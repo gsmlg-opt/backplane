@@ -184,7 +184,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         parent: caller.name,
         authority: Keyword.get(opts, :authority, %{}),
         snapshot: nil,
-        snapshot_identity: nil
+        snapshot_identity: nil,
+        closure: :open
       }
 
       state = %{
@@ -451,7 +452,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           status: :running,
           final: nil,
           snapshot: nil,
-          snapshot_identity: nil
+          snapshot_identity: nil,
+          closure: :open
       }
 
       {:ok,
@@ -601,53 +603,132 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     :exit, _ -> :ok
   end
 
+  defp cancel_agent(%{pid: nil, closure: :confirmed}), do: :already_closed
+
+  defp cancel_agent(%{pid: nil, closure: {:uncertain, _}}),
+    do: {:error, Error.new(:unknown_outcome, "agent cleanup is not settled")}
+
+  defp cancel_agent(%{pid: nil}),
+    do: {:error, Error.new(:unknown_outcome, "agent process identity is unavailable")}
+
+  defp cancel_agent(_agent),
+    do: {:error, Error.new(:unknown_outcome, "agent process identity is unavailable")}
+
   defp cancel_owned_tree(state, name, action) do
     names = [name | descendant_names(state, name)]
     next_status = if action == :close, do: :shutdown, else: :interrupted
 
     Enum.reduce_while(names, {:ok, state}, fn child_name, {:ok, acc} ->
-      agent = Map.fetch!(acc.agents, child_name)
+      case Map.fetch(acc.agents, child_name) do
+        :error ->
+          {:cont, {:ok, acc}}
 
-      case cancel_agent(agent) do
-        :ok ->
-          case maybe_close_child(acc, agent, action) do
-            {:ok, agent} ->
-              acc = put_in(acc, [:agents, child_name], %{agent | status: next_status})
+        {:ok, agent} ->
+          if action == :close and agent.closure == :confirmed do
+            {:cont, {:ok, acc}}
+          else
+            agent = %{
+              agent
+              | closure: if(action == :close, do: :in_progress, else: agent.closure)
+            }
 
-              {:cont,
-               {:ok,
-                %{
-                  acc
-                  | monitors: Map.delete(acc.monitors, agent.monitor),
-                    updates: MapSet.put(acc.updates, child_name)
-                }}}
+            acc = put_in(acc, [:agents, child_name], agent)
 
-            {:error, %Error{} = error} ->
-              acc = put_in(acc, [:agents, child_name, :status], :interrupted)
-              {:halt, {:error, error, %{acc | updates: MapSet.put(acc.updates, child_name)}}}
+            case cancel_agent(agent) do
+              :ok ->
+                case maybe_close_child(acc, agent, action) do
+                  {:ok, closed_agent} ->
+                    closed_agent = %{closed_agent | status: next_status}
+                    acc = put_in(acc, [:agents, child_name], closed_agent)
+
+                    {:cont,
+                     {:ok,
+                      %{
+                        acc
+                        | monitors: maybe_delete_monitor(acc.monitors, closed_agent.monitor),
+                          updates: MapSet.put(acc.updates, child_name)
+                      }}}
+
+                  {:error, %Error{} = error} ->
+                    uncertain = %{agent | status: :interrupted, closure: {:uncertain, error}}
+                    acc = put_in(acc, [:agents, child_name], uncertain)
+
+                    {:halt,
+                     {:error, error, %{acc | updates: MapSet.put(acc.updates, child_name)}}}
+                end
+
+              :already_closed ->
+                {:cont, {:ok, acc}}
+
+              {:error, %Error{} = error} ->
+                acc =
+                  if action == :close do
+                    put_in(acc, [:agents, child_name], %{
+                      agent
+                      | status: :interrupted,
+                        closure: {:uncertain, error}
+                    })
+                  else
+                    acc
+                  end
+
+                {:halt, {:error, error, acc}}
+            end
           end
-
-        {:error, %Error{} = error} ->
-          {:halt, {:error, error, acc}}
       end
     end)
   end
 
   defp maybe_close_child(_state, agent, :interrupt), do: {:ok, agent}
 
-  defp maybe_close_child(state, agent, :close) do
-    with {:ok, snapshot} <- settled_snapshot(agent) do
-      Process.demonitor(agent.monitor, [:flush])
-      _ = DynamicSupervisor.terminate_child(state.child_supervisor, agent.pid)
-
+  defp maybe_close_child(state, %{pid: pid} = agent, :close) when is_pid(pid) do
+    with {:ok, snapshot} <- settled_snapshot(agent),
+         :ok <- safe_demonitor(agent.monitor),
+         :ok <- safe_terminate_child(state.child_supervisor, pid) do
       {:ok,
        agent
        |> Map.put(:pid, nil)
        |> Map.put(:monitor, nil)
        |> Map.put(:snapshot, snapshot)
-       |> Map.put(:snapshot_identity, snapshot_identity(snapshot))}
+       |> Map.put(:snapshot_identity, snapshot_identity(snapshot))
+       |> Map.put(:closure, :confirmed)}
     end
   end
+
+  defp safe_demonitor(ref) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    :ok
+  catch
+    :error, _ -> :ok
+  end
+
+  defp safe_demonitor(_), do: :ok
+
+  defp safe_terminate_child(supervisor, pid) when is_pid(supervisor) and is_pid(pid) do
+    if Process.alive?(supervisor) do
+      case DynamicSupervisor.terminate_child(supervisor, pid) do
+        :ok ->
+          :ok
+
+        {:error, :not_found} ->
+          :ok
+
+        {:error, reason} ->
+          {:error, Error.new(:unknown_outcome, "agent termination is uncertain", cause: reason)}
+      end
+    else
+      {:error, Error.new(:unknown_outcome, "agent supervisor is unavailable")}
+    end
+  catch
+    :exit, reason ->
+      {:error, Error.new(:unknown_outcome, "agent termination is uncertain", cause: reason)}
+  end
+
+  defp safe_terminate_child(_supervisor, _pid),
+    do: {:error, Error.new(:unknown_outcome, "agent process identity is unavailable")}
+
+  defp maybe_delete_monitor(monitors, ref) when is_reference(ref), do: Map.delete(monitors, ref)
+  defp maybe_delete_monitor(monitors, _), do: monitors
 
   defp descendant_names(state, name) do
     direct =
@@ -848,6 +929,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp public_status(%{status: :completed, final: final}), do: %{completed: final}
+
+  defp public_status(%{closure: {:uncertain, %Error{message: message}}}) do
+    %{unknown_outcome: message || "agent cleanup is not settled"}
+  end
+
   defp public_status(%{status: {:errored, reason}}), do: %{errored: reason}
 
   defp public_status(%{status: status}) when status in [:running, :interrupted, :shutdown],

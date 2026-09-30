@@ -18,9 +18,9 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.MultiAgent",
       "required_backends": ["host child-options callback and provider"],
-      "tests": ["codex_multi_agent_profile_test.exs", "ct05_collaboration_test.exs"],
+      "tests": ["codex_multi_agent_profile_test.exs", "codex_multi_agent_close_test.exs", "ct05_collaboration_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
-      "deviation": "Model-callable V1 and V2 Conversation profiles start real supervised child Conversations. Regression chains cover interrupt/send, completed follow-up, close/resume, committed file mutation without replay, preserved quotas/history, and old-run fencing. Strict-store/fault tests exercise the manager with real children, not a production durable store. Native Codex event-wire parity remains unverified."
+      "deviation": "Model-callable V1 and V2 Conversation profiles start real supervised child Conversations. Regression chains cover interrupt/send, completed follow-up, close/resume, committed file mutation without replay, preserved quotas/history, old-run fencing, and R13 idempotent/recursive close with uncertain settlement. Strict-store/fault tests exercise the manager with real children, not a production durable store. Native Codex event-wire parity remains unverified."
     },
     {
       "id": "resource",
@@ -54,9 +54,9 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.Tools",
       "required_backends": ["host command adapter and ResourceRegistry"],
-      "tests": ["codex_tools_test.exs", "codex_contract_test.exs", "codex_command_budget_test.exs", "codex_command_lifecycle_test.exs", "codex_session_incarnation_test.exs"],
+      "tests": ["codex_tools_test.exs", "codex_contract_test.exs", "codex_command_budget_test.exs", "codex_command_lifecycle_test.exs", "tools/local_command_cleanup_test.exs", "codex_session_incarnation_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
-      "deviation": "Direct Codex.call -> Command -> real Linux LocalCommand tests separate response truncation from host hard limits and check repeated stdin cursors and completion markers. Lifecycle tests additionally use admitted Conversation dispatch. Output token budgeting is a four-bytes-per-token estimate, PTY remains rejected, and process-group proof is Linux-only."
+      "deviation": "Direct Codex.call -> Command -> real Linux LocalCommand tests separate response truncation from host hard limits and check repeated stdin cursors and completion markers. Lifecycle tests additionally use admitted Conversation dispatch. Cleanup-evidence regression coverage preserves uncertain session ownership after completion records expire, but the native process suite is skipped on this macOS host by its Linux/coreutils gate. Output token budgeting is a four-bytes-per-token estimate, PTY remains rejected, and process-group proof is Linux-only."
     },
     {
       "id": "plan",
@@ -141,8 +141,8 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.Control",
       "required_backends": ["host interaction, permission, readiness, and token providers as selected"],
-      "tests": ["codex_ct04_test.exs", "codex_control_profile_test.exs"],
-      "deviation": "Replies and grants are host-resolved and context replacement preserves runtime resources. Exact token accounting depends on a host provider and native UI/event parity is unverified."
+      "tests": ["codex_ct04_test.exs", "codex_control_profile_test.exs", "conversation_test.exs"],
+      "deviation": "Replies and grants are host-resolved and context replacement preserves runtime resources. Conversation checkpoints coordinate interaction admission and acknowledgement with the same Store commit queue and retain remaining root/effect/nested budgets. Exact token accounting depends on a host provider and native UI/event parity is unverified."
     },
     {
       "id": "raw_custom_input",
@@ -209,9 +209,9 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.CodeMode",
       "required_backends": ["Deno, ResourceRegistry, and admitted nested dispatcher"],
-      "tests": ["codex_ct08_test.exs", "codex_framing_test.exs", "codex_code_mode_os_cleanup_test.exs"],
+      "tests": ["codex_ct08_test.exs", "codex_framing_test.exs", "codex_code_mode_os_cleanup_test.exs", "conversation_catalog_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
-      "deviation": "Real Deno Conversation tests exercise exec -> yield -> later provider turn -> wait -> nested dispatch after the original effect Task exits, plus lifecycle cancellation. Cell workers are temporary and nested contexts retain the trusted catalog/resource callbacks. A real CPU-bound Deno process is checked for OS termination after timeout on Linux only; Code Mode is rejected before spawn when verified process identity/cleanup is unavailable. Framing tests inject deterministic raw-byte splits into the packaged worker and separately exercise real CodeMode.execute with large source/results. Wait remains a generator continuation, not pinned time-sliced running-cell behavior; native wire parity remains unverified."
+      "deviation": "Real Deno Conversation tests exercise exec -> yield -> later provider turn -> wait -> nested dispatch after the original effect Task exits, plus lifecycle cancellation. Cell workers are temporary and nested contexts retain the trusted catalog/resource callbacks; nested human interaction now pauses the worker timer with its remaining budget. A real CPU-bound Deno process is checked for OS termination after timeout on Linux only; Code Mode is rejected before spawn when verified process identity/cleanup is unavailable. Framing tests inject deterministic raw-byte splits into the packaged worker and separately exercise real CodeMode.execute with large source/results. This host skipped native Deno/process cleanup tests; wait remains a generator continuation, not pinned time-sliced running-cell behavior; native wire parity remains unverified."
     },
     {
       "id": "service_backed",
@@ -283,16 +283,17 @@
     }
   ],
   "regression_review": {
-    "reviewed_backplane_commit": "78fb2d43ac294daab42881c0e440cc4c57d7e212",
+    "reviewed_backplane_commit": "301ffd41bfadfc806af7d71dc773359ce57c0d02",
     "compatibility_target_unchanged": true,
-    "follow_up_repairs": ["R8", "R9", "R10", "R11", "R12"],
-    "evidence_note": "R8-R12 add temporary-worker, incarnation-tagged snapshot, per-invocation command cleanup, shared nested trusted-context, and pre-admission process-lifecycle regressions. Test files distinguish direct helper/backend paths from admitted Conversation and real-effect paths. Linux native Deno/PTY/process-group validation remains separate from macOS capability-unit validation. No production durability, native-wire, or live-service parity claim follows from these repairs."
+    "follow_up_repairs": ["R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "R16", "R17"],
+    "evidence_note": "R8-R12 add temporary-worker, incarnation-tagged snapshot, per-invocation command cleanup, shared nested trusted-context, and pre-admission process-lifecycle regressions. R13 is exercised through the model-callable collaboration profile and codex_multi_agent_close_test.exs, including recursive/repeated close, late DOWN, peer survival, and retained unknown settlement. R14 retains session/owner/incarnation/process-group cleanup evidence beyond completed-output retention; its focused native process tests are skipped on this macOS host by the Linux/coreutils gate. R15-R17 use the real Conversation commit/checkpoint, catalog, interaction, and Code Mode paths; existing GatedStore tests establish cancellation fencing and catalog checkpoint barriers, while CT07/control tests establish supported interaction. Native Deno/PTY/process-group execution remains separate from macOS capability-unit validation. No production durability, native-wire, or live-service parity claim follows from these repairs."
   },
   "overall_disposition": "pinned_66_entry_source_inventory_adapted_profiles_verified_native_parity_partial",
   "non_claims": [
     "Exact-source inventory is not behavioral parity.",
     "No production provider or service conformance was run.",
     "No durable extension restart recovery was run.",
-    "Native Codex event, worker, PTY, and complete output-schema parity remain incomplete."
+    "Native Codex event, worker, PTY, and complete output-schema parity remain incomplete.",
+    "R14 Linux process cleanup and R17 real Deno deadline suspension were not executed on this macOS host."
   ]
 }

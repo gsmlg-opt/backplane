@@ -125,6 +125,19 @@ a successful command merely because an exit code is missing. LocalCommand keeps
 its bounded output buffer and Linux process-group cleanup; descendants that
 create a separate session remain outside that backend's cleanup guarantee.
 
+Command output retention is bounded independently from cleanup evidence. A failed
+cleanup keeps the invocation/session, owner incarnation, process-group and
+workspace association until an explicit reconciler confirms release. Expiring a
+completed output record therefore cannot make `session_cleanup_status/1` or
+owner cleanup report `:confirmed`; unknown identities remain distinct from known
+never-launched reservations and confirmed-release receipts.
+
+Collaboration close is idempotent. Closed or interrupted records retain closure
+state and any uncertain settlement evidence, recursive close skips confirmed
+descendants, and stale monitor notifications are fenced by run identity. The
+manager does not terminate unrelated peers when a descendant cannot establish
+settlement.
+
 ## Worker framing
 
 The packaged Deno worker runs with explicit denied ambient permissions using

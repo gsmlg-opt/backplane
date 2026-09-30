@@ -80,7 +80,17 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          {:ok, nested_dispatch} <- nested_dispatch(operation),
          opts =
            code_options(context,
-             dispatcher: fn request, _execution_context -> nested_dispatch.(request) end,
+             dispatcher: fn request, execution_context ->
+               suspend = Map.get(execution_context, :suspend)
+               if is_function(suspend, 0), do: suspend.()
+
+               try do
+                 nested_dispatch.(request)
+               after
+                 resume = Map.get(execution_context, :resume)
+                 if is_function(resume, 0), do: resume.()
+               end
+             end,
              execution_context: %{
                run_id: owner,
                authority: operation.effective_authority,
@@ -107,7 +117,17 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
              {:ok, result} <-
                resume(registry, handle, nil,
                  owner: owner,
-                 dispatcher: fn request, _execution_context -> nested_dispatch.(request) end,
+                 dispatcher: fn request, execution_context ->
+                   suspend = Map.get(execution_context, :suspend)
+                   if is_function(suspend, 0), do: suspend.()
+
+                   try do
+                     nested_dispatch.(request)
+                   after
+                     resume = Map.get(execution_context, :resume)
+                     if is_function(resume, 0), do: resume.()
+                   end
+                 end,
                  execution_context: %{
                    run_id: owner,
                    authority: operation.effective_authority,
@@ -457,6 +477,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            timer: nil,
            from: nil,
            awaiting_resume: false,
+           timer_deadline: nil,
+           paused_remaining: nil,
            active_tool: nil,
            tool_count: 0,
            buffer: ""
@@ -483,6 +505,38 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     def handle_call(:begin, from, state) do
       send_command(state.port, %{type: "execute", code: state.code})
       {:noreply, arm(state, from)}
+    end
+
+    def handle_call(:suspend_timer, _from, state) do
+      remaining =
+        case state.timer_deadline do
+          deadline when is_integer(deadline) ->
+            max(0, deadline - System.monotonic_time(:millisecond))
+
+          _ ->
+            nil
+        end
+
+      if state.timer, do: Process.cancel_timer(state.timer)
+      {:reply, :ok, %{state | timer: nil, timer_deadline: nil, paused_remaining: remaining}}
+    end
+
+    def handle_call(:resume_timer, _from, state) do
+      remaining = state.paused_remaining
+
+      if is_integer(remaining) do
+        timer = Process.send_after(self(), :deadline, remaining)
+
+        {:reply, :ok,
+         %{
+           state
+           | timer: timer,
+             timer_deadline: System.monotonic_time(:millisecond) + remaining,
+             paused_remaining: nil
+         }}
+      else
+        {:reply, :ok, state}
+      end
     end
 
     def handle_call(
@@ -567,8 +621,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       )
     end
 
-    def handle_info(:deadline, state),
+    def handle_info(:deadline, %{timer: timer} = state) when is_reference(timer),
       do: fail(state, Error.new(:timeout, "code mode execution timed out"))
+
+    def handle_info(:deadline, state), do: {:noreply, state}
 
     def handle_info({:EXIT, port, reason}, %{port: port} = state) do
       fail(state, Error.new(:execution_failure, "code mode worker exited", cause: reason))
@@ -628,9 +684,16 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           raw_input: message["rawInput"]
         }
 
+        worker = self()
+
+        execution_context =
+          state.context
+          |> Map.put(:suspend, fn -> GenServer.call(worker, :suspend_timer, :infinity) end)
+          |> Map.put(:resume, fn -> GenServer.call(worker, :resume_timer, :infinity) end)
+
         task =
           Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-            state.dispatcher.(request, state.context)
+            state.dispatcher.(request, execution_context)
           end)
 
         {:noreply,
@@ -692,18 +755,32 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     defp pause(state, result) do
       if state.timer, do: Process.cancel_timer(state.timer)
       GenServer.reply(state.from, result)
-      {:noreply, %{state | from: nil, timer: nil, awaiting_resume: true}}
+
+      {:noreply,
+       %{
+         state
+         | from: nil,
+           timer: nil,
+           timer_deadline: nil,
+           paused_remaining: nil,
+           awaiting_resume: true
+       }}
     end
 
     defp fail(state, error), do: finish(state, {:error, error})
 
-    defp arm(state, from),
-      do: %{
+    defp arm(state, from) do
+      timer = Process.send_after(self(), :deadline, state.timeout)
+
+      %{
         state
         | from: from,
           awaiting_resume: false,
-          timer: Process.send_after(self(), :deadline, state.timeout)
+          timer: timer,
+          timer_deadline: System.monotonic_time(:millisecond) + state.timeout,
+          paused_remaining: nil
       }
+    end
 
     defp capture_os_identity(port) do
       case Port.info(port, :os_pid) do

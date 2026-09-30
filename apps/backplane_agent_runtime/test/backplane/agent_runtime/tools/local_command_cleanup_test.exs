@@ -194,6 +194,61 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandCleanupTest do
              Command.start(command, %{request | owner_run_id: "blocked-after-result-expiry"})
   end
 
+  test "session cleanup evidence survives output eviction and can be reconciled", %{
+    workspace: workspace
+  } do
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    cleanup = fn _owner, _port, _token, _group_id ->
+      attempt = Agent.get_and_update(attempts, fn count -> {count, count + 1} end)
+
+      if attempt == 0 do
+        {:error, Error.new(:resource_conflict, "injected cleanup uncertainty")}
+      else
+        :ok
+      end
+    end
+
+    {server, command} =
+      start_backend(
+        cleanup_timeout: 500,
+        completion_retention: 30,
+        cleanup_reconciler: cleanup
+      )
+
+    session_id = System.unique_integer([:positive])
+
+    request =
+      Map.put(ignored_term_request(workspace, "session-evidence"), :session_id, session_id)
+
+    {:ok, job} = Command.start(command, request, deadline_limit: 5_000)
+    group_id = owned_group(server, job.port)
+    on_exit(fn -> kill_group(group_id) end)
+    wait_for_file(request.executable <> ".ready", monotonic_deadline(500))
+
+    assert :ok = Command.cancel(command, request)
+
+    assert {:ok, %{cleanup_status: :uncertain}} =
+             wait_for_status(command, request, job, :cleanup_failed, 1_000)
+
+    assert :ok =
+             wait_until(
+               fn ->
+                 match?(
+                   {:error, %{class: :not_found}},
+                   Command.read(command, request, job, cursor: 0)
+                 )
+               end,
+               monotonic_deadline(500)
+             )
+
+    assert :uncertain = GenServer.call(server, {:session_cleanup_status, session_id})
+    assert :ok = Command.cancel_confirmed(command, request, 1_000)
+    assert :ok = Command.cancel_confirmed(command, request, 100)
+    assert :confirmed = GenServer.call(server, {:session_cleanup_status, session_id})
+    refute Map.has_key?(:sys.get_state(server).cleanup_evidence, session_id)
+  end
+
   test "shutdown cleans active and uncertain verified groups but preserves unrelated work", %{
     workspace: workspace
   } do

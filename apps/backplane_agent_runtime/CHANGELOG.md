@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- R13: make collaboration close idempotent and tree-aware. Repeated or recursive
+  close requests now preserve partial and uncertain settlement evidence, fence
+  stale monitor events, and leave unrelated peers supervised.
+- R14: retain authoritative command ownership and cleanup evidence after bounded
+  output records expire. Per-session and owner-wide reconciliation now share the
+  same evidence and distinguish unknown, pending, uncertain, and confirmed states.
+- R15-R17: serialize nested Conversation transitions behind one Store commit
+  coordinator; bind catalog staging to producer and publication-boundary
+  invocations; and suspend root, effect, nested, and Code Mode deadlines during
+  supported human interaction while restoring only the remaining budget.
 - Repair Codex patch hunk matching, contextual anchors, EOF handling and
   rename-with-edit; preserve partial mutations and uncertain-write evidence.
 - Preserve supervised Code Mode cells across provider turns and rebind nested

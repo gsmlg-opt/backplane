@@ -75,11 +75,14 @@ context.emit.(%{type: :tool_update, ...})
 The host receives `interaction_requested` with a fresh `interaction_id`, then
 calls `Conversation.resolve(pid, id, answer)` after authenticating the responder.
 The answer is persisted before the worker continues. Stale/duplicate IDs fail.
-An explicitly requested human interaction suspends the active effect and root
-deadlines. On resolution, each resumes with the remaining pre-wait budget;
-provider and tool execution outside an interaction remains bounded. Cancellation
-closes pending interaction ownership. MCP form rendering and answer validation
-remain in the Sigma tool/interaction adapter.
+An explicitly requested human interaction suspends the active effect, nested
+invocation, Code Mode worker, and root deadlines. On resolution, each resumes
+with its remaining pre-wait budget; queued timeout messages from before
+suspension are fenced by the active timer. Provider and tool execution outside
+an interaction remains bounded. Cancellation closes pending interaction
+ownership. MCP form rendering and answer validation remain in the Sigma
+tool/interaction adapter. Nested interaction is supported through the same
+trusted context; a nested invocation has its own token and settlement identity.
 
 For descriptors with `requires_approval: true`, the runtime asks for an exact
 operation approval before invocation; only `:approved` allows dispatch. It binds
@@ -165,6 +168,20 @@ batch checkpoint and before steering, hooks, or another provider attempt. Other
 calls in the discovery response remain pinned to the old catalog. Failed,
 error-marked, cancelled, or storage-failed discovery discards its staging.
 Approval and interaction waits reject new staging.
+
+Nested discovery records both the producing invocation and the enclosing tool
+publication boundary. A staged catalog becomes eligible only after the producing
+invocation has an acknowledged successful result; outer failure, timeout,
+cancellation, or storage uncertainty discards dependent staging. A callback from
+a completed nested invocation is rejected by its expired token even while the
+outer tool remains active. Publication still occurs once at the existing
+post-batch boundary, so calls in the discovery batch remain pinned to the old
+catalog.
+
+Conversation persistent transitions, including nested admission, result, timeout,
+interaction, and publication checkpoints, use one FIFO commit coordinator. A
+queued transition is rebased against the last acknowledged conversation before
+dispatch; cancellation clears queued transitions before any effect can start.
 
 `status/1` exposes the active revision plus staged/published receipts without
 catalog contents. Reusing a `publication_id` with the structurally identical

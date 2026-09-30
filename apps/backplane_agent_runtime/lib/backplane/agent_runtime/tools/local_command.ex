@@ -89,6 +89,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          pending: %{},
          workspaces: MapSet.new(),
          owned_groups: %{},
+         cleanup_evidence: %{},
+         released_sessions: MapSet.new(),
          cancelled_launchers: %{},
          cancelled_sessions: %{},
          cleanup_supervisor: cleanup_supervisor,
@@ -227,6 +229,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         request_cleanup(port, :cancelled, current)
       end)
 
+    state =
+      state.cleanup_evidence
+      |> Enum.filter(fn {_session_id, evidence} -> evidence.owner_run_id == owner_run_id end)
+      |> Enum.reduce(state, fn {session_id, _evidence}, current ->
+        retry_session_cleanup(session_id, current)
+      end)
+
     {:reply, :ok, state}
   end
 
@@ -241,7 +250,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         nil ->
           case Enum.find(state.active, fn {_port, job} -> job.session_id == session_id end) do
             {port, _job} -> request_cleanup(port, :cancelled, state)
-            nil -> state
+            nil -> retry_session_cleanup(session_id, state)
           end
       end
 
@@ -263,18 +272,26 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         end) ->
           :uncertain
 
+        Enum.any?(state.cleanup_evidence, fn {_key, evidence} ->
+          evidence.session_id == session_id and evidence.cleanup_status == :uncertain
+        end) ->
+          :uncertain
+
+        Enum.any?(state.cleanup_evidence, fn {_key, evidence} ->
+          evidence.session_id == session_id and evidence.cleanup_status == :pending
+        end) ->
+          :pending
+
         Map.has_key?(state.cancelled_sessions, session_id) ->
           pid = Map.fetch!(state.cancelled_sessions, session_id)
           if File.exists?("/proc/#{pid}"), do: :pending, else: :confirmed
 
-        true ->
+        MapSet.member?(state.released_sessions, session_id) ->
           :confirmed
-      end
 
-    state =
-      if status == :confirmed,
-        do: %{state | cancelled_sessions: Map.delete(state.cancelled_sessions, session_id)},
-        else: state
+        true ->
+          :unknown
+      end
 
     {:reply, status, state}
   end
@@ -305,9 +322,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         job.owner_run_id == owner_run_id and job.cleanup_status == :uncertain
       end)
 
+    evidence_failed? =
+      Enum.any?(state.cleanup_evidence, fn {_session_id, evidence} ->
+        evidence.owner_run_id == owner_run_id and evidence.cleanup_status == :uncertain
+      end)
+
     status =
       cond do
-        failed? or Enum.any?(active, fn {_port, job} -> job.cleanup_status == :uncertain end) ->
+        failed? or evidence_failed? or
+            Enum.any?(active, fn {_port, job} -> job.cleanup_status == :uncertain end) ->
           :uncertain
 
         active != [] or pending? or owned != [] or launchers != [] ->
@@ -335,6 +358,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       job = %{
         port: port,
         session_id: pending.session_id,
+        owner_incarnation: Map.get(pending.request, :incarnation, 1),
         owner_monitor_ref: pending.owner_monitor_ref,
         process_group_id: pid,
         owner_run_id: pending.request.owner_run_id,
@@ -383,7 +407,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
              Map.put(state.owned_groups, port, %{
                process_group_id: pid,
                workspace: pending.request.workspace,
-               owner_run_id: pending.request.owner_run_id
+               owner_run_id: pending.request.owner_run_id,
+               session_id: pending.session_id,
+               owner_incarnation: Map.get(pending.request, :incarnation, 1)
              })
        }}
     else
@@ -505,7 +531,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         {:noreply, settle_job(port, normalize_cleanup_result(result), state)}
 
       nil ->
-        {:noreply, state}
+        case evidence_cleanup_by_ref(state, ref) do
+          {session_id, _evidence} ->
+            Process.demonitor(ref, [:flush])
+            {:noreply, settle_evidence(session_id, normalize_cleanup_result(result), state)}
+
+          nil ->
+            {:noreply, state}
+        end
     end
   end
 
@@ -528,6 +561,22 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
               )
 
             {:noreply, settle_job(port, {:error, error}, state)}
+
+          nil ->
+            case evidence_cleanup_by_ref(state, ref) do
+              {session_id, %{cleanup_task_pid: ^pid}} ->
+                error =
+                  Error.new(
+                    :resource_conflict,
+                    "local command cleanup worker exited before settlement",
+                    details: %{reason: inspect(reason)}
+                  )
+
+                {:noreply, settle_evidence(session_id, {:error, error}, state)}
+
+              _other ->
+                {:noreply, state}
+            end
 
           _other ->
             {:noreply, state}
@@ -554,6 +603,20 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
+  def handle_info({:cleanup_timeout, {:session, session_id}, token, ref}, state) do
+    case Map.get(state.cleanup_evidence, session_id) do
+      %{cleanup_token: ^token, cleanup_task_ref: ^ref} = evidence ->
+        if is_pid(evidence.cleanup_task_pid) and Process.alive?(evidence.cleanup_task_pid),
+          do: Process.exit(evidence.cleanup_task_pid, :kill)
+
+        error = Error.new(:resource_conflict, "local command cleanup reconciliation timed out")
+        {:noreply, settle_evidence(session_id, {:error, error}, state)}
+
+      _other ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:cleanup_timeout, _port, _token, _ref}, state), do: {:noreply, state}
 
   def handle_info({:cleanup_result, port, token, result}, state)
@@ -567,6 +630,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       {:noreply, settle_job(port, normalize_cleanup_result(result), state)}
     else
       {:noreply, state}
+    end
+  end
+
+  def handle_info({:cleanup_result, {:session, session_id}, token, result}, state) do
+    case Map.get(state.cleanup_evidence, session_id) do
+      %{cleanup_token: ^token} = evidence ->
+        if is_pid(evidence.cleanup_task_pid) and Process.alive?(evidence.cleanup_task_pid),
+          do: Process.exit(evidence.cleanup_task_pid, :kill)
+
+        {:noreply, settle_evidence(session_id, normalize_cleanup_result(result), state)}
+
+      _other ->
+        {:noreply, state}
     end
   end
 
@@ -654,6 +730,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           Process.sleep(10)
           await_session_cleanup(server, session_id, deadline)
         end
+
+      :unknown ->
+        {:error, Error.new(:unknown_outcome, "local command cleanup identity is unknown")}
     end
   end
 
@@ -694,6 +773,45 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       }
 
       %{state | active: Map.put(state.active, port, updated)}
+    end
+  end
+
+  defp retry_session_cleanup(session_id, state) do
+    case Map.get(state.cleanup_evidence, session_id) do
+      %{cleanup_status: :uncertain, cleanup_task_ref: nil} = evidence ->
+        token = make_ref()
+        owner = self()
+
+        %Task{pid: task_pid, ref: task_ref} =
+          Task.Supervisor.async_nolink(state.cleanup_supervisor, fn ->
+            state.cleanup_reconciler.(
+              owner,
+              {:session, session_id},
+              token,
+              evidence.process_group_id
+            )
+          end)
+
+        cleanup_timer =
+          Process.send_after(
+            self(),
+            {:cleanup_timeout, {:session, session_id}, token, task_ref},
+            state.cleanup_timeout
+          )
+
+        updated = %{
+          evidence
+          | cleanup_status: :pending,
+            cleanup_token: token,
+            cleanup_task_pid: task_pid,
+            cleanup_task_ref: task_ref,
+            cleanup_timer: cleanup_timer
+        }
+
+        %{state | cleanup_evidence: Map.put(state.cleanup_evidence, session_id, updated)}
+
+      _other ->
+        state
     end
   end
 
@@ -741,6 +859,17 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           state
           | active: active,
             completed: Map.put(state.completed, port, job),
+            cleanup_evidence:
+              cond do
+                not is_integer(job.session_id) -> state.cleanup_evidence
+                release_workspace? -> Map.delete(state.cleanup_evidence, job.session_id)
+                true -> Map.put(state.cleanup_evidence, job.session_id, cleanup_evidence(job))
+              end,
+            released_sessions:
+              if(release_workspace? and is_integer(job.session_id),
+                do: MapSet.put(state.released_sessions, job.session_id),
+                else: state.released_sessions
+              ),
             owned_groups:
               if(release_workspace?,
                 do: Map.delete(state.owned_groups, port),
@@ -753,6 +882,63 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
               )
         }
     end
+  end
+
+  defp settle_evidence(session_id, cleanup_result, state) do
+    case Map.pop(state.cleanup_evidence, session_id) do
+      {nil, _evidence} ->
+        state
+
+      {evidence, remaining} ->
+        cancel_timer(evidence.cleanup_timer)
+        demonitor_cleanup(evidence.cleanup_task_ref)
+
+        case cleanup_result do
+          :ok ->
+            %{
+              state
+              | cleanup_evidence: remaining,
+                owned_groups: drop_owned_group(state.owned_groups, session_id),
+                workspaces: MapSet.delete(state.workspaces, evidence.workspace),
+                released_sessions: MapSet.put(state.released_sessions, session_id)
+            }
+
+          {:error, %Error{} = error} ->
+            retained = %{
+              evidence
+              | cleanup_status: :uncertain,
+                cleanup_error: error,
+                cleanup_token: nil,
+                cleanup_task_pid: nil,
+                cleanup_task_ref: nil,
+                cleanup_timer: nil
+            }
+
+            %{state | cleanup_evidence: Map.put(remaining, session_id, retained)}
+        end
+    end
+  end
+
+  defp cleanup_evidence(job) do
+    %{
+      session_id: job.session_id,
+      owner_run_id: job.owner_run_id,
+      owner_incarnation: job.owner_incarnation,
+      process_group_id: job.process_group_id,
+      workspace: job.workspace,
+      cleanup_status: :uncertain,
+      cleanup_error: job.cleanup_error,
+      cleanup_token: nil,
+      cleanup_task_pid: nil,
+      cleanup_task_ref: nil,
+      cleanup_timer: nil
+    }
+  end
+
+  defp drop_owned_group(owned_groups, session_id) do
+    owned_groups
+    |> Enum.reject(fn {_port, group} -> Map.get(group, :session_id) == session_id end)
+    |> Map.new()
   end
 
   defp alive_owner(%{owner_pid: pid}) when is_pid(pid) do
@@ -819,6 +1005,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp active_cleanup_by_ref(state, ref) do
     Enum.find(state.active, fn {_port, job} -> job.cleanup_task_ref == ref end)
+  end
+
+  defp evidence_cleanup_by_ref(state, ref) do
+    Enum.find(state.cleanup_evidence, fn {_session_id, evidence} ->
+      evidence.cleanup_task_ref == ref
+    end)
   end
 
   defp normalize_cleanup_result(:ok), do: :ok
