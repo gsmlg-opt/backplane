@@ -111,9 +111,9 @@ defmodule Backplane.CIWorkflowTest do
 
   @test_run ~S"""
   if [ "${{ matrix.app }}" = "backplane_memory" ]; then
-    mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime
+    mix "do" --app backplane_memory cmd mix test --exclude memory_qualification_runtime
   else
-    mix do --app ${{ matrix.app }} cmd mix test
+    mix "do" --app ${{ matrix.app }} cmd mix test
   fi
   """
 
@@ -256,10 +256,10 @@ defmodule Backplane.CIWorkflowTest do
 
     assert_step(job, %{
       "name" => "Compile with warnings as errors",
-      "run" => "mix do --app ${{ matrix.app }} compile --warnings-as-errors"
+      "run" => "mix \"do\" --app ${{ matrix.app }} compile --warnings-as-errors"
     })
 
-    assert_step(job, %{"name" => "Run tests", "run" => "mix do --app ${{ matrix.app }} test"})
+    assert_step(job, %{"name" => "Run tests", "run" => "mix \"do\" --app ${{ matrix.app }} test"})
   end
 
   test "Agent Runtime owns standalone tests, prerequisites, and latest compatibility", %{

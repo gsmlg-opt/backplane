@@ -58,7 +58,7 @@ jobs:
         run: mix deps.get
 
       - name: Compile with warnings as errors
-        run: mix do --app ${{ matrix.app }} compile --warnings-as-errors
+        run: mix "do" --app ${{ matrix.app }} compile --warnings-as-errors
 
       - name: Run tests
-        run: mix do --app ${{ matrix.app }} test
+        run: mix "do" --app ${{ matrix.app }} test
