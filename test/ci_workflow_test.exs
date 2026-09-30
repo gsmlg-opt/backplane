@@ -3,6 +3,8 @@ ExUnit.start()
 defmodule Backplane.CIWorkflowTest do
   use ExUnit.Case, async: true
 
+  @dedicated_apps ~w(backplane_agent_runtime backplane_ai_protocol backplane_ai_protocol_testkit backplane_skill_protocol)
+
   @setup_beam_action "erlef/setup-beam@v1"
   @rust_action "dtolnay/rust-toolchain@stable"
   @elixir_pin "${{ env.ELIXIR_VERSION }}"
@@ -110,8 +112,6 @@ defmodule Backplane.CIWorkflowTest do
   @test_run ~S"""
   if [ "${{ matrix.app }}" = "backplane_memory" ]; then
     mix do --app backplane_memory cmd mix test --exclude memory_qualification_runtime
-  elif [ "${{ matrix.app }}" = "backplane_ai_protocol_testkit" ]; then
-    mix do --app backplane_ai_protocol_testkit test
   else
     mix do --app ${{ matrix.app }} cmd mix test
   fi
@@ -120,7 +120,10 @@ defmodule Backplane.CIWorkflowTest do
   setup_all do
     {:ok,
      ci_workflow: YamlElixir.read_from_file!(".github/workflows/ci.yml"),
-     test_workflow: YamlElixir.read_from_file!(".github/workflows/test.yml")}
+     test_workflow: YamlElixir.read_from_file!(".github/workflows/test.yml"),
+     ai_workflow: YamlElixir.read_from_file!(".github/workflows/ai-protocol.yml"),
+     runtime_workflow: YamlElixir.read_from_file!(".github/workflows/agent-runtime.yml"),
+     skill_workflow: YamlElixir.read_from_file!(".github/workflows/skill-protocol.yml")}
   end
 
   test "CI has exact metadata, static jobs, and a dedicated workflow contract", %{
@@ -131,7 +134,7 @@ defmodule Backplane.CIWorkflowTest do
     refute Map.has_key?(workflow, true)
 
     assert workflow["jobs"] |> Map.keys() |> Enum.sort() ==
-             ~w(agent-runtime-latest compile credo dialyzer format workflow-contract)
+             ~w(compile credo dialyzer format workflow-contract)
 
     assert_standard_ci_job(
       workflow,
@@ -158,7 +161,6 @@ defmodule Backplane.CIWorkflowTest do
     )
 
     assert_dialyzer_job(workflow)
-    assert_agent_runtime_latest_job(workflow)
     assert_workflow_contract_job(workflow)
     assert_no_bypasses(workflow)
   end
@@ -166,7 +168,7 @@ defmodule Backplane.CIWorkflowTest do
   test "Test has the exact dynamic matrix, native services, cache, and command", %{
     test_workflow: workflow
   } do
-    expected_apps = umbrella_apps()
+    expected_apps = umbrella_apps() -- @dedicated_apps
     assert Map.delete(workflow, "jobs") == @test_metadata
     assert Map.has_key?(workflow, "on")
     refute Map.has_key?(workflow, true)
@@ -193,22 +195,14 @@ defmodule Backplane.CIWorkflowTest do
       "Set up Elixir",
       "Set up Rust",
       "Install native build dependencies",
-      "Set up agent runtime command prerequisites",
       "Restore dependencies cache",
       "Install dependencies",
-      "Install standalone package dependencies",
       "Start PostgreSQL 17 with pgvector",
       "Prepare test database",
       "Run tests"
     ])
 
     assert_common_steps(job, true, @test_cache_key, @test_cache_prefix)
-
-    assert_step(job, %{
-      "name" => "Set up agent runtime command prerequisites",
-      "if" => "matrix.app == 'backplane_agent_runtime'",
-      "run" => @runtime_command_setup_run
-    })
 
     assert_step(job, %{
       "name" => "Start PostgreSQL 17 with pgvector",
@@ -218,17 +212,153 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(job, %{"name" => "Prepare test database", "run" => "mix ecto.setup"})
 
     assert_step(job, %{
-      "name" => "Install standalone package dependencies",
-      "if" => "matrix.app == 'backplane_skill_protocol'",
-      "run" => "mix do --app backplane_skill_protocol cmd mix deps.get"
-    })
-
-    assert_step(job, %{
       "name" => "Run tests",
       "run" => @test_run
     })
 
     assert_no_bypasses(workflow)
+  end
+
+  test "AI Protocol owns protocol and Testkit checks behind package paths", %{
+    ai_workflow: workflow
+  } do
+    assert_package_triggers(workflow, "AI Protocol", [
+      "apps/backplane_ai_protocol/**",
+      "apps/backplane_ai_protocol_testkit/**",
+      ".github/workflows/ai-protocol.yml"
+    ])
+
+    assert Map.keys(workflow["jobs"]) == ["test"]
+    job = job!(workflow, "test")
+
+    assert Map.delete(job, "steps") == %{
+             "name" => "Test (${{ matrix.app }})",
+             "runs-on" => "ubuntu-24.04",
+             "strategy" => %{
+               "fail-fast" => false,
+               "matrix" => %{"app" => ~w(backplane_ai_protocol backplane_ai_protocol_testkit)}
+             }
+           }
+
+    assert_package_steps(job, [
+      "Restore dependencies cache",
+      "Install dependencies",
+      "Compile with warnings as errors",
+      "Run tests"
+    ])
+
+    assert_package_cache(job, "ai-protocol", "deps\n_build\n", "app-${{ matrix.app }}-", [
+      "mix.lock",
+      "apps/backplane_ai_protocol*/mix.exs"
+    ])
+
+    assert_step(job, %{"name" => "Install dependencies", "run" => "mix deps.get"})
+
+    assert_step(job, %{
+      "name" => "Compile with warnings as errors",
+      "run" => "mix do --app ${{ matrix.app }} compile --warnings-as-errors"
+    })
+
+    assert_step(job, %{"name" => "Run tests", "run" => "mix do --app ${{ matrix.app }} test"})
+  end
+
+  test "Agent Runtime owns standalone tests, prerequisites, and latest compatibility", %{
+    runtime_workflow: workflow
+  } do
+    assert_package_triggers(workflow, "Agent Runtime", [
+      "apps/backplane_agent_runtime/**",
+      ".github/workflows/agent-runtime.yml"
+    ])
+
+    assert workflow["jobs"] |> Map.keys() |> Enum.sort() == ~w(agent-runtime-latest test)
+    job = job!(workflow, "test")
+
+    assert Map.delete(job, "steps") == %{
+             "name" => "Agent Runtime Tests",
+             "runs-on" => "ubuntu-24.04",
+             "defaults" => %{"run" => %{"working-directory" => "apps/backplane_agent_runtime"}}
+           }
+
+    assert_package_steps(job, [
+      "Install native build dependencies",
+      "Set up Deno",
+      "Set up agent runtime command prerequisites",
+      "Restore dependencies cache",
+      "Install dependencies",
+      "Compile with warnings as errors",
+      "Run tests"
+    ])
+
+    assert_step(job, %{"name" => "Install native build dependencies", "run" => @native_build_run})
+
+    assert_step(job, %{
+      "name" => "Set up Deno",
+      "uses" => "denoland/setup-deno@v2",
+      "with" => %{"deno-version" => "2.8.3"}
+    })
+
+    assert_step(job, %{
+      "name" => "Set up agent runtime command prerequisites",
+      "run" => @runtime_command_setup_run
+    })
+
+    assert_package_cache(
+      job,
+      "agent-runtime",
+      "apps/backplane_agent_runtime/deps\napps/backplane_agent_runtime/_build\n",
+      "",
+      ["apps/backplane_agent_runtime/mix.lock", "apps/backplane_agent_runtime/mix.exs"]
+    )
+
+    assert_step(job, %{"name" => "Install dependencies", "run" => "mix deps.get"})
+
+    assert_step(job, %{
+      "name" => "Compile with warnings as errors",
+      "run" => "mix compile --warnings-as-errors"
+    })
+
+    assert_step(job, %{"name" => "Run tests", "run" => "mix test"})
+    assert_agent_runtime_latest_job(workflow)
+  end
+
+  test "Skill Protocol retains package and HTTP integration coverage behind package paths", %{
+    skill_workflow: workflow
+  } do
+    assert_package_triggers(workflow, "Skill Protocol", [
+      "apps/backplane_skill_protocol/**",
+      "scripts/verify_skill_protocol_package.sh",
+      "scripts/skill_protocol_consumer_verify.exs",
+      ".github/workflows/skill-protocol.yml"
+    ])
+
+    assert workflow["jobs"] |> Map.keys() |> Enum.sort() == ~w(integration package)
+
+    assert_step(job!(workflow, "package"), %{
+      "name" => "Verify standalone package and consumer",
+      "run" => "unbuffer bash scripts/verify_skill_protocol_package.sh"
+    })
+
+    assert_step(job!(workflow, "integration"), %{
+      "name" => "Run Skill Protocol HTTP integration",
+      "run" =>
+        "unbuffer mix test apps/backplane_api/test/backplane/api/skill_protocol_http_integration_test.exs apps/backplane_api/test/backplane/api/skill_protocol_router_test.exs apps/backplane_api/test/backplane/api/skill_protocol_telemetry_test.exs"
+    })
+
+    script = File.read!("scripts/verify_skill_protocol_package.sh")
+    assert script =~ "mix compile --warnings-as-errors"
+    assert script =~ "mix test"
+    assert script =~ "skill_protocol_consumer_verify.exs"
+  end
+
+  test "main and dedicated test matrices partition all umbrella apps", %{
+    test_workflow: main,
+    ai_workflow: ai
+  } do
+    main_apps = get_in(main, ["jobs", "test", "strategy", "matrix", "app"])
+    ai_apps = get_in(ai, ["jobs", "test", "strategy", "matrix", "app"])
+    all_apps = main_apps ++ ai_apps ++ ~w(backplane_agent_runtime backplane_skill_protocol)
+    assert Enum.sort(all_apps) == umbrella_apps()
+    assert all_apps == Enum.uniq(all_apps)
   end
 
   test "CI setup-beam pins are step-local under a count-preserving mutation", %{
@@ -325,7 +455,18 @@ defmodule Backplane.CIWorkflowTest do
              "env" => %{"MIX_ENV" => "prod"}
            }
 
-    assert_step_names(job, ["Checkout code", "Set up latest Elixir", "Compile package strictly"])
+    assert_step_names(job, [
+      "Checkout code",
+      "Set up latest Elixir",
+      "Install package dependencies",
+      "Compile package strictly"
+    ])
+
+    assert_step(job, %{
+      "name" => "Install package dependencies",
+      "working-directory" => "apps/backplane_agent_runtime",
+      "run" => "mix deps.get"
+    })
 
     assert_step(job, %{"name" => "Checkout code", "uses" => "actions/checkout@v7"})
 
@@ -407,6 +548,44 @@ defmodule Backplane.CIWorkflowTest do
       "name" => "Set up Rust",
       "uses" => @rust_action,
       "with" => %{"toolchain" => @rust_pin}
+    })
+  end
+
+  defp assert_package_triggers(workflow, name, paths) do
+    assert workflow["name"] == name
+
+    assert workflow["on"] == %{
+             "push" => %{"paths" => paths},
+             "pull_request" => %{"paths" => paths}
+           }
+
+    assert workflow["permissions"] == %{"contents" => "read"}
+    assert workflow["concurrency"] == @concurrency
+    assert workflow["env"]["ELIXIR_VERSION"] == "1.18.4"
+    assert workflow["env"]["OTP_VERSION"] == "28.5.0.5"
+    assert_no_bypasses(workflow)
+  end
+
+  defp assert_package_steps(job, steps) do
+    assert_step_names(job, ["Checkout code", "Set up Elixir" | steps])
+    assert_step(job, %{"name" => "Checkout code", "uses" => "actions/checkout@v7"})
+    assert_setup_beam_step(job)
+  end
+
+  defp assert_package_cache(job, package, path, suffix, lockfiles) do
+    prefix =
+      "${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-#{package}-mix-${{ env.MIX_ENV }}-#{suffix}"
+
+    hashes = Enum.map_join(lockfiles, ", ", &"'#{&1}'")
+
+    assert_step(job, %{
+      "name" => "Restore dependencies cache",
+      "uses" => "actions/cache@v6",
+      "with" => %{
+        "path" => path,
+        "key" => prefix <> "${{ hashFiles(#{hashes}) }}",
+        "restore-keys" => prefix
+      }
     })
   end
 

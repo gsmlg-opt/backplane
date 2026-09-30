@@ -1,0 +1,64 @@
+name: AI Protocol
+
+on:
+  push:
+    paths:
+      - "apps/backplane_ai_protocol/**"
+      - "apps/backplane_ai_protocol_testkit/**"
+      - ".github/workflows/ai-protocol.yml"
+  pull_request:
+    paths:
+      - "apps/backplane_ai_protocol/**"
+      - "apps/backplane_ai_protocol_testkit/**"
+      - ".github/workflows/ai-protocol.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18.4"
+  OTP_VERSION: "28.5.0.5"
+  MIX_ENV: test
+
+jobs:
+  test:
+    name: Test (${{ matrix.app }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - backplane_ai_protocol
+          - backplane_ai_protocol_testkit
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-ai-protocol-mix-${{ env.MIX_ENV }}-app-${{ matrix.app }}-${{ hashFiles('mix.lock', 'apps/backplane_ai_protocol*/mix.exs') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-ai-protocol-mix-${{ env.MIX_ENV }}-app-${{ matrix.app }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile with warnings as errors
+        run: mix do --app ${{ matrix.app }} compile --warnings-as-errors
+
+      - name: Run tests
+        run: mix do --app ${{ matrix.app }} test

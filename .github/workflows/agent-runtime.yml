@@ -1,0 +1,128 @@
+name: Agent Runtime
+
+on:
+  push:
+    paths:
+      - "apps/backplane_agent_runtime/**"
+      - ".github/workflows/agent-runtime.yml"
+  pull_request:
+    paths:
+      - "apps/backplane_agent_runtime/**"
+      - ".github/workflows/agent-runtime.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18.4"
+  OTP_VERSION: "28.5.0.5"
+  MIX_ENV: test
+
+jobs:
+  test:
+    name: Agent Runtime Tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/backplane_agent_runtime
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.8.3"
+
+      - name: Set up agent runtime command prerequisites
+        run: |
+          sudo apt-get install -y --no-install-recommends ca-certificates curl perl procps util-linux xz-utils
+          coreutils_version="9.4"
+          coreutils_sha256="ea613a4cf44612326e917201bbbcdfbd301de21ffc3b59b6e5c07e040b275e52"
+          coreutils_archive="$RUNNER_TEMP/coreutils-${coreutils_version}.tar.xz"
+          coreutils_source="$RUNNER_TEMP/coreutils-${coreutils_version}"
+          curl --fail --location --silent --show-error \
+            --output "$coreutils_archive" \
+            "https://ftp.gnu.org/gnu/coreutils/coreutils-${coreutils_version}.tar.xz"
+          echo "${coreutils_sha256}  ${coreutils_archive}" | sha256sum --check -
+          tar -xJf "$coreutils_archive" -C "$RUNNER_TEMP"
+          (
+            cd "$coreutils_source"
+            ./configure --disable-nls --without-selinux --enable-single-binary=symlinks
+            make -j"$(nproc)"
+          )
+          coreutils_path="$coreutils_source/src/coreutils"
+          test -x "$coreutils_path"
+          test "$(uname -s)" = "Linux"
+          test -r /proc/self/stat
+          for command_name in setsid sh kill; do
+            command_path="$(type -P "$command_name")"
+            test -x "$command_path"
+          done
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+          ln -s "$coreutils_path" "$smoke_dir/env"
+          ln -s "$coreutils_path" "$smoke_dir/printf"
+          ln -s "$coreutils_path" "$smoke_dir/sleep"
+          test "$("$smoke_dir/env" "$smoke_dir/printf" '%s' runtime)" = "runtime"
+          "$smoke_dir/sleep" 0
+          echo "COREUTILS=$coreutils_path" >> "$GITHUB_ENV"
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            apps/backplane_agent_runtime/deps
+            apps/backplane_agent_runtime/_build
+          key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-agent-runtime-mix-${{ env.MIX_ENV }}-${{ hashFiles('apps/backplane_agent_runtime/mix.lock', 'apps/backplane_agent_runtime/mix.exs') }}
+          restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-agent-runtime-mix-${{ env.MIX_ENV }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+
+      - name: Run tests
+        run: mix test
+
+  agent-runtime-latest:
+    name: Agent Runtime (Elixir 1.20 / OTP 29)
+    runs-on: ubuntu-24.04
+
+    env:
+      MIX_ENV: prod
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up latest Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.1"
+          otp-version: "29.0.2"
+
+      - name: Install package dependencies
+        working-directory: apps/backplane_agent_runtime
+        run: mix deps.get
+
+      - name: Compile package strictly
+        working-directory: apps/backplane_agent_runtime
+        run: mix compile --force --warnings-as-errors

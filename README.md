@@ -305,6 +305,14 @@ mix test
 
 The umbrella includes database-backed tests, LiveView tests, MCP transport tests, managed service tests, LLM proxy tests, Relayixir proxy tests, and DayEx utility tests.
 
+GitHub Actions splits package tests out of the main `Test` matrix:
+
+- `ai-protocol.yml` tests `backplane_ai_protocol` and `backplane_ai_protocol_testkit`.
+- `agent-runtime.yml` runs standalone runtime tests with Coreutils and Deno, plus strict Elixir 1.20 / OTP 29 compilation.
+- `skill-protocol.yml` verifies the standalone package, consumer, and DB-backed HTTP integration.
+
+These workflows run only when their owning app directories, workflow files, or package verification scripts change. Changes to other apps do not trigger them. The main `Test` matrix covers the remaining umbrella apps; `CI` retains umbrella compilation, formatting, Credo, Dialyzer, and workflow routing contracts. Local `mix test` still runs the full suite.
+
 ## Project Notes
 
 - PostgreSQL stores runtime configuration, credentials, upstream definitions, clients, skills, provider metadata, model aliases, and usage logs.
