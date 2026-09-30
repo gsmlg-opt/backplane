@@ -25,6 +25,10 @@ defmodule Backplane.AgentRuntime.Command do
   @callback cancel_confirmed(map(), map(), pos_integer()) :: :ok | {:error, Error.t()}
   @optional_callbacks cancel_confirmed: 3
 
+  @callback reserve(map(), map()) :: :ok | {:error, Error.t()}
+  @callback acknowledge_release(map(), map()) :: :ok | {:error, Error.t()}
+  @optional_callbacks reserve: 2, acknowledge_release: 2
+
   @callback cancel(map(), map()) :: :ok | {:error, Error.t()}
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
@@ -133,6 +137,19 @@ defmodule Backplane.AgentRuntime.Command do
   end
 
   def workspace_conflict?(_command, _invocation), do: false
+
+  @doc "Reserve a trusted session before launch; legacy adapters retain uncertain cleanup semantics."
+  def reserve(command, invocation), do: lifecycle_callback(command, :reserve, invocation)
+
+  @doc "Acknowledge consumed cleanup evidence so a backend may retire its pinned receipt."
+  def acknowledge_release(command, invocation),
+    do: lifecycle_callback(command, :acknowledge_release, invocation)
+
+  defp lifecycle_callback(command, callback, invocation) do
+    if function_exported?(command.adapter, callback, 2),
+      do: apply(command.adapter, callback, [command, invocation]),
+      else: :ok
+  end
 
   defp validate_adapter(namespace) do
     adapter = Map.get(namespace, :adapter)

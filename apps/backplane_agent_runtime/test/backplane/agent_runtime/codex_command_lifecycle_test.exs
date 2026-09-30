@@ -47,6 +47,23 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
     end
   end
 
+  defmodule AmbiguousCommand do
+    defdelegate reserve(command, invocation), to: LocalCommand
+    defdelegate acknowledge_release(command, invocation), to: LocalCommand
+    defdelegate read(command, invocation, job, opts), to: LocalCommand
+    defdelegate write(command, invocation, job, chars), to: LocalCommand
+
+    def start(command, request, opts) do
+      {:ok, _job} = LocalCommand.start(command, request, opts)
+      {:error, Error.new(:transient_transport, "start acknowledgement was lost")}
+    end
+
+    def cancel_confirmed(_command, _invocation, _timeout),
+      do: {:error, Error.new(:unknown_outcome, "backend reconciliation is unavailable")}
+
+    def cancel(_command, _invocation), do: raise("owner-wide fallback must not run")
+  end
+
   setup %{tmp_dir: root} do
     coreutils = System.find_executable("coreutils")
     assert is_binary(coreutils), "lifecycle tests require coreutils"
@@ -79,6 +96,125 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
     assert Task.yield(cancelling, 100) == {:ok, :ok}
     send(cleanup, :release)
     eventually(fn -> Conversation.status(conversation).phase == :terminal end)
+  end
+
+  test "a refused second launch preserves the first session and confirms final cleanup", ctx do
+    %{conversation: conversation} = start_run(ctx)
+    {:ok, _} = Conversation.prompt(conversation, "execute commands")
+    assert_receive {:provider, %{run_id: owner}, provider}, 3_000
+
+    send(
+      provider,
+      {:events,
+       [
+         tool("first", "exec_command", %{
+           "cmd" => "read answer; printf 'FIRST_COMPLETE:%s' \"$answer\"",
+           "login" => false,
+           "yield_time_ms" => 0
+         }),
+         done()
+       ]}
+    )
+
+    assert_receive {:provider, %{messages: messages}, provider}, 3_000
+    session = List.last(messages).result.session_id
+
+    send(
+      provider,
+      {:events,
+       [
+         tool("refused", "exec_command", %{
+           "cmd" => "printf SHOULD_NOT_START",
+           "login" => false,
+           "yield_time_ms" => 0
+         }),
+         done()
+       ]}
+    )
+
+    assert_receive {:provider, %{messages: messages}, provider}, 3_000
+    assert List.last(messages).result.error.class == :resource_conflict
+    assert List.last(messages).result.error.message == "workspace already has an active command"
+
+    assert {:ok, [%{id: ^session, status: :active}]} =
+             ResourceRegistry.owner_status(ctx.registry, owner)
+
+    send(
+      provider,
+      {:events,
+       [
+         tool("finish-first", "write_stdin", %{
+           "session_id" => session,
+           "chars" => "usable\n",
+           "yield_time_ms" => 1_000
+         }),
+         done()
+       ]}
+    )
+
+    assert_receive {:provider, %{messages: messages}, provider}, 3_000
+    assert List.last(messages).result.output =~ "FIRST_COMPLETE:usable"
+    send(provider, {:events, [done()]})
+    eventually(fn -> Conversation.status(conversation).phase == :terminal end)
+    assert Conversation.status(conversation).run.state == :completed
+    assert Conversation.status(conversation).resource_cleanup == :confirmed
+    assert {:ok, []} = ResourceRegistry.owner_status(ctx.registry, owner)
+  end
+
+  test "an ambiguous native launch retains invocation evidence and uncertain run cleanup", ctx do
+    %{conversation: conversation} = start_run(ctx, adapter: AmbiguousCommand)
+    command(conversation, 0)
+    pids = wait_pids(ctx.tmp_dir)
+    assert_receive {:provider, %{messages: messages}, provider}, 3_000
+    assert List.last(messages).result.error.class == :unknown_outcome
+    send(provider, {:events, [done()]})
+    eventually(fn -> Conversation.status(conversation).phase == :terminal end)
+    status = Conversation.status(conversation)
+    assert status.run.state == :unknown_outcome
+    assert match?({:uncertain, _}, status.resource_cleanup)
+
+    assert {:ok, [%{status: :failed}]} =
+             ResourceRegistry.owner_status(ctx.registry, status.run.run_id)
+
+    assert Enum.any?(pids, &running?/1)
+  end
+
+  test "native session admission refusal withdraws only the unused model-callable reservation",
+       ctx do
+    %{conversation: conversation, command: command} = start_run(ctx, session_capacity: 1)
+
+    held = %{
+      owner_run_id: "host-held",
+      incarnation: 1,
+      session_id: System.unique_integer([:positive, :monotonic])
+    }
+
+    assert :ok = Command.reserve(command, held)
+    {:ok, _} = Conversation.prompt(conversation, "execute")
+    assert_receive {:provider, %{run_id: owner}, provider}, 3_000
+
+    send(
+      provider,
+      {:events,
+       [
+         tool("refused", "exec_command", %{
+           "cmd" => "printf NEVER > forbidden",
+           "login" => false,
+           "yield_time_ms" => 0
+         }),
+         done()
+       ]}
+    )
+
+    assert_receive {:provider, %{messages: messages}, provider}, 3_000
+    assert List.last(messages).result.error.class == :overloaded
+    assert {:ok, []} = ResourceRegistry.owner_status(ctx.registry, owner)
+    refute File.exists?(Path.join(ctx.tmp_dir, "forbidden"))
+    send(provider, {:events, [done()]})
+    eventually(fn -> Conversation.status(conversation).phase == :terminal end)
+    assert Conversation.status(conversation).resource_cleanup == :confirmed
+    assert :ok = Command.cancel_confirmed(command, held, 100)
+    assert :ok = Command.acknowledge_release(command, held)
   end
 
   test "cancellation during initial polling kills parent and same-group descendant", ctx do
@@ -217,7 +353,12 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
     id = "lifecycle-#{System.unique_integer([:positive])}"
 
     backend_opts =
-      Keyword.take(opts, [:launcher_script, :startup_timeout, :cleanup_reconciler]) ++ [name: nil]
+      Keyword.take(opts, [
+        :launcher_script,
+        :startup_timeout,
+        :cleanup_reconciler,
+        :session_capacity
+      ]) ++ [name: nil]
 
     server =
       start_supervised!(
@@ -226,7 +367,7 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
 
     {:ok, command} =
       Command.new(%{
-        adapter: LocalCommand,
+        adapter: Keyword.get(opts, :adapter, LocalCommand),
         server: server,
         allowed_environment: %{},
         deadline_limit: 10_000
@@ -274,7 +415,7 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
     conversation =
       start_supervised!(Supervisor.child_spec({Conversation, args}, id: id, restart: :temporary))
 
-    %{conversation: conversation, server: server}
+    %{conversation: conversation, server: server, command: command}
   end
 
   defp command(conversation, yield_ms) do
@@ -304,6 +445,9 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
   end
 
   defp done, do: %{type: :response_completed, message: %{role: :assistant, content: "done"}}
+
+  defp tool(id, name, arguments),
+    do: %{type: :tool_call_completed, tool_call: %{id: id, name: name, arguments: arguments}}
 
   defp wait_pids(root) do
     paths = Enum.map(["parent.pid", "child.pid"], &Path.join(root, &1))

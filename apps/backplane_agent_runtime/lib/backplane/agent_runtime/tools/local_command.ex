@@ -26,6 +26,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   @term_grace_ms 150
   @kill_grace_ms 300
   @output_entry_overhead 8
+  @default_receipt_capacity 256
+  @default_session_capacity 256
 
   def start_link(opts \\ []) do
     with {:ok, _config} <- runtime_options(opts) do
@@ -67,14 +69,24 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     case Map.get(invocation, :session_id) do
       session_id when is_integer(session_id) ->
         server = server(command)
-        :ok = GenServer.call(server, {:cancel_session, session_id})
-        await_session_cleanup(server, session_id, System.monotonic_time(:millisecond) + timeout)
+
+        with :ok <- GenServer.call(server, {:cancel_session, invocation}) do
+          await_session_cleanup(server, invocation, System.monotonic_time(:millisecond) + timeout)
+        end
 
       _ ->
         {:error,
          Error.new(:unknown_outcome, "local command cleanup requires an invocation session")}
     end
   end
+
+  @impl Backplane.AgentRuntime.Command
+  def reserve(command, invocation),
+    do: GenServer.call(server(command), {:reserve_session, invocation})
+
+  @impl Backplane.AgentRuntime.Command
+  def acknowledge_release(command, invocation),
+    do: GenServer.call(server(command), {:acknowledge_release, invocation})
 
   @impl GenServer
   def init(opts) do
@@ -90,7 +102,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          workspaces: MapSet.new(),
          owned_groups: %{},
          cleanup_evidence: %{},
-         released_sessions: MapSet.new(),
+         session_obligations: %{},
+         released_sessions: %{},
+         released_order: :queue.new(),
+         expired_session_floor: 0,
+         receipt_capacity: config.receipt_capacity,
+         session_capacity: config.session_capacity,
          cancelled_launchers: %{},
          cancelled_sessions: %{},
          cleanup_supervisor: cleanup_supervisor,
@@ -114,57 +131,29 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   @impl GenServer
   def handle_call({:start, request}, from, state) do
-    if is_pid(Map.get(request, :owner_pid)) and not Process.alive?(request.owner_pid) do
-      {:reply, {:error, Error.new(:cancelled, "command owner is no longer alive")}, state}
+    case admit_session(state, request) do
+      {:ok, state} -> start_reserved(request, from, state)
+      {:error, error} -> {:reply, {:error, error}, fence_refusal(state, request, error)}
+    end
+  end
+
+  def handle_call({:reserve_session, invocation}, _from, state) do
+    case admit_session(state, invocation) do
+      {:ok, next} -> {:reply, :ok, next}
+      {:error, error} -> {:reply, {:error, error}, fence_refusal(state, invocation, error)}
+    end
+  end
+
+  def handle_call({:acknowledge_release, invocation}, _from, state) do
+    with {:ok, receipt} <- session_identity(state, invocation),
+         true <- receipt.status == :confirmed do
+      {:reply, :ok, retire_receipt(state, invocation.session_id, receipt)}
     else
-      if active_workspace?(state, request.workspace) do
-        {:reply,
-         {:error,
-          Error.new(:resource_conflict, "workspace already has an active command",
-            details: %{workspace: request.workspace}
-          )}, state}
-      else
-        nonce = nonce()
-        environment = isolated_environment(request.environment)
+      false ->
+        {:reply, {:error, Error.new(:unknown_outcome, "session release is not confirmed")}, state}
 
-        spawn_opts = [
-          :use_stdio,
-          :stderr_to_stdout,
-          :hide,
-          :exit_status,
-          {:line, 1024},
-          {:args,
-           ["--fork", "--wait", sh_path!(), state.launcher_script, nonce, request.executable] ++
-             List.wrap(request.arguments)},
-          {:env, environment},
-          {:cd, request.workspace}
-        ]
-
-        port = Port.open({:spawn_executable, setsid_path!()}, spawn_opts)
-        {:os_pid, launcher_pid} = :erlang.port_info(port, :os_pid)
-
-        startup_limit = min(state.startup_timeout, request.deadline_limit)
-        timer = Process.send_after(self(), {:startup_timeout, port}, startup_limit)
-
-        pending = %{
-          from: from,
-          request: request,
-          nonce: nonce,
-          session_id: Map.get(request, :session_id),
-          launcher_pid: launcher_pid,
-          started_at: System.monotonic_time(:millisecond),
-          timer: timer,
-          owner_monitor_ref:
-            if(is_pid(Map.get(request, :owner_pid)), do: Process.monitor(request.owner_pid))
-        }
-
-        {:noreply,
-         %{
-           state
-           | pending: Map.put(state.pending, port, pending),
-             workspaces: MapSet.put(state.workspaces, request.workspace)
-         }}
-      end
+      error ->
+        {:reply, error, state}
     end
   end
 
@@ -239,22 +228,49 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     {:reply, :ok, state}
   end
 
-  def handle_call({:cancel_session, session_id}, _from, state) when is_integer(session_id) do
-    state =
-      case Enum.find(state.pending, fn {_port, launch} ->
-             launch.request.session_id == session_id
-           end) do
-        {port, _launch} ->
-          fail_pending(port, Error.new(:cancelled, "local command launch was cancelled"), state)
+  def handle_call({:cancel_session, %{session_id: session_id} = invocation}, _from, state)
+      when is_integer(session_id) do
+    case ensure_cancellation_identity(state, invocation) do
+      {:ok, state} ->
+        state =
+          case Enum.find(state.pending, fn {_port, launch} ->
+                 launch.request.session_id == session_id
+               end) do
+            {port, _launch} ->
+              fail_pending(
+                port,
+                Error.new(:cancelled, "local command launch was cancelled"),
+                state
+              )
 
-        nil ->
-          case Enum.find(state.active, fn {_port, job} -> job.session_id == session_id end) do
-            {port, _job} -> request_cleanup(port, :cancelled, state)
-            nil -> retry_session_cleanup(session_id, state)
+            nil ->
+              case Enum.find(state.active, fn {_port, job} -> job.session_id == session_id end) do
+                {port, _job} ->
+                  request_cleanup(port, :cancelled, state)
+
+                nil ->
+                  case Map.get(state.session_obligations, session_id) do
+                    %{status: status} when status in [:reserved, :never_started] ->
+                      session_status(state, invocation, :confirmed)
+
+                    _ ->
+                      retry_session_cleanup(session_id, state)
+                  end
+              end
           end
-      end
 
-    {:reply, :ok, state}
+        {:reply, :ok, state}
+
+      {:error, error} ->
+        {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:session_cleanup_status, %{} = invocation}, from, state) do
+    case session_identity(state, invocation) do
+      {:ok, _} -> handle_call({:session_cleanup_status, invocation.session_id}, from, state)
+      error -> {:reply, error, state}
+    end
   end
 
   def handle_call({:session_cleanup_status, session_id}, _from, state)
@@ -286,11 +302,20 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           pid = Map.fetch!(state.cancelled_sessions, session_id)
           if File.exists?("/proc/#{pid}"), do: :pending, else: :confirmed
 
-        MapSet.member?(state.released_sessions, session_id) ->
+        Map.get(state.session_obligations, session_id, %{})[:status] == :confirmed or
+            Map.has_key?(state.released_sessions, session_id) ->
           :confirmed
 
         true ->
           :unknown
+      end
+
+    state =
+      if status == :confirmed do
+        %{state | cancelled_sessions: Map.delete(state.cancelled_sessions, session_id)}
+        |> session_status(%{session_id: session_id}, :confirmed)
+      else
+        state
       end
 
     {:reply, status, state}
@@ -302,7 +327,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       |> Map.get(owner_run_id, MapSet.new())
       |> Enum.split_with(&File.exists?("/proc/#{&1}"))
       |> then(fn {alive, _gone} ->
-        {alive, Map.put(state.cancelled_launchers, owner_run_id, MapSet.new(alive))}
+        {alive,
+         if(alive == [],
+           do: Map.delete(state.cancelled_launchers, owner_run_id),
+           else: Map.put(state.cancelled_launchers, owner_run_id, MapSet.new(alive))
+         )}
       end)
 
     state = %{state | cancelled_launchers: cancelled_launchers}
@@ -684,6 +713,70 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     :ok
   end
 
+  defp start_reserved(request, from, state) do
+    if is_pid(Map.get(request, :owner_pid)) and not Process.alive?(request.owner_pid) do
+      {:reply, {:error, Error.new(:cancelled, "command owner is no longer alive")},
+       session_status(state, request, :never_started)}
+    else
+      if active_workspace?(state, request.workspace) do
+        {:reply,
+         {:error,
+          Error.new(:resource_conflict, "workspace already has an active command",
+            details: %{workspace: request.workspace}
+          )}, session_status(state, request, :never_started)}
+      else
+        if map_size(state.active) + map_size(state.pending) + map_size(state.completed) +
+             map_size(state.cleanup_evidence) >= state.session_capacity do
+          {:reply,
+           {:error, Error.new(:overloaded, "local command retained resource capacity reached")},
+           session_status(state, request, :never_started)}
+        else
+          state = session_status(state, request, :launching)
+          nonce = nonce()
+          environment = isolated_environment(request.environment)
+
+          spawn_opts = [
+            :use_stdio,
+            :stderr_to_stdout,
+            :hide,
+            :exit_status,
+            {:line, 1024},
+            {:args,
+             ["--fork", "--wait", sh_path!(), state.launcher_script, nonce, request.executable] ++
+               List.wrap(request.arguments)},
+            {:env, environment},
+            {:cd, request.workspace}
+          ]
+
+          port = Port.open({:spawn_executable, setsid_path!()}, spawn_opts)
+          {:os_pid, launcher_pid} = :erlang.port_info(port, :os_pid)
+
+          startup_limit = min(state.startup_timeout, request.deadline_limit)
+          timer = Process.send_after(self(), {:startup_timeout, port}, startup_limit)
+
+          pending = %{
+            from: from,
+            request: request,
+            nonce: nonce,
+            session_id: Map.get(request, :session_id),
+            launcher_pid: launcher_pid,
+            started_at: System.monotonic_time(:millisecond),
+            timer: timer,
+            owner_monitor_ref:
+              if(is_pid(Map.get(request, :owner_pid)), do: Process.monitor(request.owner_pid))
+          }
+
+          {:noreply,
+           %{
+             state
+             | pending: Map.put(state.pending, port, pending),
+               workspaces: MapSet.put(state.workspaces, request.workspace)
+           }}
+        end
+      end
+    end
+  end
+
   defp fail_pending(port, error, state) do
     case Map.pop(state.pending, port) do
       {nil, _pending} ->
@@ -715,8 +808,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp await_session_cleanup(server, session_id, deadline) do
-    case GenServer.call(server, {:session_cleanup_status, session_id}) do
+  defp await_session_cleanup(server, invocation, deadline) do
+    case GenServer.call(server, {:session_cleanup_status, invocation}) do
       :confirmed ->
         :ok
 
@@ -728,11 +821,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           {:error, Error.new(:unknown_outcome, "local command cleanup confirmation timed out")}
         else
           Process.sleep(10)
-          await_session_cleanup(server, session_id, deadline)
+          await_session_cleanup(server, invocation, deadline)
         end
 
       :unknown ->
         {:error, Error.new(:unknown_outcome, "local command cleanup identity is unknown")}
+
+      {:error, %Error{}} = error ->
+        error
     end
   end
 
@@ -855,7 +951,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           state.completion_retention
         )
 
-        %{
+        state = %{
           state
           | active: active,
             completed: Map.put(state.completed, port, job),
@@ -865,11 +961,6 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                 release_workspace? -> Map.delete(state.cleanup_evidence, job.session_id)
                 true -> Map.put(state.cleanup_evidence, job.session_id, cleanup_evidence(job))
               end,
-            released_sessions:
-              if(release_workspace? and is_integer(job.session_id),
-                do: MapSet.put(state.released_sessions, job.session_id),
-                else: state.released_sessions
-              ),
             owned_groups:
               if(release_workspace?,
                 do: Map.delete(state.owned_groups, port),
@@ -881,6 +972,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                 else: state.workspaces
               )
         }
+
+        if release_workspace?, do: session_status(state, job, :confirmed), else: state
     end
   end
 
@@ -899,9 +992,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
               state
               | cleanup_evidence: remaining,
                 owned_groups: drop_owned_group(state.owned_groups, session_id),
-                workspaces: MapSet.delete(state.workspaces, evidence.workspace),
-                released_sessions: MapSet.put(state.released_sessions, session_id)
+                workspaces: MapSet.delete(state.workspaces, evidence.workspace)
             }
+            |> session_status(evidence, :confirmed)
 
           {:error, %Error{} = error} ->
             retained = %{
@@ -1211,6 +1304,142 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
+  # Live obligations are never evicted. Only explicitly consumed confirmation
+  # receipts enter the recent cache; the scalar floor fences expired identities
+  # without keeping an expired-ID tombstone collection. Existing reservations
+  # are looked up first, so out-of-order acknowledgement cannot revoke them.
+  defp admit_session(state, %{session_id: id} = invocation) when is_integer(id) and id > 0 do
+    case session_identity(state, invocation) do
+      {:ok, %{status: :reserved}} ->
+        {:ok, state}
+
+      {:ok, _} ->
+        {:error, Error.new(:cancelled, "command session no longer accepts launch")}
+
+      {:error, %Error{details: %{receipt: :expired}}} ->
+        {:error, Error.new(:cancelled, "command session identity has expired")}
+
+      {:error, %Error{class: :not_found}} ->
+        if map_size(state.session_obligations) < state.session_capacity do
+          receipt = %{
+            owner_run_id: invocation.owner_run_id,
+            incarnation: Map.get(invocation, :incarnation, 1),
+            status: :reserved
+          }
+
+          {:ok, %{state | session_obligations: Map.put(state.session_obligations, id, receipt)}}
+        else
+          {:error,
+           Error.new(:overloaded, "local command unresolved session capacity reached",
+             details: %{launch_status: :never_started, reservation: :not_created}
+           )}
+        end
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp admit_session(state, %{session_id: nil}), do: {:ok, state}
+
+  defp admit_session(state, invocation) when not is_map_key(invocation, :session_id),
+    do: {:ok, state}
+
+  defp admit_session(_state, _invocation),
+    do: {:error, Error.new(:validation, "command session must be positive")}
+
+  defp session_identity(state, %{session_id: id, owner_run_id: owner} = invocation) do
+    case Map.get(state.session_obligations, id) || Map.get(state.released_sessions, id) do
+      %{owner_run_id: actual, incarnation: incarnation} = receipt ->
+        cond do
+          owner != actual ->
+            {:error, Error.new(:forbidden, "command session owner does not match")}
+
+          Map.get(invocation, :incarnation, 1) != incarnation ->
+            {:error, Error.new(:resource_conflict, "stale command session incarnation")}
+
+          true ->
+            {:ok, receipt}
+        end
+
+      nil ->
+        if is_integer(id) and id <= state.expired_session_floor,
+          do:
+            {:error,
+             Error.new(:unknown_outcome, "command release receipt is unavailable or expired",
+               details: %{receipt: :expired}
+             )},
+          else: {:error, Error.new(:not_found, "command session identity is unknown")}
+    end
+  end
+
+  defp session_identity(_state, _invocation),
+    do: {:error, Error.new(:validation, "command session identity is required")}
+
+  defp fence_refusal(state, %{session_id: id}, %Error{
+         details: %{launch_status: :never_started, reservation: :not_created}
+       }),
+       do: %{state | expired_session_floor: max(state.expired_session_floor, id)}
+
+  defp fence_refusal(state, _invocation, _error), do: state
+
+  defp ensure_cancellation_identity(state, invocation) do
+    case session_identity(state, invocation) do
+      {:ok, _} ->
+        {:ok, state}
+
+      {:error, %Error{class: :not_found}} ->
+        case admit_session(state, invocation) do
+          {:ok, next} -> {:ok, session_status(next, invocation, :fenced_unknown)}
+          error -> error
+        end
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp session_status(state, %{session_id: id}, status) when is_integer(id) do
+    case Map.get(state.session_obligations, id) do
+      nil ->
+        state
+
+      receipt ->
+        %{
+          state
+          | session_obligations:
+              Map.put(state.session_obligations, id, %{receipt | status: status})
+        }
+    end
+  end
+
+  defp session_status(state, _invocation, _status), do: state
+
+  defp retire_receipt(state, id, receipt) do
+    if Map.has_key?(state.released_sessions, id) do
+      state
+    else
+      receipts = Map.put(state.released_sessions, id, receipt)
+      order = :queue.in(id, state.released_order)
+
+      {receipts, order, floor} =
+        if map_size(receipts) > state.receipt_capacity do
+          {{:value, expired}, order} = :queue.out(order)
+          {Map.delete(receipts, expired), order, max(state.expired_session_floor, expired)}
+        else
+          {receipts, order, state.expired_session_floor}
+        end
+
+      %{
+        state
+        | session_obligations: Map.delete(state.session_obligations, id),
+          released_sessions: receipts,
+          released_order: order,
+          expired_session_floor: floor
+      }
+    end
+  end
+
   defp runtime_options(opts) do
     with {:ok, cleanup_timeout} <-
            bounded_timeout(
@@ -1228,15 +1457,26 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
            ),
          {:ok, completion_retention} <- completion_retention(opts),
          {:ok, cleanup_reconciler} <- cleanup_reconciler(opts),
-         {:ok, shutdown_signaler} <- shutdown_signaler(opts) do
+         {:ok, shutdown_signaler} <- shutdown_signaler(opts),
+         {:ok, receipt_capacity} <- capacity(opts, :receipt_capacity, @default_receipt_capacity),
+         {:ok, session_capacity} <- capacity(opts, :session_capacity, @default_session_capacity) do
       {:ok,
        %{
          cleanup_timeout: cleanup_timeout,
          shutdown_timeout: shutdown_timeout,
          completion_retention: completion_retention,
          cleanup_reconciler: cleanup_reconciler,
-         shutdown_signaler: shutdown_signaler
+         shutdown_signaler: shutdown_signaler,
+         receipt_capacity: receipt_capacity,
+         session_capacity: session_capacity
        }}
+    end
+  end
+
+  defp capacity(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      n when is_integer(n) and n > 0 -> {:ok, n}
+      _ -> {:error, Error.new(:validation, "#{key} must be finite and positive")}
     end
   end
 

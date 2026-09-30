@@ -108,6 +108,16 @@ Compatibility remains adapted rather than unqualified full parity:
 - Production MCP, web/image services, and provider-hosted tools were not tested
   against live backends.
 
+Code Mode backend selection and migration are deferred. Denox NIF is the preferred
+future candidate, not an adopted or verified backend. This milestone repairs
+ordinary command lifecycle and shared Conversation timers/nested publication;
+it does not verify engine interruption, isolation, resource limits, callback
+cancellation, thread shutdown, continuations, or engine timer generations. The
+existing opt-in profiles, capability gates, adapter and native tests remain.
+See `docs/agent-runtime/codex-tools/backend-decision.md` in the repository for
+the deferred checklist. Shared-runtime nested-dispatch tests do not establish
+native Code Mode conformance.
+
 ## Command response budgets
 
 `exec_command.max_output_tokens` and `write_stdin.max_output_tokens` bound the

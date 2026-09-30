@@ -27,6 +27,11 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     do: GenServer.call(pid, {:cleanup_status, handle, owner})
 
   def owner_status(pid, owner), do: GenServer.call(pid, {:owner_status, owner})
+
+  @doc "Inspect live or recently settled session cleanup, including bounded receipt acknowledgement."
+  def session_cleanup_status(pid, session_id, owner, incarnation),
+    do: GenServer.call(pid, {:session_cleanup_status, session_id, owner, incarnation})
+
   def worker_supervisor(pid), do: GenServer.call(pid, :worker_supervisor)
 
   def register_session(pid, owner, value, opts \\ []),
@@ -40,6 +45,15 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
 
   def forget_session(pid, session_id, owner, incarnation \\ nil),
     do: GenServer.call(pid, {:forget_session, session_id, owner, incarnation})
+
+  @doc """
+  Withdraw an unused reservation after trusted backend evidence proves non-start.
+
+  The caller must verify that later launch attempts have been fenced. A missing
+  job binding alone is insufficient evidence; ambiguous launches use release.
+  """
+  def withdraw_session(pid, session_id, owner, incarnation),
+    do: GenServer.call(pid, {:withdraw_session, session_id, owner, incarnation})
 
   def release_session(pid, session_id, owner, incarnation \\ nil),
     do: GenServer.call(pid, {:release_session, session_id, owner, incarnation}, :infinity)
@@ -133,17 +147,38 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     {:reply, {:ok, statuses}, state}
   end
 
+  def handle_call({:session_cleanup_status, id, owner, incarnation}, _from, state) do
+    case lookup_session(state, id, owner, incarnation) do
+      {:ok, entry} ->
+        {:reply, {:ok, Map.take(entry, [:status, :reason])}, state}
+
+      {:error, %Error{class: :not_found}} = error ->
+        case Map.get(state.settled, {:session, id}) do
+          %{owner_id: ^owner, handle: %{incarnation: ^incarnation}} = receipt ->
+            {:reply, {:ok, Map.take(receipt, [:status, :reason, :acknowledgement])}, state}
+
+          _ ->
+            {:reply, error, state}
+        end
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
   def handle_call({:register_session, owner, value, opts}, _from, state)
       when is_binary(owner) and owner != "" and is_list(opts) do
     cleanup = Keyword.get(opts, :cleanup)
 
     with :ok <- validate_cleanup(cleanup),
+         :ok <- validate_lifecycle(Keyword.get(opts, :acknowledge)),
          :ok <- validate_incarnation(Keyword.get(opts, :incarnation, 1)) do
       id = System.unique_integer([:positive, :monotonic])
       handle = %{session_id: id, owner_id: owner, incarnation: Keyword.get(opts, :incarnation, 1)}
 
       entry =
         entry(handle, value, normalize_cleanup(cleanup, handle), Keyword.get(opts, :owner_pid))
+        |> Map.put(:acknowledge, Keyword.get(opts, :acknowledge))
 
       {:reply, {:ok, id}, put_entry(state, {:session, id}, entry)}
     else
@@ -175,6 +210,24 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
       {:reply, :ok, remove_entry(state, {:session, id}, entry, :confirmed)}
     else
       error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:withdraw_session, id, owner, incarnation}, _from, state) do
+    with {:ok, entry} <- lookup_session(state, id, owner, incarnation),
+         :ok <- active(entry),
+         true <- match?(%{job: nil}, entry.value) do
+      {:reply, :ok,
+       remove_entry(state, {:session, id}, Map.put(entry, :acknowledge, nil), :confirmed)}
+    else
+      false ->
+        {:reply,
+         {:error,
+          Error.new(:resource_conflict, "only an unused command reservation can be withdrawn")},
+         state}
+
+      error ->
+        {:reply, error, state}
     end
   end
 
@@ -238,6 +291,21 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     do: {:noreply, request_cleanup(state, key, from)}
 
   @impl true
+  def handle_info({:acknowledge_timeout, ref, pid}, %{tasks: tasks} = state)
+      when is_map_key(tasks, ref) do
+    case Map.pop(tasks, ref) do
+      {{:acknowledge, key, _timer}, rest} ->
+        Process.exit(pid, :kill)
+        Process.demonitor(ref, [:flush])
+
+        {:noreply,
+         settle_acknowledgement(%{state | tasks: rest}, key, {:error, :acknowledgement_timeout})}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({ref, results}, %{tasks: tasks} = state) when is_map_key(tasks, ref) do
     Process.demonitor(ref, [:flush])
 
@@ -248,6 +316,10 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
 
       {{:cleanup, key}, rest} ->
         {:noreply, settle_cleanup(%{state | tasks: rest}, key, results)}
+
+      {{:acknowledge, key, timer}, rest} ->
+        Process.cancel_timer(timer)
+        {:noreply, settle_acknowledgement(%{state | tasks: rest}, key, results)}
     end
   end
 
@@ -278,6 +350,10 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
         )
 
         {:noreply, %{state | tasks: rest}}
+
+      {{:acknowledge, key, timer}, rest} ->
+        Process.cancel_timer(timer)
+        {:noreply, settle_acknowledgement(%{state | tasks: rest}, key, {:error, reason})}
     end
   end
 
@@ -444,21 +520,55 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
         {settled, order}
       end
 
-    case key do
-      {:resource, id} ->
-        %{
-          state
-          | resources: Map.delete(state.resources, id),
-            settled: settled,
-            settled_order: order
-        }
+    state =
+      case key do
+        {:resource, id} ->
+          %{
+            state
+            | resources: Map.delete(state.resources, id),
+              settled: settled,
+              settled_order: order
+          }
 
-      {:session, id} ->
+        {:session, id} ->
+          %{
+            state
+            | sessions: Map.delete(state.sessions, id),
+              settled: settled,
+              settled_order: order
+          }
+      end
+
+    case Map.get(entry, :acknowledge) do
+      fun when is_function(fun, 1) ->
+        task =
+          Task.Supervisor.async_nolink(state.cleanup_supervisor, fn ->
+            lifecycle(fun, entry.handle)
+          end)
+
+        timer =
+          Process.send_after(
+            self(),
+            {:acknowledge_timeout, task.ref, task.pid},
+            state.cleanup_timeout
+          )
+
+        %{state | tasks: Map.put(state.tasks, task.ref, {:acknowledge, key, timer})}
+
+      _ ->
+        state
+    end
+  end
+
+  defp settle_acknowledgement(state, key, result) do
+    case Map.get(state.settled, key) do
+      nil ->
+        state
+
+      receipt ->
         %{
           state
-          | sessions: Map.delete(state.sessions, id),
-            settled: settled,
-            settled_order: order
+          | settled: Map.put(state.settled, key, Map.put(receipt, :acknowledgement, result))
         }
     end
   end
@@ -524,6 +634,37 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
 
   defp validate_cleanup(_),
     do: {:error, Error.new(:validation, "cleanup must be a zero- or one-arity function")}
+
+  defp validate_lifecycle(nil), do: :ok
+  defp validate_lifecycle(fun) when is_function(fun, 1), do: :ok
+
+  defp validate_lifecycle(_),
+    do: {:error, Error.new(:validation, "session lifecycle callback must have arity one")}
+
+  defp lifecycle(nil, _handle), do: :ok
+
+  defp lifecycle(fun, handle) do
+    case fun.(handle) do
+      :ok ->
+        :ok
+
+      {:error, %Error{}} = error ->
+        error
+
+      _ ->
+        {:error, Error.new(:unknown_outcome, "session lifecycle acknowledgement is unconfirmed")}
+    end
+  rescue
+    error ->
+      {:error,
+       Error.new(:unknown_outcome, "session lifecycle callback failed",
+         cause: Exception.message(error)
+       )}
+  catch
+    kind, reason ->
+      {:error,
+       Error.new(:unknown_outcome, "session lifecycle callback stopped", cause: {kind, reason})}
+  end
 
   defp normalize_cleanup(nil, _handle), do: nil
   defp normalize_cleanup(fun, _handle) when is_function(fun, 0), do: fun

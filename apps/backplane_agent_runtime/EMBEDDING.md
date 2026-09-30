@@ -84,6 +84,17 @@ ownership. MCP form rendering and answer validation remain in the Sigma
 tool/interaction adapter. Nested interaction is supported through the same
 trusted context; a nested invocation has its own token and settlement identity.
 
+Root, effect and nested execution timers carry a fresh generation each time
+they are armed. Suspension invalidates the previous generation; resumption
+uses only the remaining budget. Store admission acknowledgement alone cannot
+revive an interaction after a valid timeout or cancellation wins. Commit and
+cleanup deadlines continue to run during human waiting. Engine timer fencing
+is separately deferred; these shared-runtime guarantees do not verify Deno or
+Denox engine behavior.
+If a nested worker dies during an acknowledged human wait, the runtime stops
+with uncertain settlement and clears the interaction rather than continuing
+with suspended deadlines.
+
 For descriptors with `requires_approval: true`, the runtime asks for an exact
 operation approval before invocation; only `:approved` allows dispatch. It binds
 the decision to run, tool revision and argument digest and still uses the existing
@@ -178,6 +189,12 @@ outer tool remains active. Publication still occurs once at the existing
 post-batch boundary, so calls in the discovery batch remain pinned to the old
 catalog.
 
+A nested producer stops accepting callbacks when its execution ends, before
+its settlement acknowledgement arrives. Failed, error-marked, timed-out,
+cancelled or uncertain producers relinquish their own staged catalog then;
+they cannot retain the pending slot or mutate a later producer's update. A
+successful producer becomes eligible only after its settlement is acknowledged.
+
 Conversation persistent transitions, including nested admission, result, timeout,
 interaction, and publication checkpoints, use one FIFO commit coordinator. A
 queued transition is rebased against the last acknowledged conversation before
@@ -265,6 +282,36 @@ are stopped. Existing `cancel/2` keeps its request-acknowledgement contract; it
 alone cannot prove cleanup. Adapters without confirmation leave Codex cleanup
 uncertain. Linux `LocalCommand` implements confirmation for its supported process
 groups; descendants that establish a new session are outside that guarantee.
+
+Command adapters may implement `reserve/2` and `acknowledge_release/2`. Codex
+registers the owner-bound session first, then reserves it with the backend before
+launch. Native reservation binds the owner and incarnation, fences cancellation
+before handle binding, and pins evidence until registry release is acknowledged.
+Legacy adapters keep their existing `start/3` result contract; a generic error
+or missing record remains uncertain unless trusted backend evidence proves
+non-start. Only an explicit validated rejection carrying
+`Error.details.launch_status: :never_started` and `reservation: :not_created`
+allows withdrawal without cleanup. An adapter emitting that evidence must have
+fenced every later launch of that identity before replying; an error class alone
+is insufficient. LocalCommand emits it when finite admission capacity is full.
+
+LocalCommand accepts positive `receipt_capacity` and `session_capacity` options
+(both default to 256). Unacknowledged confirmations and unresolved obligations
+are pinned, and retained command/output resources also apply admission
+backpressure. Registry receipt acknowledgement runs in a supervised task with
+the registry cleanup timeout. Hosts that fail to acknowledge consumed evidence
+must reconcile backend obligations before admitting more work.
+
+Recent release receipts preserve exact owner/incarnation checks. Repeated
+release is confirmed while the receipt or a pinned obligation exists; an evicted
+receipt returns `:unknown_outcome` with `receipt: :expired`. This means
+unavailable-or-expired evidence, not proof that the ID once ran. A scalar floor
+fences old identities without an expired-ID collection. New native session IDs
+must increase monotonically; an existing reserved identity remains valid even
+when newer receipts are retired. The ResourceRegistry already generates such
+IDs. Direct hosts using numeric sessions must use fresh monotonic IDs and
+acknowledge confirmed releases; calls without numeric sessions keep their
+existing ownership contract and are subject to retained-resource backpressure.
 
 ## Continuing a Codex child agent
 

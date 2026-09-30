@@ -36,7 +36,7 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.ResourceRegistry",
       "required_backends": ["owner PID and host-selected resource adapters"],
-      "tests": ["codex_resource_registry_test.exs", "codex_tools_test.exs", "codex_ct08_test.exs", "codex_command_lifecycle_test.exs", "codex_code_mode_os_cleanup_test.exs", "codex_session_incarnation_test.exs"],
+      "tests": ["codex_resource_registry_test.exs", "codex_tools_test.exs", "codex_ct08_test.exs", "codex_command_lifecycle_test.exs", "codex_command_receipts_test.exs", "codex_code_mode_os_cleanup_test.exs", "codex_session_incarnation_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
       "deviation": "Real Linux LocalCommand processes and same-group descendants are checked through Conversation completion, cancellation during launch/polling, returned-session cancellation, deadlines, provider/store failure, lost acknowledgement and owner death. Registry callback fault tests retain failed/uncertain evidence. Direct Codex.call command-session tests reject stale trusted incarnations. Registries remain process-local; escaped sessions and restart durability are not covered."
     },
@@ -54,9 +54,9 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.Tools",
       "required_backends": ["host command adapter and ResourceRegistry"],
-      "tests": ["codex_tools_test.exs", "codex_contract_test.exs", "codex_command_budget_test.exs", "codex_command_lifecycle_test.exs", "tools/local_command_cleanup_test.exs", "codex_session_incarnation_test.exs"],
+      "tests": ["codex_tools_test.exs", "codex_contract_test.exs", "codex_command_budget_test.exs", "codex_command_lifecycle_test.exs", "codex_command_receipts_test.exs", "tools/local_command_cleanup_test.exs", "codex_session_incarnation_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
-      "deviation": "Direct Codex.call -> Command -> real Linux LocalCommand tests separate response truncation from host hard limits and check repeated stdin cursors and completion markers. Lifecycle tests additionally use admitted Conversation dispatch. Cleanup-evidence regression coverage preserves uncertain session ownership after completion records expire, but the native process suite is skipped on this macOS host by its Linux/coreutils gate. Output token budgeting is a four-bytes-per-token estimate, PTY remains rejected, and process-group proof is Linux-only."
+      "deviation": "Direct Codex.call -> Command -> real Linux LocalCommand tests separate response truncation from host hard limits and check repeated stdin cursors and completion markers. Lifecycle tests additionally use admitted Conversation dispatch. Cleanup-evidence regression coverage preserves uncertain session ownership after completion records expire; the prior macOS run skipped the native process suite by its Linux/coreutils gate. The 2026-10-01 Linux milestone reproduces and verifies R18 pre-launch refusal, ambiguous launch and cancellation fencing, and R21 bounded receipts, pinned cleanup evidence and backpressure through real LocalCommand and Conversation. Output token budgeting is a four-bytes-per-token estimate, PTY remains rejected, and process-group proof is Linux-only."
     },
     {
       "id": "plan",
@@ -141,8 +141,8 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.Control",
       "required_backends": ["host interaction, permission, readiness, and token providers as selected"],
-      "tests": ["codex_ct04_test.exs", "codex_control_profile_test.exs", "conversation_test.exs"],
-      "deviation": "Replies and grants are host-resolved and context replacement preserves runtime resources. Conversation checkpoints coordinate interaction admission and acknowledgement with the same Store commit queue and retain remaining root/effect/nested budgets. Exact token accounting depends on a host provider and native UI/event parity is unverified."
+      "tests": ["codex_ct04_test.exs", "codex_control_profile_test.exs", "conversation_test.exs", "conversation_runtime_repairs_test.exs"],
+      "deviation": "Replies and grants are host-resolved and context replacement preserves runtime resources. Conversation checkpoints coordinate interaction admission and acknowledgement with the same Store commit queue and retain remaining root/effect/nested budgets. R19-runtime generation fencing and acknowledgement races are verified by shared-runtime integration tests; engine timers are separately deferred. Exact token accounting depends on a host provider and native UI/event parity is unverified."
     },
     {
       "id": "raw_custom_input",
@@ -175,8 +175,8 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.DynamicRuntime",
       "required_backends": ["host MCP/resource adapter and admitted dynamic candidates"],
-      "tests": ["codex_ct07_test.exs"],
-      "deviation": "A real local TCP JSON-RPC resource call and post-batch publication fencing are covered. Production MCP transports, credentials, pagination, and full Codex wire parity remain unverified."
+      "tests": ["codex_ct07_test.exs", "conversation_runtime_repairs_test.exs"],
+      "deviation": "A real local TCP JSON-RPC resource call and post-batch publication fencing are covered. R20 failed/error-marked/cancelled/uncertain/crashed/timed-out nested producers are fenced before settlement acknowledgement, allowing same-outer-invocation retry without changing batch pinning. Production MCP transports, credentials, pagination, and full Codex wire parity remain unverified."
     },
     {
       "id": "search",
@@ -192,8 +192,8 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.DynamicRuntime",
       "required_backends": ["host-provided admitted candidates"],
-      "tests": ["codex_ct07_test.exs"],
-      "deviation": "Search is bounded and owner-scoped, and discovered tools become callable only on the next provider turn. Native ranking/loading semantics remain unverified."
+      "tests": ["codex_ct07_test.exs", "conversation_runtime_repairs_test.exs"],
+      "deviation": "Search is bounded and owner-scoped, and discovered tools become callable only on the next provider turn. R20 scripted outer tools use the production nested dispatcher to release failed producer staging and publish only acknowledged B discovery at the next provider turn; this is shared-runtime integration evidence. Native ranking/loading semantics remain unverified."
     },
     {
       "id": "code_mode",
@@ -211,7 +211,7 @@
       "required_backends": ["Deno, ResourceRegistry, and admitted nested dispatcher"],
       "tests": ["codex_ct08_test.exs", "codex_framing_test.exs", "codex_code_mode_os_cleanup_test.exs", "conversation_catalog_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
-      "deviation": "Real Deno Conversation tests exercise exec -> yield -> later provider turn -> wait -> nested dispatch after the original effect Task exits, plus lifecycle cancellation. Cell workers are temporary and nested contexts retain the trusted catalog/resource callbacks; nested human interaction now pauses the worker timer with its remaining budget. A real CPU-bound Deno process is checked for OS termination after timeout on Linux only; Code Mode is rejected before spawn when verified process identity/cleanup is unavailable. Framing tests inject deterministic raw-byte splits into the packaged worker and separately exercise real CodeMode.execute with large source/results. This host skipped native Deno/process cleanup tests; wait remains a generator continuation, not pinned time-sliced running-cell behavior; native wire parity remains unverified."
+      "deviation": "Real Deno Conversation tests exercise exec -> yield -> later provider turn -> wait -> nested dispatch after the original effect Task exits, plus lifecycle cancellation. Cell workers are temporary and nested contexts retain the trusted catalog/resource callbacks; nested human interaction now pauses the worker timer with its remaining budget. A real CPU-bound Deno process is checked for OS termination after timeout on Linux only; Code Mode is rejected before spawn when verified process identity/cleanup is unavailable. Framing tests inject deterministic raw-byte splits into the packaged worker and separately exercise real CodeMode.execute with large source/results. The prior macOS host skipped native Deno/process cleanup tests. The 2026-10-01 Linux runtime run executes the existing native tests with Deno 2.8.3; backend migration and engine-level interruption/isolation/lifecycle verification, including R19-engine timer fencing, remain deferred; wait remains a generator continuation, not pinned time-sliced running-cell behavior; native wire parity remains unverified."
     },
     {
       "id": "service_backed",
@@ -294,6 +294,122 @@
     "No production provider or service conformance was run.",
     "No durable extension restart recovery was run.",
     "Native Codex event, worker, PTY, and complete output-schema parity remain incomplete.",
-    "R14 Linux process cleanup and R17 real Deno deadline suspension were not executed on this macOS host."
-  ]
+    "Historical macOS validation did not execute R14 Linux process cleanup or R17 real Deno deadline suspension; current milestone evidence is recorded separately.",
+    "Code Mode backend migration is deferred; Denox NIF is a preferred future candidate, not adopted or verified.",
+    "R19-runtime and R20 shared-runtime integration tests do not verify engine-level interruption, resource limits, callback cancellation, shutdown, isolation, continuations or engine timer generations."
+  ],
+  "runtime_repairs_milestone": {
+    "date": "2026-10-01",
+    "branch": "main",
+    "reviewed_backplane_commit": "60a9be615b874bc1d7f721bd38b3a07e68562c5e",
+    "implementation_base_commit": "d347040395bdab31bbb8a27dc3278a32b0acba4c",
+    "implementation_state": "validated_before_commit",
+    "compatibility_target_unchanged": true,
+    "decision_record": "backend-decision.md",
+    "validation_record": "runtime-repairs-validation.md",
+    "findings": [
+      {
+        "id": "R18",
+        "status": "implemented-and-verified",
+        "reproduction": "Real Conversation busy launch returned unknown_outcome instead of resource_conflict before repair.",
+        "tests": [
+          "codex_command_lifecycle_test.exs",
+          "codex_command_receipts_test.exs"
+        ]
+      },
+      {
+        "id": "R19-runtime",
+        "status": "implemented-and-verified",
+        "reproduction": "Old queued root timeout cancelled direct and nested waiting interactions; generation and acknowledgement races now covered.",
+        "tests": [
+          "conversation_runtime_repairs_test.exs"
+        ]
+      },
+      {
+        "id": "R20",
+        "status": "implemented-and-verified",
+        "reproduction": "Failed nested staging and callbacks persisted; producer eligibility preceded settlement acknowledgement.",
+        "tests": [
+          "conversation_runtime_repairs_test.exs"
+        ]
+      },
+      {
+        "id": "R21",
+        "status": "implemented-and-verified",
+        "reproduction": "Isolated baseline executed eight native commands and retained eight receipts with capacity two.",
+        "tests": [
+          "codex_command_receipts_test.exs",
+          "codex_resource_registry_test.exs"
+        ]
+      },
+      {
+        "id": "R19-engine-deferred",
+        "status": "deferred",
+        "reproduction": "Static review risk; shared-runtime repair is not engine timer fencing.",
+        "tests": []
+      }
+    ],
+    "engine_work": {
+      "status": "deferred",
+      "preferred_future_candidate": "Denox NIF",
+      "adopted": false,
+      "verified": false,
+      "checklist": [
+        "synchronous JavaScript interruption",
+        "resource and memory limits",
+        "callback cancellation",
+        "execution-thread/runtime shutdown confirmation",
+        "permission isolation",
+        "continuation behavior",
+        "engine timer generation fencing"
+      ]
+    },
+    "validation_runs": [
+      {
+        "id": "r18-red",
+        "result": "10 tests, 1 expected failure",
+        "environment": "Linux; real LocalCommand; before repair"
+      },
+      {
+        "id": "r19-r20-red",
+        "result": "9 tests, 7 expected failures",
+        "environment": "Scripted Conversation with barrier-capable Store; before repair",
+        "note": "Admission timeout/cancellation races already passed; no engine used."
+      },
+      {
+        "id": "r21-red",
+        "result": "6 tests, 1 expected failure, 5 excluded; receipt count 8 exceeds capacity 2",
+        "environment": "Isolated git archive of implementation base; Linux; all eight commands succeeded",
+        "note": "Earlier retention-zero setup failures are not reproduction evidence."
+      },
+      {
+        "id": "focused",
+        "result": "130 tests, 0 failures",
+        "environment": "Linux; Elixir 1.18.5/OTP 28; no skips"
+      },
+      {
+        "id": "runtime-without-deno",
+        "result": "Interrupted after missing-Deno native failures/timeouts; not a passing run",
+        "environment": "Initial PATH lacked Deno",
+        "note": "Existing tests and gates were preserved; cached Deno used for the subsequent complete run."
+      },
+      {
+        "id": "runtime",
+        "result": "495 tests, 0 failures",
+        "environment": "Linux; Elixir 1.18.5/OTP 28; cached Deno 2.8.3; no skips"
+      },
+      {
+        "id": "package",
+        "result": "passed: 495 runtime tests, 83 isolated Conversation consumer tests, formatting, development warnings-as-errors compilation, docs, Hex artifact, empty/bundled/fake consumers, examples and read-only Sigma probe",
+        "environment": "devenv; Linux; Deno 2.8.3; no skips",
+        "artifact_sha256": "663d8e72c324b6536ad143bd3b33377ecdc91827d34d9d889cb6e5ca9ff4e8b8",
+        "sigma_probe_revision": "7b30ca0a9f25146c5469b62fd87005fe1d7568c5"
+      },
+      {
+        "id": "inventory",
+        "result": "passed: 16 families, 66 exact-source entries; source pin unchanged",
+        "environment": "exact pinned Codex checkout; Ruby 3.4.9 from temporary Nix shell"
+      }
+    ]
+  }
 }

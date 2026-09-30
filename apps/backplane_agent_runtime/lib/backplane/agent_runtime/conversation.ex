@@ -139,7 +139,17 @@ defmodule Backplane.AgentRuntime.Conversation do
         do: if(RunKernel.terminal?(run.state), do: :terminal, else: :recovery_required),
         else: :idle
 
-    timer = if restored?, do: nil, else: Process.send_after(self(), :deadline, limits.run)
+    generation = if restored?, do: nil, else: make_ref()
+
+    timer =
+      if restored?,
+        do: nil,
+        else:
+          Process.send_after(
+            self(),
+            {:deadline, run.run_id, run.incarnation, generation},
+            limits.run
+          )
 
     catalog = ToolCatalog.initial(opts)
 
@@ -160,6 +170,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       stopping: nil,
       cleanup_due: nil,
       timer: timer,
+      timer_generation: generation,
       effect_live_deadline: nil,
       paused_run_remaining: nil,
       paused_effect_remaining: nil,
@@ -310,8 +321,9 @@ defmodule Backplane.AgentRuntime.Conversation do
               )
             end)
 
-          timer =
-            Process.send_after(self(), {:nested_timeout, task.ref}, next_state.limits.effect)
+          generation = make_ref()
+          timeout = max(1, min(next_state.limits.effect, next_state.run.deadline - now()))
+          timer = Process.send_after(self(), {:nested_timeout, task.ref, generation}, timeout)
 
           %{
             next_state
@@ -319,7 +331,8 @@ defmodule Backplane.AgentRuntime.Conversation do
               nested: %{
                 task: task,
                 timer: timer,
-                live_deadline: System.monotonic_time(:millisecond) + next_state.limits.effect,
+                timer_generation: generation,
+                live_deadline: System.monotonic_time(:millisecond) + timeout,
                 from: from,
                 token: nested_token,
                 invocation: invocation
@@ -338,19 +351,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   @impl true
   def handle_info({ref, result}, %{nested: %{task: %{ref: ref}} = nested} = s) do
     clear_task(nested)
-    normalized = normalize_nested_result(result)
-    completion = Map.put(nested.invocation, :result, tool_result(normalized))
-    s = settle_nested_catalog(s, nested.invocation, normalized)
-
-    next = fn next_state, _prepared ->
-      GenServer.reply(nested.from, normalized)
-      %{next_state | nested: nil}
-    end
-
-    pending = %{nested | task: nil, timer: nil, live_deadline: nil}
-
-    {:noreply,
-     drive(commit(%{s | nested: pending}, {:tool_completed, now(), completion}, %{}, [], next))}
+    {:noreply, complete_nested(s, normalize_nested_result(result))}
   end
 
   def handle_info({ref, result}, %{commit: %{task: %{ref: ref}} = entry} = s) do
@@ -368,7 +369,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         s =
           cond do
             RunKernel.terminal?(prepared.run.state) ->
-              entry.next.(%{s | stopping: nil}, prepared)
+              entry.next.(%{invalidate_run_timer(s) | stopping: nil}, prepared)
 
             s.stopping ->
               advance_stop(s)
@@ -399,8 +400,22 @@ defmodule Backplane.AgentRuntime.Conversation do
       s.commit && s.commit.task.ref == ref ->
         {:noreply, storage_failed(%{s | commit: nil}, error)}
 
+      s.nested && s.nested.task && s.nested.task.ref == ref ->
+        clear_task(s.nested)
+
+        error =
+          Error.new(:unknown_outcome, "nested worker exited before settlement",
+            cause: inspect(reason)
+          )
+
+        if s.phase == :waiting_interaction do
+          {:noreply, stop(%{s | last_error: error}, :uncertain)}
+        else
+          {:noreply, complete_nested(s, {:error, error})}
+        end
+
       s.effect && s.effect.task.ref == ref ->
-        Process.cancel_timer(s.effect.timer)
+        if s.effect.timer, do: Process.cancel_timer(s.effect.timer)
         {:noreply, stop(%{s | effect: nil, last_error: error}, :uncertain)}
 
       true ->
@@ -408,9 +423,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  def handle_info({:timeout, ref}, s) do
+  def handle_info({:timeout, ref, generation}, s) when is_reference(generation) do
     cond do
-      s.commit && s.commit.task.ref == ref && is_reference(s.commit.timer) ->
+      s.commit && s.commit.task.ref == ref && s.commit.timer_generation == generation ->
         kill_task(s.commit)
 
         {:noreply,
@@ -419,7 +434,7 @@ defmodule Backplane.AgentRuntime.Conversation do
            Error.new(:timeout, "commit acknowledgement timed out")
          )}
 
-      s.effect && s.effect.task.ref == ref && is_reference(s.effect.timer) ->
+      s.effect && s.effect.task.ref == ref && s.effect.timer_generation == generation ->
         {:noreply, stop(s, :deadline_exceeded)}
 
       true ->
@@ -428,30 +443,22 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   def handle_info(
-        {:nested_timeout, ref},
-        %{nested: %{task: %{ref: ref}, timer: timer} = nested} = s
+        {:nested_timeout, ref, generation},
+        %{nested: %{task: %{ref: ref}, timer_generation: generation} = nested} = s
       )
-      when is_reference(timer) do
-    Task.shutdown(nested.task, :brutal_kill)
-    error = Error.new(:timeout, "nested tool execution timed out")
-    completion = Map.put(nested.invocation, :result, tool_result({:error, error}))
-    s = discard_owned_catalog(s, nested.invocation)
-
-    next = fn next_state, _prepared ->
-      GenServer.reply(nested.from, {:error, error})
-      %{next_state | nested: nil}
-    end
-
-    pending = %{nested | task: nil, timer: nil, live_deadline: nil}
+      when is_reference(generation) do
+    kill_task(nested)
 
     {:noreply,
-     drive(commit(%{s | nested: pending}, {:tool_completed, now(), completion}, %{}, [], next))}
+     complete_nested(s, {:error, Error.new(:timeout, "nested tool execution timed out")})}
   end
 
-  def handle_info(:deadline, s) do
-    if s.phase in [:terminal, :storage_failed, :recovery_required],
-      do: {:noreply, s},
-      else: {:noreply, stop(s, :deadline_exceeded)}
+  def handle_info(
+        {:deadline, run_id, incarnation, generation},
+        %{run: %{run_id: run_id, incarnation: incarnation}, timer_generation: generation} = s
+      )
+      when is_reference(generation) do
+    {:noreply, stop(s, :deadline_exceeded)}
   end
 
   def handle_info(_, s), do: {:noreply, s}
@@ -515,10 +522,20 @@ defmodule Backplane.AgentRuntime.Conversation do
     if current_effect?(s, token) and is_nil(s.interaction) do
       interaction = %{id: id("interaction"), request: request}
 
+      s = %{s | interaction: %{id: interaction.id, from: from, token: token}}
+
       checkpoint(s, %{s.conversation | pending_interaction: interaction}, fn s ->
-        emit(s, %{type: :interaction_requested, interaction_id: interaction.id, request: request})
-        s = pause_deadlines(s)
-        %{s | interaction: %{id: interaction.id, from: from}, phase: :waiting_interaction}
+        if (current_effect?(s, token) and s.interaction) && s.interaction.id == interaction.id do
+          emit(s, %{
+            type: :interaction_requested,
+            interaction_id: interaction.id,
+            request: request
+          })
+
+          %{pause_deadlines(s) | phase: :waiting_interaction}
+        else
+          checkpoint(s, %{s.conversation | pending_interaction: nil}, & &1)
+        end
       end)
     else
       GenServer.reply(from, {:error, Error.new(:resource_conflict, "stale interaction")})
@@ -617,11 +634,12 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp process(s, {:effect_result, {:tool, invocation, rest, catalog}, result}) do
     s = discard_failed_catalog(s, invocation, result)
     result = tool_result(result)
-    s = settle_catalog_producer(s, invocation, result)
     input = Map.put(invocation, :result, result)
 
     commit(s, {:tool_completed, now(), input}, %{}, [], fn s, _ ->
-      append_tool_result(s, invocation, result, rest, catalog)
+      s
+      |> settle_catalog_producer(invocation, result)
+      |> append_tool_result(invocation, result, rest, catalog)
     end)
   end
 
@@ -1085,8 +1103,9 @@ defmodule Backplane.AgentRuntime.Conversation do
         do: max(1, min(s.limits.commit, s.cleanup_due - System.monotonic_time(:millisecond))),
         else: s.limits.commit
 
-    timer = Process.send_after(self(), {:timeout, task.ref}, timeout)
-    %{s | commit: %{task: task, timer: timer, next: next}}
+    generation = make_ref()
+    timer = Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
+    %{s | commit: %{task: task, timer: timer, timer_generation: generation, next: next}}
   end
 
   defp start_effect(s, role, function) do
@@ -1116,11 +1135,18 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     task = Task.Supervisor.async_nolink(s.supervisor, fn -> function.(context) end)
     timeout = max(1, min(s.limits.effect, s.run.deadline - now()))
-    timer = Process.send_after(self(), {:timeout, task.ref}, timeout)
+    generation = make_ref()
+    timer = Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
 
     %{
       s
-      | effect: %{task: task, timer: timer, role: role, token: token},
+      | effect: %{
+          task: task,
+          timer: timer,
+          timer_generation: generation,
+          role: role,
+          token: token
+        },
         effect_live_deadline: System.monotonic_time(:millisecond) + timeout,
         phase: :running
     }
@@ -1163,6 +1189,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp stop(s, reason) do
+    s = invalidate_run_timer(s)
     task_stop = if s.effect, do: kill_task(s.effect), else: :ok
 
     if s.nested do
@@ -1249,6 +1276,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp storage_failed(s, error) do
+    s = invalidate_run_timer(s)
     if s.effect, do: kill_task(s.effect)
     if s.nested && s.nested.task, do: kill_task(s.nested)
     if s.nested, do: GenServer.reply(s.nested.from, {:error, error})
@@ -1300,8 +1328,42 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp tool_result({:error, error}), do: %{is_error: true, error: error}
   defp tool_result(_), do: %{is_error: true, error: "malformed tool result"}
   defp current_effect?(%{effect: %{token: token}, stopping: nil}, token), do: true
-  defp current_effect?(%{nested: %{token: token}, stopping: nil}, token), do: true
+
+  defp current_effect?(%{nested: %{token: token, task: %{ref: _}}, stopping: nil}, token),
+    do: true
+
   defp current_effect?(_, _), do: false
+
+  defp invalidate_run_timer(s) do
+    if s.timer, do: Process.cancel_timer(s.timer)
+    %{s | timer: nil, timer_generation: nil}
+  end
+
+  defp complete_nested(%{nested: nested} = s, normalized) do
+    completion = Map.put(nested.invocation, :result, tool_result(normalized))
+    s = discard_failed_catalog(s, nested.invocation, normalized)
+
+    s =
+      case s.interaction do
+        %{token: token, from: waiter} when token == nested.token ->
+          GenServer.reply(waiter, {:error, Error.new(:cancelled, "nested invocation ended")})
+          %{s | interaction: nil}
+
+        _ ->
+          s
+      end
+
+    next = fn next_state, _prepared ->
+      next_state = settle_nested_catalog(next_state, nested.invocation, normalized)
+      GenServer.reply(nested.from, normalized)
+      %{next_state | nested: nil}
+    end
+
+    # Expire all producer callbacks immediately; acknowledged successful settlement
+    # alone makes staged discovery eligible at the enclosing publication boundary.
+    pending = %{nested | task: nil, timer: nil, timer_generation: nil, live_deadline: nil}
+    drive(commit(%{s | nested: pending}, {:tool_completed, now(), completion}, %{}, [], next))
+  end
 
   defp pause_deadlines(s) do
     run_remaining = max(0, s.run.deadline - now())
@@ -1325,14 +1387,15 @@ defmodule Backplane.AgentRuntime.Conversation do
       end
 
     if s.timer, do: Process.cancel_timer(s.timer)
-    if s.effect, do: Process.cancel_timer(s.effect.timer)
+    if s.effect && s.effect.timer, do: Process.cancel_timer(s.effect.timer)
     if s.nested && s.nested.timer, do: Process.cancel_timer(s.nested.timer)
 
     %{
       s
       | timer: nil,
-        effect: if(s.effect, do: %{s.effect | timer: nil}, else: nil),
-        nested: if(s.nested, do: %{s.nested | timer: nil}, else: nil),
+        timer_generation: nil,
+        effect: if(s.effect, do: %{s.effect | timer: nil, timer_generation: nil}, else: nil),
+        nested: if(s.nested, do: %{s.nested | timer: nil, timer_generation: nil}, else: nil),
         effect_live_deadline: nil,
         paused_run_remaining: run_remaining,
         paused_effect_remaining: effect_remaining,
@@ -1346,17 +1409,26 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp resume_deadline(s), do: s.run.deadline
 
   defp resume_deadlines(s) do
-    timer = Process.send_after(self(), :deadline, max(0, s.run.deadline - now()))
-    s = %{s | timer: timer}
+    generation = make_ref()
+
+    timer =
+      Process.send_after(
+        self(),
+        {:deadline, s.run.run_id, s.run.incarnation, generation},
+        max(0, s.run.deadline - now())
+      )
+
+    s = %{s | timer: timer, timer_generation: generation}
 
     s =
       case {s.effect, s.paused_effect_remaining} do
         {%{task: task} = effect, remaining} when is_integer(remaining) and remaining >= 0 ->
-          timer = Process.send_after(self(), {:timeout, task.ref}, remaining)
+          generation = make_ref()
+          timer = Process.send_after(self(), {:timeout, task.ref, generation}, remaining)
 
           %{
             s
-            | effect: %{effect | timer: timer},
+            | effect: %{effect | timer: timer, timer_generation: generation},
               effect_live_deadline: System.monotonic_time(:millisecond) + remaining,
               paused_run_remaining: nil,
               paused_effect_remaining: nil
@@ -1368,13 +1440,15 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     case {s.nested, s.paused_nested_remaining} do
       {%{task: task} = nested, remaining} when is_integer(remaining) and remaining >= 0 ->
-        timer = Process.send_after(self(), {:nested_timeout, task.ref}, remaining)
+        generation = make_ref()
+        timer = Process.send_after(self(), {:nested_timeout, task.ref, generation}, remaining)
 
         %{
           s
           | nested: %{
               nested
               | timer: timer,
+                timer_generation: generation,
                 live_deadline: System.monotonic_time(:millisecond) + remaining
             },
             paused_nested_remaining: nil
@@ -1436,7 +1510,12 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp catalog_reconciliation_allowed(_s, nil), do: :ok
 
   defp catalog_reconciliation_allowed(%{effect: %{token: token}, stopping: nil}, token), do: :ok
-  defp catalog_reconciliation_allowed(%{nested: %{token: token}, stopping: nil}, token), do: :ok
+
+  defp catalog_reconciliation_allowed(
+         %{nested: %{token: token, task: %{ref: _}}, stopping: nil},
+         token
+       ),
+       do: :ok
 
   defp catalog_reconciliation_allowed(_s, _token),
     do: {:error, Error.new(:resource_conflict, "stale catalog publication owner")}
@@ -1459,7 +1538,12 @@ defmodule Backplane.AgentRuntime.Conversation do
        do: :ok
 
   defp catalog_stage_allowed(
-         %{phase: :running, stopping: nil, interaction: nil, nested: %{token: token}},
+         %{
+           phase: :running,
+           stopping: nil,
+           interaction: nil,
+           nested: %{token: token, task: %{ref: _}}
+         },
          token
        ),
        do: :ok

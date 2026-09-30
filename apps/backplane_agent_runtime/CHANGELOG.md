@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- R18/R21: distinguish trusted pre-launch refusal from ambiguous command launch;
+  retain cancellation fencing and actionable conflicts, and bound recent
+  confirmed-release receipts separately from tracked cleanup obligations.
+- R19-runtime: fence mutable Conversation deadlines with independent timer
+  generations and prevent late interaction checkpoints from reviving stopped work.
+- R20: revoke failed nested producers' staging and callbacks before settlement
+  acknowledgement; allow a caught failure to retry discovery in the same outer
+  invocation, publishing only acknowledged success at the existing boundary.
+- Defer Code Mode backend selection/migration and engine-level verification.
+  Denox NIF is a preferred future candidate, not an adopted backend. Preserve
+  the opt-in/fail-closed gates and existing native tests; shared-runtime tests
+  do not establish engine conformance.
 - R13: make collaboration close idempotent and tree-aware. Repeated or recursive
   close requests now preserve partial and uncertain settlement evidence, fence
   stale monitor events, and leave unrelated peers supervised.

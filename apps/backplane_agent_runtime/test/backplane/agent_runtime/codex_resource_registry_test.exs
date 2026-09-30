@@ -163,6 +163,36 @@ defmodule Backplane.AgentRuntime.CodexResourceRegistryTest do
              ResourceRegistry.cleanup_status(registry, handle, "race")
   end
 
+  test "a blocked receipt acknowledgement is bounded without blocking cleanup or cancellation" do
+    registry = start_supervised!({ResourceRegistry, cleanup_timeout: 50})
+    test = self()
+
+    {:ok, id} =
+      ResourceRegistry.register_session(registry, "ack-owner", %{job: nil},
+        incarnation: 2,
+        cleanup: fn -> :done end,
+        acknowledge: fn _ ->
+          send(test, {:acknowledging, self()})
+          receive do: (:never -> :ok)
+        end
+      )
+
+    assert {:ok, :done} = ResourceRegistry.release_session(registry, id, "ack-owner", 2)
+    assert_receive {:acknowledging, worker}
+    assert {:ok, []} = ResourceRegistry.cancel_owner(registry, "ack-owner")
+
+    assert {:ok, %{status: :confirmed}} =
+             ResourceRegistry.session_cleanup_status(registry, id, "ack-owner", 2)
+
+    Process.monitor(worker)
+    assert_receive {:DOWN, _, :process, ^worker, :killed}, 500
+
+    assert {:ok, %{status: :confirmed, acknowledgement: {:error, :acknowledgement_timeout}}} =
+             ResourceRegistry.session_cleanup_status(registry, id, "ack-owner", 2)
+
+    assert :sys.get_state(registry).tasks == %{}
+  end
+
   test "late and duplicate cleanup replies do not reopen settled handles" do
     {:ok, registry} = ResourceRegistry.start_link(cleanup_timeout: 500)
     parent = self()

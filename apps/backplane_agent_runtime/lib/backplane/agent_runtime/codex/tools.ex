@@ -77,10 +77,15 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
          {:ok, session_id} <- reserve_command_session(context, command, invocation) do
       invocation = Map.put(invocation, :session_id, session_id)
 
-      case Command.start(command, invocation,
-             deadline_limit: command.deadline_limit,
-             output_limit: command.output_limit
-           ) do
+      start =
+        with :ok <- Command.reserve(command, invocation) do
+          Command.start(command, invocation,
+            deadline_limit: command.deadline_limit,
+            output_limit: command.output_limit
+          )
+        end
+
+      case start do
         {:ok, job} ->
           with :ok <- bind_command_session(context, session_id, invocation, job),
                {:ok, result} <- poll(command, invocation, job, 0, yield_time(args, false)),
@@ -92,6 +97,13 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
                 {:ok, _} -> {:error, error}
                 {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
               end
+          end
+
+        {:error,
+         %Error{details: %{launch_status: :never_started, reservation: :not_created}} = error} ->
+          case withdraw_command_session(context, session_id, invocation) do
+            :ok -> {:error, error}
+            {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
           end
 
         {:error, %Error{} = error} ->
@@ -289,13 +301,22 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     cleanup = fn %{session_id: session_id} ->
       Command.cancel_confirmed(
         command,
-        %{owner_run_id: owner, session_id: session_id},
+        %{owner_run_id: owner, session_id: session_id, incarnation: invocation.incarnation},
         timeout
       )
     end
 
+    identity = fn handle ->
+      %{owner_run_id: owner, session_id: handle.session_id, incarnation: handle.incarnation}
+    end
+
     resource_opts =
-      [cleanup: cleanup, incarnation: invocation.incarnation] |> maybe_put_owner(owner_pid)
+      [
+        cleanup: cleanup,
+        incarnation: invocation.incarnation,
+        acknowledge: fn handle -> Command.acknowledge_release(command, identity.(handle)) end
+      ]
+      |> maybe_put_owner(owner_pid)
 
     ResourceRegistry.register_session(registry, owner, %{job: nil, cursor: 0}, resource_opts)
   end
@@ -334,6 +355,18 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   end
 
   defp release_command_session(_context, _id, _invocation), do: {:ok, :not_tracked}
+
+  defp withdraw_command_session(%{session_registry: registry}, id, invocation)
+       when is_pid(registry) and is_integer(id),
+       do:
+         ResourceRegistry.withdraw_session(
+           registry,
+           id,
+           invocation.owner_run_id,
+           invocation.incarnation
+         )
+
+  defp withdraw_command_session(_context, _id, _invocation), do: :ok
 
   defp maybe_put_owner(opts, owner_pid) when is_pid(owner_pid),
     do: Keyword.put(opts, :owner_pid, owner_pid)

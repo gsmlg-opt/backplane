@@ -107,6 +107,22 @@ Resource registries and collaboration managers remain ephemeral. Hosts needing
 restart reconciliation must retain serializable resource/run identities and
 backend-specific evidence in their own recovery system. Never serialize registry
 values, PIDs, ports, cleanup functions, dispatch closures, credentials or grants.
+
+LocalCommand separates active/output records, unresolved session obligations,
+and recent confirmed-release receipts. An obligation's confirmed evidence stays
+pinned until the ResourceRegistry consumes it; only then may it enter the bounded
+receipt cache. Receipt acknowledgement runs as a supervised, bounded effect after
+registry settlement. A failed acknowledgement retains the backend obligation and
+can cause admission backpressure; it does not undo already confirmed OS cleanup.
+Missing or evicted receipts never prove successful release and must not cause
+blind cleanup retries. Hosts must reconcile unresolved identities explicitly.
+
+Conversation timer generations and catalog callback tokens are ephemeral fences,
+not persistent execution contexts. A failed nested producer loses staging before
+settlement acknowledgement, while a successful producer becomes eligible only
+after that acknowledgement. A lost Store reply still requires loading and
+reconciling the store; neither staging nor receipt eviction permits replay.
+
 A replacement child run uses a fresh storage aggregate and committed history;
 it never automatically replays a restored nonterminal run or a completed tool
 mutation. The old run's revision history remains distinct from the replacement.
