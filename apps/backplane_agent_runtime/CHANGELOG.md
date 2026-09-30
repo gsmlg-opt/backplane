@@ -14,6 +14,17 @@
 - Track command resources before launch, clean resources on every run terminal
   path, and retain uncertain cleanup for reconciliation. Add optional command
   adapter `cancel_confirmed/3`; a cancellation request alone is not confirmation.
+- R8: make Code Mode cell workers temporary so supervisor completion, cancellation,
+  protocol failure, and crashes never replay a cell with stale creator arguments.
+- R9: bind closed-agent snapshots to their run/incarnation and clear them only
+  after a successful replacement, preserving recovery evidence on failure.
+- R10: carry a stable command session identity through reservation and launch;
+  individual cleanup no longer invokes owner-wide cancellation, and adapters
+  without per-invocation confirmation report uncertainty.
+- R11: construct direct and nested effect contexts through the same trusted path,
+  including catalog staging/publication callbacks and resource ownership.
+- R12: gate Code Mode on verified process-lifecycle capability before spawning;
+  Deno availability alone is not sufficient, and unsupported hosts fail closed.
 - Keep the Codex compatibility revision pinned to
   `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. These repairs do not establish
   complete native-wire parity, durable session recovery, or live-service parity.

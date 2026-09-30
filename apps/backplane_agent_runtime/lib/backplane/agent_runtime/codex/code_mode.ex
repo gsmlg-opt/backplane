@@ -27,7 +27,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
   @spec contracts(map()) :: [map()]
   def contracts(%{resource_registry: registry} = context) when is_pid(registry) do
-    if is_binary(Map.get(context, :deno_path, System.find_executable("deno"))) do
+    if lifecycle_capability(context) == :verified and
+         is_binary(Map.get(context, :deno_path, System.find_executable("deno"))) do
       [
         %{
           name: "exec",
@@ -58,6 +59,18 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
   end
 
   def contracts(_context), do: []
+
+  @doc "Returns whether the host can verify and clean up a Code Mode process."
+  @spec lifecycle_capability(map()) :: :verified | {:unsupported, atom()}
+  def lifecycle_capability(context) when is_map(context) do
+    case Map.get(context, :process_lifecycle_capability) do
+      :verified -> detect_lifecycle_capability()
+      :unsupported -> {:unsupported, :host_declared_unavailable}
+      _ -> detect_lifecycle_capability()
+    end
+  end
+
+  def lifecycle_capability(_), do: {:unsupported, :invalid_context}
 
   @spec call(map()) :: {:ok, map()} | {:error, Error.t()}
   def call(%{tool_name: "exec", arguments: code, run_id: owner} = operation)
@@ -113,6 +126,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
   def execute(registry, owner, code, opts \\ [])
       when is_pid(registry) and is_binary(owner) and is_binary(code) and is_list(opts) do
     with :ok <- validate_owner(owner),
+         :ok <- require_lifecycle_capability(opts),
          :ok <- validate_code(code, opts),
          {:ok, context} <- execution_context(owner, opts),
          {:ok, dispatcher} <- dispatcher(opts),
@@ -291,6 +305,32 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
   defp validate_owner(owner) when owner != "", do: :ok
   defp validate_owner(_), do: {:error, Error.new(:validation, "code mode owner is required")}
 
+  defp require_lifecycle_capability(opts) do
+    context = Keyword.get(opts, :host_context, %{})
+
+    case lifecycle_capability(context) do
+      :verified ->
+        :ok
+
+      {:unsupported, reason} ->
+        {:error,
+         Error.new(
+           :unsupported_capability,
+           "Code Mode process lifecycle verification is unavailable",
+           details: %{reason: reason}
+         )}
+    end
+  end
+
+  defp detect_lifecycle_capability do
+    cond do
+      :os.type() != {:unix, :linux} -> {:unsupported, :linux_process_identity_required}
+      not is_binary(System.find_executable("kill")) -> {:unsupported, :kill_unavailable}
+      not File.dir?("/proc") -> {:unsupported, :proc_unavailable}
+      true -> :verified
+    end
+  end
+
   defp validate_code(code, opts) do
     limit = Keyword.get(opts, :code_limit, @default_code_limit)
 
@@ -328,7 +368,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         output_limit: Map.get(context, :output_limit, @default_output_limit),
         tool_limit: Map.get(context, :tool_limit, @default_tool_limit),
         code_limit: Map.get(context, :code_limit, @default_code_limit),
-        deno_path: Map.get(context, :deno_path)
+        deno_path: Map.get(context, :deno_path),
+        host_context: context
       ]
   end
 
@@ -361,6 +402,16 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
   defmodule Worker do
     use GenServer
+
+    def child_spec(opts) do
+      %{
+        id: __MODULE__,
+        start: {__MODULE__, :start_link, [opts]},
+        restart: :temporary,
+        shutdown: 5_000,
+        type: :worker
+      }
+    end
 
     @max_line 1_048_576
     @term_wait_ms 150
@@ -823,7 +874,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           {:noreply, %{state | buffer: data}}
 
         {length, 1} when length <= @max_line ->
-          <<line::binary-size(length), _newline, rest::binary>> = data
+          <<line::binary-size(^length), _newline, rest::binary>> = data
 
           case handle_line(String.trim_trailing(line, "\r"), %{state | buffer: ""}) do
             {:noreply, next_state} -> consume_data(next_state, rest)

@@ -118,13 +118,11 @@ defmodule Backplane.AgentRuntime.Command do
       if function_exported?(command.adapter, :cancel_confirmed, 3) do
         command.adapter.cancel_confirmed(command, invocation, timeout)
       else
-        case cancel(command, invocation) do
-          :ok ->
-            {:error, Error.new(:unknown_outcome, "command backend did not confirm termination")}
-
-          error ->
-            error
-        end
+        {:error,
+         Error.new(
+           :unknown_outcome,
+           "command backend does not support per-invocation termination"
+         )}
       end
     end
   end

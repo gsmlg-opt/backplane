@@ -469,13 +469,48 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
                "message" => "next task"
              })
 
-    assert_receive {:child_provider, second_run, second_request, _second_provider}
+    assert_receive {:child_provider, second_run, second_request, second_provider}
     refute second_run == first_run
 
     assert Enum.map(second_request.messages, & &1[:content]) == [
              "write once",
              "done once",
              "next task"
+           ]
+
+    send(
+      second_provider,
+      {:events,
+       [%{type: :response_completed, message: %{role: :assistant, content: "done twice"}}]}
+    )
+
+    assert {:ok, %{timed_out: false}} =
+             call(runtime, :v1, "root", "multi_agent_v1::wait_agent", %{
+               "targets" => [second_run],
+               "timeout_ms" => 500
+             })
+
+    assert {:ok, %{status: :shutdown}} =
+             call(runtime, :v1, "root", "multi_agent_v1::close_agent", %{"target" => second_run})
+
+    assert {:ok, %{status: :running}} =
+             call(runtime, :v1, "root", "multi_agent_v1::resume_agent", %{"id" => second_run})
+
+    assert {:ok, %{submission_id: _}} =
+             call(runtime, :v1, "root", "multi_agent_v1::send_input", %{
+               "target" => second_run,
+               "message" => "third task"
+             })
+
+    assert_receive {:child_provider, third_run, third_request, _third_provider}
+    refute third_run == second_run
+
+    assert Enum.map(third_request.messages, & &1[:content]) == [
+             "write once",
+             "done once",
+             "next task",
+             "done twice",
+             "third task"
            ]
   end
 
@@ -728,7 +763,7 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
        ]}
     )
 
-    assert_receive {:child_provider, ^first_run, after_patch, next_child_provider}
+    assert_receive {:child_provider, ^first_run, after_patch, next_child_provider}, 5_000
     assert File.read!(Path.join(root, "marker.txt")) == "created once\n"
     assert Enum.count(after_patch.messages, &(&1[:name] == "apply_patch")) == 1
 

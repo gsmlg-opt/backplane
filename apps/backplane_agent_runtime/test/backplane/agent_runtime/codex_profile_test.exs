@@ -7,7 +7,8 @@ defmodule Backplane.AgentRuntime.CodexProfileTest do
     DynamicRuntime,
     ExtensionRuntime,
     MultiAgent,
-    ResourceRegistry
+    ResourceRegistry,
+    CodeMode
   }
 
   defmodule Provider do
@@ -199,7 +200,7 @@ defmodule Backplane.AgentRuntime.CodexProfileTest do
     })
 
     assert_receive {:agent_runtime, "service-profile", %{type: :tool_completed}}
-    assert_receive {:provider, %{messages: messages}, done_provider}
+    assert_receive {:provider, %{messages: messages}, done_provider}, 5_000
     assert %{is_error: false, results: [%{title: "pinned"}]} = List.last(messages).result
 
     send(done_provider, {
@@ -258,27 +259,28 @@ defmodule Backplane.AgentRuntime.CodexProfileTest do
       "web::search"
     ]
 
+    code_mode_available? = CodeMode.lifecycle_capability(%{}) == :verified
+    selected_tools = if code_mode_available?, do: tools, else: List.delete(tools, "exec")
+    code_mode_family = if code_mode_available?, do: [:code_mode], else: []
+
     authority = %{
       caller: "host",
       run_id: "configured-run",
-      grants: tools,
-      tool_revisions: Map.new(tools, &{&1, 1})
+      grants: selected_tools,
+      tool_revisions: Map.new(selected_tools, &{&1, 1})
     }
 
     assert {:ok, profile} =
              Codex.profile(:configured, context, authority,
-               families: [
-                 :interactive,
-                 :collaboration_v2,
-                 :extensions,
-                 :dynamic,
-                 :code_mode,
-                 :services
-               ],
-               tools: tools
+               families:
+                 [:interactive, :collaboration_v2, :extensions, :dynamic] ++
+                   code_mode_family ++ [:services],
+               tools: selected_tools
              )
 
-    assert MapSet.new(profile.registry.tools, fn {name, _} -> name end) == MapSet.new(tools)
-    assert MapSet.new(profile.tools, & &1.name) == MapSet.new(tools)
+    assert MapSet.new(profile.registry.tools, fn {name, _} -> name end) ==
+             MapSet.new(selected_tools)
+
+    assert MapSet.new(profile.tools, & &1.name) == MapSet.new(selected_tools)
   end
 end

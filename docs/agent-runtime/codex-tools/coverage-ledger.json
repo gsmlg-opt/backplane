@@ -211,7 +211,7 @@
       "required_backends": ["Deno, ResourceRegistry, and admitted nested dispatcher"],
       "tests": ["codex_ct08_test.exs", "codex_framing_test.exs", "codex_code_mode_os_cleanup_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
-      "deviation": "Real Deno Conversation tests exercise exec -> yield -> later provider turn -> wait -> nested dispatch after the original effect Task exits, plus lifecycle cancellation. A real CPU-bound Deno process is checked for OS termination after timeout. Framing tests inject deterministic raw-byte splits into the packaged worker and separately exercise real CodeMode.execute with large source/results. Wait remains a generator continuation, not pinned time-sliced running-cell behavior; native wire parity remains unverified."
+      "deviation": "Real Deno Conversation tests exercise exec -> yield -> later provider turn -> wait -> nested dispatch after the original effect Task exits, plus lifecycle cancellation. Cell workers are temporary and nested contexts retain the trusted catalog/resource callbacks. A real CPU-bound Deno process is checked for OS termination after timeout on Linux only; Code Mode is rejected before spawn when verified process identity/cleanup is unavailable. Framing tests inject deterministic raw-byte splits into the packaged worker and separately exercise real CodeMode.execute with large source/results. Wait remains a generator continuation, not pinned time-sliced running-cell behavior; native wire parity remains unverified."
     },
     {
       "id": "service_backed",
@@ -283,9 +283,10 @@
     }
   ],
   "regression_review": {
-    "reviewed_backplane_commit": "f8b6661f74af5359c8e6da2c431f1b57a9468c71",
+    "reviewed_backplane_commit": "78fb2d43ac294daab42881c0e440cc4c57d7e212",
     "compatibility_target_unchanged": true,
-    "evidence_note": "Test files distinguish direct helper/backend paths from admitted Conversation and real-effect paths. No production durability, native-wire, or live-service parity claim follows from these repairs."
+    "follow_up_repairs": ["R8", "R9", "R10", "R11", "R12"],
+    "evidence_note": "R8-R12 add temporary-worker, incarnation-tagged snapshot, per-invocation command cleanup, shared nested trusted-context, and pre-admission process-lifecycle regressions. Test files distinguish direct helper/backend paths from admitted Conversation and real-effect paths. Linux native Deno/PTY/process-group validation remains separate from macOS capability-unit validation. No production durability, native-wire, or live-service parity claim follows from these repairs."
   },
   "overall_disposition": "pinned_66_entry_source_inventory_adapted_profiles_verified_native_parity_partial",
   "non_claims": [

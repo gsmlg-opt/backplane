@@ -210,10 +210,12 @@ ProtocolSubscription backpressure, cursor and replay policies.
 Codex command sessions and Code Mode cells belong to the executing Conversation,
 not its short-lived effect Task. The runtime supplies that owner through trusted
 backend context; model arguments cannot change it. Cells are supervised by the
-resource registry's worker supervisor. A resumed cell retains its identity and
-nested-call counter, but receives the current wait invocation's dispatcher,
-authority, incarnation and catalog snapshot. The previous effect token is never
-made valid again.
+resource registry's worker supervisor and use a `:temporary` child specification,
+so normal completion, cancellation, protocol failure, or a crash never replays
+the original start arguments. A resumed cell retains its identity and nested-call
+counter, but receives the current wait invocation's dispatcher, authority,
+incarnation and catalog snapshot. The previous effect token is never made valid
+again.
 
 Run completion, cancellation, deadlines, provider failure and storage failure
 initiate bounded cleanup even if the Conversation remains alive. Command ownership
@@ -222,8 +224,12 @@ assume returned sessions survive completion of their run. This repair introduces
 no implicit session-lifetime extension.
 
 Numeric command sessions are bound to the trusted invocation incarnation as well
-as the run owner. A replacement incarnation cannot poll or release an old session
-by reusing its numeric ID; host reconciliation remains responsible for old work.
+as the run owner. Reservation cleanup carries a stable session identity from
+before launch through the backend acknowledgement, so a rejected or ambiguous
+launch can only reconcile that invocation. An adapter without per-invocation
+confirmation reports uncertainty and never falls back to owner-wide cancellation.
+A replacement incarnation cannot poll or release an old session by reusing its
+numeric ID; host reconciliation remains responsible for old work.
 
 `Conversation.status/1` includes process-local `resource_cleanup` evidence.
 Failed cleanup prevents a confirmed terminal outcome; failed or lost storage
@@ -235,7 +241,9 @@ requests all owned registries concurrently under its cleanup deadline and
 acknowledges cancellation before waiting for those outcomes.
 
 Command adapters can implement the optional `cancel_confirmed/3` callback
-(command, invocation, timeout). Return `:ok` only after verifying owned resources
+(command, invocation, timeout). The invocation includes the trusted session
+identity for individual cleanup; owner-wide cancellation remains a separate run
+termination path. Return `:ok` only after verifying owned resources
 are stopped. Existing `cancel/2` keeps its request-acknowledgement contract; it
 alone cannot prove cleanup. Adapters without confirmation leave Codex cleanup
 uncertain. Linux `LocalCommand` implements confirmation for its supported process
@@ -250,6 +258,11 @@ option. It does not resubmit the original prompt. Remaining work and deadline
 bounds carry forward, and replacement authority cannot exceed either the current
 parent or the prior child authority. Exhausted agents cannot gain another quota
 by closing, resuming, or following up.
+
+Closed-run snapshots are tagged with their originating run and incarnation. A
+successful replacement clears the cached snapshot; a failed replacement retains
+it as recovery evidence. A later child therefore cannot reuse history or quota
+from an older incarnation when the current execution has an uncertain outcome.
 
 Close/resume and interrupt/send require settled execution. Restored nonterminal
 runs remain inspection-only; uncertain mutations and unacknowledged storage need

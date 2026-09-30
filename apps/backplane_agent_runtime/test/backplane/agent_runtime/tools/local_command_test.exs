@@ -1,6 +1,12 @@
 defmodule Backplane.AgentRuntime.Tools.LocalCommandTest do
   use ExUnit.Case, async: false
 
+  if match?({:unix, :linux}, :os.type()) and File.dir?("/proc/self") do
+    :ok
+  else
+    @moduletag skip: "local command lifecycle requires Linux /proc"
+  end
+
   alias Backplane.AgentRuntime.Command
   alias Backplane.AgentRuntime.Error
   alias Backplane.AgentRuntime.Tools.LocalCommand

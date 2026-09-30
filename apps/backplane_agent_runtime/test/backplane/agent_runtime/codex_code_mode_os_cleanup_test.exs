@@ -3,8 +3,13 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
   alias Backplane.AgentRuntime.Codex.{CodeMode, ResourceRegistry}
   alias Backplane.AgentRuntime.Error
 
+  @native_capability CodeMode.lifecycle_capability(%{})
+
+  if match?({:unsupported, _reason}, @native_capability) do
+    @moduletag skip: "native Code Mode lifecycle capability unavailable"
+  end
+
   test "timing out CPU-bound JavaScript terminates the actual Deno process" do
-    assert match?({:unix, :linux}, :os.type()), "OS cleanup regression requires Linux"
     deno = System.find_executable("deno")
     assert is_binary(deno), "real Deno is required"
     registry = start_supervised!(ResourceRegistry)

@@ -7,9 +7,14 @@ defmodule Backplane.AgentRuntime.CodexCommandBudgetTest do
 
   @moduletag :tmp_dir
 
+  if match?({:unix, :linux}, :os.type()) and File.dir?("/proc/self") and
+       is_binary(System.find_executable("coreutils")) do
+    :ok
+  else
+    @moduletag skip: "real command regressions require Linux and coreutils"
+  end
+
   setup %{tmp_dir: root} do
-    assert match?({:unix, :linux}, :os.type()), "real command regressions require Linux"
-    assert System.find_executable("coreutils"), "real command regressions require coreutils"
     server = start_supervised!({LocalCommand, name: nil})
     registry = start_supervised!(ResourceRegistry)
 

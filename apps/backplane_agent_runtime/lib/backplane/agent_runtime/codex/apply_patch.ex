@@ -143,12 +143,12 @@ defmodule Backplane.AgentRuntime.Codex.ApplyPatch do
     )
     |> case do
       {:ok, done, current} ->
-        if current.lines == [] and lines != [] do
+        if current.lines == [] and not Enum.empty?(lines) do
           invalid("update hunk does not contain lines")
         else
           hunks = Enum.reverse(if current.lines == [], do: done, else: [current | done])
 
-          if hunks == [] and lines != [],
+          if hunks == [] and not Enum.empty?(lines),
             do: invalid("update has no hunk lines"),
             else: {:ok, hunks}
         end

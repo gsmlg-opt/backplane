@@ -4,6 +4,12 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
   alias Backplane.AgentRuntime.{Codex, Conversation, EphemeralStore, Error}
   alias Backplane.AgentRuntime.Codex.{CodeMode, ResourceRegistry}
 
+  @native_capability CodeMode.lifecycle_capability(%{})
+
+  if match?({:unsupported, _reason}, @native_capability) do
+    @moduletag skip: "native Code Mode lifecycle capability unavailable"
+  end
+
   defmodule Provider do
     def stream(request, context) do
       send(context.test, {:provider, request, self()})

@@ -5,6 +5,11 @@ defmodule Backplane.AgentRuntime.CodexFramingTest do
 
   @moduletag :tmp_dir
   @worker Path.expand("../../../priv/codex/code_mode_worker.js", __DIR__)
+  @native_capability CodeMode.lifecycle_capability(%{})
+
+  if match?({:unsupported, _reason}, @native_capability) do
+    @moduletag skip: "native Code Mode lifecycle capability unavailable"
+  end
 
   setup do
     deno = System.find_executable("deno")
@@ -94,7 +99,7 @@ defmodule Backplane.AgentRuntime.CodexFramingTest do
 
     record = JSON.encode!(%{type: "complete", value: "你"}) <> "\n"
     {offset, _} = :binary.match(record, "你")
-    <<first::binary-size(offset + 1), second::binary>> = record
+    <<first::binary-size(^offset + 1), second::binary>> = record
     assert {:noreply, buffered} = CodeMode.Worker.handle_info({port, {:data, first}}, state)
     assert buffered.buffer == first
     assert {:stop, :normal, _} = CodeMode.Worker.handle_info({port, {:data, second}}, buffered)

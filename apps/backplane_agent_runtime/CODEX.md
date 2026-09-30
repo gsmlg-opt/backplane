@@ -32,9 +32,13 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   plugin request tools. Search publishes admitted tools for the next provider
   turn; another call in the discovery batch remains fenced to the old catalog.
 - `:code_mode`, `:code_mode_only`, and `:mixed` expose the pinned freeform
-  `exec` and function `wait` contracts. The opt-in Deno worker has no ambient
-  filesystem or network access. Nested calls re-enter the admitted Conversation
-  dispatcher with the existing run, authority, revision, budget, and audit path.
+  `exec` and function `wait` contracts only when the host can verify Deno
+  process identity and bounded cleanup. Deno presence alone is insufficient;
+  the current native adapter requires Linux `/proc` and `kill`, and unsupported
+  hosts are rejected before a cell or nested tool can start. The opt-in Deno
+  worker has no ambient filesystem or network access. Nested calls re-enter the
+  admitted Conversation dispatcher with the existing run, authority, revision,
+  budget, resource owner, catalog callbacks, and audit path.
 - `:service_compat` exposes only configured service adapters. It includes the
   pinned `web::run` and `image_gen::imagegen` contracts plus explicit Backplane
   compatibility tools `web::fetch`, `web::search`, and `web::x_search`.
@@ -56,8 +60,9 @@ Profiles are capability-driven and fail closed. Command tools need the selected
 workspace, command adapter, caller identity, and `Codex.ResourceRegistry`; plan
 needs a host-started `Plan`; collaboration needs `Codex.MultiAgent`; extensions
 need `Codex.ExtensionRuntime`; dynamic tools need `Codex.DynamicRuntime` plus the
-relevant MCP/plugin adapters; Code Mode needs `Codex.ResourceRegistry` and Deno;
-service and hosted tools need host-owned adapters and credentials. Selecting no
+  relevant MCP/plugin adapters; Code Mode needs `Codex.ResourceRegistry`, Deno,
+  and a verified process-lifecycle capability; service and hosted tools need
+  host-owned adapters and credentials. Selecting no
 profile starts none of these resources.
 
 Existing consumers can upgrade without selecting a Codex profile; their current

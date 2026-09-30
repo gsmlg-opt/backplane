@@ -182,7 +182,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         message: request.message,
         profile: request.profile,
         parent: caller.name,
-        authority: Keyword.get(opts, :authority, %{})
+        authority: Keyword.get(opts, :authority, %{}),
+        snapshot: nil,
+        snapshot_identity: nil
       }
 
       state = %{
@@ -306,10 +308,6 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     else
       {:error, %Error{} = error} ->
         {:reply, {:error, error}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, Error.new(:execution_failure, "child failed to resume", cause: reason)},
-         state}
     end
   end
 
@@ -366,7 +364,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           status =
             case {type, agent.status} do
               {:run_completed, _status} -> :completed
-              {:run_cancelled, status} when status in [:interrupted, :shutdown] -> status
+              {:run_cancelled, _status} -> :interrupted
               {_type, _status} -> {:errored, event_error(event)}
             end
 
@@ -451,7 +449,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           opts: opts,
           authority: Keyword.get(opts, :authority, %{}),
           status: :running,
-          final: nil
+          final: nil,
+          snapshot: nil,
+          snapshot_identity: nil
       }
 
       {:ok,
@@ -460,7 +460,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          | sequence: state.sequence + 1,
            agents: Map.put(state.agents, name, replacement),
            run_index: Map.put(state.run_index, run_id, name),
-           monitors: state.monitors |> Map.delete(agent.monitor) |> Map.put(ref, {name, run_id})
+           monitors: state.monitors |> Map.delete(agent.monitor) |> Map.put(ref, {name, run_id}),
+           updates: MapSet.delete(state.updates, name)
        }}
     else
       {:error, %Error{} = error} ->
@@ -515,12 +516,23 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  defp settled_snapshot(%{snapshot: snapshot}) when is_map(snapshot), do: {:ok, snapshot}
+  defp settled_snapshot(%{snapshot: snapshot, snapshot_identity: identity, run_id: run_id})
+       when is_map(snapshot) and is_map(identity) do
+    if identity == snapshot_identity(snapshot) and Map.get(identity, :run_id) == run_id,
+      do: {:ok, snapshot},
+      else: {:error, Error.new(:unknown_outcome, "cached agent snapshot belongs to an older run")}
+  end
 
   defp settled_snapshot(%{pid: pid}) when is_pid(pid) do
     deadline = System.monotonic_time(:millisecond) + @settlement_wait_ms
     await_settlement(pid, deadline)
   end
+
+  defp settled_snapshot(_agent),
+    do: {:error, Error.new(:unknown_outcome, "agent snapshot is unavailable")}
+
+  defp snapshot_identity(%{run: run}),
+    do: %{run_id: Map.get(run, :run_id), incarnation: Map.get(run, :incarnation)}
 
   defp await_settlement(pid, deadline) do
     case Conversation.status(pid) do
@@ -627,7 +639,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     with {:ok, snapshot} <- settled_snapshot(agent) do
       Process.demonitor(agent.monitor, [:flush])
       _ = DynamicSupervisor.terminate_child(state.child_supervisor, agent.pid)
-      {:ok, agent |> Map.put(:pid, nil) |> Map.put(:monitor, nil) |> Map.put(:snapshot, snapshot)}
+
+      {:ok,
+       agent
+       |> Map.put(:pid, nil)
+       |> Map.put(:monitor, nil)
+       |> Map.put(:snapshot, snapshot)
+       |> Map.put(:snapshot_identity, snapshot_identity(snapshot))}
     end
   end
 

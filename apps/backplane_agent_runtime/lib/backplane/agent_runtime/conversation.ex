@@ -269,6 +269,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   def handle_call({:nested_tool, token, request}, from, s) do
     case prepare_nested_tool(s, token, request) do
       {:ok, invocation, catalog} ->
+        resource_owner_pid = self()
+
         opts = [
           registry: catalog.registry,
           authority: catalog.authority,
@@ -280,7 +282,12 @@ defmodule Backplane.AgentRuntime.Conversation do
             Task.Supervisor.async_nolink(next_state.supervisor, fn ->
               prepared = %{
                 prepared
-                | operation: Map.put(prepared.operation, :effective_authority, catalog.authority)
+                | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
+                  host_context:
+                    Map.merge(
+                      prepared.host_context,
+                      trusted_effect_context(next_state, token, catalog, resource_owner_pid)
+                    )
               }
 
               Execution.dispatch(
@@ -939,12 +946,14 @@ defmodule Backplane.AgentRuntime.Conversation do
             input = Map.merge(identity(s), %{status: outcome, outcome: turn})
 
             commit(s, {:finish, now(), input}, %{}, [], fn s, _ ->
+              s = %{s | phase: :terminal}
+
               emit(s, %{
                 type: if(outcome == :completed, do: :run_completed, else: :run_failed),
                 outcome: turn
               })
 
-              %{s | phase: :terminal}
+              s
             end)
           else
             stop(s, :uncertain)
@@ -1011,27 +1020,12 @@ defmodule Backplane.AgentRuntime.Conversation do
     owner = self()
     token = make_ref()
 
-    context =
-      Keyword.get(s.opts, :provider_context, %{})
-      |> Map.put(:interact, fn request ->
-        GenServer.call(owner, {:interact, token, request}, :infinity)
-      end)
-      |> Map.put(:emit, fn event -> GenServer.call(owner, {:chunk, token, event}, :infinity) end)
-      |> Map.put(:request_new_context, fn ->
-        GenServer.call(owner, {:request_new_context, token}, :infinity)
-      end)
+    context = base_effect_context(s, owner, token)
 
     context =
       case role do
         {:tool, _, _, _} ->
-          context
-          |> Map.put(:catalog_snapshot, catalog_from_role(role))
-          |> Map.put(:stage_catalog, fn update ->
-            GenServer.call(owner, {:stage_catalog, token, update}, :infinity)
-          end)
-          |> Map.put(:nested_dispatch, fn request ->
-            GenServer.call(owner, {:nested_tool, token, request}, :infinity)
-          end)
+          Map.merge(context, trusted_effect_context(s, token, catalog_from_role(role), owner))
 
         _ ->
           context
@@ -1059,6 +1053,29 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp catalog_from_role({:tool, _invocation, _rest, catalog}), do: catalog
+
+  defp base_effect_context(s, owner, token) do
+    Keyword.get(s.opts, :provider_context, %{})
+    |> Map.put(:interact, fn request ->
+      GenServer.call(owner, {:interact, token, request}, :infinity)
+    end)
+    |> Map.put(:emit, fn event -> GenServer.call(owner, {:chunk, token, event}, :infinity) end)
+    |> Map.put(:request_new_context, fn ->
+      GenServer.call(owner, {:request_new_context, token}, :infinity)
+    end)
+  end
+
+  defp trusted_effect_context(s, token, catalog, owner) do
+    base_effect_context(s, owner, token)
+    |> Map.put(:catalog_snapshot, catalog)
+    |> Map.put(:stage_catalog, fn update ->
+      GenServer.call(owner, {:stage_catalog, token, update}, :infinity)
+    end)
+    |> Map.put(:nested_dispatch, fn request ->
+      GenServer.call(owner, {:nested_tool, token, request}, :infinity)
+    end)
+    |> Map.put(:resource_owner_pid, owner)
+  end
 
   defp stop(s, reason) do
     task_stop = if s.effect, do: kill_task(s.effect), else: :ok
@@ -1130,8 +1147,10 @@ defmodule Backplane.AgentRuntime.Conversation do
 
         # Keep the stop request until the cleanup commit has succeeded.
         commit(%{s | stopping: nil}, {:cleanup_settled, now(), settlement}, %{}, [], fn s, _ ->
+          s = %{s | phase: :terminal}
+
           emit(s, %{type: :run_cancelled, outcome: s.run.outcome, state: s.run.state})
-          %{s | phase: :terminal}
+          s
         end)
 
       true ->

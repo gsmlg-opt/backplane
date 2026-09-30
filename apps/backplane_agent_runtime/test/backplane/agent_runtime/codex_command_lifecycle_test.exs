@@ -6,6 +6,12 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
   @moduletag :tmp_dir
   @moduletag capture_log: true
 
+  if match?({:unix, :linux}, :os.type()) and File.dir?("/proc/self") do
+    :ok
+  else
+    @moduletag skip: "command lifecycle requires Linux /proc"
+  end
+
   defmodule Provider do
     def stream(request, %{test: test}) do
       send(test, {:provider, request, self()})
@@ -42,7 +48,6 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
   end
 
   setup %{tmp_dir: root} do
-    assert match?({:unix, :linux}, :os.type()), "lifecycle tests require Linux /proc"
     coreutils = System.find_executable("coreutils")
     assert is_binary(coreutils), "lifecycle tests require coreutils"
     File.ln_s!(coreutils, Path.join(root, "sleep"))

@@ -81,7 +81,10 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     with :ok <- validate_incarnation(incarnation), :ok <- validate_cleanup(cleanup) do
       id = "res_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
       handle = %{resource_id: id, owner_id: owner, incarnation: incarnation, kind: kind}
-      entry = entry(handle, value, cleanup, Keyword.get(opts, :owner_pid))
+
+      entry =
+        entry(handle, value, normalize_cleanup(cleanup, handle), Keyword.get(opts, :owner_pid))
+
       {:reply, {:ok, handle}, put_entry(state, {:resource, id}, entry)}
     else
       error -> {:reply, error, state}
@@ -138,7 +141,10 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
          :ok <- validate_incarnation(Keyword.get(opts, :incarnation, 1)) do
       id = System.unique_integer([:positive, :monotonic])
       handle = %{session_id: id, owner_id: owner, incarnation: Keyword.get(opts, :incarnation, 1)}
-      entry = entry(handle, value, cleanup, Keyword.get(opts, :owner_pid))
+
+      entry =
+        entry(handle, value, normalize_cleanup(cleanup, handle), Keyword.get(opts, :owner_pid))
+
       {:reply, {:ok, id}, put_entry(state, {:session, id}, entry)}
     else
       error -> {:reply, error, state}
@@ -514,7 +520,12 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
 
   defp validate_cleanup(nil), do: :ok
   defp validate_cleanup(fun) when is_function(fun, 0), do: :ok
+  defp validate_cleanup(fun) when is_function(fun, 1), do: :ok
 
   defp validate_cleanup(_),
-    do: {:error, Error.new(:validation, "cleanup must be a zero-arity function")}
+    do: {:error, Error.new(:validation, "cleanup must be a zero- or one-arity function")}
+
+  defp normalize_cleanup(nil, _handle), do: nil
+  defp normalize_cleanup(fun, _handle) when is_function(fun, 0), do: fun
+  defp normalize_cleanup(fun, handle) when is_function(fun, 1), do: fn -> fun.(handle) end
 end

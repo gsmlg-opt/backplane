@@ -64,12 +64,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   @impl Backplane.AgentRuntime.Command
   def cancel_confirmed(command, invocation, timeout) do
-    with :ok <- cancel(command, invocation) do
-      await_owner_cleanup(
-        server(command),
-        invocation.owner_run_id,
-        System.monotonic_time(:millisecond) + timeout
-      )
+    case Map.get(invocation, :session_id) do
+      session_id when is_integer(session_id) ->
+        server = server(command)
+        :ok = GenServer.call(server, {:cancel_session, session_id})
+        await_session_cleanup(server, session_id, System.monotonic_time(:millisecond) + timeout)
+
+      _ ->
+        {:error,
+         Error.new(:unknown_outcome, "local command cleanup requires an invocation session")}
     end
   end
 
@@ -87,6 +90,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          workspaces: MapSet.new(),
          owned_groups: %{},
          cancelled_launchers: %{},
+         cancelled_sessions: %{},
          cleanup_supervisor: cleanup_supervisor,
          cleanup_timeout: config.cleanup_timeout,
          shutdown_timeout: config.shutdown_timeout,
@@ -144,6 +148,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           from: from,
           request: request,
           nonce: nonce,
+          session_id: Map.get(request, :session_id),
           launcher_pid: launcher_pid,
           started_at: System.monotonic_time(:millisecond),
           timer: timer,
@@ -225,6 +230,55 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     {:reply, :ok, state}
   end
 
+  def handle_call({:cancel_session, session_id}, _from, state) when is_integer(session_id) do
+    state =
+      case Enum.find(state.pending, fn {_port, launch} ->
+             launch.request.session_id == session_id
+           end) do
+        {port, _launch} ->
+          fail_pending(port, Error.new(:cancelled, "local command launch was cancelled"), state)
+
+        nil ->
+          case Enum.find(state.active, fn {_port, job} -> job.session_id == session_id end) do
+            {port, _job} -> request_cleanup(port, :cancelled, state)
+            nil -> state
+          end
+      end
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:session_cleanup_status, session_id}, _from, state)
+      when is_integer(session_id) do
+    status =
+      cond do
+        Enum.any?(state.pending, fn {_port, launch} -> launch.request.session_id == session_id end) ->
+          :pending
+
+        Enum.any?(state.active, fn {_port, job} -> job.session_id == session_id end) ->
+          :pending
+
+        Enum.any?(state.completed, fn {_port, job} ->
+          job.session_id == session_id and job.cleanup_status == :uncertain
+        end) ->
+          :uncertain
+
+        Map.has_key?(state.cancelled_sessions, session_id) ->
+          pid = Map.fetch!(state.cancelled_sessions, session_id)
+          if File.exists?("/proc/#{pid}"), do: :pending, else: :confirmed
+
+        true ->
+          :confirmed
+      end
+
+    state =
+      if status == :confirmed,
+        do: %{state | cancelled_sessions: Map.delete(state.cancelled_sessions, session_id)},
+        else: state
+
+    {:reply, status, state}
+  end
+
   def handle_call({:owner_cleanup_status, owner_run_id}, _from, state) do
     {launchers, cancelled_launchers} =
       state.cancelled_launchers
@@ -280,6 +334,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
       job = %{
         port: port,
+        session_id: pending.session_id,
         owner_monitor_ref: pending.owner_monitor_ref,
         process_group_id: pid,
         owner_run_id: pending.request.owner_run_id,
@@ -574,25 +629,30 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                 MapSet.new([pending.launcher_pid]),
                 &MapSet.put(&1, pending.launcher_pid)
               ),
+            cancelled_sessions:
+              if(is_integer(pending.session_id),
+                do: Map.put(state.cancelled_sessions, pending.session_id, pending.launcher_pid),
+                else: state.cancelled_sessions
+              ),
             workspaces: MapSet.delete(state.workspaces, pending.request.workspace)
         }
     end
   end
 
-  defp await_owner_cleanup(server, owner, deadline) do
-    case GenServer.call(server, {:owner_cleanup_status, owner}) do
+  defp await_session_cleanup(server, session_id, deadline) do
+    case GenServer.call(server, {:session_cleanup_status, session_id}) do
       :confirmed ->
         :ok
 
       :uncertain ->
-        {:error, Error.new(:unknown_outcome, "local command process-group cleanup is uncertain")}
+        {:error, Error.new(:unknown_outcome, "local command cleanup is uncertain")}
 
       :pending ->
         if System.monotonic_time(:millisecond) >= deadline do
           {:error, Error.new(:unknown_outcome, "local command cleanup confirmation timed out")}
         else
           Process.sleep(10)
-          await_owner_cleanup(server, owner, deadline)
+          await_session_cleanup(server, session_id, deadline)
         end
     end
   end

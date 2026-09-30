@@ -330,7 +330,8 @@ defmodule Backplane.AgentRuntime.CodexCt07Test do
       ]
     })
 
-    assert_receive {:mcp_request, %{"method" => "resources/list", "params" => %{}}}
+    assert_receive {:mcp_request, request}, 5_000
+    assert %{"method" => "resources/list", "params" => %{}} = request
     assert_receive {:provider, %{messages: messages}, final_provider}, 5_000
 
     assert %{result: %{:is_error => false, "resources" => [%{"uri" => "memory://fixture"}]}} =

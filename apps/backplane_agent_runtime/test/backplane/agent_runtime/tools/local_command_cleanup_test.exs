@@ -7,9 +7,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommandCleanupTest do
 
   import ExUnit.CaptureLog
 
+  if match?({:unix, :linux}, :os.type()) and File.dir?("/proc/self") and
+       is_binary(System.get_env("COREUTILS") || System.find_executable("coreutils")) do
+    :ok
+  else
+    @moduletag skip: "local command cleanup requires Linux and coreutils"
+  end
+
   setup do
     coreutils = System.get_env("COREUTILS") || System.find_executable("coreutils")
-    assert is_binary(coreutils), "COREUTILS must point to the Coreutils multiplexer binary"
 
     workspace =
       Path.join(

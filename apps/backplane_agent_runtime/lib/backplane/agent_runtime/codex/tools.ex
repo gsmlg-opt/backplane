@@ -75,6 +75,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     with :ok <- reject_unsupported_exec_options(args),
          {:ok, invocation} <- command_args(args, caller, context),
          {:ok, session_id} <- reserve_command_session(context, command, invocation) do
+      invocation = Map.put(invocation, :session_id, session_id)
+
       case Command.start(command, invocation,
              deadline_limit: command.deadline_limit,
              output_limit: command.output_limit
@@ -282,8 +284,15 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
        when is_pid(registry) do
     owner = invocation.owner_run_id
     timeout = Map.get(context, :cleanup_timeout, 4_000)
-    cleanup = fn -> Command.cancel_confirmed(command, %{owner_run_id: owner}, timeout) end
     owner_pid = Map.get(context, :owner_pid)
+
+    cleanup = fn %{session_id: session_id} ->
+      Command.cancel_confirmed(
+        command,
+        %{owner_run_id: owner, session_id: session_id},
+        timeout
+      )
+    end
 
     resource_opts =
       [cleanup: cleanup, incarnation: invocation.incarnation] |> maybe_put_owner(owner_pid)
