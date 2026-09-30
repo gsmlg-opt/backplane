@@ -641,8 +641,6 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   defp validate_lifecycle(_),
     do: {:error, Error.new(:validation, "session lifecycle callback must have arity one")}
 
-  defp lifecycle(nil, _handle), do: :ok
-
   defp lifecycle(fun, handle) do
     case fun.(handle) do
       :ok ->

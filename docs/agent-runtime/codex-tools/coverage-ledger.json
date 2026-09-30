@@ -406,6 +406,12 @@
         "sigma_probe_revision": "7b30ca0a9f25146c5469b62fd87005fe1d7568c5"
       },
       {
+        "id": "post-push-compiler-correction",
+        "result": "passed: formatting, strict compile, 28 lifecycle regressions; separate production warnings-as-errors compile on Elixir 1.20.4 / OTP 29",
+        "environment": "Linux; correction removes an unreachable lifecycle nil clause detected by Elixir 1.20.1 / OTP 29.0.2 CI on bec580a4",
+        "note": "Main repair CI and Elixir 1.18 runtime job passed; earlier package artifact remains separate historical evidence. JSONSchex dependency warnings were emitted; runtime package emitted no warnings."
+      },
+      {
         "id": "inventory",
         "result": "passed: 16 families, 66 exact-source entries; source pin unchanged",
         "environment": "exact pinned Codex checkout; Ruby 3.4.9 from temporary Nix shell"

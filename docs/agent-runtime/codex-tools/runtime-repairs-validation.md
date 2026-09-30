@@ -115,6 +115,30 @@ preserved the source lock and byte-identical packaged upstream inventory.
 Ledger schema remains v2, with this milestone and its validation runs added
 separately from historical review evidence.
 
+## Post-push compiler correction
+
+Commit `bec580a4dd48e2ca61b2206522c6b4c96e438eb3` was rebased unchanged over
+four unrelated remote commits through `6d4b2a81` and pushed. Its CI checks and
+Elixir 1.18 runtime job passed. The Elixir 1.20.1 / OTP 29.0.2 strict compilation
+job detected an unreachable `lifecycle(nil, _handle)` clause introduced here;
+the only caller already requires an arity-one function. The follow-up removes
+that unused clause without changing the lifecycle contract and refreshes the
+local source manifest. The earlier package artifact and runs remain historical
+evidence for the main repair patch.
+
+The correction passed these commands from the runtime package directory:
+
+```sh
+MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps MIX_BUILD_PATH=/tmp/backplane-runtime-r18-r21-build mix do format --check-formatted, compile --warnings-as-errors, test test/backplane/agent_runtime/codex_resource_registry_test.exs test/backplane/agent_runtime/codex_command_receipts_test.exs test/backplane/agent_runtime/codex_command_lifecycle_test.exs
+PATH=/nix/store/6z2rn7bppkdx6p3qqkawp9yw1jw9hb42-elixir-1.20.4/bin:$PATH MIX_ENV=prod MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps MIX_BUILD_PATH=/tmp/backplane-runtime-r18-r21-latest-build mix compile --force --warnings-as-errors
+```
+
+Formatting and strict compilation passed; lifecycle regressions passed
+**28 tests, 0 failures**, seed 469556. The separate strict production compile
+passed on **Elixir 1.20.4 / OTP 29**. Existing JSONSchex dependency warnings
+were emitted; the runtime package emitted no warnings. Inventory generation
+and checking use the same pinned-source commands above.
+
 ## Host migration and remaining limits
 
 Settle/reconcile active runs, then restart affected Conversation,

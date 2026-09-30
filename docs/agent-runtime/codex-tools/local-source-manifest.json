@@ -130,8 +130,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/resource_registry.ex",
-      "sha256": "2f36bb076559804f8e5b641168f72aec5045a6b519df0b18ae6d62e4ad2c30b9",
-      "bytes": 22340
+      "sha256": "787aa639017f708bdc2686a1e80b9d797c79bfb34d8cd81c3f11ea0a15b700e1",
+      "bytes": 22299
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/result.ex",
