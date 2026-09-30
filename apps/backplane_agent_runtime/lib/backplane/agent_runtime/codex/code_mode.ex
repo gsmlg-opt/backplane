@@ -888,7 +888,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         {:ok, %{starttime: ^starttime, state: state}} when state in ["Z", "X"] -> :gone
         {:ok, %{starttime: ^starttime}} -> :running
         {:ok, _other} -> :gone
-        {:error, :enoent} -> :gone
+        {:error, reason} when reason in [:enoent, :esrch] -> :gone
         {:error, reason} -> {:uncertain, {:proc_probe_failed, reason}}
       end
     end

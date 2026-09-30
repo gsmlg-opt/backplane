@@ -55,6 +55,20 @@ defmodule Backplane.CIWorkflowTest do
 
   @native_build_run "sudo apt-get update\nsudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev\n"
 
+  @ai_setup_run ~S"""
+  protocol_root="$GITHUB_WORKSPACE/tmp/ai-protocol"
+  mkdir -p "$protocol_root/apps" "$protocol_root/config"
+  cp -R apps/backplane_ai_protocol apps/backplane_ai_protocol_testkit "$protocol_root/apps/"
+  cp mix.lock "$protocol_root/mix.lock"
+  printf 'import Config\n' > "$protocol_root/config/config.exs"
+  cat > "$protocol_root/mix.exs" <<'ELIXIR'
+  defmodule Backplane.AiProtocol.CI.MixProject do
+    use Mix.Project
+    def project, do: [apps_path: "apps"]
+  end
+  ELIXIR
+  """
+
   @runtime_command_setup_run ~S"""
   sudo apt-get install -y --no-install-recommends ca-certificates curl perl procps util-linux xz-utils
   coreutils_version="9.4"
@@ -87,6 +101,7 @@ defmodule Backplane.CIWorkflowTest do
   test "$("$smoke_dir/env" "$smoke_dir/printf" '%s' runtime)" = "runtime"
   "$smoke_dir/sleep" 0
   echo "COREUTILS=$coreutils_path" >> "$GITHUB_ENV"
+  echo "$coreutils_source/src" >> "$GITHUB_PATH"
   """
 
   @postgres_run ~S"""
@@ -234,6 +249,7 @@ defmodule Backplane.CIWorkflowTest do
     assert Map.delete(job, "steps") == %{
              "name" => "Test (${{ matrix.app }})",
              "runs-on" => "ubuntu-24.04",
+             "defaults" => %{"run" => %{"working-directory" => "tmp/ai-protocol"}},
              "strategy" => %{
                "fail-fast" => false,
                "matrix" => %{"app" => ~w(backplane_ai_protocol backplane_ai_protocol_testkit)}
@@ -241,25 +257,38 @@ defmodule Backplane.CIWorkflowTest do
            }
 
     assert_package_steps(job, [
+      "Prepare protocol-only umbrella",
       "Restore dependencies cache",
       "Install dependencies",
       "Compile with warnings as errors",
       "Run tests"
     ])
 
-    assert_package_cache(job, "ai-protocol", "deps\n_build\n", "app-${{ matrix.app }}-", [
-      "mix.lock",
-      "apps/backplane_ai_protocol*/mix.exs"
-    ])
+    assert_step(job, %{
+      "name" => "Prepare protocol-only umbrella",
+      "working-directory" => ".",
+      "run" => @ai_setup_run
+    })
+
+    assert_package_cache(
+      job,
+      "ai-protocol",
+      "tmp/ai-protocol/deps\ntmp/ai-protocol/_build\n",
+      "app-${{ matrix.app }}-",
+      [
+        "mix.lock",
+        "apps/backplane_ai_protocol*/mix.exs"
+      ]
+    )
 
     assert_step(job, %{"name" => "Install dependencies", "run" => "mix deps.get"})
 
     assert_step(job, %{
       "name" => "Compile with warnings as errors",
-      "run" => "mix \"do\" --app ${{ matrix.app }} compile --warnings-as-errors"
+      "run" => "mix compile --warnings-as-errors"
     })
 
-    assert_step(job, %{"name" => "Run tests", "run" => "mix \"do\" --app ${{ matrix.app }} test"})
+    assert_step(job, %{"name" => "Run tests", "run" => "mix test apps/${{ matrix.app }}/test"})
   end
 
   test "Agent Runtime owns standalone tests, prerequisites, and latest compatibility", %{

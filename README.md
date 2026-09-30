@@ -307,7 +307,7 @@ The umbrella includes database-backed tests, LiveView tests, MCP transport tests
 
 GitHub Actions splits package tests out of the main `Test` matrix:
 
-- `ai-protocol.yml` tests `backplane_ai_protocol` and `backplane_ai_protocol_testkit`.
+- `ai-protocol.yml` tests `backplane_ai_protocol` and `backplane_ai_protocol_testkit` in a protocol-only umbrella, without starting host apps or PostgreSQL.
 - `agent-runtime.yml` runs standalone runtime tests with Coreutils and Deno, plus strict Elixir 1.20 / OTP 29 compilation.
 - `skill-protocol.yml` verifies the standalone package, consumer, and DB-backed HTTP integration.
 

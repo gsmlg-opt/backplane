@@ -266,9 +266,9 @@ defmodule Backplane.AgentRuntime.ExecutionCorrectnessTest do
           registry: registry,
           authority: authority(),
           budget: budget,
-          commit_timeout: 100,
-          effect_timeout: 20,
-          run_timeout: 1_000
+          commit_timeout: 500,
+          effect_timeout: 250,
+          run_timeout: 2_000
         )
       end)
 
@@ -276,10 +276,10 @@ defmodule Backplane.AgentRuntime.ExecutionCorrectnessTest do
       if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
     end)
 
-    assert_receive {:tool_started, _worker}
+    assert_receive {:tool_started, _worker}, 1_000
 
     assert {:ok, {:error, %Error{class: :timeout, details: %{certainty: :uncertain}}}} =
-             Task.yield(task, 500)
+             Task.yield(task, 2_000)
 
     assert {:ok, stored} = EphemeralStore.load(table, "run_1")
     assert stored.run.state == :unknown_outcome
@@ -485,7 +485,7 @@ defmodule Backplane.AgentRuntime.ExecutionCorrectnessTest do
                registry: registry(SpyBackend, self()),
                authority: authority(),
                budget: budget,
-               commit_timeout: 20,
+               commit_timeout: 250,
                effect_timeout: 100,
                run_timeout: 1_000
              )

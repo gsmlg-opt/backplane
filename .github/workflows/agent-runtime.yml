@@ -83,6 +83,7 @@ jobs:
           test "$("$smoke_dir/env" "$smoke_dir/printf" '%s' runtime)" = "runtime"
           "$smoke_dir/sleep" 0
           echo "COREUTILS=$coreutils_path" >> "$GITHUB_ENV"
+          echo "$coreutils_source/src" >> "$GITHUB_PATH"
 
       - name: Restore dependencies cache
         uses: actions/cache@v6
