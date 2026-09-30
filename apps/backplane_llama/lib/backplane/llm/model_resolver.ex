@@ -18,6 +18,7 @@ defmodule Backplane.LLM.ModelResolver do
 
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.AutoModelRoute
+  alias Backplane.LLM.CodexCatalog
   alias Backplane.LLM.ModelAlias
   alias Backplane.LLM.ProviderApi
   alias Backplane.LLM.ProviderModel
@@ -143,6 +144,13 @@ defmodule Backplane.LLM.ModelResolver do
   end
 
   defp resolve_alias(api_type, alias_name) do
+    case resolve_catalog_alias(api_type, alias_name) do
+      {:error, :no_provider} -> resolve_non_catalog_alias(api_type, alias_name)
+      result -> result
+    end
+  end
+
+  defp resolve_non_catalog_alias(api_type, alias_name) do
     result =
       case AutoModelRoute.get_by_model_and_surface(alias_name, api_type) do
         nil ->
@@ -155,8 +163,11 @@ defmodule Backplane.LLM.ModelResolver do
     case result do
       {:error, :no_provider} ->
         case resolve_custom_alias(api_type, alias_name) do
-          {:error, :no_provider} -> resolve_provider_alias(api_type, alias_name)
-          custom_result -> custom_result
+          {:error, :no_provider} ->
+            resolve_provider_alias(api_type, alias_name)
+
+          custom_result ->
+            custom_result
         end
 
       result ->
@@ -178,6 +189,23 @@ defmodule Backplane.LLM.ModelResolver do
 
       route ->
         resolve_auto_model_route(route, api_type)
+    end
+  end
+
+  defp resolve_catalog_alias(api_type, alias_name) do
+    case CodexCatalog.target_for(alias_name) do
+      nil ->
+        {:error, :no_provider}
+
+      target ->
+        resolve_catalog_target(api_type, target)
+    end
+  end
+
+  defp resolve_catalog_target(api_type, target) do
+    case String.split(target, "/", parts: 2) do
+      [provider_name, raw_model] -> resolve_prefixed(api_type, provider_name, raw_model)
+      [_alias_name] -> resolve_custom_alias_target(api_type, target)
     end
   end
 

@@ -147,6 +147,7 @@ defmodule Backplane.Api.PageController do
         routes: [
           "GET /v1",
           "GET /v1/models",
+          "GET /v1/codex/models",
           "POST /v1/messages",
           "POST /v1/chat/completions",
           "POST /v1/responses",

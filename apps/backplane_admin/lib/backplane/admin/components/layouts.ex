@@ -46,7 +46,8 @@ defmodule Backplane.Admin.Layouts do
         [
           %{label: "Providers", path: "/llama/providers", icon: "cloud"},
           %{label: "Embedding", path: "/llama/embedding", icon: "vector-point"},
-          %{label: "Model Alias", path: "/llama/model-aliases", icon: "tune-vertical"}
+          %{label: "Model Alias", path: "/llama/model-aliases", icon: "tune-vertical"},
+          %{label: "Codex Catalog", path: "/llama/codex-catalog", icon: "robot-outline"}
         ]
 
       :mcp ->

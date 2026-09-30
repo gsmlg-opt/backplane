@@ -9,6 +9,7 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
   test "maps routes to their least operation scope" do
     assert ResourceAuthorization.required_scope(conn(:get, "/v1")) == nil
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/models")) == "llm::models"
+    assert ResourceAuthorization.required_scope(conn(:get, "/v1/codex/models")) == "llm::models"
 
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/providers/openai-codex/models")) ==
              "llm::models"

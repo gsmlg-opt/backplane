@@ -236,6 +236,7 @@ defmodule Backplane.LLM.RouterTest do
 
       for {method, path, scope} <- [
             {:get, "/v1/models", "llm::models"},
+            {:get, "/v1/codex/models", "llm::models"},
             {:post, "/v1/responses", "llm::invoke"}
           ] do
         missing = public_llm_request(method, path)
@@ -401,6 +402,15 @@ defmodule Backplane.LLM.RouterTest do
       assert body["object"] == "list"
       assert "anthropic-prod/claude-sonnet" in ids
       assert "openai-prod/gpt-4o" in ids
+    end
+  end
+
+  describe "public GET /v1/codex/models via ProxyPlug" do
+    test "returns the explicit catalog envelope" do
+      conn = public_llm_request(:get, "/v1/codex/models")
+
+      assert conn.status == 200
+      assert json_body(conn) == %{"models" => []}
     end
   end
 
