@@ -60,6 +60,22 @@ defmodule Backplane.LLM.ModelDiscovery do
   @doc "Reload models for one provider API surface."
   @spec reload_api(Provider.t(), ProviderApi.t()) :: discovery_result()
   def reload_api(%Provider{} = provider, %ProviderApi{} = api) do
+    case reload_api_with_details(provider, api) do
+      {:ok, %{summary: summary}} -> summary
+      {:error, summary} -> summary
+    end
+  end
+
+  @doc "Reload one Codex API and return the exact accepted upstream model descriptors."
+  def reload_codex_api(%Provider{} = provider, %ProviderApi{} = api) do
+    if openai_codex_oauth_api?(provider, api) and :openai_responses in api.native_protocols do
+      reload_api_with_details(provider, api)
+    else
+      {:error, add_error(empty_result(), "openai: not an OpenAI Codex Responses API")}
+    end
+  end
+
+  defp reload_api_with_details(provider, api) do
     # Resolving OAuth headers can refresh and persist the credential. Complete that
     # before capturing the generation that guards the upstream request and writes.
     with {:ok, provider, api, _generation} <- discovery_generation(provider.id, api.id),
@@ -67,10 +83,21 @@ defmodule Backplane.LLM.ModelDiscovery do
          {:ok, provider, api, generation} <- discovery_generation(provider.id, api.id),
          {:ok, model_details} <- discover_model_details(provider, api),
          :ok <- ensure_discovery_generation(generation) do
-      persist_models(provider, api, model_details, generation)
+      case persist_models(provider, api, model_details, generation) do
+        %{errors: []} = result ->
+          {:ok,
+           %{
+             summary: Map.take(result, [:discovered, :created, :updated, :errors]),
+             models: Enum.map(model_details, & &1.metadata),
+             api_updated_at: result.api_updated_at
+           }}
+
+        result ->
+          {:error, Map.take(result, [:discovered, :created, :updated, :errors])}
+      end
     else
       {:error, reason} ->
-        add_error(empty_result(), "#{api.api_surface}: #{format_error(reason)}")
+        {:error, add_error(empty_result(), "#{api.api_surface}: #{format_error(reason)}")}
     end
   end
 
@@ -820,7 +847,7 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   defp maybe_record_discovered_at(result, api) do
     case ProviderApi.update(api, %{last_discovered_at: DateTime.utc_now()}) do
-      {:ok, _api} -> result
+      {:ok, updated_api} -> Map.put(result, :api_updated_at, updated_api.updated_at)
       {:error, reason} -> add_error(result, "last_discovered_at: #{format_error(reason)}")
     end
   end

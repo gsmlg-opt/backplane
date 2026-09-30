@@ -10,6 +10,7 @@ defmodule Backplane.LLM.CodexCatalog do
 
   alias Backplane.LLM.{
     CodexCatalogEntry,
+    ModelDiscovery,
     ModelMetadata,
     ModelResolver,
     Provider,
@@ -19,6 +20,7 @@ defmodule Backplane.LLM.CodexCatalog do
   }
 
   alias Backplane.Repo
+  alias Backplane.Settings.Credentials
 
   @default_priority 100
 
@@ -40,6 +42,40 @@ defmodule Backplane.LLM.CodexCatalog do
 
   @doc "Fetch an entry by id."
   def get(id), do: Repo.get(CodexCatalogEntry, id)
+
+  @doc "List enabled Codex providers with an eligible Responses API, without fetching secrets."
+  def providers do
+    Provider.list()
+    |> Enum.filter(&(not is_nil(codex_api(&1))))
+  end
+
+  @doc "Import every model from a selected Codex provider."
+  def import_provider(provider_id) when is_binary(provider_id) do
+    with %Provider{} = provider <- Provider.get(provider_id),
+         %ProviderApi{} = api <- codex_api(provider),
+         {:ok, snapshot} <- ModelDiscovery.reload_codex_api(provider, api) do
+      persist_snapshot(provider, api, snapshot, :all)
+    else
+      nil -> {:error, :invalid_codex_provider}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Refresh one saved Codex model from its provider's latest model listing."
+  def refresh(entry_id) when is_binary(entry_id) do
+    with %CodexCatalogEntry{} = entry <- get(entry_id),
+         true <- imported_entry?(entry),
+         {:ok, provider} <- source_provider(entry.source_model),
+         %ProviderApi{} = api <- codex_api(provider),
+         {:ok, snapshot} <- ModelDiscovery.reload_codex_api(provider, api),
+         true <- Enum.any?(snapshot.models, &(&1["slug"] == entry.public_model_id)) do
+      persist_snapshot(provider, api, snapshot, {:one, entry.id})
+    else
+      nil -> {:error, :invalid_codex_entry}
+      false -> {:error, :model_unavailable}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc "Create a catalog policy entry after validating its route and metadata."
   def create(attrs) when is_map(attrs) do
@@ -79,7 +115,18 @@ defmodule Backplane.LLM.CodexCatalog do
     broadcast_on_ok(result)
   end
 
-  def toggle(%CodexCatalogEntry{} = entry), do: __MODULE__.update(entry, %{enabled: true})
+  def toggle(%CodexCatalogEntry{} = entry) do
+    case effective_entry(entry) do
+      {:ok, _resolved} ->
+        entry
+        |> CodexCatalogEntry.changeset(%{enabled: true})
+        |> Repo.update()
+        |> broadcast_on_ok()
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   @doc "Return all routable OpenAI Responses targets for the admin selector."
   def candidates do
@@ -94,7 +141,7 @@ defmodule Backplane.LLM.CodexCatalog do
       order_by: [asc: provider.name, asc: model.model]
     )
     |> Repo.all()
-    |> Enum.filter(&responses_surface?/1)
+    |> Enum.filter(&(eligible_provider?(&1.provider) and responses_surface?(&1)))
     |> Enum.map(fn model ->
       %{
         source_model: "#{model.provider.name}/#{model.model}",
@@ -133,23 +180,31 @@ defmodule Backplane.LLM.CodexCatalog do
   @doc "Resolve an enabled public Codex id to its existing Backplane route target."
   def target_for(public_model_id) when is_binary(public_model_id) do
     case Repo.get_by(CodexCatalogEntry, public_model_id: public_model_id, enabled: true) do
-      %CodexCatalogEntry{source_model: source_model} -> source_model
-      nil -> nil
+      %CodexCatalogEntry{} = entry ->
+        case effective_entry(entry) do
+          {:ok, _resolved} -> entry.source_model
+          _ -> nil
+        end
+
+      nil ->
+        nil
     end
   end
 
   @doc "Build an effective entry for preview and diagnostics."
   def effective_entry(%CodexCatalogEntry{} = entry) do
-    with {:ok, provider, raw_model} <- ModelResolver.resolve(:openai, entry.source_model),
+    with true <- imported_entry?(entry),
+         {:ok, provider} <- source_provider(entry.source_model),
+         true <- eligible_provider?(provider),
+         {:ok, resolved_provider, raw_model} <- ModelResolver.resolve(:openai, entry.source_model),
+         true <- resolved_provider.id == provider.id and raw_model == entry.public_model_id,
          %ProviderModel{} = model <-
            ProviderModel.get_by_provider_and_model(provider.id, raw_model),
          %ProviderApi{} = api <- responses_api(provider.id),
          true <- :openai_responses in api.native_protocols,
          true <- model.enabled and provider.enabled and is_nil(provider.deleted_at),
-         %ProviderModelSurface{} = surface <- responses_surface(model.id, api.id),
-         metadata <- canonical_metadata(model, provider),
-         metadata <- Map.merge(metadata, surface.metadata || %{}),
-         metadata <- apply_overrides(metadata, entry),
+         %ProviderModelSurface{} <- responses_surface(model.id, api.id),
+         metadata <- entry.metadata["codex_raw"],
          descriptor <- descriptor(entry, metadata) do
       {:ok,
        %{
@@ -168,15 +223,7 @@ defmodule Backplane.LLM.CodexCatalog do
     end
   end
 
-  defp descriptor(entry, metadata) do
-    serialize_model(
-      entry.public_model_id,
-      entry.display_name || metadata["display_name"],
-      entry.description || metadata["description"],
-      metadata,
-      entry.priority
-    )
-  end
+  defp descriptor(_entry, metadata), do: metadata
 
   @doc "Serialize one model using the current Codex ModelInfo wire contract."
   def serialize_model(
@@ -283,28 +330,6 @@ defmodule Backplane.LLM.CodexCatalog do
     )
   end
 
-  defp apply_overrides(metadata, %CodexCatalogEntry{} = entry) do
-    metadata
-    |> Map.merge(entry.metadata || %{})
-    |> maybe_put("context_window", entry.context_window_override)
-    |> Map.merge(normalize_reasoning_override(entry.reasoning_metadata))
-  end
-
-  defp normalize_reasoning_override(%{"supported_reasoning_levels" => levels} = override)
-       when is_list(levels) do
-    Map.put(override, "supported_reasoning_levels", normalize_levels(levels))
-  end
-
-  defp normalize_reasoning_override(%{supported_reasoning_levels: levels} = override)
-       when is_list(levels) do
-    override
-    |> Map.delete(:supported_reasoning_levels)
-    |> Map.put("supported_reasoning_levels", normalize_levels(levels))
-  end
-
-  defp normalize_reasoning_override(override) when is_map(override), do: override
-  defp normalize_reasoning_override(_), do: %{}
-
   defp canonical_metadata(model, provider) do
     ModelMetadata.normalize(provider.preset_key, model.metadata || %{})
   end
@@ -367,7 +392,10 @@ defmodule Backplane.LLM.CodexCatalog do
   end
 
   defp routable_source?(source) do
-    with {:ok, provider, raw_model} <- ModelResolver.resolve(:openai, source),
+    with {:ok, provider} <- source_provider(source),
+         true <- eligible_provider?(provider),
+         {:ok, resolved_provider, raw_model} <- ModelResolver.resolve(:openai, source),
+         true <- resolved_provider.id == provider.id,
          %ProviderModel{} = model <-
            ProviderModel.get_by_provider_and_model(provider.id, raw_model),
          %ProviderApi{} = api <- responses_api(provider.id),
@@ -378,37 +406,6 @@ defmodule Backplane.LLM.CodexCatalog do
     else
       _ -> false
     end
-  end
-
-  defp normalize_levels(levels) do
-    Enum.flat_map(levels, fn
-      effort when is_binary(effort) ->
-        if valid_effort?(effort), do: [%{"effort" => effort, "description" => effort}], else: []
-
-      %{"effort" => effort} = level when is_binary(effort) ->
-        if valid_effort?(effort),
-          do: [
-            %{
-              "effort" => effort,
-              "description" => effort_description(level["description"], effort)
-            }
-          ],
-          else: []
-
-      %{effort: effort} = level when is_binary(effort) ->
-        if valid_effort?(effort),
-          do: [
-            %{
-              "effort" => effort,
-              "description" => effort_description(Map.get(level, :description), effort)
-            }
-          ],
-          else: []
-
-      _ ->
-        []
-    end)
-    |> Enum.uniq_by(& &1["effort"])
   end
 
   defp normalize_attrs(attrs) do
@@ -451,16 +448,164 @@ defmodule Backplane.LLM.CodexCatalog do
   defp truthy?(value) when value in [true, "true", "1", 1], do: true
   defp truthy?(_), do: false
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
   defp blank?(value), do: !is_binary(value) or String.trim(value) == ""
   defp valid_effort?(value), do: is_binary(value) and String.trim(value) != ""
 
-  defp effort_description(value, fallback) when is_binary(value) do
-    if String.trim(value) == "", do: fallback, else: value
+  defp codex_api(%Provider{} = provider) do
+    if eligible_provider?(provider) do
+      apis =
+        case provider.apis do
+          %Ecto.Association.NotLoaded{} -> ProviderApi.list_for_provider(provider.id)
+          apis -> apis
+        end
+
+      Enum.find(apis, fn api ->
+        api.enabled and api.api_surface == :openai and api.model_discovery_enabled and
+          :openai_responses in api.native_protocols
+      end)
+    end
   end
 
-  defp effort_description(_value, fallback), do: fallback
+  defp eligible_provider?(%Provider{} = provider) do
+    provider.enabled and is_nil(provider.deleted_at) and
+      provider.preset_key == "openai-codex" and oauth_credential?(provider.credential)
+  end
+
+  defp oauth_credential?(name) do
+    Enum.any?(Credentials.list(), fn credential ->
+      credential.name == name and
+        (credential.metadata || %{})["auth_type"] == "openai_oauth"
+    end)
+  end
+
+  defp source_provider(source) when is_binary(source) do
+    case String.split(source, "/", parts: 2) do
+      [name, slug] when name != "" and slug != "" ->
+        provider =
+          Provider
+          |> where([row], row.name == ^name and is_nil(row.deleted_at))
+          |> Repo.one()
+
+        case provider do
+          %Provider{} = provider -> {:ok, provider}
+          nil -> {:error, :invalid_codex_provider}
+        end
+
+      _ ->
+        {:error, :invalid_codex_provider}
+    end
+  end
+
+  defp source_provider(_), do: {:error, :invalid_codex_provider}
+
+  defp imported_entry?(%CodexCatalogEntry{} = entry) do
+    case (entry.metadata || %{})["codex_raw"] do
+      %{"slug" => slug} when is_binary(slug) -> slug == entry.public_model_id
+      _ -> false
+    end
+  end
+
+  defp persist_snapshot(provider, api, snapshot, selection) do
+    result =
+      Repo.transaction(fn ->
+        current_provider =
+          Provider
+          |> where([row], row.id == ^provider.id)
+          |> lock("FOR UPDATE")
+          |> Repo.one()
+
+        current_api =
+          ProviderApi
+          |> where([row], row.id == ^api.id)
+          |> lock("FOR UPDATE")
+          |> Repo.one()
+
+        unless current_provider && current_api &&
+                 current_provider.name == provider.name &&
+                 current_provider.credential == provider.credential &&
+                 current_api.updated_at == snapshot.api_updated_at &&
+                 current_api.provider_id == provider.id &&
+                 codex_api(current_provider) do
+          Repo.rollback(:discovery_configuration_changed)
+        end
+
+        case selection do
+          :all ->
+            Enum.reduce(snapshot.models, %{created: 0, refreshed: 0, retained: 0}, fn raw,
+                                                                                      counts ->
+              {status, _entry} = upsert_imported_entry(current_provider, raw)
+              Map.update!(counts, status, &(&1 + 1))
+            end)
+
+          {:one, entry_id} ->
+            entry =
+              CodexCatalogEntry
+              |> where([row], row.id == ^entry_id)
+              |> lock("FOR UPDATE")
+              |> Repo.one()
+
+            unless entry, do: Repo.rollback(:invalid_codex_entry)
+
+            raw = Enum.find(snapshot.models, &(&1["slug"] == entry.public_model_id))
+
+            unless (raw && imported_entry?(entry)) and
+                     entry.source_model == "#{current_provider.name}/#{raw["slug"]}" do
+              Repo.rollback(:invalid_codex_entry)
+            end
+
+            {_status, updated} = upsert_imported_entry(current_provider, raw)
+            updated
+        end
+      end)
+
+    case result do
+      {:ok, value} ->
+        ModelResolver.clear_cache()
+        Backplane.PubSubBroadcaster.broadcast_llm_providers(:llm_providers_changed, %{})
+        {:ok, value}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp upsert_imported_entry(provider, %{"slug" => slug} = raw) do
+    source_model = "#{provider.name}/#{slug}"
+
+    attrs = %{
+      public_model_id: slug,
+      source_model: source_model,
+      display_name: raw["display_name"],
+      description: raw["description"],
+      priority: if(is_integer(raw["priority"]), do: raw["priority"], else: @default_priority),
+      context_window_override: nil,
+      reasoning_metadata: %{},
+      metadata: %{"codex_raw" => raw}
+    }
+
+    case Repo.get_by(CodexCatalogEntry, public_model_id: slug) do
+      nil ->
+        case %CodexCatalogEntry{}
+             |> CodexCatalogEntry.changeset(Map.put(attrs, :enabled, true))
+             |> Repo.insert() do
+          {:ok, entry} -> {:created, entry}
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+      %CodexCatalogEntry{source_model: ^source_model} = entry ->
+        if Map.take(entry, Map.keys(attrs)) == attrs do
+          {:retained, entry}
+        else
+          case entry |> CodexCatalogEntry.changeset(attrs) |> Repo.update() do
+            {:ok, updated} -> {:refreshed, updated}
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end
+
+      _entry ->
+        Repo.rollback({:model_conflict, slug})
+    end
+  end
 
   defp changeset_error(attrs, reason) do
     field =

@@ -1,9 +1,9 @@
 # LLM model metadata
 
-`GET /v1/models` keeps the OpenAI-compatible `object: "list"` and `data` array,
-and returns a second, Codex-compatible `models` array. Authentication and the
-`llm::models` scope are unchanged. Listing reads persisted discovery data; it
-does not poll providers during the public request.
+`GET /v1/models` returns the OpenAI-compatible top-level `object: "list"` and
+`data` fields. Authentication and the `llm::models` scope are unchanged.
+Listing reads persisted discovery data; it does not poll providers during the
+public request.
 
 ## OpenAI-compatible listing
 
@@ -49,28 +49,18 @@ Supplemental discovery is best-effort. A missing or failed metadata endpoint
 does not invalidate a successful model listing or erase last-known supplemental
 metadata. Existing generic and provider-scoped Codex discovery remain independent.
 
-## Codex listing
+## Codex catalog
 
-`models` contains typed Codex model descriptors, not copies of OpenAI `data`
-objects. `slug` is the exact Backplane request model ID, including the provider
-prefix or alias. Known context limits, input modalities, and reasoning efforts
-are mapped into Codex's top-level fields.
-
-Only models whose resolved OpenAI API supports native Responses appear in this
-array. Chat-only and Anthropic-only models remain visible in `data`, but are not
-advertised as usable by Codex. The `openai-codex` preset still requires its
-provider-scoped endpoint and is not advertised as globally invokable.
-
-Unknown context/output limits are omitted. Unknown reasoning efforts use an
-empty array with no default effort. Codex compatibility defaults use text-only
-input, no verbosity or reasoning-summary support, unified execution, and a
-10,000-byte tool-output truncation policy. These are conservative client
-settings, not claims about undocumented model capabilities. Explicit valid
-upstream Codex settings override the corresponding defaults.
-Codex requires model instructions in its catalog; when the upstream does not
-advertise them, Backplane supplies a short model-independent coding-assistant
-instruction rather than guessing a model-specific prompt. Advertised literal
-instructions and personality variables are retained.
+Codex descriptors are served separately by `GET /v1/codex/models`; they are not
+part of the OpenAI-compatible `/v1/models` response. In the admin catalog,
+select an enabled OpenAI Codex provider to import its complete upstream model
+list. Each entry retains the exact upstream descriptor, including unknown fields,
+and uses the upstream slug as its public ID. Refresh Models updates every saved
+model from that provider's current snapshot while preserving enabled states; the
+admin Preview JSON dialog shows the effective response. This endpoint publishes enabled
+entries only while their Codex Responses routes remain available. See
+[OpenAI Codex Responses proxy](llm-proxy-openai-codex.md) for its catalog and
+provider-scoped route details.
 
 ## Local serving presets
 

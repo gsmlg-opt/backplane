@@ -86,9 +86,17 @@ For example, a current Codex catalog may contain `gpt-5.6-sol`,
 rather than synthesizing these names.
 
 The global `/v1/models` endpoint remains OpenAI-compatible and is independent
-from direct Codex routing. It now also provides normalized `data[].metadata`
-and Codex model descriptors under `models` for globally routable native Responses
-models. The `openai-codex` preset remains provider-scoped; see
+from direct Codex routing. Its top-level response contains `object: "list"` and
+`data`; each model may include normalized `data[].metadata`. The separate
+`/v1/codex/models` endpoint returns exact descriptors imported from a selected
+OpenAI Codex provider. Imports include every model in the provider's current
+`/models` response. The admin catalog offers one Refresh Models action per provider
+with saved models; it updates that provider's full snapshot while preserving each
+model's enabled state. Preview JSON opens the effective response in a dialog. Disabled entries
+and entries whose Responses route is unavailable are omitted. Saved entries
+whose model disappears upstream remain stored for review. The direct Codex
+endpoints remain provider-scoped; imported slugs also route through generic
+`POST /v1/responses`. See
 [LLM model metadata](llm-model-metadata.md) for the global listing contract.
 
 ## Chat Completions
