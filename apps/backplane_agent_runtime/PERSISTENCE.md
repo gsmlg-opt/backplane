@@ -116,12 +116,31 @@ registry settlement. A failed acknowledgement retains the backend obligation and
 can cause admission backpressure; it does not undo already confirmed OS cleanup.
 Missing or evicted receipts never prove successful release and must not cause
 blind cleanup retries. Hosts must reconcile unresolved identities explicitly.
+Owner-wide cancellation fences existing never-launched reservations in the
+backend before acknowledgement; a consumed or evicted receipt cannot make an
+old launch identity valid again. A verified LocalCommand reconciliation updates
+current cleanup status in retained output for the exact session, owner, and
+incarnation without shortening the output cache lifetime or changing the
+command's execution outcome. The earlier `cleanup_error` remains historical
+diagnostic evidence. A still-active ResourceRegistry session can release through
+its existing callback after host backend reconciliation; an already failed or
+uncertain registry entry has no public retry/reset and remains unresolved.
 
 Conversation timer generations and catalog callback tokens are ephemeral fences,
 not persistent execution contexts. A failed nested producer loses staging before
 settlement acknowledgement, while a successful producer becomes eligible only
 after that acknowledgement. A lost Store reply still requires loading and
 reconciling the store; neither staging nor receipt eviction permits replay.
+An already-dispatched mutating direct or nested tool with an untrustworthy
+outcome retains its committed active invocation and execution intent under the
+existing `unknown_outcome` boundary. Outer error handling, Task cleanup and
+late results do not consume that evidence. This adds no persistence fields or
+Store callbacks; the admitted catalog used for classification is process-local.
+After acknowledgement loss, the host must inspect the stored run before any
+continuation or replacement.
+The current R22 implementation still fails command lifecycle regressions for
+trusted confirmed non-start refusals; see the follow-up validation record. Do
+not treat the new classification as a fully validated host upgrade boundary.
 
 A replacement child run uses a fresh storage aggregate and committed history;
 it never automatically replays a restored nonterminal run or a completed tool

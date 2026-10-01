@@ -94,6 +94,22 @@ Denox engine behavior.
 If a nested worker dies during an acknowledged human wait, the runtime stops
 with uncertain settlement and clears the interaction rather than continuing
 with suspended deadlines.
+An already-dispatched, potentially mutating direct or nested tool also remains
+unresolved when its worker dies, times out, or returns an uncertain result. The
+runtime classifies the normalized outcome against the pinned admitted tool
+descriptor, then stops through the existing `unknown_outcome` settlement path
+without completing that invocation. Its active-tool and execution-intent
+evidence remain inspectable. An outer tool catching the error or attempting to
+return success, OS cleanup, cancellation, or a late Task result cannot consume
+or replay it. Explicit `unknown_outcome` stays uncertain even for a read-only
+descriptor; an ordinary confirmed read-only error can be handled. Error text,
+model arguments, and `retry_safe` do not prove that a mutation did not run.
+This R22 repair is not yet a validated host contract: the current full Linux
+runtime suite fails three command lifecycle tests. Two trusted confirmed
+non-start refusals are incorrectly treated as uncertain, and an older ambiguous
+launch test still expects provider continuation. See the follow-up section in
+[runtime-repairs-validation.md](../../docs/agent-runtime/codex-tools/runtime-repairs-validation.md)
+before upgrading.
 
 For descriptors with `requires_approval: true`, the runtime asks for an exact
 operation approval before invocation; only `:approved` allows dispatch. It binds
@@ -287,6 +303,13 @@ Command adapters may implement `reserve/2` and `acknowledge_release/2`. Codex
 registers the owner-bound session first, then reserves it with the backend before
 launch. Native reservation binds the owner and incarnation, fences cancellation
 before handle binding, and pins evidence until registry release is acknowledged.
+Owner-wide `Command.cancel/2` also confirms and fences that owner's existing
+never-launched reservations in the LocalCommand backend before replying. A
+delayed launch with an old session identity is rejected while the owner PID is
+still alive. This is distinct from per-invocation `cancel_confirmed/3`; another
+owner's reservation remains usable, including when a newer cancelled receipt
+has been evicted.
+
 Legacy adapters keep their existing `start/3` result contract; a generic error
 or missing record remains uncertain unless trusted backend evidence proves
 non-start. Only an explicit validated rejection carrying
@@ -312,6 +335,19 @@ when newer receipts are retired. The ResourceRegistry already generates such
 IDs. Direct hosts using numeric sessions must use fresh monotonic IDs and
 acknowledge confirmed releases; calls without numeric sessions keep their
 existing ownership contract and are subject to retained-resource backpressure.
+
+After explicit `Command.cancel_confirmed/3` reconciliation verifies process
+group release, LocalCommand's current `cleanup_status` is confirmed in both
+session and owner queries and in any retained output record for the exact
+session, owner, and incarnation. An in-progress retry reports pending before
+older uncertain output metadata. The output cache retains its normal lifetime;
+the command's original status, exit and termination information do not become
+successful execution. A retained `cleanup_error` records the earlier failure,
+not the current cleanup state. A host can then release a still-active
+ResourceRegistry session through its existing cleanup callback and receipt
+acknowledgement. A registry entry already marked failed or uncertain has no
+public retry/reset operation: backend confirmation does not erase that registry
+evidence, and the host must reconcile it separately before replacement.
 
 ## Continuing a Codex child agent
 

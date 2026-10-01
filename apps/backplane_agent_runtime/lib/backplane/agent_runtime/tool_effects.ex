@@ -13,6 +13,13 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @default_output_limit 1_048_576
 
+  @doc "Classifies an observed backend result using its admitted descriptor safety."
+  @spec settlement(term(), map()) :: :settled | :uncertain
+  def settlement({:ok, result}, _safety) when is_map(result), do: :settled
+  def settlement({:error, %Error{class: :unknown_outcome}}, _safety), do: :uncertain
+  def settlement({:error, %Error{}}, %{read_only: true}), do: :settled
+  def settlement(_outcome, _safety), do: :uncertain
+
   @spec execute(adapter(), map(), map()) :: {:ok, map()} | {:error, Error.t()}
   def execute(adapter, invocation, context)
       when is_atom(adapter) and is_map(invocation) and is_map(context) do

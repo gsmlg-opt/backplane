@@ -36,7 +36,7 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.ResourceRegistry",
       "required_backends": ["owner PID and host-selected resource adapters"],
-      "tests": ["codex_resource_registry_test.exs", "codex_tools_test.exs", "codex_ct08_test.exs", "codex_command_lifecycle_test.exs", "codex_command_receipts_test.exs", "codex_code_mode_os_cleanup_test.exs", "codex_session_incarnation_test.exs"],
+      "tests": ["codex_resource_registry_test.exs", "codex_tools_test.exs", "codex_ct08_test.exs", "codex_command_lifecycle_test.exs", "codex_command_receipts_test.exs", "tools/local_command_owner_cancel_test.exs", "tools/local_command_reconciliation_test.exs", "codex_code_mode_os_cleanup_test.exs", "codex_session_incarnation_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
       "deviation": "Real Linux LocalCommand processes and same-group descendants are checked through Conversation completion, cancellation during launch/polling, returned-session cancellation, deadlines, provider/store failure, lost acknowledgement and owner death. Registry callback fault tests retain failed/uncertain evidence. Direct Codex.call command-session tests reject stale trusted incarnations. Registries remain process-local; escaped sessions and restart durability are not covered."
     },
@@ -54,9 +54,9 @@
       "parity": "adapted",
       "handler": "Backplane.AgentRuntime.Codex.Tools",
       "required_backends": ["host command adapter and ResourceRegistry"],
-      "tests": ["codex_tools_test.exs", "codex_contract_test.exs", "codex_command_budget_test.exs", "codex_command_lifecycle_test.exs", "codex_command_receipts_test.exs", "tools/local_command_cleanup_test.exs", "codex_session_incarnation_test.exs"],
+      "tests": ["codex_tools_test.exs", "codex_contract_test.exs", "codex_command_budget_test.exs", "codex_command_lifecycle_test.exs", "codex_command_receipts_test.exs", "tools/local_command_cleanup_test.exs", "tools/local_command_owner_cancel_test.exs", "tools/local_command_reconciliation_test.exs", "codex_session_incarnation_test.exs"],
       "test_base": "apps/backplane_agent_runtime/test/backplane/agent_runtime/",
-      "deviation": "Direct Codex.call -> Command -> real Linux LocalCommand tests separate response truncation from host hard limits and check repeated stdin cursors and completion markers. Lifecycle tests additionally use admitted Conversation dispatch. Cleanup-evidence regression coverage preserves uncertain session ownership after completion records expire; the prior macOS run skipped the native process suite by its Linux/coreutils gate. The 2026-10-01 Linux milestone reproduces and verifies R18 pre-launch refusal, ambiguous launch and cancellation fencing, and R21 bounded receipts, pinned cleanup evidence and backpressure through real LocalCommand and Conversation. Output token budgeting is a four-bytes-per-token estimate, PTY remains rejected, and process-group proof is Linux-only."
+      "deviation": "Direct Codex.call -> Command -> real Linux LocalCommand tests separate response truncation from host hard limits and check repeated stdin cursors and completion markers. Lifecycle tests additionally use admitted Conversation dispatch. Cleanup-evidence regression coverage preserves uncertain session ownership after completion records expire; the prior macOS run skipped the native process suite by its Linux/coreutils gate. The 2026-10-01 Linux milestone reproduces and verifies R18 pre-launch refusal, ambiguous launch and cancellation fencing, and R21 bounded receipts, pinned cleanup evidence and backpressure through real LocalCommand and Conversation. Later R23/R24 focused Linux regressions verify owner-wide reservation fencing and authoritative cleanup confirmation, but the combined R22-R24 full runtime currently fails three command lifecycle tests. Output token budgeting is a four-bytes-per-token estimate, PTY remains rejected, and process-group proof is Linux-only."
     },
     {
       "id": "plan",
@@ -343,6 +343,35 @@
         ]
       },
       {
+        "id": "R22",
+        "status": "unresolved-full-suite-regression",
+        "reproduction": "On baseline 3197296, nested mutating worker failure or timeout could be caught by an outer success and consume the execution intent. The current normalized-outcome repair preserves uncertainty, but the full native runtime has three command lifecycle failures, including two trusted confirmed non-start refusals misclassified as uncertain.",
+        "tests": [
+          "conversation_uncertain_effects_test.exs",
+          "conversation_runtime_repairs_test.exs",
+          "codex_command_lifecycle_test.exs"
+        ]
+      },
+      {
+        "id": "R23",
+        "status": "focused-native-verified-overall-pending",
+        "reproduction": "Public owner cancellation left an existing reserved identity launchable with its owner PID alive. Focused native tests verify backend owner-wide fencing through receipt eviction and preserve unrelated reservations.",
+        "tests": [
+          "tools/local_command_owner_cancel_test.exs",
+          "codex_command_receipts_test.exs"
+        ]
+      },
+      {
+        "id": "R24",
+        "status": "focused-native-verified-overall-pending",
+        "reproduction": "Verified cleanup retry left stale uncertain completed metadata ahead of pending/confirmed evidence. Focused native tests verify exact-session synchronization, original output/outcome preservation, and the remaining failed ResourceRegistry limitation.",
+        "tests": [
+          "tools/local_command_reconciliation_test.exs",
+          "tools/local_command_cleanup_test.exs",
+          "codex_resource_registry_test.exs"
+        ]
+      },
+      {
         "id": "R19-engine-deferred",
         "status": "deferred",
         "reproduction": "Static review risk; shared-runtime repair is not engine timer fencing.",
@@ -415,6 +444,36 @@
         "id": "inventory",
         "result": "passed: 16 families, 66 exact-source entries; source pin unchanged",
         "environment": "exact pinned Codex checkout; Ruby 3.4.9 from temporary Nix shell"
+      },
+      {
+        "id": "r22-r24-r22-red",
+        "result": "4 tests, 4 expected failures, 7 excluded; exit 2; seed 870741",
+        "environment": "macOS isolated archive of baseline 3197296 with new regression test only",
+        "note": "A separate current focused R22 selection passed 132 tests, 0 failures, seed 812590; the later full runtime found regressions."
+      },
+      {
+        "id": "r22-r24-r23-native",
+        "result": "red 1 test, 1 expected failure, exit 2; green focused 44 tests, 0 failures, exit 0; seed 386553",
+        "environment": "isolated Raven Linux; real LocalCommand and process-group cleanup",
+        "note": "Parent independently reran the new regression: 2 tests, 0 failures, seed 12373."
+      },
+      {
+        "id": "r22-r24-r24-native",
+        "result": "red 2 tests, 2 expected failures, exit 2; green focused 55 tests, 0 failures, exit 0; seed 82733",
+        "environment": "isolated Raven Linux; real LocalCommand reconciler on retry",
+        "note": "Parent independently reran the new regression: 2 tests, 0 failures, seed 93432."
+      },
+      {
+        "id": "r22-r24-runtime-current",
+        "result": "failed: 510 tests, 3 command lifecycle failures; exit 2; seed 194011; no skips",
+        "environment": "isolated Raven Linux; Elixir 1.18.5/OTP 28; Deno 2.8.3",
+        "note": "Two confirmed non-start refusals are current R22 regressions; one older ambiguous-launch continuation expectation conflicts with the required uncertainty boundary. Current package verifier has not run."
+      },
+      {
+        "id": "r22-r24-inventory-current",
+        "result": "passed: 16 families, 66 exact-source entries; exit 0",
+        "environment": "local pinned Codex source at /tmp/backplane-r22-r24-codex-source; /opt/homebrew/bin/ruby",
+        "note": "Final follow-up inventory --check passed; source pin, source lock and packaged upstream inventory remained byte-identical. Historical inventory validation run above is unchanged."
       }
     ]
   }

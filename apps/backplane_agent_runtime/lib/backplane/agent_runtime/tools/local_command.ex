@@ -197,6 +197,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   @impl GenServer
   def handle_call({:cancel_owner, owner_run_id}, _from, state) do
+    state =
+      Enum.reduce(state.session_obligations, state, fn
+        {session_id, %{owner_run_id: ^owner_run_id, status: :reserved}}, current ->
+          session_status(current, %{session_id: session_id}, :confirmed)
+
+        _, current ->
+          current
+      end)
+
     pending_for_owner =
       Enum.filter(state.pending, fn {_port, launch} ->
         launch.request.owner_run_id == owner_run_id
@@ -283,6 +292,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         Enum.any?(state.active, fn {_port, job} -> job.session_id == session_id end) ->
           :pending
 
+        Enum.any?(state.cleanup_evidence, fn {_key, evidence} ->
+          evidence.session_id == session_id and evidence.cleanup_status == :pending
+        end) ->
+          :pending
+
         Enum.any?(state.completed, fn {_port, job} ->
           job.session_id == session_id and job.cleanup_status == :uncertain
         end) ->
@@ -292,11 +306,6 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           evidence.session_id == session_id and evidence.cleanup_status == :uncertain
         end) ->
           :uncertain
-
-        Enum.any?(state.cleanup_evidence, fn {_key, evidence} ->
-          evidence.session_id == session_id and evidence.cleanup_status == :pending
-        end) ->
-          :pending
 
         Map.has_key?(state.cancelled_sessions, session_id) ->
           pid = Map.fetch!(state.cancelled_sessions, session_id)
@@ -988,9 +997,20 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
         case cleanup_result do
           :ok ->
+            completed =
+              Map.new(state.completed, fn {port, job} ->
+                if job.session_id == session_id and job.owner_run_id == evidence.owner_run_id and
+                     job.owner_incarnation == evidence.owner_incarnation do
+                  {port, %{job | cleanup_status: :confirmed}}
+                else
+                  {port, job}
+                end
+              end)
+
             %{
               state
               | cleanup_evidence: remaining,
+                completed: completed,
                 owned_groups: drop_owned_group(state.owned_groups, session_id),
                 workspaces: MapSet.delete(state.workspaces, evidence.workspace)
             }

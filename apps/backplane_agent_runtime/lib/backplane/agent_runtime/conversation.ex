@@ -8,6 +8,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     InputSchema,
     Policy,
     ToolCatalog,
+    ToolEffects,
     ToolRegistry
   }
 
@@ -335,7 +336,8 @@ defmodule Backplane.AgentRuntime.Conversation do
                 live_deadline: System.monotonic_time(:millisecond) + timeout,
                 from: from,
                 token: nested_token,
-                invocation: invocation
+                invocation: invocation,
+                catalog: catalog
               }
           }
         end
@@ -404,7 +406,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         clear_task(s.nested)
 
         error =
-          Error.new(:unknown_outcome, "nested worker exited before settlement",
+          Error.new(:execution_failure, "nested worker exited before settlement",
             cause: inspect(reason)
           )
 
@@ -633,14 +635,19 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp process(s, {:effect_result, {:tool, invocation, rest, catalog}, result}) do
     s = discard_failed_catalog(s, invocation, result)
-    result = tool_result(result)
-    input = Map.put(invocation, :result, result)
 
-    commit(s, {:tool_completed, now(), input}, %{}, [], fn s, _ ->
-      s
-      |> settle_catalog_producer(invocation, result)
-      |> append_tool_result(invocation, result, rest, catalog)
-    end)
+    if tool_settlement(catalog, invocation, result) == :uncertain do
+      stop(%{s | last_error: uncertain_error(result)}, :uncertain)
+    else
+      normalized = tool_result(result)
+      input = Map.put(invocation, :result, normalized)
+
+      commit(s, {:tool_completed, now(), input}, %{}, [], fn s, _ ->
+        s
+        |> settle_catalog_producer(invocation, normalized)
+        |> append_tool_result(invocation, normalized, rest, catalog)
+      end)
+    end
   end
 
   defp process(
@@ -1340,8 +1347,18 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp complete_nested(%{nested: nested} = s, normalized) do
-    completion = Map.put(nested.invocation, :result, tool_result(normalized))
     s = discard_failed_catalog(s, nested.invocation, normalized)
+
+    if tool_settlement(nested.catalog, nested.invocation, normalized) == :uncertain do
+      GenServer.reply(nested.from, normalized)
+      stop(%{s | nested: nil, last_error: uncertain_error(normalized)}, :uncertain)
+    else
+      settle_nested_result(s, nested, normalized)
+    end
+  end
+
+  defp settle_nested_result(s, nested, normalized) do
+    completion = Map.put(nested.invocation, :result, tool_result(normalized))
 
     s =
       case s.interaction do
@@ -1364,6 +1381,22 @@ defmodule Backplane.AgentRuntime.Conversation do
     pending = %{nested | task: nil, timer: nil, timer_generation: nil, live_deadline: nil}
     drive(commit(%{s | nested: pending}, {:tool_completed, now(), completion}, %{}, [], next))
   end
+
+  defp tool_settlement(catalog, invocation, normalized) do
+    case ToolRegistry.lookup(catalog.registry, invocation.tool_name) do
+      {:ok, %{tool_revision: revision, safety: safety}}
+      when revision == invocation.tool_revision ->
+        ToolEffects.settlement(normalized, safety)
+
+      _ ->
+        :uncertain
+    end
+  end
+
+  defp uncertain_error({:error, %Error{} = error}), do: error
+
+  defp uncertain_error(_),
+    do: Error.new(:unknown_outcome, "tool result lacks trustworthy settlement evidence")
 
   defp pause_deadlines(s) do
     run_remaining = max(0, s.run.deadline - now())

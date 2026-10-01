@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- R22: retain already-dispatched mutating tool invocations when a nested worker
+  dies, times out, or returns an uncertain result. Outer success cannot settle
+  the effect; confirmed read-only failures remain recoverable.
+- R23: owner-wide command cancellation fences existing never-launched
+  reservations before acknowledging cancellation, including after receipt
+  consumption and eviction.
+- R24: verified command cleanup updates retained output cleanup status for the
+  exact session, owner, and incarnation, while preserving the original execution
+  outcome, output, and historical cleanup error.
+- R22 remains under repair: the current full Linux runtime run has three command
+  lifecycle failures, including two confirmed non-start refusals now classified
+  as uncertain. See the follow-up validation record before upgrading.
 - R18/R21: distinguish trusted pre-launch refusal from ambiguous command launch;
   retain cancellation fencing and actionable conflicts, and bound recent
   confirmed-release receipts separately from tracked cleanup obligations.

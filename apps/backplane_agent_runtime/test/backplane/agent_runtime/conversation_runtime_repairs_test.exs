@@ -163,7 +163,7 @@ defmodule Backplane.AgentRuntime.ConversationRuntimeRepairsTest do
     end
   end
 
-  for failure <- [:error, :error_marked, :timeout, :crash, :cancelled, :uncertain] do
+  for failure <- [:error, :error_marked, :timeout, :crash, :cancelled] do
     test "failed nested producer #{failure} releases staging and callbacks before settlement acknowledgement" do
       {pid, table, gates} = start()
       {outer, producer} = begin_tool(pid, true)
@@ -189,9 +189,6 @@ defmodule Backplane.AgentRuntime.ConversationRuntimeRepairsTest do
 
         :cancelled ->
           send(producer, {:result, {:error, Error.new(:cancelled, "producer cancelled")}})
-
-        :uncertain ->
-          send(producer, {:result, {:error, Error.new(:unknown_outcome, "producer uncertain")}})
       end
 
       assert_receive {:store_barrier, :nested_settlement, settlement}, 1_000
@@ -250,6 +247,28 @@ defmodule Backplane.AgentRuntime.ConversationRuntimeRepairsTest do
       assert {:ok, %{run: %{active_tools: active}}} = EphemeralStore.load(table, "repairs")
       assert active == %{}
     end
+  end
+
+  test "explicit uncertain nested producer revokes staging before uncertain run settlement" do
+    {pid, table, _gates} = start()
+    {_outer, producer} = begin_tool(pid, true)
+    a = update("a-publication", "only-a")
+    send(producer, {:stage, a})
+    assert_receive {:stager, stale}
+    assert_receive {:staged, {:ok, %{status: :staged}}}
+    send(producer, {:result, {:error, Error.new(:unknown_outcome, "producer uncertain")}})
+
+    assert_receive {:agent_runtime, "repairs", %{type: :run_cancelled, state: :unknown_outcome}},
+                   1_000
+
+    assert Conversation.status(pid).pending_catalog_publication == nil
+    assert {:error, %Error{class: :resource_conflict}} = stale.(a)
+
+    assert {:ok, %{run: %{state: :unknown_outcome, active_tools: active}}} =
+             EphemeralStore.load(table, "repairs")
+
+    assert Enum.any?(active, fn {_id, invocation} -> invocation.tool_name == "a" end)
+    refute_receive {:provider, _, _}, 20
   end
 
   test "lost nested settlement acknowledgement cannot publish successful staging or retain callbacks" do

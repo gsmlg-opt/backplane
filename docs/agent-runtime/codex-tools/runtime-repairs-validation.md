@@ -162,3 +162,144 @@ PTY parity, escaped-session cleanup, full Codex compatibility or Denox
 conformance is claimed. Nested worker death during acknowledged human waiting
 stops conservatively with uncertain settlement. The deferred engine checklist
 remains open even though the preserved native test suite passed.
+
+## R22–R24 follow-up on baseline `3197296da0a2e63884ea90eacd690d2786c49cd9`
+
+This later follow-up is separate from the R18–R21 milestone and
+its historical 495-test/package artifact. The Codex source remains pinned to
+`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. No engine backend or Denox
+dependency was changed. Source paths below are relative to
+`apps/backplane_agent_runtime/lib/backplane/agent_runtime/`; tests are under its
+`test/backplane/agent_runtime/` directory.
+
+| Finding | Current status | Reproduction, repair, and remaining limit | Changed files and regression |
+| --- | --- | --- | --- |
+| R22 | Implemented, **unresolved full-suite regression** | The baseline let a crashed/timed-out nested mutation's error be caught and followed by outer success, consuming its execution intent. Current classification uses the normalized outcome and pinned admitted descriptor; an uncertain direct or nested mutation stops through existing `unknown_outcome` while retaining active invocation and intent. Confirmed read-only errors remain recoverable; explicit unknown results remain unknown. The current full Linux runtime run fails three command lifecycle tests: two trusted confirmed non-start refusals now stop as uncertain, while an older ambiguous-launch test expects continuation contrary to the new uncertainty boundary. R22 cannot be called verified until these contracts are reconciled and the full suite passes. | `conversation.ex`, `tool_effects.ex`; `conversation_uncertain_effects_test.exs`, `conversation_runtime_repairs_test.exs` |
+| R23 | Implemented and focused native verified; overall milestone pending | Public owner-wide `Command.cancel/2` omitted `:reserved` obligations, so an old launch started while its owner PID lived. The backend now confirms and fences matching reserved identities in the same GenServer cancellation transaction. Mixed reserved/pending/active cancellation, unrelated older reservation survival, repeat cancellation, and late launch after receipt consumption/eviction pass on Linux. | `tools/local_command.ex`; `tools/local_command_owner_cancel_test.exs` |
+| R24 | Implemented and focused native verified; overall milestone pending | A verified cleanup retry left an unexpired completed job's `cleanup_status: :uncertain` authoritative, and that record also masked in-progress retry evidence. Pending retry evidence now precedes stale completed metadata; verified settlement confirms the retained job only for the exact session, owner, and incarnation. Its output, TTL, original execution status/exit/termination and historical `cleanup_error` remain. A still-active ResourceRegistry session releases through its existing callback after host backend reconciliation. An already failed registry entry remains failed: there is no public retry/reset, and backend confirmation cannot erase it. | `tools/local_command.ex`; `tools/local_command_reconciliation_test.exs` |
+
+### Follow-up reproduction and focused checks
+
+R22's isolated baseline archive was
+`/var/folders/sc/__3sj3tx5h9d4wxx953s0fgh0000gn/T/backplane-r22-astra-baseline-82jd8ri8`
+at `3197296da0a2e63884ea90eacd690d2786c49cd9`, with only the new
+regression test copied in. From its runtime package directory, with
+`MIX_ENV=test`, `MIX_DEPS_PATH=/Users/gao/Workspace/gsmlg-opt/backplane/deps`,
+and `MIX_BUILD_PATH=/tmp/backplane-runtime-r22-astra-baseline-build`:
+
+```sh
+mix test test/backplane/agent_runtime/conversation_uncertain_effects_test.exs:99 test/backplane/agent_runtime/conversation_uncertain_effects_test.exs:116 test/backplane/agent_runtime/conversation_uncertain_effects_test.exs:126 test/backplane/agent_runtime/conversation_uncertain_effects_test.exs:134
+```
+
+The baseline exited 2: **4 tests, 4 expected failures, 7 excluded**, seed
+870741. An earlier Sol reproduction had 6 tests and 4 failures. On the current
+macOS standalone runtime, from
+`/Users/gao/Workspace/gsmlg-opt/backplane/apps/backplane_agent_runtime` with
+`MIX_ENV=test`, `MIX_DEPS_PATH=/Users/gao/Workspace/gsmlg-opt/backplane/deps`,
+and `MIX_BUILD_PATH=/tmp/backplane-runtime-r22-r24-build`, the following
+focused selection exited 0: **132 tests, 0 failures**, seed 812590.
+
+```sh
+mix test test/backplane/agent_runtime/conversation_uncertain_effects_test.exs test/backplane/agent_runtime/conversation_runtime_repairs_test.exs test/backplane/agent_runtime/conversation_test.exs test/backplane/agent_runtime/conversation_catalog_test.exs test/backplane/agent_runtime/kernel_lifecycle_test.exs test/backplane/agent_runtime/execution_correctness_test.exs test/backplane/agent_runtime/recovery_test.exs test/backplane/agent_runtime/codex_multi_agent_profile_test.exs test/backplane/agent_runtime/codex_multi_agent_close_test.exs
+```
+
+An earlier two-file R22 check passed **35 tests, 0 failures**, seed 917864.
+Scoped formatting, forced warnings-as-errors compilation of 69 files, and
+`git diff --check` passed on macOS Elixir 1.19.5 / OTP 28. The regression uses
+a real Conversation, production nested dispatcher, a barrier-capable Store,
+and filesystem mutation. Its supervised outer helper records an attempted
+success after the runtime stops the outer Task; this does not prove the outer
+Task completed. For the timeout case, the harness cancels only the older outer
+timer and leaves the actual nested timer to expire. Late-result checks use
+captured Task references. No production durable adapter is exercised.
+
+R23 and R24 native checks ran in the isolated Raven Linux copy
+`/tmp/backplane-r22-r24.qsW1Lh/apps/backplane_agent_runtime`, with
+`COREUTILS=/run/current-system/sw/bin/coreutils`,
+`PATH=/tmp/backplane-r22-r24.qsW1Lh/tools:$PATH` (Deno 2.8.3),
+`MIX_ENV=test`, and `MIX_BUILD_PATH=/tmp/backplane-r22-r24.qsW1Lh/build`.
+The source/test files for each repair were overlaid into that copy; the real
+Raven checkout was not modified.
+
+```sh
+mix test test/backplane/agent_runtime/tools/local_command_owner_cancel_test.exs --seed 386553
+```
+
+R23 before repair exited 2: **1 test, 1 expected failure**. After public
+reserve/cancel, delayed start returned a running job. With the repair, this
+test passed **2 tests, 0 failures**. The broader native selection below exited
+0: **44 tests, 0 failures**, seed 386553.
+
+```sh
+mix test test/backplane/agent_runtime/tools/local_command_owner_cancel_test.exs test/backplane/agent_runtime/tools/local_command_test.exs test/backplane/agent_runtime/tools/local_command_cleanup_test.exs test/backplane/agent_runtime/codex_command_receipts_test.exs test/backplane/agent_runtime/codex_command_lifecycle_test.exs --seed 386553
+```
+
+```sh
+mix test test/backplane/agent_runtime/tools/local_command_reconciliation_test.exs --seed 82733
+```
+
+R24 before repair exited 2: **2 tests, 2 expected failures**;
+`Command.cancel_confirmed/3` reported stale `unknown_outcome` after explicit
+retry. The first implementation still returned early while retry evidence was
+pending, so the status query was corrected before final validation. The focused
+new test then passed **2 tests, 0 failures**. The broader native selection
+below exited 0: **55 tests, 0 failures**, seed 82733.
+
+```sh
+mix test test/backplane/agent_runtime/tools/local_command_reconciliation_test.exs test/backplane/agent_runtime/tools/local_command_cleanup_test.exs test/backplane/agent_runtime/tools/local_command_owner_cancel_test.exs test/backplane/agent_runtime/tools/local_command_test.exs test/backplane/agent_runtime/codex_command_receipts_test.exs test/backplane/agent_runtime/codex_command_lifecycle_test.exs test/backplane/agent_runtime/codex_resource_registry_test.exs --seed 82733
+```
+
+R24's fixture injects only the first failure and a worker barrier; its retry
+calls the captured default Linux process-group reconciler and verifies actual
+process absence. It does not set backend success state directly. Stale prior
+tokens/references, repeated confirmation, retained output, an unresolved
+sibling, and an already failed registry entry are covered. Both native focused
+selections passed scoped `mix format --check-formatted`,
+`mix compile --warnings-as-errors`, and `git diff --check` after their edits.
+The parent independently reran each new native test: R23 **2 tests, 0 failures**,
+seed 12373; R24 **2 tests, 0 failures**, seed 93432.
+
+### Current full-runtime gate and delivery limits
+
+From the isolated Linux runtime directory, with the native environment above:
+
+```sh
+env MIX_ENV=test MIX_BUILD_PATH=/tmp/backplane-r22-r24.qsW1Lh/build COREUTILS=/run/current-system/sw/bin/coreutils PATH=/tmp/backplane-r22-r24.qsW1Lh/tools:$PATH mix test
+```
+
+This current full-runtime run **failed**, exit 2: **510 tests, 3 failures**,
+seed 194011, with Deno 2.8.3 available and no test skips. The complete log is
+`/tmp/backplane-r22-r24-runtime-final.log` locally and `runtime-final.log` in
+the isolated Linux copy. All failures are in
+`codex_command_lifecycle_test.exs`: line 101 expects a confirmed workspace
+non-start refusal to continue; line 182 expects the same for session-capacity
+non-start refusal; line 164 is an older ambiguous-launch expectation of
+provider continuation. The first two are current R22 regressions; the third
+requires aligning the test's expected continuation with the required uncertain
+effect behavior without weakening the recorded execution evidence. The
+passing R22 focused run and the R23/R24 native runs do not close this gate.
+
+Current whole-runtime `mix format --check-formatted` and
+`mix compile --force --warnings-as-errors` passed on Linux Elixir 1.18.5 /
+OTP 28; the latter compiled 69 files. The parent generated the local source
+manifest with
+`env CODEX_SOURCE_ROOT=/tmp/backplane-r22-r24-codex-source /opt/homebrew/bin/ruby scripts/codex_tools_inventory.rb --generate`
+(exit 0). The pin/source lock and packaged upstream inventory remain
+byte-identical. The final follow-up inventory check also passed, exit 0:
+**16 families, 66 exact-source entries**.
+
+```sh
+env CODEX_SOURCE_ROOT=/tmp/backplane-r22-r24-codex-source /opt/homebrew/bin/ruby scripts/codex_tools_inventory.rb --check
+```
+
+The current R22–R24 package verifier has not run. Do not reuse the earlier
+495-test total or package SHA as evidence for this follow-up.
+No complete R22–R24 milestone, Codex parity, engine conformance, or production
+host migration is claimed.
+
+Before a host upgrade, settle/reconcile active runs and restart affected
+Conversation, ResourceRegistry, MultiAgent, and LocalCommand supervision
+trees; these process-local states have no hot migration. No new Store fields,
+command adapter callbacks, or recovery framework were added. Existing optional
+adapter callbacks remain optional. An already failed ResourceRegistry entry
+cannot be reset through a public API, even after verified backend cleanup.
