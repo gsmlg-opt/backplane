@@ -581,8 +581,16 @@ A later cleanup may move authorized captures into `proxy_payloads` and remove or
 For streaming requests:
 
 - `duration_ms` measures the full proxy lifecycle.
-- `ttft_ms` is measured at the first upstream response chunk.
-- `stream_duration_ms` measures first chunk to final chunk/close.
+- `ttft_ms` measures proxy request start to the arrival of the first complete SSE
+  event containing nonempty generated text, reasoning, or tool arguments. Heartbeats,
+  role-only events, empty deltas, lifecycle-only events, and usage events do not trigger it.
+- `stream_duration_ms` measures first generated content to stream finalization;
+  timestamps are captured before asynchronous observation processing.
+- Records with this timing interpretation carry `metadata.timing.basis = "first_content"`.
+  The admin displays TTFT and output tokens per second (`output_tokens * 1000 /
+  stream_duration_ms`) only for these streaming records. Historical records,
+  unobserved content, non-streaming responses, missing counts, and nonpositive
+  generation intervals display unavailable metrics rather than estimates.
 - `stream_chunks` counts forwarded chunks.
 - Token usage is extracted from provider-supported final events.
 - Client disconnect produces `outcome = cancelled` or `client_disconnect`, not a successful completion.

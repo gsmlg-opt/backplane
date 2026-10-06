@@ -1,6 +1,8 @@
 defmodule Backplane.LLM.UsageAccumulator do
   @moduledoc "Accumulates token usage and streaming metrics from SSE chunks."
 
+  alias Backplane.AiProtocol.SSE
+
   @type snapshot :: %{
           input_tokens: integer() | nil,
           output_tokens: integer() | nil,
@@ -24,9 +26,17 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   @max_response_body_bytes 8_388_608
   @max_observation_chunk_bytes 1_048_576
+  @feed_slice_bytes 65_536
   @default_max_queue 256
   @default_snapshot_timeout 50
   @meta_key {__MODULE__, :meta}
+  @stream_protocols [
+    :legacy,
+    :compact,
+    :openai_responses,
+    :google_generate_content,
+    :google_antigravity
+  ]
 
   @spec new(
           :legacy
@@ -80,6 +90,14 @@ defmodule Backplane.LLM.UsageAccumulator do
         :legacy -> legacy_state(:legacy)
         :compact -> legacy_state(:compact)
       end
+
+    state =
+      state
+      |> Map.put(:started_at, Keyword.get(opts, :started_at_mono, state.started_at))
+      |> Map.put(
+        :timing,
+        if(state.protocol in @stream_protocols, do: Backplane.LLM.ContentTiming.new())
+      )
 
     start_owner(state, max_queue, snapshot_timeout)
   end
@@ -144,6 +162,7 @@ defmodule Backplane.LLM.UsageAccumulator do
   defp legacy_state(protocol) do
     %{
       protocol: protocol,
+      usage_framer: new_usage_framer(),
       input_tokens: nil,
       output_tokens: nil,
       cached_tokens: nil,
@@ -171,6 +190,8 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   @spec scan_chunk(pid(), binary()) :: :ok
   def scan_chunk(pid, chunk) when is_binary(chunk) do
+    arrived_at = System.monotonic_time(:millisecond)
+
     case accumulator_meta(pid) do
       {:ok, atomics, max_queue, _timeout} ->
         if byte_size(chunk) > @max_observation_chunk_bytes do
@@ -178,7 +199,7 @@ defmodule Backplane.LLM.UsageAccumulator do
           :atomics.add(atomics, 4, 1)
           :atomics.add(atomics, 5, byte_size(chunk))
         else
-          enqueue_chunk(pid, chunk, atomics, max_queue)
+          enqueue_chunk(pid, chunk, arrived_at, atomics, max_queue)
         end
 
       _ ->
@@ -190,7 +211,7 @@ defmodule Backplane.LLM.UsageAccumulator do
     _, _ -> :ok
   end
 
-  defp enqueue_chunk(pid, chunk, atomics, max_queue) do
+  defp enqueue_chunk(pid, chunk, arrived_at, atomics, max_queue) do
     pending = :atomics.add_get(atomics, 3, 1)
 
     if not Process.alive?(pid) or pending > max_queue do
@@ -201,7 +222,7 @@ defmodule Backplane.LLM.UsageAccumulator do
     else
       Agent.cast(pid, fn state ->
         try do
-          scan_state(state, chunk)
+          scan_state(state, chunk, arrived_at)
         after
           :atomics.sub(atomics, 3, 1)
         end
@@ -218,6 +239,8 @@ defmodule Backplane.LLM.UsageAccumulator do
 
   @spec snapshot(pid(), non_neg_integer(), atom()) :: snapshot()
   def snapshot(pid, status \\ 200, transport_reason \\ :eof) do
+    finished_at = System.monotonic_time(:millisecond)
+
     state =
       try do
         Agent.get_and_update(
@@ -237,10 +260,7 @@ defmodule Backplane.LLM.UsageAccumulator do
                   transport_reason
                 )
 
-              next =
-                state
-                |> Map.put(:observer, observer)
-                |> put_google_first_content(System.monotonic_time(:millisecond))
+              next = Map.put(state, :observer, observer)
 
               {next, next}
 
@@ -248,10 +268,17 @@ defmodule Backplane.LLM.UsageAccumulator do
               observer =
                 Backplane.AiProtocol.Antigravity.Observer.finish(observer, transport_reason)
 
+              next = Map.put(state, :observer, observer)
+
+              {next, next}
+
+            %{protocol: protocol} = state when protocol in [:legacy, :compact] ->
+              # Finish a copy so an intermediate snapshot cannot close the live stream.
               next =
-                state
-                |> Map.put(:observer, observer)
-                |> put_antigravity_first_content(System.monotonic_time(:millisecond))
+                case SSE.finish(state.usage_framer) do
+                  {:ok, _framer, events} -> observe_usage_events(state, events)
+                  {:error, _error, _framer} -> state
+                end
 
               {next, next}
 
@@ -286,14 +313,10 @@ defmodule Backplane.LLM.UsageAccumulator do
 
     if state == :unavailable,
       do: unavailable_snapshot(pid),
-      else: snapshot_from_state(state, status, pid)
+      else: snapshot_from_state(state, status, pid, finished_at)
   end
 
-  defp snapshot_from_state(state, status, pid) do
-    first = state.first_chunk_at
-    last = state.last_chunk_at
-    started = state.started_at
-
+  defp snapshot_from_state(state, status, pid, finished_at) do
     base = %{
       input_tokens: state[:input_tokens],
       output_tokens: state[:output_tokens],
@@ -302,8 +325,8 @@ defmodule Backplane.LLM.UsageAccumulator do
       finish_reason: state[:finish_reason],
       provider_request_id: state[:provider_request_id],
       stream_chunks: state.chunk_count,
-      ttft_ms: if(first, do: first - started, else: nil),
-      stream_duration_ms: if(first && last, do: last - first, else: nil),
+      ttft_ms: nil,
+      stream_duration_ms: nil,
       observation_status: nil,
       protocol_terminal: nil,
       error_code: nil,
@@ -356,6 +379,7 @@ defmodule Backplane.LLM.UsageAccumulator do
       end
 
     snapshot
+    |> apply_content_timing(state, finished_at)
     |> mark_parser_failure(state)
     |> apply_observation_limits(pid)
   end
@@ -404,11 +428,14 @@ defmodule Backplane.LLM.UsageAccumulator do
   defp mark_parser_failure(snapshot, %{observer_error: true}) do
     %{
       snapshot
-      | observation_status: :incomplete,
+      | ttft_ms: nil,
+        stream_duration_ms: nil,
+        observation_status: :incomplete,
         protocol_terminal: :incomplete,
         partial: true,
         usage_complete: false,
-        metadata: Map.put(snapshot.metadata, :observation, %{parser_failed: true})
+        metadata:
+          snapshot.metadata |> clear_timing() |> Map.put(:observation, %{parser_failed: true})
     }
   end
 
@@ -596,9 +623,7 @@ defmodule Backplane.LLM.UsageAccumulator do
     if state.first_chunk_at, do: state, else: Map.put(state, :first_chunk_at, now)
   end
 
-  defp scan_state(state, chunk) do
-    now = System.monotonic_time(:millisecond)
-
+  defp scan_state(state, chunk, now) do
     state =
       state
       |> Map.update!(:chunk_count, &(&1 + 1))
@@ -606,6 +631,8 @@ defmodule Backplane.LLM.UsageAccumulator do
       |> Map.put(:last_chunk_at, now)
 
     try do
+      state = scan_content_timing(state, chunk, now)
+
       next =
         case state do
           %{protocol: :openai_responses, observer: observer} ->
@@ -644,25 +671,88 @@ defmodule Backplane.LLM.UsageAccumulator do
             extract_usage_from_chunk(state, chunk)
         end
 
-      next |> put_google_first_content(now) |> put_antigravity_first_content(now)
+      next
     rescue
       _ -> Map.put(state, :observer_error, true)
     end
   end
 
-  defp extract_usage_from_chunk(state, chunk) do
-    chunk
-    |> String.split("\n")
-    |> Enum.filter(&String.starts_with?(&1, "data: "))
-    |> Enum.reduce(state, fn line, state ->
-      json_str = String.trim_leading(line, "data: ")
+  defp scan_content_timing(%{timing: nil} = state, _chunk, _now), do: state
 
-      case Jason.decode(json_str) do
-        {:ok, data} -> extract_from_parsed(state, data)
-        _ -> state
-      end
-    end)
+  defp scan_content_timing(state, chunk, now) do
+    timing = Backplane.LLM.ContentTiming.feed(state.timing, chunk, now, state.protocol)
+    state = Map.put(state, :timing, timing)
+
+    state =
+      if state.protocol in [:google_generate_content, :google_antigravity],
+        do: Map.put(state, :first_content_at, timing.first_content_at),
+        else: state
+
+    state
   end
+
+  defp new_usage_framer,
+    do: SSE.new(max_frame_bytes: @max_observation_chunk_bytes, max_buffer_bytes: 2_097_152)
+
+  defp extract_usage_from_chunk(state, chunk) do
+    observe_usage_slices(state, chunk)
+  end
+
+  defp observe_usage_slices(state, chunk) when byte_size(chunk) > @feed_slice_bytes do
+    <<slice::binary-size(@feed_slice_bytes), rest::binary>> = chunk
+    state |> observe_usage_chunk(slice) |> observe_usage_slices(rest)
+  end
+
+  defp observe_usage_slices(state, chunk), do: observe_usage_chunk(state, chunk)
+
+  defp observe_usage_chunk(state, chunk) do
+    case SSE.feed(state.usage_framer, chunk) do
+      {:ok, framer, events} ->
+        observe_usage_events(%{state | usage_framer: framer}, events)
+
+      {:error, _error, _framer} ->
+        chunk
+        |> String.split("\n")
+        |> Enum.reduce(%{state | usage_framer: new_usage_framer()}, fn
+          "data: " <> json, state -> extract_usage_json(state, json)
+          _line, state -> state
+        end)
+    end
+  end
+
+  defp observe_usage_events(state, events),
+    do: Enum.reduce(events, state, fn event, state -> extract_usage_json(state, event.data) end)
+
+  defp extract_usage_json(state, json) do
+    case Jason.decode(json) do
+      {:ok, document} -> extract_from_parsed(state, document)
+      _ -> state
+    end
+  end
+
+  defp apply_content_timing(
+         snapshot,
+         %{timing: %{first_content_at: first, unavailable: false}} = state,
+         finished_at
+       )
+       when is_integer(first) do
+    timing = Map.get(snapshot.metadata, :timing, %{}) |> Map.put(:basis, "first_content")
+
+    %{
+      snapshot
+      | ttft_ms: max(first - state.started_at, 0),
+        stream_duration_ms: max(finished_at - first, 0),
+        metadata: Map.put(snapshot.metadata, :timing, timing)
+    }
+  end
+
+  defp apply_content_timing(snapshot, _state, _finished_at), do: snapshot
+
+  defp clear_timing(%{timing: timing} = metadata),
+    do:
+      Map.put(metadata, :timing, timing |> Map.delete(:basis) |> Map.put(:first_content_ms, nil))
+
+  defp clear_timing(metadata), do: metadata
 
   defp extract_from_parsed(state, %{"message" => %{"usage" => usage}} = data) do
     state |> update_tokens(usage) |> update_provider_request_id(get_in(data, ["message", "id"]))
@@ -778,7 +868,9 @@ defmodule Backplane.LLM.UsageAccumulator do
 
           %{
             snapshot
-            | input_tokens: nil,
+            | ttft_ms: nil,
+              stream_duration_ms: nil,
+              input_tokens: nil,
               output_tokens: nil,
               cached_tokens: nil,
               reasoning_tokens: nil,
@@ -791,7 +883,7 @@ defmodule Backplane.LLM.UsageAccumulator do
                 ),
               partial: true,
               usage_complete: false,
-              metadata: metadata
+              metadata: clear_timing(metadata)
           }
         else
           snapshot
@@ -890,26 +982,6 @@ defmodule Backplane.LLM.UsageAccumulator do
 
     %{tool | arguments: decoded}
   end
-
-  defp put_google_first_content(
-         %{protocol: :google_generate_content, first_content_at: nil, observer: observer} = state,
-         now
-       ) do
-    if observer.content_seen, do: %{state | first_content_at: now}, else: state
-  end
-
-  defp put_google_first_content(state, _now), do: state
-
-  defp put_antigravity_first_content(
-         %{protocol: :google_antigravity, first_content_at: nil, observer: observer} = state,
-         now
-       ) do
-    if Backplane.AiProtocol.Antigravity.Observer.facts(observer).content_seen,
-      do: %{state | first_content_at: now},
-      else: state
-  end
-
-  defp put_antigravity_first_content(state, _now), do: state
 
   defp put_google_body_first_content(%{first_content_at: nil} = state, facts, now) do
     if facts.content_seen, do: %{state | first_content_at: now}, else: state

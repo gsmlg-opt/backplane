@@ -201,6 +201,9 @@ defmodule Backplane.LLM.AccessEventTest do
     assert log.total_tokens == 168
     assert log.provider_request_id == "resp_codex_body"
     assert log.metadata["protocol_observation"]["usage_status"] == "complete"
+    assert log.ttft_ms == nil
+    assert log.stream_duration_ms == nil
+    refute get_in(log.metadata, ["timing", "basis"])
   end
 
   test "ordinary Responses streaming requests retain the shared observer" do
@@ -214,5 +217,64 @@ defmodule Backplane.LLM.AccessEventTest do
 
     assert %{protocol: :openai_responses} = Agent.get(access.usage_acc, & &1)
     Backplane.LLM.UsageAccumulator.stop(access.usage_acc)
+  end
+
+  test "stream content timing is persisted relative to request start" do
+    conn = conn(:post, "/v1/chat/completions", "{}") |> send_resp(200, "")
+
+    access =
+      conn
+      |> AccessEvent.start("chat_completions", :openai_chat_completions)
+      |> AccessEvent.put_requested_model("request-content-timing")
+
+    # Simulate time spent routing before the upstream stream starts.
+    access = %{access | started_at_mono: access.started_at_mono - 500}
+    access = AccessEvent.mark_stream(access)
+
+    AccessEvent.scan_stream_chunk(access, ": heartbeat\n\n")
+
+    AccessEvent.scan_stream_chunk(
+      access,
+      ~S(data: {"choices":[{"delta":{"content":"hi"}}]}) <> "\n\n"
+    )
+
+    AccessEvent.scan_stream_chunk(
+      access,
+      ~S(data: {"usage":{"prompt_tokens":3,"completion_tokens":5}}) <> "\n\n"
+    )
+
+    :ok = AccessEvent.finalize(access, conn, :success)
+    flush_logs!()
+
+    log = log_for_model("request-content-timing")
+    assert log.ttft_ms >= 500
+    assert log.ttft_ms <= log.duration_ms
+    assert is_integer(log.stream_duration_ms)
+    assert log.stream_duration_ms >= 0
+    assert log.metadata["timing"]["basis"] == "first_content"
+    assert log.output_tokens == 5
+  end
+
+  test "usage-only stream does not fabricate first-token timing" do
+    conn = conn(:post, "/v1/chat/completions", "{}") |> send_resp(200, "")
+
+    access =
+      conn
+      |> AccessEvent.start("chat_completions", :openai_chat_completions)
+      |> AccessEvent.put_requested_model("usage-only-timing")
+      |> AccessEvent.mark_stream()
+
+    AccessEvent.scan_stream_chunk(
+      access,
+      ~S(data: {"usage":{"prompt_tokens":3,"completion_tokens":0}}) <> "\n\n"
+    )
+
+    :ok = AccessEvent.finalize(access, conn, :success)
+    flush_logs!()
+
+    log = log_for_model("usage-only-timing")
+    assert log.ttft_ms == nil
+    assert log.stream_duration_ms == nil
+    assert log.output_tokens == 0
   end
 end

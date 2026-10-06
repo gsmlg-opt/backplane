@@ -84,7 +84,12 @@ defmodule Backplane.LLM.AccessEvent do
   @spec mark_stream(t()) :: t()
   def mark_stream(%__MODULE__{} = state) do
     protocol = accumulator_protocol(state)
-    %{state | stream?: true, usage_acc: new_usage_accumulator(protocol)}
+
+    %{
+      state
+      | stream?: true,
+        usage_acc: new_usage_accumulator(protocol, state.started_at_mono)
+    }
   end
 
   @spec prepare_response_observation(t()) :: t()
@@ -94,7 +99,7 @@ defmodule Backplane.LLM.AccessEvent do
   def prepare_response_observation(%__MODULE__{} = state) do
     case response_accumulator_protocol(state) do
       :openai_responses ->
-        %{state | usage_acc: new_usage_accumulator(:openai_responses_body)}
+        %{state | usage_acc: new_usage_accumulator(:openai_responses_body, state.started_at_mono)}
 
       protocol
       when protocol in [
@@ -104,7 +109,7 @@ defmodule Backplane.LLM.AccessEvent do
              :google_count_tokens_body,
              :google_antigravity_body
            ] ->
-        %{state | usage_acc: new_usage_accumulator(protocol)}
+        %{state | usage_acc: new_usage_accumulator(protocol, state.started_at_mono)}
 
       nil ->
         state
@@ -353,12 +358,12 @@ defmodule Backplane.LLM.AccessEvent do
     end
   end
 
-  defp new_usage_accumulator(protocol) do
+  defp new_usage_accumulator(protocol, started_at_mono) do
     factory =
       Application.get_env(
         :backplane_llama,
         :usage_accumulator_factory,
-        &UsageAccumulator.new/1
+        fn protocol -> UsageAccumulator.new(protocol, started_at_mono: started_at_mono) end
       )
 
     case factory.(protocol) do

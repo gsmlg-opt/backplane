@@ -451,7 +451,8 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     assert log.outcome == "success"
     assert log.stream_chunks >= 2
     assert is_integer(log.ttft_ms)
-    assert is_integer(log.ttft_ms)
+    assert is_integer(log.stream_duration_ms)
+    assert log.metadata["timing"]["basis"] == "first_content"
     assert log.finish_reason in ["stop", nil]
   end
 

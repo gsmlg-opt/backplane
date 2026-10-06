@@ -74,12 +74,23 @@ The parse-time budget uses monotonic elapsed time around each bounded JSON docum
 
 The existing accumulator records:
 
-- `ttft_ms`: time from accumulator creation to the first observed response chunk, which is first-byte timing, not guaranteed first-content timing
-- `metadata.timing.first_content_ms`: time from accumulator creation until candidate content is first detected; `nil` when no content is observed
-- `stream_duration_ms`: time from the first observed chunk to the last observed chunk
+- `ttft_ms`: time from proxy request start until the first complete SSE event containing nonempty generated text, thought text, or function arguments; `nil` without observed streaming content
+- `metadata.timing.first_content_ms`: for streaming requests, the same content interval as `ttft_ms`; JSON body observation retains its separate whole-body content detection timestamp
+- `stream_duration_ms`: time from first generated content to stream finalization
 - `stream_chunks`: number of chunks accepted by the accumulator owner
 
-First-content timing is measured in the accumulator owner when the pure observer reports `content_seen`; it is not inferred from finish or usage. Completion timing remains the surrounding access event's request/upstream duration; protocol terminal facts describe semantics, not a new clock measurement.
+Streaming content timing uses bounded incremental SSE framing and captures arrival
+before enqueueing work to the accumulator owner. Empty parts, empty text, role-only
+events, heartbeats, and usage do not trigger timing. It is not inferred from terminal
+response content. Stream timing is unavailable when observation drops chunks or
+timing framing limits prevent reliable detection.
+
+New stream records carry `metadata.timing.basis = "first_content"`. The log UI
+requires this marker to display TTFT and output tokens per second, calculated as
+`output_tokens * 1000 / stream_duration_ms`. Missing counts and nonpositive intervals
+remain unavailable. Google output tokens continue to exclude thought tokens;
+reasoning tokens are not added again. Historical first-chunk measurements are not
+backfilled as TTFT.
 
 ## Sensitive data
 
