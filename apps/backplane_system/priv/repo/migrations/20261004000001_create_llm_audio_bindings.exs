@@ -2,6 +2,9 @@ defmodule Backplane.Repo.Migrations.CreateLlmAudioBindings do
   use Ecto.Migration
 
   def change do
+    bindings_table = qualified_name("llm_audio_bindings")
+    provider_models_table = qualified_name("llm_provider_models")
+
     create unique_index(:llm_provider_models, [:id, :provider_id],
              name: :llm_provider_models_id_provider_id_index
            )
@@ -25,8 +28,8 @@ defmodule Backplane.Repo.Migrations.CreateLlmAudioBindings do
     end
 
     execute(
-      "ALTER TABLE llm_audio_bindings ADD CONSTRAINT llm_audio_bindings_model_provider_fkey FOREIGN KEY (provider_model_id, provider_id) REFERENCES llm_provider_models (id, provider_id) ON DELETE CASCADE",
-      "ALTER TABLE llm_audio_bindings DROP CONSTRAINT llm_audio_bindings_model_provider_fkey"
+      "ALTER TABLE #{bindings_table} ADD CONSTRAINT llm_audio_bindings_model_provider_fkey FOREIGN KEY (provider_model_id, provider_id) REFERENCES #{provider_models_table} (id, provider_id) ON DELETE CASCADE",
+      "ALTER TABLE #{bindings_table} DROP CONSTRAINT llm_audio_bindings_model_provider_fkey"
     )
 
     create unique_index(:llm_audio_bindings, [:provider_model_id, :operation])
@@ -43,5 +46,11 @@ defmodule Backplane.Repo.Migrations.CreateLlmAudioBindings do
     create constraint(:llm_audio_bindings, :llm_audio_bindings_billing_label_check,
              check: "billing_label IN ('subscription', 'payg')"
            )
+  end
+
+  defp qualified_name(name) do
+    [prefix(), name]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map_join(".", fn part -> ~s("#{String.replace(part, "\"", "\"\"")}") end)
   end
 end
