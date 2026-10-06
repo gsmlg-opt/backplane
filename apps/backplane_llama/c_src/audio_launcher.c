@@ -173,6 +173,9 @@ static bool filesystem_sandbox(const struct options *o) {
   bool ok=landlock_rule(rs,o->workdir,work);
   for(size_t i=0;ok&&i<libs.count;i++) ok=landlock_rule(rs,libs.p[i],LANDLOCK_ACCESS_FS_READ_FILE|LANDLOCK_ACCESS_FS_EXECUTE);
   if(access("/etc/ld.so.cache",F_OK)==0) ok=ok&&landlock_rule(rs,"/etc/ld.so.cache",LANDLOCK_ACCESS_FS_READ_FILE);
+  /* Ogg serial generation needs entropy. FFmpeg's fallback may execute an
+   * unavailable AArch64 cycle counter; grant only this device's read access. */
+  ok=ok&&landlock_rule(rs,"/dev/urandom",LANDLOCK_ACCESS_FS_READ_FILE);
   ok=ok&&prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)==0&&syscall(__NR_landlock_restrict_self,rs,0)==0;
   close(rs);return ok;
 }
