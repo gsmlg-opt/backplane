@@ -55,6 +55,15 @@ defmodule Backplane.CIWorkflowTest do
 
   @native_build_run "sudo apt-get update\nsudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev\n"
 
+  @audio_tools_run "sudo apt-get install -y --no-install-recommends ffmpeg\n"
+  @audio_sdk_run ~S"""
+  sudo apt-get install -y --no-install-recommends python3-venv
+  python3 -m venv "$RUNNER_TEMP/audio-sdk-venv"
+  "$RUNNER_TEMP/audio-sdk-venv/bin/python" -m pip install --disable-pip-version-check 'openai==2.26.0'
+  "$RUNNER_TEMP/audio-sdk-venv/bin/python" -c 'from importlib.metadata import version; assert version("openai") == "2.26.0"'
+  echo "BACKPLANE_AUDIO_SDK_PYTHON=$RUNNER_TEMP/audio-sdk-venv/bin/python" >> "$GITHUB_ENV"
+  """
+
   @ai_setup_run ~S"""
   protocol_root="$GITHUB_WORKSPACE/tmp/ai-protocol"
   mkdir -p "$protocol_root/apps" "$protocol_root/config"
@@ -210,6 +219,8 @@ defmodule Backplane.CIWorkflowTest do
       "Set up Elixir",
       "Set up Rust",
       "Install native build dependencies",
+      "Install audio media tools",
+      "Install pinned OpenAI SDK for audio conformance",
       "Restore dependencies cache",
       "Install dependencies",
       "Start PostgreSQL 17 with pgvector",
@@ -218,6 +229,19 @@ defmodule Backplane.CIWorkflowTest do
     ])
 
     assert_common_steps(job, true, @test_cache_key, @test_cache_prefix)
+
+    assert_step(job, %{
+      "name" => "Install audio media tools",
+      "if" =>
+        "contains(fromJSON('[\"backplane_api\",\"backplane_llama\",\"backplane_admin\"]'), matrix.app)",
+      "run" => @audio_tools_run
+    })
+
+    assert_step(job, %{
+      "name" => "Install pinned OpenAI SDK for audio conformance",
+      "if" => "matrix.app == 'backplane_api'",
+      "run" => @audio_sdk_run
+    })
 
     assert_step(job, %{
       "name" => "Start PostgreSQL 17 with pgvector",
