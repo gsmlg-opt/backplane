@@ -59,6 +59,14 @@ def live(pid):
     return bool(r.stdout.strip()) and not r.stdout.strip().startswith('Z')
 
 
+def pressure_failure(p, stderr):
+    stderr.seek(0, os.SEEK_END)
+    stderr.seek(max(stderr.tell() - 4096, 0))
+    return {'returncode': p.poll(), 'stderr': stderr.read().decode('utf-8', errors='replace'),
+        'host_nproc': resource.getrlimit(resource.RLIMIT_NPROC),
+        'host_as': resource.getrlimit(resource.RLIMIT_AS)}
+
+
 with tempfile.TemporaryDirectory(prefix='audio-native-') as parent:
     root = os.path.join(parent, 'worker')
     os.mkdir(root, 0o700)
@@ -98,22 +106,24 @@ with tempfile.TemporaryDirectory(prefix='audio-native-') as parent:
         # Ordinary Python threads stay outside the media worker's guardian.
         pressure_code = """
 import threading
-threading.stack_size(65536)
 hold = threading.Event()
 threads = [threading.Thread(target=hold.wait) for _ in range(128)]
 for thread in threads:
     thread.start()
 hold.wait()
 """
-        pressure = subprocess.Popen([sys.executable, '-c', pressure_code],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        # Use CPython's platform default stack: tiny custom stacks are not
+        # portable across architectures. A file prevents crash dumps filling a pipe.
+        pressure_stderr = tempfile.TemporaryFile()
+        pressure = subprocess.Popen([sys.executable, '-X', 'faulthandler', '-c', pressure_code],
+            stdout=subprocess.DEVNULL, stderr=pressure_stderr)
         try:
             tasks = pathlib.Path(f'/proc/{pressure.pid}/task')
             until = time.monotonic() + 5
             while len(list(tasks.iterdir())) <= 64 and time.monotonic() < until:
-                assert pressure.poll() is None, 'host thread-pressure helper exited'
+                assert pressure.poll() is None, pressure_failure(pressure, pressure_stderr)
                 time.sleep(0.01)
-            assert len(list(tasks.iterdir())) > 64
+            assert len(list(tasks.iterdir())) > 64, pressure_failure(pressure, pressure_stderr)
             pressure_output = os.path.join(root, 'uid-pressure.wav')
             success(finish(start(root, 'convert', ffmpeg, ['-nostdin', '-v', 'error',
                 '-f', 'lavfi', '-i', 'sine=duration=0.1', '-threads', '1',
@@ -127,7 +137,7 @@ hold.wait()
             except subprocess.TimeoutExpired:
                 pressure.kill()
                 pressure.wait(timeout=5)
-            pressure.stderr.close()
+            pressure_stderr.close()
     for action in ('cancel', 'eof', 'timeout', 'helper-kill'):
         p = start(root, 'convert', launcher, ['--internal-hold'], deadline=200 if action == 'timeout' else 10000)
         f = frame(p)
