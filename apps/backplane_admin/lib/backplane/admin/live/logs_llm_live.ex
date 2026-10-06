@@ -82,6 +82,8 @@ defmodule Backplane.Admin.LogsLlmLive do
             <div><dt class="text-on-surface-variant">Operation</dt><dd>{operation_label(@record.operation)}</dd></div>
             <div><dt class="text-on-surface-variant">Usage observation</dt><dd>{usage_observation(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Duration</dt><dd>{@record.duration_ms || "-"} ms</dd></div>
+            <div id="llm-detail-ttft"><dt class="text-on-surface-variant"><.ttft_label /></dt><dd>{format_ttft(@record)}</dd></div>
+            <div id="llm-detail-tokens-per-second"><dt class="text-on-surface-variant"><.tokens_per_second_label /></dt><dd>{format_tokens_per_second(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Tokens</dt><dd>{token_summary(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Payload</dt><dd>{payload_status(@record)}</dd></div>
             <div><dt class="text-on-surface-variant">Recorded</dt><dd><.local_time datetime={@record.inserted_at} /></dd></div>
@@ -130,29 +132,33 @@ defmodule Backplane.Admin.LogsLlmLive do
         <.empty_state title="No LLM logs found" message="Try widening the time range or clearing filters." />
       </div>
 
-      <.dm_table :if={!@loading and @records != []} id="llm-logs-table" data={@records} hover zebra>
-        <:col :let={row} label="Client">{client_label(row)}</:col>
-        <:col :let={row} label="Provider">{row.provider_name || "-"}</:col>
-        <:col :let={row} label="Model">
-          <.link navigate={~p"/system/logs/llm/#{row.id}"} class="font-mono text-xs text-primary underline">
-            {model_label(row)}
-          </.link>
-        </:col>
-        <:col :let={row} label="Protocol">{protocol_label(row.api_surface)}</:col>
-        <:col :let={row} label="Operation">{operation_label(row.operation)}</:col>
-        <:col :let={row} label="Usage observation">{usage_observation(row)}</:col>
-        <:col :let={row} label="Outcome">
-          <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
-        </:col>
-        <:col :let={row} label="Status">{row.status || "-"}</:col>
-        <:col :let={row} label="Latency">{row.duration_ms || "-"} ms</:col>
-        <:col :let={row} label="Input Tokens">{format_token_count(row.input_tokens)}</:col>
-        <:col :let={row} label="Cached Tokens">{format_token_count(row.cached_tokens)}</:col>
-        <:col :let={row} label="Output Tokens">{format_token_count(row.output_tokens)}</:col>
-        <:col :let={row} label="Recorded">
-          <.local_time datetime={row.inserted_at} format="short" />
-        </:col>
-      </.dm_table>
+      <div :if={!@loading and @records != []} id="llm-logs-table-scroll" class="min-w-0 w-full overflow-x-auto">
+        <.dm_table id="llm-logs-table" data={@records} hover zebra>
+          <:col :let={row} label="Client">{client_label(row)}</:col>
+          <:col :let={row} label="Provider">{row.provider_name || "-"}</:col>
+          <:col :let={row} label="Model">
+            <.link navigate={~p"/system/logs/llm/#{row.id}"} class="font-mono text-xs text-primary underline">
+              {model_label(row)}
+            </.link>
+          </:col>
+          <:col :let={row} label="Protocol">{protocol_label(row.api_surface)}</:col>
+          <:col :let={row} label="Operation">{operation_label(row.operation)}</:col>
+          <:col :let={row} label="Usage observation">{usage_observation(row)}</:col>
+          <:col :let={row} label="Outcome">
+            <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
+          </:col>
+          <:col :let={row} label="Status">{row.status || "-"}</:col>
+          <:col :let={row} label="Latency">{row.duration_ms || "-"} ms</:col>
+          <:col :let={row} label="TTFT" header={ttft_label(assigns)}>{format_ttft(row)}</:col>
+          <:col :let={row} label="T/S" header={tokens_per_second_label(assigns)}>{format_tokens_per_second(row)}</:col>
+          <:col :let={row} label="Input Tokens">{format_token_count(row.input_tokens)}</:col>
+          <:col :let={row} label="Cached Tokens">{format_token_count(row.cached_tokens)}</:col>
+          <:col :let={row} label="Output Tokens">{format_token_count(row.output_tokens)}</:col>
+          <:col :let={row} label="Recorded">
+            <.local_time datetime={row.inserted_at} format="short" />
+          </:col>
+        </.dm_table>
+      </div>
 
       <div :if={@next_cursor} class="mt-4">
         <.dm_btn phx-click="load_more" size="sm">Load more</.dm_btn>
@@ -300,6 +306,51 @@ defmodule Backplane.Admin.LogsLlmLive do
   end
 
   defp unavailable_observation?(_observation), do: false
+
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#173
+  # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#173 use native tooltips until core popovers are supported.
+  defp ttft_label(assigns) do
+    ~H"""
+    <span title="Time from request start to first generated content." aria-label="TTFT: Time from request start to first generated content." tabindex="0" class="cursor-help">
+      TTFT
+    </span>
+    """
+  end
+
+  defp tokens_per_second_label(assigns) do
+    ~H"""
+    <span title="Output tokens per second, measured from first generated content until the stream ends." aria-label="T/S: Output tokens per second, measured from first generated content until the stream ends." tabindex="0" class="cursor-help">
+      T/S
+    </span>
+    """
+  end
+
+  defp format_ttft(%{ttft_ms: ttft_ms} = record)
+       when is_integer(ttft_ms) and ttft_ms >= 0 do
+    if first_content_timing?(record), do: "#{ttft_ms} ms", else: "—"
+  end
+
+  defp format_ttft(_record), do: "—"
+
+  defp format_tokens_per_second(
+         %{output_tokens: tokens, stream_duration_ms: duration_ms} = record
+       )
+       when is_integer(tokens) and tokens >= 0 and is_integer(duration_ms) and duration_ms > 0 do
+    if first_content_timing?(record),
+      do: :erlang.float_to_binary(tokens * 1_000 / duration_ms, decimals: 1),
+      else: "—"
+  end
+
+  defp format_tokens_per_second(_record), do: "—"
+
+  defp first_content_timing?(%{
+         stream: true,
+         metadata: %{"timing" => %{"basis" => "first_content"}}
+       }),
+       do: true
+
+  defp first_content_timing?(_record), do: false
 
   defp format_token_count(nil), do: "-"
 

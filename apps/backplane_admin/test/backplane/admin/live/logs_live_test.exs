@@ -117,6 +117,105 @@ defmodule Backplane.Admin.LogsLiveTest do
     assert html =~ ">95<"
   end
 
+  test "llm list and detail display first-content TTFT and generation speed", %{conn: conn} do
+    for {output_tokens, duration_ms, expected_rate} <- [
+          {95, 2_000, "47.5"},
+          {1, 3_000, "0.3"},
+          {0, 2_000, "0.0"}
+        ] do
+      model = "timing-valid-#{output_tokens}"
+
+      log =
+        insert_llm_log(%{
+          requested_model: model,
+          stream: true,
+          ttft_ms: 0,
+          stream_duration_ms: duration_ms,
+          output_tokens: output_tokens,
+          metadata: %{"timing" => %{"basis" => "first_content"}}
+        })
+
+      {:ok, view, _html} = live_with_sandbox(conn, "/system/logs/llm?model=#{model}")
+
+      assert has_element?(view, "#llm-logs-table th", "TTFT")
+      assert has_element?(view, "#llm-logs-table th", "T/S")
+      assert has_element?(view, "#llm-logs-table td[data-label='TTFT']", "0 ms")
+      assert has_element?(view, "#llm-logs-table td[data-label='T/S']", expected_rate)
+
+      assert has_element?(
+               view,
+               "#llm-logs-table [tabindex='0'][title*='first generated content'][aria-label^='TTFT:']"
+             )
+
+      assert has_element?(
+               view,
+               "#llm-logs-table [tabindex='0'][title^='Output tokens per second'][aria-label^='T/S:']"
+             )
+
+      {:ok, detail, _html} = live_with_sandbox(conn, "/system/logs/llm/#{log.id}")
+
+      assert has_element?(detail, "#llm-detail-ttft dt", "TTFT")
+      assert has_element?(detail, "#llm-detail-ttft dd", "0 ms")
+      assert has_element?(detail, "#llm-detail-tokens-per-second dt", "T/S")
+      assert has_element?(detail, "#llm-detail-tokens-per-second dd", expected_rate)
+
+      assert has_element?(
+               detail,
+               "#llm-detail-ttft [tabindex='0'][title*='first generated content'][aria-label^='TTFT:']"
+             )
+
+      assert has_element?(
+               detail,
+               "#llm-detail-tokens-per-second [tabindex='0'][title^='Output tokens per second'][aria-label^='T/S:']"
+             )
+    end
+  end
+
+  test "llm list and detail leave unavailable or legacy timings blank", %{conn: conn} do
+    valid = %{
+      stream: true,
+      ttft_ms: 321,
+      stream_duration_ms: 2_000,
+      output_tokens: 95,
+      metadata: %{"timing" => %{"basis" => "first_content"}}
+    }
+
+    for {name, overrides, expected_ttft, expected_rate} <- [
+          {"legacy", %{metadata: %{}}, "—", "—"},
+          {"google-legacy",
+           %{
+             metadata: %{
+               "timing" => %{"first_content_ms" => 321}
+             }
+           }, "—", "—"},
+          {"missing", %{ttft_ms: nil, stream_duration_ms: nil}, "—", "—"},
+          {"zero-duration", %{stream_duration_ms: 0}, "321 ms", "—"},
+          {"negative-duration", %{stream_duration_ms: -1}, "321 ms", "—"},
+          {"missing-output", %{output_tokens: nil}, "321 ms", "—"},
+          {"negative-output", %{output_tokens: -1}, "321 ms", "—"},
+          {"negative-ttft", %{ttft_ms: -1}, "—", "47.5"},
+          {"nonstream", %{stream: false}, "—", "—"}
+        ] do
+      model = "timing-unavailable-#{name}"
+
+      log =
+        valid
+        |> Map.merge(overrides)
+        |> Map.put(:requested_model, model)
+        |> insert_llm_log()
+
+      {:ok, view, _html} = live_with_sandbox(conn, "/system/logs/llm?model=#{model}")
+
+      assert has_element?(view, "#llm-logs-table td[data-label='TTFT']", expected_ttft)
+      assert has_element?(view, "#llm-logs-table td[data-label='T/S']", expected_rate)
+
+      {:ok, detail, _html} = live_with_sandbox(conn, "/system/logs/llm/#{log.id}")
+
+      assert has_element?(detail, "#llm-detail-ttft dd", expected_ttft)
+      assert has_element?(detail, "#llm-detail-tokens-per-second dd", expected_rate)
+    end
+  end
+
   test "llm logs show Google protocol, operation, and real usage observation states", %{
     conn: conn
   } do
