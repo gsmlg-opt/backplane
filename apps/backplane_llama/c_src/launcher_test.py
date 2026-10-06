@@ -53,6 +53,18 @@ def success(frames):
     assert frames[-1] == b'X' + struct.pack('!I', 0) + b'\x00\x01', frames
 
 
+def media_result(frames):
+    terminal = next(f for f in frames if f[:1] == b'X')
+    exit_code, worker_signal, cleanup = struct.unpack('!IBB', terminal[1:])
+    return {'exit_code': exit_code, 'signal': worker_signal, 'cleanup': cleanup,
+        'stderr': b''.join(f[1:] for f in frames if f[:1] == b'D').decode('utf-8', errors='replace'),
+        'errors': [f[1:] for f in frames if f[:1] == b'E'], 'raw_frames': frames}
+
+
+def media_succeeded(frames):
+    return not any(f[:1] == b'E' for f in frames) and frames[-1] == b'X' + struct.pack('!I', 0) + b'\x00\x01'
+
+
 def live(pid):
     # A reparented zombie is not a live media worker.
     r = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True)
@@ -101,6 +113,40 @@ with tempfile.TemporaryDirectory(prefix='audio-native-') as parent:
         '-vn', '-sn', '-dn', '-c:a', 'pcm_s16le', '-f', 's16le', decoded], deadline=10000)))
     assert pathlib.Path(decoded).stat().st_size > 0
     print('PASS bounded ffprobe and full decode pipeline', flush=True)
+    webm = os.path.join(root, 'source.webm')
+    fixture = pathlib.Path(__file__).resolve().parent.parent / 'priv/audio/readiness/webm-opus.webm'
+    pathlib.Path(webm).write_bytes(fixture.read_bytes())
+    ogg_checks = []
+    for label, demuxer, media_input, codec_args in [
+            ('Ogg Opus encode', 'flac', source,
+                ['-c:a', 'libopus', '-ar', '48000', '-ac', '1', '-b:a', '64k', '-application', 'audio']),
+            ('WebM to Ogg Opus remux', 'matroska', webm, ['-c:a', 'copy'])]:
+        ogg_output = os.path.join(root, 'encoded.ogg' if demuxer == 'flac' else 'remuxed.ogg')
+        args = ['-nostdin', '-hide_banner', '-v', 'error', '-threads', '1', '-filter_threads', '1',
+            '-protocol_whitelist', 'file,pipe', '-f', demuxer, '-i', media_input,
+            '-map', '0:a:0', '-vn', '-sn', '-dn', *codec_args, '-f', 'ogg', ogg_output]
+        frames = finish(start(root, 'convert', ffmpeg, args, deadline=10000))
+        ok = media_succeeded(frames)
+        if ok:
+            assert pathlib.Path(ogg_output).read_bytes().startswith(b'OggS')
+            print('PASS ' + label, flush=True)
+        else:
+            # Synthetic inputs only. Preserve the raw bounded D/X frames and
+            # compare the identical codec/muxer outside confinement.
+            print('FAIL ' + label + ': ' + repr(media_result(frames)), flush=True)
+            direct_output = ogg_output + '.direct'
+            direct = subprocess.run([ffmpeg, *args[:-1], direct_output], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
+            # Diagnostic control only: bitexact suppresses Ogg's random serial
+            # generation. Production commands must keep their normal serials.
+            control_output = ogg_output + '.bitexact'
+            control_args = [*args[:-1], '-fflags', '+bitexact', control_output]
+            control = finish(start(root, 'convert', ffmpeg, control_args, deadline=10000))
+            print('COMPARE ' + label + ': ' + repr({
+                'direct_returncode': direct.returncode, 'direct_stderr': direct.stderr[-4096:],
+                'bitexact_launcher': media_result(control)}), flush=True)
+        ogg_checks.append((label, ok))
+    assert all(ok for _, ok in ogg_checks), ogg_checks
     if sys.platform == 'linux':
         # RLIMIT_NPROC counts every thread with the real UID, including BEAM.
         # Ordinary Python threads stay outside the media worker's guardian.
