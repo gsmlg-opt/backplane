@@ -198,6 +198,12 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     on_exit(fn -> :telemetry.detach(telemetry_id) end)
     old = Application.get_env(:backplane, :auth_token)
     old_loopback = Application.get_env(:backplane_llama, :audio_allow_http_loopback)
+
+    on_exit(fn ->
+      restore(:backplane, :auth_token, old)
+      restore(:backplane_llama, :audio_allow_http_loopback, old_loopback)
+    end)
+
     Application.put_env(:backplane, :auth_token, "audio-loopback-client")
     Application.put_env(:backplane_llama, :audio_allow_http_loopback, true)
     :ok = Config.set_policy(%{})
@@ -272,11 +278,6 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
       Config.set_voices(%{
         provider.name => %{"aliases" => %{"default" => "native-voice"}, "allow_native" => false}
       })
-
-    on_exit(fn ->
-      restore(:backplane, :auth_token, old)
-      restore(:backplane_llama, :audio_allow_http_loopback, old_loopback)
-    end)
 
     Agent.update(state, &Map.put(&1, :requested_model, "#{provider.name}/speech"))
 
@@ -399,8 +400,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
        ctx do
     for content_type <- ["Application/JSON; charset=utf-8", "application/problem+json"] do
       body =
-        "{\n\n\"base_resp\":{\"status_code\":1004," <>
-          "\"status_msg\":\"native-offline-secret\"}}"
+        ~s({\n\n"base_resp":{"status_code":1004,"status_msg":"native-offline-secret"}})
 
       fragments = for <<byte <- body>>, do: <<byte>>
       Agent.update(ctx.state, &%{&1 | mode: {:fragments, content_type, fragments}})
