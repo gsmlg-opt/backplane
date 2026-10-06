@@ -119,6 +119,13 @@ jobs:
       - name: Compile with warnings as errors
         run: mix compile --warnings-as-errors
 
+      - name: Run native launcher codec and lifecycle gate
+        run: |
+          python3 apps/backplane_llama/c_src/launcher_test.py \
+            "$GITHUB_WORKSPACE/apps/backplane_llama/priv/bin/backplane-audio-launcher" \
+            "$(command -v ffmpeg)" \
+            "$(command -v ffprobe)"
+
       - name: Run scoped audio tests
         env:
           BACKPLANE_AUDIO_SDK_PYTHON: ${{ runner.temp }}/audio-sdk-venv/bin/python
@@ -126,10 +133,3 @@ jobs:
           mix test apps/backplane_llama/test/backplane/audio \
             apps/backplane_api/test/backplane/api/audio_*_test.exs \
             apps/backplane_admin/test/backplane/admin/live/audio_*_test.exs
-
-      - name: Run native launcher codec and lifecycle gate
-        run: |
-          python3 apps/backplane_llama/c_src/launcher_test.py \
-            "$GITHUB_WORKSPACE/apps/backplane_llama/priv/bin/backplane-audio-launcher" \
-            "$(command -v ffmpeg)" \
-            "$(command -v ffprobe)"
