@@ -84,9 +84,32 @@ static bool limits(const struct options *o) {
   bool ok=limit_resource(RLIMIT_CORE,0)&&limit_resource(RLIMIT_NOFILE,64)&&
     limit_resource(RLIMIT_FSIZE,o->max_file)&&limit_resource(RLIMIT_CPU,(rlim_t)(o->deadline/1000+2));
 #ifdef __linux__
-  ok=ok&&limit_resource(RLIMIT_AS,(rlim_t)2*1024*1024*1024)&&limit_resource(RLIMIT_NPROC,64);
+  ok=ok&&limit_resource(RLIMIT_AS,(rlim_t)2*1024*1024*1024);
 #endif
   return ok;
+}
+
+static const char *worker_resource_failure(pid_t pid) {
+#ifdef __linux__
+  /* RLIMIT_NPROC counts all threads with the real UID, including BEAM. Count
+   * this worker's thread group instead; seccomp forbids descendant processes.
+   * The guardian remains outside confinement and retains the unreaped PID. */
+  char path[64];snprintf(path,sizeof(path),"/proc/%ld/status",(long)pid);
+  FILE *status=fopen(path,"r");if(!status)return "sandbox_unavailable";
+  char line[256];unsigned long threads=0;bool found=false;
+  while(fgets(line,sizeof(line),status)) {
+    if(sscanf(line,"Threads: %lu",&threads)==1){found=true;break;}
+  }
+  fclose(status);
+  if(!found)return "sandbox_unavailable";
+  return threads>64?"resource_limit":NULL;
+#else
+  /* Darwin has no usable RLIMIT_AS, so RSS is also sampled. */
+  struct proc_taskinfo taskinfo;
+  if(proc_pidinfo(pid,PROC_PIDTASKINFO,0,&taskinfo,sizeof(taskinfo))==sizeof(taskinfo)&&
+     (taskinfo.pti_resident_size>(uint64_t)2*1024*1024*1024||taskinfo.pti_threadnum>64))return "resource_limit";
+  return NULL;
+#endif
 }
 
 #ifdef __linux__
@@ -394,14 +417,9 @@ static int guard(const struct options *o,int lifeline) {
         else if(result>0){control_used+=(size_t)result;if(control_used==5)failure="cancelled";}
       }
     }
-#ifdef __APPLE__
-    /* Darwin does not implement a usable RLIMIT_AS. Sample resident memory and
-     * threads every poll; this bounds detection latency, not instantaneous RSS.
-     * Linux uses kernel RLIMIT_AS/NPROC instead. */
-    struct proc_taskinfo taskinfo;
-    if(!failure&&started&&proc_pidinfo(pid,PROC_PIDTASKINFO,0,&taskinfo,sizeof(taskinfo))==sizeof(taskinfo)&&
-       (taskinfo.pti_resident_size>(uint64_t)2*1024*1024*1024||taskinfo.pti_threadnum>64))failure="resource_limit";
-#endif
+    /* Sample per-worker threads every poll on both platforms. Linux retains
+     * hard RLIMIT_AS; Darwin additionally samples resident memory. */
+    if(!failure&&started)failure=worker_resource_failure(pid);
     if(!failure&&now_ms()>=deadline)failure="timeout";
     if(failure&&!terminated){kill(-pid,SIGTERM);kill(pid,SIGTERM);terminated=true;kill_at=now_ms()+150;cleanup_deadline=now_ms()+2000;}
     if(terminated&&now_ms()>=kill_at){kill(-pid,SIGKILL);kill(pid,SIGKILL);kill_at=UINT64_MAX;}

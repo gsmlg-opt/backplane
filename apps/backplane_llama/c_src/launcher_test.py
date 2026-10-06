@@ -3,6 +3,7 @@ Run: python3 launcher_test.py ABS_LAUNCHER ABS_FFMPEG ABS_FFPROBE
 """
 import os
 import pathlib
+import resource
 import signal
 import struct
 import subprocess
@@ -92,12 +93,58 @@ with tempfile.TemporaryDirectory(prefix='audio-native-') as parent:
         '-vn', '-sn', '-dn', '-c:a', 'pcm_s16le', '-f', 's16le', decoded], deadline=10000)))
     assert pathlib.Path(decoded).stat().st_size > 0
     print('PASS bounded ffprobe and full decode pipeline', flush=True)
+    if sys.platform == 'linux':
+        # RLIMIT_NPROC counts every thread with the real UID, including BEAM.
+        # Ordinary Python threads stay outside the media worker's guardian.
+        pressure_code = """
+import threading
+threading.stack_size(65536)
+hold = threading.Event()
+threads = [threading.Thread(target=hold.wait) for _ in range(128)]
+for thread in threads:
+    thread.start()
+hold.wait()
+"""
+        pressure = subprocess.Popen([sys.executable, '-c', pressure_code],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            tasks = pathlib.Path(f'/proc/{pressure.pid}/task')
+            until = time.monotonic() + 5
+            while len(list(tasks.iterdir())) <= 64 and time.monotonic() < until:
+                assert pressure.poll() is None, 'host thread-pressure helper exited'
+                time.sleep(0.01)
+            assert len(list(tasks.iterdir())) > 64
+            pressure_output = os.path.join(root, 'uid-pressure.wav')
+            success(finish(start(root, 'convert', ffmpeg, ['-nostdin', '-v', 'error',
+                '-f', 'lavfi', '-i', 'sine=duration=0.1', '-threads', '1',
+                pressure_output], deadline=10000)))
+            assert pathlib.Path(pressure_output).read_bytes().startswith(b'RIFF')
+            print('PASS other same-UID threads do not consume the worker budget', flush=True)
+        finally:
+            pressure.terminate()
+            try:
+                pressure.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pressure.kill()
+                pressure.wait(timeout=5)
+            pressure.stderr.close()
     for action in ('cancel', 'eof', 'timeout', 'helper-kill'):
         p = start(root, 'convert', launcher, ['--internal-hold'], deadline=200 if action == 'timeout' else 10000)
         f = frame(p)
         assert f[:1] == b'S', f
         pid, pgid = struct.unpack('!II', f[1:])
         assert pid == pgid
+        if action == 'cancel' and sys.platform == 'linux':
+            limits = pathlib.Path(f'/proc/{pid}/limits').read_text()
+            process_limit = next(line for line in limits.splitlines()
+                if line.startswith('Max processes'))
+            inherited = ['unlimited' if value == resource.RLIM_INFINITY else str(value)
+                for value in resource.getrlimit(resource.RLIMIT_NPROC)]
+            assert process_limit.split()[2:4] == inherited, process_limit
+            address_limit = next(line for line in limits.splitlines()
+                if line.startswith('Max address space'))
+            assert address_limit.split()[3:5] == [str(2 * 1024**3)] * 2, address_limit
+            print(f'PASS actual Linux limits: {process_limit}; {address_limit}', flush=True)
         assert not marker.exists(), 'stale cleanup evidence survived launch'
         if action == 'cancel':
             p.stdin.write(b'\x00\x00\x00\x01C'); p.stdin.flush()
@@ -117,8 +164,7 @@ with tempfile.TemporaryDirectory(prefix='audio-native-') as parent:
     assert b'Eoutput_limit' in frames, frames
     assert pathlib.Path(root, 'large').stat().st_size <= 8192
     print('PASS output limit', flush=True)
-    if sys.platform == 'darwin':
-        frames = finish(start(root, 'convert', launcher, ['--internal-thread-flood']))
-        assert b'Eresource_limit' in frames, frames
-        assert marker.read_text() == 'clean\n'
-        print('PASS sampled Darwin thread bound', flush=True)
+    frames = finish(start(root, 'convert', launcher, ['--internal-thread-flood']))
+    assert b'Eresource_limit' in frames, frames
+    assert marker.read_text() == 'clean\n'
+    print('PASS sampled per-worker thread bound', flush=True)

@@ -29,7 +29,7 @@ per written file and does not reject larger pre-existing read-only inputs.
 The guardian alone reads packet4 stdin. EOF or a cancellation packet cancels the
 worker. Packet4 output is `S + u32be PID + u32be PGID`, optional `D + diagnostic`,
 optional `E + stable code`, then `X + u32be exit + u8 signal + u8 cleanup`. Errors
-include `resource_limit` for Darwin's sampled memory/thread enforcement. Cleanup
+include `resource_limit` for sampled thread enforcement and Darwin memory enforcement. Cleanup
 0 always means quarantine; an unknown exit status uses `UINT32_MAX`. Never
 release resources merely on receiving E or on the initial helper exiting.
 
@@ -43,19 +43,24 @@ old evidence is removed before launch. The caller must serialize use of a
 workdir and quarantine missing evidence after helper failure.
 
 Linux uses exact executable/resolved-library Landlock rules, a minimal exec
-environment, architecture-checked seccomp, and kernel AS/CPU/FSIZE/NOFILE/CORE/
-NPROC limits. Seccomp permits libc threads. It rejects process creation, network
+environment, architecture-checked seccomp, and kernel AS/CPU/FSIZE/NOFILE/CORE
+limits. Seccomp permits libc threads. It rejects process creation, network
 sockets, process-group changes, signals to unrelated processes, ptrace, io_uring,
-and alternate syscall ABIs. NPROC is a per-UID kernel bound; it is not a
-per-request thread quota and privileged UIDs can bypass it. Production must use
-an unprivileged dedicated gateway UID.
+and alternate syscall ABIs. The guardian reads `/proc/<worker PID>/status` every
+approximately 20 ms and terminates the worker above 64 threads; unavailable
+observation fails closed. Process creation remains denied by seccomp, so this
+thread group contains every confined media task. This avoids `RLIMIT_NPROC`,
+whose per-UID accounting incorrectly included BEAM and other gateway threads.
+The inherited host NPROC limit is unchanged. Production must use an unprivileged
+dedicated gateway UID.
 
 Darwin uses sandbox-exec with exact non-system library paths, OS library/cache
 roots, no Mach service lookup, and no network or process fork. Reading the root
 directory itself is needed by dyld; recursive root access is not allowed. Darwin
 rejects usable RLIMIT_AS limits, so the guardian checks RSS <= 2 GiB and <= 64
-threads every approximately 20 ms. This is sampled enforcement with possible
-overshoot, unlike Linux's hard address-space limit. CPU/file/fd/core limits apply
+threads every approximately 20 ms. Thread enforcement on both platforms, and
+Darwin RSS enforcement, is sampled with possible overshoot; Linux retains its
+hard address-space limit. CPU/file/fd/core limits apply
 on both platforms. No shell or uploaded filename enters command construction.
 
 `selftest` executes the launcher's own denial checks under identical confinement;

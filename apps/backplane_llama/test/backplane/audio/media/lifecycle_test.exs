@@ -102,6 +102,27 @@ defmodule Backplane.Audio.Media.LifecycleTest do
     TempFiles.release(handle)
   end
 
+  test "native worker thread exhaustion terminates media and confirms cleanup", %{policy: policy} do
+    before = Admission.counts().media
+    {:ok, handle} = TempFiles.create(self(), policy)
+    launcher = Runner.launcher()
+
+    with_env("BACKPLANE_AUDIO_FFMPEG_PATH", launcher, fn ->
+      command = %{
+        mode: :convert,
+        args: ["--internal-thread-flood"],
+        output: nil,
+        max_bytes: 1_000_000
+      }
+
+      assert {:error, %{code: "audio_resource_limit"}} = Runner.run(handle, command, policy)
+      assert File.read!(handle.dir <> ".cleanup-confirmed") == "clean\n"
+      assert Admission.counts().media == before
+      assert :ok = TempFiles.release(handle)
+      refute File.exists?(handle.dir)
+    end)
+  end
+
   test "uncertain terminal keeps files and capacity until trusted cleanup proof", %{
     policy: policy
   } do
