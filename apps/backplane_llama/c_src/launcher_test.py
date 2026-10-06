@@ -75,6 +75,23 @@ with tempfile.TemporaryDirectory(prefix='audio-native-') as parent:
         '-of', 'json', '-o', report, out], deadline=10000)))
     assert b'pcm_s16le' in pathlib.Path(report).read_bytes()
     print('PASS real ffmpeg/ffprobe', flush=True)
+    source = os.path.join(root, 'input.media')
+    success(finish(start(root, 'convert', ffmpeg, ['-nostdin', '-hide_banner', '-v', 'error',
+        '-threads', '1', '-f', 'lavfi', '-i',
+        'sine=frequency=440:sample_rate=24000:duration=0.5', '-c:a', 'flac', '-f', 'flac', source],
+        deadline=10000)))
+    report = os.path.join(root, 'probe.json')
+    success(finish(start(root, 'probe', ffprobe, ['-v', 'error', '-protocol_whitelist', 'file,pipe',
+        '-f', 'flac', '-show_streams', '-show_format', '-of', 'json', '-o', report, '-i', source],
+        deadline=10000)))
+    assert b'flac' in pathlib.Path(report).read_bytes()
+    decoded = os.path.join(root, 'decoded.pcm')
+    success(finish(start(root, 'convert', ffmpeg, ['-nostdin', '-hide_banner', '-v', 'error',
+        '-threads', '1', '-filter_threads', '1', '-xerror', '-err_detect', 'explode',
+        '-protocol_whitelist', 'file,pipe', '-f', 'flac', '-i', source, '-map', '0:a:0',
+        '-vn', '-sn', '-dn', '-c:a', 'pcm_s16le', '-f', 's16le', decoded], deadline=10000)))
+    assert pathlib.Path(decoded).stat().st_size > 0
+    print('PASS bounded ffprobe and full decode pipeline', flush=True)
     for action in ('cancel', 'eof', 'timeout', 'helper-kill'):
         p = start(root, 'convert', launcher, ['--internal-hold'], deadline=200 if action == 'timeout' else 10000)
         f = frame(p)
