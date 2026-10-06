@@ -24,6 +24,7 @@ in {
       tailwindcss_4
       pkg-config
       openssl
+      ffmpeg-full
       cargo
       rustc
       beam28Packages.elixir-ls

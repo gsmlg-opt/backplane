@@ -51,6 +51,184 @@ defmodule Backplane.LLM.AccessEvent do
     }
   end
 
+  @audio_operations %{
+    "audio.speech" => "/v1/audio/speech",
+    "audio.transcriptions" => "/v1/audio/transcriptions"
+  }
+  @audio_labels ~w(requested_model resolved_model provider_name credential_ref provider_request_id)a
+  @audio_ids ~w(provider_id provider_api_id provider_model_id provider_model_surface_id)a
+  @audio_counts ~w(request_bytes response_bytes upstream_bytes input_characters usage_characters queue_ms probe_ms conversion_ms first_byte_ms upstream_ms)a
+  @audio_formats ~w(mp3 opus aac flac wav pcm mp4 m4a mpeg mpga ogg webm)
+  @audio_strategies ~w(native passthrough remux transcode)
+
+  @doc "Creates an audio access record without retaining the connection or request body."
+  def start_audio(%Plug.Conn{} = conn, operation) when is_map_key(@audio_operations, operation) do
+    context = Context.get(conn) || Context.root()
+
+    %__MODULE__{
+      context:
+        Context.root(
+          request_id: safe_audio_label(context.request_id) || Id.request_id(),
+          trace_id: safe_audio_label(context.trace_id) || Id.generator().trace_id()
+        ),
+      event_id: Id.generator().event_id(),
+      started_at_mono: System.monotonic_time(:millisecond),
+      operation: operation,
+      api_surface: "openai_audio",
+      http_method: "POST",
+      path: Map.fetch!(@audio_operations, operation),
+      client_id: safe_audio_label(client_id(conn)),
+      attempt_count: 1
+    }
+  end
+
+  @doc "Creates a separate preview execution record without a connection or payload."
+  def start_audio_preview(operation) when operation in [:speech, :transcription] do
+    %__MODULE__{
+      context: Context.root(),
+      event_id: Id.generator().event_id(),
+      started_at_mono: System.monotonic_time(:millisecond),
+      operation:
+        if(operation == :speech, do: "audio.preview.speech", else: "audio.preview.transcriptions"),
+      api_surface: "admin_audio_preview",
+      http_method: "LIVEVIEW",
+      path: "/llama/audio",
+      attempt_count: 1
+    }
+  end
+
+  @doc "Keeps only typed, bounded audio observation fields. Unknown keys are discarded."
+  def sanitize_audio_fields(fields) when is_map(fields) do
+    labels =
+      for key <- @audio_labels,
+          value = safe_audio_label(Map.get(fields, key)),
+          value,
+          into: %{},
+          do: {key, value}
+
+    ids =
+      for key <- @audio_ids,
+          value = safe_audio_label(Map.get(fields, key)),
+          value,
+          into: %{},
+          do: {key, value}
+
+    counts =
+      for key <- @audio_counts,
+          value = safe_audio_count(Map.get(fields, key)),
+          value != nil,
+          into: %{},
+          do: {key, value}
+
+    %{}
+    |> Map.merge(labels)
+    |> Map.merge(ids)
+    |> Map.merge(counts)
+    |> maybe_audio_value(
+      :sample_rate,
+      safe_audio_integer(Map.get(fields, :sample_rate), 1, 192_000)
+    )
+    |> maybe_audio_value(:channels, safe_audio_integer(Map.get(fields, :channels), 1, 8))
+    |> maybe_audio_value(:audio_seconds, safe_audio_seconds(Map.get(fields, :audio_seconds)))
+    |> maybe_audio_value(
+      :input_format,
+      safe_audio_enum(Map.get(fields, :input_format), @audio_formats)
+    )
+    |> maybe_audio_value(
+      :output_format,
+      safe_audio_enum(Map.get(fields, :output_format), @audio_formats)
+    )
+    |> maybe_audio_value(
+      :strategy,
+      safe_audio_enum(Map.get(fields, :strategy), @audio_strategies)
+    )
+    |> maybe_audio_value(:stream, if(is_boolean(Map.get(fields, :stream)), do: fields.stream))
+    |> maybe_audio_value(
+      :provider_dispatched,
+      if(is_boolean(Map.get(fields, :provider_dispatched)), do: fields.provider_dispatched)
+    )
+    |> maybe_audio_value(
+      :paid_uncertain,
+      if(is_boolean(Map.get(fields, :paid_uncertain)), do: fields.paid_uncertain)
+    )
+  end
+
+  @doc "Emits the audio terminal event through v2 even when persistence is disabled."
+  def finalize_audio(%__MODULE__{} = state, fields, outcome, status, error_code)
+      when outcome in [:success, :error, :cancelled, :timeout] do
+    fields = sanitize_audio_fields(fields)
+    duration_ms = max(System.monotonic_time(:millisecond) - state.started_at_mono, 0)
+    status = if is_integer(status) and status in 100..599, do: status, else: nil
+    error_code = safe_audio_label(error_code)
+
+    record = %{
+      operation: state.operation,
+      api_surface: state.api_surface,
+      http_method: state.http_method,
+      path: state.path,
+      request_id: state.context.request_id,
+      trace_id: state.context.trace_id,
+      client_id: state.client_id,
+      event_id: state.event_id,
+      requested_model: fields[:requested_model],
+      resolved_model: fields[:resolved_model],
+      provider_id: fields[:provider_id],
+      provider_name: fields[:provider_name],
+      provider_api_id: fields[:provider_api_id],
+      provider_model_id: fields[:provider_model_id],
+      provider_model_surface_id: fields[:provider_model_surface_id],
+      provider_request_id: fields[:provider_request_id],
+      status: status,
+      outcome: to_string(outcome),
+      error_kind: if(outcome == :success, do: nil, else: to_string(outcome)),
+      error_code: if(outcome == :success, do: nil, else: error_code),
+      stream: fields[:stream] || false,
+      duration_ms: duration_ms,
+      upstream_duration_ms: fields[:upstream_ms],
+      ttft_ms: fields[:first_byte_ms],
+      request_bytes: fields[:request_bytes],
+      response_bytes: fields[:response_bytes],
+      attempt_count: 1,
+      metadata: %{audio: Map.drop(fields, (@audio_labels -- [:credential_ref]) ++ @audio_ids)}
+    }
+
+    Event.emit_stop(:llm_proxy, "request", state.context,
+      event_id: state.event_id,
+      measurements: %{duration_ms: duration_ms, system_time: System.system_time()},
+      attributes: compact_record(record)
+    )
+  end
+
+  defp maybe_audio_value(map, _key, nil), do: map
+  defp maybe_audio_value(map, key, value), do: Map.put(map, key, value)
+
+  defp safe_audio_label(value) when is_binary(value) and byte_size(value) in 1..128 do
+    if String.valid?(value) and String.match?(value, ~r/\A[A-Za-z0-9][A-Za-z0-9._:\/-]*\z/),
+      do: value
+  end
+
+  defp safe_audio_label(_), do: nil
+
+  defp safe_audio_count(value) when is_integer(value) and value >= 0 and value <= 1_000_000_000,
+    do: value
+
+  defp safe_audio_count(_), do: nil
+  defp safe_audio_seconds(value) when is_number(value) and value >= 0 and value <= 600, do: value
+  defp safe_audio_seconds(_), do: nil
+
+  defp safe_audio_integer(value, minimum, maximum)
+       when is_integer(value) and value >= minimum and value <= maximum,
+       do: value
+
+  defp safe_audio_integer(_, _, _), do: nil
+
+  defp safe_audio_enum(value, allowed) when is_atom(value),
+    do: safe_audio_enum(Atom.to_string(value), allowed)
+
+  defp safe_audio_enum(value, allowed) do
+    if value in allowed, do: value
+  end
+
   defp client_id(%Plug.Conn{assigns: %{resource_auth: %{client_id: client_id}}}) do
     client_id
   end

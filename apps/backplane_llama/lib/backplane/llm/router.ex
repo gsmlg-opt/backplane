@@ -36,7 +36,20 @@ defmodule Backplane.LLM.Router do
   }
 
   alias Backplane.Embedding
-  alias Backplane.Transport.CacheBodyReader
+
+  alias Backplane.Audio.{
+    AccessLifecycle,
+    Binding,
+    Config,
+    Downstream,
+    Error,
+    Request,
+    Resolver,
+    Speech,
+    Transcription
+  }
+
+  alias Backplane.Audio.Media.Session
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
   plug(Backplane.Transport.CORS)
@@ -49,13 +62,7 @@ defmodule Backplane.LLM.Router do
 
   plug(Backplane.LLM.ResourceAuthorization)
 
-  plug(Plug.Parsers,
-    parsers: [:json],
-    pass: ["application/json"],
-    json_decoder: Jason,
-    length: 50_000_000,
-    body_reader: {CacheBodyReader, :read_body, []}
-  )
+  plug(Backplane.Audio.RouteParser)
 
   plug(:dispatch)
 
@@ -83,6 +90,14 @@ defmodule Backplane.LLM.Router do
 
   post "/v1/embeddings" do
     proxy_embedding_request(conn)
+  end
+
+  post "/v1/audio/speech" do
+    audio_contract(conn, :speech)
+  end
+
+  post "/v1/audio/transcriptions" do
+    audio_contract(conn, :transcription)
   end
 
   post "/v1/chat/completions" do
@@ -117,6 +132,363 @@ defmodule Backplane.LLM.Router do
   end
 
   # ── Proxy dispatch ────────────────────────────────────────────────────────────
+
+  defp audio_contract(conn, operation) do
+    validator = if operation == :speech, do: &Request.speech/1, else: &Request.transcription/1
+
+    session_result =
+      case {conn.private[:audio_session], conn.private[:audio_observer]} do
+        {session, observer} when is_pid(session) and is_pid(observer) -> {:ok, session}
+        _ -> {:error, Error.new(503, "Audio admission unavailable", nil, "audio_unavailable")}
+      end
+
+    case session_result do
+      {:ok, session} ->
+        try do
+          with {:ok, request} <- validator.(conn.body_params),
+               request = Map.put(request, :observer, conn.private.audio_observer),
+               _ <- AccessLifecycle.update(request.observer, %{requested_model: request.model}),
+               {:ok, resolution} <- Resolver.resolve(operation, request.model),
+               :ok <- Resolver.validate_request(resolution, request),
+               true <- resolution.binding.native_protocol == :minimax do
+            deadline = conn.private.audio_deadline
+            execute_audio(conn, operation, request, resolution, session, deadline)
+          else
+            false ->
+              audio_error(
+                conn,
+                Error.new(
+                  422,
+                  "Unsupported audio provider",
+                  "model",
+                  "audio_provider_unsupported"
+                )
+              )
+
+            {:error, %Error{} = error} ->
+              audio_error(conn, error)
+          end
+        rescue
+          error ->
+            AccessLifecycle.finish(
+              conn.private[:audio_observer],
+              :error,
+              nil,
+              "audio_request_failed"
+            )
+
+            reraise error, __STACKTRACE__
+        catch
+          kind, reason ->
+            AccessLifecycle.finish(
+              conn.private[:audio_observer],
+              :error,
+              nil,
+              "audio_request_failed"
+            )
+
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        after
+          safe_release_audio_session(session)
+
+          case conn.body_params do
+            %{"file" => %Plug.Upload{} = upload} -> Plug.Upload.delete(upload)
+            _ -> :ok
+          end
+        end
+
+      {:error, %Error{} = error} ->
+        audio_error(conn, error)
+    end
+  end
+
+  defp execute_audio(conn, :speech, request, resolution, session, deadline) do
+    owner = self()
+
+    task =
+      owned_audio_task(fn ->
+        owner_ref = Process.monitor(owner)
+
+        consumer = fn event, acc ->
+          ref = make_ref()
+          send(owner, {:audio_event, self(), ref, event})
+
+          receive do
+            {:audio_ack, ^ref, :ok} ->
+              {:ok, acc}
+
+            {:audio_ack, ^ref, {:error, error}} ->
+              {:error, error, acc}
+
+            {:DOWN, ^owner_ref, :process, ^owner, _} ->
+              {:error, Error.new(499, "Client disconnected", nil, "audio_cancelled"), acc}
+          after
+            max(deadline - System.monotonic_time(:millisecond), 0) ->
+              {:error, audio_timeout(), acc}
+          end
+        end
+
+        Speech.run(request, resolution, session, deadline, consumer, nil)
+      end)
+
+    consumer = fn
+      {:chunk, bytes}, conn -> audio_chunk(conn, bytes, "audio/mpeg")
+      {:file, artifact}, conn -> audio_file(conn, artifact)
+    end
+
+    case await_audio_task(task, conn, deadline, consumer) do
+      {:ok, {:ok, _, _metadata}, conn} ->
+        AccessLifecycle.finish(conn.private.audio_observer, :success, 200)
+        conn
+
+      {:ok, {:error, %Error{} = error, _, _metadata}, conn} ->
+        if conn.state in [:chunked, :file] do
+          AccessLifecycle.finish_error(conn.private.audio_observer, error, conn.status)
+
+          raise Plug.Conn.NotSentError,
+            message: "Audio stream failed after response commitment: #{error.code}"
+        else
+          audio_error(conn, error)
+        end
+
+      {:error, %Error{} = error, conn} ->
+        if conn.state in [:chunked, :file] do
+          AccessLifecycle.finish_error(conn.private.audio_observer, error, conn.status)
+          raise Plug.Conn.NotSentError, message: "Audio stream interrupted: #{error.code}"
+        else
+          audio_error(conn, error)
+        end
+    end
+  end
+
+  defp execute_audio(conn, :transcription, request, resolution, session, deadline) do
+    task =
+      owned_audio_task(fn ->
+        Transcription.run(request, resolution, session, deadline)
+      end)
+
+    case await_audio_task(task, conn, deadline, fn _, conn -> {:ok, conn} end) do
+      {:ok, {:ok, text, _metadata}, conn} ->
+        body =
+          if request.response_format == "text", do: text, else: Jason.encode!(%{"text" => text})
+
+        mime = if request.response_format == "text", do: "text/plain", else: "application/json"
+
+        sent =
+          deliver_audio_response(conn, deadline, byte_size(body), fn ->
+            conn |> put_resp_content_type(mime, "utf-8") |> send_resp(200, body)
+          end)
+
+        AccessLifecycle.finish(conn.private.audio_observer, :success, 200)
+        sent
+
+      {:ok, {:error, %Error{} = error, _metadata}, conn} ->
+        audio_error(conn, error)
+
+      {:error, %Error{} = error, conn} ->
+        audio_error(conn, error)
+    end
+  end
+
+  defp deliver_audio_response(conn, deadline, bytes, fun) do
+    case Downstream.start(conn, deadline) do
+      {:ok, downstream} ->
+        try do
+          delivered = Downstream.deliver(downstream, deadline, fun)
+          AccessLifecycle.delivered(conn.private.audio_observer, bytes)
+
+          case Downstream.restore(delivered, downstream) do
+            {:ok, restored} ->
+              restored
+
+            {:error, _} ->
+              audio_disconnected(conn)
+              raise Plug.Conn.NotSentError, message: "Audio client disconnected"
+          end
+        after
+          Downstream.stop(downstream)
+        end
+
+      {:error, _} ->
+        audio_disconnected(conn)
+        raise Plug.Conn.NotSentError, message: "Audio client disconnected"
+    end
+  end
+
+  defp owned_audio_task(fun) do
+    owner = self()
+    task = Task.Supervisor.async_nolink(Backplane.Audio.Media.TaskSupervisor, fun)
+
+    spawn(fn ->
+      owner_ref = Process.monitor(owner)
+      task_ref = Process.monitor(task.pid)
+
+      receive do
+        {:DOWN, ^owner_ref, :process, ^owner, _} -> Process.exit(task.pid, :kill)
+        {:DOWN, ^task_ref, :process, _, _} -> :ok
+      end
+    end)
+
+    task
+  end
+
+  defp await_audio_task(task, conn, deadline, consumer) do
+    case Downstream.start(conn, deadline) do
+      {:ok, downstream} ->
+        try do
+          result = await_audio_loop(task, conn, deadline, consumer, downstream)
+          result_conn = elem(result, tuple_size(result) - 1)
+
+          case Downstream.restore(result_conn, downstream) do
+            {:ok, restored} ->
+              put_elem(result, tuple_size(result) - 1, restored)
+
+            {:error, error} ->
+              AccessLifecycle.finish_error(conn.private.audio_observer, error, result_conn.status)
+              raise Plug.Conn.NotSentError, message: error.message
+          end
+        after
+          Downstream.stop(downstream)
+          if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
+        end
+
+      {:error, error} ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, error, conn}
+    end
+  end
+
+  defp await_audio_loop(%Task{ref: task_ref} = task, conn, deadline, consumer, downstream) do
+    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+    raw = if downstream, do: downstream.raw
+    http2? = match?(%{kind: :http2}, downstream)
+
+    if timeout == 0 do
+      Task.shutdown(task, :brutal_kill)
+      {:error, audio_timeout(), conn}
+    else
+      receive do
+        {:bandit, {:rst_stream, _code}} when http2? ->
+          Task.shutdown(task, :brutal_kill)
+          audio_disconnected(conn)
+          raise Bandit.TransportError, message: "Audio client reset stream", error: :closed
+
+        {tag, socket}
+        when not is_nil(raw) and socket == raw and tag in [:tcp_closed, :ssl_closed] ->
+          Task.shutdown(task, :brutal_kill)
+          audio_disconnected(conn)
+          raise Plug.Conn.NotSentError, message: "Audio client disconnected"
+
+        {tag, socket, _reason}
+        when not is_nil(raw) and socket == raw and tag in [:tcp_error, :ssl_error] ->
+          Task.shutdown(task, :brutal_kill)
+          audio_disconnected(conn)
+          raise Plug.Conn.NotSentError, message: "Audio client disconnected"
+
+        {tag, socket, bytes} when not is_nil(raw) and socket == raw and tag in [:tcp, :ssl] ->
+          with {:ok, next_conn} <- Downstream.append(conn, bytes),
+               :ok <- Downstream.rearm(downstream) do
+            await_audio_loop(task, next_conn, deadline, consumer, downstream)
+          else
+            _ ->
+              Task.shutdown(task, :brutal_kill)
+
+              AccessLifecycle.finish(
+                conn.private.audio_observer,
+                :error,
+                conn.status,
+                "audio_pipeline_too_large"
+              )
+
+              raise Plug.Conn.NotSentError, message: "Audio pipelined input exceeded limit"
+          end
+
+        {:audio_event, pid, ref, event} when pid == task.pid ->
+          case Downstream.deliver(downstream, deadline, fn -> consumer.(event, conn) end) do
+            {:ok, next_conn} ->
+              bytes =
+                case event do
+                  {:chunk, bytes} -> byte_size(bytes)
+                  {:file, artifact} -> artifact.bytes
+                end
+
+              AccessLifecycle.delivered(conn.private.audio_observer, bytes)
+              send(pid, {:audio_ack, ref, :ok})
+              await_audio_loop(task, next_conn, deadline, consumer, downstream)
+
+            {:error, %Error{} = error, next_conn} ->
+              send(pid, {:audio_ack, ref, {:error, error}})
+              await_audio_loop(task, next_conn, deadline, consumer, downstream)
+          end
+
+        {^task_ref, result} ->
+          Task.ignore(task)
+          {:ok, result, conn}
+
+        {:DOWN, ^task_ref, :process, _pid, _reason} ->
+          {:error, Error.new(503, "Audio worker failed", nil, "audio_unavailable"), conn}
+      after
+        timeout ->
+          Task.shutdown(task, :brutal_kill)
+          {:error, audio_timeout(), conn}
+      end
+    end
+  end
+
+  defp audio_timeout,
+    do: Error.new(504, "Audio request timed out", nil, "audio_timeout", "api_error")
+
+  defp audio_file(conn, %{path: path, mime: mime, plan: %{target: %{extension: extension}}}) do
+    if File.regular?(path) do
+      conn =
+        conn
+        |> put_resp_content_type(mime, nil)
+        |> put_resp_header("cache-control", "no-transform")
+        |> put_resp_header("content-disposition", "attachment; filename=\"speech.#{extension}\"")
+        |> send_file(200, path)
+
+      {:ok, conn}
+    else
+      {:error, Error.new(503, "Audio output unavailable", nil, "audio_output_unavailable"), conn}
+    end
+  end
+
+  defp audio_chunk(conn, bytes, mime) do
+    conn =
+      if conn.state == :unset,
+        do:
+          conn
+          |> put_resp_content_type(mime, nil)
+          |> put_resp_header("cache-control", "no-transform")
+          |> send_chunked(200),
+        else: conn
+
+    case chunk(conn, bytes) do
+      {:ok, conn} -> {:ok, conn}
+      {:error, _} -> {:error, Error.new(499, "Client disconnected", nil, "audio_cancelled"), conn}
+    end
+  end
+
+  defp safe_release_audio_session(session) do
+    Session.release(session)
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp audio_error(conn, error) do
+    sent = Error.send(conn, error)
+    AccessLifecycle.finish_error(conn.private[:audio_observer], error)
+    sent
+  end
+
+  defp audio_disconnected(conn) do
+    AccessLifecycle.finish(
+      conn.private[:audio_observer],
+      :cancelled,
+      conn.status,
+      "audio_cancelled"
+    )
+  end
 
   defp strip_repeated_request_prefix(%Plug.Conn{} = conn, prefix) do
     stripped = Enum.drop_while(conn.path_info, &(&1 == prefix))
@@ -701,7 +1073,44 @@ defmodule Backplane.LLM.Router do
         Map.put(entry, "metadata", metadata)
       end
 
-    resolved_entries
+    audio_entries =
+      if Config.enabled?() do
+        enabled_bindings =
+          Binding.list()
+          |> Enum.filter(fn binding ->
+            binding.enabled and binding.provider.enabled and is_nil(binding.provider.deleted_at) and
+              binding.provider_model.enabled
+          end)
+
+        public_names =
+          Enum.map(enabled_bindings, fn binding ->
+            "#{binding.provider.name}/#{binding.provider_model.model}"
+          end) ++
+            Enum.map(custom_aliases, & &1.alias) ++
+            for(
+              binding <- enabled_bindings,
+              binding.provider.name in provider_alias_names,
+              do: binding.provider_model.model
+            )
+
+        for name <- Enum.uniq(public_names),
+            Enum.any?([:speech, :transcription], fn operation ->
+              match?({:ok, _}, Resolver.resolve(operation, name))
+            end) do
+          %{
+            "id" => name,
+            "object" => "model",
+            "created" => 1_700_000_000,
+            "owned_by" => "backplane"
+          }
+        end
+      else
+        []
+      end
+
+    (resolved_entries ++ audio_entries)
+    |> Enum.uniq_by(& &1["id"])
+    |> Enum.sort_by(& &1["id"])
   end
 
   defp selected_model_target(

@@ -59,6 +59,8 @@ tmp/
 /apps/*/data/
 /apps/yellow_dog_dns/priv/zones/
 /apps/geo_ip_db/priv/data/*.mmdb
+/apps/backplane_llama/priv/bin/backplane-audio-launcher
+/apps/backplane_llama/priv/bin/backplane-audio-launcher.tmp.*
 /data/
 
 # Config backup files

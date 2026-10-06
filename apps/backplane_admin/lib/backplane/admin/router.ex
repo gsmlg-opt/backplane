@@ -26,6 +26,7 @@ defmodule Backplane.Admin.Router do
     live("/llama/providers/new", ProviderNewLive, :new)
     live("/llama/providers/:id", ProviderShowLive, :show)
     live("/llama/embedding", EmbeddingLive, :index)
+    live("/llama/audio", AudioLive, :index)
     live("/llama/model-aliases", SettingsLive, :model_aliases)
     live("/llama/codex-catalog", CodexCatalogLive, :index)
     live("/mcp/upstreams", UpstreamsLive, :index)

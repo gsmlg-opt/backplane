@@ -13,12 +13,19 @@ defmodule BackplaneLlama.Application do
         Relayixir,
         Backplane.LLM.ModelResolver,
         route_loader_child(),
-        Backplane.LLM.RateLimiter
+        Backplane.LLM.RateLimiter,
+        {DynamicSupervisor,
+         strategy: :one_for_one, name: Backplane.Audio.AccessLifecycle.Supervisor},
+        Backplane.Audio.Media.Supervisor
       ]
       |> maybe_llm_observability()
       |> Enum.reject(&is_nil/1)
 
-    with {:ok, pid} <- Supervisor.start_link(children, strategy: :one_for_one, name: BackplaneLlama.Supervisor) do
+    with {:ok, pid} <-
+           Supervisor.start_link(children,
+             strategy: :one_for_one,
+             name: BackplaneLlama.Supervisor
+           ) do
       maybe_attach_usage_collector()
       {:ok, pid}
     end

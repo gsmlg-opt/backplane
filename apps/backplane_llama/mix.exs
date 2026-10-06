@@ -11,6 +11,7 @@ defmodule BackplaneLlama.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: [:backplane_audio_launcher] ++ Mix.compilers(),
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -46,5 +47,28 @@ defmodule BackplaneLlama.MixProject do
       {:mox, "~> 1.1", only: :test},
       {:bypass, "~> 2.1", only: :test}
     ]
+  end
+end
+
+# Defined here so the compiler task is available before this app's Elixir build.
+defmodule Mix.Tasks.Compile.BackplaneAudioLauncher do
+  use Mix.Task.Compiler
+  @recursive true
+
+  @impl true
+  def run(_args) do
+    source = Path.join(__DIR__, "c_src/build.sh")
+    output = Path.join(__DIR__, "priv/bin/backplane-audio-launcher")
+
+    # Always build for the current target. In particular, a host Mach-O artifact
+    # copied into a Docker context must never satisfy the Linux build.
+    case System.cmd("sh", [source, output], stderr_to_stdout: true) do
+      {_, 0} ->
+        {:ok, []}
+
+      {message, _} ->
+        Mix.shell().error(message)
+        {:error, []}
+    end
   end
 end

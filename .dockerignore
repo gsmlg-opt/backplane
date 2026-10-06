@@ -5,6 +5,8 @@ _build
 deps
 node_modules
 apps/backplane_host_agent
+apps/backplane_llama/priv/bin/backplane-audio-launcher
+apps/backplane_llama/priv/bin/backplane-audio-launcher.tmp.*
 priv/plts
 .elixir_ls
 .direnv

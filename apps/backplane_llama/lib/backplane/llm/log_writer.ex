@@ -11,6 +11,7 @@ defmodule Backplane.LLM.LogWriter do
   require Logger
 
   alias Backplane.LLM.ProxyRequest
+  alias Backplane.Observability
   alias Backplane.Observability.{Buffer, WriterPolicy}
   alias Backplane.Repo
 
@@ -69,6 +70,25 @@ defmodule Backplane.LLM.LogWriter do
 
   @doc false
   def handle_event(_event, _measurements, metadata, _config) do
+    if audio_event?(metadata) and not Observability.llm_write?() do
+      :ok
+    else
+      enqueue_event(metadata)
+    end
+  end
+
+  defp audio_event?(metadata) do
+    attrs = metadata[:attributes] || metadata["attributes"] || %{}
+
+    (attrs[:operation] || attrs["operation"]) in [
+      "audio.speech",
+      "audio.transcriptions",
+      "audio.preview.speech",
+      "audio.preview.transcriptions"
+    ]
+  end
+
+  defp enqueue_event(metadata) do
     row =
       metadata
       |> row_from_metadata()

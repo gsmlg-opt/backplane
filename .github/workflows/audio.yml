@@ -1,0 +1,135 @@
+name: Audio Integration
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - ".github/workflows/audio.yml"
+      - "docs/audio.md"
+      - "apps/backplane_llama/**"
+      - "apps/backplane_api/test/backplane/api/audio_*_test.exs"
+      - "apps/backplane_api/test/support/audio_sdk_smoke.py"
+      - "apps/backplane_admin/lib/backplane/admin/audio_preview.ex"
+      - "apps/backplane_admin/lib/backplane/admin/live/audio_live.ex"
+      - "apps/backplane_admin/lib/backplane/admin/router.ex"
+      - "apps/backplane_admin/test/backplane/admin/live/audio_*_test.exs"
+      - "apps/backplane_system/priv/repo/migrations/*llm_audio_bindings.exs"
+      - "config/**"
+      - "mix.exs"
+      - "mix.lock"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/audio.yml"
+      - "docs/audio.md"
+      - "apps/backplane_llama/**"
+      - "apps/backplane_api/test/backplane/api/audio_*_test.exs"
+      - "apps/backplane_api/test/support/audio_sdk_smoke.py"
+      - "apps/backplane_admin/lib/backplane/admin/audio_preview.ex"
+      - "apps/backplane_admin/lib/backplane/admin/live/audio_live.ex"
+      - "apps/backplane_admin/lib/backplane/admin/router.ex"
+      - "apps/backplane_admin/test/backplane/admin/live/audio_*_test.exs"
+      - "apps/backplane_system/priv/repo/migrations/*llm_audio_bindings.exs"
+      - "config/**"
+      - "mix.exs"
+      - "mix.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18.4"
+  OTP_VERSION: "28.5.0.5"
+  RUST_VERSION: "1.95.0"
+  MIX_ENV: test
+  PGHOST: /var/run/postgresql
+
+jobs:
+  audio:
+    name: Audio (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install audio and native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ffmpeg python3 python3-venv
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Install pinned official OpenAI SDK for offline conformance
+        run: |
+          python3 -m venv "$RUNNER_TEMP/audio-sdk-venv"
+          "$RUNNER_TEMP/audio-sdk-venv/bin/python" -m pip install --disable-pip-version-check 'openai==2.26.0'
+          "$RUNNER_TEMP/audio-sdk-venv/bin/python" -c 'from importlib.metadata import version; assert version("openai") == "2.26.0"'
+
+      - name: Install PostgreSQL 17 with pgvector
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl --fail --silent --show-error \
+            --output /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-17 postgresql-server-dev-17 build-essential
+          git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+          make -C /tmp/pgvector with_llvm=no
+          sudo make -C /tmp/pgvector with_llvm=no install
+          sudo pg_ctlcluster 16 main stop || true
+          sudo pg_dropcluster --stop 17 main || true
+          sudo pg_createcluster 17 main --start --port 5432
+          sudo -u postgres createuser --superuser "$USER" || true
+          pg_isready -h "$PGHOST"
+
+      - name: Install Mix dependencies
+        run: mix deps.get
+
+      - name: Prepare test database
+        run: mix ecto.setup
+
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+
+      - name: Run scoped audio tests
+        env:
+          BACKPLANE_AUDIO_SDK_PYTHON: ${{ runner.temp }}/audio-sdk-venv/bin/python
+        run: |
+          mix test apps/backplane_llama/test/backplane/audio \
+            apps/backplane_api/test/backplane/api/audio_*_test.exs \
+            apps/backplane_admin/test/backplane/admin/live/audio_*_test.exs
+
+      - name: Run native launcher codec and lifecycle gate
+        run: |
+          python3 apps/backplane_llama/c_src/launcher_test.py \
+            "$GITHUB_WORKSPACE/apps/backplane_llama/priv/bin/backplane-audio-launcher" \
+            "$(command -v ffmpeg)" \
+            "$(command -v ffprobe)"

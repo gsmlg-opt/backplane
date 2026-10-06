@@ -30,6 +30,7 @@ COPY apps/backplane_ai_protocol_testkit/mix.exs ./apps/backplane_ai_protocol_tes
 COPY apps/backplane_auth/mix.exs ./apps/backplane_auth/mix.exs
 COPY apps/backplane_data_case/mix.exs ./apps/backplane_data_case/mix.exs
 COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
+COPY apps/backplane_llama/c_src ./apps/backplane_llama/c_src
 COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
 COPY apps/backplane_mcp_protocol/mix.exs ./apps/backplane_mcp_protocol/mix.exs
 COPY apps/backplane_memory/mix.exs ./apps/backplane_memory/mix.exs
@@ -80,6 +81,7 @@ RUN apt-get update \
     libgcc-s1 \
     libncurses6 \
     libstdc++6 \
+    ffmpeg \
     openssl \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 10001 backplane \
