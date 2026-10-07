@@ -310,7 +310,7 @@ defmodule Backplane.AgentRuntime.CodexCt08Test do
       {:ok, %{}, context}
     end
 
-    assert {:error, %Error{class: :execution_failure}} =
+    assert {:error, %Error{class: :unknown_outcome}} =
              CodeMode.execute(
                registry,
                "run-a",

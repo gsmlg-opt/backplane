@@ -29,6 +29,10 @@ defmodule Backplane.AgentRuntime.Command do
   @callback acknowledge_release(map(), map()) :: :ok | {:error, Error.t()}
   @optional_callbacks reserve: 2, acknowledge_release: 2
 
+  @callback validate_refusal(map(), map(), Error.t()) :: :ok | {:error, Error.t()}
+  @callback capabilities(map()) :: map()
+  @optional_callbacks validate_refusal: 3, capabilities: 1
+
   @callback cancel(map(), map()) :: :ok | {:error, Error.t()}
 
   @spec new(map()) :: {:ok, t()} | {:error, Error.t()}
@@ -144,6 +148,37 @@ defmodule Backplane.AgentRuntime.Command do
   @doc "Acknowledge consumed cleanup evidence so a backend may retire its pinned receipt."
   def acknowledge_release(command, invocation),
     do: lifecycle_callback(command, :acknowledge_release, invocation)
+
+  @doc "Validate backend-issued proof of non-execution; error metadata alone is not proof."
+  def validate_refusal(command, invocation, error) do
+    if function_exported?(command.adapter, :validate_refusal, 3),
+      do: command.adapter.validate_refusal(command, invocation, error),
+      else: {:error, Error.new(:unknown_outcome, "command refusal is unverified")}
+  end
+
+  @doc "Host-verified PTY dimensions for this platform, or an unsupported capability error."
+  def terminal(command) do
+    capabilities =
+      if function_exported?(command.adapter, :capabilities, 1),
+        do: command.adapter.capabilities(command),
+        else: %{}
+
+    case capabilities do
+      %{pty: %{verified: true, platforms: platforms} = terminal} when is_list(platforms) ->
+        rows = Map.get(terminal, :rows, 24)
+        columns = Map.get(terminal, :columns, 80)
+
+        if :os.type() in platforms and is_integer(rows) and rows in 1..1_000 and
+             is_integer(columns) and columns in 1..1_000 do
+          {:ok, %{rows: rows, columns: columns}}
+        else
+          {:error, Error.new(:unsupported_capability, "PTY execution is unavailable")}
+        end
+
+      _ ->
+        {:error, Error.new(:unsupported_capability, "PTY execution is unavailable")}
+    end
+  end
 
   defp lifecycle_callback(command, callback, invocation) do
     if function_exported?(command.adapter, callback, 2),

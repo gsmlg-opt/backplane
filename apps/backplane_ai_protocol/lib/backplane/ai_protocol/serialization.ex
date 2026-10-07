@@ -83,6 +83,7 @@ defmodule Backplane.AiProtocol.Serialization do
     raw_arguments =
       case value.raw_arguments do
         {:json, json} -> %{"encoding" => "json", "value" => json}
+        {:custom, text} -> %{"encoding" => "custom", "value" => text}
         {:structured, structured} -> %{"encoding" => "structured", "value" => structured}
       end
 

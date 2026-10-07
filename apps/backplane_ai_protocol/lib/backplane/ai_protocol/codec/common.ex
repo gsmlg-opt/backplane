@@ -3,6 +3,51 @@ defmodule Backplane.AiProtocol.Codec.Common do
 
   alias Backplane.AiProtocol.{Error, SSE, Usage}
 
+  def reject_custom_tools(request) do
+    custom? =
+      Enum.any?(request.tools || [], &(&1.input_kind == :custom)) or
+        Enum.any?(request.input, fn
+          %{content: blocks} ->
+            Enum.any?(blocks, fn
+              %{type: :tool_call, tool_call: %{raw_arguments: {:custom, _}}} -> true
+              _ -> false
+            end)
+
+          _ ->
+            false
+        end)
+
+    cond do
+      custom? -> unsupported("custom_tools")
+      namespaced_tools?(request) -> unsupported("tool_namespaces")
+      true -> :ok
+    end
+  end
+
+  defp namespaced_tools?(request) do
+    Enum.any?(request.tools || [], &String.contains?(&1.name, "::")) or
+      Enum.any?(request.input, fn
+        %{content: blocks} ->
+          Enum.any?(blocks, fn
+            %{type: :tool_call, tool_call: call} -> String.contains?(call.name, "::")
+            _ -> false
+          end)
+
+        _ ->
+          false
+      end)
+  end
+
+  def unsupported(capability) do
+    {:error,
+     %{
+       Error.incompatible!("Provider cannot preserve requested tool capability", %{
+         "capability" => capability
+       })
+       | upstream_outcome: :not_submitted
+     }}
+  end
+
   def stream_state(opts) do
     %{
       sse: SSE.new(opts),

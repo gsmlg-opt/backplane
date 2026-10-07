@@ -156,7 +156,7 @@ defmodule Backplane.AgentRuntime.CodexCommandReceiptsTest do
              })
 
     for _ <- 1..8 do
-      assert {:error, %Error{class: :resource_conflict}} =
+      assert {:ok, %{is_error: true, error: %Error{class: :resource_conflict, cause: nil}}} =
                Codex.call(ctx.context, "exec_command", %{
                  "cmd" => "printf refused",
                  "login" => false,
@@ -181,6 +181,30 @@ defmodule Backplane.AgentRuntime.CodexCommandReceiptsTest do
              })
 
     eventually(fn -> map_size(:sys.get_state(ctx.server).session_obligations) == 0 end)
+  end
+
+  test "non-start proof binds the exact owner, incarnation, session and refusal", ctx do
+    for _ <- 1..4 do
+      assert :ok = Command.reserve(ctx.command, identity())
+    end
+
+    refused = identity()
+    assert {:error, error} = Command.reserve(ctx.command, refused)
+    assert :ok = Command.validate_refusal(ctx.command, refused, error)
+
+    for changed <- [
+          %{refused | owner_run_id: "other"},
+          %{refused | incarnation: 8},
+          %{refused | session_id: refused.session_id + 1}
+        ] do
+      assert {:error, %Error{class: :unknown_outcome}} =
+               Command.validate_refusal(ctx.command, changed, error)
+    end
+
+    for changed <- [%{error | cause: nil}, %{error | message: "forged refusal"}] do
+      assert {:error, %Error{class: :unknown_outcome}} =
+               Command.validate_refusal(ctx.command, refused, changed)
+    end
   end
 
   test "failed native cleanup survives output eviction and successful receipt churn", ctx do

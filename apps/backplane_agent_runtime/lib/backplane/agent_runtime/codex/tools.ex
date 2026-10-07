@@ -73,9 +73,11 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
   defp exec_command(%{command: command, caller: caller} = context, args) do
     with :ok <- reject_unsupported_exec_options(args),
+         {:ok, terminal} <- command_terminal(command, args),
          {:ok, invocation} <- command_args(args, caller, context),
          {:ok, session_id} <- reserve_command_session(context, command, invocation) do
-      invocation = Map.put(invocation, :session_id, session_id)
+      invocation =
+        Map.merge(invocation, %{session_id: session_id, tty: terminal != nil, terminal: terminal})
 
       start =
         with :ok <- Command.reserve(command, invocation) do
@@ -99,18 +101,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
               end
           end
 
-        {:error,
-         %Error{details: %{launch_status: :never_started, reservation: :not_created}} = error} ->
-          case withdraw_command_session(context, session_id, invocation) do
-            :ok -> {:error, error}
-            {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
-          end
-
         {:error, %Error{} = error} ->
-          case release_command_session(context, session_id, invocation) do
-            {:ok, _} -> {:error, error}
-            {:error, %Error{} = cleanup_error} -> {:error, cleanup_error}
-          end
+          settle_command_refusal(context, command, session_id, invocation, error)
       end
     end
   end
@@ -118,13 +110,36 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   defp exec_command(_context, _args),
     do: {:error, Error.new(:unsupported_capability, "command and caller are not configured")}
 
+  defp settle_command_refusal(context, command, id, invocation, error) do
+    verified? = Command.validate_refusal(command, invocation, error) == :ok
+
+    cleanup =
+      if verified? and Map.get(error.details, :reservation) == :not_created,
+        do: withdraw_command_session(context, id, invocation),
+        else: release_command_session(context, id, invocation)
+
+    case cleanup do
+      result when result == :ok or elem(result, 0) == :ok ->
+        if verified?,
+          do: {:ok, %{is_error: true, error: %{error | cause: nil}}},
+          else: {:error, error}
+
+      {:error, %Error{} = cleanup_error} ->
+        {:error, cleanup_error}
+    end
+  end
+
+  defp command_terminal(command, args) do
+    if Map.get(args, "tty", false), do: Command.terminal(command), else: {:ok, nil}
+  end
+
   defp write_stdin(
          %{command: command, caller: caller, session_registry: registry} = context,
          %{"session_id" => session_id} = args
        )
        when is_pid(registry) and is_integer(session_id) do
-    caller_run_id = Map.get(caller, :run_id)
-    incarnation = Map.get(context, :incarnation, 1)
+    caller_run_id = resource_owner_id(context, caller)
+    incarnation = resource_incarnation(context)
     invocation = %{owner_run_id: caller_run_id, incarnation: incarnation}
 
     with {:ok, session} <-
@@ -144,9 +159,9 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   end
 
   # Compatibility path for callers that still hold the opaque Backplane job.
-  defp write_stdin(%{command: command, caller: caller}, args) do
+  defp write_stdin(%{command: command, caller: caller} = context, args) do
     job = Map.get(args, "job") || Map.get(args, :job)
-    invocation = %{owner_run_id: Map.get(caller, :run_id)}
+    invocation = %{owner_run_id: resource_owner_id(context, caller)}
 
     with true <- is_map(job) or {:error, Error.new(:validation, "session_id is required")},
          {:ok, result} <- Command.read(command, invocation, job, cursor: 0) do
@@ -243,8 +258,8 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
          arguments: [shell_flag, cmd],
          workspace: workspace,
          environment: %{},
-         owner_run_id: Map.get(caller, :run_id),
-         incarnation: Map.get(context, :incarnation, 1),
+         owner_run_id: resource_owner_id(context, caller),
+         incarnation: resource_incarnation(context),
          owner_pid: Map.get(context, :owner_pid)
        }}
     else
@@ -253,11 +268,13 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     end
   end
 
+  defp resource_owner_id(%{resource_owner: %{owner_id: owner}}, _caller), do: owner
+  defp resource_owner_id(_context, caller), do: Map.get(caller, :run_id)
+  defp resource_incarnation(%{resource_owner: %{incarnation: incarnation}}), do: incarnation
+  defp resource_incarnation(context), do: Map.get(context, :incarnation, 1)
+
   defp reject_unsupported_exec_options(args) do
     cond do
-      Map.get(args, "tty", false) ->
-        {:error, Error.new(:unsupported_capability, "PTY execution is unavailable")}
-
       Map.get(args, "sandbox_permissions", "use_default") != "use_default" ->
         {:error, Error.new(:forbidden, "sandbox override was not granted by the host")}
 

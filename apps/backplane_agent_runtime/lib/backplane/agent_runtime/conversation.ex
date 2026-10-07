@@ -12,7 +12,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     ToolRegistry
   }
 
-  alias Backplane.AgentRuntime.Codex.ResourceRegistry
+  alias Backplane.AgentRuntime.Codex.{ResourceRegistry, Session}
 
   alias Backplane.AgentRuntime.Kernel, as: RunKernel
 
@@ -37,11 +37,18 @@ defmodule Backplane.AgentRuntime.Conversation do
   """
 
   def start_link(opts) do
-    with {:ok, opts} <- admit_initial_catalog(opts),
+    with :ok <- validate_session_options(opts),
+         {:ok, opts} <- admit_initial_catalog(opts),
          {:ok, _} <- Execution.validate_limits(opts),
          {:ok, _} <- Budget.new(%{work: Keyword.get(opts, :work, 100)}) do
       GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
     end
+  end
+
+  defp validate_session_options(opts) do
+    if Keyword.has_key?(opts, :run) and Keyword.has_key?(opts, :session_binding),
+      do: {:error, Error.new(:forbidden, "restored runs cannot attach a session binding")},
+      else: :ok
   end
 
   defp admit_initial_catalog(opts) do
@@ -188,7 +195,20 @@ defmodule Backplane.AgentRuntime.Conversation do
       resource_cleanup: :not_requested
     }
 
-    {:ok, state}
+    case Keyword.get(opts, :session_binding) do
+      nil ->
+        {:ok, state}
+
+      binding ->
+        if binding.run_id == run.run_id and binding.run_incarnation == run.incarnation do
+          case Session.attach(binding, catalog) do
+            :ok -> {:ok, state}
+            {:error, error} -> {:stop, error}
+          end
+        else
+          {:stop, Error.new(:forbidden, "conversation identity does not match session binding")}
+        end
+    end
   end
 
   @impl true
@@ -351,6 +371,13 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   @impl true
+  def handle_info({:codex_session_close, token}, s) do
+    case Keyword.get(s.opts, :session_binding) do
+      %{token: ^token} -> {:noreply, stop(s, :cancelled)}
+      _ -> {:noreply, s}
+    end
+  end
+
   def handle_info({ref, result}, %{nested: %{task: %{ref: ref}} = nested} = s) do
     clear_task(nested)
     {:noreply, complete_nested(s, normalize_nested_result(result))}
@@ -1003,18 +1030,22 @@ defmodule Backplane.AgentRuntime.Conversation do
           checkpoint(s, %{s.conversation | follow_up: rest}, &begin_prompt(&1, message, :new))
 
         [] ->
-          s = cleanup_resources(s)
+          s = prepare_finish_resources(s, outcome)
 
           if s.resource_cleanup == :confirmed do
             input = Map.merge(identity(s), %{status: outcome, outcome: turn})
 
             commit(s, {:finish, now(), input}, %{}, [], fn s, _ ->
-              s = %{s | phase: :terminal}
+              s = acknowledge_finish_resources(%{s | phase: :terminal}, outcome)
 
-              emit(s, %{
-                type: if(outcome == :completed, do: :run_completed, else: :run_failed),
-                outcome: turn
-              })
+              if s.resource_cleanup == :confirmed do
+                emit(s, %{
+                  type: if(outcome == :completed, do: :run_completed, else: :run_failed),
+                  outcome: turn
+                })
+              else
+                emit(s, %{type: :session_detach_failed, error: s.last_error})
+              end
 
               s
             end)
@@ -1718,9 +1749,66 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp resource_registries(_), do: []
 
   defp cleanup_resources(%{resource_cleanup: status} = s) when status != :not_requested,
-    do: s
+    do: cleanup_session_resources(s)
 
   defp cleanup_resources(s) do
+    if Keyword.has_key?(s.opts, :session_binding),
+      do: cleanup_session_resources(s),
+      else: cleanup_run_resources(s)
+  end
+
+  defp prepare_finish_resources(s, :completed) do
+    case Keyword.get(s.opts, :session_binding) do
+      nil ->
+        cleanup_resources(s)
+
+      binding ->
+        case Session.prepare_detach(binding) do
+          :ok -> %{s | resource_cleanup: :confirmed}
+          {:error, error} -> %{s | resource_cleanup: {:uncertain, error}, last_error: error}
+        end
+    end
+  end
+
+  defp prepare_finish_resources(s, _), do: cleanup_resources(s)
+
+  defp acknowledge_finish_resources(s, :completed) do
+    case Keyword.get(s.opts, :session_binding) do
+      nil ->
+        s
+
+      binding ->
+        case Session.detach(binding) do
+          {:ok, _} ->
+            s
+
+          {:error, error} ->
+            s = cleanup_session_resources(s)
+            %{s | resource_cleanup: {:uncertain, error}, last_error: error}
+        end
+    end
+  end
+
+  defp acknowledge_finish_resources(s, _outcome), do: s
+
+  defp cleanup_session_resources(s) do
+    case Keyword.get(s.opts, :session_binding) do
+      nil ->
+        s
+
+      binding ->
+        result = Session.close(binding, run_fenced: true)
+
+        status =
+          if match?({:ok, %{status: :confirmed}}, result),
+            do: :confirmed,
+            else: {:uncertain, result}
+
+        %{s | resource_cleanup: status}
+    end
+  end
+
+  defp cleanup_run_resources(s) do
     # Run all registry requests concurrently under one run cleanup deadline.
     # Killing a waiter on timeout does not assert that external cleanup finished;
     # the registry keeps its own supervised work and reconciliation evidence.
@@ -1728,7 +1816,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       Enum.map(s.resource_registries, fn registry ->
         Task.Supervisor.async_nolink(s.supervisor, fn ->
           try do
-            ResourceRegistry.cancel_owner(registry, s.run.run_id)
+            ResourceRegistry.close_owner(registry, s.run.run_id)
           catch
             :exit, reason -> {:error, inspect(reason)}
           end

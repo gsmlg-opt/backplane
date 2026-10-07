@@ -53,6 +53,7 @@ defmodule Backplane.AiProtocol.Request do
          {:ok, model} <- model(Map.get(attrs, :model)),
          {:ok, input} <- input(Map.get(attrs, :input), opts),
          {:ok, tools} <- tools(attrs[:tools], opts),
+         :ok <- unique_tools_and_calls(input, tools),
          :ok <- optional_map(attrs, :settings, limits),
          :ok <- optional_map(attrs, :output_constraints, limits),
          :ok <- optional_map(attrs, :correlation, limits),
@@ -77,6 +78,20 @@ defmodule Backplane.AiProtocol.Request do
 
   @doc false
   def keys, do: @keys
+
+  defp unique_tools_and_calls(input, tools) do
+    ids =
+      for %{content: content} <- input,
+          %{type: :tool_call, tool_call: call} <- content,
+          do: call.id
+
+    names = Enum.map(tools, & &1.name)
+
+    if MapSet.size(MapSet.new(ids)) == length(ids) and
+         MapSet.size(MapSet.new(names)) == length(names),
+       do: :ok,
+       else: {:error, Error.invalid!("Duplicate tool name or call ID")}
+  end
 
   defp model(%{} = model), do: {:ok, model}
   defp model(model) when is_binary(model) and model != "", do: {:ok, model}

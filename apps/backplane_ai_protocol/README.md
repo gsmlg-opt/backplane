@@ -13,11 +13,12 @@ provider presets, and durable observation.
 
 ## Provider codec API
 
-`Backplane.AiProtocol.Codec` is a pure facade with three supported selectors:
+`Backplane.AiProtocol.Codec` is a pure facade with four supported selectors:
 
 - `:anthropic` for Anthropic Messages
 - `:openai` for OpenAI Chat Completions and compatible APIs
 - `:google` for Google Gemini GenerateContent
+- `:openai_responses` for Responses text, JSON functions and raw custom tools
 
 The facade exposes:
 
@@ -54,9 +55,43 @@ opaque provider state, usage, terminal state, or a structured error. Hosts must
 decide how those events become runtime messages and must not treat protocol
 terminal observation as transport/process ownership.
 
-The OpenAI Responses observer remains an observation helper for Backplane's
-native proxy path. It is not an OpenAI Responses client codec, and `:responses`
-is not a supported `Codec` selector.
+The OpenAI Responses observer remains a separate observation helper for Backplane's
+native proxy path. `:openai_responses` selects the client codec; `:responses` is
+not an alias.
+
+## Custom tool input and canonical namespaces
+
+JSON tools retain the default `input_kind: :function`, `input_schema` map and
+`{:json, bytes}` or `{:structured, map}` arguments. Custom definitions explicitly
+use `input_kind: :custom`, optional bounded `format` metadata, and no JSON schema.
+Custom calls use `raw_arguments: {:custom, text}`; patches and JavaScript remain
+text and are never wrapped in a synthetic JSON object. Constructors validate
+UTF-8 and existing portable-value limits (262,144 bytes per string by default).
+
+Names may be unqualified or use a canonical `namespace::name` identity. Responses
+encodes namespace tool declarations and separate native call `namespace`/`name`
+fields, then reconstructs the canonical identity on decode. Chat Completions,
+Anthropic and Google codecs reject custom input and canonical namespaces with
+an incompatible capability and `upstream_outcome: :not_submitted` before a host
+can dispatch the request.
+
+Responses projects `custom_tool_call`, `response.custom_tool_call_input.delta`,
+`response.custom_tool_call_input.done`, and `custom_tool_call_output`. Tool result
+history must contain the associated typed call so the codec can choose function
+or custom output. Stream deltas identify input kind in
+`extensions["openai_responses::input_kind"]`; completed content retains the tagged
+arguments. Duplicate call IDs, unknown/mismatched item IDs, changed completion
+input, incomplete terminals and cumulative input overflow are rejected. Use
+`max_tool_input_bytes` on Responses stream/response decoding to tighten the input
+bound. Retained streams default to 128 calls and 1,048,576 total tool-input bytes;
+`max_tool_calls` and `max_total_tool_input_bytes` can tighten these limits. SSE
+framing limits also apply.
+
+The Responses codec supports text, function/custom calls, text results, usage
+and terminal events. It rejects images, reasoning, opaque provider state and
+unsupported events. This subset does not establish complete provider parity or
+enable cross-protocol gateway routes. All credentials, approvals and execution
+authority remain host-owned.
 
 ## Opaque provider state
 

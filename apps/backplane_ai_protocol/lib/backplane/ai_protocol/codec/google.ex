@@ -26,7 +26,8 @@ defmodule Backplane.AiProtocol.Codec.Google do
   def encode_rest_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Common.reject_state_references(request),
+    with :ok <- Common.reject_custom_tools(request),
+         :ok <- Common.reject_state_references(request),
          :ok <- validate_provider_states(request.input, destination),
          {:ok, contents} <- encode_contents(request.input),
          {:ok, declarations} <- encode_tools(request.tools),
@@ -533,7 +534,8 @@ defmodule Backplane.AiProtocol.Codec.Google do
   defp stop_reason("MAX_TOKENS"), do: :max_output_tokens
 
   defp stop_reason(reason)
-       when reason in ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT"], do: :safety
+       when reason in ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT"],
+       do: :safety
 
   defp stop_reason("STOP"), do: :stop
   defp stop_reason(nil), do: :unknown

@@ -9,7 +9,8 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Common.reject_state_references(request),
+    with :ok <- Common.reject_custom_tools(request),
+         :ok <- Common.reject_state_references(request),
          :ok <-
            Common.reject_reserved(request.settings, request.output_constraints, [
              "model",

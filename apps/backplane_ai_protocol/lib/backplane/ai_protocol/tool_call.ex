@@ -13,7 +13,8 @@ defmodule Backplane.AiProtocol.ToolCall do
 
   @type structured_arguments :: map()
 
-  @type raw_arguments :: {:json, binary()} | {:structured, structured_arguments()}
+  @type raw_arguments ::
+          {:json, binary()} | {:structured, structured_arguments()} | {:custom, binary()}
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -75,7 +76,7 @@ defmodule Backplane.AiProtocol.ToolCall do
   end
 
   defp tool_name(value) when is_binary(value) and value != "" and byte_size(value) <= 256 do
-    if String.match?(value, ~r/^[a-zA-Z0-9_.-]+$/) do
+    if String.match?(value, ~r/^[a-zA-Z0-9_.-]+(?:::[a-zA-Z0-9_.-]+)?$/) do
       {:ok, value}
     else
       {:error, Error.invalid!("Tool call name contains invalid characters")}
@@ -91,12 +92,20 @@ defmodule Backplane.AiProtocol.ToolCall do
     end
   end
 
+  defp raw_arguments({:custom, bytes}, limits) when is_binary(bytes) do
+    with :ok <- Backplane.AiProtocol.Validation.term(bytes, limits),
+         do: {:ok, {:custom, bytes}}
+  end
+
   defp raw_arguments({:structured, value}, limits) do
     with {:ok, _bytes} <- structured_arguments(value, limits),
          :ok <- Backplane.AiProtocol.Validation.term(value, limits) do
       {:ok, {:structured, value}}
     end
   end
+
+  defp raw_arguments(_value, _limits),
+    do: {:error, Error.invalid!("Tool arguments must be JSON, structured object, or custom text")}
 
   defp structured_arguments(value, limits) when is_map(value) do
     case Backplane.AiProtocol.Validation.term(value, limits) do

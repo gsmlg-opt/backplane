@@ -161,4 +161,23 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentCloseTest do
     assert Process.alive?(runtime)
     assert Process.alive?(state.child_supervisor)
   end
+
+  test "session close attempts a live sibling after an uncertain child's settlement" do
+    {:ok, runtime} = start_runtime(self())
+    uncertain = spawn(runtime, "uncertain")
+    sibling = spawn(runtime, "sibling")
+    state = :sys.get_state(runtime)
+    uncertain_pid = state.agents[agent_name(uncertain)].pid
+    sibling_pid = state.agents[agent_name(sibling)].pid
+    Process.exit(uncertain_pid, :kill)
+
+    assert {:error, %Error{class: :unknown_outcome}} = MultiAgent.close_session(runtime)
+    state = :sys.get_state(runtime)
+    assert state.session_closed
+    assert match?({:uncertain, %Error{}}, state.agents[agent_name(uncertain)].closure)
+    assert state.agents[agent_name(sibling)].closure == :confirmed
+    assert state.agents[agent_name(sibling)].pid == nil
+    refute Process.alive?(sibling_pid)
+    assert {:error, %Error{class: :unknown_outcome}} = MultiAgent.close_session(runtime)
+  end
 end

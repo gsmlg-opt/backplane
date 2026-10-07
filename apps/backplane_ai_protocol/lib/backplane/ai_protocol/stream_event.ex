@@ -3,7 +3,9 @@ defmodule Backplane.AiProtocol.StreamEvent do
   One ordered provider stream observation.
 
   `index` is the provider item/tool index. `call_id` is the canonical call identity and
-  `native_id` preserves a distinct provider identity. Argument deltas remain raw JSON bytes.
+  `native_id` preserves a distinct provider identity. Argument deltas remain raw input bytes. Responses custom deltas carry
+  `extensions["openai_responses::input_kind"] == "custom"`; completed calls retain
+  the `{:custom, text}` argument tag.
   """
 
   defstruct [

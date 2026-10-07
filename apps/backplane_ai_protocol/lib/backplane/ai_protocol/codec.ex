@@ -2,7 +2,7 @@ defmodule Backplane.AiProtocol.Codec do
   @moduledoc """
   Pure provider codec facade.
 
-  Supported selectors are `:anthropic`, `:openai`, and `:google`. Request encoding accepts
+  Supported selectors are `:anthropic`, `:openai`, `:google`, and `:openai_responses`. Request encoding accepts
   `stream: boolean()`. Streaming functions retain state only in the value returned to the caller.
   Transport, authentication, retries, and execution remain host-owned.
   """
@@ -63,6 +63,7 @@ defmodule Backplane.AiProtocol.Codec do
   end
 
   defp implementation(:anthropic), do: Backplane.AiProtocol.Codec.Anthropic
+  defp implementation(:openai_responses), do: Backplane.AiProtocol.Codec.OpenAIResponses
   defp implementation(:openai), do: Backplane.AiProtocol.Codec.OpenAI
   defp implementation(:google), do: Backplane.AiProtocol.Codec.Google
   defp implementation(_), do: nil

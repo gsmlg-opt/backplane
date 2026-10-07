@@ -9,7 +9,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Common.reject_state_references(request),
+    with :ok <- Common.reject_custom_tools(request),
+         :ok <- Common.reject_state_references(request),
          :ok <-
            Common.reject_reserved(request.settings, request.output_constraints, [
              "model",
@@ -171,7 +172,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
          reasoning,
          details
        )
-       when is_binary(text), do: encode_blocks(rest, content, calls, [text | reasoning], details)
+       when is_binary(text),
+       do: encode_blocks(rest, content, calls, [text | reasoning], details)
 
   defp encode_blocks(
          [%ContentBlock{type: :tool_call, tool_call: call} | rest],

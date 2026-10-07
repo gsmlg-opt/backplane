@@ -1,3 +1,12 @@
+# Current Code Mode adapter scope — internal request #54
+
+The current PR extends the existing packaged Deno process adapter. It does not
+migrate to Denox. The source contract remains Codex revision
+`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`; current guarantees, fixtures, and
+remaining native-engine differential limits are described in
+[code-mode-conformance.md](code-mode-conformance.md). The milestone recorded
+below is historical and does not describe these new changes.
+
 # Code Mode backend decision — 2026-10-01
 
 The current milestone repairs ordinary commands and the shared Conversation
