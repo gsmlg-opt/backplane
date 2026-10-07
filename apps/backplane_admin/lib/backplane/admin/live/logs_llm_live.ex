@@ -148,7 +148,7 @@ defmodule Backplane.Admin.LogsLlmLive do
             <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
           </:col>
           <:col :let={row} label="Status">{row.status || "-"}</:col>
-          <:col :let={row} label="Latency">{row.duration_ms || "-"} ms</:col>
+          <:col :let={row} label="Duration">{row.duration_ms || "-"} ms</:col>
           <:col :let={row} label="TTFT" header={ttft_label(assigns)}>{format_ttft(row)}</:col>
           <:col :let={row} label="T/S" header={tokens_per_second_label(assigns)}>{format_tokens_per_second(row)}</:col>
           <:col :let={row} label="Input Tokens">{format_token_count(row.input_tokens)}</:col>
