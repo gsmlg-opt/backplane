@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `ToolEffects.reject/2` for trusted host-backend rejection before dispatch.
+  Validate the exact operation before provider continuation; plain errors,
+  mismatched/replayed identities and unknown outcomes remain fail-closed.
+
 - R22: retain already-dispatched mutating tool invocations when a nested worker
   dies, times out, or returns an uncertain result. Outer success cannot settle
   the effect; confirmed read-only failures remain recoverable.
@@ -11,9 +15,9 @@
 - R24: verified command cleanup updates retained output cleanup status for the
   exact session, owner, and incarnation, while preserving the original execution
   outcome, output, and historical cleanup error.
-- R22 remains under repair: the current full Linux runtime run has three command
-  lifecycle failures, including two confirmed non-start refusals now classified
-  as uncertain. See the follow-up validation record before upgrading.
+- Codex command non-start refusals use the validated backend receipt contract
+  repaired in v1.10.12. Generic host tools use the explicit pre-dispatch rejection
+  contract above; error classes alone remain insufficient evidence.
 - R18/R21: distinguish trusted pre-launch refusal from ambiguous command launch;
   retain cancellation fencing and actionable conflicts, and bound recent
   confirmed-release receipts separately from tracked cleanup obligations.

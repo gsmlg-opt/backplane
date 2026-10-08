@@ -145,6 +145,8 @@ mkdir -p "$conversation_fixture/test/fixtures"
 cp -R "$script_dir/../test/agent_runtime_packages/conversation/." "$conversation_fixture/"
 cp "$source_dir/test/backplane/agent_runtime/conversation_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/conversation_test.exs"
+cp "$source_dir/test/backplane/agent_runtime/conversation_rejections_test.exs" \
+  "$conversation_fixture/test/backplane/agent_runtime/conversation_rejections_test.exs"
 cp "$source_dir/test/backplane/agent_runtime/input_schema_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/input_schema_test.exs"
 cp "$source_dir/test/backplane/agent_runtime/store_conformance_test.exs" \

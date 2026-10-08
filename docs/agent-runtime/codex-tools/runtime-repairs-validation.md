@@ -1,5 +1,11 @@
 # Runtime repairs validation — 2026-10-01
 
+The current generic host-rejection contract and its validation are recorded in
+[the 2026-10-09 follow-up](#host-rejection-contract-follow-up--2026-10-09-issue-60).
+Earlier failed command-lifecycle results below are historical; the Codex
+command refusal repair shipped in v1.10.12. Deferred engine guarantees remain
+separate from the generic host contract.
+
 Work was performed on `main`, initially clean at
 `d347040395bdab31bbb8a27dc3278a32b0acba4c`, which contains the reviewed
 `60a9be615b874bc1d7f721bd38b3a07e68562c5e`. Validation was performed before commit.
@@ -303,3 +309,57 @@ trees; these process-local states have no hot migration. No new Store fields,
 command adapter callbacks, or recovery framework were added. Existing optional
 adapter callbacks remain optional. An already failed ResourceRegistry entry
 cannot be reset through a public API, even after verified backend cleanup.
+
+
+## Host rejection contract follow-up — 2026-10-09 (issue #60)
+
+Issue [#60](https://github.com/gsmlg-opt/backplane/issues/60) reports Synapsis
+host-tool approval refusals becoming uncertain after the Runtime upgrade. The
+registered host backend returned plain `{:error, Error}` before its Gateway
+call. For a potentially mutating descriptor, Runtime cannot infer non-execution
+from an error class or metadata. The supported contract in v1.10.14 is now
+`ToolEffects.reject(operation, error)` at that trusted pre-dispatch branch;
+[EMBEDDING.md](../../../apps/backplane_agent_runtime/EMBEDDING.md) gives the
+adapter pattern and limits.
+
+Execution verifies the rejection's exact operation identity and arguments
+before publishing a structured error and settling the invocation. Direct and
+nested paths continue the provider; forged/malformed/replayed identities,
+explicit unknown outcomes, and results arriving after cancellation remain
+fail-closed. The helper asserts the trusted host's pre-dispatch decision; it does
+not inspect external execution or reconcile a tool that already ran. Existing
+host adapters must adopt it explicitly. Generic errors retain their current
+classification.
+
+Validation used Linux Elixir 1.18.5 / OTP 28, Deno 2.8.3 on PATH, and the native
+Coreutils prerequisite:
+
+- Standalone Runtime: 568 tests, zero failures; warnings-as-errors compilation
+  and formatting passed. The new conversation regressions failed on the
+  unmodified source before the implementation.
+- `scripts/verify_agent_runtime_package.sh`: docs/compile/format and all 568
+  source tests passed; 95 tests passed against the extracted artifact, including
+  the new rejection cases. Empty-tool, bundled-basic, fake-backend, embedded and
+  Codex consumer examples passed. The read-only Sigma source probe passed at
+  `c6e916cabfb38ac20e4c3d4ccdd43652af607f38`.
+- The exact Codex inventory check passed: 16 families, 66 entries, unchanged pin
+  `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. Only hashes for the two changed
+  generic Runtime source files were refreshed.
+
+Consumer comparison used an isolated Synapsis checkout at
+`5d4f0ac07a1606d0a3708eebf93a264ff5d23556`, seed 780259, and the three files
+named in the issue. Its unchanged Runtime 1.10.4 pin ran 35 tests with one
+pending-approval timeout failure. With Runtime 1.10.14 and pre-Gateway rejection
+adoption, the unchanged tests ran with three failures: that same timeout, a
+manual backend fixture lacking complete operation identity, and an old assertion
+expecting provider completion after a dispatched tool's unknown timeout.
+
+After supplying the manual fixture's exact operation identity and changing only
+the dispatched-timeout expectation to uncertain cancellation with retained
+intent, 34 checks passed. Only the unchanged baseline pending-approval timeout
+assertion was excluded. All eight daemon tests and all three AbortableHTTP tests
+passed in both comparisons. Approval/grant rejection, registration replacement
+and disable, approved execution, task cancellation and no-retry checks passed.
+The post-Gateway backend error handling was unchanged. These are supported
+contract checks, not an unmodified consumer full-suite pass or a macOS
+reproduction. No Synapsis main files or dependency pin were changed.
