@@ -104,12 +104,39 @@ return success, OS cleanup, cancellation, or a late Task result cannot consume
 or replay it. Explicit `unknown_outcome` stays uncertain even for a read-only
 descriptor; an ordinary confirmed read-only error can be handled. Error text,
 model arguments, and `retry_safe` do not prove that a mutation did not run.
-This R22 repair is not yet a validated host contract: the current full Linux
-runtime suite fails three command lifecycle tests. Two trusted confirmed
-non-start refusals are incorrectly treated as uncertain, and an older ambiguous
-launch test still expects provider continuation. See the follow-up section in
-[runtime-repairs-validation.md](https://github.com/gsmlg-opt/backplane/blob/main/docs/agent-runtime/codex-tools/runtime-repairs-validation.md)
-before upgrading.
+A registered host backend that rejects an invocation **before dispatching any
+external effect** can return `ToolEffects.reject(operation, error)` instead of a
+plain error:
+
+```elixir
+alias Backplane.AgentRuntime.{Error, ToolEffects}
+
+def execute(operation) do
+  with :ok <- authorize_without_dispatch(operation) do
+    dispatch_tool(operation)
+  else
+    {:error, %Error{} = error} -> ToolEffects.reject(operation, error)
+  end
+end
+```
+
+This is an assertion by the trusted backend, not independent runtime observation
+of the host. Use it only for checks completed before dispatch: rejected scoped
+approval, expired or mismatched grants, or a changed/disabled host registration.
+The rejection binds the current operation's run/incarnation, provider attempt,
+invocation, descriptor/catalog identity and exact arguments. Execution validates
+it before returning a structured `is_error: true` result to the provider and
+settling that invocation. The host must use the exact runtime operation; changed,
+incomplete or replayed identities fail closed. `:unknown_outcome` cannot be
+converted to a rejection.
+
+Do not call this helper for an error returned by an already-dispatched tool,
+for a timeout/crash, or based on missing backend records. Plain errors and error
+metadata claiming non-execution retain their existing uncertainty classification.
+Late rejection results cannot revive cancelled or timed-out work. Host adapters
+that currently return plain pre-dispatch errors, including the Synapsis adapter
+reported in [#60](https://github.com/gsmlg-opt/backplane/issues/60), must explicitly
+adopt this contract; upgrading the package alone does not reclassify those errors.
 
 For descriptors with `requires_approval: true`, the runtime asks for an exact
 operation approval before invocation; only `:approved` allows dispatch. It binds

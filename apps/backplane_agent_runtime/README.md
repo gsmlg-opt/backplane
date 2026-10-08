@@ -5,6 +5,11 @@ configuration, history, UI and public protocols. Optional tools and their backen
 start only when selected by the host. No Phoenix, database, Sigma or Backplane
 server application is required.
 
+Trusted host backends can return `ToolEffects.reject(operation, error)` for a
+proved rejection before dispatch, preserving provider continuation without
+weakening uncertain-effect handling. Existing adapters returning plain errors
+must adopt this explicit contract; see [EMBEDDING.md](EMBEDDING.md).
+
 The package uses `jsonschex 0.10.0` as its production JSON Schema Draft
 2020-12 engine; it is intentionally not dependency-free.
 

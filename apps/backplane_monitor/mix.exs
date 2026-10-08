@@ -4,7 +4,7 @@ defmodule BackplaneMonitor.MixProject do
   def project do
     [
       app: :backplane_monitor,
-      version: "1.10.13",
+      version: "1.10.14",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",

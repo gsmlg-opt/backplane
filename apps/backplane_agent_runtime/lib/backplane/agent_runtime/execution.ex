@@ -356,6 +356,9 @@ defmodule Backplane.AgentRuntime.Execution do
       {:error, %Error{} = error} ->
         {:error, error}
 
+      {:rejected, rejection} when function == :execute ->
+        ToolEffects.validate_rejection(rejection, operation)
+
       other ->
         {:error,
          Error.new(:malformed_result, "backend returned an invalid result",
