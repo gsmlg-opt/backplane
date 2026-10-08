@@ -39,7 +39,7 @@ async function readBody(request: IncomingMessage) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-test("@google/genai v2.24.0 emits the Gemini Developer API wire contract", async () => {
+test("@google/genai v2.28.0 emits the Gemini Developer API wire contract", async () => {
   const recordings: Recording[] = [];
   const server = createServer(async (request, serverResponse) => {
     const url = new URL(request.url ?? "/", "http://recording.invalid");
@@ -119,7 +119,7 @@ test("@google/genai v2.24.0 emits the Gemini Developer API wire contract", async
 
   for (const recording of recordings) {
     assert.equal(recording.headers["x-goog-api-key"], apiKey);
-    assert.match(recording.headers["x-goog-api-client"] as string, /^google-genai-sdk\/2\.24\.0 /);
+    assert.match(recording.headers["x-goog-api-client"] as string, /^google-genai-sdk\/2\.28\.0 /);
     assert.equal(recording.query.includes("key="), false);
     assert.match(recording.path, /^\/deploy\/v1beta\/models(?:\/|$)/);
   }

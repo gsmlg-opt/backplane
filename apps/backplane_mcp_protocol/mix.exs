@@ -52,7 +52,7 @@ defmodule Backplane.McpProtocol.MixProject do
   defp deps do
     [
       {:finch, "~> 0.19"},
-      {:peri, "0.9.0"},
+      {:peri, "~> 0.11.3"},
       {:telemetry, "~> 1.2"},
       {:redix, "~> 1.5", optional: true},
       {:gun, "~> 2.2", optional: true},
@@ -103,7 +103,8 @@ defmodule Backplane.McpProtocol.MixProject do
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/backplane_mcp_protocol"
       },
-      files: ~w[lib pages priv/static mix.exs README.md CHANGELOG.md CONTRIBUTING.md LICENSE .formatter.exs]
+      files:
+        ~w[lib pages priv/static mix.exs README.md CHANGELOG.md CONTRIBUTING.md LICENSE .formatter.exs]
     }
   end
 

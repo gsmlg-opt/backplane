@@ -30,7 +30,7 @@ defmodule MathEx.MixProject do
   defp deps do
     [
       {:decimal, "~> 3.0"},
-      {:complex, "~> 0.5"}
+      {:complex, "~> 1.0"}
     ]
   end
 

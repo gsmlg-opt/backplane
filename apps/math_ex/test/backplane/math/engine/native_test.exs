@@ -22,7 +22,9 @@ defmodule Backplane.Math.Engine.NativeTest do
     assert {:ok, val} = Native.run(:evaluate, %{ast: {:app, :sin, [{:num, 0}]}})
     assert_in_delta val, 0.0, 1.0e-12
 
-    assert {:ok, 3} = Native.run(:evaluate, %{ast: {:op, :+, [{:var, "x"}, {:num, 1}]}, vars: %{"x" => 2}})
+    assert {:ok, 3} =
+             Native.run(:evaluate, %{ast: {:op, :+, [{:var, "x"}, {:num, 1}]}, vars: %{"x" => 2}})
+
     assert {:error, {:unbound_var, "y"}} = Native.run(:evaluate, %{ast: {:var, "y"}})
 
     assert {:ok, val_pi} = Native.run(:evaluate, %{ast: {:sym, :pi}})
@@ -33,6 +35,40 @@ defmodule Backplane.Math.Engine.NativeTest do
     ast = {:op, :+, [{:num, Decimal.new("0.1")}, {:num, Decimal.new("0.2")}]}
     assert {:ok, %Decimal{} = value} = Native.run(:evaluate, %{ast: ast})
     assert Decimal.equal?(value, Decimal.new("0.3"))
+  end
+
+  test "evaluates imaginary and mixed complex-real arithmetic" do
+    imaginary = {:sym, :i}
+
+    assert {:ok, %Complex{} = squared} =
+             Native.run(:evaluate, %{ast: {:op, :*, [imaginary, imaginary]}})
+
+    assert squared.re == -1.0
+    assert squared.im == 0.0
+
+    assert {:ok, %Complex{} = sum} =
+             Native.run(:evaluate, %{ast: {:op, :+, [{:num, 2}, imaginary]}})
+
+    assert sum.re == 2.0
+    assert sum.im == 1.0
+
+    assert {:ok, %Complex{} = product} =
+             Native.run(:evaluate, %{ast: {:op, :*, [{:num, 2}, imaginary]}})
+
+    assert product.re == 0.0
+    assert product.im == 2.0
+
+    assert {:ok, %Complex{} = quotient} =
+             Native.run(:evaluate, %{ast: {:op, :/, [imaginary, {:num, 2}]}})
+
+    assert quotient.re == 0.0
+    assert quotient.im == 0.5
+
+    assert {:ok, %Complex{} = negated} =
+             Native.run(:evaluate, %{ast: {:op, :neg, [imaginary]}})
+
+    assert negated.re == 0.0
+    assert negated.im == -1.0
   end
 
   test "returns unsupported op errors" do
