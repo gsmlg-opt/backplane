@@ -20,13 +20,18 @@ legacy initialization and session behavior required by older protocol versions.
 ```elixir
 def deps do
   [
-    {:backplane_mcp_protocol, "~> 1.7.0"}
+    {:backplane_mcp_protocol, "~> 1.10.12"}
   ]
 end
 ```
 
 Inside the Backplane umbrella, use `{:backplane_mcp_protocol, in_umbrella: true}`
 instead.
+
+Version `1.6.3` is retired and predates modern MCP support. Consumers requiring
+`2026-07-28` should update their dependency constraint and run
+`mix deps.update backplane_mcp_protocol`. Version `1.10.12` is published on Hex
+with the modern HTTP implementation.
 
 ## Quick Start
 
@@ -115,6 +120,76 @@ protocol_version: "2025-06-18"
 Modern HTTP requests are stateless, POST-only, and do not create an MCP
 session. Legacy versions continue to use their existing initialization,
 session, GET notification stream, and DELETE cleanup behavior.
+
+### Modern HTTP wire requests
+
+An HTTP client can discover the server directly without `initialize`:
+
+```bash
+curl --fail-with-body http://localhost:4000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: server/discover' \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "server/discover",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "example", "version": "1.0.0"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    }
+  }'
+```
+
+Every modern request needs that `_meta` object. Mirror the body method in
+`Mcp-Method` and the metadata version in `MCP-Protocol-Version`. For `tools/call`,
+also mirror `params.name` in `Mcp-Name`; declared `x-mcp-header` tool arguments
+need their matching `Mcp-Param-*` headers. A mismatch returns HTTP 400 with
+JSON-RPC code `-32020`; missing required metadata returns `-32602`.
+
+Completed responses include `resultType: "complete"` and authoritative server
+information in `result._meta["io.modelcontextprotocol/serverInfo"]`. Cacheable
+results, including `server/discover` and `tools/list`, include `ttlMs` and
+`cacheScope` (defaulting to `0` and `"private"`). The modern executor adds these
+fields after the callback returns. `Response.to_protocol/1` alone builds the
+component payload and does not select a protocol version. Likewise, calling the
+internal `Server.Handlers.handle/3` directly bypasses discovery: mount the
+`StreamableHTTP.Plug` shown above so `Server.Modern.Executor` handles
+`server/discover` and decorates responses.
+
+Register static tools with `component/2`, or register dynamic tools in
+`init_request/2`. The legacy `init/2` callback does not run for modern requests,
+and a modern frame is fresh for each request. Keep durable application state
+in the application's own context.
+
+When local input-schema validation is enabled for a tool, invalid arguments
+produce a JSON-RPC `error` with code `-32602` and no `result`. An application
+failure can instead return a completed tool result
+with `isError: true` and application-owned structured details:
+
+```elixir
+response =
+  Response.tool()
+  |> Response.error("Revision conflict")
+  |> Response.structured(%{
+    "code" => "revision_conflict",
+    "message" => "Revision conflict",
+    "details" => %{"expected_revision" => 3},
+    "retryable" => false
+  })
+
+{:reply, response, frame}
+```
+
+The package's Agent Note HTTP parity regression is pinned to
+[`gsmlg-opt/agent-note` at `1a16690d`](https://github.com/gsmlg-opt/agent-note/blob/1a16690d3f0bcdb08e00752e46d76f234313416b/crates/note-mcp/tests/org_transports_test.rs),
+covering discovery, cache metadata, routing, schema rejection, and structured
+mutation results through a real HTTP client. Note revisions and business tool
+behavior remain the consuming application's responsibility.
 
 ### Streamable HTTP endpoint and dynamic headers
 

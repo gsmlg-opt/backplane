@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Adds Agent Note HTTP parity regression coverage and documents upgrading from
+  retired `1.6.3` to published `1.10.12` for modern discovery and tool calls.
 - Fixes Streamable HTTP `:auto` negotiation so a valid `server/discover`
   `-32601 Method not found` response falls back to the canonical legacy
   initialization flow while explicit version pins remain strict.
@@ -34,4 +36,4 @@
 ### 1.6.3
 
 This release used the Backplane umbrella version by mistake and is retired.
-Use `0.3.1` instead.
+Use a supported release such as `1.10.12` for MCP `2026-07-28` support.
