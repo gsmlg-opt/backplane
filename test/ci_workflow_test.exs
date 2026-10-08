@@ -22,7 +22,7 @@ defmodule Backplane.CIWorkflowTest do
     "permissions" => %{"contents" => "read"},
     "concurrency" => @concurrency,
     "env" => %{
-      "ELIXIR_VERSION" => "1.18.4",
+      "ELIXIR_VERSION" => "1.19.5",
       "OTP_VERSION" => "28.5.0.5",
       "RUST_VERSION" => "1.95.0",
       "MIX_ENV" => "dev"
