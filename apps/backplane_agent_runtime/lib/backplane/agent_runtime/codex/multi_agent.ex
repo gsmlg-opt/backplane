@@ -19,6 +19,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def start_link(opts) when is_list(opts),
     do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
+  def rebind_parent(runtime, binding, authority),
+    do: GenServer.call(runtime, {:rebind_parent, binding, authority})
+
+  def detach_parent(runtime, binding), do: GenServer.call(runtime, {:detach_parent, binding})
+  def transfer_ready(runtime), do: GenServer.call(runtime, :transfer_ready)
+  def close_session(runtime), do: GenServer.call(runtime, :close_session, :infinity)
+
+  def close_session(runtime, owner_id, incarnation),
+    do: GenServer.call(runtime, {:close_session, {owner_id, incarnation}}, :infinity)
+
   @spec contracts(:v1 | :v2, pid(), keyword()) :: [map()]
   def contracts(profile, runtime, opts \\ []) when profile in [:v1, :v2] and is_pid(runtime) do
     runtime_wait = GenServer.call(runtime, :wait_options)
@@ -60,6 +70,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          parent_run_id: parent_run_id,
          parent_name: normalize_root(parent_name),
          parent_authority: authority,
+         session_authority: nil,
+         parent_binding: nil,
+         session_owner: nil,
+         session_closed: false,
          child_options: child_options,
          child_supervisor: supervisor,
          subscriber: Keyword.get(opts, :subscriber),
@@ -79,6 +93,74 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   @impl true
+  def handle_call({:rebind_parent, binding, authority}, _from, state) do
+    owner = {binding.owner_id, binding.incarnation}
+
+    cond do
+      state.session_closed ->
+        {:reply, {:error, Error.new(:forbidden, "collaboration session is closed")}, state}
+
+      state.session_owner != nil and state.session_owner != owner ->
+        {:reply, {:error, Error.new(:forbidden, "collaboration belongs to another session")},
+         state}
+
+      state.parent_binding != nil and state.parent_binding != binding ->
+        {:reply,
+         {:error, Error.new(:resource_conflict, "collaboration parent is still attached")}, state}
+
+      true ->
+        {:reply, :ok,
+         %{
+           state
+           | parent_run_id: binding.run_id,
+             parent_authority: authority,
+             session_authority: authority,
+             parent_binding: binding,
+             session_owner: owner
+         }}
+    end
+  end
+
+  def handle_call({:detach_parent, binding}, _from, state) do
+    if state.parent_binding == binding do
+      {:reply, :ok, %{state | parent_binding: nil, parent_run_id: nil}}
+    else
+      {:reply, {:error, Error.new(:forbidden, "stale collaboration parent binding")}, state}
+    end
+  end
+
+  def handle_call(:transfer_ready, _from, state) do
+    ready =
+      Enum.all?(state.agents, fn {_name, agent} ->
+        case transfer_snapshot(agent) do
+          {:ok, snapshot} ->
+            snapshot.run.state != :unknown_outcome and
+              not match?({:uncertain, _}, snapshot.resource_cleanup)
+
+          {:error, _} ->
+            false
+        end
+      end)
+
+    result =
+      if ready,
+        do: :ok,
+        else:
+          {:error, Error.new(:unknown_outcome, "collaboration resources require reconciliation")}
+
+    {:reply, result, state}
+  end
+
+  def handle_call(:close_session, _from, state) do
+    close_session_state(state)
+  end
+
+  def handle_call({:close_session, owner}, _from, state) do
+    if state.session_owner == owner,
+      do: close_session_state(state),
+      else: {:reply, :ok, state}
+  end
+
   def handle_call(:wait_options, _from, state) do
     {:reply,
      Map.take(state, [
@@ -91,10 +173,38 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def handle_call({:tool, profile, operation}, from, state) do
     with {:ok, caller} <- authenticate(operation, state),
          {:ok, action} <- action(profile, operation.tool_name) do
+      state =
+        if caller.name == state.parent_name,
+          do: %{state | parent_authority: caller.authority},
+          else: state
+
       dispatch(action, operation.arguments, from, caller, state)
     else
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
     end
+  end
+
+  defp close_session_state(state) do
+    state = %{state | session_closed: true, parent_run_id: nil, parent_binding: nil}
+
+    {state, errors} =
+      Enum.reduce(Map.keys(state.agents), {state, []}, fn name, {current, errors} ->
+        case cancel_owned_tree(current, name, :close) do
+          {:ok, next} -> {next, errors}
+          {:error, error, next} -> {next, [error | errors]}
+        end
+      end)
+
+    result =
+      if errors == [],
+        do: :ok,
+        else:
+          {:error,
+           Error.new(:unknown_outcome, "collaboration session cleanup is unconfirmed",
+             details: %{errors: errors}
+           )}
+
+    {:reply, result, state}
   end
 
   @impl true
@@ -514,7 +624,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       %{run_id: state.parent_run_id, name: state.parent_name, authority: state.parent_authority}
     else
       parent = state.agents[agent.parent]
-      %{run_id: parent.run_id, name: parent.name, authority: parent.authority}
+
+      %{
+        run_id: parent.run_id,
+        name: parent.name,
+        authority: current_child_authority(state, parent)
+      }
     end
   end
 
@@ -739,21 +854,45 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     direct ++ Enum.flat_map(direct, &descendant_names(state, &1))
   end
 
-  defp authenticate(%{run_id: run_id}, state) do
+  defp transfer_snapshot(%{snapshot: snapshot}) when is_map(snapshot), do: {:ok, snapshot}
+
+  defp transfer_snapshot(%{pid: pid}) when is_pid(pid) do
+    snapshot = Conversation.status(pid)
+
+    if snapshot.phase in [:storage_failed, :recovery_required],
+      do: {:error, Error.new(:unknown_outcome, "child requires reconciliation")},
+      else: {:ok, snapshot}
+  catch
+    :exit, reason ->
+      {:error, Error.new(:unknown_outcome, "child state is unavailable", cause: reason)}
+  end
+
+  defp transfer_snapshot(_),
+    do: {:error, Error.new(:unknown_outcome, "child state is unavailable")}
+
+  defp authenticate(%{run_id: run_id} = operation, state) do
     cond do
+      state.session_closed ->
+        {:error, Error.new(:forbidden, "collaboration session is closed")}
+
       run_id == state.parent_run_id ->
-        {:ok,
-         %{
-           name: state.parent_name,
-           run_id: state.parent_run_id,
-           authority: state.parent_authority
-         }}
+        if current_parent?(state, operation) do
+          {:ok,
+           %{
+             name: state.parent_name,
+             run_id: state.parent_run_id,
+             authority: current_root_authority(state, operation)
+           }}
+        else
+          {:error, Error.new(:forbidden, "stale collaboration parent invocation")}
+        end
 
       name = state.run_index[run_id] ->
         agent = state.agents[name]
 
         if agent.run_id == run_id and agent.status == :running,
-          do: {:ok, %{name: name, run_id: run_id, authority: agent.authority}},
+          do:
+            {:ok, %{name: name, run_id: run_id, authority: current_child_authority(state, agent)}},
           else: {:error, Error.new(:forbidden, "stale collaboration run")}
 
       true ->
@@ -763,6 +902,44 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp authenticate(_, _state),
     do: {:error, Error.new(:forbidden, "collaboration caller is missing")}
+
+  defp current_parent?(%{session_owner: nil}, _operation), do: true
+
+  defp current_parent?(%{parent_binding: binding}, operation) when is_map(binding) do
+    owner = get_in(operation, [:backend_context, :resource_owner])
+
+    operation[:incarnation] == binding.run_incarnation and is_map(owner) and
+      owner[:owner_id] == binding.owner_id and owner[:incarnation] == binding.incarnation
+  end
+
+  defp current_parent?(_, _), do: false
+
+  defp current_root_authority(%{session_owner: nil} = state, _operation),
+    do: state.parent_authority
+
+  defp current_root_authority(state, operation) do
+    case operation[:effective_authority] do
+      current when is_map(current) ->
+        if state.session_authority do
+          allowed = MapSet.new(Map.get(state.session_authority, :grants, []))
+          grants = Enum.filter(Map.get(current, :grants, []), &MapSet.member?(allowed, &1))
+          Map.put(current, :grants, grants)
+        else
+          current
+        end
+
+      _ ->
+        state.parent_authority
+    end
+  end
+
+  defp current_child_authority(%{session_owner: nil}, agent), do: agent.authority
+
+  defp current_child_authority(state, agent) do
+    allowed = MapSet.new(Map.get(state.parent_authority, :grants, []))
+    grants = Enum.filter(Map.get(agent.authority, :grants, []), &MapSet.member?(allowed, &1))
+    Map.put(agent.authority, :grants, grants)
+  end
 
   defp action(:v2, name) do
     case name do

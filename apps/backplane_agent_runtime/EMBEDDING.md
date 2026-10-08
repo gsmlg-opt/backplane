@@ -108,7 +108,7 @@ This R22 repair is not yet a validated host contract: the current full Linux
 runtime suite fails three command lifecycle tests. Two trusted confirmed
 non-start refusals are incorrectly treated as uncertain, and an older ambiguous
 launch test still expects provider continuation. See the follow-up section in
-[runtime-repairs-validation.md](../../docs/agent-runtime/codex-tools/runtime-repairs-validation.md)
+[runtime-repairs-validation.md](https://github.com/gsmlg-opt/backplane/blob/main/docs/agent-runtime/codex-tools/runtime-repairs-validation.md)
 before upgrading.
 
 For descriptors with `requires_approval: true`, the runtime asks for an exact

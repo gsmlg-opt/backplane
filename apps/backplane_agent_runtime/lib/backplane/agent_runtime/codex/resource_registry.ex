@@ -26,11 +26,47 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   def cleanup_status(pid, handle, owner),
     do: GenServer.call(pid, {:cleanup_status, handle, owner})
 
+  def owner_transfer_ready(pid, owner) do
+    entries = GenServer.call(pid, {:transfer_entries, owner})
+
+    ready =
+      Enum.all?(entries, fn entry ->
+        if entry.status != :active do
+          false
+        else
+          case entry.handle do
+            %{kind: :continuation} ->
+              try do
+                Backplane.AgentRuntime.Codex.CodeMode.Worker.ready_for_detach(entry.value) == true
+              catch
+                :exit, _ -> false
+              end
+
+            _ ->
+              true
+          end
+        end
+      end)
+
+    if ready,
+      do: :ok,
+      else: {:error, Error.new(:unknown_outcome, "session resource is not ready for transfer")}
+  end
+
   def owner_status(pid, owner), do: GenServer.call(pid, {:owner_status, owner})
 
   @doc "Inspect live or recently settled session cleanup, including bounded receipt acknowledgement."
   def session_cleanup_status(pid, session_id, owner, incarnation),
     do: GenServer.call(pid, {:session_cleanup_status, session_id, owner, incarnation})
+
+  def fence_owner(pid, owner), do: GenServer.call(pid, {:fence_owner, owner})
+  def close_owner(pid, owner), do: GenServer.call(pid, {:close_owner, owner}, :infinity)
+
+  def code_state(pid, owner, incarnation \\ 1),
+    do: GenServer.call(pid, {:code_state, owner, incarnation})
+
+  def store_code_state(pid, handle, owner, key, value),
+    do: GenServer.call(pid, {:store_code_state, handle, owner, key, value})
 
   def worker_supervisor(pid), do: GenServer.call(pid, :worker_supervisor)
 
@@ -61,13 +97,19 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   @impl true
   def init(opts) do
     timeout = Keyword.get(opts, :cleanup_timeout, @default_cleanup_timeout)
+    max_continuations = Keyword.get(opts, :max_continuations, 16)
 
-    if is_integer(timeout) and timeout > 0 and timeout <= 60_000 do
+    if is_integer(timeout) and timeout > 0 and timeout <= 60_000 and is_integer(max_continuations) and
+         max_continuations in 1..256 do
       {:ok, cleanup_supervisor} = Task.Supervisor.start_link()
       {:ok, worker_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
 
       {:ok,
        %{
+         max_continuations: max_continuations,
+         code_state: %{},
+         code_owner_monitors: %{},
+         closed_owners: MapSet.new(),
          resources: %{},
          sessions: %{},
          settled: %{},
@@ -79,11 +121,56 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
          cleanup_timeout: timeout
        }}
     else
-      {:stop, Error.new(:validation, "cleanup_timeout must be between 1 and 60000 ms")}
+      {:stop,
+       Error.new(
+         :validation,
+         "cleanup_timeout must be 1..60000 ms and max_continuations must be 1..256"
+       )}
     end
   end
 
   @impl true
+  def handle_call({:code_state, owner, incarnation}, _from, state) do
+    with :ok <- owner_open(state, owner), :ok <- validate_incarnation(incarnation) do
+      {:reply, Map.get(state.code_state, {owner, incarnation}, %{}), state}
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:store_code_state, handle, owner, key, value}, _from, state) do
+    with :ok <- owner_open(state, owner),
+         {:ok, entry} <- lookup_resource(state, handle, owner),
+         :ok <- active(entry) do
+      identity = {owner, handle.incarnation}
+      stored = Map.put(Map.get(state.code_state, identity, %{}), key, value)
+      all_stored = Map.put(state.code_state, identity, stored)
+
+      if map_size(stored) <= 256 and :erlang.external_size(stored) <= 1_048_576 and
+           map_size(all_stored) <= 64 and :erlang.external_size(all_stored) <= 16_777_216 do
+        state = monitor_code_owner(state, owner, entry.owner_pid)
+        {:reply, :ok, %{state | code_state: all_stored}}
+      else
+        {:reply,
+         {:error, Error.new(:budget_exceeded, "Code Mode stored state exceeds its bound")}, state}
+      end
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:fence_owner, owner}, _from, state),
+    do:
+      {:reply, :ok,
+       %{clear_code_state(state, owner) | closed_owners: MapSet.put(state.closed_owners, owner)}}
+
+  def handle_call({:close_owner, owner}, from, state) do
+    handle_call({:cancel_owner, owner}, from, %{
+      state
+      | closed_owners: MapSet.put(state.closed_owners, owner)
+    })
+  end
+
   def handle_call(:worker_supervisor, _from, state),
     do: {:reply, {:ok, state.worker_supervisor}, state}
 
@@ -92,7 +179,10 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     incarnation = Keyword.get(opts, :incarnation, 1)
     cleanup = Keyword.get(opts, :cleanup)
 
-    with :ok <- validate_incarnation(incarnation), :ok <- validate_cleanup(cleanup) do
+    with :ok <- owner_open(state, owner),
+         :ok <- resource_capacity(state, kind),
+         :ok <- validate_incarnation(incarnation),
+         :ok <- validate_cleanup(cleanup) do
       id = "res_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
       handle = %{resource_id: id, owner_id: owner, incarnation: incarnation, kind: kind}
 
@@ -136,6 +226,12 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     end
   end
 
+  def handle_call({:transfer_entries, owner}, _from, state),
+    do:
+      {:reply,
+       all_entries(state) |> Enum.map(&elem(&1, 1)) |> Enum.filter(&(&1.owner_id == owner)),
+       state}
+
   def handle_call({:owner_status, owner}, _from, state) do
     statuses =
       all_entries(state)
@@ -170,7 +266,8 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
       when is_binary(owner) and owner != "" and is_list(opts) do
     cleanup = Keyword.get(opts, :cleanup)
 
-    with :ok <- validate_cleanup(cleanup),
+    with :ok <- owner_open(state, owner),
+         :ok <- validate_cleanup(cleanup),
          :ok <- validate_lifecycle(Keyword.get(opts, :acknowledge)),
          :ok <- validate_incarnation(Keyword.get(opts, :incarnation, 1)) do
       id = System.unique_integer([:positive, :monotonic])
@@ -264,6 +361,8 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   end
 
   def handle_call({:cancel_owner, owner}, from, state) do
+    state = clear_code_state(state, owner)
+
     keys =
       all_entries(state)
       |> Enum.filter(fn {_key, entry} -> entry.owner_id == owner end)
@@ -358,9 +457,32 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    owner =
+      Enum.find_value(state.code_owner_monitors, fn {owner, monitor} ->
+        if monitor.ref == ref, do: owner
+      end)
+
+    state =
+      if owner do
+        state = clear_code_state(state, owner)
+        state = %{state | closed_owners: MapSet.put(state.closed_owners, owner)}
+
+        Enum.reduce(all_entries(state), state, fn {key, entry}, acc ->
+          if entry.owner_id == owner, do: request_cleanup(acc, key, nil), else: acc
+        end)
+      else
+        state
+      end
+
     next =
       Enum.reduce(all_entries(state), state, fn {key, entry}, acc ->
-        if entry.monitor_ref == ref, do: request_cleanup(acc, key, nil), else: acc
+        if entry.monitor_ref == ref do
+          acc = clear_code_state(acc, entry.owner_id)
+          acc = %{acc | closed_owners: MapSet.put(acc.closed_owners, entry.owner_id)}
+          request_cleanup(acc, key, nil)
+        else
+          acc
+        end
       end)
 
     {:noreply, next}
@@ -368,11 +490,54 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
 
   def handle_info(_, state), do: {:noreply, state}
 
+  defp resource_capacity(state, :continuation) do
+    count = Enum.count(state.resources, fn {_, entry} -> entry.handle.kind == :continuation end)
+
+    if count < state.max_continuations,
+      do: :ok,
+      else: {:error, Error.new(:overloaded, "Code Mode cell capacity reached")}
+  end
+
+  defp resource_capacity(_state, _kind), do: :ok
+
+  defp owner_open(state, owner) do
+    if MapSet.member?(state.closed_owners, owner),
+      do: {:error, Error.new(:resource_conflict, "resource owner is closed")},
+      else: :ok
+  end
+
+  defp monitor_code_owner(state, owner, pid) when is_pid(pid) do
+    if Map.has_key?(state.code_owner_monitors, owner),
+      do: state,
+      else: %{
+        state
+        | code_owner_monitors:
+            Map.put(state.code_owner_monitors, owner, %{pid: pid, ref: Process.monitor(pid)})
+      }
+  end
+
+  defp monitor_code_owner(state, _owner, _pid), do: state
+
+  defp clear_code_state(state, owner) do
+    case state.code_owner_monitors[owner] do
+      %{ref: ref} -> Process.demonitor(ref, [:flush])
+      _ -> :ok
+    end
+
+    %{
+      state
+      | code_owner_monitors: Map.delete(state.code_owner_monitors, owner),
+        code_state:
+          Map.reject(state.code_state, fn {{stored_owner, _}, _} -> stored_owner == owner end)
+    }
+  end
+
   defp self_registry(state), do: state.registry_pid
 
   defp entry(handle, value, cleanup, owner_pid) do
     %{
       handle: handle,
+      owner_pid: owner_pid,
       owner_id: handle.owner_id,
       value: value,
       cleanup: cleanup,

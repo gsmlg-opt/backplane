@@ -1,0 +1,153 @@
+{
+  "schema": "backplane.codex-code-mode.source-contract/v1",
+  "codex_commit": "46fdd5ef39735f4159cdcf0ec5e85c10521494e5",
+  "method": "Handcrafted JavaScript cases and expected observations from pinned source contracts; neither captured nor executed against the native Codex engine.",
+  "sources": [
+    {
+      "path": "codex-rs/code-mode-protocol/src/description.rs",
+      "sha256": "3704ff6396101253d69ecb4af655f8a418a9ae19888e262717367532d428912e"
+    },
+    {
+      "path": "codex-rs/code-mode-protocol/src/runtime.rs",
+      "sha256": "a64d60e9e7d2c1812ace64825d4009f12d1d4ef572c5ba04602acc44658e1094"
+    },
+    {
+      "path": "codex-rs/core/src/tools/code_mode/execute_spec.rs",
+      "sha256": "40f06a09be0edd11faaeeac9b4d3fb162d05548ee0e8ecb4289c0e0a5c50c58c"
+    }
+  ],
+  "defaults": {
+    "yield_time_ms": 10000,
+    "wait_yield_time_ms": 10000,
+    "max_output_tokens": 10000
+  },
+  "completion_cases": [
+    {
+      "id": "text-values",
+      "source_contract": "description.rs Global helpers text",
+      "code": "text({ok:true}); text(undefined); text(null);",
+      "output": [
+        {
+          "type": "text",
+          "text": "{\"ok\":true}"
+        },
+        {
+          "type": "text",
+          "text": "undefined"
+        },
+        {
+          "type": "text",
+          "text": "null"
+        }
+      ]
+    },
+    {
+      "id": "early-exit",
+      "source_contract": "description.rs Global helpers exit",
+      "code": "text('before'); exit(); text('after');",
+      "output": [
+        {
+          "type": "text",
+          "text": "before"
+        }
+      ]
+    },
+    {
+      "id": "discard-pending-timer",
+      "source_contract": "description.rs Pending timeouts do not keep exec alive",
+      "code": "setTimeout(() => text('late'), 100); text('now');",
+      "output": [
+        {
+          "type": "text",
+          "text": "now"
+        }
+      ]
+    },
+    {
+      "id": "media",
+      "source_contract": "description.rs image/audio/generatedImage",
+      "code": "image('data:image/png;base64,AA==', 'original'); audio({audio_url:'data:audio/wav;base64,AA=='}); generatedImage({image_url:'data:image/png;base64,AA==',output_hint:'saved'});",
+      "output": [
+        {
+          "type": "image",
+          "mimeType": "image/png",
+          "data": "AA==",
+          "detail": "original"
+        },
+        {
+          "type": "audio",
+          "mimeType": "audio/wav",
+          "data": "AA=="
+        },
+        {
+          "type": "image",
+          "mimeType": "image/png",
+          "data": "AA=="
+        },
+        {
+          "type": "text",
+          "text": "saved"
+        }
+      ]
+    },
+    {
+      "id": "async-module-exports",
+      "source_contract": "description.rs Evaluates code as an async module",
+      "code": "export const result = await Promise.resolve(3); text(result);",
+      "output": [
+        {
+          "type": "text",
+          "text": "3"
+        }
+      ]
+    },
+    {
+      "id": "strict-top-level-this",
+      "source_contract": "description.rs async module semantics",
+      "code": "text(typeof this);",
+      "output": [
+        {
+          "type": "text",
+          "text": "undefined"
+        }
+      ]
+    }
+  ],
+  "pragma_cases": [
+    {
+      "id": "plain-defaults",
+      "code": "yield_control(); await new Promise(() => {});",
+      "yield_time_ms": 10000,
+      "max_output_tokens": 10000
+    },
+    {
+      "id": "empty-object-defaults",
+      "code": "// @exec: {}\nyield_control(); await new Promise(() => {});",
+      "yield_time_ms": 10000,
+      "max_output_tokens": 10000
+    },
+    {
+      "id": "null-defaults",
+      "code": "// @exec: {\"yield_time_ms\":null,\"max_output_tokens\":null}\nyield_control(); await new Promise(() => {});",
+      "yield_time_ms": 10000,
+      "max_output_tokens": 10000
+    },
+    {
+      "id": "indented-crlf",
+      "code": " \t// @exec: {\"yield_time_ms\":40,\"max_output_tokens\":7}\r\nyield_control(); await new Promise(() => {});",
+      "yield_time_ms": 40,
+      "max_output_tokens": 7
+    }
+  ],
+  "invalid_source_cases": [
+    "",
+    "   ",
+    "// @exec: {}",
+    "// @exec: {}\n  ",
+    "// @exec: []\ntext(1);",
+    "// @exec: {\"unknown\":1}\ntext(1);",
+    "// @exec: {\"yield_time_ms\":-1}\ntext(1);",
+    "// @exec: {\"yield_time_ms\":1.5}\ntext(1);",
+    "// @exec: {\"max_output_tokens\":\"1\"}\ntext(1);"
+  ]
+}

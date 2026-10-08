@@ -12,4 +12,20 @@ defmodule Backplane.AiProtocol.TestKitTest do
     assert fixture.expected.input_tokens == 11
     assert Jason.decode!(fixture.body)["id"] == "resp_fixture_1"
   end
+
+  test "custom Responses fixture projects patch, JavaScript and namespaced JSON independently" do
+    fixture = Backplane.AiProtocol.TestKit.openai_responses_custom_tools()
+
+    assert {:ok, response} =
+             Backplane.AiProtocol.Codec.decode_response(
+               :openai_responses,
+               fixture.status,
+               [],
+               fixture.body
+             )
+
+    assert Enum.map(response.output, fn block ->
+             Map.take(block.tool_call, [:id, :name, :raw_arguments])
+           end) == fixture.expected
+  end
 end

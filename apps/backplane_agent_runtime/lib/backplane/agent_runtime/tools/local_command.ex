@@ -88,6 +88,10 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   def acknowledge_release(command, invocation),
     do: GenServer.call(server(command), {:acknowledge_release, invocation})
 
+  @impl Backplane.AgentRuntime.Command
+  def validate_refusal(command, invocation, error),
+    do: GenServer.call(server(command), {:validate_refusal, invocation, error})
+
   @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -108,6 +112,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          expired_session_floor: 0,
          receipt_capacity: config.receipt_capacity,
          session_capacity: config.session_capacity,
+         refusal_key: :crypto.strong_rand_bytes(32),
          cancelled_launchers: %{},
          cancelled_sessions: %{},
          cleanup_supervisor: cleanup_supervisor,
@@ -132,16 +137,42 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   @impl GenServer
   def handle_call({:start, request}, from, state) do
     case admit_session(state, request) do
-      {:ok, state} -> start_reserved(request, from, state)
-      {:error, error} -> {:reply, {:error, error}, fence_refusal(state, request, error)}
+      {:ok, state} ->
+        start_reserved(request, from, state)
+
+      {:error, error} ->
+        {:reply, {:error, refusal_error(state, request, error)},
+         fence_refusal(state, request, error)}
     end
   end
 
   def handle_call({:reserve_session, invocation}, _from, state) do
     case admit_session(state, invocation) do
-      {:ok, next} -> {:reply, :ok, next}
-      {:error, error} -> {:reply, {:error, error}, fence_refusal(state, invocation, error)}
+      {:ok, next} ->
+        {:reply, :ok, next}
+
+      {:error, error} ->
+        {:reply, {:error, refusal_error(state, invocation, error)},
+         fence_refusal(state, invocation, error)}
     end
+  end
+
+  def handle_call({:validate_refusal, invocation, %Error{} = error}, _from, state) do
+    valid? =
+      case error do
+        %Error{cause: {:local_command_refusal, proof}, details: %{launch_status: :never_started}} ->
+          proof == refusal_proof(state, invocation, %{error | cause: nil})
+
+        _ ->
+          false
+      end
+
+    result =
+      if valid?,
+        do: :ok,
+        else: {:error, Error.new(:unknown_outcome, "command refusal is unverified")}
+
+    {:reply, result, state}
   end
 
   def handle_call({:acknowledge_release, invocation}, _from, state) do
@@ -724,21 +755,34 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp start_reserved(request, from, state) do
     if is_pid(Map.get(request, :owner_pid)) and not Process.alive?(request.owner_pid) do
-      {:reply, {:error, Error.new(:cancelled, "command owner is no longer alive")},
-       session_status(state, request, :never_started)}
+      {:reply,
+       {:error,
+        refusal_error(state, request, Error.new(:cancelled, "command owner is no longer alive"),
+          reservation: :created
+        )}, session_status(state, request, :never_started)}
     else
       if active_workspace?(state, request.workspace) do
         {:reply,
          {:error,
-          Error.new(:resource_conflict, "workspace already has an active command",
-            details: %{workspace: request.workspace}
+          refusal_error(
+            state,
+            request,
+            Error.new(:resource_conflict, "workspace already has an active command",
+              details: %{workspace: request.workspace}
+            ),
+            reservation: :created
           )}, session_status(state, request, :never_started)}
       else
         if map_size(state.active) + map_size(state.pending) + map_size(state.completed) +
              map_size(state.cleanup_evidence) >= state.session_capacity do
           {:reply,
-           {:error, Error.new(:overloaded, "local command retained resource capacity reached")},
-           session_status(state, request, :never_started)}
+           {:error,
+            refusal_error(
+              state,
+              request,
+              Error.new(:overloaded, "local command retained resource capacity reached"),
+              reservation: :created
+            )}, session_status(state, request, :never_started)}
         else
           state = session_status(state, request, :launching)
           nonce = nonce()
@@ -1402,6 +1446,37 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
        do: %{state | expired_session_floor: max(state.expired_session_floor, id)}
 
   defp fence_refusal(state, _invocation, _error), do: state
+
+  # Authenticate bounded, stateless refusal evidence with a per-server key. The
+  # proof binds the exact session/owner/incarnation and error, survives receipt
+  # acknowledgement, and cannot be inferred from missing jobs or copied metadata.
+  defp refusal_error(state, invocation, error, opts \\ []) do
+    if Map.get(error.details, :launch_status) == :never_started or opts != [] do
+      error = %{error | details: Map.merge(error.details, Map.new(opts))}
+      error = %{error | details: Map.put(error.details, :launch_status, :never_started)}
+      %{error | cause: {:local_command_refusal, refusal_proof(state, invocation, error)}}
+    else
+      error
+    end
+  end
+
+  defp refusal_proof(state, invocation, error) do
+    identity = {
+      Map.get(invocation, :session_id),
+      Map.get(invocation, :owner_run_id),
+      Map.get(invocation, :incarnation, 1)
+    }
+
+    command =
+      Map.take(invocation, [:executable, :arguments, :workspace, :environment, :tty, :terminal])
+
+    :crypto.mac(
+      :hmac,
+      :sha256,
+      state.refusal_key,
+      :erlang.term_to_binary({identity, command, error})
+    )
+  end
 
   defp ensure_cancellation_identity(state, invocation) do
     case session_identity(state, invocation) do

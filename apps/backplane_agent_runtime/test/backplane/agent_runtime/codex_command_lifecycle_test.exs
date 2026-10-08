@@ -165,9 +165,8 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
     %{conversation: conversation} = start_run(ctx, adapter: AmbiguousCommand)
     command(conversation, 0)
     pids = wait_pids(ctx.tmp_dir)
-    assert_receive {:provider, %{messages: messages}, provider}, 3_000
-    assert List.last(messages).result.error.class == :unknown_outcome
-    send(provider, {:events, [done()]})
+    assert_receive {:agent_runtime, _, %{type: :run_cancelled, state: :unknown_outcome}}, 3_000
+    refute_receive {:provider, _, _}, 100
     eventually(fn -> Conversation.status(conversation).phase == :terminal end)
     status = Conversation.status(conversation)
     assert status.run.state == :unknown_outcome

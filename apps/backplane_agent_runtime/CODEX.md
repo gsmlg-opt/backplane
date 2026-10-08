@@ -81,7 +81,9 @@ mix run --no-start --no-deps-check apps/backplane_agent_runtime/examples/codex_l
 On Linux it uses the existing `LocalCommand` process-group backend. On other
 platforms it uses an explicitly labelled one-shot `System.cmd` example adapter
 because production `LocalCommand` currently requires Linux `/proc`, `setsid`,
-and process-group probing. PTY compatibility is not claimed.
+and process-group probing. Verified host adapters can opt into PTY; see
+`docs/agent-runtime/codex-tools/command-host-adapters.md` for the capability and
+cleanup contract. The default LocalCommand adapter still uses pipes.
 
 ## Compatibility Boundary
 
@@ -98,9 +100,13 @@ search is `web::run`, and image generation is `image_gen::imagegen`.
 
 Compatibility remains adapted rather than unqualified full parity:
 
-- Code Mode `wait` resumes a stored generator continuation, not the pinned
-  time-sliced running-cell implementation.
-- Linux process-group cleanup and PTY behavior are unavailable on macOS.
+- Code Mode uses the packaged Deno process adapter with running-cell time slices,
+  incremental output, and current-catalog dispatch on `wait`. The legacy
+  `codex.tool`/generator interface remains available. The source contract and
+  native-engine differential validation limits are documented in
+  `docs/agent-runtime/codex-tools/code-mode-conformance.md`.
+- The default native lifecycle adapters require Linux. Other platforms require
+  independently verified host adapters.
 - Extension reference state is ephemeral unless a durable host adapter supplies
   and verifies recovery.
 - Full pinned output schemas, all schema property descriptions, and native Codex
@@ -108,15 +114,28 @@ Compatibility remains adapted rather than unqualified full parity:
 - Production MCP, web/image services, and provider-hosted tools were not tested
   against live backends.
 
-Code Mode backend selection and migration are deferred. Denox NIF is the preferred
-future candidate, not an adopted or verified backend. This milestone repairs
-ordinary command lifecycle and shared Conversation timers/nested publication;
-it does not verify engine interruption, isolation, resource limits, callback
-cancellation, thread shutdown, continuations, or engine timer generations. The
-existing opt-in profiles, capability gates, adapter and native tests remain.
-See `docs/agent-runtime/codex-tools/backend-decision.md` in the repository for
-the deferred checklist. Shared-runtime nested-dispatch tests do not establish
-native Code Mode conformance.
+The selected Code Mode backend for internal request #54 is the existing Deno
+process adapter, with no Denox migration. Host limits remain independent from
+response budgets: source 128 KiB, lifetime output 1 MiB, 32 nested calls,
+30 seconds of engine execution, and a 64 MiB V8 old-space ceiling by default.
+V8's old-space limit is not a total OS-process RSS limit. ResourceRegistry bounds
+live cells (16 by default), stored keys (256 per owner/incarnation), and total
+stored state (16 MiB). A host can set shorter execution limits.
+
+`tools` and `ALL_TOOLS` derive from the admitted registry and exact grants.
+Running cells buffer detached output and hold nested requests until a new `wait`
+supplies the current dispatcher, authority, and catalog. Attached notifications
+emit a `custom_tool_call_output` event immediately; detached notifications are
+retained for the next wait. No callback from an expired invocation can grant
+access. Unsettled or crashed nested callbacks remain `unknown_outcome`.
+
+`Codex.Session` optionally owns commands, cells, stored state, and collaboration
+identities across separate bounded runs. Hosts bind a fresh run, build its profile,
+and pass the returned `session_binding` to Conversation. Natural successful
+completion prepares detachment, commits the run finish, then acknowledges
+retention. Cancellation/failure/session close fence admission and perform bounded
+cleanup; restart creates a fresh session identity and never replays effects.
+See `docs/agent-runtime/codex-tools/session-resources.md` for the host API.
 
 ## Command response budgets
 

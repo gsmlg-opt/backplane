@@ -8,16 +8,18 @@ defmodule Backplane.AiProtocol.ToolDefinition do
   alias Backplane.AiProtocol.Error
 
   @enforce_keys [:name]
-  defstruct [:name, :description, :input_schema, extensions: %{}]
+  defstruct [:name, :description, :input_schema, :format, input_kind: :function, extensions: %{}]
 
   @type t :: %__MODULE__{
           name: String.t(),
           description: String.t() | nil,
           input_schema: map() | nil,
+          input_kind: :function | :custom,
+          format: map() | nil,
           extensions: map()
         }
 
-  @keys [:name, :description, :input_schema, :extensions]
+  @keys [:name, :description, :input_schema, :input_kind, :format, :extensions]
 
   @spec new(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def new(attrs, opts \\ [])
@@ -29,6 +31,7 @@ defmodule Backplane.AiProtocol.ToolDefinition do
     with :ok <- Backplane.AiProtocol.Validation.reject_unknown(attrs, @keys),
          {:ok, name} <- tool_name(Map.get(attrs, :name)),
          :ok <- optional_string(attrs, :description, limits),
+         :ok <- input_kind(attrs, limits),
          :ok <- schema(attrs[:input_schema], limits),
          :ok <- extensions(attrs[:extensions], limits) do
       {:ok,
@@ -36,6 +39,8 @@ defmodule Backplane.AiProtocol.ToolDefinition do
          name: name,
          description: attrs[:description],
          input_schema: attrs[:input_schema],
+         input_kind: attrs[:input_kind] || :function,
+         format: attrs[:format],
          extensions: attrs[:extensions] || %{}
        }}
     end
@@ -45,7 +50,7 @@ defmodule Backplane.AiProtocol.ToolDefinition do
   def keys, do: @keys
 
   defp tool_name(value) when is_binary(value) and value != "" and byte_size(value) <= 256 do
-    if String.match?(value, ~r/^[a-zA-Z0-9_.-]+$/) do
+    if String.match?(value, ~r/^[a-zA-Z0-9_.-]+(?:::[a-zA-Z0-9_.-]+)?$/) do
       {:ok, value}
     else
       {:error, Error.invalid!("Tool name contains invalid characters")}
@@ -59,6 +64,25 @@ defmodule Backplane.AiProtocol.ToolDefinition do
       nil -> :ok
       value when is_binary(value) -> Backplane.AiProtocol.Validation.term(value, limits)
       _ -> {:error, Error.invalid!("Tool #{key} must be a string")}
+    end
+  end
+
+  defp input_kind(attrs, limits) do
+    case {attrs[:input_kind] || :function, attrs[:input_schema], attrs[:format]} do
+      {:function, _, nil} ->
+        :ok
+
+      {:custom, nil, nil} ->
+        :ok
+
+      {:custom, nil, format} when is_map(format) ->
+        Backplane.AiProtocol.Validation.term(format, limits)
+
+      _ ->
+        {:error,
+         Error.invalid!(
+           "Custom tools require raw input and optional format; functions require a JSON schema"
+         )}
     end
   end
 

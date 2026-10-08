@@ -20,7 +20,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
   SOURCE: /[\\s\\S]+/
   """
 
-  @default_timeout 5_000
+  @default_timeout 30_000
   @default_code_limit 131_072
   @default_output_limit 1_048_576
   @default_tool_limit 32
@@ -33,7 +33,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         %{
           name: "exec",
           description:
-            "Execute JavaScript in isolated Code Mode and call admitted tools through codex.tool.",
+            "Execute isolated JavaScript with tools, ALL_TOOLS, text/image/audio, generatedImage, store/load, notify, exit and yield_control. A first-line // @exec: JSON pragma sets yield_time_ms and max_output_tokens. Wait only on returned cell_id; each wait returns new output and uses current admitted authority.",
           input_kind: :custom,
           format: %{type: "grammar", syntax: "lark", definition: @grammar},
           backend: Backplane.AgentRuntime.Codex.Backend,
@@ -73,13 +73,19 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
   def lifecycle_capability(_), do: {:unsupported, :invalid_context}
 
   @spec call(map()) :: {:ok, map()} | {:error, Error.t()}
-  def call(%{tool_name: "exec", arguments: code, run_id: owner} = operation)
-      when is_binary(code) and is_binary(owner) do
+  def call(%{tool_name: "exec", arguments: code, run_id: run_id} = operation)
+      when is_binary(code) and is_binary(run_id) do
     with {:ok, context} <- backend_context(operation),
          {:ok, registry} <- required_registry(context),
+         resource_owner = resource_owner(operation),
+         owner = resource_owner.owner_id,
          {:ok, nested_dispatch} <- nested_dispatch(operation),
+         {:ok, slice} <- source_options(code),
          opts =
            code_options(context,
+             yield_time_ms: slice.yield_time_ms,
+             max_tokens: slice.max_output_tokens,
+             tools: tool_metadata(operation),
              dispatcher: fn request, execution_context ->
                suspend = Map.get(execution_context, :suspend)
                if is_function(suspend, 0), do: suspend.()
@@ -92,23 +98,27 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
                end
              end,
              execution_context: %{
-               run_id: owner,
+               emit: operation.backend_context[:emit],
+               run_id: run_id,
+               owner_id: owner,
                authority: operation.effective_authority,
                catalog_revision: operation.catalog_revision
              },
-             incarnation: operation.incarnation,
-             owner_pid: operation.backend_context[:resource_owner_pid]
+             incarnation: resource_owner.incarnation,
+             owner_pid: resource_owner.owner_pid
            ),
          {:ok, result} <- execute(registry, owner, code, opts) do
       {:ok, public_result(result)}
     end
   end
 
-  def call(%{tool_name: "wait", arguments: arguments, run_id: owner} = operation)
-      when is_map(arguments) and is_binary(owner) do
+  def call(%{tool_name: "wait", arguments: arguments, run_id: run_id} = operation)
+      when is_map(arguments) and is_binary(run_id) do
     with {:ok, context} <- backend_context(operation),
          {:ok, registry} <- required_registry(context),
-         {:ok, handle} <- public_handle(arguments["cell_id"], owner, operation.incarnation) do
+         resource_owner = resource_owner(operation),
+         owner = resource_owner.owner_id,
+         {:ok, handle} <- public_handle(arguments["cell_id"], owner, resource_owner.incarnation) do
       if arguments["terminate"] == true do
         with {:ok, _} <- cancel(registry, handle, owner),
              do: {:ok, %{cell_id: arguments["cell_id"], status: :terminated}}
@@ -117,6 +127,9 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
              {:ok, result} <-
                resume(registry, handle, nil,
                  owner: owner,
+                 tools: tool_metadata(operation),
+                 yield_time_ms: arguments["yield_time_ms"] || 10_000,
+                 max_tokens: arguments["max_tokens"] || 10_000,
                  dispatcher: fn request, execution_context ->
                    suspend = Map.get(execution_context, :suspend)
                    if is_function(suspend, 0), do: suspend.()
@@ -129,7 +142,9 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
                    end
                  end,
                  execution_context: %{
-                   run_id: owner,
+                   emit: operation.backend_context[:emit],
+                   run_id: run_id,
+                   owner_id: owner,
                    authority: operation.effective_authority,
                    catalog_revision: operation.catalog_revision
                  }
@@ -149,24 +164,49 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          :ok <- require_lifecycle_capability(opts),
          :ok <- validate_code(code, opts),
          {:ok, context} <- execution_context(owner, opts),
+         stored when is_map(stored) <-
+           ResourceRegistry.code_state(registry, owner, Keyword.get(opts, :incarnation, 1)),
          {:ok, dispatcher} <- dispatcher(opts),
          {:ok, supervisor} <- ResourceRegistry.worker_supervisor(registry),
          {:ok, worker} <-
            DynamicSupervisor.start_child(
              supervisor,
-             {__MODULE__.Worker, worker_opts(code, context, dispatcher, opts)}
+             {__MODULE__.Worker,
+              worker_opts(code, context, dispatcher, Keyword.put(opts, :registry, registry))}
            ),
          {:ok, os_identity} <- __MODULE__.Worker.os_identity(worker),
          {:ok, handle} <-
-           ResourceRegistry.register(registry, owner, :continuation, worker,
-             incarnation: Keyword.get(opts, :incarnation, 1),
-             owner_pid: Keyword.get(opts, :owner_pid) || self(),
-             cleanup: fn -> safe_stop(worker, os_identity) end
-           ),
-         :ok <- __MODULE__.Worker.adopt(worker),
+           register_worker(registry, owner, worker, os_identity, opts),
+         :ok <- __MODULE__.Worker.adopt(worker, handle),
          result <- begin_worker(worker),
          {:ok, result} <- settle_execution(registry, owner, handle, result) do
       {:ok, result}
+    end
+  end
+
+  defp register_worker(registry, owner, worker, identity, opts) do
+    result =
+      ResourceRegistry.register(registry, owner, :continuation, worker,
+        incarnation: Keyword.get(opts, :incarnation, 1),
+        owner_pid: Keyword.get(opts, :owner_pid) || self(),
+        cleanup: fn -> safe_stop(worker, identity) end
+      )
+
+    case result do
+      {:ok, _} ->
+        result
+
+      {:error, error} ->
+        case safe_stop(worker, identity) do
+          :ok ->
+            {:error, error}
+
+          evidence ->
+            {:error,
+             Error.new(:unknown_outcome, "unregistered Code Mode worker cleanup is unconfirmed",
+               cause: evidence
+             )}
+        end
     end
   end
 
@@ -180,8 +220,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         {:ok, result} ->
           settle_resume(registry, handle, owner, result, opts)
 
-        {:error, %Error{class: class} = error}
-        when class in [:budget_exceeded, :resource_conflict] ->
+        {:rejected, %Error{} = error} ->
           {:error, error}
 
         {:error, %Error{} = error} ->
@@ -204,7 +243,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         worker,
         value,
         Keyword.get(opts, :dispatcher),
-        Keyword.get(opts, :execution_context)
+        Keyword.get(opts, :execution_context),
+        Keyword.get(opts, :yield_time_ms),
+        Keyword.get(opts, :max_tokens, 10_000),
+        Keyword.get(opts, :tools)
       )
     catch
       :exit, reason ->
@@ -299,14 +341,19 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       tool_limit: Keyword.get(opts, :tool_limit, @default_tool_limit),
       code_limit: Keyword.get(opts, :code_limit, @default_code_limit),
       deno_path: Keyword.get(opts, :deno_path),
-      creator_pid: self()
+      creator_pid: self(),
+      registry: Keyword.fetch!(opts, :registry),
+      tools: Keyword.get(opts, :tools, []),
+      yield_time_ms: Keyword.get(opts, :yield_time_ms),
+      max_tokens: Keyword.get(opts, :max_tokens, 10_000),
+      incarnation: Keyword.get(opts, :incarnation, 1)
     ]
   end
 
   defp execution_context(owner, opts) do
     context = Keyword.get(opts, :execution_context, %{})
 
-    if is_map(context) and Map.get(context, :run_id, owner) == owner,
+    if is_map(context) and Map.get(context, :owner_id, Map.get(context, :run_id, owner)) == owner,
       do: {:ok, Map.put_new(context, :run_id, owner) |> Map.put_new(:owner_id, owner)},
       else: {:error, Error.new(:forbidden, "code mode execution context is not owner-bound")}
   end
@@ -393,6 +440,70 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       ]
   end
 
+  defp resource_owner(operation) do
+    Map.get(operation.backend_context, :resource_owner, %{
+      owner_id: operation.run_id,
+      incarnation: operation.incarnation,
+      owner_pid: operation.backend_context[:resource_owner_pid]
+    })
+  end
+
+  defp source_options(code) do
+    case String.split(code, "\n", parts: 2) do
+      [line, source] ->
+        case String.trim_leading(line) do
+          "// @exec:" <> json ->
+            with false <- String.trim(source) == "",
+                 {:ok, map} when is_map(map) <- JSON.decode(String.trim(json)),
+                 true <-
+                   Enum.all?(Map.keys(map), &(&1 in ["yield_time_ms", "max_output_tokens"])),
+                 time when is_integer(time) and time >= 0 and time <= 300_000 <-
+                   Map.get(map, "yield_time_ms") || 10_000,
+                 tokens when is_integer(tokens) and tokens >= 0 and tokens <= 262_144 <-
+                   Map.get(map, "max_output_tokens") || 10_000 do
+              {:ok, %{yield_time_ms: time, max_output_tokens: tokens}}
+            else
+              _ -> {:error, Error.new(:validation, "invalid Code Mode pragma")}
+            end
+
+          _ ->
+            default_source_options(code)
+        end
+
+      [line] ->
+        if String.starts_with?(String.trim_leading(line), "// @exec:"),
+          do: {:error, Error.new(:validation, "Code Mode pragma requires following source")},
+          else: default_source_options(code)
+    end
+  end
+
+  defp default_source_options(code) do
+    if String.trim(code) == "",
+      do: {:error, Error.new(:validation, "Code Mode source must not be empty")},
+      else: {:ok, %{yield_time_ms: 10_000, max_output_tokens: 10_000}}
+  end
+
+  defp tool_metadata(operation) do
+    case operation.backend_context[:catalog_snapshot] do
+      %{registry: %{tools: tools}} ->
+        tools
+        |> Map.values()
+        |> Enum.reject(&(&1.tool_name in ["exec", "wait"]))
+        |> Enum.filter(&(&1.tool_name in operation.effective_authority.grants))
+        |> Enum.map(fn tool ->
+          %{
+            name: String.replace(tool.tool_name, "::", "__"),
+            tool_name: tool.tool_name,
+            description: Map.get(tool, :description, ""),
+            input_kind: Map.get(tool, :codex_input_kind, :function)
+          }
+        end)
+
+      _ ->
+        []
+    end
+  end
+
   defp public_result(%{handle: %{resource_id: cell_id}} = result) do
     result |> Map.delete(:handle) |> Map.put(:cell_id, cell_id)
   end
@@ -442,11 +553,26 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def begin(pid), do: GenServer.call(pid, :begin, :infinity)
 
-    def resume(pid, value, dispatcher, context),
-      do: GenServer.call(pid, {:resume, value, dispatcher, context}, :infinity)
+    def resume(
+          pid,
+          value,
+          dispatcher,
+          context,
+          yield_time_ms \\ nil,
+          max_tokens \\ 10_000,
+          tools \\ nil
+        ),
+        do:
+          GenServer.call(
+            pid,
+            {:resume, value, dispatcher, context, yield_time_ms, max_tokens, tools},
+            :infinity
+          )
+
+    def ready_for_detach(pid), do: GenServer.call(pid, :ready_for_detach)
 
     def stop(pid), do: GenServer.call(pid, :stop, 3_000)
-    def adopt(pid), do: GenServer.call(pid, :adopt)
+    def adopt(pid, handle \\ nil), do: GenServer.call(pid, {:adopt, handle})
     def os_identity(pid), do: GenServer.call(pid, :os_identity)
 
     @impl true
@@ -468,12 +594,38 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
                pid when is_pid(pid) -> Process.monitor(pid)
                _ -> nil
              end,
+           handle: nil,
            code: Keyword.fetch!(opts, :code),
            context: Keyword.fetch!(opts, :context),
            dispatcher: Keyword.fetch!(opts, :dispatcher),
            timeout: Keyword.fetch!(opts, :timeout),
            output_limit: Keyword.fetch!(opts, :output_limit),
            tool_limit: Keyword.fetch!(opts, :tool_limit),
+           registry: Keyword.get(opts, :registry),
+           stored:
+             case Keyword.get(opts, :registry) do
+               registry when is_pid(registry) ->
+                 ResourceRegistry.code_state(
+                   registry,
+                   Keyword.fetch!(opts, :context).owner_id,
+                   Keyword.get(opts, :incarnation, 1)
+                 )
+
+               _ ->
+                 %{}
+             end,
+           tools: Keyword.get(opts, :tools, []),
+           yield_time_ms: Keyword.get(opts, :yield_time_ms),
+           max_tokens: Keyword.get(opts, :max_tokens, 10_000),
+           outputs: [],
+           output_bytes: 0,
+           slice_timer: nil,
+           slice_generation: nil,
+           timer_generation: nil,
+           continuation_kind: nil,
+           pending_tool: nil,
+           pending_yield: nil,
+           terminal_result: nil,
            timer: nil,
            from: nil,
            awaiting_resume: false,
@@ -489,6 +641,12 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     end
 
     @impl true
+    def handle_call(:ready_for_detach, _from, state),
+      do:
+        {:reply,
+         is_nil(state.from) and is_nil(state.active_tool) and
+           not match?({:error, %Error{}}, state.terminal_result), state}
+
     def handle_call(:os_identity, _from, state),
       do: {:reply, {:ok, state.os_identity}, state}
 
@@ -497,13 +655,19 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       {:stop, :normal, status, %{state | os_cleanup_status: status}}
     end
 
-    def handle_call(:adopt, _from, state) do
+    def handle_call({:adopt, handle}, _from, state) do
       if state.creator_ref, do: Process.demonitor(state.creator_ref, [:flush])
-      {:reply, :ok, %{state | creator_ref: nil}}
+      {:reply, :ok, %{state | creator_ref: nil, handle: handle}}
     end
 
     def handle_call(:begin, from, state) do
-      send_command(state.port, %{type: "execute", code: state.code})
+      send_command(state.port, %{
+        type: "execute",
+        code: state.code,
+        tools: state.tools,
+        stored: state.stored
+      })
+
       {:noreply, arm(state, from)}
     end
 
@@ -525,12 +689,14 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       remaining = state.paused_remaining
 
       if is_integer(remaining) do
-        timer = Process.send_after(self(), :deadline, remaining)
+        generation = make_ref()
+        timer = Process.send_after(self(), {:deadline, generation}, remaining)
 
         {:reply, :ok,
          %{
            state
            | timer: timer,
+             timer_generation: generation,
              timer_deadline: System.monotonic_time(:millisecond) + remaining,
              paused_remaining: nil
          }}
@@ -540,26 +706,66 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     end
 
     def handle_call(
-          {:resume, value, dispatcher, context},
+          {:resume, value, dispatcher, context, slice, tokens, tools},
           from,
-          %{from: nil, awaiting_resume: true} = state
+          %{from: nil} = state
         ) do
-      if bounded_term?(value, state.output_limit) do
+      with true <- bounded_term?(value, state.output_limit),
+           stored when is_map(stored) <- refreshed_store(state) do
         state = rebind(state, dispatcher, context)
-        send_command(state.port, %{type: "resume", value: value})
-        {:noreply, arm(%{state | from: from, awaiting_resume: false}, from)}
+
+        if state.terminal_result == nil do
+          send_command(state.port, %{
+            type: "configure",
+            tools: tools || state.tools,
+            stored: stored
+          })
+        end
+
+        state = %{state | yield_time_ms: slice, max_tokens: tokens, tools: tools || state.tools}
+
+        cond do
+          state.terminal_result != nil ->
+            finish(%{state | from: from}, state.terminal_result)
+
+          state.awaiting_resume ->
+            send_command(state.port, %{type: "resume", value: value})
+            {:noreply, arm(%{state | awaiting_resume: false}, from)}
+
+          true ->
+            state = arm(state, from)
+
+            case state.pending_tool do
+              nil -> {:noreply, state}
+              message -> tool_call(message, %{state | pending_tool: nil})
+            end
+        end
       else
-        {:reply,
-         {:error, Error.new(:budget_exceeded, "continuation value exceeds the configured bound")},
-         state}
+        false ->
+          {:reply,
+           {:rejected,
+            Error.new(:budget_exceeded, "continuation value exceeds the configured bound")},
+           state}
+
+        {:error, %Error{} = error} ->
+          fail(%{state | from: from}, error)
       end
     end
 
-    def handle_call({:resume, _value, _dispatcher, _context}, _from, state),
+    def handle_call({:resume, _, _, _, _, _, _}, _from, state),
       do:
-        {:reply,
-         {:error, Error.new(:resource_conflict, "code mode is not awaiting a continuation")},
+        {:reply, {:rejected, Error.new(:resource_conflict, "Code Mode already has a waiter")},
          state}
+
+    defp refreshed_store(%{terminal_result: result}) when not is_nil(result), do: %{}
+
+    defp refreshed_store(state),
+      do:
+        ResourceRegistry.code_state(
+          state.registry,
+          state.context.owner_id,
+          state.handle.incarnation
+        )
 
     defp rebind(state, nil, nil), do: state
 
@@ -569,6 +775,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     @impl true
     def handle_info({:DOWN, ref, :process, _pid, _reason}, %{creator_ref: ref} = state),
       do: {:stop, :normal, state}
+
+    def handle_info({port, _event}, %{port: port, terminal_result: result} = state)
+        when not is_nil(result),
+        do: {:noreply, state}
 
     def handle_info({port, {:data, chunk}}, %{port: port} = state) when is_binary(chunk) do
       consume_data(state, state.buffer <> chunk)
@@ -599,7 +809,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
             value: value
           })
 
-          {:noreply, %{state | active_tool: nil, context: context}}
+          complete_tool(%{state | active_tool: nil, context: context})
+
+        {:error, %Error{class: :unknown_outcome} = error} ->
+          fail(%{state | active_tool: nil}, error)
 
         {:error, %Error{} = error} ->
           send_command(state.port, %{
@@ -609,22 +822,49 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
             error: Error.to_map(error)
           })
 
-          {:noreply, %{state | active_tool: nil}}
+          complete_tool(%{state | active_tool: nil})
       end
     end
 
     def handle_info({:DOWN, ref, :process, _pid, reason}, %{active_tool: %{ref: ref}} = state) do
       handle_info(
         {ref,
-         {:error, Error.new(:execution_failure, "nested tool dispatcher stopped", cause: reason)}},
+         {:error,
+          Error.new(:unknown_outcome, "nested tool dispatcher stopped before settlement",
+            cause: reason
+          )}},
         state
       )
     end
 
-    def handle_info(:deadline, %{timer: timer} = state) when is_reference(timer),
-      do: fail(state, Error.new(:timeout, "code mode execution timed out"))
+    def handle_info(
+          {:deadline, generation},
+          %{timer_generation: generation, timer: timer} = state
+        )
+        when is_reference(timer),
+        do: fail(state, Error.new(:timeout, "code mode execution timed out"))
 
+    def handle_info({:deadline, _generation}, state), do: {:noreply, state}
     def handle_info(:deadline, state), do: {:noreply, state}
+
+    def handle_info(
+          {:slice, generation},
+          %{slice_generation: generation, from: from, active_tool: nil} = state
+        )
+        when not is_nil(from),
+        do: running_yield(state)
+
+    def handle_info({:slice, generation}, %{slice_generation: generation, from: from} = state)
+        when not is_nil(from) do
+      timer = Process.send_after(self(), {:slice, generation}, 10)
+      {:noreply, %{state | slice_timer: timer}}
+    end
+
+    def handle_info({:slice, _}, state), do: {:noreply, state}
+
+    def handle_info({:EXIT, port, _reason}, %{port: port, terminal_result: result} = state)
+        when not is_nil(result),
+        do: {:noreply, state}
 
     def handle_info({:EXIT, port, reason}, %{port: port} = state) do
       fail(state, Error.new(:execution_failure, "code mode worker exited", cause: reason))
@@ -640,8 +880,61 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       :ok
     end
 
+    defp handle_line(_line, %{terminal_result: result} = state) when not is_nil(result),
+      do: {:noreply, state}
+
     defp handle_line(line, state) do
       case JSON.decode(line) do
+        {:ok, %{"type" => "output", "item" => item}} ->
+          bytes = Map.get(state, :output_bytes, 0) + byte_size(JSON.encode!(item))
+
+          if bytes <= state.output_limit,
+            do: {:noreply, %{state | outputs: state.outputs ++ [item], output_bytes: bytes}},
+            else: fail(state, Error.new(:budget_exceeded, "Code Mode output exceeds its bound"))
+
+        {:ok, %{"type" => "store", "key" => key, "value" => value}} when is_binary(key) ->
+          case ResourceRegistry.store_code_state(
+                 state.registry,
+                 state.handle,
+                 state.context.owner_id,
+                 key,
+                 value
+               ) do
+            :ok -> {:noreply, state}
+            {:error, error} -> fail(state, error)
+          end
+
+        {:ok, %{"type" => "notify", "value" => value}} ->
+          item = %{"type" => "notification", "text" => value}
+          bytes = state.output_bytes + byte_size(JSON.encode!(item))
+
+          if bytes <= state.output_limit do
+            state = %{state | output_bytes: bytes}
+            event = %{type: :custom_tool_call_output, output: value}
+            callback = state.context[:emit]
+
+            if state.from && is_function(callback, 1) do
+              case callback.(event) do
+                :ok -> {:noreply, state}
+                {:error, error} -> fail(state, error)
+              end
+            else
+              {:noreply, %{state | outputs: state.outputs ++ [item]}}
+            end
+          else
+            fail(
+              state,
+              Error.new(:budget_exceeded, "Code Mode notification output exceeds its bound")
+            )
+          end
+
+        {:ok, %{"type" => "control_yield"}} ->
+          cond do
+            is_nil(state.from) -> {:noreply, state}
+            state.active_tool != nil -> {:noreply, %{state | pending_yield: :running}}
+            true -> running_yield(state)
+          end
+
         {:ok, %{"type" => "tool_call"} = message} ->
           tool_call(message, state)
 
@@ -664,13 +957,30 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         result = {:ok, %{status: status, value: value}}
 
         case status do
-          :yielded -> pause(state, result)
-          :completed -> finish(state, result)
+          :yielded when state.active_tool != nil ->
+            {:noreply, %{state | pending_yield: {:generator, result}}}
+
+          :yielded ->
+            pause(state, result)
+
+          :completed ->
+            finish(state, result)
         end
       else
         fail(state, Error.new(:budget_exceeded, "code mode result exceeds the configured bound"))
       end
     end
+
+    defp complete_tool(%{pending_yield: :running} = state),
+      do: running_yield(%{state | pending_yield: nil})
+
+    defp complete_tool(%{pending_yield: {:generator, result}} = state),
+      do: pause(%{state | pending_yield: nil}, result)
+
+    defp complete_tool(state), do: {:noreply, state}
+
+    defp tool_call(message, %{from: nil, active_tool: nil, pending_tool: nil} = state),
+      do: {:noreply, %{state | pending_tool: message}}
 
     defp tool_call(%{"id" => id, "name" => name} = message, %{active_tool: nil} = state)
          when is_binary(id) and is_binary(name) do
@@ -730,7 +1040,36 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            cause: other
          )}
 
-    defp finish(%{from: nil} = state, _result), do: {:stop, :normal, state}
+    defp finish(%{active_tool: tool} = state, _result) when not is_nil(tool),
+      do:
+        finish(
+          %{state | active_tool: nil},
+          {:error, Error.new(:unknown_outcome, "Code Mode ended with an unsettled nested tool")}
+        )
+
+    defp finish(%{from: nil, terminal_result: result} = state, _result) when not is_nil(result),
+      do: {:noreply, state}
+
+    defp finish(%{from: nil} = state, result) do
+      status = cleanup_os(state)
+
+      result =
+        if status == :ok,
+          do: result,
+          else:
+            {:error, Error.new(:unknown_outcome, "Code Mode cleanup unconfirmed", cause: status)}
+
+      if state.timer, do: Process.cancel_timer(state.timer)
+
+      {:noreply,
+       %{
+         state
+         | terminal_result: result,
+           os_cleanup_status: status,
+           timer: nil,
+           timer_generation: nil
+       }}
+    end
 
     defp finish(state, result) do
       if state.timer, do: Process.cancel_timer(state.timer)
@@ -745,7 +1084,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
                cause: status
              )}
 
-      GenServer.reply(state.from, result)
+      GenServer.reply(state.from, with_output(state, result))
       {:stop, :normal, %{state | from: nil, awaiting_resume: false, os_cleanup_status: status}}
     end
 
@@ -754,7 +1093,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
     defp pause(state, result) do
       if state.timer, do: Process.cancel_timer(state.timer)
-      GenServer.reply(state.from, result)
+      GenServer.reply(state.from, with_output(state, result))
 
       {:noreply,
        %{
@@ -763,22 +1102,67 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            timer: nil,
            timer_deadline: nil,
            paused_remaining: nil,
-           awaiting_resume: true
+           timer_generation: nil,
+           slice_generation: nil,
+           awaiting_resume: true,
+           outputs: []
        }}
     end
 
     defp fail(state, error), do: finish(state, {:error, error})
 
+    defp running_yield(state) do
+      GenServer.reply(state.from, with_output(state, {:ok, %{status: :yielded}}))
+      {:noreply, %{state | from: nil, outputs: [], slice_timer: nil, slice_generation: nil}}
+    end
+
+    defp with_output(state, {:ok, result}) do
+      outputs = Map.get(state, :outputs, [])
+      # Return whole media records; the host hard output bound remains independent.
+      limit = Map.get(state, :max_tokens, 10_000) * 4
+
+      {kept, _} =
+        Enum.reduce(outputs, {[], 0}, fn item, {items, bytes} ->
+          size = byte_size(JSON.encode!(item))
+          if bytes + size <= limit, do: {items ++ [item], bytes + size}, else: {items, bytes}
+        end)
+
+      {:ok, Map.merge(result, %{output: kept, output_truncated: length(kept) != length(outputs)})}
+    end
+
+    defp with_output(_state, error), do: error
+
     defp arm(state, from) do
-      timer = Process.send_after(self(), :deadline, state.timeout)
+      state =
+        if state.timer do
+          state
+        else
+          generation = make_ref()
+          timer = Process.send_after(self(), {:deadline, generation}, state.timeout)
+
+          %{
+            state
+            | timer: timer,
+              timer_generation: generation,
+              timer_deadline: System.monotonic_time(:millisecond) + state.timeout,
+              paused_remaining: nil
+          }
+        end
+
+      if state.slice_timer, do: Process.cancel_timer(state.slice_timer)
+      generation = make_ref()
+
+      timer =
+        if is_integer(state.yield_time_ms),
+          do: Process.send_after(self(), {:slice, generation}, state.yield_time_ms),
+          else: nil
 
       %{
         state
         | from: from,
           awaiting_resume: false,
-          timer: timer,
-          timer_deadline: System.monotonic_time(:millisecond) + state.timeout,
-          paused_remaining: nil
+          slice_timer: timer,
+          slice_generation: generation
       }
     end
 
@@ -911,6 +1295,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     defp open_port(deno, _opts) do
       args = [
         "run",
+        "--v8-flags=--max-old-space-size=64",
         "--no-config",
         "--quiet",
         "--deny-read",

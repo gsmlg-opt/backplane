@@ -8,9 +8,25 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
     Codex.ExtensionRuntime,
     Codex.MultiAgent,
     Codex.Services,
+    Codex.Session,
     Codex.Tools,
     Error
   }
+
+  def execute(%{backend_context: %{session_binding: binding} = backend} = operation) do
+    with {:ok, owner} <- Session.validate(binding, operation) do
+      operation = %{
+        operation
+        | backend_context:
+            backend
+            |> Map.delete(:session_binding)
+            |> Map.put(:resource_owner, owner)
+            |> Map.put(:resource_owner_pid, owner.owner_pid)
+      }
+
+      execute(operation)
+    end
+  end
 
   def execute(
         %{backend_context: %{family: :local, context: context} = backend_context} = operation
@@ -21,6 +37,7 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
         _ -> context
       end
       |> Map.put(:incarnation, Map.get(operation, :incarnation, 1))
+      |> Map.put(:resource_owner, Map.get(backend_context, :resource_owner))
 
     Tools.call(context, operation.tool_name, operation.arguments)
   end
