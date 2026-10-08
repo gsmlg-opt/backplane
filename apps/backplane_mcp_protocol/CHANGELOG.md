@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixes single Peri validation errors crashing tool and prompt input handling,
+  preserves nested error details, and makes `Schema.validator/1` callbacks safe
+  to compose with Peri custom validators.
 - Adds Agent Note HTTP parity regression coverage and documents upgrading from
   retired `1.6.3` to published `1.10.12` for modern discovery and tool calls.
 - Fixes Streamable HTTP `:auto` negotiation so a valid `server/discover`

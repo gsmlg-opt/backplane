@@ -624,6 +624,41 @@ legacy GET stream, replay IDs, or session deletion.
 
 ## Schemas, Structured Content, and Tasks
 
+### Composing Peri validators
+
+Use `Server.Component.Schema.validator/1` when a custom field delegates to
+another Peri schema. It returns a callback suitable for `{:custom, callback}`,
+normalizing both single and list errors and preserving declared field paths:
+
+```elixir
+alias Backplane.McpProtocol.Server.Component.Schema
+
+attachment_validator = Schema.validator(%{name: {:required, :string}})
+
+Frame.register_tool(frame, "create_note",
+  input_schema: %{
+    title: {:required, :string},
+    attachment: {:required, {:custom, attachment_validator}}
+  }
+)
+```
+
+Invalid attachment names produce JSON-RPC `-32602` with an
+`attachment.name` validation detail. Successful validation retains Peri's
+validated or transformed value. This composition works with dynamically
+registered tools and custom fields in component schemas, for both modern and
+legacy requests.
+
+A direct `fn value -> Peri.validate(inner_schema, value) end` callback can return
+a single root `Peri.Error`, while Peri's nested traversal expects a list. Use
+`Schema.validator(inner_schema)` for that delegation. The adapter converts root
+`nil` paths to empty paths before Peri prefixes enclosing fields; the error
+formatter renders nested leaves using their complete paths. It preserves the
+paths Peri provides, which do not include dynamic map keys or list indices in
+all validation forms.
+
+### Wire schemas and structured results
+
 Modern wire schemas are preserved as arbitrary JSON Schema 2020-12 maps,
 including `$defs`, composition, references, and unknown keywords. Peri remains
 the local validator for its supported subset; external network `$ref`

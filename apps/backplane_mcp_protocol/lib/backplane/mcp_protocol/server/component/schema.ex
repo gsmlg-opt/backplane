@@ -60,10 +60,14 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
     end)
   end
 
-  @spec format_errors([map()] | [binary()]) :: binary()
+  @spec format_errors(map() | binary() | [map() | binary()]) :: binary()
   def format_errors(errors) when is_list(errors) do
     Enum.map_join(errors, "; ", &format_error/1)
   end
+
+  def format_errors(error), do: format_errors([error])
+
+  defp format_error(%Peri.Error{errors: [_ | _] = errors}), do: format_errors(errors)
 
   defp format_error(%{path: path, message: message}) do
     path_str = Enum.join(path || [], ".")
@@ -111,7 +115,13 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   defp describe_base_type(schema) when is_map(schema), do: "nested object"
   defp describe_base_type(_), do: "parameter"
 
-  @spec validator(schema()) :: validator()
+  @doc """
+  Builds a validator, with Peri DSL errors normalized for custom-field composition.
+
+  Use `{:custom, validator(inner_schema)}` to delegate to another Peri schema.
+  Error lists have valid root paths so Peri can prefix enclosing field names.
+  """
+  @spec validator(schema() | Peri.schema()) :: validator()
   def validator({:json_schema, _schema} = schema) do
     case compile_validator(schema) do
       {:ok, validator} -> validator
@@ -126,8 +136,25 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
   def validator(schema) do
     peri_schema = Component.__clean_schema_for_peri__(schema)
-    fn params -> Peri.validate(peri_schema, params) end
+
+    fn params ->
+      case Peri.validate(peri_schema, params) do
+        {:error, errors} -> {:error, Enum.map(List.wrap(errors), &normalize_peri_error/1)}
+        result -> result
+      end
+    end
   end
+
+  defp normalize_peri_error(%Peri.Error{} = error) do
+    nested =
+      if is_list(error.errors),
+        do: Enum.map(error.errors, &normalize_peri_error/1),
+        else: error.errors
+
+    %{error | path: error.path || [], errors: nested}
+  end
+
+  defp normalize_peri_error(error), do: error
 
   @doc false
   @spec compile_validator(schema(), keyword()) ::
