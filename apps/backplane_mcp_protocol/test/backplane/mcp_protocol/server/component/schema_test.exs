@@ -358,6 +358,23 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
   end
 
   describe "format_errors/1" do
+    test "formats a single root custom validation error" do
+      schema = {:custom, fn _value -> {:error, "invalid note input", []} end}
+      assert {:error, %Peri.Error{} = error} = Peri.validate(schema, %{})
+
+      assert Schema.format_errors(error) == "invalid note input"
+    end
+
+    test "formats nested error leaves with their complete field paths" do
+      assert {:error, errors} =
+               Peri.validate(%{attachment: %{meta: %{name: :string}}}, %{
+                 "attachment" => %{"meta" => %{"name" => 1}}
+               })
+
+      assert Schema.format_errors(errors) ==
+               "attachment.meta.name: expected type of :string received 1 value"
+    end
+
     test "formats simple error messages" do
       errors = ["Field is required", "Invalid type"]
       assert Schema.format_errors(errors) == "Field is required; Invalid type"
@@ -387,6 +404,56 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
 
       assert result ==
                "Simple error; field: complex error; {:unexpected, \"format\"}"
+    end
+  end
+
+  describe "composed Peri validators" do
+    test "normalizes root custom errors into lists with an empty path" do
+      validator = Schema.validator({:custom, fn _ -> {:error, "invalid note input", []} end})
+
+      assert {:error, [%Peri.Error{path: [], message: "invalid note input"}]} = validator.(%{})
+    end
+
+    test "composes root custom validation under a declared attachment field" do
+      inner = Schema.validator({:custom, fn _ -> {:error, "invalid attachment", []} end})
+      validator = Schema.validator(%{attachment: {:required, {:custom, inner}}})
+
+      assert {:error, errors} = validator.(%{"attachment" => %{}})
+      assert Schema.format_errors(errors) == "attachment: invalid attachment"
+    end
+
+    test "preserves nested declared field paths when composing validators" do
+      inner = Schema.validator(%{meta: %{name: :string}})
+      validator = Schema.validator(%{attachment: {:required, {:custom, inner}}})
+
+      assert {:error, errors} = validator.(%{"attachment" => %{"meta" => %{"name" => 1}}})
+
+      assert Schema.format_errors(errors) ==
+               "attachment.meta.name: expected type of :string received 1 value"
+    end
+
+    test "composes an error collection whose parent and leaves have root paths" do
+      error = Peri.Error.exception([Peri.Error.new_single("invalid attachment", [])])
+      inner = Schema.validator({:custom, fn _ -> {:error, error} end})
+      validator = Schema.validator(%{attachment: {:required, {:custom, inner}}})
+
+      assert {:error, errors} = validator.(%{"attachment" => %{}})
+      assert Schema.format_errors(errors) == "attachment: invalid attachment"
+    end
+
+    test "normalizes additional-keys validation errors" do
+      schema = {:schema, %{}, {:additional_keys, {:custom, fn _ -> {:error, "invalid extra field", []} end}}}
+      validator = Schema.validator(schema)
+
+      assert {:error, [%Peri.Error{path: [], message: "invalid extra field"}]} =
+               validator.(%{"extra" => 1})
+    end
+
+    test "preserves transformed successful values in composed validators" do
+      inner = Schema.validator({:custom, fn value -> {:ok, String.trim(value)} end})
+      validator = Schema.validator(%{name: {:required, {:custom, inner}}})
+
+      assert {:ok, %{name: "example"}} = validator.(%{"name" => " example "})
     end
   end
 
