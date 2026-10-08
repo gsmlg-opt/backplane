@@ -294,8 +294,8 @@ defmodule Backplane.Admin.EmbeddingLive do
           </:col>
           <:col :let={model} label="Actions">
             <div class="flex items-center gap-1">
-              <.dm_tooltip content="Edit" position="bottom">
-                <.dm_btn
+              <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                <.dm_btn {tooltip_attrs}
                   id={"edit-embedding-model-#{model.id}"}
                   type="button"
                   size="xs"
@@ -309,8 +309,8 @@ defmodule Backplane.Admin.EmbeddingLive do
                   <span class="sr-only">Edit</span>
                 </.dm_btn>
               </.dm_tooltip>
-              <.dm_tooltip content="Delete" position="bottom">
-                <.dm_btn
+              <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                <.dm_btn {tooltip_attrs}
                   id={"delete-embedding-model-#{model.id}"}
                   type="button"
                   size="xs"

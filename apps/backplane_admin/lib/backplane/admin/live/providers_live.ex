@@ -172,8 +172,8 @@ defmodule Backplane.Admin.ProvidersLive do
         </:col>
         <:col :let={provider} label="Actions">
           <div class="flex items-center gap-1">
-            <.dm_tooltip content="View" position="bottom">
-              <.link navigate={~p"/llama/providers/#{provider.id}"} class="no-underline">
+            <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
+              <.link {tooltip_attrs} navigate={~p"/llama/providers/#{provider.id}"} class="no-underline">
                 <.dm_btn
                   type="button"
                   size="xs"
@@ -186,8 +186,8 @@ defmodule Backplane.Admin.ProvidersLive do
                 </.dm_btn>
               </.link>
             </.dm_tooltip>
-            <.dm_tooltip content={if provider.enabled, do: "Disable", else: "Enable"} position="bottom">
-              <.dm_btn
+            <.dm_tooltip :let={tooltip_attrs} content={if provider.enabled, do: "Disable", else: "Enable"} position="bottom">
+              <.dm_btn {tooltip_attrs}
                 type="button"
                 variant={if provider.enabled, do: "warning", else: "success"}
                 size="xs"
@@ -202,8 +202,8 @@ defmodule Backplane.Admin.ProvidersLive do
                 <span class="sr-only">{if provider.enabled, do: "Disable", else: "Enable"}</span>
               </.dm_btn>
             </.dm_tooltip>
-            <.dm_tooltip content="Delete" position="bottom">
-              <.dm_btn
+            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+              <.dm_btn {tooltip_attrs}
                 type="button"
                 variant="error"
                 size="xs"

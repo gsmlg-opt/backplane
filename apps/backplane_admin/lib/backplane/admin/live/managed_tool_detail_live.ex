@@ -303,8 +303,8 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
           <:title>
             <div class="flex items-center justify-between w-full">
               <span>Test Tool</span>
-              <.dm_tooltip :if={@test_result || @test_error} content="Clear results">
-                <.dm_btn
+              <.dm_tooltip :let={tooltip_attrs} :if={@test_result || @test_error} content="Clear results">
+                <.dm_btn {tooltip_attrs}
                   size="xs"
                   shape="circle"
                   variant="ghost"

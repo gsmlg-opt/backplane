@@ -221,8 +221,8 @@ defmodule Backplane.Admin.ApiUsageLive do
         </:col>
         <:col :let={account} label="Actions">
           <div class="flex items-center gap-1">
-            <.dm_tooltip content={if account.active, do: "Pause", else: "Resume"} position="bottom">
-              <.dm_btn id={"toggle-api-account-#{account.id}"} type="button" size="xs" shape="circle"
+            <.dm_tooltip :let={tooltip_attrs} content={if account.active, do: "Pause", else: "Resume"} position="bottom">
+              <.dm_btn {tooltip_attrs} id={"toggle-api-account-#{account.id}"} type="button" size="xs" shape="circle"
                 variant={if account.active, do: "warning", else: "success"}
                 aria-label={"#{if account.active, do: "Pause", else: "Resume"} #{account.name}"}
                 phx-click="toggle_active" phx-value-id={account.id}>
@@ -230,15 +230,15 @@ defmodule Backplane.Admin.ApiUsageLive do
                 <span class="sr-only">{if account.active, do: "Pause", else: "Resume"}</span>
               </.dm_btn>
             </.dm_tooltip>
-            <.dm_tooltip content="Edit" position="bottom">
-              <.link id={"edit-api-account-#{account.id}"} patch={~p"/system/monitor/api-usage/#{account.id}/edit"} class="no-underline">
+            <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+              <.link {tooltip_attrs} id={"edit-api-account-#{account.id}"} patch={~p"/system/monitor/api-usage/#{account.id}/edit"} class="no-underline">
                 <.dm_btn type="button" size="xs" shape="circle" aria-label={"Edit #{account.name}"}>
                   <.dm_mdi name="pencil" class="h-4 w-4" /><span class="sr-only">Edit</span>
                 </.dm_btn>
               </.link>
             </.dm_tooltip>
-            <.dm_tooltip content="Delete" position="bottom">
-              <.dm_btn id={"delete-api-account-#{account.id}"} type="button" size="xs" shape="circle" variant="error"
+            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+              <.dm_btn {tooltip_attrs} id={"delete-api-account-#{account.id}"} type="button" size="xs" shape="circle" variant="error"
                 aria-label={"Delete #{account.name}"} phx-click="delete" phx-value-id={account.id}
                 confirm="Delete this API account?">
                 <.dm_mdi name="trash-can" class="h-4 w-4" /><span class="sr-only">Delete</span>

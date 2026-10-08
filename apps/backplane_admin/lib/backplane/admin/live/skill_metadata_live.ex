@@ -188,13 +188,13 @@ defmodule Backplane.Admin.SkillMetadataLive do
                     class="input input-bordered input-sm flex-1"
                     autofocus
                   />
-                  <.dm_tooltip content="Save">
-                    <.dm_btn type="submit" size="xs" variant="primary" shape="circle">
+                  <.dm_tooltip :let={tooltip_attrs} content="Save">
+                    <.dm_btn {tooltip_attrs} type="submit" size="xs" variant="primary" shape="circle">
                       <.dm_mdi name="check" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip content="Cancel">
-                    <.dm_btn type="button" size="xs" shape="circle" phx-click="cancel-edit-tag">
+                  <.dm_tooltip :let={tooltip_attrs} content="Cancel">
+                    <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" phx-click="cancel-edit-tag">
                       <.dm_mdi name="close" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
@@ -202,8 +202,8 @@ defmodule Backplane.Admin.SkillMetadataLive do
               </div>
 
               <div :if={@editing_tag != tag_info.tag} class="flex gap-1">
-                <.dm_tooltip content="Rename">
-                  <.dm_btn
+                <.dm_tooltip :let={tooltip_attrs} content="Rename">
+                  <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
@@ -213,8 +213,8 @@ defmodule Backplane.Admin.SkillMetadataLive do
                     <.dm_mdi name="pencil" class="w-4 h-4" />
                   </.dm_btn>
                 </.dm_tooltip>
-                <.dm_tooltip content="Delete">
-                  <.dm_btn
+                <.dm_tooltip :let={tooltip_attrs} content="Delete">
+                  <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
@@ -267,13 +267,13 @@ defmodule Backplane.Admin.SkillMetadataLive do
                     class="input input-bordered input-sm flex-1"
                     autofocus
                   />
-                  <.dm_tooltip content="Save">
-                    <.dm_btn type="submit" size="xs" variant="primary" shape="circle">
+                  <.dm_tooltip :let={tooltip_attrs} content="Save">
+                    <.dm_btn {tooltip_attrs} type="submit" size="xs" variant="primary" shape="circle">
                       <.dm_mdi name="check" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip content="Cancel">
-                    <.dm_btn type="button" size="xs" shape="circle" phx-click="cancel-edit-category">
+                  <.dm_tooltip :let={tooltip_attrs} content="Cancel">
+                    <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" phx-click="cancel-edit-category">
                       <.dm_mdi name="close" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
@@ -281,8 +281,8 @@ defmodule Backplane.Admin.SkillMetadataLive do
               </div>
 
               <div :if={@editing_category != cat_info.category} class="flex gap-1">
-                <.dm_tooltip content="Rename">
-                  <.dm_btn
+                <.dm_tooltip :let={tooltip_attrs} content="Rename">
+                  <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
@@ -292,8 +292,8 @@ defmodule Backplane.Admin.SkillMetadataLive do
                     <.dm_mdi name="pencil" class="w-4 h-4" />
                   </.dm_btn>
                 </.dm_tooltip>
-                <.dm_tooltip content="Delete">
-                  <.dm_btn
+                <.dm_tooltip :let={tooltip_attrs} content="Delete">
+                  <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
@@ -326,8 +326,8 @@ defmodule Backplane.Admin.SkillMetadataLive do
                   class="input input-bordered input-sm w-full"
                 />
               </div>
-              <.dm_tooltip content="Add">
-                <.dm_btn type="submit" size="sm" variant="primary" shape="circle">
+              <.dm_tooltip :let={tooltip_attrs} content="Add">
+                <.dm_btn {tooltip_attrs} type="submit" size="sm" variant="primary" shape="circle">
                   <.dm_mdi name="plus" class="w-4 h-4" />
                 </.dm_btn>
               </.dm_tooltip>

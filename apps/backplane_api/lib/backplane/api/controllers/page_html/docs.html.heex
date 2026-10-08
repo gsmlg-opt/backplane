@@ -11,21 +11,21 @@
         <.dm_badge variant="info" size="sm" soft>Public API</.dm_badge>
         <.dm_badge variant="success" size="sm" soft>Docs</.dm_badge>
         <nav class="appbar-actions" aria-label="Backplane public gateway">
-          <.dm_tooltip content="Docs" position="bottom" class="inline-flex">
-            <a href={~p"/docs"} class="appbar-action" aria-label="Docs">
+          <.dm_tooltip :let={tooltip_attrs} content="Docs" position="bottom" class="inline-flex">
+            <a {tooltip_attrs} href={~p"/docs"} class="appbar-action" aria-label="Docs">
               <.dm_mdi name="book-open-page-variant" class="h-5 w-5" />
               <span class="sr-only">Docs</span>
             </a>
           </.dm_tooltip>
         </nav>
-        <.dm_tooltip content="Theme" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} content="Theme" position="bottom">
           <details
             id="docs-theme-switcher"
             class="theme-controller-dropdown theme-controller-dropdown-end theme-controller-dropdown-icon"
             phx-hook="ThemeSwitcher"
             data-theme="moonlight"
           >
-            <summary
+            <summary {tooltip_attrs}
               class="theme-controller-trigger"
               aria-label="Select theme"
               aria-haspopup="menu"

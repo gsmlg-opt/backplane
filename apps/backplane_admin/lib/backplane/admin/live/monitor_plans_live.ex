@@ -337,8 +337,8 @@ defmodule Backplane.Admin.MonitorPlansLive do
         </:col>
         <:col :let={plan} label="Actions">
           <div class="flex items-center gap-1">
-            <.dm_tooltip content={if plan.active, do: "Deactivate", else: "Activate"} position="bottom">
-              <.dm_btn
+            <.dm_tooltip :let={tooltip_attrs} content={if plan.active, do: "Deactivate", else: "Activate"} position="bottom">
+              <.dm_btn {tooltip_attrs}
                 type="button"
                 variant={if plan.active, do: "warning", else: "success"}
                 size="xs"
@@ -352,8 +352,8 @@ defmodule Backplane.Admin.MonitorPlansLive do
               </.dm_btn>
             </.dm_tooltip>
 
-            <.dm_tooltip content="Edit" position="bottom">
-              <.link patch={~p"/system/monitor/plans/#{plan.id}/edit"} class="no-underline">
+            <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+              <.link {tooltip_attrs} patch={~p"/system/monitor/plans/#{plan.id}/edit"} class="no-underline">
                 <.dm_btn
                   type="button"
                   size="xs"
@@ -366,8 +366,8 @@ defmodule Backplane.Admin.MonitorPlansLive do
               </.link>
             </.dm_tooltip>
 
-            <.dm_tooltip content="Delete" position="bottom">
-              <.dm_btn
+            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+              <.dm_btn {tooltip_attrs}
                 type="button"
                 variant="error"
                 size="xs"

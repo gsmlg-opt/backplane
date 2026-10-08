@@ -41,11 +41,12 @@ defmodule Backplane.Admin.MonitorPlansLiveTest do
     |> render_submit()
 
     assert_patch(view, "/system/monitor/plans")
+    plan = Repo.get_by!(Plan, name: plan_name)
 
     assert [%{action: "monitor_plan.create", target_id: target_id} = event] =
              Backplane.Admin.Audit.list()
 
-    assert target_id == Repo.get_by!(Plan, name: plan_name).id
+    assert target_id == plan.id
     refute inspect(event) =~ credential_name
     refute inspect(event) =~ "projects/test-project"
 
@@ -53,7 +54,28 @@ defmodule Backplane.Admin.MonitorPlansLiveTest do
              provider: "google_ai",
              credential_name: ^credential_name,
              config: %{"project" => "projects/test-project"}
-           } = Repo.get_by(Plan, name: plan_name)
+           } = plan
+
+    tree = view |> render() |> Floki.parse_fragment!()
+
+    assert [trigger] =
+             Floki.find(tree, ~s(button[aria-label="Delete #{plan_name}"][command="show-modal"]))
+
+    assert [tooltip_id] = Floki.attribute(trigger, "interestfor")
+    assert Floki.attribute(trigger, "aria-describedby") == [tooltip_id]
+    assert Floki.attribute(trigger, "title") == ["Delete"]
+    assert Floki.attribute(trigger, "phx-click") == []
+    assert Floki.attribute(trigger, "phx-value-id") == []
+    assert [tooltip] = Floki.find(tree, "##{tooltip_id}[role=tooltip][popover=hint]")
+    assert Floki.text(tooltip) |> String.trim() == "Delete"
+    assert [dialog_id] = Floki.attribute(trigger, "commandfor")
+    assert [action] = Floki.find(tree, "##{dialog_id} [data-dm-confirm-action]")
+    assert Floki.attribute(action, "phx-click") == ["delete"]
+    assert Floki.attribute(action, "phx-value-id") == [plan.id]
+    assert Floki.attribute(action, "interestfor") == []
+
+    view |> element("##{dialog_id} [data-dm-confirm-action]") |> render_click()
+    assert Repo.get(Plan, plan.id) == nil
   end
 
   defp live_form(view) do

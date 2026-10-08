@@ -1170,8 +1170,8 @@ defmodule Backplane.Admin.ProviderShowLive do
           </:col>
           <:col :let={model} label="Actions">
             <div class="flex items-center gap-1">
-              <.dm_tooltip content="Edit" position="bottom">
-                <.dm_btn
+              <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                <.dm_btn {tooltip_attrs}
                   id={"edit-model-#{model.id}"}
                   type="button"
                   size="xs"
@@ -1185,8 +1185,8 @@ defmodule Backplane.Admin.ProviderShowLive do
                   <span class="sr-only">Edit</span>
                 </.dm_btn>
               </.dm_tooltip>
-              <.dm_tooltip content={if model.enabled, do: "Disable", else: "Enable"} position="bottom">
-                <.dm_btn
+              <.dm_tooltip :let={tooltip_attrs} content={if model.enabled, do: "Disable", else: "Enable"} position="bottom">
+                <.dm_btn {tooltip_attrs}
                   id={"toggle-model-#{model.id}"}
                   type="button"
                   size="xs"
@@ -1204,8 +1204,8 @@ defmodule Backplane.Admin.ProviderShowLive do
                   <span class="sr-only">{if model.enabled, do: "Disable", else: "Enable"}</span>
                 </.dm_btn>
               </.dm_tooltip>
-              <.dm_tooltip content="Remove" position="bottom">
-                <.dm_btn
+              <.dm_tooltip :let={tooltip_attrs} content="Remove" position="bottom">
+                <.dm_btn {tooltip_attrs}
                   id={"open-delete-model-modal-#{model.id}"}
                   type="button"
                   size="xs"

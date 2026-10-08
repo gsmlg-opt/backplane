@@ -460,8 +460,8 @@ defmodule Backplane.Admin.AgentMcpLive do
                 </td>
                 <td class="px-3 py-1.5 align-middle text-right">
                   <div class="flex items-center justify-end gap-1">
-                    <.dm_tooltip content={if server.enabled, do: "Disable", else: "Enable"}>
-                      <.dm_btn
+                    <.dm_tooltip :let={tooltip_attrs} content={if server.enabled, do: "Disable", else: "Enable"}>
+                      <.dm_btn {tooltip_attrs}
                         size="xs"
                         shape="circle"
                         variant={if server.enabled, do: "warning", else: "primary"}
@@ -474,15 +474,15 @@ defmodule Backplane.Admin.AgentMcpLive do
                         />
                       </.dm_btn>
                     </.dm_tooltip>
-                    <.dm_tooltip content="Edit">
-                      <.link patch={~p"/mcp/agent/#{server.id}/edit"}>
+                    <.dm_tooltip :let={tooltip_attrs} content="Edit">
+                      <.link {tooltip_attrs} patch={~p"/mcp/agent/#{server.id}/edit"}>
                         <.dm_btn size="xs" shape="circle" variant="outline">
                           <.dm_mdi name="pencil" class="w-4 h-4" />
                         </.dm_btn>
                       </.link>
                     </.dm_tooltip>
-                    <.dm_tooltip content="Delete">
-                      <.dm_btn
+                    <.dm_tooltip :let={tooltip_attrs} content="Delete">
+                      <.dm_btn {tooltip_attrs}
                         size="xs"
                         shape="circle"
                         variant="error"

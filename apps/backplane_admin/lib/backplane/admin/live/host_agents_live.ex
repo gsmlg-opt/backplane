@@ -364,8 +364,8 @@ defmodule Backplane.Admin.HostAgentsLive do
               <td class="px-3 py-2 align-top">{relative_time(entry.connected_at)}</td>
               <td class="px-3 py-2 align-top">{relative_time(entry.last_sync)}</td>
               <td class="px-3 py-2 align-top">
-                <.dm_tooltip content="View" position="bottom">
-                  <.link
+                <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
+                  <.link {tooltip_attrs}
                     navigate={~p"/system/host-agents/#{entry.host.id}/overview"}
                     aria-label="View"
                   >
@@ -528,8 +528,8 @@ defmodule Backplane.Admin.HostAgentsLive do
                 <td class="px-3 py-2 align-top">{token.name}</td>
                 <td class="px-3 py-2 align-top">
                   <div class="flex flex-wrap gap-1">
-                    <.dm_tooltip content="Reveal" position="bottom">
-                      <.dm_btn
+                    <.dm_tooltip :let={tooltip_attrs} content="Reveal" position="bottom">
+                      <.dm_btn {tooltip_attrs}
                         id={"reveal-token-#{token.id}"}
                         type="button"
                         variant="outline"
@@ -542,8 +542,8 @@ defmodule Backplane.Admin.HostAgentsLive do
                         <.dm_mdi name="eye" class="w-4 h-4" />
                       </.dm_btn>
                     </.dm_tooltip>
-                    <.dm_tooltip content="Revoke" position="bottom">
-                      <.dm_btn
+                    <.dm_tooltip :let={tooltip_attrs} content="Revoke" position="bottom">
+                      <.dm_btn {tooltip_attrs}
                         id={"revoke-token-#{token.id}"}
                         type="button"
                         variant="error"

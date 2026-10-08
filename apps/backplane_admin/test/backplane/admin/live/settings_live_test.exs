@@ -373,11 +373,24 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       assert has_element?(
                view,
-               ~s(el-dm-button[aria-label="Delete oauth-action-key"][phx-click="show_delete_confirm"])
+               ~s(button[aria-label="Delete oauth-action-key"][phx-click="show_delete_confirm"])
              )
 
-      assert has_element?(view, ".tooltip-content", "Edit")
-      assert has_element?(view, ".tooltip-content", "Delete")
+      tree = view |> render() |> Floki.parse_fragment!()
+
+      for name <- ["plain-action-key", "oauth-action-key"], action <- ["Edit", "Delete"] do
+        selector =
+          if action == "Edit",
+            do: ~s(a[href="/system/credentials/#{name}/edit"]),
+            else: ~s(button[aria-label="Delete #{name}"])
+
+        assert [trigger] = Floki.find(tree, selector)
+        assert [tooltip_id] = Floki.attribute(trigger, "interestfor")
+        assert Floki.attribute(trigger, "aria-describedby") == [tooltip_id]
+        assert Floki.attribute(trigger, "title") == [action]
+        assert [tooltip] = Floki.find(tree, "##{tooltip_id}[role=tooltip][popover=hint]")
+        assert Floki.text(tooltip) |> String.trim() == action
+      end
     end
 
     test "renders OAuth credential edit status and actions", %{conn: conn} do

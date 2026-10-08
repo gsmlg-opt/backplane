@@ -203,6 +203,21 @@ defmodule Backplane.Admin.ApiUsageLiveTest do
              "#delete-api-account-#{account.id}[command='show-modal'][commandfor='#{dialog_id}']"
            )
 
+    tree = view |> render() |> Floki.parse_fragment!()
+    assert [trigger] = Floki.find(tree, "#delete-api-account-#{account.id}")
+    assert [tooltip_id] = Floki.attribute(trigger, "interestfor")
+    assert Floki.attribute(trigger, "aria-describedby") == [tooltip_id]
+    assert Floki.attribute(trigger, "title") == ["Delete"]
+    assert Floki.attribute(trigger, "aria-label") == ["Delete #{account.name} edited"]
+    assert Floki.attribute(trigger, "phx-click") == []
+    assert Floki.attribute(trigger, "phx-value-id") == []
+    assert [tooltip] = Floki.find(tree, "##{tooltip_id}[role=tooltip][popover=hint]")
+    assert Floki.text(tooltip) |> String.trim() == "Delete"
+    assert [action] = Floki.find(tree, "##{dialog_id} [data-dm-confirm-action]")
+    assert Floki.attribute(action, "phx-click") == ["delete"]
+    assert Floki.attribute(action, "phx-value-id") == [account.id]
+    assert Floki.attribute(action, "interestfor") == []
+
     view
     |> element("##{dialog_id} [phx-click='delete'][phx-value-id='#{account.id}']")
     |> render_click()

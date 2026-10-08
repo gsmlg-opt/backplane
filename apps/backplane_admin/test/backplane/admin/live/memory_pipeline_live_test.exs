@@ -58,7 +58,7 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
 
     tree = Floki.parse_fragment!(html)
     assert length(Floki.find(tree, "#later-stages .later-stage")) == 5
-    assert length(Floki.find(tree, "#later-stages el-dm-badge")) == 5
+    assert length(Floki.find(tree, "#later-stages .badge[role=status]")) == 5
     assert length(Regex.scan(~r/Unavailable/, html)) == 5
 
     for label <- [
@@ -363,7 +363,7 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
   defp badge_texts(html) do
     html
     |> Floki.parse_fragment!()
-    |> Floki.find("el-dm-badge")
+    |> Floki.find(".badge[role=status]")
     |> Enum.map(&(Floki.text(&1) |> String.trim()))
   end
 end

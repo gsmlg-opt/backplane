@@ -475,8 +475,8 @@ defmodule Backplane.Admin.UpstreamsLive do
               </td>
               <td class="px-3 py-1.5 align-middle">
                 <div class="flex items-center gap-1">
-                  <.dm_tooltip content={if upstream.enabled, do: "Disable", else: "Enable"} position="bottom">
-                    <.dm_btn
+                  <.dm_tooltip :let={tooltip_attrs} content={if upstream.enabled, do: "Disable", else: "Enable"} position="bottom">
+                    <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant={if upstream.enabled, do: "warning", else: "primary"}
@@ -489,8 +489,8 @@ defmodule Backplane.Admin.UpstreamsLive do
                       />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip content="Connect" position="bottom">
-                    <.dm_btn
+                  <.dm_tooltip :let={tooltip_attrs} content="Connect" position="bottom">
+                    <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant="primary"
@@ -500,15 +500,15 @@ defmodule Backplane.Admin.UpstreamsLive do
                       <.dm_mdi name="connection" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip content="Edit" position="bottom">
-                    <.link patch={~p"/mcp/upstreams/#{upstream.id}/edit"}>
+                  <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                    <.link {tooltip_attrs} patch={~p"/mcp/upstreams/#{upstream.id}/edit"}>
                       <.dm_btn size="xs" shape="circle" variant="outline">
                         <.dm_mdi name="pencil" class="w-4 h-4" />
                       </.dm_btn>
                     </.link>
                   </.dm_tooltip>
-                  <.dm_tooltip content="Delete" position="bottom">
-                    <.dm_btn
+                  <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                    <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant="error"
