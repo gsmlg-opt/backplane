@@ -4,7 +4,7 @@ defmodule BackplaneLlama.MixProject do
   def project do
     [
       app: :backplane_llama,
-      version: "1.10.14",
+      version: "1.10.15",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
