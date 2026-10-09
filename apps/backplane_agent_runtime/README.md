@@ -13,6 +13,12 @@ must adopt this explicit contract; see [EMBEDDING.md](EMBEDDING.md).
 The package uses `jsonschex 0.10.0` as its production JSON Schema Draft
 2020-12 engine; it is intentionally not dependency-free.
 
+Embeddings can set `provider_output_limit: :infinity` for unlimited generated
+provider content, or select a finite non-negative byte budget per response.
+Repeated stream snapshots count each logical content block once. The finite
+`output_limit` tool-result bound remains independent; see [EMBEDDING.md](EMBEDDING.md)
+for defaults, content representation and structured limit errors.
+
 `Backplane.AgentRuntime.Conversation` drives prompt → lazy provider stream →
 authorized tools → provider continuation → settlement. It is an alternative owner
 to the existing explicit-command `ExecutionController`, not another controller to

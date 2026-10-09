@@ -17,6 +17,12 @@ Start `Backplane.AgentRuntime.Conversation` under a host supervisor with:
   (30,000 ms), `commit_timeout` (5,000 ms), and `cleanup_timeout` (5,000 ms).
   Work counts provider attempts and tool invocations; it is not a token or billing
   quota. Provider usage is retained separately without inventing missing values.
+- `provider_output_limit`: a non-negative integer byte budget per provider response,
+  or `:infinity` to permit unlimited generated content. When absent it inherits
+  the finite `output_limit` option, whose default is 1,048,576 bytes.
+- `output_limit`: a finite non-negative integer tool-result bound (default
+  1,048,576 bytes). `:infinity`, other atoms, nil, negative and noninteger values
+  are rejected; unlimited provider output never changes this tool bound.
 
 `prompt/2` admits the initial user input. During execution, it queues a follow-up,
 matching Sigma's default. `steer/2` queues steering. `follow_up/2` queues a new turn.
@@ -55,6 +61,34 @@ usage and response-terminal events. The first terminal ends enumeration; exhaust
 streams without a terminal fail. Terminal assistant tool-call blocks are
 validated and executed; incremental completed calls support providers whose final
 message does not include tool blocks. Duplicate tool IDs fail explicitly.
+
+Provider content accounting counts UTF-8 bytes of generated text and thinking,
+plus tool arguments. Normalized `index` identifies a content block (default 0
+when omitted); use distinct indexes for multiple blocks of the same kind. Tool
+IDs join indexed argument deltas/snapshots to completed calls, including IDs that
+arrive only at completion. Binary/custom arguments and `partial_json` snapshots
+use their raw byte length; materialized argument maps use compact JSON encoding.
+For each logical block the counter retains the larger of accumulated delta bytes
+and the largest snapshot, so repeated snapshots, tool-call completion, usage and
+the terminal message never add a second copy. Raw JSON whitespace/escaping can
+make streamed arguments larger than their materialized map encoding; the larger
+representation determines that block's budget. A final-only message counts its
+content, and a terminal snapshot can contribute bytes not present in deltas.
+The counter resets before every provider attempt, including tool continuations.
+
+Usage, tool names/IDs, signatures, metadata and event envelopes do not consume
+this content budget. Provider transport limits remain the host adapter's policy.
+A finite limit breach returns `Backplane.AgentRuntime.Error` with class
+`:resource_conflict`, message `"provider output limit exceeded"` and details
+`%{scope: :provider_response, size: bytes, limit: limit}`. Invalid options return
+`:validation` before provider/tool dispatch. The same provider option and
+content accounting apply to direct non-stream `Execution.run/5` provider effects;
+responses may carry an assistant `message`, normalized `content`, or `text`, with
+optional `tool_calls`/`tools` collections. Deadlines, finite work budgets,
+authorization, cancellation and uncertain-effect settlement still apply.
+
+For example, an embedding can select `provider_output_limit: :infinity` while
+retaining `output_limit: 1_048_576` for tool results.
 
 A Sigma provider adapter builds `Sigma.Ai.ProviderRequest` from that request and
 its trusted configuration, then returns `Sigma.Ai.Provider.stream(provider,

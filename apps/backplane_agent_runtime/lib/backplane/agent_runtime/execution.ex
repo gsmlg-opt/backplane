@@ -5,6 +5,7 @@ defmodule Backplane.AgentRuntime.Execution do
   alias Backplane.AgentRuntime.InputSchema
   alias Backplane.AgentRuntime.Kernel
   alias Backplane.AgentRuntime.Policy
+  alias Backplane.AgentRuntime.ProviderOutput
   alias Backplane.AgentRuntime.Store
   alias Backplane.AgentRuntime.ToolEffects
   alias Backplane.AgentRuntime.ToolRegistry
@@ -102,7 +103,8 @@ defmodule Backplane.AgentRuntime.Execution do
 
   @spec validate_limits(keyword()) :: {:ok, map()} | {:error, Error.t()}
   def validate_limits(opts) when is_list(opts) do
-    with {:ok, commit} <- finite_timeout(opts, :commit_timeout, @default_commit_timeout),
+    with :ok <- ProviderOutput.validate_options(opts),
+         {:ok, commit} <- finite_timeout(opts, :commit_timeout, @default_commit_timeout),
          {:ok, effect} <- finite_timeout(opts, :effect_timeout, @default_effect_timeout),
          {:ok, cleanup} <- finite_timeout(opts, :cleanup_timeout, @default_cleanup_timeout),
          {:ok, run} <- finite_timeout(opts, :run_timeout, @default_run_timeout),
@@ -126,8 +128,10 @@ defmodule Backplane.AgentRuntime.Execution do
       ) do
     operation = Map.put(operation, :provider_context, host_context)
 
-    with {:ok, response} <- call_adapter(adapter, :start, operation),
-         :ok <- bounded(response, Keyword.get(opts, :output_limit, @default_output_limit)) do
+    with :ok <- ProviderOutput.validate_options(opts),
+         {:ok, response} <- call_adapter(adapter, :start, operation),
+         {:ok, _} <-
+           ProviderOutput.check(ProviderOutput.response(response), ProviderOutput.limit(opts)) do
       {:ok, [response]}
     end
   end
@@ -138,7 +142,8 @@ defmodule Backplane.AgentRuntime.Execution do
       ) do
     operation = Map.put(operation, :backend_context, host_context)
 
-    with {:ok, result} <- call_adapter(adapter, :execute, operation),
+    with :ok <- ProviderOutput.validate_options(opts),
+         {:ok, result} <- call_adapter(adapter, :execute, operation),
          {:ok, _} <-
            ToolEffects.validate_output(%{payload: result},
              limit: Keyword.get(opts, :output_limit, @default_output_limit)
@@ -365,18 +370,6 @@ defmodule Backplane.AgentRuntime.Execution do
            details: %{received: other}
          )}
     end
-  end
-
-  defp bounded(result, limit) when is_integer(limit) and limit >= 0 do
-    size = :erlang.external_size(result)
-
-    if size <= limit,
-      do: :ok,
-      else:
-        {:error,
-         Error.new(:resource_conflict, "provider output exceeds the configured bound",
-           details: %{limit: limit, size: size}
-         )}
   end
 
   defp command_with_deadline({:admit, at, input}, record, run_timeout, opts)

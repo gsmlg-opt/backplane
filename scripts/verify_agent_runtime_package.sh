@@ -147,6 +147,8 @@ cp "$source_dir/test/backplane/agent_runtime/conversation_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/conversation_test.exs"
 cp "$source_dir/test/backplane/agent_runtime/conversation_rejections_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/conversation_rejections_test.exs"
+cp "$source_dir/test/backplane/agent_runtime/provider_output_test.exs" \
+  "$conversation_fixture/test/backplane/agent_runtime/provider_output_test.exs"
 cp "$source_dir/test/backplane/agent_runtime/input_schema_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/input_schema_test.exs"
 cp "$source_dir/test/backplane/agent_runtime/store_conformance_test.exs" \

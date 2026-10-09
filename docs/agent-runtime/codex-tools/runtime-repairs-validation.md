@@ -363,3 +363,51 @@ and disable, approved execution, task cancellation and no-retry checks passed.
 The post-Gateway backend error handling was unchanged. These are supported
 contract checks, not an unmodified consumer full-suite pass or a macOS
 reproduction. No Synapsis main files or dependency pin were changed.
+
+## Provider content budget — 2026-10-09 (issue #62)
+
+Issue [#62](https://github.com/gsmlg-opt/backplane/issues/62) reports Sigma's
+accumulated message snapshots being charged repeatedly as serialized event
+bytes. Runtime v1.10.15 adds `provider_output_limit: non_neg_integer() | :infinity`
+and separates this content policy from the finite tool-result `output_limit`.
+An absent provider option retains the previous finite option/default value.
+
+Conversation and direct non-stream Execution provider effects count generated
+UTF-8 text/thinking and tool arguments. Indexed delta totals and snapshot
+high-water marks share logical blocks; late tool IDs merge existing indexed
+argument accounting. `partial_json`/binary arguments use raw bytes, materialized
+maps use compact JSON bytes, and the larger representation determines the block
+size. Final-only responses count content; completion, usage, metadata and repeated
+snapshots do not charge another copy. Each provider attempt resets the counter.
+Finite breaches carry `scope: :provider_response`, `size` and `limit` diagnostics;
+invalid options are rejected before dispatch. Tool authority, cancellation,
+deadlines, work quotas and ambiguous-effect settlement retain their existing
+checks.
+
+Validation used standalone/extracted copies, Linux Elixir 1.18.5 / OTP 28,
+Deno 2.8.3 and Coreutils 9.11:
+
+- Focused Conversation/provider/tool-bound checks: 57 tests, zero failures.
+  The original implementation failed the streaming/final-only/unlimited and
+  invalid-option regressions. Additional partial snapshots with nil tool IDs
+  reproduced index aliasing before the targeted accounting repair. Provisional
+  event-level IDs and a trusted metadata callback without a type reproduced
+  overcounting/crashing before the final guard repair.
+- Standalone Runtime: 584 tests, zero failures with native Deno/command checks
+  enabled. Deliberately crashing backend/cleanup tests emitted error logs; one
+  Deno stderr TypeError also appeared without an ExUnit failure.
+- `scripts/verify_agent_runtime_package.sh` with `REQUIRE_SIGMA_SOURCE=1`:
+  strict compile/docs/format, all 584 source tests, 111 extracted consumer tests,
+  empty-tool/bundled-basic/fake-backend consumers and embedded/Codex examples
+  passed. The read-only Sigma source probe passed at
+  `ace49f1191191b1fafc9addeeea69162972e517b`.
+- Artifact SHA-256:
+  `31d692c62f03c4b2b33346663bd5fee1ac41a1ca9fae70416119de479001cd5a`.
+- Exact Codex inventory check: 16 families, 66 entries, unchanged source pin
+  `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. Local Runtime source hashes were
+  refreshed; the upstream inventory/source lock were unchanged.
+
+These checks establish the package capability and deterministic content-budget
+contracts. They do not establish production Sigma provider execution, Codex
+behavioral parity or publication of the version; release evidence belongs to
+the release workflow.

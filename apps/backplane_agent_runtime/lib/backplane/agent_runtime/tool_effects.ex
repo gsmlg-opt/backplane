@@ -122,13 +122,15 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     payload = Map.get(output, :payload)
     size = :erlang.external_size(payload)
 
-    if is_integer(size) and size > limit do
-      {:error,
-       Error.new(:resource_conflict, "tool output exceeds the configured bound",
-         details: %{limit: limit, size: size}
-       )}
-    else
-      {:ok, output}
+    with :ok <- Backplane.AgentRuntime.ProviderOutput.validate_limit(limit, :output_limit, false) do
+      if size > limit do
+        {:error,
+         Error.new(:resource_conflict, "tool output exceeds the configured bound",
+           details: %{limit: limit, size: size}
+         )}
+      else
+        {:ok, output}
+      end
     end
   end
 end

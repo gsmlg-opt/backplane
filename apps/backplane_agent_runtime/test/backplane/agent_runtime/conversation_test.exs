@@ -34,6 +34,14 @@ defmodule Backplane.AgentRuntime.ConversationTest do
         :crash ->
           raise "scripted tool crash"
 
+        :emit_metadata ->
+          send(
+            operation.backend_context.test,
+            {:metadata_ack, operation.backend_context.emit.(%{progress: 1})}
+          )
+
+          {:ok, %{text: "metadata emitted"}}
+
         :ask ->
           reply = operation.backend_context.interact.(%{kind: :permission})
           send(operation.backend_context.test, {:answer, reply})
@@ -564,8 +572,177 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     assert_receive {:agent_runtime, "test", %{type: :run_completed}}
   end
 
+  test "trusted metadata callbacks without a type preserve event acknowledgement" do
+    {pid, _} = start(provider_output_limit: :infinity)
+    assert {:ok, _} = Conversation.prompt(pid, "read")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, tool_response()})
+    assert_receive {:tool, _, tool}
+    send(tool, :emit_metadata)
+    assert_receive {:metadata_ack, :ok}
+    assert_receive {:agent_runtime, "test", %{progress: 1}}
+    assert_receive {:provider, _, next}
+    send(next, {:events, [done("done")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "provider limits reject invalid values and keep tool limits finite" do
+    for value <- [nil, :unlimited, -1, 1.5, "100"] do
+      assert {:error, %Error{class: :validation}} =
+               Conversation.start_link(provider_output_limit: value)
+    end
+
+    for value <- [nil, :infinity, :unlimited, -1, 1.5] do
+      assert {:error, %Error{class: :validation}} = Conversation.start_link(output_limit: value)
+    end
+  end
+
+  test "unlimited provider output accepts large streamed and final-only responses" do
+    text = String.duplicate("x", 1_048_577)
+
+    for events <- [
+          [%{type: :content_text_delta, index: 0, delta: text}, done(text)],
+          [done(text)]
+        ] do
+      {pid, _} = start(provider_output_limit: :infinity, output_limit: 64)
+      assert {:ok, _} = Conversation.prompt(pid, "large response")
+      assert_receive {:provider, _, provider}
+      send(provider, {:events, events})
+      assert_receive {:agent_runtime, "test", %{type: :run_completed}}, 1_000
+      assert Conversation.status(pid).error == nil
+    end
+  end
+
+  test "finite provider budgets count text and thinking once across snapshots and chunks" do
+    text = String.duplicate("x", 200)
+    thinking = "reason"
+
+    message = %{
+      role: :assistant,
+      content: [
+        %{type: :text, text: text},
+        %{type: :thinking, thinking: thinking}
+      ]
+    }
+
+    for chunks <- [[text], List.duplicate(String.duplicate("x", 10), 20)] do
+      {pid, _} = start(provider_output_limit: 206)
+      assert {:ok, _} = Conversation.prompt(pid, "answer")
+      assert_receive {:provider, _, provider}
+
+      events =
+        Enum.with_index(chunks, 1)
+        |> Enum.map(fn {delta, i} ->
+          %{
+            type: :content_text_delta,
+            index: 0,
+            delta: delta,
+            message: %{
+              role: :assistant,
+              content: [%{type: :text, text: String.duplicate(delta, i)}]
+            }
+          }
+        end)
+
+      send(
+        provider,
+        {:events,
+         events ++
+           [
+             %{type: :content_thinking_delta, index: 1, delta: thinking, message: message},
+             %{type: :usage_updated, usage: %{tokens: 20}, message: message},
+             %{type: :response_completed, message: message, usage: %{tokens: 20}}
+           ]}
+      )
+
+      assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+      assert Conversation.status(pid).error == nil
+    end
+  end
+
+  test "final-only content and missing terminal delta bytes get structured diagnostics" do
+    for events <- [[done("four")], [%{type: :content_text_delta, delta: "fo"}, done("four")]] do
+      {pid, _} = start(provider_output_limit: 3)
+      assert {:ok, _} = Conversation.prompt(pid, "answer")
+      assert_receive {:provider, _, provider}
+      send(provider, {:events, events})
+      assert_receive {:agent_runtime, "test", %{type: :response_failed, error: error}}
+
+      assert %Error{
+               class: :resource_conflict,
+               details: %{scope: :provider_response, size: 4, limit: 3}
+             } = error
+    end
+  end
+
+  test "zero provider limit permits empty content and ignores usage and transport metadata" do
+    {pid, _} = start(provider_output_limit: 0)
+    assert {:ok, _} = Conversation.prompt(pid, "answer")
+    assert_receive {:provider, _, provider}
+
+    send(
+      provider,
+      {:events,
+       [
+         %{type: :response_started, metadata: String.duplicate("meta", 100)},
+         %{type: :usage_updated, usage: %{tokens: 10}},
+         done("")
+       ]}
+    )
+
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+    assert Conversation.status(pid).error == nil
+  end
+
+  test "provider infinity does not weaken tool output validation" do
+    {pid, _} = start(provider_output_limit: :infinity, output_limit: 64)
+    assert {:ok, _} = Conversation.prompt(pid, "read")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, tool_response()})
+    assert_receive {:tool, _, tool}
+    send(tool, {:result, {:ok, %{text: String.duplicate("x", 100)}}})
+    assert_receive {:provider, %{messages: messages}, next}
+    assert List.last(messages).result.is_error
+    send(next, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "tool arguments are charged once across deltas completion snapshots and terminal" do
+    arguments = %{"path" => "x"}
+    raw = JSON.encode!(arguments)
+    call = %{id: "call", name: "read", arguments: arguments}
+
+    message = %{
+      role: :assistant,
+      content: [%{type: :tool_call, id: "call", name: "read", arguments: arguments}]
+    }
+
+    {pid, _} = start(provider_output_limit: byte_size(raw))
+    assert {:ok, _} = Conversation.prompt(pid, "read")
+    assert_receive {:provider, _, provider}
+
+    send(
+      provider,
+      {:events,
+       [
+         %{type: :tool_call_started, index: 0, tool_call: %{id: "call", name: "read"}},
+         %{type: :tool_call_arguments_delta, index: 0, delta: raw, message: message},
+         %{type: :tool_call_completed, index: 0, tool_call: call, message: message},
+         %{type: :usage_updated, usage: %{}, message: message},
+         %{type: :response_completed, message: message}
+       ]}
+    )
+
+    assert_receive {:tool, _, tool}
+    send(tool, {:result, {:ok, %{text: "read"}}})
+    assert_receive {:provider, _, next}
+    send(next, {:events, [done("done")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+    assert Conversation.status(pid).error == nil
+  end
+
   test "provider output accounting resets for each tool continuation" do
-    {pid, _} = start(output_limit: 600)
+    {pid, _} = start(provider_output_limit: 312, output_limit: 600)
     {:ok, _} = Conversation.prompt(pid, "use several tools")
 
     for {tool_id, final_text} <- [{"tc1", "first"}, {"tc2", "second"}] do

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.15
+
+- Add validated `provider_output_limit: non_neg_integer() | :infinity` for
+  streamed and direct provider effects. Count logical text, thinking and tool
+  arguments once across deltas, snapshots, completed calls and terminal usage;
+  support final-only content and reset accounting per provider response.
+  Keep `output_limit` independently finite and reject invalid bounds before
+  dispatch. Finite provider breaches include scope, content size and limit.
+
 ## Unreleased
 
 - Add `ToolEffects.reject/2` for trusted host-backend rejection before dispatch.

@@ -7,6 +7,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     Execution,
     InputSchema,
     Policy,
+    ProviderOutput,
     ToolCatalog,
     ToolEffects,
     ToolRegistry
@@ -15,8 +16,6 @@ defmodule Backplane.AgentRuntime.Conversation do
   alias Backplane.AgentRuntime.Codex.{ResourceRegistry, Session}
 
   alias Backplane.AgentRuntime.Kernel, as: RunKernel
-
-  @default_output_limit 1_048_576
 
   @moduledoc """
   Single authoritative owner of a bounded embedded conversation.
@@ -37,7 +36,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   """
 
   def start_link(opts) do
-    with :ok <- validate_session_options(opts),
+    with :ok <- ProviderOutput.validate_options(opts),
+         :ok <- validate_session_options(opts),
          {:ok, opts} <- admit_initial_catalog(opts),
          {:ok, _} <- Execution.validate_limits(opts),
          {:ok, _} <- Budget.new(%{work: Keyword.get(opts, :work, 100)}) do
@@ -186,7 +186,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       callers: [],
       admission: nil,
       last_error: nil,
-      bytes: 0,
+      provider_output: ProviderOutput.new(),
       catalog: catalog,
       pending_catalog: nil,
       catalog_receipts: [],
@@ -275,18 +275,15 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   def handle_call({:chunk, token, event}, _from, s) do
     if current_effect?(s, token) and is_map(event) do
-      bytes = s.bytes + :erlang.external_size(event)
-      limit = output_limit(s.opts)
+      output = ProviderOutput.event(s.provider_output, event)
 
-      if bytes <= limit do
-        emit(s, event)
-        {:reply, :ok, %{s | bytes: bytes}}
-      else
-        {:reply,
-         {:error,
-          Error.new(:resource_conflict, "provider output limit exceeded",
-            details: %{limit: limit, size: bytes, scope: :provider_response}
-          )}, s}
+      case ProviderOutput.check(output, ProviderOutput.limit(s.opts)) do
+        {:ok, output} ->
+          if Map.get(event, :type) != :response_completed, do: emit(s, event)
+          {:reply, :ok, %{s | provider_output: output}}
+
+        {:error, error} ->
+          {:reply, {:error, error}, s}
       end
     else
       {:reply, {:error, Error.new(:resource_conflict, "stale stream")}, s}
@@ -758,9 +755,13 @@ defmodule Backplane.AgentRuntime.Conversation do
     opts = [adapter: Keyword.fetch!(s.opts, :provider)]
 
     commit(s, {:provider_started, now(), identity}, %{operation: request}, opts, fn s, _ ->
-      start_effect(%{s | bytes: 0}, {:provider, identity, catalog}, fn context ->
-        stream(s, request, context)
-      end)
+      start_effect(
+        %{s | provider_output: ProviderOutput.new()},
+        {:provider, identity, catalog},
+        fn context ->
+          stream(s, request, context)
+        end
+      )
     end)
   end
 
@@ -773,15 +774,14 @@ defmodule Backplane.AgentRuntime.Conversation do
         case event do
           %{type: :response_completed, message: %{role: :assistant, content: content} = message}
           when is_binary(content) or is_list(content) ->
-            case terminal_tools(acc.tools, message) do
-              {:ok, tools} ->
-                usage = if Map.get(event, :usage), do: acc.usage ++ [event.usage], else: acc.usage
+            with :ok <- context.emit.(event),
+                 {:ok, tools} <- terminal_tools(acc.tools, message) do
+              usage = if Map.get(event, :usage), do: acc.usage ++ [event.usage], else: acc.usage
 
-                {:halt,
-                 {:ok, %{acc | terminal: event, message: message, tools: tools, usage: usage}}}
-
-              {:error, _} = error ->
-                {:halt, error}
+              {:halt,
+               {:ok, %{acc | terminal: event, message: message, tools: tools, usage: usage}}}
+            else
+              {:error, _} = error -> {:halt, error}
             end
 
           %{type: :response_failed} ->
@@ -819,9 +819,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         {:error, "provider ended without terminal event"}
 
       {:ok, response} ->
-        if :erlang.external_size(response) <= output_limit(s.opts),
-          do: {:ok, response},
-          else: {:error, "provider result exceeds output limit"}
+        {:ok, response}
 
       error ->
         error
@@ -849,8 +847,6 @@ defmodule Backplane.AgentRuntime.Conversation do
       end)
     end
   end
-
-  defp output_limit(opts), do: Keyword.get(opts, :output_limit, @default_output_limit)
 
   defp collect(acc, %{
          type: :tool_call_completed,
