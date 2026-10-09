@@ -138,12 +138,97 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
     peri_schema = Component.__clean_schema_for_peri__(schema)
 
     fn params ->
-      case Peri.validate(peri_schema, params) do
-        {:error, errors} -> {:error, Enum.map(List.wrap(errors), &normalize_peri_error/1)}
-        result -> result
-      end
+      prepared = peri_schema |> expand_additional_keys(params) |> prepare_composition()
+      normalize_peri_result(Peri.validate(prepared, params))
     end
   end
+
+  defp prepare_composition(schema) do
+    Peri.walk(schema, fn
+      {:custom, callback} ->
+        {:cont, {:custom, fn value -> normalize_peri_result(call_validator(callback, value)) end}}
+
+      {:list, {:custom, _} = item_type} ->
+        {:cont, {:custom, list_validator(item_type, [])}}
+
+      {:list, {:custom, _} = item_type, opts} when is_list(opts) ->
+        {:cont, {:custom, list_validator(item_type, opts)}}
+
+      {:list, item_type, opts} when is_list(opts) ->
+        {:cont, {:list, prepare_composition(item_type), opts}}
+
+      {type, {modifier, callback}} when modifier in [:default, :transform, :encode] ->
+        {:cont, {prepare_composition(type), {modifier, callback}}}
+
+      {:schema, fields, opts} when is_list(opts) ->
+        {:cont, {:schema, prepare_composition(fields), opts}}
+
+      other ->
+        {:cont, other}
+    end)
+  end
+
+  defp call_validator(callback, value) when is_function(callback, 1), do: callback.(value)
+  defp call_validator({mod, fun}, value), do: apply(mod, fun, [value])
+  defp call_validator({mod, fun, args}, value), do: apply(mod, fun, [value | args])
+
+  defp expand_additional_keys({:schema, fields, {:additional_keys, value_type}}, value)
+       when is_map(fields) and is_map(value) do
+    # Concrete fields retain dynamic keys without resetting Peri's outer root context.
+    declared_keys = fields |> Map.keys() |> Enum.flat_map(&[&1, to_string(&1)])
+    extra_fields = value |> Map.drop(declared_keys) |> Map.new(fn {key, _} -> {key, value_type} end)
+    expand_additional_keys(Map.merge(fields, extra_fields), value)
+  end
+
+  defp expand_additional_keys(fields, value) when is_map(fields) and is_map(value) do
+    Map.new(fields, fn {key, type} ->
+      field_value = Map.get(value, key, Map.get(value, to_string(key)))
+      {key, expand_additional_keys(type, field_value)}
+    end)
+  end
+
+  defp expand_additional_keys({:required, type}, value), do: {:required, expand_additional_keys(type, value)}
+
+  defp expand_additional_keys({:required, type, opts}, value), do: {:required, expand_additional_keys(type, value), opts}
+
+  defp expand_additional_keys({:meta, type, opts}, value), do: {:meta, expand_additional_keys(type, value), opts}
+
+  defp expand_additional_keys({:schema, fields}, value), do: {:schema, expand_additional_keys(fields, value)}
+
+  defp expand_additional_keys({:schema, fields, opts}, value) when is_list(opts),
+    do: {:schema, expand_additional_keys(fields, value), opts}
+
+  defp expand_additional_keys({type, {modifier, callback}}, value) when modifier in [:default, :transform, :encode],
+    do: {expand_additional_keys(type, value), {modifier, callback}}
+
+  defp expand_additional_keys(schema, _value), do: schema
+
+  defp list_validator(item_type, opts) do
+    item_validator = validator(item_type)
+
+    fn value ->
+      with_result =
+        with {:ok, values} <- Peri.validate({:list, :any, opts}, value) do
+          values
+          |> Enum.with_index()
+          |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, acc} ->
+            case item_validator.(item) do
+              {:ok, validated} -> {:cont, {:ok, [validated | acc]}}
+              {:error, errors} -> {:halt, {:error, Enum.map(errors, &Peri.Error.update_error_paths(&1, [index]))}}
+            end
+          end)
+          |> then(fn
+            {:ok, values} -> {:ok, Enum.reverse(values)}
+            error -> error
+          end)
+        end
+
+      normalize_peri_result(with_result)
+    end
+  end
+
+  defp normalize_peri_result({:error, errors}), do: {:error, Enum.map(List.wrap(errors), &normalize_peri_error/1)}
+  defp normalize_peri_result(result), do: result
 
   defp normalize_peri_error(%Peri.Error{} = error) do
     nested =

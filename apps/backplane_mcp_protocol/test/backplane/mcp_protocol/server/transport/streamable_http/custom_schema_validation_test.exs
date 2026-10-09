@@ -27,7 +27,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
     def init(_client_info, frame), do: {:ok, register_tools(frame)}
 
     @impl true
-    def handle_tool_call(_name, params, frame) do
+    def handle_tool_call(name, params, frame) do
+      send(:persistent_term.get({__MODULE__, :test_pid}), {:tool_dispatched, name, params})
       {:reply, Response.structured(Response.tool(), params), frame}
     end
 
@@ -57,7 +58,23 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
              _ -> {:error, "invalid extra field: expected a string", []}
            end}}}
 
+      strict_attachment =
+        {:schema, %{name: {:required, {:string, {:transform, &String.trim/1}}}},
+         {:additional_keys, {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
+
+      attachments_schema = %{attachments: {:list, {:custom, Schema.validator(strict_attachment)}}}
+
       frame
+      |> register_validator("attachments", Schema.validator(attachments_schema))
+      |> register_validator("strict-root", Schema.validator(strict_attachment))
+      |> register_validator(
+        "direct-peri-single",
+        Schema.validator(%{attachments: {:list, {:custom, fn value -> Peri.validate(root_schema, value) end}}})
+      )
+      |> register_validator(
+        "direct-peri-list",
+        Schema.validator(%{attachments: {:list, {:custom, fn value -> Peri.validate(%{name: :string}, value) end}}})
+      )
       |> register_validator("root", fn params -> Peri.validate(root_schema, params) end)
       |> register_validator(
         "nested-root",
@@ -75,12 +92,15 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
   end
 
   setup do
+    :persistent_term.put({FixtureServer, :test_pid}, self())
     start_supervised!({FixtureServer, transport: {:streamable_http, start: true}})
     bypass = Bypass.open()
     opts = StreamableHTTPPlug.init(server: FixtureServer)
     Bypass.stub(bypass, "POST", "/mcp", &StreamableHTTPPlug.call(&1, opts))
 
     on_exit(fn ->
+      :persistent_term.erase({FixtureServer, :test_pid})
+
       for key <- [:session_config, :session_supervisor_mod, :authorization_config] do
         :persistent_term.erase({ServerSupervisor, FixtureServer, key})
       end
@@ -128,13 +148,65 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
       )
     end
 
+    for field <- ["creator", "attachments"] do
+      @field field
+
+      test "#{version} identifies rejected root #{@field} before dispatch", context do
+        assert_validation_survives(
+          context.url,
+          @version,
+          "strict-root",
+          %{"name" => "example", @field => "unsupported"},
+          "#{@field}: unsupported attachment field",
+          %{"name" => " example "},
+          %{"name" => "example"}
+        )
+      end
+    end
+
+    test "#{version} normalizes direct Peri singleton callbacks before dispatch", context do
+      assert_validation_survives(
+        context.url,
+        @version,
+        "direct-peri-single",
+        %{"attachments" => [%{"name" => 1}]},
+        "attachments.0: invalid note input: name must be a string",
+        %{"attachments" => [%{"name" => " example "}]},
+        %{"attachments" => [%{"name" => "example"}]}
+      )
+    end
+
+    test "#{version} normalizes direct Peri error-list callbacks before dispatch", context do
+      assert_validation_survives(
+        context.url,
+        @version,
+        "direct-peri-list",
+        %{"attachments" => [%{"name" => 1}]},
+        "attachments.0.name: expected type of :string received 1 value",
+        %{"attachments" => [%{"name" => "example"}]},
+        %{"attachments" => [%{"name" => "example"}]}
+      )
+    end
+
+    test "#{version} rejects unknown attachment fields with their full list path before dispatch", context do
+      assert_validation_survives(
+        context.url,
+        @version,
+        "attachments",
+        %{"attachments" => [%{"name" => "first"}, %{"name" => "second", "unknown_field" => "value"}]},
+        "attachments.1.unknown_field: unsupported attachment field",
+        %{"attachments" => [%{"name" => " first "}, %{"name" => " second "}]},
+        %{"attachments" => [%{"name" => "first"}, %{"name" => "second"}]}
+      )
+    end
+
     test "#{version} returns useful additional-keys validation errors and preserves transformations", context do
       assert_validation_survives(
         context.url,
         @version,
         "extras",
         %{"dynamic" => 1},
-        "invalid extra field: expected a string",
+        "dynamic: invalid extra field: expected a string",
         %{"dynamic" => " example "},
         %{"dynamic" => "example"}
       )
@@ -157,12 +229,14 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
         assert body["error"]["code"] == -32_602
         assert body["error"]["data"]["message"] == error_message
         refute Map.has_key?(body, "result")
+        refute_received {:tool_dispatched, _, _}
 
         for id <- [3, 4] do
           {response, body} = post(url, tool_request(version, name, valid, id), version, session_id)
           assert response.status == 200
           assert body["id"] == id
           assert body["result"]["structuredContent"] == expected
+          assert_receive {:tool_dispatched, ^name, _validated}, 1000
           assert body["result"]["isError"] == false
           if version == "2026-07-28", do: assert(body["result"]["resultType"] == "complete")
           refute Map.has_key?(body, "error")
@@ -178,6 +252,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
 
     refute log =~ "terminating"
     refute log =~ "FunctionClauseError"
+    refute log =~ "CaseClauseError"
     assert Process.alive?(Process.whereis(Registry.task_supervisor_name(FixtureServer)))
 
     expected_sessions = if session_id, do: 1, else: 0
