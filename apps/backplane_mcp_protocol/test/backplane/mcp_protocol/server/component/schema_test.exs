@@ -445,8 +445,99 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       schema = {:schema, %{}, {:additional_keys, {:custom, fn _ -> {:error, "invalid extra field", []} end}}}
       validator = Schema.validator(schema)
 
-      assert {:error, [%Peri.Error{path: [], message: "invalid extra field"}]} =
+      assert {:error, [%Peri.Error{path: ["extra"], message: "invalid extra field"}]} =
                validator.(%{"extra" => 1})
+    end
+
+    test "normalizes direct Peri callback errors before nested traversal" do
+      for schema <- [
+            {:custom, fn _ -> {:error, "invalid attachment", []} end},
+            %{name: {:required, :string}}
+          ] do
+        callback = fn value -> Peri.validate(schema, value) end
+        validator = Schema.validator(%{attachment: {:custom, callback}})
+
+        assert {:error, errors} = validator.(%{"attachment" => %{"name" => 1}})
+        assert Schema.format_errors(errors) =~ "attachment"
+      end
+    end
+
+    test "preserves rejected additional keys and composed attachment indices" do
+      strict =
+        {:schema, %{name: {:required, {:string, {:transform, &String.trim/1}}}},
+         {:additional_keys, {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
+
+      validator = Schema.validator(%{attachments: {:list, {:custom, Schema.validator(strict)}}})
+
+      assert {:error, errors} =
+               validator.(%{"attachments" => [%{"name" => "first"}, %{"name" => "second", "creator" => nil}]})
+
+      assert Schema.format_errors(errors) =~ "attachments.1.creator: is required"
+
+      assert {:error, errors} =
+               validator.(%{"attachments" => [%{"name" => "first"}, %{"name" => "second", "unknown_field" => "value"}]})
+
+      assert Schema.format_errors(errors) == "attachments.1.unknown_field: unsupported attachment field"
+
+      assert {:ok, %{attachments: [%{name: "first"}, %{name: "second"}]}} =
+               validator.(%{"attachments" => [%{"name" => " first "}, %{"name" => " second "}]})
+    end
+
+    test "preserves list constraints when composing custom validators" do
+      validator = Schema.validator(%{attachments: {:list, {:custom, Schema.validator(:string)}, min: 1, max: 2}})
+
+      assert {:error, _} = validator.(%{"attachments" => []})
+      assert {:error, _} = validator.(%{"attachments" => ["one", "two", "three"]})
+      assert {:ok, %{attachments: ["one", "two"]}} = validator.(%{"attachments" => ["one", "two"]})
+    end
+
+    test "normalizes callbacks under transform and constrained-list modifiers" do
+      callback = fn value -> Peri.validate({:custom, fn _ -> {:error, "invalid attachment", []} end}, value) end
+
+      schemas = [
+        %{attachments: {{:list, {:custom, callback}}, {:transform, &Function.identity/1}}},
+        %{attachments: {{:list, {:custom, callback}}, {:encode, &Function.identity/1}}},
+        %{groups: {:list, %{attachment: {:custom, callback}}, min: 1}}
+      ]
+
+      inputs = [%{attachments: [%{}]}, %{attachments: [%{}]}, %{groups: [%{attachment: %{}}]}]
+
+      for {schema, input} <- Enum.zip(schemas, inputs) do
+        assert {:error, errors} = Schema.validator(schema).(input)
+        assert Schema.format_errors(errors) =~ "invalid attachment"
+      end
+    end
+
+    test "preserves rejected keys and defaults in default-wrapped strict schemas" do
+      strict =
+        {:schema, %{name: {:required, :string}},
+         {:additional_keys, {:required, {:custom, fn _ -> {:error, "unsupported", []} end}}}}
+
+      root_validator = Schema.validator({strict, {:default, %{name: "default"}}})
+      nested_validator = Schema.validator(%{attachment: {strict, {:default, %{name: "default"}}}})
+      supplied = %{name: "given", creator: "unknown"}
+
+      assert {:error, root_errors} = root_validator.(supplied)
+      assert Schema.format_errors(root_errors) == "creator: unsupported"
+      assert {:error, nested_errors} = nested_validator.(%{attachment: supplied})
+      assert Schema.format_errors(nested_errors) == "attachment.creator: unsupported"
+      assert {:ok, %{name: "default"}} = root_validator.(nil)
+      assert {:ok, %{attachment: %{name: "default"}}} = nested_validator.(%{})
+    end
+
+    test "preserves root context in nested additional-key schemas" do
+      schema = %{
+        prefix: :string,
+        attachment:
+          {:schema, %{name: {:string, {:transform, fn name, root -> root[:prefix] <> name end}}},
+           {:additional_keys, :string}}
+      }
+
+      input = %{prefix: "a-", attachment: %{name: "b", extra: "ok"}}
+      expected = {:ok, %{prefix: "a-", attachment: %{name: "a-b", extra: "ok"}}}
+
+      assert Peri.validate(schema, input) == expected
+      assert Schema.validator(schema).(input) == expected
     end
 
     test "preserves transformed successful values in composed validators" do

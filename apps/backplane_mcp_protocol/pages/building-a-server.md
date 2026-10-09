@@ -61,7 +61,7 @@ children = [
 How do you test this? Complete one file for reference:
 
 ```elixir
-Mix.install([{:backplane_mcp_protocol, "~> 1.10.15"}])
+Mix.install([{:backplane_mcp_protocol, "~> 1.10.16"}])
 
 defmodule MyApp.Greeter do
   @moduledoc "Greet someone warmly"
@@ -649,13 +649,38 @@ validated or transformed value. This composition works with dynamically
 registered tools and custom fields in component schemas, for both modern and
 legacy requests.
 
-A direct `fn value -> Peri.validate(inner_schema, value) end` callback can return
-a single root `Peri.Error`, while Peri's nested traversal expects a list. Use
-`Schema.validator(inner_schema)` for that delegation. The adapter converts root
-`nil` paths to empty paths before Peri prefixes enclosing fields; the error
-formatter renders nested leaves using their complete paths. It preserves the
-paths Peri provides, which do not include dynamic map keys or list indices in
-all validation forms.
+When built through `Schema.validator/1`, custom callbacks may return either a
+single `Peri.Error` or a list of errors from `Peri.validate/2`. The adapter
+normalizes that result before Peri's nested traversal and converts root `nil`
+paths to empty paths before enclosing fields are prefixed. Use
+`Schema.validator(inner_schema)` at the inner boundary to retain dynamic key
+detail that plain Peri validation omits. The error formatter renders nested
+leaves using their complete declared field paths. Strict `{:schema, fields, {:additional_keys, type}}`
+validators retain the rejected extra key. Lists whose item type is
+`{:custom, callback}` also retain the failing item index and preserve list
+constraints and transformed values:
+
+```elixir
+strict_attachment =
+  {:schema, %{name: {:required, :string}},
+   {:additional_keys,
+    {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
+
+attachments_schema = %{
+  attachments: {:list, {:custom, Schema.validator(strict_attachment)}}
+}
+
+validator = Schema.validator(attachments_schema)
+```
+
+An unsupported `unknown_field` on the first attachment reports
+`attachments.0.unknown_field: unsupported attachment field`. A rejected root
+`creator` reports `creator: unsupported attachment field`. Use the helper at
+each delegated schema boundary: a callback's returned singleton or error list
+is normalized before enclosing Peri traversal, but exceptions raised inside a
+callback still indicate a validator implementation error. The adapter does
+not infer missing paths from arbitrary opaque callbacks or change other Peri
+map/list validation forms.
 
 ### Wire schemas and structured results
 
