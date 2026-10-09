@@ -4,7 +4,7 @@ defmodule MathEx.MixProject do
   def project do
     [
       app: :math_ex,
-      version: "1.10.16",
+      version: "1.10.17",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
