@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Relayixir is an Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + Mint + Mint.WebSocket. Application-layer proxy focused on correctness, streaming safety, and protocol-aware behavior.
+Relayixir is an Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + HTTP Fetch + HTTP WebSocket. Application-layer proxy focused on correctness, streaming safety, and protocol-aware behavior.
 
 Upstream source: [gsmlg-dev/relayixir](https://github.com/gsmlg-dev/relayixir)
 
@@ -14,11 +14,10 @@ Relayixir is an umbrella app within the Backplane project. Bandit standalone ser
 
 ## Project Status
 
-Phase 1 (HTTP MVP) and Phase 2 (WebSocket) are complete. Next up:
-- Phase 3: Production hardening (streaming request bodies, bounded buffering)
-- Phase 4: Inspection and policy extensions
+HTTP and WebSocket proxy paths support streaming request bodies, bounded response
+collection, and inspection hooks. Outbound transport uses HTTP family 0.20.0.
 
-Design document: `docs/design.md`
+Current architecture: `README.md`. Historical design draft: `docs/design.md`.
 
 ## Build & Test Commands
 
@@ -38,13 +37,13 @@ mix format --check-formatted       # Check formatting
 
 **HTTP path** (request/response, finite):
 ```
-Client → Bandit → Router → HttpPlug → HttpClient (Mint) → Upstream
+Client → Bandit → Router → HttpPlug → HttpClient (HTTP.fetch) → Upstream
 ```
-The streaming loop lives inside HttpPlug. HttpClient yields response parts (status, headers, data chunks, done) and HttpPlug writes them to Plug.Conn. Optional connection pooling via `ConnPool` when `pool_size` is set on an upstream.
+HttpClient exposes header-first raw streams and acknowledges chunks after HttpPlug consumes them. Fetch owns optional HTTP/1 reuse, with `ConnPool` mapping `pool_size` to its bounded idle-pool policy. RequestGuard owns cancellation across the calling process lifetime.
 
 **WebSocket path** (stateful, long-lived, bidirectional):
 ```
-Client → Bandit → Router → WebSocket.Plug → Bridge (GenServer) → UpstreamClient (Mint.WebSocket) → Upstream
+Client → Bandit → Router → WebSocket.Plug → Bridge (GenServer) → UpstreamClient (HTTP.WebSocket) → Upstream
 ```
 Bridge is a supervised GenServer under DynamicSupervisor with `:temporary` restart. It manages an explicit state machine: `:connecting → :open → :closing → :closed`.
 
@@ -58,8 +57,7 @@ Relayixir.Application (one_for_one)
 ├── Telemetry.Events (GenServer)
 ├── DynamicSupervisor (BridgeSupervisor) — WebSocket Bridge instances
 ├── Registry (BridgeRegistry) — bridge process discovery
-├── DynamicSupervisor (ConnPool.Supervisor) — per-upstream connection pools
-├── Registry (ConnPool.Registry) — pool process discovery
+├── DynamicSupervisor (RequestSupervisor) — temporary HTTP request guards
 └── Bandit (port 4000, plug: Router) — only when start_server: true
 ```
 
@@ -72,9 +70,11 @@ Routes and upstreams are stored in Agent-based config (memory-only), loaded via 
 - `Proxy.Upstream.resolve(conn)`: merges route + upstream config into an Upstream descriptor struct
 
 ### Key Design Decisions
-- Inbound (Bandit/Plug) and outbound (Mint) responsibilities are strictly separated
-- One Mint connection per request by default; optional pooling via `pool_size` per upstream
-- Request bodies are fully buffered with configurable `max_request_body_size`
+- Inbound (Bandit/Plug) and outbound (HTTP Fetch/WebSocket) responsibilities are separated
+- Fetch owns sockets and optional pooling via `pool_size` per upstream, capped at sixteen idle sockets per route
+- Request bodies stream through an acknowledged upload with configurable `max_request_body_size`; explicit `body:` sends buffered bytes
+- Responses preserve raw entity bytes and manual redirects; SSE uses Fetch streaming rather than EventSource
+- Requests are sent once; retries require trusted evidence that no request bytes were sent
 - After HTTP 101 upgrade, upstream failure communicates via close frame (1014), not HTTP error
 - Every `Plug.Conn.chunk/2` must be checked for `{:error, :closed}` (downstream disconnect)
 - Select `send_resp` for Content-Length responses, `send_chunked` for chunked/close-delimited

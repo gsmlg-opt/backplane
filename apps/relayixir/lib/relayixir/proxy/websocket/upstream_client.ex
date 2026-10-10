@@ -1,198 +1,145 @@
 defmodule Relayixir.Proxy.WebSocket.UpstreamClient do
   @moduledoc """
-  Establishes and manages upstream WebSocket connections via Mint + Mint.WebSocket.
+  Establishes and manages upstream connections through HTTP.WebSocket's proxy API.
   """
 
-  require Logger
+  alias HTTP.WebSocket
+  alias HTTP.WebSocket.Event
+  alias Relayixir.Proxy.WebSocket.{Close, Frame}
 
-  alias Relayixir.Proxy.WebSocket.Frame
+  @handshake_timeout 10_000
+  @write_timeout 5_000
 
   @doc """
-  Connects to upstream WebSocket. Returns `{:ok, conn, ref, websocket}` or `{:error, reason}`.
+  Connects to the upstream WebSocket and waits for its validated handshake.
   """
   @spec connect(Relayixir.Proxy.Upstream.t(), [{String.t(), String.t()}]) ::
-          {:ok, Mint.HTTP.t(), Mint.Types.request_ref(), Mint.WebSocket.t()} | {:error, term()}
+          {:ok, WebSocket.t()} | {:error, term()}
   def connect(upstream, headers \\ []) do
-    scheme = upstream.scheme || :http
-    ws_scheme = if scheme == :https, do: :wss, else: :ws
-    connect_timeout = Map.get(upstream, :connect_timeout, 5_000)
+    {protocols, headers} = prepare_ws_headers(headers)
+    opening_timeout = upstream.connect_timeout + @handshake_timeout
 
-    case Mint.HTTP.connect(scheme, upstream.host, upstream.port,
-           transport_opts: [timeout: connect_timeout]
+    case WebSocket.new(build_url(upstream), protocols,
+           headers: headers,
+           mode: :proxy,
+           automatic_pong: false,
+           delivery: :ack,
+           http_version: :http1,
+           tls_backend: :ssl,
+           connect_timeout: upstream.connect_timeout,
+           opening_timeout: opening_timeout,
+           write_timeout: @write_timeout,
+           close_timeout: Close.close_timeout()
          ) do
-      {:ok, conn} ->
-        path = build_path(upstream)
-        ws_headers = prepare_ws_headers(headers, upstream)
-        do_upgrade(conn, ws_scheme, path, ws_headers)
-
-      {:error, reason} ->
-        Logger.error("WebSocket upstream connect failed: #{inspect(reason)}")
-        {:error, reason}
-    end
-  end
-
-  defp do_upgrade(conn, ws_scheme, path, ws_headers) do
-    case Mint.WebSocket.upgrade(ws_scheme, conn, path, ws_headers) do
-      {:ok, conn, ref} ->
-        case await_upgrade_response(conn, ref) do
-          {:ok, conn, websocket} ->
-            {:ok, conn, ref, websocket}
-
-          {:error, conn, reason} ->
-            Mint.HTTP.close(conn)
-            Logger.error("WebSocket upstream connect failed: #{inspect(reason)}")
-            {:error, reason}
-        end
-
-      {:error, conn, reason} ->
-        Mint.HTTP.close(conn)
-        Logger.error("WebSocket upstream upgrade failed: #{inspect(reason)}")
-        {:error, reason}
+      %WebSocket{} = socket -> await_open(socket, opening_timeout)
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @doc """
-  Sends a frame to the upstream WebSocket.
+  Sends a frame and waits for local transport completion before admitting the next one.
+  In particular, Close must follow successful completion of all preceding writes.
   """
-  @spec send_frame(Mint.HTTP.t(), Mint.WebSocket.t(), Mint.Types.request_ref(), Frame.t()) ::
-          {:ok, Mint.HTTP.t(), Mint.WebSocket.t()}
-          | {:error, Mint.HTTP.t(), Mint.WebSocket.t(), term()}
-  def send_frame(conn, websocket, ref, %Frame{} = frame) do
-    mint_frame = Frame.to_mint(frame)
+  @spec send_frame(WebSocket.t(), Frame.t()) :: :ok | {:error, term()}
+  def send_frame(socket, %Frame{type: :close, close_code: code, close_reason: reason}) do
+    WebSocket.close(socket, code, reason)
+  end
 
-    case Mint.WebSocket.encode(websocket, mint_frame) do
-      {:ok, websocket, data} ->
-        case Mint.WebSocket.stream_request_body(conn, ref, data) do
-          {:ok, conn} -> {:ok, conn, websocket}
-          {:error, conn, reason} -> {:error, conn, websocket, reason}
-        end
-
-      {:error, websocket, reason} ->
-        {:error, conn, websocket, reason}
+  def send_frame(socket, %Frame{type: opcode, payload: payload}) do
+    with {:ok, ref} <- WebSocket.send_frame_ack(socket, {opcode, payload}) do
+      receive do
+        {WebSocket, ^socket, {:send_result, ^ref, result}} -> result
+      after
+        @write_timeout + 100 -> {:error, :send_timeout}
+      end
     end
   end
 
   @doc """
-  Decodes incoming data from the upstream WebSocket connection.
-  Returns `{:ok, conn, websocket, frames}` or `{:error, reason}`.
+  Normalizes public proxy events, retaining the delivery reference for acknowledgement
+  after the bridge forwards the frame to downstream.
   """
-  @spec decode_message(Mint.HTTP.t(), Mint.WebSocket.t(), term()) ::
-          {:ok, Mint.HTTP.t(), Mint.WebSocket.t(), [Frame.t()]}
-          | {:error, Mint.HTTP.t(), Mint.WebSocket.t(), term()}
-  def decode_message(conn, websocket, message) do
-    case Mint.WebSocket.stream(conn, message) do
-      {:ok, conn, [{:data, _ref, data}]} ->
-        case Mint.WebSocket.decode(websocket, data) do
-          {:ok, websocket, frames} ->
-            normalized = Enum.map(frames, &Frame.from_mint/1)
-            {:ok, conn, websocket, normalized}
-
-          {:error, websocket, reason} ->
-            {:error, conn, websocket, reason}
-        end
-
-      {:ok, conn, _other} ->
-        {:ok, conn, websocket, []}
-
-      {:error, conn, reason, _responses} ->
-        {:error, conn, websocket, reason}
-
-      :unknown ->
-        {:ok, conn, websocket, []}
-    end
+  @spec decode_message(WebSocket.t(), term()) ::
+          {:ok, [Frame.t()], reference() | nil} | {:error, term()}
+  def decode_message(socket, {WebSocket, socket, %Event.Frame{opcode: opcode, data: data}, ref}) do
+    {:ok, [%Frame{type: opcode, payload: data}], ref}
   end
+
+  def decode_message(socket, {WebSocket, socket, %Event.Close{code: 1006}}) do
+    {:error, :closed}
+  end
+
+  def decode_message(socket, {WebSocket, socket, %Event.Close{code: code, reason: reason}}) do
+    {:ok, [Frame.close(code || 1000, reason)], nil}
+  end
+
+  def decode_message(socket, {WebSocket, socket, %Event.Error{reason: reason}}) do
+    {:error, reason}
+  end
+
+  def decode_message(_socket, _message), do: {:ok, [], nil}
 
   @doc """
-  Closes the upstream connection.
+  Initiates cancellation. Owner death also tears down the connection and pending IO.
   """
-  @spec close(Mint.HTTP.t()) :: {:ok, Mint.HTTP.t()}
-  def close(conn) do
-    Mint.HTTP.close(conn)
-  end
+  @spec close(WebSocket.t()) :: :ok | {:error, term()}
+  def close(socket), do: WebSocket.close(socket)
 
-  defp build_path(upstream) do
-    case upstream.path_prefix_rewrite do
-      nil -> "/"
-      path -> path
-    end
-  end
+  defp await_open(socket, opening_timeout) do
+    monitor = Process.monitor(socket.pid)
 
-  defp prepare_ws_headers(headers, upstream) do
-    headers
-    |> Enum.reject(fn {name, _} ->
-      downcased = String.downcase(name)
-      downcased in ["host", "upgrade", "connection", "sec-websocket-version", "sec-websocket-key"]
-    end)
-    |> filter_extensions()
-    |> maybe_add_host(upstream)
-  end
-
-  defp filter_extensions(headers) do
-    Enum.reject(headers, fn {name, value} ->
-      String.downcase(name) == "sec-websocket-extensions" &&
-        String.contains?(String.downcase(value), "permessage-deflate")
-    end)
-  end
-
-  defp maybe_add_host(headers, upstream) do
-    host =
-      case upstream.port do
-        80 -> upstream.host
-        443 -> upstream.host
-        port -> "#{upstream.host}:#{port}"
+    result =
+      receive do
+        {WebSocket, ^socket, %Event.Open{}} -> {:ok, socket}
+        {WebSocket, ^socket, %Event.Error{reason: reason}} -> {:error, reason}
+        {WebSocket, ^socket, %Event.Close{}} -> {:error, :closed}
+        {:DOWN, ^monitor, :process, _pid, reason} -> {:error, reason}
+      after
+        opening_timeout + 100 -> {:error, :handshake_timeout}
       end
 
-    [{"host", host} | headers]
+    Process.demonitor(monitor, [:flush])
+    if match?({:error, _}, result), do: close(socket)
+    result
   end
 
-  defp await_upgrade_response(conn, ref) do
-    receive do
-      {:tcp, _, _} = message -> process_upgrade_message(conn, ref, message)
-      {:tcp_closed, _} = message -> process_upgrade_message(conn, ref, message)
-      {:tcp_error, _, _} = message -> process_upgrade_message(conn, ref, message)
-      {:ssl, _, _} = message -> process_upgrade_message(conn, ref, message)
-      {:ssl_closed, _} = message -> process_upgrade_message(conn, ref, message)
-      {:ssl_error, _, _} = message -> process_upgrade_message(conn, ref, message)
-    after
-      10_000 ->
-        {:error, conn, :handshake_timeout}
-    end
+  defp build_url(upstream) do
+    [path | query] = String.split(upstream.path_prefix_rewrite || "/", "?", parts: 2)
+    scheme = if(upstream.scheme == :https, do: "wss", else: "ws")
+    uri = URI.parse("#{scheme}:")
+
+    URI.to_string(%{
+      uri
+      | host: upstream.host,
+        port: upstream.port,
+        path: path,
+        query: List.first(query)
+    })
   end
 
-  defp process_upgrade_message(conn, ref, message) do
-    case Mint.WebSocket.stream(conn, message) do
-      {:ok, conn, responses} ->
-        case extract_upgrade_info(responses) do
-          {:ok, 101, resp_headers} ->
-            case Mint.WebSocket.new(conn, ref, 101, resp_headers) do
-              {:ok, conn, websocket} -> {:ok, conn, websocket}
-              {:error, conn, reason} -> {:error, conn, reason}
-            end
+  defp prepare_ws_headers(headers) do
+    protocols =
+      headers
+      |> Enum.filter(fn {name, _} -> String.downcase(name) == "sec-websocket-protocol" end)
+      |> Enum.flat_map(fn {_, value} -> String.split(value, ",", trim: true) end)
+      |> Enum.map(&String.trim/1)
 
-          {:ok, status, _headers} ->
-            {:error, conn, {:unexpected_status, status}}
+    headers =
+      Enum.reject(headers, fn {name, value} ->
+        name = String.downcase(name)
 
-          :no_status ->
-            {:error, conn, :no_upgrade_response}
-        end
+        name in [
+          "host",
+          "upgrade",
+          "connection",
+          "sec-websocket-version",
+          "sec-websocket-key",
+          "sec-websocket-protocol"
+        ] or
+          (name == "sec-websocket-extensions" and
+             String.contains?(String.downcase(value), "permessage-deflate"))
+      end)
 
-      {:error, conn, reason, _} ->
-        {:error, conn, reason}
-
-      :unknown ->
-        await_upgrade_response(conn, ref)
-    end
-  end
-
-  defp extract_upgrade_info(responses) do
-    Enum.reduce(responses, {nil, []}, fn
-      {:status, _ref, status}, {_s, h} -> {status, h}
-      {:headers, _ref, headers}, {s, _h} -> {s, headers}
-      _, acc -> acc
-    end)
-    |> case do
-      {nil, _} -> :no_status
-      {status, headers} -> {:ok, status, headers}
-    end
+    {protocols, headers}
   end
 end

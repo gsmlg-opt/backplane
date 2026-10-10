@@ -2,7 +2,7 @@ defmodule Relayixir.Proxy.EnvironmentProxy do
   @moduledoc false
 
   @type connect_option ::
-          {:proxy, {:http, String.t(), :inet.port_number(), keyword()}}
+          {:proxy, {:http | :https, String.t(), :inet.port_number(), keyword()}}
           | {:proxy_headers, [{String.t(), String.t()}]}
 
   @spec connect_options(:http | :https, String.t() | nil, :inet.port_number(), map()) ::

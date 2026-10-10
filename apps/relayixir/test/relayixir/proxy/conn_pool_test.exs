@@ -1,139 +1,73 @@
 defmodule Relayixir.Proxy.ConnPoolTest do
   use ExUnit.Case, async: true
 
-  alias Relayixir.Proxy.{ConnPool, Upstream}
+  alias Relayixir.Proxy.{HttpPlug, Upstream}
 
-  # Use a unique port per test to avoid cross-test pool collisions
-  defp upstream(port, pool_size \\ 5) do
-    %Upstream{
-      scheme: :http,
-      host: "127.0.0.1",
-      port: port,
-      pool_size: pool_size,
-      connect_timeout: 5_000
-    }
-  end
+  test "retains a consumed connection across independent request processes" do
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_address, port}} = :inet.sockname(listener)
+    on_exit(fn -> :gen_tcp.close(listener) end)
 
-  describe "ensure_started/1" do
-    test "starts a pool for an upstream" do
-      us = upstream(19001)
-      assert {:ok, pid} = ConnPool.ensure_started(us)
-      assert is_pid(pid)
-      assert Process.alive?(pid)
-    end
+    peer =
+      Task.async(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener, 2_000)
 
-    test "is idempotent — second call returns existing pid" do
-      us = upstream(19002)
-      {:ok, pid1} = ConnPool.ensure_started(us)
-      {:ok, pid2} = ConnPool.ensure_started(us)
-      assert pid1 == pid2
-    end
-  end
-
-  describe "checkout/1 and checkin/2" do
-    test "returns :empty when no idle connections" do
-      us = upstream(19003)
-      ConnPool.ensure_started(us)
-      assert {:error, :empty} = ConnPool.checkout(us)
-    end
-
-    test "checkout returns a previously checked-in connection" do
-      us = upstream(19004)
-      ConnPool.ensure_started(us)
-
-      # Start a real upstream to get a valid Mint connection
-      {:ok, listen} = :gen_tcp.listen(19004, [:binary, active: false, reuseaddr: true])
-
-      {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", 19004, transport_opts: [timeout: 5_000])
-      ConnPool.checkin(us, conn)
-
-      assert {:ok, checked_out} = ConnPool.checkout(us)
-      assert Mint.HTTP.open?(checked_out)
-
-      Mint.HTTP.close(checked_out)
-      :gen_tcp.close(listen)
-    end
-
-    test "pool respects max_size — extra connections are closed" do
-      us = upstream(19005, 2)
-      ConnPool.ensure_started(us)
-
-      {:ok, listen} = :gen_tcp.listen(19005, [:binary, active: false, reuseaddr: true])
-
-      conns =
-        for _ <- 1..3 do
-          {:ok, conn} =
-            Mint.HTTP.connect(:http, "127.0.0.1", 19005, transport_opts: [timeout: 5_000])
-
-          conn
+        for path <- ["/one", "/two"] do
+          headers = receive_headers(socket, "")
+          assert String.starts_with?(headers, "GET #{path} HTTP/1.1\r\n")
+          :ok = :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
         end
 
-      # Check in all 3 — pool size is 2, so 3rd should be discarded
-      Enum.each(conns, &ConnPool.checkin(us, &1))
-
-      # Should get exactly 2 back
-      assert {:ok, _} = ConnPool.checkout(us)
-      assert {:ok, _} = ConnPool.checkout(us)
-      assert {:error, :empty} = ConnPool.checkout(us)
-
-      :gen_tcp.close(listen)
-    end
-
-    test "dead connections are skipped on checkout" do
-      us = upstream(19006)
-      ConnPool.ensure_started(us)
-
-      {:ok, listen} = :gen_tcp.listen(19006, [:binary, active: false, reuseaddr: true])
-
-      {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", 19006, transport_opts: [timeout: 5_000])
-      # Close the conn — Mint.HTTP.close/1 returns the updated (closed) struct
-      {:ok, closed_conn} = Mint.HTTP.close(conn)
-      ConnPool.checkin(us, closed_conn)
-
-      assert {:error, :empty} = ConnPool.checkout(us)
-
-      :gen_tcp.close(listen)
-    end
-
-    test "transfers connection ownership across request processes" do
-      {:ok, server_pid} = Bandit.start_link(plug: Relayixir.TestUpstream, port: 0)
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
-      us = upstream(port)
-      {:ok, pool_pid} = ConnPool.ensure_started(us)
-      parent = self()
-
-      spawn_link(fn ->
-        {:ok, conn} = Relayixir.Proxy.HttpClient.connect(us)
-        :ok = ConnPool.checkin(us, conn)
-        :sys.get_state(pool_pid)
-        send(parent, :connection_checked_in)
+        :gen_tcp.close(socket)
       end)
 
-      assert_receive :connection_checked_in
-      assert {:ok, conn} = ConnPool.checkout(us)
+    upstream = %Upstream{scheme: :http, host: "127.0.0.1", port: port, pool_size: 2}
 
-      assert {:ok, conn, _request_ref} =
-               Relayixir.Proxy.HttpClient.send_request(conn, "GET", "/ok", [])
+    for path <- ["/one", "/two"] do
+      result =
+        Task.async(fn -> HttpPlug.call(Plug.Test.conn(:get, path), upstream, body: "") end)
+        |> Task.await()
 
-      assert {:ok, conn, parts} = Relayixir.Proxy.HttpClient.recv_response(conn, 5_000)
-      assert {:status, 200} in parts
-      assert {:data, "OK"} in parts
-
-      Relayixir.Proxy.HttpClient.close(conn)
-      ThousandIsland.stop(server_pid)
+      assert result.status == 200
+      assert result.resp_body == "OK"
     end
+
+    Task.await(peer)
   end
 
-  describe "checkin/2 without pool" do
-    test "closes connection when no pool exists" do
-      us = upstream(19007)
-      # Don't start pool — checkin should just close the conn gracefully
-      {:ok, listen} = :gen_tcp.listen(19007, [:binary, active: false, reuseaddr: true])
+  test "opens fresh connections when pooling is disabled" do
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_address, port}} = :inet.sockname(listener)
+    on_exit(fn -> :gen_tcp.close(listener) end)
 
-      {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", 19007, transport_opts: [timeout: 5_000])
-      assert :ok = ConnPool.checkin(us, conn)
+    peer =
+      Task.async(fn ->
+        for path <- ["/one", "/two"] do
+          {:ok, socket} = :gen_tcp.accept(listener, 2_000)
+          headers = receive_headers(socket, "")
+          assert String.starts_with?(headers, "GET #{path} HTTP/1.1\r\n")
+          :ok = :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+          assert {:error, :closed} = :gen_tcp.recv(socket, 0, 2_000)
+          :gen_tcp.close(socket)
+        end
+      end)
 
-      :gen_tcp.close(listen)
+    upstream = %Upstream{scheme: :http, host: "127.0.0.1", port: port}
+
+    for path <- ["/one", "/two"] do
+      result = HttpPlug.call(Plug.Test.conn(:get, path), upstream, body: "")
+      assert result.resp_body == "OK"
+    end
+
+    Task.await(peer)
+  end
+
+  defp receive_headers(socket, pending) do
+    if String.contains?(pending, "\r\n\r\n") do
+      pending
+    else
+      {:ok, data} = :gen_tcp.recv(socket, 0, 2_000)
+      receive_headers(socket, pending <> data)
     end
   end
 end

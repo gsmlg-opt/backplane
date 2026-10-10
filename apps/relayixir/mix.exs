@@ -33,7 +33,7 @@ defmodule Relayixir.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   defp description do
-    "An Elixir-native HTTP/WebSocket reverse proxy built on Bandit, Plug, Mint, and Mint.WebSocket."
+    "An Elixir-native HTTP/WebSocket reverse proxy built on Bandit, Plug, HTTP Fetch, and HTTP WebSocket."
   end
 
   defp package do
@@ -48,8 +48,10 @@ defmodule Relayixir.MixProject do
     [
       {:bandit, "~> 1.0"},
       {:plug, "~> 1.15"},
-      {:mint, "~> 1.6"},
-      {:mint_web_socket, "~> 1.0"},
+      {:http_fetch, "~> 0.20.0"},
+      {:http_web_socket, "~> 0.20.0"},
+      {:mint, "~> 1.6", only: :test},
+      {:mint_web_socket, "~> 1.0", only: :test},
       {:telemetry, "~> 1.2"},
       {:websock, "~> 0.5"}
     ]

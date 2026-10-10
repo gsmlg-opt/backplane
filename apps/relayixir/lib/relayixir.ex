@@ -1,6 +1,6 @@
 defmodule Relayixir do
   @moduledoc """
-  Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + Mint.
+  Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + HTTP Fetch/WebSocket.
 
   ## Runtime Configuration
 
@@ -53,11 +53,10 @@ defmodule Relayixir do
       UpstreamConfig,
       HookConfig,
       Relayixir.Telemetry.Events,
+      {DynamicSupervisor, name: Relayixir.Proxy.RequestSupervisor, strategy: :one_for_one},
       {DynamicSupervisor,
        name: Relayixir.Proxy.WebSocket.BridgeSupervisor, strategy: :one_for_one},
-      {Registry, keys: :unique, name: Relayixir.Proxy.WebSocket.BridgeRegistry},
-      {DynamicSupervisor, name: Relayixir.Proxy.ConnPool.Supervisor, strategy: :one_for_one},
-      {Registry, keys: :unique, name: Relayixir.Proxy.ConnPool.Registry}
+      {Registry, keys: :unique, name: Relayixir.Proxy.WebSocket.BridgeRegistry}
     ]
 
     with {:ok, sup} <-

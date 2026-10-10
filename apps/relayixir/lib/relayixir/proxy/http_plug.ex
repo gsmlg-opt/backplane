@@ -6,7 +6,7 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   require Logger
 
-  alias Relayixir.Proxy.{Headers, HttpClient, ErrorMapper, Upstream, Request, Response, ConnPool}
+  alias Relayixir.Proxy.{Headers, HttpClient, ErrorMapper, Upstream, Request, Response}
   alias Relayixir.Config.HookConfig
 
   @doc """
@@ -95,7 +95,7 @@ defmodule Relayixir.Proxy.HttpPlug do
   end
 
   defp do_proxy(conn, upstream, opts) do
-    # Strip content-length so Mint uses chunked transfer encoding for streaming.
+    # Strip content-length to use chunked transfer encoding for streaming.
     # Replace route-level injected headers case-insensitively, then apply defaults
     # for provider metadata headers only when absent.
     request_headers =
@@ -111,57 +111,69 @@ defmodule Relayixir.Proxy.HttpPlug do
     path = build_upstream_path(conn, upstream)
     method = String.upcase(conn.method)
 
-    with {:ok, mint_conn} <- connect_upstream(upstream),
-         {:ok, mint_conn} <-
-           send_request_with_body(conn, mint_conn, method, path, request_headers, upstream, opts) do
-      case stream_response(conn, mint_conn, upstream, opts) do
+    with {:ok, upstream_conn} <- prepare_upstream(upstream),
+         {:ok, upstream_conn} <-
+           send_request_with_body(
+             conn,
+             upstream_conn,
+             method,
+             path,
+             request_headers,
+             upstream,
+             opts
+           ) do
+      case stream_response(conn, upstream_conn, upstream, opts) do
         {:ok, conn} -> {:ok, conn, request}
         {:error, reason, conn} -> {:error, reason, conn}
       end
     else
-      {:error, reason} ->
-        {:error, map_error(reason, "connect_or_send", upstream, path), conn}
-
-      {:error, mint_conn, reason} ->
-        HttpClient.close(mint_conn)
+      {:error, upstream_conn, reason} ->
+        HttpClient.close(upstream_conn)
         {:error, map_error(reason, "send", upstream, path), conn}
     end
   end
 
-  defp send_request_with_body(conn, mint_conn, method, path, headers, upstream, opts) do
+  defp send_request_with_body(conn, upstream_conn, method, path, headers, upstream, opts) do
     case Keyword.get(opts, :body) do
       body when is_binary(body) ->
         # body: opt provided — send it directly (non-streaming).
-        case HttpClient.send_request(mint_conn, method, path, headers, body) do
-          {:ok, mint_conn, _ref} -> {:ok, mint_conn}
-          {:error, mint_conn, reason} -> {:error, mint_conn, reason}
+        with {:ok, upstream_conn, _ref} <-
+               HttpClient.send_request(upstream_conn, method, path, headers, body) do
+          {:ok, upstream_conn}
         end
 
       _ ->
         # Default: stream request body from Plug.Conn (original behavior).
-        with {:ok, mint_conn, request_ref} <-
-               HttpClient.send_request(mint_conn, method, path, headers, :stream),
-             {:ok, mint_conn} <-
-               stream_request_body(conn, mint_conn, request_ref, upstream.max_request_body_size) do
-          {:ok, mint_conn}
+        with {:ok, upstream_conn, request_ref} <-
+               HttpClient.send_request(upstream_conn, method, path, headers, :stream),
+             {:ok, upstream_conn} <-
+               stream_request_body(
+                 conn,
+                 upstream_conn,
+                 request_ref,
+                 upstream.max_request_body_size
+               ) do
+          {:ok, upstream_conn}
         end
     end
   end
 
   # Reads the client request body in chunks and forwards each chunk to the upstream
-  # via Mint's streaming API. Sends :eof after the last chunk.
-  defp stream_request_body(conn, mint_conn, request_ref, max_size, bytes_read \\ 0)
+  # via the acknowledged upload stream. Sends :eof after the last chunk.
+  defp stream_request_body(conn, upstream_conn, request_ref, max_size, bytes_read \\ 0)
 
-  defp stream_request_body(conn, mint_conn, request_ref, max_size, bytes_read) do
+  defp stream_request_body(conn, upstream_conn, request_ref, max_size, bytes_read) do
     case Plug.Conn.read_body(conn, length: 65_536, read_length: 65_536) do
       {:ok, chunk, _conn} ->
         total = bytes_read + byte_size(chunk)
 
         if max_size != nil && total > max_size do
-          {:error, mint_conn, :request_too_large}
+          {:error, upstream_conn, :request_too_large}
         else
-          with {:ok, mint_conn} <- HttpClient.stream_body_chunk(mint_conn, request_ref, chunk) do
-            HttpClient.stream_body_chunk(mint_conn, request_ref, :eof)
+          case HttpClient.stream_body_chunk(upstream_conn, request_ref, chunk) do
+            {:ok, upstream_conn} -> HttpClient.stream_body_chunk(upstream_conn, request_ref, :eof)
+            {:halt, upstream_conn} -> {:ok, upstream_conn}
+            error -> error
           end
         end
 
@@ -169,87 +181,46 @@ defmodule Relayixir.Proxy.HttpPlug do
         total = bytes_read + byte_size(chunk)
 
         if max_size != nil && total > max_size do
-          {:error, mint_conn, :request_too_large}
+          {:error, upstream_conn, :request_too_large}
         else
-          with {:ok, mint_conn} <- HttpClient.stream_body_chunk(mint_conn, request_ref, chunk) do
-            stream_request_body(conn, mint_conn, request_ref, max_size, total)
+          case HttpClient.stream_body_chunk(upstream_conn, request_ref, chunk) do
+            {:ok, upstream_conn} ->
+              stream_request_body(conn, upstream_conn, request_ref, max_size, total)
+
+            {:halt, upstream_conn} ->
+              {:ok, upstream_conn}
+
+            error ->
+              error
           end
         end
 
       {:error, reason} ->
-        {:error, mint_conn, reason}
+        {:error, upstream_conn, reason}
     end
   end
 
-  defp connect_upstream(upstream) do
+  defp prepare_upstream(upstream) do
     upstream_label = "#{upstream.host}:#{upstream.port}"
 
     :telemetry.execute(
-      [:relayixir, :http, :upstream, :connect, :start],
+      [:relayixir, :http, :upstream, :prepare, :start],
       %{system_time: System.system_time()},
       %{upstream: upstream_label}
     )
 
-    result = checkout_or_connect(upstream)
+    result = HttpClient.connect(upstream)
 
-    case result do
-      {:ok, _mint_conn} ->
-        :telemetry.execute(
-          [:relayixir, :http, :upstream, :connect, :stop],
-          %{system_time: System.system_time()},
-          %{upstream: upstream_label, result: :ok}
-        )
-
-      {:error, reason} ->
-        :telemetry.execute(
-          [:relayixir, :http, :upstream, :connect, :stop],
-          %{system_time: System.system_time()},
-          %{upstream: upstream_label, result: :error, reason: reason}
-        )
-    end
+    :telemetry.execute(
+      [:relayixir, :http, :upstream, :prepare, :stop],
+      %{system_time: System.system_time()},
+      %{upstream: upstream_label, result: :ok}
+    )
 
     result
   end
 
-  defp checkout_or_connect(%Upstream{pool_size: nil} = upstream) do
-    case HttpClient.connect(upstream) do
-      {:ok, _} = ok -> ok
-      {:error, _} -> {:error, :upstream_connect_failed}
-    end
-  end
-
-  defp checkout_or_connect(%Upstream{pool_size: pool_size} = upstream)
-       when is_integer(pool_size) and pool_size > 0 do
-    case ConnPool.ensure_started(upstream) do
-      {:ok, _pid} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning(
-          "ConnPool.ensure_started failed: #{inspect(reason)}, falling back to fresh connection"
-        )
-    end
-
-    case ConnPool.checkout(upstream) do
-      {:ok, conn} ->
-        {:ok, conn}
-
-      {:error, :empty} ->
-        case HttpClient.connect(upstream) do
-          {:ok, _} = ok -> ok
-          {:error, _} -> {:error, :upstream_connect_failed}
-        end
-    end
-  end
-
-  # Returns a connection to the pool (if pooling enabled) or closes it.
-  defp release_conn(upstream, mint_conn) do
-    if upstream.pool_size do
-      ConnPool.checkin(upstream, mint_conn)
-    else
-      HttpClient.close(mint_conn)
-    end
-  end
+  defp release_conn(_upstream, upstream_conn), do: HttpClient.release(upstream_conn)
 
   defp build_upstream_path(conn, upstream) do
     path =
@@ -264,17 +235,17 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp stream_response(conn, mint_conn, upstream, opts) do
+  defp stream_response(conn, upstream_conn, upstream, opts) do
     timeout = upstream.request_timeout
     fbt = upstream.first_byte_timeout
 
-    case HttpClient.recv_until_headers(mint_conn, timeout, fbt) do
-      {:ok, mint_conn, status, resp_headers, chunks, completeness} ->
+    case HttpClient.recv_until_headers(upstream_conn, timeout, fbt) do
+      {:ok, upstream_conn, status, resp_headers, chunks, completeness} ->
         response_headers = Headers.prepare_response_headers(resp_headers)
 
         forward_response(
           conn,
-          mint_conn,
+          upstream_conn,
           upstream,
           status,
           response_headers,
@@ -292,7 +263,7 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   defp forward_response(
          conn,
-         mint_conn,
+         upstream_conn,
          upstream,
          status,
          response_headers,
@@ -301,7 +272,7 @@ defmodule Relayixir.Proxy.HttpPlug do
          _opts
        )
        when status in [204, 304] do
-    release_conn(upstream, mint_conn)
+    release_conn(upstream, upstream_conn)
 
     conn =
       conn
@@ -313,7 +284,7 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   defp forward_response(
          conn,
-         mint_conn,
+         upstream_conn,
          upstream,
          status,
          response_headers,
@@ -324,7 +295,7 @@ defmodule Relayixir.Proxy.HttpPlug do
     with {:ok, stream_mapper} <- init_stream_mapper(opts, status, response_headers) do
       forward_response_body(
         conn,
-        mint_conn,
+        upstream_conn,
         upstream,
         status,
         response_headers,
@@ -334,14 +305,14 @@ defmodule Relayixir.Proxy.HttpPlug do
       )
     else
       {:error, reason} ->
-        HttpClient.close(mint_conn)
+        HttpClient.close(upstream_conn)
         {:error, reason, conn}
     end
   end
 
   defp forward_response_body(
          conn,
-         mint_conn,
+         upstream_conn,
          upstream,
          status,
          response_headers,
@@ -353,14 +324,14 @@ defmodule Relayixir.Proxy.HttpPlug do
          map_response_body?(opts) do
       # Collect body — bounded by the declared content-length.
       case collect_body(
-             mint_conn,
+             upstream_conn,
              upstream.request_timeout,
              upstream.max_response_body_size,
              chunks,
              completeness
            ) do
-        {:ok, mint_conn, body_chunks} ->
-          release_conn(upstream, mint_conn)
+        {:ok, upstream_conn, body_chunks} ->
+          release_conn(upstream, upstream_conn)
 
           mapped =
             body_chunks
@@ -394,41 +365,41 @@ defmodule Relayixir.Proxy.HttpPlug do
 
       case completeness do
         :done ->
-          send_pending_chunks(conn, mint_conn, upstream, chunks, opts, stream_mapper)
+          send_pending_chunks(conn, upstream_conn, upstream, chunks, opts, stream_mapper)
 
         :more ->
-          stream_chunks_from_mint(conn, mint_conn, upstream, chunks, opts, stream_mapper)
+          stream_chunks(conn, upstream_conn, upstream, chunks, opts, stream_mapper)
       end
     end
   end
 
-  defp collect_body(mint_conn, _timeout, max_size, chunks, :done) do
+  defp collect_body(upstream_conn, _timeout, max_size, chunks, :done) do
     if max_size != nil do
       total = chunks |> Enum.map(&byte_size/1) |> Enum.sum()
 
       if total > max_size do
-        HttpClient.close(mint_conn)
+        HttpClient.close(upstream_conn)
         {:error, :response_too_large}
       else
-        {:ok, mint_conn, chunks}
+        {:ok, upstream_conn, chunks}
       end
     else
-      {:ok, mint_conn, chunks}
+      {:ok, upstream_conn, chunks}
     end
   end
 
-  defp collect_body(mint_conn, timeout, max_size, chunks, :more) do
-    HttpClient.recv_body(mint_conn, timeout, chunks, max_size)
+  defp collect_body(upstream_conn, timeout, max_size, chunks, :more) do
+    HttpClient.recv_body(upstream_conn, timeout, chunks, max_size)
   end
 
-  defp send_pending_chunks(conn, mint_conn, upstream, [], opts, stream_mapper) do
+  defp send_pending_chunks(conn, upstream_conn, upstream, [], opts, stream_mapper) do
     case finish_mapped_stream(conn, stream_mapper, :eof, opts) do
       {:ok, conn, _stream_mapper} ->
-        release_conn(upstream, mint_conn)
+        release_conn(upstream, upstream_conn)
         {:ok, conn}
 
       {:error, reason, conn, _stream_mapper} ->
-        HttpClient.close(mint_conn)
+        HttpClient.close(upstream_conn)
 
         if reason == :closed do
           emit_downstream_disconnect()
@@ -439,19 +410,19 @@ defmodule Relayixir.Proxy.HttpPlug do
     end
   end
 
-  defp send_pending_chunks(conn, mint_conn, upstream, [chunk | rest], opts, stream_mapper) do
+  defp send_pending_chunks(conn, upstream_conn, upstream, [chunk | rest], opts, stream_mapper) do
     case send_mapped_chunk(conn, chunk, opts, stream_mapper) do
       {:ok, conn, stream_mapper} ->
-        send_pending_chunks(conn, mint_conn, upstream, rest, opts, stream_mapper)
+        send_pending_chunks(conn, upstream_conn, upstream, rest, opts, stream_mapper)
 
       {:error, :closed} ->
-        HttpClient.close(mint_conn)
+        HttpClient.close(upstream_conn)
         finish_stream_mapper(stream_mapper, :cancelled)
         emit_downstream_disconnect()
         {:ok, Plug.Conn.put_private(conn, :relayixir_downstream_disconnected, true)}
 
       {:error, reason, conn, _stream_mapper} ->
-        HttpClient.close(mint_conn)
+        HttpClient.close(upstream_conn)
         {:error, reason, conn}
     end
   end
@@ -460,9 +431,9 @@ defmodule Relayixir.Proxy.HttpPlug do
     Enum.any?(headers, fn {name, _} -> String.downcase(name) == "content-length" end)
   end
 
-  # Streams chunks from Mint to the downstream client immediately as they arrive.
+  # Streams Fetch chunks to the downstream client immediately as they arrive.
   # pending_chunks holds any data already received during the headers phase.
-  defp stream_chunks_from_mint(conn, mint_conn, upstream, pending_chunks, opts, stream_mapper) do
+  defp stream_chunks(conn, upstream_conn, upstream, pending_chunks, opts, stream_mapper) do
     conn_key = {__MODULE__, :stream_conn, make_ref()}
     Process.put(conn_key, {conn, stream_mapper, nil})
 
@@ -488,22 +459,22 @@ defmodule Relayixir.Proxy.HttpPlug do
       end
 
       case HttpClient.recv_body_streaming(
-             mint_conn,
+             upstream_conn,
              upstream.request_timeout,
              pending_chunks,
              on_chunk
            ) do
-        {:ok, mint_conn} ->
+        {:ok, upstream_conn} ->
           {final_conn, final_mapper, _error} =
             Process.get(conn_key, {conn, stream_mapper, nil})
 
           case finish_mapped_stream(final_conn, final_mapper, :eof, opts) do
             {:ok, final_conn, _final_mapper} ->
-              release_conn(upstream, mint_conn)
+              release_conn(upstream, upstream_conn)
               {:ok, final_conn}
 
             {:error, reason, final_conn, _final_mapper} ->
-              HttpClient.close(mint_conn)
+              HttpClient.close(upstream_conn)
 
               if reason == :closed do
                 emit_downstream_disconnect()
@@ -519,8 +490,8 @@ defmodule Relayixir.Proxy.HttpPlug do
               end
           end
 
-        {:stop, mint_conn} ->
-          HttpClient.close(mint_conn)
+        {:stop, upstream_conn} ->
+          HttpClient.close(upstream_conn)
 
           {stopped_conn, _stopped_mapper, mapper_error} =
             Process.get(conn_key, {conn, stream_mapper, nil})
@@ -757,7 +728,6 @@ defmodule Relayixir.Proxy.HttpPlug do
   defp map_error(:request_too_large, _stage, _upstream, _path), do: :request_too_large
   defp map_error(:nxdomain, _stage, _upstream, _path), do: :upstream_connect_failed
   defp map_error(:econnrefused, _stage, _upstream, _path), do: :upstream_connect_failed
-  defp map_error(%Mint.TransportError{}, _stage, _upstream, _path), do: :upstream_connect_failed
 
   defp map_error(reason, stage, upstream, path) do
     raw_reason = inspect(reason)

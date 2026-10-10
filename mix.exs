@@ -22,7 +22,11 @@ defmodule Backplane.Umbrella.MixProject do
   end
 
   defp deps do
-    []
+    [
+      {:http_fetch, "~> 0.20.0", override: true},
+      {:http_web_socket, "~> 0.20.0", override: true},
+      {:http_event_source, "~> 0.20.0", override: true}
+    ]
   end
 
   defp aliases do

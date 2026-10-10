@@ -4,6 +4,13 @@ defmodule Relayixir.Proxy.WebSocket.PlugTest do
   alias Relayixir.Proxy.WebSocket.Plug, as: WsPlug
   alias Relayixir.Proxy.Upstream
 
+  test "upstream close uses the WebSock stop contract with its code and reason" do
+    state = %{bridge_pid: self()}
+
+    assert WsPlug.handle_info({:bridge_frame, {:close, 1008, "policy"}}, state) ==
+             {:stop, :normal, {1008, "policy"}, state}
+  end
+
   describe "WebSock callback: handle_info EXIT" do
     test "bridge exit with :normal returns stop" do
       bridge_pid = spawn(fn -> :ok end)

@@ -1,159 +1,224 @@
 defmodule Relayixir.Proxy.HttpClient do
   @moduledoc """
-  Mint-based outbound HTTP client for upstream connections.
+  HTTP Fetch outbound requests with raw, acknowledged response streams.
+
+  A connection is a request handle. Fetch owns socket establishment and optional
+  HTTP/1 reuse; Relayixir owns header/body deadlines and downstream consumption.
   """
 
   require Logger
 
-  @doc """
-  Opens a Mint HTTP connection to the upstream.
-  """
-  @spec connect(Relayixir.Proxy.Upstream.t()) :: {:ok, Mint.HTTP.t()} | {:error, term()}
-  def connect(%Relayixir.Proxy.Upstream{} = upstream) do
-    connect(upstream, &Mint.HTTP.connect/4, System.get_env())
+  alias Relayixir.Proxy.{ConnPool, EnvironmentProxy, RequestGuard, Upstream}
+
+  defstruct [:upstream, :options, :promise, :controller, :guard, :upload, :response]
+
+  @type t :: %__MODULE__{}
+
+  @spec connect(Upstream.t(), map()) :: {:ok, t()}
+  def connect(%Upstream{} = upstream, env \\ System.get_env()) do
+    {:ok, %__MODULE__{upstream: upstream, options: connect_options(upstream, env)}}
   end
 
   @doc false
-  @spec connect(Relayixir.Proxy.Upstream.t(), function(), map()) :: {:ok, term()} | {:error, term()}
-  def connect(%Relayixir.Proxy.Upstream{} = upstream, connector, env)
-      when is_function(connector, 4) and is_map(env) do
-    options = connect_options(upstream, env)
-    attempts = if Keyword.has_key?(options, :proxy), do: 3, else: 1
-
-    connect_with_retry(upstream, options, connector, attempts)
-  end
-
-  @doc false
-  @spec connect_options(Relayixir.Proxy.Upstream.t(), map()) :: keyword()
-  def connect_options(%Relayixir.Proxy.Upstream{} = upstream, env \\ System.get_env()) do
-    base_options = [
-      protocols: [:http1],
-      transport_opts: [timeout: upstream.connect_timeout]
-    ]
-
+  @spec connect_options(Upstream.t(), map()) :: keyword()
+  def connect_options(%Upstream{} = upstream, env \\ System.get_env()) do
     proxy_options =
-      case upstream.proxy do
-        :environment ->
-          Relayixir.Proxy.EnvironmentProxy.connect_options(
+      if upstream.proxy == :environment do
+        options =
+          EnvironmentProxy.connect_options(
             upstream.scheme || :http,
             upstream.host,
             upstream.port,
             env
           )
 
-        nil ->
-          []
+        case Keyword.get(options, :proxy) do
+          nil ->
+            []
+
+          {scheme, host, port, _} ->
+            [
+              proxy:
+                {scheme, host, port,
+                 [
+                   headers: Keyword.get(options, :proxy_headers, []),
+                   timeout: upstream.connect_timeout
+                 ]}
+            ]
+        end
+      else
+        []
       end
-      |> add_proxy_timeouts(upstream.connect_timeout)
 
-    Keyword.merge(base_options, proxy_options)
+    [
+      http_version: :http1,
+      error_mode: :structured,
+      request_mode: :proxy,
+      redirect: :manual,
+      decode_body: false,
+      stream_response: true,
+      tls_backend: :ssl,
+      connect_timeout: upstream.connect_timeout,
+      # Allow separate header and body phases; the adapter enforces each deadline.
+      timeout: upstream.connect_timeout + 2 * upstream.request_timeout
+    ] ++ proxy_options ++ ConnPool.options(upstream)
   end
 
-  defp add_proxy_timeouts(options, connect_timeout) do
-    case Keyword.fetch(options, :proxy) do
-      {:ok, {scheme, host, port, proxy_options}} ->
-        proxy_options =
-          Keyword.merge(
-            [transport_opts: [timeout: connect_timeout], tunnel_timeout: connect_timeout],
-            proxy_options
-          )
-
-        Keyword.put(options, :proxy, {scheme, host, port, proxy_options})
-
-      :error ->
-        options
-    end
-  end
-
-  defp connect_with_retry(upstream, options, connector, attempts_left) do
-    result =
-      connector.(upstream.scheme || :http, upstream.host, upstream.port, options)
-
-    case result do
-      {:error, _reason} when attempts_left > 1 ->
-        connect_with_retry(upstream, options, connector, attempts_left - 1)
-
-      result ->
-        result
-    end
-  end
-
-  @doc """
-  Sends an HTTP request on the Mint connection.
-  """
-  @spec send_request(
-          Mint.HTTP.t(),
-          String.t(),
-          String.t(),
-          [{String.t(), String.t()}],
-          binary() | nil | :stream
-        ) ::
-          {:ok, Mint.HTTP.t(), Mint.Types.request_ref()} | {:error, Mint.HTTP.t(), term()}
+  @spec send_request(t(), String.t(), String.t(), list(), binary() | nil | :stream) ::
+          {:ok, t(), reference()} | {:error, t(), term()}
   def send_request(conn, method, path, headers, body \\ nil) do
-    Mint.HTTP.request(conn, method, path, headers, body)
+    {:ok, guard, controller} = RequestGuard.start(self(), Keyword.fetch!(conn.options, :timeout))
+    {body, upload} = request_body(body)
+
+    options =
+      conn.options ++
+        [method: method, headers: headers, body: body, signal: controller] ++
+        if(upload, do: [duplex: "half"], else: [])
+
+    promise = HTTP.fetch(request_url(conn.upstream, path), options)
+    if upload, do: RequestGuard.track_upload(guard, upload)
+    conn = %{conn | promise: promise, controller: controller, guard: guard, upload: upload}
+    {:ok, conn, promise.task.ref}
   end
 
-  @doc """
-  Receives the full response from Mint by looping on messages.
-
-  Returns `{:ok, conn, parts}` where parts is a list of
-  `{:status, status}`, `{:headers, headers}`, `{:data, chunk}`, and `:done`.
-
-  Returns `{:error, reason}` on timeout or transport error.
-  """
-  @spec recv_response(Mint.HTTP.t(), non_neg_integer(), non_neg_integer() | nil) ::
-          {:ok, Mint.HTTP.t(), list()} | {:error, term()}
-  def recv_response(conn, timeout, first_byte_timeout \\ nil) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-
-    first_byte_deadline =
-      if first_byte_timeout,
-        do: System.monotonic_time(:millisecond) + first_byte_timeout,
-        else: nil
-
-    recv_loop(conn, deadline, first_byte_deadline, [])
+  defp request_body(:stream) do
+    {:ok, stream} = HTTP.Stream.start_link(0)
+    {stream, stream}
   end
 
-  @doc """
-  Receives upstream response until both status and headers are available.
+  defp request_body(body), do: {body, nil}
 
-  Returns `{:ok, conn, status, headers, data_chunks, :done}` when the full response
-  arrived in the same batch as the headers (common for small responses), or
-  `{:ok, conn, status, headers, pending_chunks, :more}` when body chunks are still
-  in flight and the caller must call `recv_body/3` or `recv_body_streaming/4`.
+  defp request_url(upstream, path) do
+    [path | query] = String.split(path, "?", parts: 2)
+    uri = URI.parse("#{upstream.scheme || :http}:")
 
-  Returns `{:error, reason}` on timeout or transport error.
-  """
-  @spec recv_until_headers(Mint.HTTP.t(), non_neg_integer(), non_neg_integer() | nil) ::
-          {:ok, Mint.HTTP.t(), non_neg_integer(), list(), [binary()], :done | :more}
-          | {:error, term()}
+    %{
+      uri
+      | host: upstream.host,
+        port: upstream.port,
+        path: path,
+        query: List.first(query)
+    }
+  end
+
+  @spec stream_body_chunk(t(), reference(), binary() | :eof) ::
+          {:ok, t()} | {:halt, t()} | {:error, t(), term()}
+  def stream_body_chunk(%{upload: upload} = conn, _ref, :eof) do
+    :ok = HTTP.Stream.finish(upload)
+    {:ok, conn}
+  end
+
+  def stream_body_chunk(%{upload: upload} = conn, _ref, chunk) do
+    case HTTP.Stream.chunk(upload, chunk, conn.upstream.request_timeout) do
+      :ok ->
+        {:ok, conn}
+
+      {:error, _reason} ->
+        case await_response(conn, conn.upstream.request_timeout) do
+          {:ok, conn} -> {:halt, conn}
+          {:error, reason} -> {:error, conn, reason}
+        end
+    end
+  end
+
+  @spec recv_until_headers(t(), non_neg_integer(), non_neg_integer() | nil) ::
+          {:ok, t(), non_neg_integer(), list(), [binary()], :done | :more} | {:error, term()}
   def recv_until_headers(conn, timeout, first_byte_timeout \\ nil) do
-    deadline = System.monotonic_time(:millisecond) + timeout
+    with {:ok, conn} <- await_response(conn, min(timeout, first_byte_timeout || timeout)) do
+      response = conn.response
 
-    first_byte_deadline =
-      if first_byte_timeout,
-        do: System.monotonic_time(:millisecond) + first_byte_timeout,
-        else: nil
+      headers =
+        Enum.map(HTTP.Headers.to_list(response.headers), fn {name, value} ->
+          {String.downcase(name), value}
+        end)
 
-    recv_headers_loop(conn, deadline, first_byte_deadline, nil, nil, [])
+      if is_pid(response.body) do
+        {:ok, conn, response.status, headers, [], :more}
+      else
+        chunks = if response.body in [nil, ""], do: [], else: [response.body]
+        {:ok, conn, response.status, headers, chunks, :done}
+      end
+    end
   end
 
-  @doc """
-  Streams response body chunks to a callback after headers have been received.
+  defp await_response(%{response: %HTTP.Response{}} = conn, _timeout), do: {:ok, conn}
 
-  Calls `on_chunk.(binary())` for each data chunk. Returns `{:ok, conn}` when the
-  response is complete, `{:stop, conn}` if `on_chunk` returns `:stop`,
-  or `{:error, reason}` on timeout or transport error.
-  """
-  @spec recv_body_streaming(
-          Mint.HTTP.t(),
-          non_neg_integer(),
-          [binary()],
-          (binary() -> :ok | :stop)
-        ) ::
-          {:ok, Mint.HTTP.t()} | {:stop, Mint.HTTP.t()} | {:error, term()}
+  defp await_response(conn, timeout) do
+    case Task.yield(conn.promise.task, timeout) do
+      {:ok, %HTTP.Response{} = response} ->
+        {:ok, %{conn | response: response}}
+
+      {:ok, {:error, reason}} ->
+        close(conn)
+        {:error, map_reason(reason)}
+
+      {:exit, _reason} ->
+        close(conn)
+        {:error, :upstream_invalid_response}
+
+      nil ->
+        close(conn)
+        {:error, :upstream_timeout}
+    end
+  end
+
+  @spec recv_response(t(), non_neg_integer(), non_neg_integer() | nil) ::
+          {:ok, t(), list()} | {:error, term()}
+  def recv_response(conn, timeout, first_byte_timeout \\ nil) do
+    with {:ok, conn, status, headers, chunks, completeness} <-
+           recv_until_headers(conn, timeout, first_byte_timeout),
+         {:ok, conn, chunks} <- collect_response(conn, timeout, chunks, completeness) do
+      {:ok, conn,
+       [{:status, status}, {:headers, headers}] ++ Enum.map(chunks, &{:data, &1}) ++ [:done]}
+    end
+  end
+
+  defp collect_response(conn, _timeout, chunks, :done), do: {:ok, conn, chunks}
+  defp collect_response(conn, timeout, chunks, :more), do: recv_body(conn, timeout, chunks)
+
+  @spec recv_body(t(), non_neg_integer(), [binary()], non_neg_integer() | nil) ::
+          {:ok, t(), [binary()]} | {:error, term()}
+  def recv_body(conn, timeout, pending_chunks \\ [], max_size \\ nil) do
+    initial_size = Enum.reduce(pending_chunks, 0, &(byte_size(&1) + &2))
+
+    callback = fn chunk, {chunks, size} ->
+      size = size + byte_size(chunk)
+
+      if max_size && size > max_size,
+        do: {:halt, :response_too_large},
+        else: {:cont, {[chunk | chunks], size}}
+    end
+
+    if max_size && initial_size > max_size do
+      close(conn)
+      {:error, :response_too_large}
+    else
+      case consume_stream(conn, timeout, callback, {Enum.reverse(pending_chunks), initial_size}) do
+        {:ok, {chunks, _size}} ->
+          {:ok, conn, Enum.reverse(chunks)}
+
+        {:halt, reason} ->
+          close(conn)
+          {:error, reason}
+
+        {:error, reason} ->
+          close(conn)
+          {:error, reason}
+      end
+    end
+  end
+
+  @spec recv_body_streaming(t(), non_neg_integer(), [binary()], (binary() -> :ok | :stop)) ::
+          {:ok, t()} | {:stop, t()} | {:error, term()}
   def recv_body_streaming(conn, timeout, pending_chunks, on_chunk) do
-    result =
+    callback = fn chunk, :ok ->
+      case on_chunk.(chunk) do
+        :ok -> {:cont, :ok}
+        :stop -> {:halt, :stop}
+      end
+    end
+
+    pending =
       Enum.reduce_while(pending_chunks, :ok, fn chunk, :ok ->
         case on_chunk.(chunk) do
           :ok -> {:cont, :ok}
@@ -161,286 +226,134 @@ defmodule Relayixir.Proxy.HttpClient do
         end
       end)
 
+    result =
+      if pending == :stop, do: {:halt, :stop}, else: consume_stream(conn, timeout, callback, :ok)
+
     case result do
-      :stop ->
+      {:ok, :ok} ->
+        {:ok, conn}
+
+      {:halt, :stop} ->
         {:stop, conn}
 
-      :ok ->
-        deadline = System.monotonic_time(:millisecond) + timeout
-        recv_body_loop(conn, deadline, on_chunk)
+      {:error, reason} ->
+        close(conn)
+        {:error, reason}
+    end
+  end
+
+  defp consume_stream(conn, timeout, callback, acc) do
+    stream = conn.response.body
+    monitor = Process.monitor(stream)
+    send(stream, {:read_chunk, self(), :ack})
+
+    try do
+      read_stream(stream, monitor, System.monotonic_time(:millisecond) + timeout, callback, acc)
+    after
+      Process.demonitor(monitor, [:flush])
+    end
+  end
+
+  defp read_stream(stream, monitor, deadline, callback, acc) do
+    receive do
+      {:stream_chunk, ^stream, chunk, ref} ->
+        case callback.(chunk, acc) do
+          {:cont, acc} ->
+            send(stream, {:stream_chunk_ack, ref})
+            read_stream(stream, monitor, deadline, callback, acc)
+
+          {:halt, reason} ->
+            {:halt, reason}
+        end
+
+      {:stream_end, ^stream} ->
+        {:ok, acc}
+
+      {:stream_trailers, ^stream, _headers} ->
+        read_stream(stream, monitor, deadline, callback, acc)
+
+      {:stream_error, ^stream, reason} ->
+        {:error, map_reason(reason)}
+
+      {:DOWN, ^monitor, :process, ^stream, _reason} ->
+        {:error, :upstream_invalid_response}
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) -> {:error, :upstream_timeout}
     end
   end
 
   @doc """
-  Streams one chunk (or `:eof`) of a request body on an open streaming request.
-
-  Call after `send_request/5` with `body: :stream`.
-  Returns `{:ok, conn}` or `{:error, conn, reason}`.
+  Releases a fully consumed request, returning Fetch's cleanup confirmation result.
+  Fetch retains eligible HTTP/1 sockets. Explicit proxies return unsupported completion.
   """
-  @spec stream_body_chunk(Mint.HTTP.t(), Mint.Types.request_ref(), binary() | :eof) ::
-          {:ok, Mint.HTTP.t()} | {:error, Mint.HTTP.t(), term()}
-  def stream_body_chunk(conn, request_ref, chunk) do
-    Mint.HTTP.stream_request_body(conn, request_ref, chunk)
+  @spec release(t()) :: HTTP.RequestCompletion.result()
+  def release(conn) do
+    result =
+      HTTP.RequestCompletion.await(
+        HTTP.Promise.completion(conn.promise),
+        conn.upstream.connect_timeout
+      )
+
+    finish_cleanup(conn, result)
   end
 
-  @doc """
-  Closes the Mint connection.
-  """
-  @spec close(Mint.HTTP.t()) :: {:ok, Mint.HTTP.t()}
-  def close(conn) do
-    Mint.HTTP.close(conn)
-  end
+  @spec close(t()) :: {:ok, t()}
+  def close(%__MODULE__{} = conn) do
+    if conn.controller && Process.alive?(conn.controller),
+      do: HTTP.AbortController.abort(conn.controller)
 
-  @doc """
-  Collects remaining body chunks into a list after headers have been received.
-
-  `pending_chunks` holds any data already received during the headers phase.
-  Returns `{:ok, conn, [binary()]}` or `{:error, reason}`.
-  """
-  @spec recv_body(Mint.HTTP.t(), non_neg_integer(), [binary()], non_neg_integer() | nil) ::
-          {:ok, Mint.HTTP.t(), [binary()]} | {:error, term()}
-  def recv_body(conn, timeout, pending_chunks \\ [], max_size \\ nil) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    initial_acc = Enum.reverse(pending_chunks)
-    initial_size = initial_acc |> Enum.map(&byte_size/1) |> Enum.sum()
-    recv_body_collect(conn, deadline, initial_acc, initial_size, max_size)
-  end
-
-  defp recv_body_collect(conn, deadline, acc, acc_size, max_size) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    if remaining <= 0 do
-      Mint.HTTP.close(conn)
-      {:error, :upstream_timeout}
-    else
-      receive do
-        message ->
-          case Mint.HTTP.stream(conn, message) do
-            :unknown ->
-              recv_body_collect(conn, deadline, acc, acc_size, max_size)
-
-            {:ok, conn, responses} ->
-              case collect_body_batch_sized(responses, acc, 0) do
-                {:done, chunks, _batch_size} ->
-                  {:ok, conn, Enum.reverse(chunks)}
-
-                {:continue, new_acc, batch_size} ->
-                  new_size = acc_size + batch_size
-
-                  if max_size != nil && new_size > max_size do
-                    Mint.HTTP.close(conn)
-                    {:error, :response_too_large}
-                  else
-                    recv_body_collect(conn, deadline, new_acc, new_size, max_size)
-                  end
-              end
-
-            {:error, conn, _reason, _} ->
-              Mint.HTTP.close(conn)
-              {:error, :upstream_invalid_response}
-          end
-      after
-        remaining ->
-          Mint.HTTP.close(conn)
-          {:error, :upstream_timeout}
-      end
-    end
-  end
-
-  defp collect_body_batch_sized([], acc, size), do: {:continue, acc, size}
-
-  defp collect_body_batch_sized([{:data, _ref, d} | rest], acc, size) do
-    collect_body_batch_sized(rest, [d | acc], size + byte_size(d))
-  end
-
-  defp collect_body_batch_sized([{:done, _ref} | _], acc, size), do: {:done, acc, size}
-
-  defp collect_body_batch_sized([_ | rest], acc, size),
-    do: collect_body_batch_sized(rest, acc, size)
-
-  defp recv_headers_loop(conn, deadline, fbd, status, headers, pending) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    fb_remaining =
-      if fbd && status == nil,
-        do: fbd - System.monotonic_time(:millisecond),
-        else: nil
-
-    effective = if fb_remaining, do: min(remaining, fb_remaining), else: remaining
-
-    if effective <= 0 do
-      Mint.HTTP.close(conn)
-      {:error, :upstream_timeout}
-    else
-      receive do
-        message ->
-          case Mint.HTTP.stream(conn, message) do
-            :unknown ->
-              recv_headers_loop(conn, deadline, fbd, status, headers, pending)
-
-            {:ok, conn, responses} ->
-              {new_status, new_headers, new_pending, done?} =
-                collect_header_batch(responses, status, headers, pending)
-
-              cond do
-                done? ->
-                  {:ok, conn, new_status || 200, new_headers || [], Enum.reverse(new_pending),
-                   :done}
-
-                new_status != nil && new_headers != nil ->
-                  {:ok, conn, new_status, new_headers, Enum.reverse(new_pending), :more}
-
-                true ->
-                  recv_headers_loop(conn, deadline, fbd, new_status, new_headers, new_pending)
-              end
-
-            {:error, conn, reason, _} ->
-              Mint.HTTP.close(conn)
-              Logger.error("Mint stream error: #{inspect(reason)}")
-              {:error, :upstream_invalid_response}
-          end
-      after
-        effective ->
-          Mint.HTTP.close(conn)
-          {:error, :upstream_timeout}
-      end
-    end
-  end
-
-  defp collect_header_batch([], status, headers, pending), do: {status, headers, pending, false}
-
-  defp collect_header_batch([{:status, _ref, s} | rest], _, headers, pending) do
-    collect_header_batch(rest, s, headers, pending)
-  end
-
-  defp collect_header_batch([{:headers, _ref, h} | rest], status, _, pending) do
-    collect_header_batch(rest, status, h, pending)
-  end
-
-  defp collect_header_batch([{:data, _ref, d} | rest], status, headers, pending) do
-    collect_header_batch(rest, status, headers, [d | pending])
-  end
-
-  defp collect_header_batch([{:done, _ref} | rest], status, headers, pending) do
-    {new_status, new_headers, new_pending, _} =
-      collect_header_batch(rest, status, headers, pending)
-
-    {new_status, new_headers, new_pending, true}
-  end
-
-  defp collect_header_batch([_ | rest], status, headers, pending) do
-    collect_header_batch(rest, status, headers, pending)
-  end
-
-  defp recv_body_loop(conn, deadline, on_chunk) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    if remaining <= 0 do
-      Mint.HTTP.close(conn)
-      {:error, :upstream_timeout}
-    else
-      receive do
-        message ->
-          case Mint.HTTP.stream(conn, message) do
-            :unknown ->
-              recv_body_loop(conn, deadline, on_chunk)
-
-            {:ok, conn, responses} ->
-              case dispatch_body_batch(responses, on_chunk) do
-                :done -> {:ok, conn}
-                :stop -> {:stop, conn}
-                :continue -> recv_body_loop(conn, deadline, on_chunk)
-              end
-
-            {:error, conn, reason, _} ->
-              Mint.HTTP.close(conn)
-              Logger.error("Mint stream error: #{inspect(reason)}")
-              {:error, :upstream_invalid_response}
-          end
-      after
-        remaining ->
-          Mint.HTTP.close(conn)
-          {:error, :upstream_timeout}
-      end
-    end
-  end
-
-  defp dispatch_body_batch([], _on_chunk), do: :continue
-
-  defp dispatch_body_batch([{:data, _ref, data} | rest], on_chunk) do
-    case on_chunk.(data) do
-      :ok -> dispatch_body_batch(rest, on_chunk)
-      :stop -> :stop
-    end
-  end
-
-  defp dispatch_body_batch([{:done, _ref} | _], _on_chunk), do: :done
-  defp dispatch_body_batch([_ | rest], on_chunk), do: dispatch_body_batch(rest, on_chunk)
-
-  defp recv_loop(conn, deadline, first_byte_deadline, acc) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    first_byte_remaining =
-      if first_byte_deadline && acc == [] do
-        first_byte_deadline - System.monotonic_time(:millisecond)
+    result =
+      if conn.promise do
+        completion = HTTP.Promise.completion(conn.promise)
+        result = HTTP.RequestCompletion.abort_and_await(completion, conn.upstream.connect_timeout)
+        _ = Task.shutdown(conn.promise.task, :brutal_kill)
+        result
       else
-        nil
+        :ok
       end
 
-    effective_remaining =
-      case first_byte_remaining do
-        nil -> remaining
-        fbr -> min(remaining, fbr)
-      end
-
-    if effective_remaining <= 0 do
-      Mint.HTTP.close(conn)
-      {:error, :upstream_timeout}
-    else
-      receive do
-        message ->
-          case Mint.HTTP.stream(conn, message) do
-            :unknown ->
-              recv_loop(conn, deadline, first_byte_deadline, acc)
-
-            {:ok, conn, responses} ->
-              {new_acc, done?} = process_responses(responses, acc)
-
-              if done? do
-                {:ok, conn, Enum.reverse(new_acc)}
-              else
-                recv_loop(conn, deadline, first_byte_deadline, new_acc)
-              end
-
-            {:error, conn, reason, _responses} ->
-              Mint.HTTP.close(conn)
-              Logger.error("Mint stream error: #{inspect(reason)}")
-              {:error, :upstream_invalid_response}
-          end
-      after
-        effective_remaining ->
-          Mint.HTTP.close(conn)
-          {:error, :upstream_timeout}
-      end
-    end
+    stop_stream(conn.upload)
+    if conn.response && is_pid(conn.response.body), do: stop_stream(conn.response.body)
+    finish_cleanup(conn, result)
+    {:ok, conn}
   end
 
-  defp process_responses(responses, acc) do
-    Enum.reduce(responses, {acc, false}, fn
-      {:status, _ref, status}, {parts, _done} ->
-        {[{:status, status} | parts], false}
-
-      {:headers, _ref, headers}, {parts, _done} ->
-        {[{:headers, headers} | parts], false}
-
-      {:data, _ref, data}, {parts, _done} ->
-        {[{:data, data} | parts], false}
-
-      {:done, _ref}, {parts, _done} ->
-        {[:done | parts], true}
-
-      {:error, _ref, reason}, {parts, _done} ->
-        {[{:error, reason} | parts], true}
-    end)
+  defp finish_cleanup(conn, :ok) do
+    RequestGuard.release(conn.guard)
+    :ok
   end
+
+  defp finish_cleanup(conn, {:error, {:unsupported_completion, :proxy}} = result) do
+    # credo:disable-for-next-line Credo.Check.Design.TagTODO
+    # TODO(upstream): gsmlg-dev/http_fetch#82 - cleanup confirmation for explicit proxies.
+    # WORKAROUND(upstream): gsmlg-dev/http_fetch#82 - public abort plus local teardown only.
+    RequestGuard.release(conn.guard)
+    result
+  end
+
+  defp finish_cleanup(_conn, {:error, reason} = result) do
+    Logger.warning("Upstream request cleanup not confirmed: #{inspect(reason)}")
+    result
+  end
+
+  defp stop_stream(nil), do: :ok
+
+  defp stop_stream(stream) do
+    Process.unlink(stream)
+    if Process.alive?(stream), do: Process.exit(stream, :shutdown)
+    :ok
+  end
+
+  defp map_reason(%HTTP.RequestError{reason: reason}), do: map_reason(reason)
+
+  defp map_reason(reason)
+       when reason in [:timeout, :request_timeout, :connect_timeout, :proxy_tunnel_timeout],
+       do: :upstream_timeout
+
+  defp map_reason(reason) when reason in [:econnrefused, :nxdomain, :enetunreach, :ehostunreach],
+    do: :upstream_connect_failed
+
+  defp map_reason({:proxy_connect_status, _}), do: :upstream_connect_failed
+  defp map_reason({:tls_alert, _}), do: :upstream_connect_failed
+  defp map_reason(_reason), do: :upstream_invalid_response
 end

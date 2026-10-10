@@ -10,8 +10,8 @@ defmodule Relayixir.Telemetry.Events do
     [:relayixir, :http, :request, :start],
     [:relayixir, :http, :request, :stop],
     [:relayixir, :http, :request, :exception],
-    [:relayixir, :http, :upstream, :connect, :start],
-    [:relayixir, :http, :upstream, :connect, :stop],
+    [:relayixir, :http, :upstream, :prepare, :start],
+    [:relayixir, :http, :upstream, :prepare, :stop],
     [:relayixir, :http, :downstream, :disconnect],
     [:relayixir, :websocket, :session, :start],
     [:relayixir, :websocket, :session, :stop],
@@ -73,21 +73,21 @@ defmodule Relayixir.Telemetry.Events do
   end
 
   def handle_event(
-        [:relayixir, :http, :upstream, :connect, :start],
+        [:relayixir, :http, :upstream, :prepare, :start],
         _measurements,
         metadata,
         _config
       ) do
-    Logger.debug("Upstream connection starting", upstream: metadata[:upstream])
+    Logger.debug("Upstream request preparation starting", upstream: metadata[:upstream])
   end
 
   def handle_event(
-        [:relayixir, :http, :upstream, :connect, :stop],
+        [:relayixir, :http, :upstream, :prepare, :stop],
         _measurements,
         metadata,
         _config
       ) do
-    Logger.debug("Upstream connection completed",
+    Logger.debug("Upstream request preparation completed",
       upstream: metadata[:upstream],
       result: metadata[:result]
     )

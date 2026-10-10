@@ -64,6 +64,10 @@ defmodule Relayixir.Proxy.WebSocket.Plug do
   end
 
   @impl WebSock
+  def handle_info({:bridge_frame, {:close, code, reason}}, state) do
+    {:stop, :normal, {code, reason}, state}
+  end
+
   def handle_info({:bridge_frame, frame}, state) do
     {:push, [frame], state}
   end

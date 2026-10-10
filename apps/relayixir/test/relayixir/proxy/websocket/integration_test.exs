@@ -101,6 +101,17 @@ defmodule Relayixir.Proxy.WebSocket.IntegrationTest do
     Mint.HTTP.close(conn)
   end
 
+  test "upstream-initiated close reaches the downstream with its reason", %{proxy_port: port} do
+    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", port)
+    {:ok, conn, ref} = Mint.WebSocket.upgrade(:ws, conn, "/ws", [])
+    {:ok, conn, websocket} = await_ws_upgrade(conn, ref)
+    {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:text, "close"})
+    {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
+
+    assert {:ok, _conn, _websocket, [{:close, 1000, "requested close"}]} =
+             await_ws_frames(conn, websocket)
+  end
+
   test "non-WebSocket request to WS route returns normal HTTP response", %{
     proxy_port: proxy_port
   } do

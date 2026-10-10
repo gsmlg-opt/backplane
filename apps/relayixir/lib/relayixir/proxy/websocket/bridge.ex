@@ -1,7 +1,7 @@
 defmodule Relayixir.Proxy.WebSocket.Bridge do
   @moduledoc """
   Supervised GenServer managing a proxied WebSocket session.
-  Relays frames bidirectionally between downstream (Bandit handler) and upstream (Mint.WebSocket).
+  Relays frames bidirectionally between downstream (Bandit handler) and upstream (HTTP.WebSocket).
   Implements explicit state machine: :connecting -> :open -> :closing -> :closed.
   """
 
@@ -19,8 +19,7 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
     :downstream_pid,
     :downstream_monitor,
     :upstream_conn,
-    :upstream_ref,
-    :upstream_websocket,
+    :upstream_monitor,
     :started_at,
     :last_activity_at,
     :close_timer,
@@ -115,7 +114,7 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
     )
 
     case UpstreamClient.connect(state.upstream, state.ws_headers) do
-      {:ok, conn, ref, websocket} ->
+      {:ok, socket} ->
         Logger.info("WebSocket bridge #{state.session_id}: upstream connected")
 
         :telemetry.execute(
@@ -130,9 +129,8 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
 
         new_state = %{
           state
-          | upstream_conn: conn,
-            upstream_ref: ref,
-            upstream_websocket: websocket,
+          | upstream_conn: socket,
+            upstream_monitor: Process.monitor(socket.pid),
             status: :open,
             last_activity_at: System.monotonic_time(:millisecond),
             pending_frames: []
@@ -251,19 +249,24 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
     stop_with_reason(state, :close_timeout)
   end
 
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{upstream_monitor: ref} = state
+      ) do
+    emit_exception(state, {:upstream_error, reason})
+    send_to_downstream(state, Close.internal_error_frame())
+    stop_with_reason(state, {:upstream_error, reason})
+  end
+
   def handle_info(message, %{status: :open} = state) do
-    case UpstreamClient.decode_message(state.upstream_conn, state.upstream_websocket, message) do
-      {:ok, conn, websocket, frames} ->
-        new_state = %{
-          state
-          | upstream_conn: conn,
-            upstream_websocket: websocket,
-            last_activity_at: System.monotonic_time(:millisecond)
-        }
+    case UpstreamClient.decode_message(state.upstream_conn, message) do
+      {:ok, frames, delivery_ref} ->
+        new_state = %{state | last_activity_at: System.monotonic_time(:millisecond)}
+        result = handle_upstream_frames(frames, new_state)
+        acknowledge_upstream(state, delivery_ref)
+        result
 
-        handle_upstream_frames(frames, new_state)
-
-      {:error, _conn, _websocket, reason} ->
+      {:error, reason} ->
         Logger.error(
           "WebSocket bridge #{state.session_id}: upstream decode error: #{inspect(reason)}"
         )
@@ -275,20 +278,19 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
   end
 
   def handle_info(message, %{status: :closing} = state) do
-    case UpstreamClient.decode_message(state.upstream_conn, state.upstream_websocket, message) do
-      {:ok, conn, websocket, frames} ->
-        new_state = %{state | upstream_conn: conn, upstream_websocket: websocket}
-
+    case UpstreamClient.decode_message(state.upstream_conn, message) do
+      {:ok, frames, delivery_ref} ->
+        acknowledge_upstream(state, delivery_ref)
         has_close? = Enum.any?(frames, fn f -> f.type == :close end)
 
         if has_close? do
           if state.close_timer, do: Process.cancel_timer(state.close_timer)
-          stop_with_reason(new_state, :normal_close)
+          stop_with_reason(state, :normal_close)
         else
-          {:noreply, new_state}
+          {:noreply, state}
         end
 
-      {:error, _conn, _websocket, _reason} ->
+      {:error, _reason} ->
         stop_with_reason(state, :upstream_error_during_close)
     end
   end
@@ -384,16 +386,11 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
   end
 
   defp send_to_upstream(state, %Frame{} = frame) do
-    case UpstreamClient.send_frame(
-           state.upstream_conn,
-           state.upstream_websocket,
-           state.upstream_ref,
-           frame
-         ) do
-      {:ok, conn, websocket} ->
-        {:ok, %{state | upstream_conn: conn, upstream_websocket: websocket}}
+    case UpstreamClient.send_frame(state.upstream_conn, frame) do
+      :ok ->
+        {:ok, state}
 
-      {:error, _conn, _websocket, reason} ->
+      {:error, reason} ->
         Logger.error(
           "WebSocket bridge #{state.session_id}: upstream send failed: #{inspect(reason)}"
         )
@@ -407,10 +404,17 @@ defmodule Relayixir.Proxy.WebSocket.Bridge do
     send(state.downstream_pid, {:bridge_frame, websock_frame})
   end
 
+  defp acknowledge_upstream(_state, nil), do: :ok
+
+  defp acknowledge_upstream(state, ref) do
+    HTTP.WebSocket.acknowledge(state.upstream_conn, ref)
+  end
+
   defp cleanup_upstream(%{upstream_conn: nil}), do: :ok
 
-  defp cleanup_upstream(%{upstream_conn: conn}) do
-    UpstreamClient.close(conn)
+  defp cleanup_upstream(%{upstream_conn: socket, upstream_monitor: monitor}) do
+    if monitor, do: Process.demonitor(monitor, [:flush])
+    UpstreamClient.close(socket)
   rescue
     _ -> :ok
   end
