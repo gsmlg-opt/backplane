@@ -117,6 +117,9 @@ jobs:
       - name: Prepare test database
         run: mix ecto.setup
 
+      - name: Compile selected app
+        run: mix "do" --app ${{ matrix.app }} cmd mix compile
+
       - name: Run tests
         run: |
           if [ "${{ matrix.app }}" = "backplane_memory" ]; then
