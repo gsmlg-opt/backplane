@@ -1,18 +1,47 @@
 <% current_path = assigns[:current_path] || "/dashboard/overview" %>
 <% left_nav_items = Backplane.Admin.Layouts.left_nav_items(current_path) %>
 <% left_nav_heading = Backplane.Admin.Layouts.left_nav_heading(current_path) %>
+<% build_info = Backplane.Admin.BuildInfo.current() %>
 
 <div class="min-h-full bg-surface text-on-surface">
   <header class="appbar appbar-sticky appbar-primary">
-    <a href={Backplane.WebOrigins.api_url("/")} class="appbar-brand no-underline">
-      <img
-        src={~p"/images/backplane-logo.png"}
-        alt=""
-        class="h-10 w-10 aspect-square shrink-0 rounded-md object-contain"
-        aria-hidden="true"
-      />
-      <span class="appbar-title">Backplane</span>
-    </a>
+    <div class="flex shrink-0 items-center gap-3">
+      <a href={Backplane.WebOrigins.api_url("/")} class="appbar-brand no-underline">
+        <img
+          src={~p"/images/backplane-logo.png"}
+          alt=""
+          class="h-10 w-10 aspect-square shrink-0 rounded-md object-contain"
+          aria-hidden="true"
+        />
+        <span class="appbar-title">Backplane</span>
+      </a>
+      <.dm_tooltip
+        id="appbar-version"
+        content={Backplane.Admin.BuildInfo.tooltip(build_info)}
+        color="secondary"
+        position="bottom"
+        class="whitespace-pre-line text-left max-w-[calc(100vw-2rem)] break-words"
+        :let={trigger_attrs}
+      >
+        <button
+          id="appbar-version-trigger"
+          type="button"
+          class="cursor-help rounded-full"
+          aria-label="Version details"
+          {trigger_attrs}
+        >
+          <.dm_badge
+            id="appbar-version-badge"
+            variant="secondary"
+            size="lg"
+            pill
+            class="whitespace-nowrap font-medium"
+          >
+            {Backplane.Admin.BuildInfo.label(build_info)}
+          </.dm_badge>
+        </button>
+      </.dm_tooltip>
+    </div>
 
     <nav class="appbar-actions admin-top-nav" aria-label="Main navigation">
       <.link
