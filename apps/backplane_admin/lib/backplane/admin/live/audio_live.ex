@@ -26,6 +26,8 @@ defmodule Backplane.Admin.AudioLive do
          ),
        setup_error: nil,
        readiness: nil,
+       readiness_checking?: false,
+       readiness_error: nil,
        tts_result: nil,
        asr_result: nil,
        preview_audio: nil,
@@ -58,10 +60,16 @@ defmodule Backplane.Admin.AudioLive do
     {:noreply, load(socket)}
   end
 
+  def handle_event("check_readiness", _, %{assigns: %{readiness_checking?: true}} = socket),
+    do: {:noreply, socket}
+
   def handle_event("check_readiness", _, socket) do
-    result = Capabilities.probe()
     Audit.record("audio.readiness.requested", "audio_config")
-    {:noreply, socket |> load() |> assign(readiness: result)}
+
+    {:noreply,
+     socket
+     |> assign(readiness_checking?: true, readiness_error: nil)
+     |> start_async(:check_readiness, &readiness_probe/0)}
   end
 
   def handle_event("save_preset", %{"setup" => params}, socket) do
@@ -222,6 +230,22 @@ defmodule Backplane.Admin.AudioLive do
              |> assign(asr_result: "Complete one upload before running transcription")}
         end
     end
+  end
+
+  @impl true
+  def handle_async(:check_readiness, {:ok, result}, socket) do
+    {:noreply,
+     socket
+     |> load()
+     |> assign(readiness: result, readiness_checking?: false, readiness_error: nil)}
+  end
+
+  def handle_async(:check_readiness, {:exit, _reason}, socket) do
+    {:noreply,
+     assign(socket,
+       readiness_checking?: false,
+       readiness_error: "Readiness check failed. Try again."
+     )}
   end
 
   @impl true
@@ -498,6 +522,10 @@ defmodule Backplane.Admin.AudioLive do
     )
   end
 
+  defp readiness_probe do
+    Application.get_env(:backplane_admin, :audio_readiness_probe, &Capabilities.probe/0).()
+  end
+
   defp eligible_credentials do
     Credentials.list()
     |> Enum.filter(
@@ -537,7 +565,8 @@ defmodule Backplane.Admin.AudioLive do
       </.dm_card>
       <.dm_card variant="bordered"><:title>Readiness</:title>
         <p>Run a local codec, ffprobe, FFmpeg, sandbox and temporary storage check. No provider request is made.</p>
-        <.dm_btn id="check-audio-readiness" phx-click="check_readiness">Check readiness</.dm_btn>
+        <.dm_btn id="check-audio-readiness" phx-click="check_readiness" disabled={@readiness_checking?}>{if @readiness_checking?, do: "Checking readiness...", else: "Check readiness"}</.dm_btn>
+        <p :if={@readiness_error} id="audio-readiness-error" class="text-error">{@readiness_error}</p>
         <div :if={@readiness} id="audio-readiness">
           <p id="audio-policy-readiness">Policy: {if @policy_valid, do: "valid", else: "invalid"}</p>
           <p>{if @readiness.ready?, do: "Media ready", else: "Media unavailable"} · sandbox: {@readiness.sandbox}</p>

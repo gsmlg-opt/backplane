@@ -124,6 +124,54 @@ defmodule Backplane.Admin.AudioLiveTest do
     assert Backplane.Admin.Audit.list() == []
   end
 
+  test "readiness checking disables duplicate requests and renders the completed result", %{
+    conn: conn
+  } do
+    test_pid = self()
+
+    set_readiness_probe(fn ->
+      send(test_pid, {:readiness_probe_started, self()})
+
+      receive do
+        :complete_readiness_probe -> readiness_result()
+      end
+    end)
+
+    {:ok, view, _html} = live(conn, "/llama/audio")
+    html = render_click(element(view, "#check-audio-readiness"))
+
+    assert html =~ "Checking readiness..."
+    assert has_element?(view, "#check-audio-readiness[disabled]", "Checking readiness...")
+    assert_receive {:readiness_probe_started, task}
+
+    render_hook(view, "check_readiness", %{})
+    refute_receive {:readiness_probe_started, _}, 50
+    assert Enum.map(Backplane.Admin.Audit.list(), & &1.action) == ["audio.readiness.requested"]
+
+    send(task, :complete_readiness_probe)
+
+    eventually(fn -> not :sys.get_state(view.pid).socket.assigns.readiness_checking? end)
+
+    html = render(view)
+    assert html =~ "Media ready"
+    assert html =~ "mp3: ready"
+    assert has_element?(view, "#check-audio-readiness", "Check readiness")
+    refute has_element?(view, "#check-audio-readiness[disabled]")
+  end
+
+  test "readiness task failures re-enable checking with a generic error", %{conn: conn} do
+    set_readiness_probe(fn -> exit(:probe_failed) end)
+    {:ok, view, _html} = live(conn, "/llama/audio")
+
+    assert render_click(element(view, "#check-audio-readiness")) =~ "Checking readiness..."
+
+    eventually(fn -> not :sys.get_state(view.pid).socket.assigns.readiness_checking? end)
+
+    assert has_element?(view, "#audio-readiness-error", "Readiness check failed. Try again.")
+    assert has_element?(view, "#check-audio-readiness", "Check readiness")
+    refute has_element?(view, "#check-audio-readiness[disabled]")
+  end
+
   test "credential and region setup provisions routes without billing input or manual settings",
        %{
          conn: conn
@@ -466,19 +514,20 @@ defmodule Backplane.Admin.AudioLiveTest do
   test "real local readiness checks codecs and rejects disabled or missing-key bindings", %{
     conn: conn
   } do
+    set_readiness_probe(&readiness_result/0)
     {provider, model} = model_fixture()
     {:ok, binding} = Binding.create(Map.put(binding_params(provider, model), :capabilities, %{}))
     {:ok, view, _} = live(conn, "/llama/audio")
-    html = render_click(element(view, "#check-audio-readiness"))
+    html = check_readiness(view)
     assert html =~ "Media ready"
     for format <- ~w(mp3 opus aac flac wav pcm), do: assert(html =~ "#{format}: ready")
     assert has_element?(view, "#audio-readiness-#{binding.id}", "speech: valid")
     {:ok, _} = Binding.update(binding, %{enabled: false})
-    render_click(element(view, "#check-audio-readiness"))
+    check_readiness(view)
     assert has_element?(view, "#audio-readiness-#{binding.id}", "speech: invalid")
     {:ok, _} = Binding.update(binding, %{enabled: true})
     Backplane.Repo.update!(Ecto.Changeset.change(Backplane.Repo.reload!(model), enabled: false))
-    render_click(element(view, "#check-audio-readiness"))
+    check_readiness(view)
     assert has_element?(view, "#audio-readiness-#{binding.id}", "speech: invalid")
     Backplane.Repo.update!(Ecto.Changeset.change(Backplane.Repo.reload!(model), enabled: true))
 
@@ -486,7 +535,7 @@ defmodule Backplane.Admin.AudioLiveTest do
       Ecto.Changeset.change(Backplane.Repo.reload!(provider), enabled: false)
     )
 
-    render_click(element(view, "#check-audio-readiness"))
+    check_readiness(view)
     assert has_element?(view, "#audio-readiness-#{binding.id}", "speech: invalid")
 
     Backplane.Repo.update!(
@@ -496,7 +545,7 @@ defmodule Backplane.Admin.AudioLiveTest do
       )
     )
 
-    render_click(element(view, "#check-audio-readiness"))
+    check_readiness(view)
     assert has_element?(view, "#audio-readiness-#{binding.id}", "speech: invalid")
 
     Backplane.Repo.update!(
@@ -506,17 +555,18 @@ defmodule Backplane.Admin.AudioLiveTest do
       )
     )
 
-    render_click(element(view, "#check-audio-readiness"))
+    check_readiness(view)
     assert has_element?(view, "#audio-readiness-#{binding.id}", "speech: invalid")
     :ok = Backplane.Settings.set("llm.audio.policy", %{"upload_bytes" => -1})
-    assert render_click(element(view, "#check-audio-readiness")) =~ "Media unavailable"
+    assert check_readiness(view) =~ "Media unavailable"
     assert has_element?(view, "#audio-policy-readiness", "Policy: invalid")
   end
 
   test "paid TTS preview uses shared Speech and PCM is download-only", %{conn: conn, tmp_dir: dir} do
+    set_readiness_probe(&readiness_result/0)
     {provider, _model, _server} = preview_fixture(dir)
     {:ok, view, _html} = live(conn, "/llama/audio")
-    render_click(element(view, "#check-audio-readiness"))
+    check_readiness(view)
     refute_receive {:provider_request, _, _, _}, 50
     refute has_element?(view, "input[name='tts[ack]']")
 
@@ -909,6 +959,34 @@ defmodule Backplane.Admin.AudioLiveTest do
       billing_label: "payg",
       capabilities: "{}"
     }
+  end
+
+  defp readiness_result do
+    ready? = Config.policy_valid?()
+
+    %{
+      ready?: ready?,
+      sandbox: if(ready?, do: :ready, else: :unavailable),
+      formats: Map.new(~w(mp3 opus aac flac wav pcm), &{&1, ready?}),
+      asr_formats: %{}
+    }
+  end
+
+  defp set_readiness_probe(probe) do
+    previous = Application.get_env(:backplane_admin, :audio_readiness_probe)
+    Application.put_env(:backplane_admin, :audio_readiness_probe, probe)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:backplane_admin, :audio_readiness_probe, previous),
+        else: Application.delete_env(:backplane_admin, :audio_readiness_probe)
+    end)
+  end
+
+  defp check_readiness(view) do
+    render_click(element(view, "#check-audio-readiness"))
+    eventually(fn -> not :sys.get_state(view.pid).socket.assigns.readiness_checking? end)
+    render(view)
   end
 
   defp eventually(fun, attempts \\ 1500)
