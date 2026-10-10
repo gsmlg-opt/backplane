@@ -61,7 +61,7 @@ children = [
 How do you test this? Complete one file for reference:
 
 ```elixir
-Mix.install([{:backplane_mcp_protocol, "~> 1.10.17"}])
+Mix.install([{:backplane_mcp_protocol, "~> 1.10.18"}])
 
 defmodule MyApp.Greeter do
   @moduledoc "Greet someone warmly"
