@@ -162,13 +162,15 @@ defmodule Backplane.AgentRuntime.Kernel do
          {:ok, identity} <- identity(input, @tool_identity, "tool"),
          {:ok, invocation} <- active_invocation(run, identity.invocation_id),
          :ok <- match_identity(Map.take(invocation, @tool_identity), identity, "tool invocation"),
-         {:ok, result} <- required(input, :result, "tool result") do
+         {:ok, result} <- required(input, :result, "tool result"),
+         {:ok, context} <- optional_map(input, :context, Map.get(run, :context, %{})) do
       active_tools = Map.delete(Map.get(run, :active_tools, %{}), identity.invocation_id)
       tool_results = Map.put(Map.get(run, :tool_results, %{}), identity.invocation_id, result)
 
       run
       |> Map.put(:active_tools, active_tools)
       |> Map.put(:tool_results, tool_results)
+      |> Map.put(:context, context)
       |> settle_execution_intent("tool:#{identity.invocation_id}", :consumed)
       |> commit(:running, :tool_completed, at, input)
     end
@@ -462,8 +464,11 @@ defmodule Backplane.AgentRuntime.Kernel do
 
   defp maybe_put_execution_deadline(run, input) do
     case {Map.get(run, :deadline), fetch_field(input, :execution_deadline)} do
-      {nil, {:ok, deadline}} when is_integer(deadline) -> Map.put(run, :deadline, deadline)
-      _ -> run
+      {nil, {:ok, deadline}} when is_integer(deadline) or deadline == :infinity ->
+        Map.put(run, :deadline, deadline)
+
+      _ ->
+        run
     end
   end
 
@@ -688,8 +693,14 @@ defmodule Backplane.AgentRuntime.Kernel do
   defp validation_error(message), do: {:error, Error.new(:validation, message)}
 
   defp maybe_update_execution_deadline(run, input) do
-    case fetch_field(input, :execution_deadline) do
-      {:ok, deadline} when is_integer(deadline) ->
+    case {Map.get(run, :deadline), fetch_field(input, :execution_deadline)} do
+      {:infinity, _} ->
+        run
+
+      {nil, {:ok, :infinity}} ->
+        Map.put(run, :deadline, :infinity)
+
+      {_, {:ok, deadline}} when is_integer(deadline) ->
         if deadline >= Map.get(run, :deadline, 0),
           do: Map.put(run, :deadline, deadline),
           else: run

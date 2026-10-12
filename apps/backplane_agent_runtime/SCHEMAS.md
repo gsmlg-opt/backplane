@@ -124,3 +124,38 @@ references remain fatal validation errors.
 
 Use `schema_admission: :strict | :quarantine` when starting a Conversation or
 on a dynamic catalog update; both paths consume the same admitted bundle.
+
+
+Execution deadlines accept a finite absolute millisecond timestamp, explicit
+`:infinity`, or legacy unset `nil`. JSON persistence uses the exact string
+`"infinity"` for the sentinel and explicit normalization when reading. Public
+runtime options accept `run_timeout: :infinity`; other timeout options remain
+positive finite integers. `provider_idle_timeout` additionally accepts `nil`
+(the default total-provider-effect policy).
+
+## Goal tools and records
+
+The existing Goal tools retain object schemas: `create_goal` requires
+`objective` and accepts optional integer `token_budget` (the Goal owner validates
+its positive configured bound); `get_goal`
+accepts no properties; `update_goal` requires `status` from `complete`, `blocked`
+or `paused`. Unknown properties are rejected. Host bindings, execution mode,
+thread/run identity and resume controls are not model arguments.
+
+Persistent Goal responses use the runtime's snake_case names, adapting Codex's
+camelCase wire names. They contain `goal`, `remaining_tokens` and
+`completion_budget_report`. A present `goal` exposes `thread_id`, `objective`,
+`status`, `token_budget`, `tokens_used`, `time_used_seconds`, `created_at` and
+`updated_at`; public timestamps are Unix seconds. Remaining tokens are nil
+without a budget or while accounting is uncertain, otherwise clamped to zero.
+Uncertain accounting adds `accounting_uncertain: true` and suppresses the
+completion report so partial known usage is not advertised as final totals.
+Ordinary responses retain the three source-compatible fields. The completion report is present
+only for a complete Goal with a token budget or positive elapsed time.
+
+Private snapshots retain `goal_id`, millisecond timestamps, revision, receipt
+and invocation ledgers, attribution and accounting state. They must not become
+tool responses or provider metadata. Receipt types are `turn_started`, `usage`,
+`tool_finished`, `item_completed`, `turn_stopped`, `turn_aborted` and `turn_error`;
+their identity comes from committed runtime transitions, never model parameters.
+See [PERSISTENCE.md](PERSISTENCE.md#goal-records-and-accounting-recovery).

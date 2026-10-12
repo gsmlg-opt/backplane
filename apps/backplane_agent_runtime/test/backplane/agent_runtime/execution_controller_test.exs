@@ -67,6 +67,72 @@ defmodule Backplane.AgentRuntime.ExecutionControllerTest do
     end
   end
 
+  test "infinite root retains bounded tool and cleanup timers" do
+    {:ok, table} = EphemeralStore.new(1)
+    {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 3})
+
+    {:ok, controller} =
+      ExecutionController.start_link(
+        store: EphemeralStore,
+        context: table,
+        run: %{running_record() | deadline: :infinity},
+        registry: registry(BlockingBackend, %{test: self()}, "example", value_schema()),
+        authority: authority("example"),
+        budget: budget,
+        run_timeout: :infinity,
+        effect_timeout: 30,
+        cleanup_timeout: 40
+      )
+
+    assert :sys.get_state(controller).run_timer == nil
+
+    assert {:ok, _} =
+             ExecutionController.submit(controller, %{
+               command: {:tool_invoked, 11, invocation("example")}
+             })
+
+    assert_receive {:effect_entered, worker, _}
+    monitor = Process.monitor(worker)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}, 500
+
+    assert %{run_state: :cancelling, cancellation: :cleanup} =
+             ExecutionController.await_run_state(controller, :cancelling)
+
+    assert %{run_state: :unknown_outcome} =
+             ExecutionController.await_run_state(controller, :unknown_outcome)
+
+    assert {:ok, _, %{run: %{state: :unknown_outcome}}} = ExecutionController.await(controller)
+  end
+
+  test "infinite root retains bounded commit acknowledgement" do
+    {:ok, table} = EphemeralStore.new(1)
+    {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 3})
+
+    {:ok, controller} =
+      ExecutionController.start_link(
+        store: BlockingStore,
+        context: %{table: table, test: self()},
+        run: %{running_record() | deadline: :infinity},
+        registry: registry(NoCallBackend, %{test: self()}, "example", value_schema()),
+        authority: authority("example"),
+        budget: budget,
+        run_timeout: :infinity,
+        commit_timeout: 30,
+        cleanup_timeout: 40
+      )
+
+    assert {:ok, _} =
+             ExecutionController.submit(controller, %{
+               command: {:tool_invoked, 11, invocation("example")}
+             })
+
+    assert_receive {:store_entered, worker, _}
+    monitor = Process.monitor(worker)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}, 500
+    assert {:error, %Error{class: :timeout}} = ExecutionController.await(controller)
+    refute_receive {:unexpected_backend_call, _}, 20
+  end
+
   test "status and cancellation remain responsive while persistence is blocked" do
     {:ok, table} = EphemeralStore.new(1)
     context = %{table: table, test: self()}

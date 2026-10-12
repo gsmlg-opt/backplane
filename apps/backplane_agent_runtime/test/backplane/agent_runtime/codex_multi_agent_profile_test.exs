@@ -72,12 +72,15 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
      ]}
   end
 
-  defp start_runtime(test_pid) do
+  defp start_runtime(test_pid, timeout \\ 5_000) do
     MultiAgent.start_link(
       parent_run_id: "root",
       parent_name: "/root",
       parent_authority: %{caller: "host", run_id: "root", grants: []},
-      child_options: &child_options(test_pid, &1, &2, &3),
+      child_options: fn request, run_id, parent ->
+        {:ok, opts} = child_options(test_pid, request, run_id, parent)
+        {:ok, Keyword.put(opts, :run_timeout, timeout)}
+      end,
       min_wait_timeout_ms: 0
     )
   end
@@ -374,8 +377,113 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
     assert {:ok, %{timed_out: false}} = Task.await(wait_a)
   end
 
+  test "child replacement preserves finite and infinite deadlines and consumed work" do
+    for {prior, requested, expected} <- [
+          {5_000, :infinity, :finite},
+          {5_000, :omit, :finite},
+          {5_000, 1_000, :shorter},
+          {:infinity, :omit, :infinity},
+          {:infinity, 5_000, :finite},
+          {:infinity, "infinity", :invalid},
+          {:infinity, 3_600_001, :invalid},
+          {5_000, 3_600_001, :invalid},
+          {100, :infinity, :expired}
+        ] do
+      test_pid = self()
+      calls = start_supervised!({Agent, fn -> 0 end}, id: make_ref())
+
+      runtime =
+        start_supervised!(
+          {MultiAgent,
+           [
+             parent_run_id: "root",
+             parent_name: "/root",
+             parent_authority: %{caller: "host", run_id: "root", grants: []},
+             min_wait_timeout_ms: 0,
+             child_options: fn request, run_id, parent ->
+               invocation = Agent.get_and_update(calls, fn n -> {n, n + 1} end)
+               {:ok, opts} = child_options(test_pid, request, run_id, parent)
+               timeout = if invocation == 0, do: prior, else: requested
+
+               {:ok,
+                if(timeout == :omit,
+                  do: Keyword.delete(opts, :run_timeout),
+                  else: Keyword.put(opts, :run_timeout, timeout)
+                )}
+             end
+           ]},
+          id: make_ref()
+        )
+
+      assert {:ok, _} =
+               call(runtime, :v2, "root", "spawn_agent", %{
+                 "task_name" => "worker",
+                 "message" => "first"
+               })
+
+      assert_receive {:child_provider, _, _, provider}
+      first = :sys.get_state(runtime).agents["/root/worker"]
+      first_run = Conversation.status(first.pid).run
+
+      send(
+        provider,
+        {:events, [%{type: :response_completed, message: %{role: :assistant, content: "done"}}]}
+      )
+
+      assert {:ok, %{timed_out: false}} =
+               call(runtime, :v2, "root", "wait_agent", %{"timeout_ms" => 500})
+
+      if expected == :expired, do: Process.sleep(150)
+
+      result =
+        call(runtime, :v2, "root", "followup_task", %{
+          "target" => "/root/worker",
+          "message" => "next"
+        })
+
+      case expected do
+        :invalid ->
+          assert {:error, %Backplane.AgentRuntime.Error{class: :validation}} = result
+
+        :expired ->
+          assert {:error, %Backplane.AgentRuntime.Error{class: :timeout}} = result
+
+        _ ->
+          assert {:ok, %{accepted: true}} = result
+          assert_receive {:child_provider, _, _, _}
+          second = :sys.get_state(runtime).agents["/root/worker"]
+          second_run = Conversation.status(second.pid).run
+          assert second_run.execution_budget.quota == 9
+
+          if expected == :infinity do
+            assert second_run.deadline == :infinity
+          else
+            assert is_integer(second_run.deadline)
+
+            if is_integer(first_run.deadline) do
+              if expected == :shorter,
+                do: assert(second_run.deadline < first_run.deadline),
+                else: assert(second_run.deadline == first_run.deadline)
+            end
+          end
+      end
+    end
+  end
+
   test "completed V2 agent accepts follow-up in a fresh run with prior messages" do
-    {:ok, runtime} = start_runtime(self())
+    test_pid = self()
+
+    {:ok, runtime} =
+      MultiAgent.start_link(
+        parent_run_id: "root",
+        parent_name: "/root",
+        parent_authority: %{caller: "host", run_id: "root", grants: []},
+        min_wait_timeout_ms: 0,
+        child_options: fn request, run_id, parent ->
+          {:ok, opts} = child_options(test_pid, request, run_id, parent)
+          {:ok, Keyword.put(opts, :run_timeout, :infinity)}
+        end
+      )
 
     assert {:ok, %{task_name: "/root/worker"}} =
              call(runtime, :v2, "root", "spawn_agent", %{
@@ -411,8 +519,8 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
            ]
   end
 
-  test "V1 interrupt-and-send starts a valid replacement run" do
-    {:ok, runtime} = start_runtime(self())
+  test "V1 interrupt-and-send starts a valid infinite replacement run" do
+    {:ok, runtime} = start_runtime(self(), :infinity)
 
     assert {:ok, %{agent_id: first_run}} =
              call(runtime, :v1, "root", "multi_agent_v1::spawn_agent", %{
@@ -433,8 +541,8 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
     assert List.last(second_request.messages).content == "replacement task"
   end
 
-  test "V1 close and resume retains completed history without replaying original prompt" do
-    {:ok, runtime} = start_runtime(self())
+  test "V1 close and resume retains infinite completed history without replaying original prompt" do
+    {:ok, runtime} = start_runtime(self(), :infinity)
 
     assert {:ok, %{agent_id: first_run}} =
              call(runtime, :v1, "root", "multi_agent_v1::spawn_agent", %{

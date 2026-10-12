@@ -53,7 +53,7 @@ defmodule Backplane.AgentRuntime.Types do
           budget_account_id: id(),
           parent_run_id: id() | nil,
           state: run_state(),
-          deadline: integer() | nil,
+          deadline: integer() | :infinity | nil,
           outcome: map() | nil,
           children: [id()]
         }

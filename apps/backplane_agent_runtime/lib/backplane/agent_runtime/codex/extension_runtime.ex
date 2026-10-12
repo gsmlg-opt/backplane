@@ -9,7 +9,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
 
   use GenServer
 
-  alias Backplane.AgentRuntime.Error
+  alias Backplane.AgentRuntime.{Error, Goal}
 
   @memory_names ~w(add_ad_hoc_note list read search)
   @goal_names ~w(get_goal create_goal update_goal)
@@ -57,6 +57,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
          scope: scope,
          owner_monitor: owner_monitor,
          board_namespace: board_namespace,
+         goal: Keyword.get(opts, :goal),
          adapter: Keyword.get(opts, :adapter),
          adapter_context: Keyword.get(opts, :adapter_context, %{}),
          reference: reference_state(opts)
@@ -89,6 +90,14 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
   @impl true
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state),
     do: {:stop, :normal, state}
+
+  defp execute(%{goal: goal} = state, %{tool_name: name} = operation)
+       when is_pid(goal) and name in @goal_names do
+    case Goal.tool(goal, operation) do
+      {:ok, result} -> {:ok, result, state}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
 
   defp execute(%{adapter: adapter} = state, operation)
        when is_atom(adapter) and not is_nil(adapter) do
@@ -1005,7 +1014,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     do: %{goal: goal, remaining_tokens: goal && goal.token_budget, completion_budget_report: nil}
 
   defp no_unfinished_goal(nil), do: :ok
-  defp no_unfinished_goal(%{status: status}) when status in ["complete", "blocked"], do: :ok
+  defp no_unfinished_goal(%{status: "complete"}), do: :ok
 
   defp no_unfinished_goal(_),
     do:

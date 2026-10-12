@@ -27,7 +27,10 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   from the host.
 - `:extensions` exposes 27 concrete goal, memory, skill, history, note, and
   message-board tools. The bundled scoped reference state is ephemeral. A host
-  adapter is required before claiming durability or restart recovery.
+  adapter is required before claiming durability or restart recovery. Supplying
+  `goal: goal_owner` to `Codex.ExtensionRuntime` routes only the three Goal tools
+  to the persistent thread owner; other extension families retain their selected
+  adapters.
 - `:dynamic` conditionally exposes MCP resource operations, `tool_search`, and
   plugin request tools. Search publishes admitted tools for the next provider
   turn; another call in the discovery batch remains fenced to the old catalog.
@@ -193,3 +196,69 @@ on a later failure they remain in `Error.details.files`. A failed write can
 leave uncertain content and reports `:unknown_outcome` with `uncertain_files`.
 Callers must inspect this evidence rather than treating an error as proof that
 nothing changed. Malformed bodies are rejected before executing any operation.
+
+
+## Execution lifecycle behavioral references
+
+The tool inventory remains pinned to `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`.
+Issue #65 additionally audits Codex `a9b0815167c27ab13719dd12d13b63e02b70d221`:
+
+- [Ordinary task registration](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/tasks/mod.rs#L312-L424)
+  and [regular turns](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/tasks/regular.rs#L104-L124)
+  use cancellation-driven lifetime. Backplane exposes this through explicit
+  `run_timeout: :infinity`, preserving finite defaults for existing consumers.
+- [Stream observation](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/codex-api/src/sse/responses.rs#L535-L540)
+  bounds each `stream.next()` wait. Backplane's optional `provider_idle_timeout`
+  observes validated normalized events; raw transport SSE remains host-owned.
+- [Approval callbacks](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/session/mod.rs#L2930-L3001)
+  await bound decisions. Infinite Backplane runs use explicit infinite approval
+  expiry with the existing identity checks.
+- [Unified exec](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/unified_exec/process_manager.rs#L632-L657)
+  distinguishes observation yield from completion-only command timeout;
+  [child waits](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs#L202-L219)
+  expire observation without interrupting the child.
+
+## Goal behavioral references and adaptations
+
+The existing tool inventory at `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`
+already includes Goal extension contracts. The persistent owner ports their
+source behavior, with the additional `a9b0815167c27ab13719dd12d13b63e02b70d221`
+lifecycle audit retained explicitly:
+
+- [Tool instructions](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/ext/goal/src/spec.rs)
+  require explicit creation and constrain model updates to complete, pause or
+  block. Host resume, budget changes and clear remain separate operations.
+- [Goal accounting](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/ext/goal/src/accounting.rs)
+  excludes cached input and avoids adding reasoning output twice, establishes
+  current-usage baselines for newly created goals, excludes Plan token charges,
+  tracks descendants and stops after three qualifying failed or empty turns.
+- [Interruption accounting](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/ext/goal/src/accounting.rs#L478)
+  distinguishes `interrupt_turn` from other aborts. Backplane persists the
+  deferral and evaluates interrupted emptiness when the host next signals idle;
+  it does not claim the two source revisions have identical abort behavior.
+- [Continuation runtime](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/ext/goal/src/runtime.rs)
+  and [budget steering](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/ext/goal/templates/goals/budget_limit.md)
+  supply the continuation/wrap-up policy. Backplane reserves the host's existing
+  Session admission; it adds no independent provider loop or child scheduler.
+- [Fork inheritance](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/app-server/src/request_processors/thread_fork_goal.rs)
+  copies the Goal snapshot into a new thread. Live bindings, run receipts and
+  accounting ownership are not copied.
+
+Backplane's explicit adaptations are the host-owned `Goal.Store` CAS contract,
+committed Conversation receipt outbox, capability-bound attribution and
+snake_case response fields. Public timestamps are seconds; private persistence
+retains millisecond timestamps and `goal_id`. Completion steering refers to the
+emitted snake_case fields. Missing normalized usage suspends budgeted automatic
+admission through the existing unknown-metrics contract; this is a Backplane
+accounting guard, not another Codex Goal status or an upstream requirement.
+Uncertain responses expose `accounting_uncertain: true`, unavailable remaining
+tokens and no completion budget report. Known charged usage remains available
+as a partial measurement. Decreasing cumulative provider metrics are refused
+before another charge or provider idle refresh.
+Elapsed time reports usage rather than enforcing a Goal deadline.
+
+Persistent Goal support is opt-in and needs a validated real host adapter before
+production launch. The existing ephemeral extension reference mode remains
+explicitly ephemeral. Scoped fixtures establish package behavior, including
+receipt recovery and native nested-tool acknowledgement; they do not establish
+consumer integration, provider wire compatibility or complete Codex parity.

@@ -3,6 +3,25 @@ defmodule Backplane.AgentRuntime.UsageTest do
 
   alias Backplane.AgentRuntime.Usage
 
+  test "same usage identity with changed metrics is a conflict" do
+    {:ok, usage} = Usage.new()
+
+    report = %{
+      identity: "goal-accounting-1",
+      input_tokens: 10,
+      output_tokens: 2,
+      cached_tokens: 0
+    }
+
+    assert {:ok, usage, %{status: :recorded}} = Usage.report(usage, report)
+    totals = Usage.totals(usage)
+
+    assert {:error, %{class: :resource_conflict}} =
+             Usage.report(usage, %{report | input_tokens: 20})
+
+    assert Usage.totals(usage) == totals
+  end
+
   describe "usage accounting" do
     test "aggregates attempt reports without double counting duplicates" do
       {:ok, usage} = Usage.new()
