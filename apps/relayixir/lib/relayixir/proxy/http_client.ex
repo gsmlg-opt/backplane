@@ -284,7 +284,7 @@ defmodule Relayixir.Proxy.HttpClient do
 
   @doc """
   Releases a fully consumed request, returning Fetch's cleanup confirmation result.
-  Fetch retains eligible HTTP/1 sockets. Explicit proxies return unsupported completion.
+  Fetch retains eligible HTTP/1 sockets, including supported explicit proxy routes.
   """
   @spec release(t()) :: HTTP.RequestCompletion.result()
   def release(conn) do
@@ -321,14 +321,6 @@ defmodule Relayixir.Proxy.HttpClient do
   defp finish_cleanup(conn, :ok) do
     RequestGuard.release(conn.guard)
     :ok
-  end
-
-  defp finish_cleanup(conn, {:error, {:unsupported_completion, :proxy}} = result) do
-    # credo:disable-for-next-line Credo.Check.Design.TagTODO
-    # TODO(upstream): gsmlg-dev/http_fetch#82 - cleanup confirmation for explicit proxies.
-    # WORKAROUND(upstream): gsmlg-dev/http_fetch#82 - public abort plus local teardown only.
-    RequestGuard.release(conn.guard)
-    result
   end
 
   defp finish_cleanup(_conn, {:error, reason} = result) do

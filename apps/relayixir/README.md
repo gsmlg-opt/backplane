@@ -61,7 +61,7 @@ Client -> Router -> HttpPlug -> HttpClient (HTTP.fetch) -> Upstream
 Client -> Router -> WebSocket.Plug -> Bridge (GenServer) -> UpstreamClient (HTTP.WebSocket) -> Upstream
 ```
 
-Outbound transports use the HTTP family at version 0.20.0. Fetch runs in HTTP/1 proxy mode with manual redirects, raw response bytes, header-first response streams, and acknowledgements after downstream consumption. SSE is forwarded through this byte stream; EventSource parsing and automatic reconnection would change the proxy contract.
+Outbound transports use the HTTP family at version 0.21.2. Fetch runs in HTTP/1 proxy mode with manual redirects, raw response bytes, header-first response streams, and acknowledgements after downstream consumption. SSE is forwarded through this byte stream; EventSource parsing and automatic reconnection would change the proxy contract.
 
 Fetch owns optional HTTP/1 connection reuse. `pool_size` sets the retained idle sockets per route, capped at sixteen by Fetch; the shared pool retains at most 256 idle sockets. A supervised request guard cancels requests when the calling process exits, including while waiting for response headers.
 
@@ -69,7 +69,7 @@ HTTP upstream preparation emits `[:relayixir, :http, :upstream, :prepare, :start
 
 Requests are sent once. Fetch's structured `HTTP.RequestError` preserves the underlying failure and exposes conservative dispatch evidence. Direct TCP connection failures can prove pre-send failure; proxy, pooled, TLS and post-send failures remain unknown, so Relayixir does not replay them.
 
-Direct HTTP/1 requests, including pooled requests, now use the public completion barrier on release and cancellation. A successful barrier confirms that request resources have settled and a reusable socket has returned safely to the pool. Pending or unconfirmed cleanup retains the guard/controller until its bounded deadline. Explicit HTTP/HTTPS proxy completion remains unsupported ([upstream #82](https://github.com/gsmlg-dev/http_fetch/issues/82)); proxy cancellation uses the public AbortController and local stream teardown without claiming synchronous transport confirmation.
+Direct HTTP/1 requests, including pooled requests, and supported explicit HTTP/HTTPS proxy routes use the public completion barrier on release and cancellation. A successful barrier confirms that request resources have settled and the socket has closed or returned safely to the pool. HTTP proxies support forwarding to HTTP origins and CONNECT to HTTPS origins; HTTPS proxies support forwarding to HTTP origins. Nested TLS through an HTTPS proxy remains unsupported. Pending, unsupported, or unconfirmed cleanup retains the guard/controller until its bounded deadline.
 
 Environment-selected HTTP proxies are supported, including CONNECT for HTTPS origins. HTTPS proxy endpoints for HTTP origins use TLS with certificate verification, authenticated absolute-form targets, and the existing NO_PROXY policy. Failed proxy connections never switch to a direct origin request.
 

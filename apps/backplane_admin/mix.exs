@@ -52,9 +52,9 @@ defmodule BackplaneAdmin.MixProject do
       {:duskmoon_bundler, "~> 9.16.7", runtime: Mix.env() != :prod},
       # TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#188
       # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#188 - align the shared HTTP family.
-      {:http_fetch, "~> 0.20.0", override: true},
-      {:http_web_socket, "~> 0.20.0", override: true},
-      {:http_event_source, "~> 0.20.0", override: true},
+      {:http_fetch, "~> 0.21.2", override: true},
+      {:http_web_socket, "~> 0.21.2", override: true},
+      {:http_event_source, "~> 0.21.2", override: true},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0"},
       {:lazy_html, ">= 0.1.0"}

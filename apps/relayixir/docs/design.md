@@ -1,7 +1,7 @@
 # Relayixir Architecture Design Document
 
 > Historical pre-migration draft. Current outbound transport uses HTTP Fetch and
-> HTTP WebSocket 0.20.0; Fetch owns HTTP/1 reuse and Relayixir supervises request
+> HTTP WebSocket 0.21.2; Fetch owns HTTP/1 reuse and Relayixir supervises request
 > cancellation guards. See [README](../README.md#architecture) and the implementation
 > for the current transport and streaming behavior. Mint references below describe
 > the original design.

@@ -23,11 +23,12 @@ defmodule Relayixir.Proxy.RequestCompletionTest do
         assert_receive {:upload_received, request}, 1_000
         assert request =~ "POST "
         completion = Promise.completion(client.promise)
-        assert_pending(completion, unquote(route))
+        assert {:error, :cleanup_pending} = RequestCompletion.await(completion, 0)
 
         assert {:ok, _client} = HttpClient.close(client)
-        assert_settled(completion, unquote(route))
-        assert_stopped(client.upload, unquote(route))
+        assert :ok = RequestCompletion.await(completion, 0)
+        refute Process.alive?(client.upload)
+        assert_guard_stopped(client)
         assert_receive {:upload_socket_closed, {:error, :closed}}, 2_500
         assert :ok = Task.await(peer, 1_000)
       after
@@ -54,15 +55,41 @@ defmodule Relayixir.Proxy.RequestCompletionTest do
 
         assert is_pid(client.response.body)
         completion = Promise.completion(client.promise)
-        assert_pending(completion, unquote(route))
+        assert {:error, :cleanup_pending} = RequestCompletion.await(completion, 0)
         assert {:ok, _client} = HttpClient.close(client)
-        assert_settled(completion, unquote(route))
-        assert_stopped(client.response.body, unquote(route))
+        assert :ok = RequestCompletion.await(completion, 0)
+        refute Process.alive?(client.response.body)
+        assert_guard_stopped(client)
         assert_receive {:response_socket_closed, {:error, :closed}}, 2_500
         assert :ok = Task.await(peer, 1_000)
       after
         HttpClient.close(client)
       end
+    end
+  end
+
+  test "completed explicit HTTP proxy request releases its guard after cleanup is confirmed" do
+    {port, peer} =
+      start_peer(fn socket ->
+        request = read_until(socket, "\r\n\r\n", "")
+        assert request =~ ~r/^GET http:\/\/origin\.invalid(?::80)?\/complete HTTP\/1\.1\r\n/
+        :ok = :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+      end)
+
+    {:ok, client, _ref} =
+      HttpClient.send_request(client(:proxy, port), "GET", "/complete", [], "")
+
+    try do
+      assert {:ok, client, events} = HttpClient.recv_response(client, 1_000)
+      assert {:data, "ok"} in events
+      assert :ok = HttpClient.release(client)
+      assert :ok = RequestCompletion.await(Promise.completion(client.promise), 0)
+      assert :ok = RequestCompletion.abort_and_await(Promise.completion(client.promise), 0)
+      refute Process.alive?(client.response.body)
+      assert_guard_stopped(client)
+      assert :ok = Task.await(peer, 1_000)
+    after
+      HttpClient.close(client)
     end
   end
 
@@ -116,27 +143,9 @@ defmodule Relayixir.Proxy.RequestCompletionTest do
     end
   end
 
-  defp assert_pending(completion, :pooled),
-    do: assert({:error, :cleanup_pending} = RequestCompletion.await(completion, 0))
-
-  # Public completion does not yet cover an explicit HTTP proxy in 0.20.
-  defp assert_pending(completion, :proxy),
-    do:
-      assert({:error, {:unsupported_completion, :proxy}} = RequestCompletion.await(completion, 0))
-
-  defp assert_settled(completion, :pooled),
-    do: assert(:ok = RequestCompletion.await(completion, 0))
-
-  defp assert_settled(completion, :proxy),
-    do:
-      assert({:error, {:unsupported_completion, :proxy}} = RequestCompletion.await(completion, 0))
-
-  defp assert_stopped(stream, :pooled), do: refute(Process.alive?(stream))
-
-  defp assert_stopped(stream, :proxy) do
-    monitor = Process.monitor(stream)
-    assert_receive {:DOWN, ^monitor, :process, ^stream, _reason}, 1_000
-    refute Process.alive?(stream)
+  defp assert_guard_stopped(client) do
+    refute Process.alive?(client.guard)
+    refute Process.alive?(client.controller)
   end
 
   defp client(route, port) do

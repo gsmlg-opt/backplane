@@ -25,9 +25,9 @@ defmodule Backplane.Umbrella.MixProject do
     [
       # TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#188, gsmlg-dev/phoenix_socket_client#107
       # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#188, gsmlg-dev/phoenix_socket_client#107
-      {:http_fetch, "~> 0.20.0", override: true},
-      {:http_web_socket, "~> 0.20.0", override: true},
-      {:http_event_source, "~> 0.20.0", override: true}
+      {:http_fetch, "~> 0.21.2", override: true},
+      {:http_web_socket, "~> 0.21.2", override: true},
+      {:http_event_source, "~> 0.21.2", override: true}
     ]
   end
 

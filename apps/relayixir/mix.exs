@@ -48,8 +48,8 @@ defmodule Relayixir.MixProject do
     [
       {:bandit, "~> 1.0"},
       {:plug, "~> 1.15"},
-      {:http_fetch, "~> 0.20.0"},
-      {:http_web_socket, "~> 0.20.0"},
+      {:http_fetch, "~> 0.21.2"},
+      {:http_web_socket, "~> 0.21.2"},
       {:mint, "~> 1.6", only: :test},
       {:mint_web_socket, "~> 1.0", only: :test},
       {:telemetry, "~> 1.2"},

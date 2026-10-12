@@ -2,6 +2,7 @@ defmodule Relayixir.Proxy.HTTPSProxyTest do
   use ExUnit.Case, async: true
 
   alias Relayixir.Proxy.{HttpClient, Upstream}
+  alias HTTP.{Promise, RequestCompletion}
 
   @certfile Path.expand("../../fixtures/tls/localhost-cert.pem", __DIR__)
   @keyfile Path.expand("../../fixtures/tls/localhost-key.pem", __DIR__)
@@ -61,13 +62,87 @@ defmodule Relayixir.Proxy.HTTPSProxyTest do
              |> IO.iodata_to_binary() == compressed
 
       assert :done in events
-      HttpClient.release(client)
+      assert :ok = HttpClient.release(client)
+      assert_cleanup(client)
 
       assert {head, "mutation entity"} = Task.await(proxy, 2_000)
       assert head =~ ~r/^POST http:\/\/origin\.invalid(?::80)?\/mutate\?raw=1 HTTP\/1\.1\r\n/
       assert [_, authorization] = Regex.run(~r/\r\nproxy-authorization:\s*([^\r]+)\r\n/i, head)
       assert authorization == "Basic " <> Base.encode64("user:secret")
       refute head =~ "CONNECT "
+    after
+      HttpClient.close(client)
+    end
+  end
+
+  test "TLS proxy cancellation before headers confirms upload and socket cleanup" do
+    owner = self()
+
+    {proxy_port, proxy} =
+      start_tls_peer(fn socket ->
+        request = read_until(socket, "payload", "")
+        send(owner, {:tls_upload_received, request})
+        send(owner, {:tls_upload_socket_closed, :ssl.recv(socket, 0, 2_000)})
+      end)
+
+    {:ok, client} =
+      HttpClient.connect(upstream("origin.invalid", 80), %{
+        "HTTP_PROXY" => "https://localhost:#{proxy_port}"
+      })
+
+    {:ok, client, ref} =
+      HttpClient.send_request(trust_local_certificate(client), "POST", "/upload", [], :stream)
+
+    try do
+      assert {:ok, client} = HttpClient.stream_body_chunk(client, ref, "payload")
+      assert_receive {:tls_upload_received, request}, 1_000
+      assert request =~ ~r/^POST http:\/\/origin\.invalid(?::80)?\/upload HTTP\/1\.1\r\n/
+
+      assert {:error, :cleanup_pending} =
+               RequestCompletion.await(Promise.completion(client.promise), 0)
+
+      assert {:ok, _client} = HttpClient.close(client)
+      assert_cleanup(client)
+      refute Process.alive?(client.upload)
+      assert_receive {:tls_upload_socket_closed, {:error, :closed}}, 2_500
+      assert :ok = Task.await(proxy, 1_000)
+    after
+      HttpClient.close(client)
+    end
+  end
+
+  test "TLS proxy cancellation after headers confirms response and socket cleanup" do
+    owner = self()
+
+    {proxy_port, proxy} =
+      start_tls_peer(fn socket ->
+        read_request(:ssl, socket)
+        :ok = :ssl.send(socket, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+        send(owner, {:tls_response_socket_closed, :ssl.recv(socket, 0, 2_000)})
+      end)
+
+    {:ok, client} =
+      HttpClient.connect(upstream("origin.invalid", 80), %{
+        "HTTP_PROXY" => "https://localhost:#{proxy_port}"
+      })
+
+    {:ok, client, _ref} =
+      HttpClient.send_request(trust_local_certificate(client), "GET", "/response", [], "")
+
+    try do
+      assert {:ok, client, 200, _headers, [], :more} =
+               HttpClient.recv_until_headers(client, 1_000)
+
+      assert is_pid(client.response.body)
+
+      assert {:error, :cleanup_pending} =
+               RequestCompletion.await(Promise.completion(client.promise), 0)
+
+      assert {:ok, _client} = HttpClient.close(client)
+      assert_cleanup(client)
+      refute Process.alive?(client.response.body)
+      assert_receive {:tls_response_socket_closed, {:error, :closed}}, 2_500
+      assert :ok = Task.await(proxy, 1_000)
     after
       HttpClient.close(client)
     end
@@ -99,6 +174,7 @@ defmodule Relayixir.Proxy.HTTPSProxyTest do
     try do
       assert {:error, :upstream_connect_failed} = HttpClient.recv_response(client, 2_000)
       assert System.monotonic_time(:millisecond) - started < 2_000
+      assert_cleanup(client)
       assert {:error, _tls_error} = Task.await(proxy, 2_000)
       assert {:error, :timeout} = :gen_tcp.accept(origin, 100)
     after
@@ -143,6 +219,41 @@ defmodule Relayixir.Proxy.HTTPSProxyTest do
       assert {:error, :timeout} = :ssl.transport_accept(proxy_listener, 100)
     after
       HttpClient.close(client)
+    end
+  end
+
+  defp assert_cleanup(client) do
+    assert :ok = RequestCompletion.await(Promise.completion(client.promise), 0)
+    refute Process.alive?(client.guard)
+    refute Process.alive?(client.controller)
+  end
+
+  defp start_tls_peer(callback) do
+    {listener, port} = tls_listener()
+
+    peer =
+      Task.async(fn ->
+        {:ok, transport} = :ssl.transport_accept(listener, 2_000)
+        {:ok, socket} = :ssl.handshake(transport, 2_000)
+
+        try do
+          callback.(socket)
+          :ok
+        after
+          :ssl.close(socket)
+        end
+      end)
+
+    on_exit(fn -> if Process.alive?(peer.pid), do: Process.exit(peer.pid, :kill) end)
+    {port, peer}
+  end
+
+  defp read_until(socket, delimiter, pending) do
+    if String.contains?(pending, delimiter) do
+      pending
+    else
+      {:ok, bytes} = :ssl.recv(socket, 0, 2_000)
+      read_until(socket, delimiter, pending <> bytes)
     end
   end
 

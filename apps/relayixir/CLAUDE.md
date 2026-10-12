@@ -15,7 +15,7 @@ Relayixir is an umbrella app within the Backplane project. Bandit standalone ser
 ## Project Status
 
 HTTP and WebSocket proxy paths support streaming request bodies, bounded response
-collection, and inspection hooks. Outbound transport uses HTTP family 0.20.0.
+collection, and inspection hooks. Outbound transport uses HTTP family 0.21.2.
 
 Current architecture: `README.md`. Historical design draft: `docs/design.md`.
 
