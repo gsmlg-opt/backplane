@@ -42,3 +42,17 @@ projected separately and never become local registry entries. The implementation
 is assessed compatibility, not unqualified Codex parity; platform, durable
 backend, provider-wire, and live-service limits are recorded in the coverage
 ledger under `docs/agent-runtime/codex-tools/`.
+
+
+Long-running interactive turns can explicitly select `run_timeout: :infinity`
+and optionally `provider_idle_timeout: 300_000`. Work quotas, tools, commits,
+cleanup and native-command limits remain bounded. See `EMBEDDING.md` for the
+separate timeout policies and `PERSISTENCE.md` for conservative recovery.
+
+`Backplane.AgentRuntime.Goal` is an optional persistent thread owner for explicit
+objectives, token accounting and automatic continuation through the host's
+existing Session admission. Enable it with host-owned `Goal.Store` and
+`Goal.Host` adapters, then bind each Conversation run. The three existing Goal
+tools can use this owner through `Codex.ExtensionRuntime`; ordinary runs create
+no Goal. See [EMBEDDING.md](EMBEDDING.md#persistent-thread-goals) for setup and
+[PERSISTENCE.md](PERSISTENCE.md#goal-records-and-accounting-recovery) for recovery.

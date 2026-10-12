@@ -8,7 +8,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   use GenServer
 
-  alias Backplane.AgentRuntime.{Conversation, Error}
+  alias Backplane.AgentRuntime.{Conversation, Error, Goal}
+
+  alias Backplane.AgentRuntime.Execution
 
   @default_wait_timeout_ms 30_000
   @maximum_wait_timeout_ms 3_600_000
@@ -70,6 +72,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          parent_run_id: parent_run_id,
          parent_name: normalize_root(parent_name),
          parent_authority: authority,
+         root_goal_context: %{},
          session_authority: nil,
          parent_binding: nil,
          session_owner: nil,
@@ -175,7 +178,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, action} <- action(profile, operation.tool_name) do
       state =
         if caller.name == state.parent_name,
-          do: %{state | parent_authority: caller.authority},
+          do: %{
+            state
+            | parent_authority: caller.authority,
+              root_goal_context: Map.take(caller, [:goal, :goal_binding])
+          },
           else: state
 
       dispatch(action, operation.arguments, from, caller, state)
@@ -274,6 +281,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          parent = caller_metadata(caller),
          {:ok, opts} <- state.child_options.(request, run_id, parent),
          :ok <- child_authority(opts, caller.authority),
+         {:ok, opts} <- attribute_child(opts, parent),
          opts = Keyword.put(opts, :subscriber, self()),
          {:ok, pid} <- start_child(state.child_supervisor, opts),
          {:ok, _receipt} <- Conversation.prompt(pid, request.message) do
@@ -542,6 +550,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          :ok <- child_authority(opts, parent.authority),
          :ok <- child_authority(opts, agent.authority),
          {:ok, opts} <- carry_limits(opts, snapshot.run),
+         {:ok, opts} <- attribute_child(opts, parent),
          opts =
            opts
            |> Keyword.put(:run_id, run_id)
@@ -597,39 +606,86 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
+  defp attribute_child(opts, %{goal: goal, goal_binding: binding})
+       when is_pid(goal) and is_map(binding) do
+    attrs = %{
+      thread_id: Keyword.get(opts, :thread_id, Keyword.fetch!(opts, :run_id)),
+      run_id: Keyword.fetch!(opts, :run_id),
+      incarnation: Keyword.get(opts, :incarnation, 1),
+      authority: Keyword.fetch!(opts, :authority)
+    }
+
+    with {:ok, child_binding} <- Goal.delegate(goal, binding, attrs) do
+      {:ok,
+       opts
+       |> Keyword.put(:goal, goal)
+       |> Keyword.put(:goal_binding, child_binding)
+       |> Keyword.put(:thread_id, child_binding.thread_id)}
+    end
+  end
+
+  defp attribute_child(opts, _parent), do: {:ok, opts}
+
   defp carry_limits(opts, run) do
     remaining_work = run.execution_budget.quota - run.execution_budget.used
-    remaining_time = run.deadline - System.system_time(:millisecond)
+
+    with :ok <- remaining_work(remaining_work),
+         {:ok, _} <- Execution.validate_limits(opts),
+         {:ok, timeout} <- carry_timeout(run.deadline, opts),
+         {:ok, _} <- Execution.validate_limits(Keyword.put(opts, :run_timeout, timeout)) do
+      {:ok,
+       opts
+       |> Keyword.put(:work, min(Keyword.get(opts, :work, remaining_work), remaining_work))
+       |> Keyword.put(:run_timeout, timeout)
+       |> inherit_deadline(run.deadline)}
+    end
+  end
+
+  defp inherit_deadline(opts, deadline) when is_integer(deadline),
+    do: Keyword.put(opts, :inherited_deadline, deadline)
+
+  defp inherit_deadline(opts, :infinity), do: Keyword.delete(opts, :inherited_deadline)
+
+  defp remaining_work(value) when value > 0, do: :ok
+
+  defp remaining_work(_),
+    do: {:error, Error.new(:budget_exceeded, "agent work quota is exhausted")}
+
+  defp carry_timeout(:infinity, opts), do: {:ok, Keyword.get(opts, :run_timeout, :infinity)}
+
+  defp carry_timeout(deadline, opts) when is_integer(deadline) do
+    remaining = deadline - System.system_time(:millisecond)
+    requested = Keyword.get(opts, :run_timeout, :infinity)
 
     cond do
-      remaining_work <= 0 ->
-        {:error, Error.new(:budget_exceeded, "agent work quota is exhausted")}
-
-      remaining_time <= 0 ->
-        {:error, Error.new(:timeout, "agent deadline has expired")}
-
-      true ->
-        {:ok,
-         opts
-         |> Keyword.put(:work, min(Keyword.get(opts, :work, remaining_work), remaining_work))
-         |> Keyword.put(
-           :run_timeout,
-           min(Keyword.get(opts, :run_timeout, remaining_time), remaining_time)
-         )}
+      remaining <= 0 -> {:error, Error.new(:timeout, "agent deadline has expired")}
+      requested == :infinity -> {:ok, remaining}
+      is_integer(requested) and requested > 0 -> {:ok, min(requested, remaining)}
+      true -> {:error, Error.new(:validation, "invalid replacement run timeout")}
     end
   end
 
   defp parent_metadata(state, agent) do
     if agent.parent == state.parent_name do
-      %{run_id: state.parent_run_id, name: state.parent_name, authority: state.parent_authority}
+      Map.merge(
+        %{
+          run_id: state.parent_run_id,
+          name: state.parent_name,
+          authority: state.parent_authority
+        },
+        state.root_goal_context
+      )
     else
       parent = state.agents[agent.parent]
 
-      %{
-        run_id: parent.run_id,
-        name: parent.name,
-        authority: current_child_authority(state, parent)
-      }
+      Map.merge(
+        %{
+          run_id: parent.run_id,
+          name: parent.name,
+          authority: current_child_authority(state, parent)
+        },
+        Map.take(Map.new(parent.opts), [:goal, :goal_binding])
+      )
     end
   end
 
@@ -881,7 +937,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
            %{
              name: state.parent_name,
              run_id: state.parent_run_id,
-             authority: current_root_authority(state, operation)
+             authority: current_root_authority(state, operation),
+             goal: get_in(operation, [:backend_context, :goal]),
+             goal_binding: get_in(operation, [:backend_context, :goal_binding])
            }}
         else
           {:error, Error.new(:forbidden, "stale collaboration parent invocation")}
@@ -892,7 +950,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
         if agent.run_id == run_id and agent.status == :running,
           do:
-            {:ok, %{name: name, run_id: run_id, authority: current_child_authority(state, agent)}},
+            {:ok,
+             %{
+               name: name,
+               run_id: run_id,
+               authority: current_child_authority(state, agent),
+               goal: Keyword.get(agent.opts, :goal),
+               goal_binding: Keyword.get(agent.opts, :goal_binding)
+             }},
           else: {:error, Error.new(:forbidden, "stale collaboration run")}
 
       true ->
@@ -1141,7 +1206,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp input_items_text(_), do: nil
 
   defp caller_metadata(caller),
-    do: %{run_id: caller.run_id, name: caller.name, authority: caller.authority}
+    do: Map.take(caller, [:run_id, :name, :authority, :goal, :goal_binding])
 
   defp event_error(event), do: inspect(Map.get(event, :outcome, "agent stopped"))
 

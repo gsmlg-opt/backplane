@@ -91,10 +91,10 @@ defmodule Backplane.AgentRuntime.Approval do
     now = Map.get(approval, :current_time) || Map.get(approval, "current_time")
     expires_at = Map.get(approval, :expires_at) || Map.get(approval, "expires_at")
 
-    if is_integer(now) and is_integer(expires_at) and now <= expires_at do
-      {:ok, expires_at}
-    else
-      {:error, Backplane.AgentRuntime.Error.new(:validation, "approval is expired")}
+    case {now, expires_at} do
+      {now, :infinity} when is_integer(now) -> {:ok, :infinity}
+      {now, expiry} when is_integer(now) and is_integer(expiry) and now <= expiry -> {:ok, expiry}
+      _ -> {:error, Backplane.AgentRuntime.Error.new(:validation, "approval is expired")}
     end
   end
 end

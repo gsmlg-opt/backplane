@@ -234,6 +234,104 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     })
   end
 
+  test "infinite run has no root timer and keeps a finite provider timer" do
+    {pid, _} = start(run_timeout: :infinity, effect_timeout: 500)
+    assert {:ok, _} = Conversation.prompt(pid, "work")
+    assert_receive {:provider, _, provider}
+    state = :sys.get_state(pid)
+    assert state.run.deadline == :infinity
+    assert state.timer == nil
+    assert state.timer_generation == nil
+    assert is_reference(state.effect.timer)
+    send(provider, {:events, [done("finished")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "infinite run still times out a stalled provider effect" do
+    {pid, _} = start(run_timeout: :infinity, effect_timeout: 40)
+    assert {:ok, _} = Conversation.prompt(pid, "work")
+    assert_receive {:provider, _, _}
+
+    assert_receive {:agent_runtime, "test", %{type: :run_cancelled, state: :unknown_outcome}},
+                   1_000
+
+    assert Conversation.status(pid).run.stop_reason == :deadline_exceeded
+  end
+
+  test "infinite run completes cumulative healthy provider and tool work" do
+    {pid, _} = start(run_timeout: :infinity, effect_timeout: 200)
+    assert {:ok, _} = Conversation.prompt(pid, "work")
+    assert_receive {:provider, _, first}
+    Process.sleep(60)
+    send(first, {:events, tool_response()})
+    assert_receive {:tool, _, tool}
+    Process.sleep(60)
+    send(tool, {:result, {:ok, %{text: "ok"}}})
+    assert_receive {:provider, _, next}
+    Process.sleep(60)
+    send(next, {:events, [done("done")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+  end
+
+  test "finite root still expires across individually healthy effects" do
+    {pid, _} = start(run_timeout: 100, effect_timeout: 200)
+    assert {:ok, _} = Conversation.prompt(pid, "work")
+    assert_receive {:provider, _, first}
+    Process.sleep(60)
+    send(first, {:events, tool_response()})
+    assert_receive {:tool, _, _}
+    assert_receive {:agent_runtime, "test", %{type: :run_cancelled}}, 500
+    assert Conversation.status(pid).run.stop_reason == :deadline_exceeded
+  end
+
+  test "infinite approval wait resolves or cancels without backend dispatch" do
+    for decision <- [:approved, :denied, :cancel] do
+      {pid, _} = start(run_timeout: :infinity, requires_approval: true)
+      assert {:ok, _} = Conversation.prompt(pid, "work")
+      assert_receive {:provider, _, provider}
+      send(provider, {:events, tool_response()})
+      assert_receive {:agent_runtime, "test", %{type: :interaction_requested, interaction_id: id}}
+      state = :sys.get_state(pid)
+      assert state.run.deadline == :infinity
+      assert state.paused_run_remaining == :infinity
+      refute_receive {:tool, _, _}, 20
+
+      if decision == :cancel do
+        assert :ok = Conversation.cancel(pid)
+        assert_receive {:agent_runtime, "test", %{type: :run_cancelled}}
+        assert {:error, _} = Conversation.resolve(pid, id, :approved)
+      else
+        assert :ok = Conversation.resolve(pid, id, decision)
+
+        if decision == :approved do
+          assert_receive {:tool, _, tool}
+          send(tool, {:result, {:ok, %{text: "ok"}}})
+        else
+          refute_receive {:tool, _, _}, 20
+        end
+
+        assert_receive {:provider, _, next}
+        send(next, {:events, [done("done")]})
+        assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+      end
+    end
+  end
+
+  test "restored terminal infinite run stays terminal with default timeout options" do
+    {pid, store} = start(run_timeout: :infinity)
+    assert {:ok, _} = Conversation.prompt(pid, "work")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, [done("done")]})
+    assert_receive {:agent_runtime, "test", %{type: :run_completed}}
+    assert {:ok, %{run: run}} = EphemeralStore.load(store, "test")
+    GenServer.stop(pid)
+    {restored, _} = start(run: run, context: store)
+    assert Conversation.status(restored).phase == :terminal
+    assert Conversation.status(restored).run.deadline == :infinity
+    assert :sys.get_state(restored).timer == nil
+    refute_receive {:provider, _, _}, 20
+  end
+
   test "initial quarantine admission only sends accepted tools to the provider" do
     valid = %{
       tool_name: "read",
@@ -1144,7 +1242,7 @@ defmodule Backplane.AgentRuntime.ConversationTest do
 
   test "cancel provider, tool and interaction waits" do
     for phase <- [:provider, :tool, :interaction] do
-      {pid, _} = start()
+      {pid, _} = start(run_timeout: :infinity)
       {:ok, _} = Conversation.prompt(pid, "cancel")
       assert_receive {:provider, _, provider}
 
@@ -1260,8 +1358,8 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     refute_receive {:tool, _, _}, 20
   end
 
-  test "restart is inspection only and retains budget, outstanding tool and transcript" do
-    {pid, store} = start()
+  test "restart is inspection only and retains infinite deadline, budget, outstanding tool and transcript" do
+    {pid, store} = start(run_timeout: :infinity)
     {:ok, _} = Conversation.prompt(pid, "hello")
     assert_receive {:provider, _, provider}
     send(provider, {:events, tool_response()})
@@ -1271,6 +1369,7 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     {restored, _} = start(run: run, context: store)
     assert Conversation.status(restored).phase == :recovery_required
     assert Conversation.status(restored).run == run
+    assert run.deadline == :infinity
     assert run.execution_budget.used == 2
     assert map_size(run.active_tools) == 1
     assert {:error, _} = Conversation.prompt(restored, "do not replay")

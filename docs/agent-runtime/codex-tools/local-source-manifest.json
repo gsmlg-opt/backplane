@@ -15,8 +15,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/approval.ex",
-      "sha256": "8cf5a88bc0af074e976986f47edcedcf64008a71b8b40e7926f29ece41d17784",
-      "bytes": 3648
+      "sha256": "416cb3474eff6ee7195ab629a5b2de99fee54651d17346af81ca927855130e4e",
+      "bytes": 3738
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/attempt.ex",
@@ -75,8 +75,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/extension_runtime.ex",
-      "sha256": "83c4d14bde1d10ecc855f0fd3b1a6f70f6f4db535d8fb402dce21978b70be57f",
-      "bytes": 45064
+      "sha256": "0a118e8539d51e75156924fd50efa9f7c4677b79ec07a1a8a3c67449db6240b3",
+      "bytes": 45350
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/extensions.ex",
@@ -105,8 +105,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/multi_agent.ex",
-      "sha256": "c3b25b770464dedc07cb8e3c9a6e6c968c2d9d40bb6788f4d34557a475dd6904",
-      "bytes": 45102
+      "sha256": "a9c6a3a957b93091b3efa2ccd59e05b0c72b15846fda3c99367e8cf9d3fe46f2",
+      "bytes": 47491
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/path_guard.ex",
@@ -180,13 +180,13 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/conversation.ex",
-      "sha256": "f510a5aeb3799c75f7806db19a380e65f5a4ec9c6f2370a54c39c413ed686d43",
-      "bytes": 62698
+      "sha256": "b31786b6b654f38a89c3844ad091191c67fc13ae55a534aac134c08a674ff59d",
+      "bytes": 80413
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/conversation_adapter.ex",
-      "sha256": "39922a9ae641090b5020c10234eb64916ef74b8b783d378e5cbfaf51bc970956",
-      "bytes": 1810
+      "sha256": "8066d4ab1f3a6834b6f03fc3dc0d796df40fa437cf2a6dfd92fb70f1302f2c97",
+      "bytes": 3357
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/dependency.ex",
@@ -215,13 +215,38 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/execution.ex",
-      "sha256": "c67901a633dae7a7d5d7ea9d403a0d100da47e37aa91368ee1151bc4dc75addc",
-      "bytes": 22146
+      "sha256": "c92d15dbd7db39a2624598694526b2f2fd75b42954ecd884d16a612e562d2baa",
+      "bytes": 22967
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/execution_controller.ex",
-      "sha256": "9e3f3f36894ed5574c5f1bfd6b09241993c64dc42901bfd06bbc8d2a7e0b936a",
-      "bytes": 19461
+      "sha256": "d32afb99d24881bee5a2cb7020427c5a4bbb415431187bdfb0fd9c09de29c391",
+      "bytes": 19552
+    },
+    {
+      "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/goal/host.ex",
+      "sha256": "06cbe99b25d8fd339b52551cd4142cba2bc8cb24887921014346f599474214ff",
+      "bytes": 478
+    },
+    {
+      "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/goal/state.ex",
+      "sha256": "3ce465e615b559f0da511a28d5ca536308d752711ac8ca01c950b1125fff7fa6",
+      "bytes": 18777
+    },
+    {
+      "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/goal/store.ex",
+      "sha256": "b194357ef902551cb79167f68ea384211b3c360ace3e9999f9b9e2eac4ad2750",
+      "bytes": 2505
+    },
+    {
+      "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/goal.ex",
+      "sha256": "71b336ec5b61394f17d8033ec672ee2bcae1db45c29b09dbd23bc505d42cce7c",
+      "bytes": 28823
+    },
+    {
+      "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/goal_bridge.ex",
+      "sha256": "cd24d32b1e9619a1501cf0c346946fcee9ef7423d67cfddec4bfea956efda1da",
+      "bytes": 4599
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/id.ex",
@@ -240,8 +265,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/kernel.ex",
-      "sha256": "6adf15591453271ebde81bda8da5c1fd24ddcaa741b79482cb0fa727eb37ab0a",
-      "bytes": 25202
+      "sha256": "738dd3df56b7f7058e13a88dde6606fd7af6e8c2717638e1055338f5a85241ac",
+      "bytes": 25513
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/loop_breaker.ex",
@@ -350,13 +375,13 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/types.ex",
-      "sha256": "9eaa6ad58bcc3c2c0722b2e6fbe4890e9b9b32261ce239c3b4c6d52c5cbf06b6",
-      "bytes": 2884
+      "sha256": "fd46651fb13d72139e7ac4b3ed6fc9178b1ef5e3ac947a7b71ff672188fe4545",
+      "bytes": 2896
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/usage.ex",
-      "sha256": "a47da86aac418dad70cd1a5a61ceae2ce98c34e7e3dfe0e2c0f47c1ef62300e2",
-      "bytes": 3669
+      "sha256": "b5de7f9ffba22f1999ba5257ef2a7d83cb944a9b5d98fe4b77ca81f676bc8be8",
+      "bytes": 3602
     },
     {
       "path": "apps/backplane_agent_runtime/priv/codex/code_mode_worker.js",

@@ -201,13 +201,14 @@ defmodule Backplane.AgentRuntime.StoreConformanceTest do
         provider_context: %{},
         subscriber: self(),
         work: 5,
-        run_timeout: 1_000
+        run_timeout: :infinity
       )
 
     assert {:ok, _} = Conversation.prompt(conversation, "persist")
     assert_receive {:agent_runtime, "conversation_restart", %{type: :run_completed}}, 1_000
     assert %{phase: :terminal, run: run} = Conversation.status(conversation)
     assert run.context.conversation.messages != []
+    assert run.deadline == :infinity
     GenServer.stop(conversation)
 
     {:ok, restarted_context} = FileStore.restart(context)
@@ -222,11 +223,44 @@ defmodule Backplane.AgentRuntime.StoreConformanceTest do
         provider: FailingIfCalledProvider,
         provider_context: %{test: self()},
         subscriber: self(),
-        work: 5,
-        run_timeout: 1_000
+        work: 5
       )
 
     assert %{phase: :terminal, run: ^persisted} = Conversation.status(restored)
+    refute_receive :provider_called, 20
+    GenServer.stop(restored)
+  end
+
+  @tag :tmp_dir
+  test "file-backed infinite admission survives load replay and incarnation fence", %{
+    tmp_dir: dir
+  } do
+    {:ok, context} = FileStore.open(dir)
+    run = base_run("infinite_recovery")
+    command = {:admit, 10, %{state: :running, deadline: :infinity}}
+    assert {:ok, _} = Store.store(FileStore, context, run, %{command: command})
+    {:ok, restarted} = FileStore.restart(context)
+    assert {:ok, %{run: saved}} = FileStore.load(restarted, run.run_id)
+    assert saved.deadline == :infinity
+    assert {:ok, replayed, _, _} = Kernel.execute(run, command)
+    assert replayed.deadline == saved.deadline
+    assert {:ok, %{run: fenced}} = Store.fence(FileStore, restarted, run.run_id, 1, 1, 2)
+    assert fenced.deadline == :infinity
+
+    {:ok, restored} =
+      Conversation.start_link(
+        run_id: run.run_id,
+        run: fenced,
+        store: FileStore,
+        context: restarted,
+        provider: FailingIfCalledProvider,
+        provider_context: %{test: self()},
+        subscriber: self()
+      )
+
+    assert Conversation.status(restored).phase == :recovery_required
+    assert :sys.get_state(restored).timer == nil
+    assert {:error, _} = Conversation.prompt(restored, "do not replay")
     refute_receive :provider_called, 20
     GenServer.stop(restored)
   end

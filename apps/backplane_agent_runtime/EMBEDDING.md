@@ -13,7 +13,7 @@ Start `Backplane.AgentRuntime.Conversation` under a host supervisor with:
   select backends or widen authority.
 - Optional `hooks` implementing `prompt/2` and `stop/2`.
 - Optional `subscriber` PID receiving `{:agent_runtime, run_id, event}`.
-- Finite `work` quota (default 100), `run_timeout` (300,000 ms), `effect_timeout`
+- Finite `work` quota (default 100), `run_timeout` (300,000 ms or explicit `:infinity`), `effect_timeout`
   (30,000 ms), `commit_timeout` (5,000 ms), and `cleanup_timeout` (5,000 ms).
   Work counts provider attempts and tool invocations; it is not a token or billing
   quota. Provider usage is retained separately without inventing missing values.
@@ -33,8 +33,8 @@ host content blocks/context; Sigma's command adapter owns their public shape.
 
 One steering item is consumed after the provider response and complete sequential
 tool batch, or after a response without tools, before the stop hook. Follow-ups
-start after the current turn outcome is committed. One root run shares its finite
-budget/deadline across these turns. A completed root rejects further prompts;
+start after the current turn outcome is committed. One root run shares its work quota and configured
+deadline policy across these turns. A completed root rejects further prompts;
 the session adapter starts a new run with its committed canonical messages.
 
 `cancel/1` acknowledges cancellation acceptance immediately, fences callbacks,
@@ -446,3 +446,137 @@ these changed in-memory states do not provide a hot-upgrade migration. Existing
 non-Codex consumers need no new profile or command callback. Real Deno process
 termination is verified on Linux using the captured process identity; other
 platforms do not acquire a confirmed-cleanup guarantee from these tests.
+
+
+## Long-running interactive turns
+
+Opt in with `run_timeout: :infinity`. This persists `deadline: :infinity`,
+omits the root timer and preserves disabled mode through human waits and safe
+child continuations. Omitted options retain the finite defaults. The finite
+maximum is 3,600,000 ms; effect, commit and cleanup limits remain finite.
+Explicit cancellation still fences the run and reconciles uncertain effects.
+An approval bound to an infinite run has explicit infinite expiry; its operation
+identity, argument digest, tool revision and trusted resolver checks still apply.
+
+`provider_idle_timeout: 300_000` optionally replaces the provider's total effect
+limit with a finite wait for its next accepted normalized event. Accepted progress
+refreshes the generation-fenced timer. Tools, hooks, store commits and cleanup
+retain their own total limits, and a finite root deadline still wins. Human
+interaction pauses the provider wait and resumes its remaining time.
+
+```elixir
+Conversation.start_link(
+  # Other host-owned provider/store/catalog options are required.
+  run_id: "interactive-run",
+  run_timeout: :infinity,
+  provider_idle_timeout: 300_000,
+  effect_timeout: 30_000,
+  commit_timeout: 5_000,
+  cleanup_timeout: 5_000
+)
+```
+
+The host transport owns raw SSE observation. A normalized enumerable cannot see
+SSE comments or events its adapter discards; enabling this option establishes
+idle semantics at the normalized runtime boundary.
+
+Finite child continuations preserve the prior absolute deadline. The internal
+`inherited_deadline` option carries that value between trusted runtime owners;
+it is not a model argument or a consumer option for extending a deadline.
+
+## Persistent thread Goals
+
+The host opts into `Backplane.AgentRuntime.Goal` independently of any Codex
+profile. One host thread owner starts it with durable `Goal.Store` and
+`Goal.Host` adapters. A missing adapter or an invalid initial record refuses
+startup. The package supplies no production database or thread scheduler.
+
+```elixir
+alias Backplane.AgentRuntime.{Conversation, Goal}
+alias Backplane.AgentRuntime.Codex.Session
+
+# Execute in the host's existing thread owner; adapter modules/contexts and
+# runtime_options are supplied by the embedding.
+{:ok, goal} = Goal.start_link(
+  thread_id: thread_id,
+  owner_pid: self(),
+  store: MyGoalStore,
+  store_context: goal_store_context,
+  host: MyGoalHost,
+  host_context: thread_context
+)
+
+# Record an explicit user instruction, then durably create the Goal.
+{:ok, _} = Goal.set(goal, %{objective: "Finish the requested migration"},
+  %{text: "Keep working until the migration is finished"})
+
+# Reuse the host's ordinary Session, grants and fresh run identity.
+{:ok, session_binding} = Session.bind(session, authority)
+{:ok, goal_binding} = Goal.bind(goal, %{
+  thread_id: thread_id,
+  run_id: authority.run_id,
+  incarnation: 1,
+  authority: authority,
+  usage_authoritative: true,
+  mode: :execution
+})
+
+{:ok, conversation} = Conversation.start_link(Keyword.merge(runtime_options,
+  run_id: authority.run_id,
+  authority: authority,
+  thread_id: thread_id,
+  session_binding: session_binding,
+  goal: goal,
+  goal_binding: goal_binding
+))
+{:ok, _} = Conversation.prompt(conversation, user_message)
+```
+
+`runtime_options` still supplies the ordinary provider, run Store, catalog and
+resource options. Use a supervisor in the real host. Omit `token_budget` unless
+the user requested one. A budgeted Goal requires authoritative normalized
+input/cached/output usage at binding and automatic admission; missing values
+remain unknown and suspend budgeted automatic continuation. Trusted binding
+`mode: :plan` excludes Goal token/time charges and lifecycle failure audits.
+Delegated bindings inherit that mode and authorize root usage only; child Goal
+tools require a separate owner for the child thread. Bindings and authority are ephemeral
+host capabilities and never model input.
+
+To expose the existing `create_goal`, `get_goal` and `update_goal` tools, start
+`Codex.ExtensionRuntime` with `goal: goal` and its required host/caller/run/project
+scope, then select `:extensions` (or the configured extension family) through
+`Codex.profile/4`. Preserve the returned registry/tools/authority bundle. A
+Conversation with Goal tools also needs the same `goal` and `goal_binding` so
+provider usage and tool settlement are acknowledged before subsequent work.
+Without a supplied Goal owner, the extension reference backend remains ephemeral.
+
+`Goal.Host.record_user_instruction/3` records canonical provenance before a
+host `set/3` or `clear/2` mutation. Failure leaves the Goal unchanged.
+`start_turn_if_idle/3` atomically reserves ordinary host admission and returns
+`{:ok, {:started, %{run_id: run_id, incarnation: incarnation, turn_id: turn_id}}}`
+or `{:ok, {:not_submitted, reason}}`. It validates `request.host_generation`,
+Session readiness, queued user input and pending interactions. This callback
+must return promptly, must not dispatch providers, and must not synchronously
+reenter Goal. Schedule the accepted turn through the existing owner after the
+callback returns; bind fresh Session/Goal capabilities and pass
+`goal_trigger: :goal`. Host generation must change when user input or
+cancellation invalidates a reservation.
+
+After ordinary run settlement, receipt reconciliation and Session readiness,
+the owner calls `Goal.idle(goal, current_host_generation)`. There is no polling
+loop. Busy, deferred, already-reserved or uncertain-accounting states return
+`not_submitted`. Interruption persists a continuation deferral; restoring an
+active status does not itself launch work. Explicit host resume uses
+`Goal.set(goal, %{status: :active}, user_instruction)` after reconciliation.
+Model tools can complete, pause or block; they cannot resume, change budgets,
+clear, or replace an unfinished Goal.
+
+Charge is `max(0, input_tokens - cached_tokens) + output_tokens`; reasoning is
+already included in output. Cumulative reports debit acknowledged deltas once,
+including terminal repeats and descendant reports. A fresh Goal starts from
+current usage rather than charging earlier work. Budget exhaustion persists
+`budget_limited`, emits one wrap-up steering item and lets the current turn
+settle. It does not assert the objective was achieved. Elapsed seconds report
+active Goal time, including active idle intervals, and do not create a deadline.
+Plan entry/exit resets the local clock; restore starts a fresh clock without
+charging process downtime.

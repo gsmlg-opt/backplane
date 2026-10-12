@@ -24,6 +24,58 @@ defmodule Backplane.AgentRuntime.ExecutionTest do
     def chunks(_chunks), do: {:ok, %{type: :completed}}
   end
 
+  test "only the run timeout accepts infinity" do
+    assert {:ok, %{run: :infinity, effect: 30_000}} =
+             Execution.validate_limits(run_timeout: :infinity)
+
+    for key <- [:effect_timeout, :commit_timeout, :cleanup_timeout] do
+      assert {:error, %Error{class: :validation}} =
+               Execution.validate_limits([{key, :infinity}])
+    end
+
+    for value <- ["infinity", :disabled, -1] do
+      assert {:error, %Error{class: :validation}} =
+               Execution.validate_limits(run_timeout: value)
+    end
+  end
+
+  test "provider idle timeout is optional and finite" do
+    for value <- [nil, 30, 300_000] do
+      assert {:ok, %{provider_idle: ^value}} =
+               Execution.validate_limits(provider_idle_timeout: value)
+    end
+
+    for value <- [0, -1, "30", :infinity, 3_600_001] do
+      assert {:error, %Error{class: :validation}} =
+               Execution.validate_limits(provider_idle_timeout: value)
+    end
+  end
+
+  test "admission persists explicit infinity and preserves saved deadlines" do
+    for {deadline, opts, expected} <- [
+          {nil, [run_timeout: :infinity], :infinity},
+          {nil, [], 301_000},
+          {:infinity, [], :infinity},
+          {2_000, [run_timeout: :infinity], 2_000}
+        ] do
+      {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))
+      record = %{base_record() | deadline: deadline}
+
+      assert {:ok, committed, _} =
+               Execution.run(
+                 EphemeralStore,
+                 context,
+                 record,
+                 %{command: {:admit, 10, %{state: :running}}},
+                 Keyword.merge([adapter: NoEffectAdapter, wall_now: fn -> 1_000 end], opts)
+               )
+
+      assert committed.revision == 1
+      assert {:ok, %{run: saved}} = EphemeralStore.load(context, record.run_id)
+      assert saved.deadline == expected
+    end
+  end
+
   describe "store-first execution" do
     test "admits a run without dispatching an external effect" do
       {:ok, context} = EphemeralStore.new(System.unique_integer([:positive]))

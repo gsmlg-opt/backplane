@@ -26,6 +26,18 @@ defmodule Backplane.AgentRuntime.ApprovalTest do
     }
   end
 
+  test "infinite expiry preserves approval binding checks" do
+    approval = %{approval() | expires_at: :infinity, current_time: 1_000_000}
+    assert {:ok, :approved} = Approval.decide(approval, decision(:approved))
+    assert {:ok, :denied} = Approval.decide(approval, decision(:denied))
+
+    assert {:error, %Backplane.AgentRuntime.Error{class: :forbidden}} =
+             Approval.decide(approval, %{decision(:approved) | arguments_digest: "changed"})
+
+    assert {:error, %Backplane.AgentRuntime.Error{}} =
+             Approval.decide(%{approval | current_time: nil}, decision(:approved))
+  end
+
   describe "approval" do
     test "approves a valid decision before expiry" do
       assert {:ok, :approved} = Approval.decide(approval(), decision(:approved))

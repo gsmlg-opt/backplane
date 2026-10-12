@@ -379,7 +379,7 @@ defmodule Backplane.AgentRuntime.ConversationUncertainEffectsTest do
       authority: %{caller: "host", run_id: run_id, grants: ["outer", "effect"], tool_revision: 1},
       tools: [%{name: "outer", description: "outer", parameters: %{}}],
       work: 20,
-      run_timeout: 5_000,
+      run_timeout: :infinity,
       effect_timeout: Keyword.get(opts, :effect_timeout, 3_000),
       commit_timeout: Keyword.get(opts, :commit_timeout, 1_000)
     ]

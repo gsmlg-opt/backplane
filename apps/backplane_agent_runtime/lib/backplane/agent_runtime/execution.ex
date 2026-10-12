@@ -107,10 +107,12 @@ defmodule Backplane.AgentRuntime.Execution do
          {:ok, commit} <- finite_timeout(opts, :commit_timeout, @default_commit_timeout),
          {:ok, effect} <- finite_timeout(opts, :effect_timeout, @default_effect_timeout),
          {:ok, cleanup} <- finite_timeout(opts, :cleanup_timeout, @default_cleanup_timeout),
-         {:ok, run} <- finite_timeout(opts, :run_timeout, @default_run_timeout),
+         {:ok, run} <- run_timeout(opts),
+         {:ok, provider_idle} <- provider_idle_timeout(opts),
          :ok <- validate_clock(opts, :monotonic_now),
          :ok <- validate_clock(opts, :wall_now) do
-      {:ok, %{commit: commit, effect: effect, cleanup: cleanup, run: run}}
+      {:ok,
+       %{commit: commit, effect: effect, cleanup: cleanup, run: run, provider_idle: provider_idle}}
     end
   end
 
@@ -429,6 +431,20 @@ defmodule Backplane.AgentRuntime.Execution do
     {:error, Error.new(:execution_failure, "committed intent does not match prepared operation")}
   end
 
+  defp run_timeout(opts) do
+    case Keyword.get(opts, :run_timeout, @default_run_timeout) do
+      :infinity -> {:ok, :infinity}
+      _ -> finite_timeout(opts, :run_timeout, @default_run_timeout)
+    end
+  end
+
+  defp provider_idle_timeout(opts) do
+    case Keyword.get(opts, :provider_idle_timeout) do
+      nil -> {:ok, nil}
+      _ -> finite_timeout(opts, :provider_idle_timeout, @default_effect_timeout)
+    end
+  end
+
   defp finite_timeout(opts, key, default) do
     case Keyword.get(opts, key, default) do
       value when is_integer(value) and value > 0 and value <= @maximum_timeout -> {:ok, value}
@@ -449,18 +465,28 @@ defmodule Backplane.AgentRuntime.Execution do
     end
   end
 
+  defp absolute_deadline(%{deadline: :infinity}, _run_timeout, _opts), do: :infinity
+
   defp absolute_deadline(%{deadline: deadline}, _run_timeout, _opts)
        when is_integer(deadline),
        do: deadline
 
+  defp absolute_deadline(_record, :infinity, _opts), do: :infinity
+
   defp absolute_deadline(_record, run_timeout, opts), do: wall_now(opts) + run_timeout
 
   defp effective_timeout(record, configured, run_timeout, opts) do
-    remaining = absolute_deadline(record, run_timeout, opts) - wall_now(opts)
+    case absolute_deadline(record, run_timeout, opts) do
+      :infinity ->
+        {:ok, configured}
 
-    if remaining > 0,
-      do: {:ok, min(configured, remaining)},
-      else: {:error, Error.new(:timeout, "run deadline has expired")}
+      deadline ->
+        remaining = deadline - wall_now(opts)
+
+        if remaining > 0,
+          do: {:ok, min(configured, remaining)},
+          else: {:error, Error.new(:timeout, "run deadline has expired")}
+    end
   end
 
   defp initial_commit_timeout(_record, command, limits, _opts)
@@ -474,6 +500,8 @@ defmodule Backplane.AgentRuntime.Execution do
     clock = Keyword.get(opts, :wall_now, fn -> System.system_time(:millisecond) end)
     clock.()
   end
+
+  defp validate_record_deadline(%{deadline: :infinity}, _opts), do: :ok
 
   defp validate_record_deadline(%{deadline: nil}, _opts), do: :ok
 

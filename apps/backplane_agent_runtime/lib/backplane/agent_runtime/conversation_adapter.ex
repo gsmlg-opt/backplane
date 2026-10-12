@@ -9,6 +9,30 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   `%{id: binary, name: binary, arguments: map}`; response_completed carries the
   authoritative assistant `message`. The first terminal ends enumeration.
 
+  `provider_idle_timeout` opts into a finite idle timer renewed after each valid
+  normalized event. The default provider timer bounds the entire effect. Tools
+  and hooks retain their total effect limit. Normalized enumeration cannot see
+  raw SSE comments or transport events omitted by the adapter; the transport
+  owns raw stream observation timeouts.
+
+  Optional Goal accounting consumes cumulative usage per attempt. Normalized
+  `usage_updated` and `response_completed` events carry nonnegative integer
+  `input_tokens`, `cached_tokens`, `output_tokens`, and `reasoning_tokens`, or
+  nil/`:unknown` for unavailable metrics. Reasoning is already included in
+  output. The runtime stamps report identity from the trusted run/incarnation
+  and attempt, commits usage before acknowledging enumeration, and deduplicates
+  terminal repeats. Budgeted Goals require a host-issued binding with
+  authoritative usage capability; unknown charge closes automatic admission.
+  Provider idle observation pauses while bounded local journal/Goal storage
+  acknowledges an event. Root and storage deadlines remain enforced.
+
+  `response_failed` may carry a normalized error map with `class: :usage_limit`
+  for a proven provider usage-limit rejection. Other terminal provider errors
+  block automatic Goal continuation. Hosts own error classification; the runtime
+  does not infer quota failures from message text. An assistant message may carry
+  `phase: :commentary`, `:final`, or `:final_answer`; absent phase is final for
+  Goal empty-turn accounting.
+
   A host may call its existing provider facade here: no HTTP/SSE parser belongs
   in this runtime. Requests contain messages, turn_id, run_id, incarnation,
   step_id, attempt_id, catalog_revision, and canonical tools shaped as

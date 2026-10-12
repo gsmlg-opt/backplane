@@ -548,6 +548,8 @@ defmodule Backplane.AgentRuntime.ExecutionController do
     end
   end
 
+  defp arm_run_timer(%{run: %{deadline: :infinity}} = state), do: cancel_run_timer(state)
+
   defp arm_run_timer(%{run: %{deadline: deadline}, run_deadline: deadline} = state)
        when is_integer(deadline),
        do: state

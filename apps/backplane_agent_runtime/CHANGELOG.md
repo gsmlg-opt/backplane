@@ -11,6 +11,18 @@
 
 ## Unreleased
 
+- Add explicit `run_timeout: :infinity` with durable disabled root deadlines,
+  bound approvals, finite owned-work limits and conservative recovery (#65).
+- Add opt-in finite `provider_idle_timeout` for validated normalized provider
+  progress, independent of tool and store deadlines.
+- Restrict reference Goal replacement to completed goals and preserve Usage
+  digest conflicts instead of silently accepting changed duplicate reports.
+- Add optional persistent thread Goals with host-owned storage, user provenance
+  and Session admission; integrate committed provider/tool/turn accounting,
+  budget wrap-up steering and root-attributed descendant usage (#65).
+- Route the existing Goal extension tools to the supplied Goal owner, retaining
+  explicit creation, completed-only replacement and host-only resume/clear.
+
 - Add `ToolEffects.reject/2` for trusted host-backend rejection before dispatch.
   Validate the exact operation before provider continuation; plain errors,
   mismatched/replayed identities and unknown outcomes remain fail-closed.

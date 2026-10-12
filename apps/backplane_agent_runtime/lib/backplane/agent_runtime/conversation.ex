@@ -5,6 +5,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     Budget,
     Error,
     Execution,
+    Goal,
+    GoalBridge,
+    Usage,
     InputSchema,
     Policy,
     ProviderOutput,
@@ -38,10 +41,30 @@ defmodule Backplane.AgentRuntime.Conversation do
   def start_link(opts) do
     with :ok <- ProviderOutput.validate_options(opts),
          :ok <- validate_session_options(opts),
+         :ok <- GoalBridge.validate_options(opts),
+         :ok <- validate_inherited_deadline(opts),
          {:ok, opts} <- admit_initial_catalog(opts),
          {:ok, _} <- Execution.validate_limits(opts),
          {:ok, _} <- Budget.new(%{work: Keyword.get(opts, :work, 100)}) do
       GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
+    end
+  end
+
+  defp validate_inherited_deadline(opts) do
+    case Keyword.get(opts, :inherited_deadline) do
+      nil -> :ok
+      value when is_integer(value) -> :ok
+      _ -> {:error, Error.new(:validation, "inherited deadline must be an absolute timestamp")}
+    end
+  end
+
+  defp initial_deadline(opts, timeout) do
+    configured = if timeout == :infinity, do: :infinity, else: now() + timeout
+
+    case {Keyword.get(opts, :inherited_deadline), configured} do
+      {deadline, :infinity} when is_integer(deadline) -> deadline
+      {deadline, configured} when is_integer(deadline) -> min(deadline, configured)
+      _ -> configured
     end
   end
 
@@ -127,19 +150,21 @@ defmodule Backplane.AgentRuntime.Conversation do
       usage: []
     }
 
-    fresh = %{
-      run_id: Keyword.fetch!(opts, :run_id),
-      incarnation: Keyword.get(opts, :incarnation, 1),
-      expected_revision: 0,
-      state: :queued,
-      admitted: false,
-      context: %{conversation: conversation},
-      children: [],
-      deadline: now() + limits.run,
-      execution_budget: budget
-    }
+    run =
+      Keyword.get_lazy(opts, :run, fn ->
+        %{
+          run_id: Keyword.fetch!(opts, :run_id),
+          incarnation: Keyword.get(opts, :incarnation, 1),
+          expected_revision: 0,
+          state: :queued,
+          admitted: false,
+          context: %{conversation: conversation},
+          children: [],
+          deadline: initial_deadline(opts, limits.run),
+          execution_budget: budget
+        }
+      end)
 
-    run = Keyword.get(opts, :run, fresh)
     restored? = Keyword.has_key?(opts, :run)
 
     phase =
@@ -147,17 +172,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         do: if(RunKernel.terminal?(run.state), do: :terminal, else: :recovery_required),
         else: :idle
 
-    generation = if restored?, do: nil, else: make_ref()
-
-    timer =
-      if restored?,
-        do: nil,
-        else:
-          Process.send_after(
-            self(),
-            {:deadline, run.run_id, run.incarnation, generation},
-            limits.run
-          )
+    {timer, generation} = if restored?, do: {nil, nil}, else: run_timer(run)
 
     catalog = ToolCatalog.initial(opts)
 
@@ -192,6 +207,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       catalog_receipts: [],
       new_context_requested: false,
       resource_registries: resource_registries(catalog.registry),
+      goal_binding: Keyword.get(opts, :goal_binding),
+      goal_delivery: nil,
+      provider_progress_from: nil,
       resource_cleanup: :not_requested
     }
 
@@ -273,6 +291,28 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  def handle_call({:provider_chunk, token, event}, from, s) do
+    if current_effect?(s, token) and match?({:provider, _, _}, s.effect.role) and
+         is_nil(s.provider_progress_from) and valid_provider_event?(event) do
+      if cumulative_provider_progress?(s, event) do
+        output = ProviderOutput.event(s.provider_output, event)
+
+        case ProviderOutput.check(output, ProviderOutput.limit(s.opts)) do
+          {:ok, output} ->
+            s = refresh_provider_idle(%{s | provider_output: output})
+            checkpoint_provider_progress(s, event, from)
+
+          {:error, error} ->
+            {:reply, {:error, error}, s}
+        end
+      else
+        {:reply, {:error, Error.new(:validation, "cumulative provider usage regressed")}, s}
+      end
+    else
+      {:reply, {:error, Error.new(:resource_conflict, "stale provider stream")}, s}
+    end
+  end
+
   def handle_call({:chunk, token, event}, _from, s) do
     if current_effect?(s, token) and is_map(event) do
       output = ProviderOutput.event(s.provider_output, event)
@@ -328,6 +368,7 @@ defmodule Backplane.AgentRuntime.Conversation do
                         outer_invocation(invocation, next_state)
                       )
                     )
+                    |> Map.merge(goal_tool_context(next_state))
               }
 
               Execution.dispatch(
@@ -340,7 +381,7 @@ defmodule Backplane.AgentRuntime.Conversation do
             end)
 
           generation = make_ref()
-          timeout = max(1, min(next_state.limits.effect, next_state.run.deadline - now()))
+          timeout = effect_timeout(next_state, next_state.limits.effect)
           timer = Process.send_after(self(), {:nested_timeout, task.ref, generation}, timeout)
 
           %{
@@ -373,6 +414,45 @@ defmodule Backplane.AgentRuntime.Conversation do
       %{token: ^token} -> {:noreply, stop(s, :cancelled)}
       _ -> {:noreply, s}
     end
+  end
+
+  def handle_info(
+        {ref, result},
+        %{goal_delivery: %{task: %{ref: ref}, kind: :unbind} = entry} = s
+      ) do
+    clear_task(entry)
+    s = %{s | goal_delivery: nil}
+
+    case result do
+      {:ok, :unbound} ->
+        {:noreply, entry.next.(%{s | goal_binding: nil})}
+
+      {:error, error} ->
+        {:noreply, storage_failed(s, error)}
+
+      _ ->
+        {:noreply,
+         storage_failed(
+           s,
+           Error.new(:malformed_result, "invalid goal revocation acknowledgement")
+         )}
+    end
+  end
+
+  def handle_info({ref, result}, %{goal_delivery: %{task: %{ref: ref}} = entry} = s) do
+    clear_task(entry)
+    s = %{s | goal_delivery: nil}
+    {:noreply, drive(process(s, {:effect_result, {:goal_delivery, entry.next}, result}))}
+  end
+
+  def handle_info(
+        {:goal_timeout, ref, generation},
+        %{goal_delivery: %{task: %{ref: ref}, timer_generation: generation} = entry} = s
+      ) do
+    kill_task(entry)
+
+    {:noreply,
+     storage_failed(%{s | goal_delivery: nil}, Error.new(:timeout, "goal delivery timed out"))}
   end
 
   def handle_info({ref, result}, %{nested: %{task: %{ref: ref}} = nested} = s) do
@@ -416,13 +496,17 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   def handle_info({ref, result}, %{effect: %{task: %{ref: ref}} = entry} = s) do
     clear_task(entry)
-    {:noreply, enqueue(%{s | effect: nil}, {:effect_result, entry.role, result})}
+    s = %{s | effect: nil}
+    {:noreply, enqueue(s, {:effect_result, entry.role, result})}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, s) do
     error = Error.new(:execution_failure, "worker exited", cause: inspect(reason))
 
     cond do
+      s.goal_delivery && s.goal_delivery.task.ref == ref ->
+        {:noreply, storage_failed(%{s | goal_delivery: nil}, error)}
+
       s.commit && s.commit.task.ref == ref ->
         {:noreply, storage_failed(%{s | commit: nil}, error)}
 
@@ -493,6 +577,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   def terminate(_, s) do
     if s.timer, do: Process.cancel_timer(s.timer)
     if s.effect, do: kill_task(s.effect)
+    if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.commit, do: kill_task(s.commit)
     if s.nested && s.nested.task, do: kill_task(s.nested)
     if Process.alive?(s.supervisor), do: Supervisor.stop(s.supervisor)
@@ -500,6 +585,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp enqueue(s, job), do: drive(%{s | jobs: :queue.in(job, s.jobs)})
   defp drive(%{commit: commit} = s) when not is_nil(commit), do: s
+  defp drive(%{goal_delivery: delivery} = s) when not is_nil(delivery), do: s
   defp drive(%{stopping: stopping} = s) when not is_nil(stopping), do: advance_stop(s)
 
   defp drive(%{commit_queue: queue} = s) do
@@ -600,6 +686,15 @@ defmodule Backplane.AgentRuntime.Conversation do
         conversation =
           if mode == :new, do: %{conversation | turn_id: id("turn")}, else: conversation
 
+        conversation =
+          if mode == :new,
+            do:
+              GoalBridge.queue(s, conversation, [
+                {:turn_started,
+                 %{mode: goal_mode(s), trigger: Keyword.get(s.opts, :goal_trigger, :user)}}
+              ]),
+            else: conversation
+
         checkpoint(s, conversation, fn s ->
           emit(s, %{
             type: :prompt_consumed,
@@ -609,7 +704,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           })
 
           s = acknowledge_admission(s, :ok)
-          start_provider(s)
+          deliver_goal(s, &start_provider/1)
         end)
 
       {:error, error} ->
@@ -634,25 +729,51 @@ defmodule Backplane.AgentRuntime.Conversation do
             usage: s.conversation.usage ++ response.usage
         }
 
+        case goal_provider_usage(s, conversation, response.usage, identity) do
+          {:ok, conversation} ->
+            conversation =
+              GoalBridge.queue(s, conversation, [
+                {:item_completed,
+                 %{
+                   kind: :assistant,
+                   text: goal_text(response.message),
+                   phase: response.message[:phase],
+                   questions: response.message[:questions]
+                 }}
+              ])
+
+            input =
+              Map.merge(identity, %{
+                final?: false,
+                result: response,
+                context: Map.put(s.run.context, :conversation, conversation)
+              })
+
+            commit(s, {:provider_completed, now(), input}, %{}, [], fn s, _ ->
+              emit(s, response.terminal)
+              deliver_goal(s, &begin_tools(&1, response.tools, catalog))
+            end)
+
+          {:error, error} ->
+            storage_failed(s, error)
+        end
+
+      {:error, error} ->
+        conversation =
+          GoalBridge.queue(s, s.conversation, [
+            {:turn_error, %{class: goal_error_class(error), retryable: false}}
+          ])
+
         input =
           Map.merge(identity, %{
             final?: false,
-            result: response,
+            result: %{error: error},
             context: Map.put(s.run.context, :conversation, conversation)
           })
 
         commit(s, {:provider_completed, now(), input}, %{}, [], fn s, _ ->
-          s = %{s | conversation: conversation}
-          emit(s, response.terminal)
-          begin_tools(s, response.tools, catalog)
-        end)
-
-      {:error, error} ->
-        input = Map.merge(identity, %{final?: false, result: %{error: error}})
-
-        commit(s, {:provider_completed, now(), input}, %{}, [], fn s, _ ->
           emit(s, %{type: :response_failed, error: error})
-          finish_turn(%{s | last_error: error}, :failed)
+          deliver_goal(s, &finish_turn(%{&1 | last_error: error}, :failed))
         end)
     end
   end
@@ -664,12 +785,20 @@ defmodule Backplane.AgentRuntime.Conversation do
       stop(%{s | last_error: uncertain_error(result)}, :uncertain)
     else
       normalized = tool_result(result)
-      input = Map.put(invocation, :result, normalized)
+
+      conversation =
+        GoalBridge.queue(s, s.conversation, [
+          {:tool_finished, goal_tool_payload(invocation, normalized)}
+        ])
+
+      input =
+        invocation
+        |> Map.put(:result, normalized)
+        |> Map.put(:context, Map.put(s.run.context, :conversation, conversation))
 
       commit(s, {:tool_completed, now(), input}, %{}, [], fn s, _ ->
-        s
-        |> settle_catalog_producer(invocation, normalized)
-        |> append_tool_result(invocation, normalized, rest, catalog)
+        s = settle_catalog_producer(s, invocation, normalized)
+        deliver_goal(s, &append_tool_result(&1, invocation, normalized, rest, catalog))
       end)
     end
   end
@@ -730,6 +859,30 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  defp process(s, {:effect_result, {:goal_delivery, next}, {:ok, responses, binding}}) do
+    conversation = Map.put(s.conversation, :goal_outbox, [])
+
+    conversation =
+      Enum.reduce(responses, conversation, fn response, conversation ->
+        case response.steering do
+          nil ->
+            conversation
+
+          item ->
+            Map.update!(
+              conversation,
+              :steering,
+              &(&1 ++ [%{role: :user, content: item.text, source: :goal}])
+            )
+        end
+      end)
+
+    checkpoint(%{s | goal_binding: binding}, conversation, next)
+  end
+
+  defp process(s, {:effect_result, {:goal_delivery, _}, {:error, error}}),
+    do: storage_failed(s, error)
+
   defp process(s, {:effect_result, _, _}), do: fail(s, "invalid adapter result")
 
   defp begin_prompt(s, message, mode) do
@@ -774,8 +927,8 @@ defmodule Backplane.AgentRuntime.Conversation do
         case event do
           %{type: :response_completed, message: %{role: :assistant, content: content} = message}
           when is_binary(content) or is_list(content) ->
-            with :ok <- context.emit.(event),
-                 {:ok, tools} <- terminal_tools(acc.tools, message) do
+            with {:ok, tools} <- terminal_tools(acc.tools, message),
+                 :ok <- context.provider_emit.(event) do
               usage = if Map.get(event, :usage), do: acc.usage ++ [event.usage], else: acc.usage
 
               {:halt,
@@ -798,15 +951,11 @@ defmodule Backplane.AgentRuntime.Conversation do
                  :provider_hosted_event,
                  :usage_updated
                ] ->
-            case context.emit.(event) do
-              :ok ->
-                case collect(acc, event) do
-                  {:ok, acc} -> {:cont, {:ok, acc}}
-                  {:error, error} -> {:halt, {:error, error}}
-                end
-
-              error ->
-                {:halt, error}
+            with {:ok, acc} <- collect(acc, event),
+                 :ok <- context.provider_emit.(event) do
+              {:cont, {:ok, acc}}
+            else
+              {:error, _} = error -> {:halt, error}
             end
 
           _ ->
@@ -934,6 +1083,7 @@ defmodule Backplane.AgentRuntime.Conversation do
                 ])
               )
               |> Map.put(:resource_owner_pid, resource_owner_pid)
+              |> Map.merge(goal_tool_context(s))
         }
 
         case Execution.dispatch(
@@ -1015,44 +1165,244 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp finish_turn(s, outcome) do
     turn = %{turn_id: s.conversation.turn_id, outcome: outcome, error: s.last_error}
 
-    checkpoint(s, %{s.conversation | turns: s.conversation.turns ++ [turn]}, fn s ->
-      emit(
-        s,
-        Map.put(turn, :type, if(outcome == :completed, do: :turn_completed, else: :turn_failed))
-      )
+    conversation =
+      GoalBridge.queue(s, %{s.conversation | turns: s.conversation.turns ++ [turn]}, [
+        {:turn_stopped, %{outcome: outcome}}
+      ])
 
-      case s.conversation.follow_up do
-        [message | rest] ->
-          checkpoint(s, %{s.conversation | follow_up: rest}, &begin_prompt(&1, message, :new))
+    checkpoint(s, conversation, fn s ->
+      deliver_goal(s, fn s ->
+        emit(
+          s,
+          Map.put(turn, :type, if(outcome == :completed, do: :turn_completed, else: :turn_failed))
+        )
 
-        [] ->
-          s = prepare_finish_resources(s, outcome)
+        case s.conversation.follow_up do
+          [message | rest] ->
+            checkpoint(s, %{s.conversation | follow_up: rest}, &begin_prompt(&1, message, :new))
 
-          if s.resource_cleanup == :confirmed do
-            input = Map.merge(identity(s), %{status: outcome, outcome: turn})
+          [] ->
+            s = prepare_finish_resources(s, outcome)
 
-            commit(s, {:finish, now(), input}, %{}, [], fn s, _ ->
-              s = acknowledge_finish_resources(%{s | phase: :terminal}, outcome)
+            if s.resource_cleanup == :confirmed do
+              input = Map.merge(identity(s), %{status: outcome, outcome: turn})
 
-              if s.resource_cleanup == :confirmed do
-                emit(s, %{
-                  type: if(outcome == :completed, do: :run_completed, else: :run_failed),
-                  outcome: turn
-                })
-              else
-                emit(s, %{type: :session_detach_failed, error: s.last_error})
-              end
+              commit(s, {:finish, now(), input}, %{}, [], fn s, _ ->
+                s = acknowledge_finish_resources(%{s | phase: :terminal}, outcome)
 
-              s
-            end)
-          else
-            stop(s, :uncertain)
-          end
-      end
+                if s.resource_cleanup == :confirmed do
+                  unbind_goal(s, fn s ->
+                    emit(s, %{
+                      type: if(outcome == :completed, do: :run_completed, else: :run_failed),
+                      outcome: turn
+                    })
+
+                    s
+                  end)
+                else
+                  emit(s, %{type: :session_detach_failed, error: s.last_error})
+                  s
+                end
+              end)
+            else
+              stop(s, :uncertain)
+            end
+        end
+      end)
     end)
   end
 
   defp fail(s, reason), do: finish_turn(%{s | last_error: reason}, :failed)
+
+  defp deliver_goal(%{goal_binding: nil} = s, next), do: next.(s)
+
+  defp deliver_goal(s, next) do
+    goal = Keyword.fetch!(s.opts, :goal)
+    receipts = Map.get(s.conversation, :goal_outbox, [])
+    binding = s.goal_binding
+
+    task =
+      Task.Supervisor.async_nolink(s.supervisor, fn ->
+        with {:ok, responses} <- GoalBridge.deliver(goal, binding, receipts),
+             {:ok, binding} <- Goal.attribution(goal, binding),
+             do: {:ok, responses, binding}
+      end)
+
+    timeout =
+      if s.cleanup_due,
+        do: max(1, min(s.limits.commit, s.cleanup_due - System.monotonic_time(:millisecond))),
+        else: effect_timeout(s, s.limits.commit)
+
+    generation = make_ref()
+    timer = Process.send_after(self(), {:goal_timeout, task.ref, generation}, timeout)
+    %{s | goal_delivery: %{task: task, timer: timer, timer_generation: generation, next: next}}
+  end
+
+  defp goal_provider_usage(%{goal_binding: nil}, conversation, _usage, _identity),
+    do: {:ok, conversation}
+
+  defp goal_provider_usage(s, conversation, snapshots, identity) do
+    ledger = Map.get(conversation, :goal_usage, elem(Usage.new(), 1))
+
+    with {:ok, ledger, report} <- GoalBridge.report(ledger, snapshots, identity) do
+      report = cumulative_report(report, identity)
+      {:ok, GoalBridge.queue(s, Map.put(conversation, :goal_usage, ledger), [{:usage, report}])}
+    end
+  end
+
+  defp checkpoint_provider_progress(%{goal_binding: nil} = s, event, _from) do
+    if event.type != :response_completed, do: emit(s, event)
+    {:reply, :ok, s}
+  end
+
+  defp checkpoint_provider_progress(s, event, from) do
+    {:provider, identity, _catalog} = s.effect.role
+    usage = Map.get(event, :usage)
+    prior_usage = get_in(s.conversation, [:goal_stream_usage, identity.attempt_id]) || %{}
+
+    baseline_usage =
+      if usage,
+        do:
+          Map.merge(prior_usage, usage, fn _key, old, new ->
+            if new in [nil, :unknown], do: old, else: new
+          end)
+
+    activity_key = {identity.attempt_id, :reasoning}
+    activity = Map.get(s.conversation, :goal_activity, %{})
+
+    thinking =
+      event.type == :content_thinking_delta and
+        is_binary(event[:delta]) and String.trim(event.delta) != "" and
+        not Map.has_key?(activity, activity_key)
+
+    events = if usage, do: [{:usage, cumulative_report(usage, identity)}], else: []
+
+    events =
+      if thinking,
+        do: events ++ [{:item_completed, %{kind: :reasoning, text: event.delta}}],
+        else: events
+
+    if events == [] do
+      if event.type != :response_completed, do: emit(s, event)
+      {:reply, :ok, s}
+    else
+      previous_goal_id = s.goal_binding.expected_goal_id
+      s = suspend_provider_idle(%{s | callers: [from | s.callers], provider_progress_from: from})
+
+      {:noreply,
+       deliver_goal(s, fn s ->
+         baseline_events =
+           if s.goal_binding.expected_goal_id != previous_goal_id do
+             baseline = get_in(s.conversation, [:goal_stream_usage, identity.attempt_id])
+
+             baseline =
+               if baseline, do: Map.put(baseline, :attempt_id, identity.attempt_id), else: nil
+
+             [
+               {:turn_started,
+                %{
+                  mode: goal_mode(s),
+                  trigger: Keyword.get(s.opts, :goal_trigger, :user),
+                  usage_baseline: baseline
+                }}
+             ]
+           else
+             []
+           end
+
+         conversation =
+           if thinking,
+             do: Map.put(s.conversation, :goal_activity, Map.put(activity, activity_key, true)),
+             else: s.conversation
+
+         conversation =
+           if usage,
+             do:
+               Map.update(
+                 conversation,
+                 :goal_stream_usage,
+                 %{identity.attempt_id => baseline_usage},
+                 &Map.put(&1, identity.attempt_id, baseline_usage)
+               ),
+             else: conversation
+
+         conversation = GoalBridge.queue(s, conversation, baseline_events ++ events)
+
+         checkpoint(s, conversation, fn s ->
+           deliver_goal(s, fn s ->
+             if event.type != :response_completed, do: emit(s, event)
+             s = refresh_provider_idle(%{s | provider_progress_from: nil})
+             reply(s, from, :ok)
+           end)
+         end)
+       end)}
+    end
+  end
+
+  defp cumulative_report(usage, identity) do
+    metrics = Map.take(usage, [:input_tokens, :cached_tokens, :output_tokens, :reasoning_tokens])
+    hash = digest(metrics)
+
+    metrics
+    |> Map.merge(Map.take(identity, [:run_id, :incarnation, :attempt_id, :step_id]))
+    |> Map.put(
+      :identity,
+      "#{identity.run_id}:#{identity.incarnation}:#{identity.attempt_id}:#{hash}"
+    )
+    |> Map.put(:cumulative, true)
+  end
+
+  defp goal_mode(%{goal_binding: nil}), do: :execution
+  defp goal_mode(s), do: s.goal_binding.mode
+  defp goal_tool_context(%{goal_binding: nil}), do: %{}
+
+  defp goal_tool_context(s),
+    do: %{goal: Keyword.fetch!(s.opts, :goal), goal_binding: s.goal_binding}
+
+  defp goal_text(%{content: text}) when is_binary(text), do: text
+
+  defp goal_text(%{content: blocks}) when is_list(blocks),
+    do: Enum.map_join(blocks, "", fn block -> Map.get(block, :text, "") end)
+
+  defp goal_error_class(%{class: class}), do: class
+  defp goal_error_class(_), do: :provider_error
+  defp goal_abort_reason(:cancelled), do: :interrupted
+  defp goal_abort_reason(reason), do: reason
+
+  defp goal_tool_payload(invocation, result),
+    do: %{
+      tool: invocation.tool_name,
+      success: result[:is_error] != true,
+      handler_executed: true,
+      settlement: :confirmed
+    }
+
+  defp unbind_goal(%{goal_binding: nil} = s, next), do: next.(s)
+
+  defp unbind_goal(s, next) do
+    goal = Keyword.fetch!(s.opts, :goal)
+    binding = s.goal_binding
+    task = Task.Supervisor.async_nolink(s.supervisor, fn -> Goal.unbind(goal, binding) end)
+
+    timeout =
+      if s.cleanup_due,
+        do: max(1, min(s.limits.commit, s.cleanup_due - System.monotonic_time(:millisecond))),
+        else: min(s.limits.commit, s.limits.cleanup)
+
+    generation = make_ref()
+    timer = Process.send_after(self(), {:goal_timeout, task.ref, generation}, timeout)
+
+    %{
+      s
+      | goal_delivery: %{
+          task: task,
+          timer: timer,
+          timer_generation: generation,
+          kind: :unbind,
+          next: next
+        }
+    }
+  end
 
   defp checkpoint(s, conversation, next, opts \\ []) do
     input =
@@ -1060,8 +1410,11 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     input =
       case Keyword.get(opts, :execution_deadline) do
-        deadline when is_integer(deadline) -> Map.put(input, :execution_deadline, deadline)
-        _ -> input
+        deadline when is_integer(deadline) or deadline == :infinity ->
+          Map.put(input, :execution_deadline, deadline)
+
+        _ ->
+          input
       end
 
     commit(s, {:conversation_updated, now(), input}, %{}, [], fn s, _ ->
@@ -1087,8 +1440,47 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp enqueue_or_commit(%{commit: nil} = s, command, meta, extra, next),
     do: do_commit(s, command, meta, extra, next)
 
+  defp enqueue_or_commit(s, {kind, at, input} = command, meta, extra, next) do
+    command =
+      if kind in [:provider_completed, :tool_completed] and
+           is_map(get_in(input, [:context, :conversation])),
+         do: {kind, at, Map.put(input, :base_conversation, s.conversation)},
+         else: command
+
+    %{s | commit_queue: :queue.in({command, meta, extra, next}, s.commit_queue)}
+  end
+
   defp enqueue_or_commit(s, command, meta, extra, next),
     do: %{s | commit_queue: :queue.in({command, meta, extra, next}, s.commit_queue)}
+
+  defp rebase_queued_command(s, {kind, at, %{base_conversation: base} = input})
+       when kind in [:provider_completed, :tool_completed] do
+    desired = get_in(input, [:context, :conversation])
+    conversation = merge_conversation(base, s.conversation, desired)
+
+    conversation =
+      if Map.has_key?(desired, :goal_outbox) do
+        appended = Enum.drop(desired.goal_outbox, length(Map.get(base, :goal_outbox, [])))
+        revision = s.run.expected_revision + 1
+
+        appended =
+          Enum.with_index(appended, fn receipt, index ->
+            %{
+              receipt
+              | revision: revision,
+                receipt_id:
+                  "#{receipt.run_id}:#{receipt.incarnation}:#{revision}:#{receipt.type}:#{index}"
+            }
+          end)
+
+        Map.put(conversation, :goal_outbox, Map.get(s.conversation, :goal_outbox, []) ++ appended)
+      else
+        conversation
+      end
+
+    {kind, at,
+     input |> Map.delete(:base_conversation) |> put_in([:context, :conversation], conversation)}
+  end
 
   defp rebase_queued_command(s, {kind, at, input} = command)
        when kind == :conversation_updated and is_map(input) do
@@ -1168,7 +1560,13 @@ defmodule Backplane.AgentRuntime.Conversation do
       end
 
     task = Task.Supervisor.async_nolink(s.supervisor, fn -> function.(context) end)
-    timeout = max(1, min(s.limits.effect, s.run.deadline - now()))
+
+    configured =
+      if match?({:provider, _, _}, role),
+        do: s.limits.provider_idle || s.limits.effect,
+        else: s.limits.effect
+
+    timeout = effect_timeout(s, configured)
     generation = make_ref()
     timer = Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
 
@@ -1203,6 +1601,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       GenServer.call(owner, {:interact, token, request}, :infinity)
     end)
     |> Map.put(:emit, fn event -> GenServer.call(owner, {:chunk, token, event}, :infinity) end)
+    |> Map.put(:provider_emit, fn event ->
+      GenServer.call(owner, {:provider_chunk, token, event}, :infinity)
+    end)
     |> Map.put(:request_new_context, fn ->
       GenServer.call(owner, {:request_new_context, token}, :infinity)
     end)
@@ -1225,6 +1626,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp stop(s, reason) do
     s = invalidate_run_timer(s)
     task_stop = if s.effect, do: kill_task(s.effect), else: :ok
+    if s.goal_delivery, do: kill_task(s.goal_delivery)
 
     if s.nested do
       if s.nested.task, do: kill_task(s.nested)
@@ -1242,6 +1644,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     s = %{
       s
       | effect: nil,
+        goal_delivery: nil,
         nested: nil,
         nested_admission: nil,
         commit_queue: :queue.new(),
@@ -1271,6 +1674,15 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp advance_stop(s) do
     cond do
+      s.goal_delivery != nil ->
+        s
+
+      s.effect != nil ->
+        s
+
+      Map.get(s.conversation, :goal_outbox, []) != [] and s.run.state == :running ->
+        deliver_goal(s, &advance_stop/1)
+
       RunKernel.terminal?(s.run.state) ->
         %{s | stopping: nil, phase: :terminal}
 
@@ -1279,6 +1691,11 @@ defmodule Backplane.AgentRuntime.Conversation do
           s.conversation
           |> Map.put(:pending_interaction, nil)
           |> Map.put(:queue_status, :suspended)
+
+        conversation =
+          GoalBridge.queue(s, conversation, [
+            {:turn_aborted, %{reason: goal_abort_reason(s.stopping.reason)}}
+          ])
 
         checkpoint(s, conversation, & &1)
 
@@ -1297,8 +1714,10 @@ defmodule Backplane.AgentRuntime.Conversation do
         commit(%{s | stopping: nil}, {:cleanup_settled, now(), settlement}, %{}, [], fn s, _ ->
           s = %{s | phase: :terminal}
 
-          emit(s, %{type: :run_cancelled, outcome: s.run.outcome, state: s.run.state})
-          s
+          unbind_goal(s, fn s ->
+            emit(s, %{type: :run_cancelled, outcome: s.run.outcome, state: s.run.state})
+            s
+          end)
         end)
 
       true ->
@@ -1312,6 +1731,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp storage_failed(s, error) do
     s = invalidate_run_timer(s)
     if s.effect, do: kill_task(s.effect)
+    if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.nested && s.nested.task, do: kill_task(s.nested)
     if s.nested, do: GenServer.reply(s.nested.from, {:error, error})
     Enum.each(s.callers, &GenServer.reply(&1, {:error, error}))
@@ -1323,6 +1743,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     %{
       s
       | phase: :storage_failed,
+        goal_delivery: nil,
         effect: nil,
         nested: nil,
         nested_admission: nil,
@@ -1385,7 +1806,17 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp settle_nested_result(s, nested, normalized) do
-    completion = Map.put(nested.invocation, :result, tool_result(normalized))
+    result = tool_result(normalized)
+
+    conversation =
+      GoalBridge.queue(s, s.conversation, [
+        {:tool_finished, goal_tool_payload(nested.invocation, result)}
+      ])
+
+    completion =
+      nested.invocation
+      |> Map.put(:result, result)
+      |> Map.put(:context, Map.put(s.run.context, :conversation, conversation))
 
     s =
       case s.interaction do
@@ -1399,8 +1830,11 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     next = fn next_state, _prepared ->
       next_state = settle_nested_catalog(next_state, nested.invocation, normalized)
-      GenServer.reply(nested.from, normalized)
-      %{next_state | nested: nil}
+
+      deliver_goal(next_state, fn acknowledged ->
+        GenServer.reply(nested.from, normalized)
+        %{acknowledged | nested: nil}
+      end)
     end
 
     # Expire all producer callbacks immediately; acknowledged successful settlement
@@ -1425,8 +1859,101 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp uncertain_error(_),
     do: Error.new(:unknown_outcome, "tool result lacks trustworthy settlement evidence")
 
+  defp valid_provider_event?(%{type: type, delta: delta})
+       when type in [:content_text_delta, :content_thinking_delta, :tool_call_arguments_delta],
+       do: is_binary(delta)
+
+  defp valid_provider_event?(%{type: :tool_call_completed} = event),
+    do: match?({:ok, _}, collect(%{tools: []}, event))
+
+  defp valid_provider_event?(
+         %{type: :response_completed, message: %{role: :assistant, content: content}} = event
+       ),
+       do: (is_binary(content) or is_list(content)) and valid_usage_event?(event)
+
+  defp valid_provider_event?(%{type: :usage_updated, usage: usage}),
+    do: valid_normalized_usage?(usage)
+
+  defp valid_provider_event?(%{type: :usage_updated}), do: false
+
+  defp valid_provider_event?(%{type: type}),
+    do: type in [:response_started, :tool_call_started, :provider_hosted_event, :usage_updated]
+
+  defp valid_provider_event?(_), do: false
+
+  defp valid_usage_event?(event),
+    do:
+      not Map.has_key?(event, :usage) or is_nil(event.usage) or
+        valid_normalized_usage?(event.usage)
+
+  defp valid_normalized_usage?(usage) when is_map(usage),
+    do:
+      Enum.all?([:input_tokens, :cached_tokens, :output_tokens, :reasoning_tokens], fn key ->
+        value = Map.get(usage, key)
+        value in [nil, :unknown] or (is_integer(value) and value >= 0)
+      end)
+
+  defp valid_normalized_usage?(_), do: false
+
+  defp cumulative_provider_progress?(%{goal_binding: nil}, _event), do: true
+
+  defp cumulative_provider_progress?(s, %{usage: usage}) when is_map(usage) do
+    {:provider, identity, _} = s.effect.role
+    previous = get_in(s.conversation, [:goal_stream_usage, identity.attempt_id]) || %{}
+
+    Enum.all?([:input_tokens, :cached_tokens, :output_tokens, :reasoning_tokens], fn key ->
+      old = previous[key]
+      new = usage[key]
+      not (is_integer(old) and is_integer(new) and new < old)
+    end)
+  end
+
+  defp cumulative_provider_progress?(_s, _event), do: true
+
+  defp refresh_provider_idle(%{phase: :waiting_interaction} = s), do: s
+  defp refresh_provider_idle(%{limits: %{provider_idle: nil}} = s), do: s
+
+  defp refresh_provider_idle(s) do
+    if s.effect.timer, do: Process.cancel_timer(s.effect.timer)
+    generation = make_ref()
+    timeout = effect_timeout(s, s.limits.provider_idle)
+    timer = Process.send_after(self(), {:timeout, s.effect.task.ref, generation}, timeout)
+
+    %{
+      s
+      | effect: %{s.effect | timer: timer, timer_generation: generation},
+        effect_live_deadline: System.monotonic_time(:millisecond) + timeout
+    }
+  end
+
+  defp suspend_provider_idle(%{limits: %{provider_idle: nil}} = s), do: s
+
+  defp suspend_provider_idle(s) do
+    if s.effect.timer, do: Process.cancel_timer(s.effect.timer)
+    %{s | effect: %{s.effect | timer: nil, timer_generation: nil}, effect_live_deadline: nil}
+  end
+
+  defp effect_timeout(%{run: %{deadline: :infinity}}, configured), do: configured
+  defp effect_timeout(s, configured), do: max(1, min(configured, s.run.deadline - now()))
+
+  defp run_timer(%{deadline: :infinity}), do: {nil, nil}
+
+  defp run_timer(run) do
+    generation = make_ref()
+
+    timer =
+      Process.send_after(
+        self(),
+        {:deadline, run.run_id, run.incarnation, generation},
+        max(0, run.deadline - now())
+      )
+
+    {timer, generation}
+  end
+
   defp pause_deadlines(s) do
-    run_remaining = max(0, s.run.deadline - now())
+    run_remaining =
+      if(s.run.deadline == :infinity, do: :infinity, else: max(0, s.run.deadline - now()))
 
     effect_remaining =
       case s.effect_live_deadline do
@@ -1469,15 +1996,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp resume_deadline(s), do: s.run.deadline
 
   defp resume_deadlines(s) do
-    generation = make_ref()
-
-    timer =
-      Process.send_after(
-        self(),
-        {:deadline, s.run.run_id, s.run.incarnation, generation},
-        max(0, s.run.deadline - now())
-      )
-
+    {timer, generation} = run_timer(s.run)
     s = %{s | timer: timer, timer_generation: generation}
 
     s =

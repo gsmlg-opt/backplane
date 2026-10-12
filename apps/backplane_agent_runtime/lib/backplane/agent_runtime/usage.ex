@@ -27,8 +27,6 @@ defmodule Backplane.AgentRuntime.Usage do
              Backplane.AgentRuntime.Error.new(:resource_conflict, "usage report conflict")}
           end
 
-          {:ok, usage, %{status: :duplicate, identity: identity}}
-
         nil ->
           totals = add_reports(usage.totals, delta)
 

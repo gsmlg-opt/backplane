@@ -145,3 +145,82 @@ not treat the new classification as a fully validated host upgrade boundary.
 A replacement child run uses a fresh storage aggregate and committed history;
 it never automatically replays a restored nonterminal run or a completed tool
 mutation. The old run's revision history remains distinct from the replacement.
+
+
+## Explicit disabled deadlines
+
+The durable run deadline is `integer() | :infinity | nil`. Only `:infinity`
+disables the root deadline. `nil` keeps the legacy unset meaning and receives a
+finite default on admission. A finite admitted record remains finite even when
+new options request infinity. An explicit saved infinity remains infinite when
+options are omitted.
+
+JSON adapters encode the sentinel as `"infinity"` and decode it with an explicit
+case into `:infinity`. Do not create atoms from stored strings. Effect, commit,
+cleanup, work and native command bounds remain independently finite. Restoring
+an unfinished infinite run still requires reconciliation and fencing before
+admission; it never authorizes replay of its external effects.
+
+## Goal records and accounting recovery
+
+Conversation revokes its Goal binding in a supervised task before emitting the
+terminal run notification. The acknowledgement is bounded by commit and cleanup
+limits. Goal death or missing acknowledgement leaves a controlled
+`storage_failed` recovery boundary; hosts must reconcile it before new admission,
+even if the journal already contains a terminal run.
+
+`Goal.Store` is a separate host-owned thread record contract:
+
+```elixir
+@callback load(term(), binary()) :: {:ok, map()} | {:error, Error.t()}
+@callback compare_and_swap(term(), binary(), non_neg_integer(),
+  binary() | nil, map()) :: {:ok, map()} | {:error, Error.t()}
+```
+
+For an absent thread, return the empty record from `Goal.State.new(thread_id,
+[])`. CAS must compare both revision and current `goal_id` (nil for no Goal),
+persist the entire next record atomically, advance revision exactly once and
+return that committed record. A conflict returns `Error` class
+`:resource_conflict`. Clearing retains a tombstone revision, so delete/recreate
+cannot reuse an old receipt or mutation fence. Adapter acknowledgements must
+represent their documented durable transaction/flush boundary.
+
+Persist the full private snapshot, including receipt digests, event revisions,
+cumulative usage baselines, mutation invocation responses, audit counters,
+budget-steering delivery state and continuation deferral. The public
+`Goal.get/1` response is insufficient for recovery. Never store PIDs, references,
+functions, ports, authority capabilities or BEAM monotonic timestamps. Elapsed
+whole seconds are persisted; a restored owner establishes a fresh local clock.
+The file-backed test fixture proves package restart handling, not production
+adapter durability.
+
+Conversation checkpoints the Goal receipt outbox with the acknowledged
+provider/tool/turn transition. Goal CAS records the receipt and response before
+Conversation clears the outbox in another checkpoint. A lost reply may therefore
+leave either an undelivered receipt or an already-applied receipt. Redeliver the
+same receipt identity and payload; matching duplicates return the saved response,
+while changed duplicates conflict. Recover accounting without replaying the
+provider or external tool. Goal tool mutation and invocation response are also
+stored together so a repeated committed invocation returns its original result.
+
+After acknowledgement failure, load and fence/reconcile the ordinary run first.
+`Goal.restore/1` reloads its record and invalidates live bindings/reservations;
+it does not scan run journals or launch a continuation. The host reconstructs
+fresh authorized bindings, then uses `GoalBridge.redeliver(goal, binding, run)`
+for each retained committed outbox. Resolve changed Goal identity and uncertain
+effects explicitly before fresh admission. Only after delivery and ordinary
+Session readiness may the host signal `Goal.idle/2`. Restarting clears
+process-local pending-receipt tracking, so persisted run outboxes remain the
+host's recovery authority.
+
+Descendant bindings capture root thread and Goal identity at admission. Their
+capabilities authorize root usage accounting only; they cannot read or mutate
+the root Goal through its tools. Child threads that need their own Goal tools
+must receive their own host-owned Goal. Plan mode is inherited at delegation,
+and its lifecycle does not change root Goal status or failure audits.
+Their reports debit that root once, including while the root run is idle; completing
+a child never adds its aggregate usage a second time. Replacing or clearing the
+root fences old descendant receipts from the new Goal. `fork_snapshot/2` copies
+the Goal snapshot into an empty target thread, retaining its Goal identity,
+status, budget, totals and timestamps. Run receipts, live bindings, reservations
+and continuation ownership are fresh in the target.

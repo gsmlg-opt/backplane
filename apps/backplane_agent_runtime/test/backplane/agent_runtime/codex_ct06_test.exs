@@ -1,3 +1,5 @@
+Code.require_file("../../fixtures/goal_file_store.exs", __DIR__)
+
 defmodule Backplane.AgentRuntime.CodexCT06Test do
   use ExUnit.Case, async: true
 
@@ -93,6 +95,121 @@ defmodule Backplane.AgentRuntime.CodexCT06Test do
 
     assert {:error, %{class: :resource_conflict}} =
              extension_call(runtime, @scope.run_id, "create_goal", %{"objective" => "replace"})
+  end
+
+  test "reference goal creation replaces only completed goals" do
+    runtime = start_supervised!({ExtensionRuntime, scope: @scope})
+
+    assert {:ok, _} =
+             extension_call(runtime, @scope.run_id, "create_goal", %{"objective" => "first"})
+
+    for status <- ["blocked", "paused"] do
+      assert {:ok, _} =
+               extension_call(runtime, @scope.run_id, "update_goal", %{"status" => status})
+
+      assert {:error, %{class: :resource_conflict}} =
+               extension_call(runtime, @scope.run_id, "create_goal", %{
+                 "objective" => "replacement"
+               })
+    end
+
+    assert {:ok, _} =
+             extension_call(runtime, @scope.run_id, "update_goal", %{"status" => "complete"})
+
+    assert {:ok, %{goal: %{objective: "replacement"}}} =
+             extension_call(runtime, @scope.run_id, "create_goal", %{"objective" => "replacement"})
+  end
+
+  defmodule GoalHost do
+    def record_user_instruction(_, _, _), do: :ok
+    def start_turn_if_idle(_, _, _), do: {:ok, {:not_submitted, :busy}}
+  end
+
+  @tag :tmp_dir
+  test "extension goal tools delegate to persistent thread accounting across runs", ctx do
+    alias Backplane.AgentRuntime.{Goal, GoalFileStore}
+    store = start_supervised!({GoalFileStore, ctx.tmp_dir})
+
+    goal =
+      start_supervised!(
+        {Goal,
+         thread_id: "thread",
+         owner_pid: self(),
+         store: GoalFileStore,
+         store_context: store,
+         host: GoalHost,
+         host_context: nil}
+      )
+
+    authority = %{run_id: "r", caller: "host", grants: ["create_goal", "get_goal", "update_goal"]}
+
+    {:ok, binding} =
+      Goal.bind(goal, %{
+        thread_id: "thread",
+        run_id: "r",
+        incarnation: 1,
+        authority: authority,
+        usage_authoritative: true
+      })
+
+    runtime = start_supervised!({ExtensionRuntime, scope: @scope, goal: goal})
+
+    operation = %{
+      run_id: "r",
+      incarnation: 1,
+      invocation_id: "create-1",
+      tool_name: "create_goal",
+      arguments: %{"objective" => "ship", "token_budget" => 100},
+      backend_context: %{runtime: runtime, goal_binding: binding}
+    }
+
+    assert {:ok, first} = ExtensionRuntime.call(operation)
+    assert {:ok, ^first} = ExtensionRuntime.call(operation)
+    {:ok, binding} = Goal.attribution(goal, binding)
+    {:ok, snapshot} = Goal.snapshot(goal)
+
+    assert {:ok, _} =
+             Goal.committed(goal, %{
+               binding: binding,
+               receipt_id: "usage-1",
+               revision: 2,
+               thread_id: "thread",
+               run_id: "r",
+               incarnation: 1,
+               turn_id: "t",
+               expected_goal_id: snapshot.goal.goal_id,
+               type: :usage,
+               payload: %{
+                 attempt_id: "a",
+                 identity: "a",
+                 input_tokens: 50,
+                 cached_tokens: 40,
+                 output_tokens: 7
+               }
+             })
+
+    next_authority = %{authority | run_id: "other"}
+
+    {:ok, next_binding} =
+      Goal.bind(goal, %{
+        thread_id: "thread",
+        run_id: "other",
+        incarnation: 1,
+        authority: next_authority,
+        usage_authoritative: true
+      })
+
+    next_runtime =
+      start_supervised!({ExtensionRuntime, scope: @other, goal: goal}, id: :next_extensions)
+
+    assert {:ok, %{goal: %{tokens_used: 17}, remaining_tokens: 83}} =
+             ExtensionRuntime.call(%{
+               run_id: "other",
+               incarnation: 1,
+               tool_name: "get_goal",
+               arguments: %{},
+               backend_context: %{runtime: next_runtime, goal_binding: next_binding}
+             })
   end
 
   test "explicit owner death removes the ephemeral runtime" do
