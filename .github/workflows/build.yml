@@ -54,7 +54,7 @@ jobs:
           - release: host_agent
             target:
               name: macos-arm64
-              runner: macos-14
+              runner: macos-latest
 
     steps:
       - name: Checkout
