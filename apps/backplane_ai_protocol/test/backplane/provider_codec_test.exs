@@ -191,7 +191,8 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
                 kind: :invalid_request,
                 stage: :validation,
                 message: "Provider response is not a JSON object"
-              }, _state} =
+              },
+              _state} =
                Codec.stream_feed(protocol, Codec.stream_new(protocol, []), "data: {\n\n")
 
       state = Codec.stream_new(protocol, [])
@@ -343,7 +344,7 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
              Codec.encode_request(:openai, request, opts)
 
     assert message["reasoning_content"] == "why"
-    assert message["reasoning_details"] == [state.payload]
+    assert message["reasoning_details"] == state.payload
 
     body =
       Jason.encode!(%{
@@ -370,6 +371,70 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
              Codec.decode_error(:openai, 401, [], %{"error" => %{"message" => secret}}, [])
 
     refute message =~ secret
+  end
+
+  test "openai concatenates MiniMax detail payloads in order and preserves opaque objects" do
+    first = %{"type" => "reasoning.text", "text" => "first"}
+
+    second = %{
+      "type" => "reasoning.encrypted",
+      "data" => "opaque",
+      "unknown" => %{"nested" => [%{"value" => 1}, %{"value" => 2}]}
+    }
+
+    third = %{"type" => "reasoning.text", "text" => "third"}
+    fourth = %{"type" => "reasoning.text", "text" => "fourth"}
+    fifth = %{"type" => "reasoning.text", "text" => "fifth"}
+
+    payloads = [first, [second, third], [], [fourth], fifth]
+
+    content =
+      Enum.map(payloads, fn payload ->
+        {:ok, state} = provider_state(:openai, "minimax_reasoning_details", payload, "m")
+        %{type: :provider_state, state: state}
+      end)
+
+    {:ok, request} =
+      Request.new(%{model: "m", input: [%{role: :assistant, content: content}]})
+
+    opts = [
+      profile: "p",
+      endpoint: "https://api.example",
+      account: "account-a",
+      credential_scope: "scope-a",
+      credential_version: "1"
+    ]
+
+    assert {:ok, %{"messages" => [message]}} =
+             Codec.encode_request(:openai, request, opts)
+
+    assert message["reasoning_details"] == [first, second, third, fourth, fifth]
+  end
+
+  test "openai replays decoded MiniMax object and list details as one top-level list" do
+    first = %{"type" => "reasoning.text", "text" => "first"}
+    second = %{"type" => "reasoning.encrypted", "data" => "opaque"}
+    opts = [profile: "p", endpoint: "https://api.example", model: "m"]
+
+    for payload <- [first, [first, second]] do
+      body = %{
+        "model" => "m",
+        "choices" => [
+          %{
+            "finish_reason" => "stop",
+            "message" => %{"content" => "answer", "reasoning_details" => payload}
+          }
+        ]
+      }
+
+      assert {:ok, response} = Codec.decode_response(:openai, 200, [], body, opts)
+
+      assert {:ok, request} =
+               Request.new(%{model: "m", input: [%{role: :assistant, content: response.output}]})
+
+      assert {:ok, %{"messages" => [message]}} = Codec.encode_request(:openai, request, opts)
+      assert message["reasoning_details"] == List.wrap(payload)
+    end
   end
 
   test "openai rejects incomplete tools at DONE and preserves streaming reasoning details" do

@@ -210,7 +210,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
          reasoning,
          details
        ),
-       do: encode_blocks(rest, content, calls, reasoning, [payload | details])
+       do:
+         encode_blocks(rest, content, calls, reasoning, Enum.reverse(List.wrap(payload), details))
 
   defp encode_blocks(_, _, _, _, _),
     do: {:error, Error.incompatible!("OpenAI cannot preserve content block")}
