@@ -46,7 +46,8 @@ defmodule Backplane.LLM.Router do
     Request,
     Resolver,
     Speech,
-    Transcription
+    Transcription,
+    Voices
   }
 
   alias Backplane.Audio.Media.Session
@@ -90,6 +91,15 @@ defmodule Backplane.LLM.Router do
 
   post "/v1/embeddings" do
     proxy_embedding_request(conn)
+  end
+
+  get "/v1/audio/voices" do
+    conn = fetch_query_params(conn)
+
+    case Voices.list(conn.query_params["model"]) do
+      {:ok, voices} -> send_json(conn, 200, %{object: "list", data: voices})
+      {:error, %Error{} = error} -> Error.send(conn, error)
+    end
   end
 
   post "/v1/audio/speech" do

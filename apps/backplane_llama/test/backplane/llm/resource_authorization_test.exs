@@ -9,6 +9,7 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
   test "maps routes to their least operation scope" do
     assert ResourceAuthorization.required_scope(conn(:get, "/v1")) == nil
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/models")) == "llm::models"
+    assert ResourceAuthorization.required_scope(conn(:get, "/v1/audio/voices")) == "llm::models"
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/codex/models")) == "llm::models"
 
     assert ResourceAuthorization.required_scope(conn(:get, "/v1/providers/openai-codex/models")) ==
@@ -47,6 +48,17 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
     assert conn.halted
     assert conn.status == 403
     assert Jason.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
+  end
+
+  test "voice discovery requires model scope for OAuth and DB clients" do
+    for kind <- [:oauth, :client_token] do
+      denied = authorize(:get, "/v1/audio/voices", kind, ["llm::invoke"])
+      assert denied.status == 403
+
+      for scopes <- [["llm::models"], ["llm::*"], ["*"]] do
+        refute authorize(:get, "/v1/audio/voices", kind, scopes).halted
+      end
+    end
   end
 
   test "accepts exact and wildcard model scopes" do
