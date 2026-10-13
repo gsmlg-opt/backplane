@@ -251,39 +251,43 @@ defmodule Backplane.AgentRuntime.ExecutionCorrectnessTest do
     assert budget.used == 0
   end
 
-  test "synchronous execution bounds a hung effect and reports uncertainty" do
-    {:ok, table} = EphemeralStore.new(1)
-    {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 1})
-    registry = registry(BlockingBackend, self())
+  for run_timeout <- [2_000, :infinity] do
+    @tag run_timeout: run_timeout
+    test "synchronous execution bounds a hung effect and reports uncertainty (#{inspect(run_timeout)} run timeout)",
+         %{run_timeout: run_timeout} do
+      {:ok, table} = EphemeralStore.new(1)
+      {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 1})
+      registry = registry(BlockingBackend, self())
 
-    task =
-      Task.async(fn ->
-        Execution.run(
-          EphemeralStore,
-          table,
-          running_record(),
-          %{command: {:tool_invoked, 11, invocation("invocation_1")}},
-          registry: registry,
-          authority: authority(),
-          budget: budget,
-          commit_timeout: 500,
-          effect_timeout: 250,
-          run_timeout: 2_000
-        )
+      task =
+        Task.async(fn ->
+          Execution.run(
+            EphemeralStore,
+            table,
+            running_record(),
+            %{command: {:tool_invoked, 11, invocation("invocation_1")}},
+            registry: registry,
+            authority: authority(),
+            budget: budget,
+            commit_timeout: 500,
+            effect_timeout: 250,
+            run_timeout: run_timeout
+          )
+        end)
+
+      on_exit(fn ->
+        if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
       end)
 
-    on_exit(fn ->
-      if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
-    end)
+      assert_receive {:tool_started, _worker}, 1_000
 
-    assert_receive {:tool_started, _worker}, 1_000
+      assert {:ok, {:error, %Error{class: :timeout, details: %{certainty: :uncertain}}}} =
+               Task.yield(task, 2_000)
 
-    assert {:ok, {:error, %Error{class: :timeout, details: %{certainty: :uncertain}}}} =
-             Task.yield(task, 2_000)
-
-    assert {:ok, stored} = EphemeralStore.load(table, "run_1")
-    assert stored.run.state == :unknown_outcome
-    assert stored.run.execution_intents["tool:invocation_1"].status == :uncertain
+      assert {:ok, stored} = EphemeralStore.load(table, "run_1")
+      assert stored.run.state == :unknown_outcome
+      assert stored.run.execution_intents["tool:invocation_1"].status == :uncertain
+    end
   end
 
   test "invalid timeout configuration is rejected and stale timeout identities are ignored" do
@@ -473,25 +477,30 @@ defmodule Backplane.AgentRuntime.ExecutionCorrectnessTest do
     assert Process.alive?(controller)
   end
 
-  test "synchronous commit has a finite bound and never dispatches without acknowledgement" do
-    {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 1})
+  for run_timeout <- [1_000, :infinity] do
+    @tag run_timeout: run_timeout
+    test "synchronous commit has a finite bound and never dispatches without acknowledgement (#{inspect(run_timeout)} run timeout)",
+         %{run_timeout: run_timeout} do
+      {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 1})
 
-    assert {:error, %Error{class: :timeout, details: %{certainty: :uncertain}}} =
-             Execution.run(
-               HangingStore,
-               %{test: self()},
-               running_record(),
-               %{command: {:tool_invoked, 11, invocation("invocation_1")}},
-               registry: registry(SpyBackend, self()),
-               authority: authority(),
-               budget: budget,
-               commit_timeout: 250,
-               effect_timeout: 100,
-               run_timeout: 1_000
-             )
+      assert {:error, %Error{class: :timeout, details: %{certainty: :uncertain}}} =
+               Execution.run(
+                 HangingStore,
+                 %{test: self()},
+                 running_record(),
+                 %{command: {:tool_invoked, 11, invocation("invocation_1")}},
+                 registry: registry(SpyBackend, self()),
+                 authority: authority(),
+                 budget: budget,
+                 commit_timeout: 250,
+                 effect_timeout: 100,
+                 run_timeout: run_timeout
+               )
 
-    assert_receive {:commit_started, _worker}
-    refute_receive {:tool_called, _}
+      assert_receive {:commit_started, worker}
+      refute Process.alive?(worker)
+      refute_receive {:tool_called, _}
+    end
   end
 
   test "expired synchronous cleanup remains available within its own finite envelope" do
@@ -575,34 +584,38 @@ defmodule Backplane.AgentRuntime.ExecutionCorrectnessTest do
              ExecutionController.status(failed_cleanup)
   end
 
-  test "synchronous uncertain settlement is bounded by cleanup timeout" do
-    {:ok, table} = EphemeralStore.new(1)
-    {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 1})
-    registry = registry(BlockingBackend, self())
-    context = %{table: table, test: self()}
+  for run_timeout <- [1_000, :infinity] do
+    @tag run_timeout: run_timeout
+    test "synchronous uncertain settlement is bounded by cleanup timeout (#{inspect(run_timeout)} run timeout)",
+         %{run_timeout: run_timeout} do
+      {:ok, table} = EphemeralStore.new(1)
+      {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 1})
+      registry = registry(BlockingBackend, self())
+      context = %{table: table, test: self()}
 
-    task =
-      Task.async(fn ->
-        Execution.run(
-          SelectiveStore,
-          context,
-          running_record(),
-          %{command: {:tool_invoked, 11, invocation("invocation_1")}},
-          registry: registry,
-          authority: authority(),
-          budget: budget,
-          commit_timeout: 200,
-          effect_timeout: 20,
-          cleanup_timeout: 20,
-          run_timeout: 1_000
-        )
+      task =
+        Task.async(fn ->
+          Execution.run(
+            SelectiveStore,
+            context,
+            running_record(),
+            %{command: {:tool_invoked, 11, invocation("invocation_1")}},
+            registry: registry,
+            authority: authority(),
+            budget: budget,
+            commit_timeout: 200,
+            effect_timeout: 20,
+            cleanup_timeout: 20,
+            run_timeout: run_timeout
+          )
+        end)
+
+      on_exit(fn ->
+        if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
       end)
 
-    on_exit(fn ->
-      if Process.alive?(task.pid), do: Task.shutdown(task, :brutal_kill)
-    end)
-
-    assert {:ok, {:error, %Error{class: :timeout}}} = Task.yield(task, 150)
+      assert {:ok, {:error, %Error{class: :timeout}}} = Task.yield(task, 150)
+    end
   end
 
   test "pure kernel completion without a gateway intent leaves cleanup safe" do
@@ -666,6 +679,73 @@ defmodule Backplane.AgentRuntime.ExecutionCorrectnessTest do
     assert stored.run.state == :unknown_outcome
     assert stored.run.execution_budget.used == 1
     assert stored.run.execution_intents["tool:invocation_1"].status == :uncertain
+  end
+
+  test "persisted unlimited execution survives elapsed wall time and finite defaults" do
+    {:ok, table} = EphemeralStore.new(1)
+    {:ok, budget} = Budget.new(%{root_run_id: "run_1", work: 3})
+    registry = registry(SpyBackend, self())
+
+    final =
+      Enum.reduce(1..3, running_record(), fn index, run ->
+        input = invocation("invocation_#{index}")
+        value = input.arguments["value"]
+
+        opts = [
+          registry: registry,
+          authority: authority(),
+          budget: budget,
+          wall_now: fn -> index * 1_000_000 end
+        ]
+
+        opts = if index == 1, do: Keyword.put(opts, :run_timeout, :infinity), else: opts
+
+        assert {:ok, _, %{effects: [%{value: ^value}], run: active}} =
+                 Execution.run(
+                   EphemeralStore,
+                   table,
+                   run,
+                   %{command: {:tool_invoked, index * 2, input}},
+                   opts
+                 )
+
+        assert_receive {:tool_called, %{invocation_id: invocation_id}}
+        assert invocation_id == input.invocation_id
+        assert active.deadline == :infinity
+
+        completion = Map.put(input, :result, %{value: value})
+
+        assert {:ok, _, %{effects: []}} =
+                 Execution.run(
+                   EphemeralStore,
+                   table,
+                   active,
+                   %{command: {:tool_completed, index * 2 + 1, completion}},
+                   opts
+                 )
+
+        assert {:ok, %{run: saved}} = EphemeralStore.load(table, run.run_id)
+        assert saved.deadline == :infinity
+        assert saved.execution_budget.used == index
+        saved
+      end)
+
+    assert final.active_tools == %{}
+    assert final.execution_budget.used == 3
+
+    assert {:error, %Error{class: :budget_exceeded}} =
+             Execution.run(
+               EphemeralStore,
+               table,
+               final,
+               %{command: {:tool_invoked, 8, invocation("invocation_4")}},
+               registry: registry,
+               authority: authority(),
+               budget: budget,
+               wall_now: fn -> 4_000_000 end
+             )
+
+    refute_receive {:tool_called, _}
   end
 
   defp submit(controller, input) do

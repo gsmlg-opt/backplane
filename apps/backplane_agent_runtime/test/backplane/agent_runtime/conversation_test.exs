@@ -50,6 +50,11 @@ defmodule Backplane.AgentRuntime.ConversationTest do
             {:ok, :allow} -> {:ok, %{text: "allowed"}}
             _ -> {:error, Error.new(:forbidden, "denied")}
           end
+
+        :ask_then_wait ->
+          reply = operation.backend_context.interact.(%{kind: :permission})
+          send(operation.backend_context.test, {:answer, reply})
+          receive do: (:finish -> {:ok, %{text: "finished"}})
       end
     end
   end
@@ -1238,6 +1243,38 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     assert Conversation.status(pid).run.deadline > pending.run.deadline
     send(next, {:events, [done("done")]})
     assert_receive {:agent_runtime, "test", %{type: :run_completed}}, 500
+  end
+
+  test "infinite human wait resumes the bounded tool effect without a root timer" do
+    {pid, _} = start(run_timeout: :infinity, effect_timeout: 200)
+    assert {:ok, _} = Conversation.prompt(pid, "question")
+    assert_receive {:provider, _, provider}
+    send(provider, {:events, tool_response()})
+    assert_receive {:tool, _, tool}
+    monitor = Process.monitor(tool)
+    send(tool, :ask_then_wait)
+    assert_receive {:agent_runtime, "test", %{type: :interaction_requested, interaction_id: id}}
+
+    paused = :sys.get_state(pid)
+    assert paused.run.deadline == :infinity
+    assert paused.paused_run_remaining == :infinity
+    assert is_integer(paused.paused_effect_remaining)
+    assert paused.effect.timer == nil
+    Process.sleep(250)
+    assert Conversation.status(pid).phase == :waiting_interaction
+
+    assert :ok = Conversation.resolve(pid, id, :allow)
+    assert_receive {:answer, {:ok, :allow}}
+    resumed = :sys.get_state(pid)
+    assert resumed.run.deadline == :infinity
+    assert resumed.timer == nil
+    assert is_reference(resumed.effect.timer)
+    assert_receive {:DOWN, ^monitor, :process, ^tool, _}, 1_000
+
+    assert_receive {:agent_runtime, "test", %{type: :run_cancelled, state: :unknown_outcome}},
+                   1_000
+
+    assert Conversation.status(pid).run.stop_reason == :deadline_exceeded
   end
 
   test "cancel provider, tool and interaction waits" do

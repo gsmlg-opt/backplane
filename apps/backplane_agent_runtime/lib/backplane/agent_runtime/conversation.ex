@@ -30,9 +30,11 @@ defmodule Backplane.AgentRuntime.Conversation do
   commit. Subscribers receive `{:agent_runtime, run_id, event}`.
 
   One root run can contain a prompt and queued follow-up turns. It shares one
-  finite work budget and absolute deadline. Once settled, the host starts a new
-  run with its canonical messages. Host sessions and Protocol V1 remain outside
-  this process. `:run` restores a committed record for inspection only: any
+  finite work budget and deadline policy. Hosts can explicitly disable the root
+  deadline with `run_timeout: :infinity`; effect, commit and cleanup limits remain
+  finite. Once settled, the host starts a new run with its canonical messages.
+  Host sessions and Protocol V1 remain outside this process. `:run` restores a
+  committed record for inspection only: any
   nonterminal restored run enters recovery_required and dispatches nothing.
   The host must reconcile uncertain effects and fence the previous incarnation
   before admitting replacement work. See PERSISTENCE.md and EMBEDDING.md.
