@@ -2,6 +2,8 @@
 
 Backplane exposes OpenAI-shaped `POST /v1/audio/speech` and `POST /v1/audio/transcriptions` on the **public** endpoint. MiniMax is the initial native provider. Audio is disabled by default. The trusted admin endpoint is separate; restrict it at the network boundary. Public OAuth and DB clients need the existing `llm::invoke` scope; legacy bearer-token compatibility follows the existing `/v1` rules.
 
+Clients can discover advertised speech voices with `GET /v1/audio/voices`, a Backplane extension requiring `llm::models` for public OAuth and DB clients. See the [consumer API reference](../apps/backplane_api/docs/audio-voices.md) for model filtering, response fields, voice aliases, and local-catalog limits. The public `/docs/llm` guide also includes discovery and synthesis examples.
+
 Each accepted speech or transcription operation emits exactly one terminal access event, including cancellation and late stream failure. Preview operations measure server-side execution and collection; they do not establish browser receipt or playback. Audio seconds, bytes, characters, and token counts remain separate units; unknown token counts stay unavailable (`nil`). For multipart ASR, `request_bytes` counts uploaded file bytes read, including bytes from partial or rejected uploads, and excludes multipart framing; `upstream_bytes` records the prepared file bytes for upstream upload. Logs contain safe metadata only, never secrets or audio/text content.
 
 ## Install and configure

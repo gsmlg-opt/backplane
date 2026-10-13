@@ -109,12 +109,27 @@ defmodule Backplane.Api.PageController do
           %{
             title: "LLM scopes",
             body:
-              "Grant llm::models for model discovery and llm::invoke for inference operations. Request only the scopes the client and user share."
+              "Grant llm::models for model and audio voice discovery and llm::invoke for inference operations, including speech synthesis. Request only the scopes the client and user share."
           },
           %{
             title: "Existing credentials remain valid",
             body:
               "Resource OAuth is additive compatibility: existing PAT and legacy bearer access continue under the deployment's configured authentication policy."
+          },
+          %{
+            title: "Audio voice discovery (Backplane extension)",
+            body:
+              "GET /v1/audio/voices uses the Backplane bearer token and llm::models scope. This is a Backplane extension, not an official OpenAI list endpoint; OpenAI's POST /v1/audio/voices creates custom voices. Call this GET directly with your HTTP client. Optional model accepts a public speech model alias or provider/model and restricts results to its provider; omit it to list providers with enabled speech bindings, models, and providers."
+          },
+          %{
+            title: "Choose a voice for the selected provider",
+            body:
+              "The response is an object=list with data rows containing id, object=audio.voice, name, language (or null), provider, native_id, and type (system or alias), sorted by provider then id. Send the returned id as speech.voice with a model belonging to that provider. Native system voices appear only when allow_native is true; configured aliases appear regardless and override a native voice with the same public id. There is no implicit conversion of OpenAI voices such as alloy."
+          },
+          %{
+            title: "Voice catalog and discovery errors",
+            body:
+              "Discovery uses the local MiniMax system-voice snapshot dated 2026-10-06, shared with the admin preview, plus configured voice aliases. It makes no upstream requests, reads no vault secrets, and incurs no provider usage charges; it does not discover account-specific cloned voices or prove credential entitlement or synthesis readiness. Audio disabled returns 503 audio_disabled. An enabled service with no eligible providers or voice policy returns an empty list. Invalid model returns 400 invalid_parameter, unknown or disabled model returns 404 model_not_found, a model for another operation returns 400 operation_mismatch, and an alias loop returns 400 alias_loop."
           }
         ],
         steps: [
@@ -142,6 +157,16 @@ defmodule Backplane.Api.PageController do
           %{
             title: "Call the model gateway",
             code: "curl -H \"Authorization: Bearer $ACCESS_TOKEN\" #{v1_url}/models"
+          },
+          %{
+            title: "Discover voices for a speech model",
+            code:
+              "curl --get #{v1_url}/audio/voices \\\n  -H \"Authorization: Bearer $ACCESS_TOKEN\" \\\n  --data-urlencode 'model=minimax-audio/speech-2.8-turbo'\n\n# Omit model to discover all eligible speech providers:\ncurl -H \"Authorization: Bearer $ACCESS_TOKEN\" #{v1_url}/audio/voices"
+          },
+          %{
+            title: "Use a discovered voice ID",
+            code:
+              "# Requires llm::invoke; this speech request may incur provider charges.\ncurl #{v1_url}/audio/speech \\\n  -H \"Authorization: Bearer $ACCESS_TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"minimax-audio/speech-2.8-turbo\",\"input\":\"Hello from Backplane\",\"voice\":\"female-tianmei\",\"response_format\":\"mp3\"}' \\\n  --output speech.mp3"
           }
         ],
         routes: [
@@ -151,6 +176,9 @@ defmodule Backplane.Api.PageController do
           "POST /v1/messages",
           "POST /v1/chat/completions",
           "POST /v1/responses",
+          "GET /v1/audio/voices (Backplane extension)",
+          "POST /v1/audio/speech",
+          "POST /v1/audio/transcriptions",
           "GET /.well-known/oauth-protected-resource/v1"
         ]
       },
