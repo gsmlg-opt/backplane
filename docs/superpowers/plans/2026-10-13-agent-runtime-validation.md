@@ -1,9 +1,9 @@
 # Agent Runtime lifecycle and Goal validation
 
-Implementation workspace: `/home/gao/Workspace/gsmlg-opt/backplane/.trees/runtime65`.
+Historical implementation workspace: `/home/gao/Workspace/gsmlg-opt/backplane/.trees/runtime65` (subsequently removed after merge).
 Detached baseline: `1f4012542ac95c98d3b6c8c7711fa4743df7ca0c`.
 Verified on 2026-10-13 with Elixir 1.18.5 / OTP 28 and Deno 2.8.3.
-Changes are uncommitted; the root checkout's separate CI commit and original planning documents are preserved.
+At verification time these changes were uncommitted. They were subsequently committed as `ca19921b` and merged by `5098c6e8`. Later CI/publication status is recorded in the master plan; the commands and results below remain the original 2026-10-13 verification record.
 
 ## Delivered contracts
 

@@ -67,7 +67,11 @@ Parallelize only disjoint ownership. One worker owns `conversation.ex` at a time
 
 ## Current status
 
-Implementation and final standalone verification are complete in the detached `.trees/runtime65` workspace. The complete owning-app suite passed 684 tests; strict compilation, scoped formatting and source inventory checks passed. See [the validation record](2026-10-13-agent-runtime-validation.md) for commands, regression evidence, implementation adaptations and host launch boundaries. Agent Note was saved and read back with the required project label. No consumer rollout or publication has occurred.
+Implementation was committed as `ca19921b` and merged into main by `5098c6e8`; `.trees/runtime65` was subsequently removed. The original standalone verification passed 684 tests, strict compilation, scoped formatting and source inventory checks. See [the validation record](2026-10-13-agent-runtime-validation.md) for that historical evidence and host launch boundaries.
+
+Status refreshed on 2026-10-14 at local HEAD `c67e57c1`: [Agent Runtime CI](https://github.com/gsmlg-opt/backplane/actions/runs/38368420298) passed 689 tests on Elixir 1.18 / OTP 28 and strict production compilation on Elixir 1.20 / OTP 29. The latest lane does not run tests. [v1.10.20](https://github.com/gsmlg-opt/backplane/releases/tag/v1.10.20) is published; its [release workflow](https://github.com/gsmlg-opt/backplane/actions/runs/38371373191), including Agent Runtime Hex publication, succeeded. These later results do not establish production consumer Goal integration. The C3 host proof above uses package-local Conversation/Session/store fixtures.
+
+Next-stage draft: [Goal package and host readiness](2026-10-14-agent-runtime-goal-readiness.md). The target production host remains a scope decision.
 
 ## Execution evidence
 

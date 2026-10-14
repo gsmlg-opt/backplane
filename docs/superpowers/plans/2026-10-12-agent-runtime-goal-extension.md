@@ -239,7 +239,7 @@ end
 - [x] Keep goal mutation serialized across read/start reservation so a replaced/cleared goal cannot launch from an old snapshot.
 - [x] Persist interruption continuation deferral separately from goal status; restoring active state alone must not erase user interruption or auto-start work.
 - [x] Retain both audited source identities in the behavioral ledger: interruption counter handling uses a9's `interrupt_turn` distinction; do not silently claim all lifecycle details are unchanged from pin46.
-- [x] `restore/1` reloads/reconciles pending accounting receipts; host explicitly signals ready/idle after ordinary run fences and Session readiness.
+- [x] `restore/1` reloads the Goal record and invalidates live bindings/reservations. The host fences/reconciles ordinary runs, reconstructs fresh authorized bindings, redelivers retained committed outboxes with `GoalBridge.redeliver/3`, checkpoints their acknowledgement, and explicitly signals idle only after Session readiness. Restore does not scan run journals or launch work.
 - [x] Fork copies objective/status/budget/counters/timestamps/goal identity to the new thread exactly as upstream snapshot semantics; live owner capabilities, receipts tied to source run and active tasks are not copied.
 - [x] Tests cover delayed store acknowledgement, concurrent clear/resume, duplicate idle signals, prompt-vs-continuation, owner death, and stop-before-reservation acknowledgement.
 
