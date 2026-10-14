@@ -119,6 +119,33 @@ defmodule Backplane.LLM.UsageQueryTest do
       assert usage.alias_calls == 1
     end
 
+    test "aggregates resolved models under each provider", %{provider: provider} do
+      insert_proxy_log(provider, %{
+        requested_model: "fast",
+        resolved_model: "claude-3-5-sonnet-20241022",
+        input_tokens: 100,
+        cached_tokens: 25,
+        output_tokens: 50
+      })
+
+      insert_proxy_log(provider, %{
+        requested_model: "#{provider.name}/claude-3-5-sonnet-20241022",
+        resolved_model: "claude-3-5-sonnet-20241022",
+        input_tokens: 200,
+        cached_tokens: 50,
+        output_tokens: 75
+      })
+
+      result = UsageQuery.aggregate(%{provider_id: provider.id})
+
+      assert [%{models: [model]}] = result.by_provider
+      assert model.model == "claude-3-5-sonnet-20241022"
+      assert model.requests == 2
+      assert model.input_tokens == 300
+      assert model.cached_tokens == 75
+      assert model.output_tokens == 125
+    end
+
     test "returns by_status breakdown", %{provider: provider} do
       insert_log(provider.id, %{status: 200})
       insert_log(provider.id, %{status: 200})

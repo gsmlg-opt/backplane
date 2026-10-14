@@ -49,10 +49,49 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     assert html =~ "Average Latency"
     assert html =~ "Usage By Provider"
     assert html =~ "usage-test-provider"
+    assert html =~ "llama-test-model"
     assert html =~ "23,224"
     assert html =~ "1,300"
     assert html =~ "200"
     assert html =~ ~s(href="/dashboard/usage/mcp")
+  end
+
+  test "filters LLM usage by the selected time range", %{conn: conn, provider: provider} do
+    now = DateTime.utc_now()
+
+    insert_llm_log(%{
+      provider_id: provider.id,
+      provider_name: provider.name,
+      requested_model: "current-model",
+      resolved_model: "current-model",
+      input_tokens: 100,
+      output_tokens: 50,
+      inserted_at: DateTime.add(now, -60, :second)
+    })
+
+    insert_llm_log(%{
+      provider_id: provider.id,
+      provider_name: provider.name,
+      requested_model: "old-model",
+      resolved_model: "old-model",
+      input_tokens: 9_999,
+      output_tokens: 9_999,
+      inserted_at: DateTime.add(now, -172_800, :second)
+    })
+
+    query =
+      URI.encode_query(%{
+        "since" => DateTime.to_iso8601(DateTime.add(now, -3_600, :second)),
+        "until" => DateTime.to_iso8601(DateTime.add(now, 60, :second))
+      })
+
+    {:ok, view, html} = live_with_sandbox(conn, "/dashboard/usage/llm?#{query}")
+
+    assert html =~ "current-model"
+    refute html =~ "old-model"
+    assert has_element?(view, ~s(form[action="/dashboard/usage/llm"]))
+    assert has_element?(view, ~s(input[name="since"]))
+    assert has_element?(view, ~s(input[name="until"]))
   end
 
   test "renders MCP usage page from persisted MCP logs", %{conn: conn} do
@@ -73,7 +112,8 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
       status: 200,
       latency_ms: 100,
       input_tokens: 10,
-      output_tokens: 5
+      output_tokens: 5,
+      inserted_at: DateTime.utc_now()
     }
 
     Repo.insert!(struct(UsageLog, Map.merge(defaults, attrs)))

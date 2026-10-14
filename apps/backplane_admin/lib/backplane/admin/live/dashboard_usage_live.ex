@@ -1,6 +1,8 @@
 defmodule Backplane.Admin.DashboardUsageLive do
   use Backplane.Admin, :live_view
 
+  import Backplane.Admin.LogsComponents, only: [parse_time_range: 1, time_range_form: 1]
+
   alias Backplane.LLM.UsageQuery
   alias Backplane.MCP.LogQuery, as: McpLogQuery
   alias Backplane.Metrics
@@ -12,12 +14,13 @@ defmodule Backplane.Admin.DashboardUsageLive do
        current_path: current_path(socket.assigns.live_action),
        usage: nil,
        mcp_usage: nil,
-       metrics: %{}
+       metrics: %{},
+       time_range: parse_time_range(%{})
      )}
   end
 
   @impl true
-  def handle_params(_params, _uri, socket) do
+  def handle_params(params, _uri, socket) do
     socket =
       case socket.assigns.live_action do
         :mcp ->
@@ -28,9 +31,12 @@ defmodule Backplane.Admin.DashboardUsageLive do
           )
 
         _ ->
+          time_range = parse_time_range(params)
+
           assign(socket,
             current_path: current_path(:llm),
-            usage: safe_call(fn -> UsageQuery.aggregate() end, empty_usage())
+            time_range: time_range,
+            usage: safe_call(fn -> UsageQuery.aggregate(time_range) end, empty_usage())
           )
       end
 
@@ -102,6 +108,12 @@ defmodule Backplane.Admin.DashboardUsageLive do
         <.dm_stat title="Average Latency" value={"#{format_number(@usage.avg_latency_ms)} ms"} />
       </div>
 
+      <.time_range_form
+        action={~p"/dashboard/usage/llm"}
+        since={@time_range.since}
+        until={@time_range.until}
+      />
+
       <section>
         <h2 class="mb-3 text-lg font-semibold">Usage By Provider</h2>
         <div :if={@usage.by_provider == []} class="text-sm text-on-surface-variant">
@@ -116,6 +128,27 @@ defmodule Backplane.Admin.DashboardUsageLive do
           <:col :let={row} label="Cached Tokens">{format_number(row.cached_tokens)}</:col>
           <:col :let={row} label="Output Tokens">{format_number(row.output_tokens)}</:col>
           <:col :let={row} label="Alias Calls">{format_number(row.alias_calls)}</:col>
+        </.dm_table>
+      </section>
+
+      <section>
+        <h2 class="mb-3 text-lg font-semibold">Usage By Provider / Model</h2>
+        <div :if={provider_model_rows(@usage.by_provider) == []} class="text-sm text-on-surface-variant">
+          No provider model usage recorded yet.
+        </div>
+        <.dm_table
+          :if={provider_model_rows(@usage.by_provider) != []}
+          id="llm-provider-model-usage-table"
+          data={provider_model_rows(@usage.by_provider)}
+          hover
+          zebra
+        >
+          <:col :let={row} label="Provider"><code>{row.provider}</code></:col>
+          <:col :let={row} label="Model"><code>{row.model}</code></:col>
+          <:col :let={row} label="Requests">{format_number(row.requests)}</:col>
+          <:col :let={row} label="Input Tokens">{format_number(row.input_tokens)}</:col>
+          <:col :let={row} label="Cached Tokens">{format_number(row.cached_tokens)}</:col>
+          <:col :let={row} label="Output Tokens">{format_number(row.output_tokens)}</:col>
         </.dm_table>
       </section>
 
@@ -164,6 +197,12 @@ defmodule Backplane.Admin.DashboardUsageLive do
   end
 
   defp rpc_method_rows(_), do: []
+
+  defp provider_model_rows(providers) do
+    Enum.flat_map(providers, fn provider ->
+      Enum.map(provider.models, &Map.put(&1, :provider, provider.provider))
+    end)
+  end
 
   defp counter(metrics, name), do: get_in(metrics, [:counters, name]) || 0
 

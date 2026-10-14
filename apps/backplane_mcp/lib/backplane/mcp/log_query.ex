@@ -177,21 +177,23 @@ defmodule Backplane.MCP.LogQuery do
   end
 
   @doc "Aggregates persisted MCP usage by client ID, RPC method, and tool."
-  @spec aggregate_by_client() :: %{optional(binary()) => map()}
-  def aggregate_by_client do
+  @spec aggregate_by_client(filters()) :: %{optional(binary()) => map()}
+  def aggregate_by_client(filters \\ %{}) do
+    client_query =
+      filters
+      |> base_query()
+      |> where([r], not is_nil(r.client_id))
+
     rows =
-      from(r in ProxyRequest,
-        where: not is_nil(r.client_id),
-        group_by: [r.client_id, r.rpc_method],
-        select: {r.client_id, r.rpc_method, count(r.id), avg(r.duration_ms)}
-      )
+      client_query
+      |> group_by([r], [r.client_id, r.rpc_method])
+      |> select([r], {r.client_id, r.rpc_method, count(r.id), avg(r.duration_ms)})
       |> Repo.all()
 
     tool_rows =
       from(t in ToolCall,
-        join: r in ProxyRequest,
+        join: r in subquery(client_query),
         on: t.mcp_request_id == r.event_id,
-        where: not is_nil(r.client_id),
         group_by: [r.client_id, t.tool_name],
         select: {r.client_id, t.tool_name, count(t.id)}
       )

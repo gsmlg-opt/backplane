@@ -37,7 +37,16 @@ defmodule Backplane.LLM.LogQuery do
               input_tokens: non_neg_integer(),
               cached_tokens: non_neg_integer(),
               output_tokens: non_neg_integer(),
-              alias_calls: non_neg_integer()
+              alias_calls: non_neg_integer(),
+              models: [
+                %{
+                  model: binary(),
+                  requests: non_neg_integer(),
+                  input_tokens: non_neg_integer(),
+                  cached_tokens: non_neg_integer(),
+                  output_tokens: non_neg_integer()
+                }
+              ]
             }
           ],
           by_model: [
@@ -130,6 +139,54 @@ defmodule Backplane.LLM.LogQuery do
         }
       end)
 
+    models_by_provider =
+      base
+      |> join(:left, [l], p in Provider, on: p.id == l.provider_id)
+      |> group_by(
+        [l, p],
+        fragment("coalesce(nullif(?, ''), ?, 'Unknown')", l.provider_name, p.name)
+      )
+      |> group_by(
+        [l, _p],
+        fragment(
+          "coalesce(nullif(?, ''), nullif(?, ''), 'Unknown')",
+          l.resolved_model,
+          l.requested_model
+        )
+      )
+      |> select([l, p], %{
+        provider: fragment("coalesce(nullif(?, ''), ?, 'Unknown')", l.provider_name, p.name),
+        model:
+          fragment(
+            "coalesce(nullif(?, ''), nullif(?, ''), 'Unknown')",
+            l.resolved_model,
+            l.requested_model
+          ),
+        requests: count(l.id),
+        input_tokens: sum(l.input_tokens),
+        cached_tokens: sum(l.cached_tokens),
+        output_tokens: sum(l.output_tokens)
+      })
+      |> order_by([l, p],
+        asc: fragment("coalesce(nullif(?, ''), ?, 'Unknown')", l.provider_name, p.name),
+        asc:
+          fragment(
+            "coalesce(nullif(?, ''), nullif(?, ''), 'Unknown')",
+            l.resolved_model,
+            l.requested_model
+          )
+      )
+      |> Repo.all()
+      |> Enum.group_by(& &1.provider, fn row ->
+        %{
+          model: row.model,
+          requests: row.requests,
+          input_tokens: row.input_tokens || 0,
+          cached_tokens: row.cached_tokens || 0,
+          output_tokens: row.output_tokens || 0
+        }
+      end)
+
     by_provider =
       base
       |> join(:left, [l], p in Provider, on: p.id == l.provider_id)
@@ -167,7 +224,8 @@ defmodule Backplane.LLM.LogQuery do
           input_tokens: row.input_tokens || 0,
           cached_tokens: row.cached_tokens || 0,
           output_tokens: row.output_tokens || 0,
-          alias_calls: row.alias_calls || 0
+          alias_calls: row.alias_calls || 0,
+          models: Map.get(models_by_provider, row.provider, [])
         }
       end)
 
@@ -191,14 +249,16 @@ defmodule Backplane.LLM.LogQuery do
   end
 
   @doc "Aggregates persisted LLM usage by client ID and requested model."
-  @spec aggregate_by_client() :: %{optional(binary()) => map()}
-  def aggregate_by_client do
-    from(l in ProxyRequest,
-      where: not is_nil(l.client_id),
-      group_by: [l.client_id, l.requested_model],
-      select:
-        {l.client_id, l.requested_model, count(l.id), sum(l.input_tokens), sum(l.cached_tokens),
-         sum(l.output_tokens)}
+  @spec aggregate_by_client(filters()) :: %{optional(binary()) => map()}
+  def aggregate_by_client(filters \\ %{}) do
+    filters
+    |> base_query()
+    |> where([l], not is_nil(l.client_id))
+    |> group_by([l], [l.client_id, l.requested_model])
+    |> select(
+      [l],
+      {l.client_id, l.requested_model, count(l.id), sum(l.input_tokens), sum(l.cached_tokens),
+       sum(l.output_tokens)}
     )
     |> Repo.all()
     |> Enum.group_by(&elem(&1, 0))
