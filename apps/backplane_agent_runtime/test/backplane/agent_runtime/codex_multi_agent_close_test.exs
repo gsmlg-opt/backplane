@@ -95,13 +95,13 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentCloseTest do
     parent_name = agent_name(parent)
     nested_name = parent_name <> "/nested"
 
-    assert {:ok, %{task_name: ^nested_name}} =
+    assert {:ok, %{agent_id: nested_run}} =
              call(runtime, parent, "multi_agent_v1::spawn_agent", %{
                "task_name" => "nested",
                "message" => "nested"
              })
 
-    nested_run = :sys.get_state(runtime).agents[nested_name].run_id
+    assert :sys.get_state(runtime).agents[nested_name].run_id == nested_run
     assert_receive {:provider, ^nested_run, _provider}
 
     assert {:ok, %{status: :shutdown}} =

@@ -31,6 +31,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def close_session(runtime, owner_id, incarnation),
     do: GenServer.call(runtime, {:close_session, {owner_id, incarnation}}, :infinity)
 
+  def snapshot(runtime), do: GenServer.call(runtime, :snapshot)
+  def subscribe(runtime, observer \\ self()), do: GenServer.call(runtime, {:subscribe, observer})
+
+  def unsubscribe(runtime, observer \\ self()),
+    do: GenServer.call(runtime, {:unsubscribe, observer})
+
   @spec contracts(:v1 | :v2, pid(), keyword()) :: [map()]
   def contracts(profile, runtime, opts \\ []) when profile in [:v1, :v2] and is_pid(runtime) do
     runtime_wait = GenServer.call(runtime, :wait_options)
@@ -66,10 +72,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, parent_name} <- required_binary(opts, :parent_name),
          {:ok, authority} <- required_map(opts, :parent_authority),
          {:ok, child_options} <- required_callback(opts, :child_options, 3),
+         {:ok, v2_child_limit} <- child_limit(opts),
          {:ok, supervisor} <- DynamicSupervisor.start_link(strategy: :one_for_one) do
       {:ok,
        %{
          parent_run_id: parent_run_id,
+         root_id: parent_run_id,
          parent_name: normalize_root(parent_name),
          parent_authority: authority,
          root_goal_context: %{},
@@ -80,11 +88,19 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          child_options: child_options,
          child_supervisor: supervisor,
          subscriber: Keyword.get(opts, :subscriber),
+         manager_id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false),
+         revision: 0,
+         observers:
+           case Keyword.get(opts, :subscriber) do
+             pid when is_pid(pid) -> %{pid => Process.monitor(pid)}
+             _ -> %{}
+           end,
          min_wait_timeout_ms: Keyword.get(opts, :min_wait_timeout_ms, 10_000),
          max_wait_timeout_ms: Keyword.get(opts, :max_wait_timeout_ms, @maximum_wait_timeout_ms),
          default_wait_timeout_ms:
            Keyword.get(opts, :default_wait_timeout_ms, @default_wait_timeout_ms),
          max_agents: Keyword.get(opts, :max_agents, 16),
+         v2_child_limit: v2_child_limit,
          sequence: 0,
          agents: %{},
          run_index: %{},
@@ -96,6 +112,28 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   @impl true
+  def handle_call(:snapshot, _from, state), do: {:reply, {:ok, public_snapshot(state)}, state}
+
+  def handle_call({:subscribe, pid}, _from, state) when is_pid(pid) do
+    state =
+      if Map.has_key?(state.observers, pid),
+        do: state,
+        else: %{state | observers: Map.put(state.observers, pid, Process.monitor(pid))}
+
+    {:reply, {:ok, public_snapshot(state)}, state}
+  end
+
+  def handle_call({:unsubscribe, pid}, _from, state) when is_pid(pid) do
+    if ref = state.observers[pid], do: Process.demonitor(ref, [:flush])
+
+    {:reply, :ok,
+     %{
+       state
+       | observers: Map.delete(state.observers, pid),
+         subscriber: if(state.subscriber == pid, do: nil, else: state.subscriber)
+     }}
+  end
+
   def handle_call({:rebind_parent, binding, authority}, _from, state) do
     owner = {binding.owner_id, binding.incarnation}
 
@@ -221,17 +259,51 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    case Map.pop(state.monitors, ref) do
-      {nil, _} ->
+    observer = Enum.find(state.observers, fn {_pid, monitor} -> monitor == ref end)
+
+    case {observer, Map.pop(state.monitors, ref)} do
+      {{pid, _}, _} ->
+        {:noreply,
+         %{
+           state
+           | observers: Map.delete(state.observers, pid),
+             subscriber: if(state.subscriber == pid, do: nil, else: state.subscriber)
+         }}
+
+      {nil, {nil, _}} ->
         {:noreply, state}
 
-      {{name, run_id}, monitors} ->
+      {nil, {{name, run_id}, monitors}} ->
         state = %{state | monitors: monitors}
 
-        if get_in(state, [:agents, name, :run_id]) == run_id and
-             get_in(state, [:agents, name, :status]) not in [:shutdown, :interrupted, :completed] do
-          state = put_in(state, [:agents, name, :status], {:errored, inspect(reason)})
+        if get_in(state, [:agents, name, :run_id]) == run_id do
+          agent = state.agents[name]
+
+          next_agent =
+            if is_map(agent.snapshot) and
+                 not match?({:uncertain, _}, agent.closure) do
+              %{agent | pid: nil, monitor: nil}
+            else
+              %{
+                agent
+                | pid: nil,
+                  monitor: nil,
+                  status:
+                    if(agent.status in [:interrupted, :shutdown],
+                      do: agent.status,
+                      else: {:errored, inspect(reason)}
+                    ),
+                  execution_reserved: true,
+                  snapshot: nil,
+                  snapshot_identity: nil,
+                  closure:
+                    {:uncertain, Error.new(:unknown_outcome, "agent exited before settlement")}
+              }
+            end
+
+          state = put_in(state, [:agents, name], next_agent)
           state = %{state | updates: MapSet.put(state.updates, name)}
+          state = publish(state, :process_exited, name)
           {:noreply, wake_waiters(state)}
         else
           {:noreply, state}
@@ -272,61 +344,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     :ok
   end
 
-  defp dispatch(:spawn, arguments, _from, caller, state) do
-    with :ok <- capacity(state),
-         {:ok, request} <- spawn_request(arguments),
+  defp dispatch({:spawn, profile}, arguments, _from, caller, state) do
+    with {:ok, request} <- spawn_request(arguments, profile),
          {:ok, name} <- child_name(caller, request.task_name),
-         :ok <- unique_name(state, name),
-         run_id = child_run_id(name, state.sequence + 1),
-         parent = caller_metadata(caller),
-         {:ok, opts} <- state.child_options.(request, run_id, parent),
-         :ok <- child_authority(opts, caller.authority),
-         {:ok, opts} <- attribute_child(opts, parent),
-         opts = Keyword.put(opts, :subscriber, self()),
-         {:ok, pid} <- start_child(state.child_supervisor, opts),
-         {:ok, _receipt} <- Conversation.prompt(pid, request.message) do
-      ref = Process.monitor(pid)
-
-      agent = %{
-        name: name,
-        id: run_id,
-        run_id: run_id,
-        pid: pid,
-        monitor: ref,
-        status: :running,
-        final: nil,
-        opts: opts,
-        request: request,
-        message: request.message,
-        profile: request.profile,
-        parent: caller.name,
-        authority: Keyword.get(opts, :authority, %{}),
-        snapshot: nil,
-        snapshot_identity: nil,
-        closure: :open
-      }
-
-      state = %{
-        state
-        | sequence: state.sequence + 1,
-          agents: Map.put(state.agents, name, agent),
-          run_index: Map.put(state.run_index, run_id, name),
-          monitors: Map.put(state.monitors, ref, {name, run_id})
-      }
-
-      result =
-        if request.profile == :v1,
-          do: %{agent_id: run_id, nickname: nil},
-          else: %{task_name: name, nickname: nil}
-
-      {:reply, {:ok, result}, state}
+         :ok <- unique_name(state, name) do
+      case prepare_activation(state, profile) do
+        {:ok, state} -> spawn_child(arguments, caller, state, profile)
+        {:error, error, state} -> {:reply, {:error, error}, state}
+      end
     else
-      {:error, %Error{} = error} ->
-        {:reply, {:error, error}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, Error.new(:execution_failure, "child failed to start", cause: reason)},
-         state}
+      {:error, error} -> {:reply, {:error, error}, state}
     end
   end
 
@@ -362,12 +389,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         ready -> {:reply, {:ok, v1_wait_result(state, ready)}, consume_updates(state, ready)}
       end
     else
-      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      {:error, %Error{} = error, next} ->
+        {:reply, {:error, error}, next}
+
+      {:error, %Error{} = error} ->
+        {:reply, {:error, error}, state}
     end
   end
 
   defp dispatch(action, arguments, _from, _caller, state)
-       when action in [:message, :followup] do
+       when action in [:message, :followup_v2] do
     target = arguments["target"]
     message = arguments["message"]
 
@@ -379,6 +410,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       state = %{state | updates: MapSet.put(state.updates, name)}
       {:reply, {:ok, %{accepted: true}}, wake_waiters(state)}
     else
+      {:error, %Error{} = error, next} -> {:reply, {:error, error}, next}
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
     end
   end
@@ -394,18 +426,40 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, state} <- deliver(state, name, agent, action, message) do
       {:reply, {:ok, %{submission_id: unique_id("submission")}}, state}
     else
+      {:error, %Error{} = error, next} -> {:reply, {:error, error}, next}
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
     end
   end
 
-  defp dispatch(action, arguments, _from, _caller, state) when action in [:interrupt, :close] do
+  defp dispatch(:interrupt, arguments, _from, caller, state) do
+    target = arguments["target"]
+
+    with :ok <- reject_interrupt_target(state, caller, target),
+         {:ok, name, agent} <- resolve_target(state, target),
+         :ok <- reject_interrupt_target(state, caller, name) do
+      previous = public_status(agent)
+
+      case interrupt_target(state, name, agent) do
+        {:ok, next} ->
+          {:reply, {:ok, %{previous_status: previous, status: public_status(next.agents[name])}},
+           wake_waiters(next)}
+
+        {:error, error, next} ->
+          {:reply, {:error, error}, wake_waiters(next)}
+      end
+    else
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp dispatch(:close, arguments, _from, _caller, state) do
     case resolve_target(state, arguments["target"]) do
       {:ok, name, agent} ->
         previous = public_status(agent)
 
-        case cancel_owned_tree(state, name, action) do
+        case cancel_owned_tree(state, name, :close) do
           {:ok, state} ->
-            next_status = if action == :close, do: :shutdown, else: :interrupted
+            next_status = :shutdown
 
             {:reply, {:ok, %{previous_status: previous, status: next_status}},
              wake_waiters(state)}
@@ -425,8 +479,84 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, state} <- replace_agent(state, name, agent, nil) do
       {:reply, {:ok, %{status: :running}}, state}
     else
+      {:error, %Error{} = error, next} ->
+        {:reply, {:error, error}, next}
+
       {:error, %Error{} = error} ->
         {:reply, {:error, error}, state}
+    end
+  end
+
+  defp spawn_child(arguments, caller, state, profile) do
+    with {:ok, request} <- spawn_request(arguments, profile),
+         {:ok, name} <- child_name(caller, request.task_name),
+         :ok <- unique_name(state, name),
+         run_id = child_run_id(name, state.sequence + 1),
+         parent =
+           caller_metadata(caller)
+           |> Map.put(:child, %{
+             agent_id: run_id,
+             name: name,
+             incarnation: 1,
+             activation: :created
+           }),
+         {:ok, opts} <- state.child_options.(request, run_id, parent),
+         :ok <- child_authority(opts, caller.authority),
+         {:ok, opts, host_metadata} <- child_configuration(opts, run_id, 1),
+         {:ok, opts} <- attribute_child(opts, parent),
+         opts = Keyword.put(opts, :subscriber, self()) do
+      agent = %{
+        name: name,
+        id: run_id,
+        run_id: run_id,
+        incarnation: 1,
+        host_metadata: host_metadata,
+        pid: nil,
+        monitor: nil,
+        status: :created,
+        final: nil,
+        opts: opts,
+        request: request,
+        message: request.message,
+        profile: request.profile,
+        parent: caller.name,
+        parent_id:
+          if(caller.name == state.parent_name,
+            do: state.root_id,
+            else: state.agents[caller.name].id
+          ),
+        authority: Keyword.get(opts, :authority, %{}),
+        snapshot: nil,
+        snapshot_identity: nil,
+        closure: :open,
+        execution_reserved: true
+      }
+
+      state =
+        %{
+          state
+          | sequence: state.sequence + 1,
+            agents: Map.put(state.agents, name, agent),
+            run_index: Map.put(state.run_index, run_id, name)
+        }
+        |> publish(:created, name)
+
+      result =
+        if request.profile == :v1,
+          do: %{agent_id: run_id, nickname: nil},
+          else: %{task_name: name, nickname: nil}
+
+      case activate_child(state, name, opts, request.message) do
+        {:ok, next} -> {:reply, {:ok, result}, next}
+        {:error, error, next} -> {:reply, {:error, error}, next}
+      end
+    else
+      {:error, %Error{} = error} ->
+        {:reply, {:error, error}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, Error.new(:execution_failure, "child failed to start", cause: reason)},
+         state}
     end
   end
 
@@ -477,7 +607,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       {:ok, name} ->
         agent = Map.fetch!(state.agents, name)
 
-        if agent.run_id != run_id or agent.status in [:shutdown, :interrupted] do
+        if agent.run_id != run_id or agent.status != :running or
+             event[:incarnation] != agent.incarnation do
           state
         else
           status =
@@ -488,12 +619,18 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
             end
 
           final = terminal_message(agent.pid, event)
-          notify(state, %{type: :agent_updated, agent_name: name, status: status})
 
-          state
-          |> put_in([:agents, name, :status], status)
-          |> put_in([:agents, name, :final], final)
-          |> Map.update!(:updates, &MapSet.put(&1, name))
+          state =
+            state
+            |> put_in([:agents, name, :status], status)
+            |> put_in([:agents, name, :final], final)
+            |> Map.update!(:updates, &MapSet.put(&1, name))
+
+          next = settle_v2_agent(state, name)
+
+          if match?({:uncertain, _}, next.agents[name].closure),
+            do: next,
+            else: publish(next, :settled, name)
         end
     end
   end
@@ -525,15 +662,31 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
+  defp deliver(_state, _name, %{closure: {:uncertain, _}}, _action, _message),
+    do: {:error, Error.new(:unknown_outcome, "agent cleanup is not settled")}
+
   defp deliver(state, _name, %{status: :running, pid: pid}, :message, message),
     do: normalize_delivery(state, Conversation.steer(pid, message))
 
   defp deliver(state, _name, %{status: :running, pid: pid}, :followup, message),
     do: normalize_delivery(state, Conversation.follow_up(pid, message))
 
+  defp deliver(state, _name, %{status: :running, pid: pid}, :followup_v2, message),
+    do: normalize_delivery(state, Conversation.follow_up(pid, message))
+
   defp deliver(state, name, %{status: status} = agent, :followup, message)
        when status in [:completed, :interrupted],
        do: replace_agent(state, name, agent, message)
+
+  defp deliver(state, name, %{status: {:errored, _}, profile: :v2} = agent, :followup, message),
+    do: replace_agent(state, name, agent, message)
+
+  defp deliver(state, name, %{status: status} = agent, :followup_v2, message)
+       when status in [:completed, :interrupted],
+       do: replace_agent(state, name, agent, message, :v2)
+
+  defp deliver(state, name, %{status: {:errored, _}} = agent, :followup_v2, message),
+    do: replace_agent(state, name, agent, message, :v2)
 
   defp deliver(_state, _name, _agent, _action, _message),
     do: {:error, Error.new(:resource_conflict, "agent is not accepting input")}
@@ -541,70 +694,146 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp normalize_delivery(state, {:ok, _}), do: {:ok, state}
   defp normalize_delivery(_state, {:error, %Error{} = error}), do: {:error, error}
 
-  defp replace_agent(state, name, agent, message) do
+  defp replace_agent(state, name, agent, message, admission_profile \\ :v1) do
     with {:ok, snapshot} <- settled_snapshot(agent),
-         :ok <- safe_replacement(snapshot),
-         run_id = child_run_id(name, state.sequence + 1),
-         parent = parent_metadata(state, agent),
-         {:ok, opts} <- state.child_options.(agent.request, run_id, parent),
-         :ok <- child_authority(opts, parent.authority),
-         :ok <- child_authority(opts, agent.authority),
-         {:ok, opts} <- carry_limits(opts, snapshot.run),
-         {:ok, opts} <- attribute_child(opts, parent),
-         opts =
-           opts
-           |> Keyword.put(:run_id, run_id)
-           |> Keyword.put(:messages, snapshot.messages)
-           |> Keyword.put(:subscriber, self()),
-         {:ok, pid} <- start_replacement_child(state.child_supervisor, opts, message) do
-      ref = Process.monitor(pid)
-      if agent.monitor, do: Process.demonitor(agent.monitor, [:flush])
-      if agent.pid, do: DynamicSupervisor.terminate_child(state.child_supervisor, agent.pid)
-
-      replacement = %{
-        agent
-        | run_id: run_id,
-          pid: pid,
-          monitor: ref,
-          opts: opts,
-          authority: Keyword.get(opts, :authority, %{}),
-          status: :running,
-          final: nil,
-          snapshot: nil,
-          snapshot_identity: nil,
-          closure: :open
-      }
-
-      {:ok,
-       %{
-         state
-         | sequence: state.sequence + 1,
-           agents: Map.put(state.agents, name, replacement),
-           run_index: Map.put(state.run_index, run_id, name),
-           monitors: state.monitors |> Map.delete(agent.monitor) |> Map.put(ref, {name, run_id}),
-           updates: MapSet.delete(state.updates, name)
-       }}
-    else
-      {:error, %Error{} = error} ->
-        {:error, error}
-
-      {:error, reason} ->
-        {:error, Error.new(:execution_failure, "child failed to start", cause: reason)}
-    end
-  end
-
-  defp start_replacement_child(supervisor, opts, message) do
-    with {:ok, pid} <- start_child(supervisor, opts) do
-      case maybe_prompt(pid, message) do
-        :ok ->
-          {:ok, pid}
-
-        {:error, %Error{} = error} ->
-          _ = DynamicSupervisor.terminate_child(supervisor, pid)
-          {:error, error}
+         :ok <- safe_replacement(snapshot) do
+      case prepare_activation(state, admission_profile, name) do
+        {:ok, next} -> start_replacement(next, name, next.agents[name], message, snapshot)
+        {:error, error, next} -> {:error, error, next}
       end
     end
   end
+
+  defp start_replacement(state, name, agent, message, snapshot) do
+    with run_id = child_run_id(name, state.sequence + 1),
+         incarnation = agent.incarnation + 1,
+         parent =
+           parent_metadata(state, agent)
+           |> Map.put(:child, %{
+             agent_id: agent.id,
+             name: name,
+             incarnation: incarnation,
+             activation: if(message == nil, do: :resumed, else: :followup)
+           }),
+         {:ok, opts} <- state.child_options.(agent.request, run_id, parent),
+         :ok <- child_authority(opts, parent.authority),
+         :ok <- child_authority(opts, agent.authority),
+         {:ok, opts, host_metadata} <- child_configuration(opts, run_id, incarnation),
+         {:ok, opts} <- carry_limits(opts, snapshot.run),
+         {:ok, opts} <- attribute_child(opts, parent) do
+      opts = opts |> Keyword.put(:messages, snapshot.messages) |> Keyword.put(:subscriber, self())
+
+      with :ok <- retire_replaced_child(state, agent) do
+        replacement = %{
+          agent
+          | run_id: run_id,
+            incarnation: incarnation,
+            host_metadata: host_metadata,
+            pid: nil,
+            monitor: nil,
+            opts: opts,
+            authority: Keyword.get(opts, :authority, %{}),
+            status: :created,
+            final: nil,
+            snapshot: nil,
+            snapshot_identity: nil,
+            closure: :open,
+            execution_reserved: true
+        }
+
+        state = %{
+          state
+          | sequence: state.sequence + 1,
+            agents: Map.put(state.agents, name, replacement),
+            run_index: Map.put(state.run_index, run_id, name),
+            monitors: Map.delete(state.monitors, agent.monitor),
+            updates: MapSet.delete(state.updates, name)
+        }
+
+        activate_child(state, name, opts, message)
+      else
+        {:error, error} -> {:error, error, reserve_uncertain(state, name, error)}
+      end
+    else
+      {:error, %Error{} = error} ->
+        {:error, error, state}
+
+      {:error, reason} ->
+        {:error, Error.new(:execution_failure, "child failed to start", cause: reason), state}
+    end
+  end
+
+  defp retire_replaced_child(_state, %{pid: nil}), do: :ok
+
+  defp retire_replaced_child(state, agent) do
+    with :ok <- safe_terminate_child(state.child_supervisor, agent.pid),
+         do: safe_demonitor(agent.monitor)
+  end
+
+  defp activate_child(state, name, opts, message) do
+    case start_child(state.child_supervisor, opts) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        agent = %{state.agents[name] | pid: pid, monitor: ref, status: :running}
+
+        next =
+          state
+          |> put_in([:agents, name], agent)
+          |> Map.update!(:monitors, &Map.put(&1, ref, {name, agent.run_id}))
+          |> publish(:started, name)
+
+        case maybe_prompt(pid, message) do
+          :ok -> {:ok, next}
+          {:error, error} -> {:error, error, reserve_uncertain(next, name, error)}
+        end
+
+      {:error, reason} ->
+        error =
+          if match?(%Error{}, reason),
+            do: reason,
+            else: Error.new(:execution_failure, "child failed to start", cause: reason)
+
+        agent = %{
+          state.agents[name]
+          | status: {:errored, :startup_failure},
+            execution_reserved: false,
+            closure: :confirmed
+        }
+
+        {:error, error, state |> put_in([:agents, name], agent) |> publish(:settled, name)}
+    end
+  end
+
+  defp child_configuration(opts, run_id, incarnation) do
+    metadata = Keyword.get(opts, :host_metadata, %{})
+
+    cond do
+      Keyword.get(opts, :run_id) != run_id or
+          Keyword.get(opts, :incarnation, incarnation) != incarnation ->
+        {:error, Error.new(:validation, "child identity differs from allocated identity")}
+
+      not is_map(metadata) or not public_metadata?(metadata) ->
+        {:error, Error.new(:validation, "host metadata must contain safe JSON values")}
+
+      true ->
+        {:ok, opts |> Keyword.delete(:host_metadata) |> Keyword.put(:incarnation, incarnation),
+         metadata}
+    end
+  end
+
+  defp public_metadata?(value) when is_map(value) do
+    not is_struct(value) and
+      Enum.all?(value, fn {key, nested} ->
+        (is_binary(key) or is_atom(key)) and
+          to_string(key) not in ~w(pid opts authority grants store provider provider_context) and
+          public_metadata?(nested)
+      end)
+  end
+
+  defp public_metadata?(value) when is_list(value), do: Enum.all?(value, &public_metadata?/1)
+
+  defp public_metadata?(value),
+    do: is_nil(value) or is_boolean(value) or is_binary(value) or is_number(value)
 
   defp attribute_child(opts, %{goal: goal, goal_binding: binding})
        when is_pid(goal) and is_map(binding) do
@@ -779,6 +1008,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp cancel_agent(%{pid: nil, closure: {:uncertain, _}}),
     do: {:error, Error.new(:unknown_outcome, "agent cleanup is not settled")}
 
+  defp cancel_agent(%{pid: nil, snapshot: snapshot} = agent) when is_map(snapshot) do
+    with {:ok, snapshot} <- settled_snapshot(agent), do: safe_replacement(snapshot)
+  end
+
   defp cancel_agent(%{pid: nil}),
     do: {:error, Error.new(:unknown_outcome, "agent process identity is unavailable")}
 
@@ -811,6 +1044,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
                   {:ok, closed_agent} ->
                     closed_agent = %{closed_agent | status: next_status}
                     acc = put_in(acc, [:agents, child_name], closed_agent)
+                    acc = publish(acc, :closed, child_name)
 
                     {:cont,
                      {:ok,
@@ -823,6 +1057,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
                   {:error, %Error{} = error} ->
                     uncertain = %{agent | status: :interrupted, closure: {:uncertain, error}}
                     acc = put_in(acc, [:agents, child_name], uncertain)
+                    acc = publish(acc, :cleanup_uncertain, child_name)
 
                     {:halt,
                      {:error, error, %{acc | updates: MapSet.put(acc.updates, child_name)}}}
@@ -843,6 +1078,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
                     acc
                   end
 
+                acc = publish(acc, :cleanup_uncertain, child_name)
+
                 {:halt, {:error, error, acc}}
             end
           end
@@ -862,8 +1099,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
        |> Map.put(:monitor, nil)
        |> Map.put(:snapshot, snapshot)
        |> Map.put(:snapshot_identity, snapshot_identity(snapshot))
+       |> Map.put(:execution_reserved, safe_replacement(snapshot) != :ok)
        |> Map.put(:closure, :confirmed)}
     end
+  end
+
+  defp maybe_close_child(_state, %{pid: nil} = agent, :close) do
+    with {:ok, snapshot} <- settled_snapshot(agent),
+         do:
+           {:ok,
+            %{agent | closure: :confirmed, execution_reserved: safe_replacement(snapshot) != :ok}}
   end
 
   defp safe_demonitor(ref) when is_reference(ref) do
@@ -1008,9 +1253,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp action(:v2, name) do
     case name do
-      "spawn_agent" -> {:ok, :spawn}
+      "spawn_agent" -> {:ok, {:spawn, :v2}}
       "send_message" -> {:ok, :message}
-      "followup_task" -> {:ok, :followup}
+      "followup_task" -> {:ok, :followup_v2}
       "interrupt_agent" -> {:ok, :interrupt}
       "list_agents" -> {:ok, :list}
       "wait_agent" -> {:ok, :wait_v2}
@@ -1018,15 +1263,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  defp action(:v1, @v1_namespace <> "::spawn_agent"), do: {:ok, :spawn}
+  defp action(:v1, @v1_namespace <> "::spawn_agent"), do: {:ok, {:spawn, :v1}}
   defp action(:v1, @v1_namespace <> "::send_input"), do: {:ok, :send_input}
   defp action(:v1, @v1_namespace <> "::resume_agent"), do: {:ok, :resume}
   defp action(:v1, @v1_namespace <> "::wait_agent"), do: {:ok, :wait_v1}
   defp action(:v1, @v1_namespace <> "::close_agent"), do: {:ok, :close}
   defp action(:v1, _), do: {:error, Error.new(:not_found, "unknown V1 collaboration tool")}
 
-  defp spawn_request(arguments) do
-    profile = if Map.has_key?(arguments, "task_name"), do: :v2, else: :v1
+  defp spawn_request(arguments, profile) do
     message = arguments["message"] || input_items_text(arguments["items"])
     task_name = arguments["task_name"] || unique_id("agent")
 
@@ -1060,6 +1304,138 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     if MapSet.subset?(child_grants, parent_grants),
       do: :ok,
       else: {:error, Error.new(:forbidden, "child authority exceeds parent grants")}
+  end
+
+  defp prepare_activation(state, profile, replacing \\ nil)
+
+  defp prepare_activation(state, :v1, replacing) when is_binary(replacing), do: {:ok, state}
+
+  defp prepare_activation(state, :v1, _replacing) do
+    case capacity(state) do
+      :ok -> {:ok, state}
+      {:error, error} -> {:error, error, state}
+    end
+  end
+
+  defp prepare_activation(state, :v2, replacing) do
+    reserved =
+      Enum.count(state.agents, fn {name, agent} ->
+        name != replacing and Map.get(agent, :execution_reserved, agent.status != :shutdown)
+      end)
+
+    if reserved >= state.v2_child_limit do
+      {:error, Error.new(:resource_conflict, "agent execution limit reached"), state}
+    else
+      make_resident_room(state, replacing)
+    end
+  end
+
+  defp make_resident_room(state, replacing) do
+    residents = Enum.count(state.agents, fn {_name, agent} -> is_pid(agent.pid) end)
+
+    if residents < state.v2_child_limit do
+      {:ok, state}
+    else
+      candidate =
+        Enum.find(state.agents, fn {name, agent} ->
+          is_pid(agent.pid) and (name == replacing or not agent.execution_reserved)
+        end)
+
+      case candidate do
+        nil ->
+          {:error, Error.new(:resource_conflict, "agent residency limit reached"), state}
+
+        {name, agent} ->
+          with {:ok, snapshot} <- settled_snapshot(agent),
+               :ok <- safe_replacement(snapshot),
+               :ok <- safe_terminate_child(state.child_supervisor, agent.pid) do
+            safe_demonitor(agent.monitor)
+
+            unloaded = %{
+              agent
+              | pid: nil,
+                monitor: nil,
+                snapshot: snapshot,
+                snapshot_identity: snapshot_identity(snapshot)
+            }
+
+            next =
+              state
+              |> put_in([:agents, name], unloaded)
+              |> Map.update!(:monitors, &Map.delete(&1, agent.monitor))
+              |> publish(:unloaded, name)
+
+            make_resident_room(next, replacing)
+          else
+            {:error, error} -> {:error, error, reserve_uncertain(state, name, error)}
+          end
+      end
+    end
+  end
+
+  defp settle_v2_agent(state, name) do
+    agent = state.agents[name]
+
+    with {:ok, snapshot} <- settled_snapshot(agent),
+         :ok <- safe_replacement(snapshot) do
+      settled = %{
+        agent
+        | snapshot: snapshot,
+          snapshot_identity: snapshot_identity(snapshot),
+          execution_reserved: false
+      }
+
+      put_in(state, [:agents, name], settled)
+    else
+      {:error, error} -> reserve_uncertain(state, name, error)
+    end
+  end
+
+  defp reserve_uncertain(state, name, error) do
+    agent = state.agents[name]
+
+    put_in(state, [:agents, name], %{
+      agent
+      | execution_reserved: true,
+        closure: {:uncertain, error},
+        snapshot: nil,
+        snapshot_identity: nil
+    })
+    |> publish(:cleanup_uncertain, name)
+  end
+
+  defp reject_interrupt_target(state, caller, target) do
+    if target in [state.parent_name, state.parent_run_id, caller.name, caller.run_id],
+      do: {:error, Error.new(:forbidden, "root and self interruption is not allowed")},
+      else: :ok
+  end
+
+  defp interrupt_target(state, name, agent) do
+    if agent.execution_reserved do
+      with :ok <- cancel_agent(agent),
+           {:ok, snapshot} <- settled_snapshot(agent),
+           :ok <- safe_replacement(snapshot) do
+        interrupted = %{
+          agent
+          | status: :interrupted,
+            execution_reserved: false,
+            snapshot: snapshot,
+            snapshot_identity: snapshot_identity(snapshot)
+        }
+
+        next =
+          state
+          |> put_in([:agents, name], interrupted)
+          |> Map.update!(:updates, &MapSet.put(&1, name))
+          |> publish(:interrupted, name)
+
+        {:ok, next}
+      else
+        {:error, error} -> {:error, error, reserve_uncertain(state, name, error)}
+      end
+    else
+      {:ok, state}
+    end
   end
 
   defp capacity(state) do
@@ -1210,10 +1586,103 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp event_error(event), do: inspect(Map.get(event, :outcome, "agent stopped"))
 
-  defp notify(%{subscriber: pid}, event) when is_pid(pid),
-    do: send(pid, {:codex_collaboration, event})
+  defp public_snapshot(state) do
+    %{
+      schema_version: 1,
+      manager_id: state.manager_id,
+      revision: state.revision,
+      root_name: state.parent_name,
+      agents:
+        state.agents
+        |> Map.values()
+        |> Enum.sort_by(& &1.name)
+        |> Enum.map(&public_agent(state, &1))
+    }
+  end
 
-  defp notify(_state, _event), do: :ok
+  defp child_limit(opts) do
+    max_agents = Keyword.get(opts, :max_agents, 16)
+    total = Keyword.get(opts, :max_concurrent_threads_per_session)
+
+    cond do
+      not is_integer(max_agents) or max_agents < 1 ->
+        {:error, Error.new(:validation, "max_agents must be a positive integer")}
+
+      total != nil and (not is_integer(total) or total < 1) ->
+        {:error,
+         Error.new(:validation, "max_concurrent_threads_per_session must be a positive integer")}
+
+      total != nil ->
+        {:ok, total - 1}
+
+      Keyword.has_key?(opts, :max_agents) ->
+        {:ok, max_agents}
+
+      true ->
+        {:ok, 3}
+    end
+  end
+
+  defp public_agent(_state, agent) do
+    uncertain =
+      match?({:uncertain, _}, agent.closure) or
+        (is_map(agent.snapshot) and safe_replacement(agent.snapshot) != :ok)
+
+    status =
+      cond do
+        uncertain -> :unknown_outcome
+        agent.status == :shutdown -> :closed
+        match?({:errored, _}, agent.status) -> :errored
+        true -> agent.status
+      end
+
+    cleanup =
+      cond do
+        uncertain -> :uncertain
+        agent.closure == :confirmed -> :confirmed
+        is_map(agent.snapshot) and agent.snapshot.resource_cleanup == :confirmed -> :confirmed
+        true -> :pending
+      end
+
+    reason =
+      case status do
+        :unknown_outcome -> "cleanup_unconfirmed"
+        :errored -> "execution_failed"
+        _ -> nil
+      end
+
+    %{
+      agent_id: agent.id,
+      name: agent.name,
+      task_name: agent.name,
+      parent_id: agent.parent_id,
+      parent_name: agent.parent,
+      profile: agent.profile,
+      run_id: agent.run_id,
+      incarnation: agent.incarnation,
+      status: status,
+      reason: reason,
+      cleanup: cleanup,
+      resident: is_pid(agent.pid),
+      host_metadata: agent.host_metadata
+    }
+  end
+
+  defp publish(state, type, name) do
+    next = %{state | revision: state.revision + 1}
+
+    event = %{
+      manager_id: next.manager_id,
+      revision: next.revision,
+      type: type,
+      agent: public_agent(next, next.agents[name])
+    }
+
+    recipients = Map.keys(next.observers)
+    recipients = if is_pid(next.subscriber), do: [next.subscriber | recipients], else: recipients
+    Enum.each(Enum.uniq(recipients), &send(&1, {:codex_collaboration, event}))
+    next
+  end
 
   defp normalize_root("/" <> _ = name), do: String.trim_trailing(name, "/")
   defp normalize_root(name), do: "/" <> String.trim(name, "/")

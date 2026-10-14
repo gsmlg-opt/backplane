@@ -316,6 +316,52 @@ they do not imply integration with Sigma's persistent peers or scheduler.
 Incremental subscriber events are transient; Sigma retains its
 ProtocolSubscription backpressure, cursor and replay policies.
 
+### Collaboration host observation and V2 capacity
+
+`Codex.MultiAgent.snapshot/1` returns `{:ok, snapshot}` with all created child
+identities, including closed records. `subscribe/2` (subscriber defaults to the
+calling process) installs a monitored observer and returns that snapshot in one
+serialized call. Events use `{:codex_collaboration, event}` with a process-local
+`manager_id`, monotonically increasing `revision`, transition `type`, and the
+complete public `agent` record. Apply events newer than the snapshot watermark,
+deduplicate by manager ID and revision, and fetch another snapshot on a gap or
+manager replacement. `unsubscribe/2` stops subsequent delivery. The model-facing
+`list_agents` retains its separate live-agent projection.
+
+Public records contain stable agent and parent identities, task name, profile,
+current run ID/incarnation, lifecycle status/reason, cleanup certainty, residency,
+and explicitly supplied JSON-safe `host_metadata`. They exclude process handles,
+grants, adapter contexts and raw failures. Creation and start are published before
+provider execution; cancellation acceptance is not confirmed interruption.
+Unexpected process exit or lost cleanup acknowledgement retains uncertainty.
+
+The existing trusted `child_options(request, run_id, parent_context)` callback
+prepares each admitted activation before execution. `parent_context.child`
+supplies the allocated stable identity, name, incarnation and activation kind.
+Durable hosts must persist the birth/activation intent and store association
+before returning success. They can return non-sensitive `host_metadata` in the options for
+observation; it is removed before starting the Conversation. Preparation failure
+prevents execution. An asynchronous observer is not a durability acknowledgement.
+The host must reconcile prepared intents after manager loss; manager state and
+observer revisions do not survive restart or automatically restore children.
+
+V2 `max_concurrent_threads_per_session` includes the root and defaults to four.
+An explicit legacy `max_agents: n`, when the new option is absent, retains an
+`n`-child-slot configuration. Spawn, nested spawn and idle follow-up share the
+same serialized admission budget; saturation returns `:resource_conflict`.
+Running, cancelling and uncertain children reserve slots. Confirmed safe
+settlement releases execution capacity, independently of retained identity.
+Idle child processes are unloaded as needed to keep residency within the child
+slot bound, retaining committed history and remaining authority/work/deadlines.
+Follow-up activates the same identity with a fresh run, without replaying its
+original prompt or uncertain effects.
+
+V2 `interrupt_agent` interrupts only the target's current task and rejects root
+or self targets. Settled/unloaded targets remain inspectable and are not reloaded
+by interruption. Independently running descendants and siblings continue.
+V1 `max_agents` continues to count open identities, and V1 `close_agent` closes
+the target and descendants. Explicit owner-session shutdown cleans up the tree.
+
 ## Codex run resources and cleanup
 
 Codex command sessions and Code Mode cells belong to the executing Conversation,

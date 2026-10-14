@@ -303,7 +303,7 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
     assert {:ok, %{timed_out: false}} = Task.await(waiter_b)
   end
 
-  test "nested ownership cascades cancellation without stopping a sibling" do
+  test "V1 close cascades through nested ownership without stopping a sibling" do
     {:ok, runtime} = start_runtime(self())
 
     assert {:ok, %{task_name: "/root/parent"}} =
@@ -332,12 +332,14 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
     before_close = :sys.get_state(runtime)
     peer_pid = before_close.agents["/root/peer"].pid
 
-    assert {:ok, %{status: :interrupted}} =
-             call(runtime, :v2, "root", "interrupt_agent", %{"target" => "/root/parent"})
+    assert {:ok, %{status: :shutdown}} =
+             call(runtime, :v1, "root", "multi_agent_v1::close_agent", %{
+               "target" => "/root/parent"
+             })
 
     state = :sys.get_state(runtime)
-    assert state.agents["/root/parent"].status == :interrupted
-    assert state.agents["/root/parent/nested"].status == :interrupted
+    assert state.agents["/root/parent"].status == :shutdown
+    assert state.agents["/root/parent/nested"].status == :shutdown
     assert state.agents["/root/peer"].status == :running
     assert Process.alive?(peer_pid)
   end

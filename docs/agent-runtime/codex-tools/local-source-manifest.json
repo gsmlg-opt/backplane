@@ -105,8 +105,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/multi_agent.ex",
-      "sha256": "a9c6a3a957b93091b3efa2ccd59e05b0c72b15846fda3c99367e8cf9d3fe46f2",
-      "bytes": 47491
+      "sha256": "bfa330992a272565f269b87e885766c32953eea2a42dd18e7d45da4446516dcb",
+      "bytes": 62737
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/path_guard.ex",
@@ -180,8 +180,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/conversation.ex",
-      "sha256": "b31786b6b654f38a89c3844ad091191c67fc13ae55a534aac134c08a674ff59d",
-      "bytes": 80413
+      "sha256": "44bc755a2cdedc42ffe9a42246844a57fd9a339f60c00f42e3a3086d202bd778",
+      "bytes": 80542
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/conversation_adapter.ex",

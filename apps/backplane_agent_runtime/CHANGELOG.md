@@ -11,6 +11,13 @@
 
 ## Unreleased
 
+- Add authoritative process-local MultiAgent host snapshots and lifecycle
+  subscriptions with sanitized records and revision watermarks (#67).
+- Separate V2 execution capacity and bounded child residency from retained
+  identities/history, gating follow-up and nested activation together (#68).
+- Interrupt only the V2 target task and require confirmed settlement; preserve
+  V1 recursive close and explicit session shutdown (#69).
+
 - Add explicit `run_timeout: :infinity` with durable disabled root deadlines,
   bound approvals, finite owned-work limits and conservative recovery (#65).
 - Add opt-in finite `provider_idle_timeout` for validated normalized provider

@@ -24,7 +24,11 @@ cannot select adapters, credentials, workspaces, environments, or grants.
 - `:collaboration_v1` and `:collaboration_v2` expose their distinct pinned names.
   `Codex.MultiAgent` owns wait/list state and starts child `Conversation`
   processes under a `DynamicSupervisor`; child options and authority come only
-  from the host.
+  from the host. Host snapshots/subscriptions retain closed identities separately
+  from model-facing lists. V2 executing capacity and runtime residency are bounded
+  independently of retained history; V2 interruption targets one task, while V1
+  close and session shutdown retain recursive cleanup. See `EMBEDDING.md` for the
+  preparation, observer revision, admission and restart boundaries.
 - `:extensions` exposes 27 concrete goal, memory, skill, history, note, and
   message-board tools. The bundled scoped reference state is ephemeral. A host
   adapter is required before claiming durability or restart recovery. Supplying
