@@ -83,6 +83,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          root_goal_context: %{},
          session_authority: nil,
          parent_binding: nil,
+         parent_pid: nil,
+         parent_incarnation: 1,
+         parent_monitor: nil,
+         parent_recovery: false,
+         mailboxes: %{},
+         input_activity: %{},
+         deliveries: %{},
          session_owner: nil,
          session_closed: false,
          child_options: child_options,
@@ -154,6 +161,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          %{
            state
            | parent_run_id: binding.run_id,
+             parent_incarnation: Map.get(binding, :run_incarnation, 1),
+             parent_pid: state.parent_pid,
+             parent_recovery: false,
+             input_activity:
+               if(state.parent_binding == binding,
+                 do: state.input_activity,
+                 else: reset_input_activity(state, state.parent_name).input_activity
+               ),
              parent_authority: authority,
              session_authority: authority,
              parent_binding: binding,
@@ -164,7 +179,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   def handle_call({:detach_parent, binding}, _from, state) do
     if state.parent_binding == binding do
-      {:reply, :ok, %{state | parent_binding: nil, parent_run_id: nil}}
+      if state.parent_monitor, do: Process.demonitor(state.parent_monitor, [:flush])
+      next = reset_input_activity(state, state.parent_name)
+
+      {:reply, :ok,
+       %{next | parent_binding: nil, parent_run_id: nil, parent_pid: nil, parent_monitor: nil}}
     else
       {:reply, {:error, Error.new(:forbidden, "stale collaboration parent binding")}, state}
     end
@@ -253,6 +272,86 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   @impl true
+  def handle_info({:codex_bind_input, pid, identity}, state) do
+    result =
+      cond do
+        state.session_closed ->
+          {:error, Error.new(:forbidden, "collaboration session is closed")}
+
+        identity.run_id != state.parent_run_id or identity.incarnation != state.parent_incarnation or
+            identity.session_binding != state.parent_binding ->
+          {:error, Error.new(:forbidden, "stale collaboration input binding")}
+
+        state.parent_pid != nil and state.parent_pid != pid ->
+          {:error, Error.new(:forbidden, "collaboration input already has an owner")}
+
+        true ->
+          :ok
+      end
+
+    case result do
+      :ok ->
+        entries = Map.get(state.mailboxes, state.parent_name, [])
+        send(pid, {:codex_input_bound, self(), identity, {:ok, entries}})
+        ref = state.parent_monitor || Process.monitor(pid)
+
+        {:noreply,
+         %{
+           state
+           | parent_pid: pid,
+             parent_monitor: ref,
+             mailboxes: Map.delete(state.mailboxes, state.parent_name)
+         }}
+
+      error ->
+        send(pid, {:codex_input_bound, self(), identity, error})
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:codex_input_activity, pid, identity, activity}, state) do
+    case input_owner(state, pid, identity) do
+      nil ->
+        {:noreply, state}
+
+      name
+      when name == state.parent_name and is_tuple(activity) and elem(activity, 0) == :settled ->
+        if state.parent_monitor, do: Process.demonitor(state.parent_monitor, [:flush])
+        {:settled, mailbox} = activity
+        entries = Map.get(state.mailboxes, name, []) ++ mailbox
+
+        next = %{
+          state
+          | parent_pid: nil,
+            parent_monitor: nil,
+            parent_recovery: false,
+            mailboxes: Map.put(state.mailboxes, name, Enum.uniq_by(entries, & &1.id))
+        }
+
+        {:noreply, next |> reset_input_activity(name) |> wake_waiters()}
+
+      _name when is_tuple(activity) ->
+        {:noreply, state}
+
+      name ->
+        {:noreply, state |> change_input_activity(name, activity) |> wake_waiters()}
+    end
+  end
+
+  def handle_info({:mail_delivery, token, result}, state),
+    do: {:noreply, complete_delivery(state, token, result)}
+
+  def handle_info({:mail_delivery_timeout, token}, state) do
+    if delivery = state.deliveries[token], do: Process.exit(delivery.worker, :kill)
+
+    {:noreply,
+     complete_delivery(
+       state,
+       token,
+       {:error, Error.new(:unknown_outcome, "mailbox acceptance was not acknowledged")}
+     )}
+  end
+
   def handle_info({:agent_runtime, run_id, event}, state) when is_map(event) do
     state = update_from_event(state, run_id, event)
     {:noreply, wake_waiters(state)}
@@ -262,6 +361,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     observer = Enum.find(state.observers, fn {_pid, monitor} -> monitor == ref end)
 
     case {observer, Map.pop(state.monitors, ref)} do
+      _ when ref == state.parent_monitor ->
+        {:noreply, %{state | parent_pid: nil, parent_monitor: nil, parent_recovery: true}}
+
       {{pid, _}, _} ->
         {:noreply,
          %{
@@ -323,7 +425,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       {%{from: from, profile: :v2}, waiters} ->
         GenServer.reply(
           from,
-          {:ok, %{message: "Timed out waiting for agent updates.", timed_out: true}}
+          {:ok, %{message: "Wait timed out.", timed_out: true}}
         )
 
         {:noreply, %{state | waiters: waiters}}
@@ -334,6 +436,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   @impl true
   def terminate(_reason, state) do
+    Enum.each(state.deliveries, fn {_token, entry} ->
+      Process.cancel_timer(entry.timer)
+      Process.exit(entry.worker, :kill)
+    end)
+
     Enum.each(state.waiters, fn {_token, waiter} ->
       if waiter.timer, do: Process.cancel_timer(waiter.timer)
     end)
@@ -372,9 +479,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp dispatch(:wait_v2, arguments, from, caller, state) do
-    case ready_names(state, nil) do
-      [] -> wait(:v2, [], arguments, from, caller, state)
-      names -> {:reply, {:ok, v2_wait_result(names)}, consume_updates(state, names)}
+    case caller_activity(state, caller.name) do
+      nil -> wait(:v2, [], arguments, from, caller, state)
+      activity -> {:reply, {:ok, v2_wait_result(activity)}, state}
     end
   end
 
@@ -397,8 +504,26 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
+  defp dispatch(:message, arguments, from, caller, state) do
+    with message when is_binary(message) and message != "" <- arguments["message"],
+         {:ok, name, destination} <- mailbox_destination(state, arguments["target"]) do
+      queue_message(
+        state,
+        name,
+        destination,
+        message,
+        communication(caller, :message, unique_id("mail")),
+        from,
+        nil
+      )
+    else
+      {:error, error} -> {:reply, {:error, error}, state}
+      _ -> {:reply, validation("message is required"), state}
+    end
+  end
+
   defp dispatch(action, arguments, _from, _caller, state)
-       when action in [:message, :followup_v2] do
+       when action == :followup_v2 do
     target = arguments["target"]
     message = arguments["message"]
 
@@ -515,6 +640,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         monitor: nil,
         status: :created,
         final: nil,
+        result_delivery: nil,
         opts: opts,
         request: request,
         message: request.message,
@@ -576,9 +702,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     {state, consumed} =
       Enum.reduce(Map.to_list(state.waiters), {state, MapSet.new()}, fn {token, waiter},
                                                                         {acc, consumed} ->
-        names = ready_names(state, if(waiter.names == [], do: nil, else: waiter.names))
+        names = if waiter.profile == :v1, do: ready_names(state, waiter.names), else: []
+        activity = if waiter.profile == :v2, do: caller_activity(state, waiter.caller), else: nil
 
-        if names == [] do
+        if names == [] and activity == nil do
           {acc, consumed}
         else
           Process.cancel_timer(waiter.timer)
@@ -586,7 +713,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           result =
             if waiter.profile == :v1,
               do: v1_wait_result(state, names),
-              else: v2_wait_result(names)
+              else: v2_wait_result(activity)
 
           GenServer.reply(waiter.from, {:ok, result})
 
@@ -630,7 +757,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
           if match?({:uncertain, _}, next.agents[name].closure),
             do: next,
-            else: publish(next, :settled, name)
+            else: next |> publish(:settled, name) |> deliver_terminal_result(name)
         end
     end
   end
@@ -664,9 +791,6 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp deliver(_state, _name, %{closure: {:uncertain, _}}, _action, _message),
     do: {:error, Error.new(:unknown_outcome, "agent cleanup is not settled")}
-
-  defp deliver(state, _name, %{status: :running, pid: pid}, :message, message),
-    do: normalize_delivery(state, Conversation.steer(pid, message))
 
   defp deliver(state, _name, %{status: :running, pid: pid}, :followup, message),
     do: normalize_delivery(state, Conversation.follow_up(pid, message))
@@ -721,7 +845,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, opts, host_metadata} <- child_configuration(opts, run_id, incarnation),
          {:ok, opts} <- carry_limits(opts, snapshot.run),
          {:ok, opts} <- attribute_child(opts, parent) do
-      opts = opts |> Keyword.put(:messages, snapshot.messages) |> Keyword.put(:subscriber, self())
+      opts =
+        opts
+        |> Keyword.put(:messages, snapshot.messages)
+        |> Keyword.put(:subscriber, self())
+        |> Keyword.put(
+          :mailbox,
+          Map.get(snapshot.conversation, :mailbox, []) ++ Map.get(state.mailboxes, name, [])
+        )
 
       with :ok <- retire_replaced_child(state, agent) do
         replacement = %{
@@ -735,6 +866,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
             authority: Keyword.get(opts, :authority, %{}),
             status: :created,
             final: nil,
+            result_delivery: nil,
             snapshot: nil,
             snapshot_identity: nil,
             closure: :open,
@@ -750,7 +882,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
             updates: MapSet.delete(state.updates, name)
         }
 
-        activate_child(state, name, opts, message)
+        state = reset_input_activity(state, name, Keyword.get(opts, :mailbox, []))
+
+        case activate_child(state, name, opts, message) do
+          {:ok, next} -> {:ok, %{next | mailboxes: Map.delete(next.mailboxes, name)}}
+          error -> error
+        end
       else
         {:error, error} -> {:error, error, reserve_uncertain(state, name, error)}
       end
@@ -771,6 +908,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp activate_child(state, name, opts, message) do
+    opts = Keyword.put(opts, :collaboration_input, %{runtime: self(), name: name})
+
     case start_child(state.child_supervisor, opts) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1181,6 +1320,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           {:ok,
            %{
              name: state.parent_name,
+             agent_id: state.root_id,
+             incarnation: state.parent_incarnation,
              run_id: state.parent_run_id,
              authority: current_root_authority(state, operation),
              goal: get_in(operation, [:backend_context, :goal]),
@@ -1198,6 +1339,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
             {:ok,
              %{
                name: name,
+               agent_id: agent.id,
+               incarnation: agent.incarnation,
                run_id: run_id,
                authority: current_child_authority(state, agent),
                goal: Keyword.get(agent.opts, :goal),
@@ -1539,9 +1682,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     %{status: status, timed_out: false}
   end
 
-  defp v2_wait_result(names) do
+  defp v2_wait_result(activity) do
     %{
-      message: "Agent updates are available for: " <> Enum.join(Enum.sort(names), ", "),
+      message:
+        if(activity == :steer, do: "Wait interrupted by new input.", else: "Wait completed."),
       timed_out: false
     }
   end
@@ -1580,6 +1724,318 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp input_items_text(_), do: nil
+
+  defp communication(source, kind, result_id) do
+    %{
+      kind: kind,
+      result_id: result_id,
+      source_name: source.name,
+      source_agent_id: source.agent_id,
+      source_run_id: source.run_id,
+      source_incarnation: source.incarnation
+    }
+  end
+
+  defp mailbox_destination(state, target) do
+    if target in [state.parent_name, state.parent_run_id] do
+      if state.parent_recovery do
+        {:error, Error.new(:unknown_outcome, "parent input requires recovery")}
+      else
+        {:ok, state.parent_name,
+         %{
+           pid: state.parent_pid,
+           identity: %{
+             run_id: state.parent_run_id,
+             incarnation: state.parent_incarnation,
+             session_binding: state.parent_binding
+           }
+         }}
+      end
+    else
+      with {:ok, name, agent} <- resolve_target(state, target) do
+        cond do
+          agent.status == :shutdown ->
+            {:error, Error.new(:forbidden, "mailbox destination is closed")}
+
+          match?({:uncertain, _}, agent.closure) ->
+            {:error, Error.new(:unknown_outcome, "mailbox destination requires recovery")}
+
+          agent.status == :running ->
+            {:ok, name,
+             %{
+               pid: agent.pid,
+               identity: %{
+                 run_id: agent.run_id,
+                 incarnation: agent.incarnation,
+                 session_binding: Keyword.get(agent.opts, :session_binding)
+               }
+             }}
+
+          true ->
+            with {:ok, snapshot} <- settled_snapshot(agent),
+                 :ok <- safe_replacement(snapshot),
+                 do: {:ok, name, %{pid: nil}}
+        end
+      end
+    end
+  end
+
+  defp communication_text(destination, content, envelope) do
+    type = if envelope.kind == :result, do: "FINAL_ANSWER", else: "MESSAGE"
+
+    "Message Type: " <>
+      type <>
+      "\nTask name: " <>
+      destination <>
+      "\nSender: " <> envelope.source_name <> "\nPayload:\n" <> content
+  end
+
+  defp queue_message(state, name, %{pid: nil}, content, envelope, from, source) do
+    content = communication_text(name, content, envelope)
+    message = %{role: :user, content: content, id: envelope.result_id, collaboration: envelope}
+    entries = Map.get(state.mailboxes, name, [])
+
+    entries =
+      if Enum.any?(entries, &(&1.id == message.id)), do: entries, else: entries ++ [message]
+
+    next =
+      %{state | mailboxes: Map.put(state.mailboxes, name, entries)}
+      |> change_input_activity(name, :mailbox)
+      |> wake_waiters()
+
+    receipt = %{accepted: true, message_id: message.id, acceptance: :process_local}
+
+    if from,
+      do: {:reply, {:ok, receipt}, next},
+      else: {:noreply, record_result_delivery(next, source, {:ok, receipt})}
+  end
+
+  defp queue_message(state, name, destination, content, envelope, from, source) do
+    owner = self()
+    token = make_ref()
+
+    worker =
+      spawn(fn ->
+        result =
+          try do
+            Conversation.queue_only(
+              destination.pid,
+              communication_text(name, content, envelope),
+              envelope,
+              destination.identity
+            )
+          rescue
+            _ -> {:error, Error.new(:execution_failure, "mailbox delivery failed")}
+          catch
+            :exit, _ ->
+              {:error, Error.new(:unknown_outcome, "mailbox destination is unavailable")}
+          end
+
+        send(owner, {:mail_delivery, token, result})
+      end)
+
+    timer = Process.send_after(self(), {:mail_delivery_timeout, token}, 5_000)
+
+    entry = %{
+      worker: worker,
+      timer: timer,
+      from: from,
+      source: source,
+      name: name,
+      destination: destination
+    }
+
+    {:noreply, %{state | deliveries: Map.put(state.deliveries, token, entry)}}
+  end
+
+  defp complete_delivery(state, token, result) do
+    case Map.pop(state.deliveries, token) do
+      {nil, _} ->
+        state
+
+      {entry, deliveries} ->
+        Process.cancel_timer(entry.timer)
+        next = %{state | deliveries: deliveries}
+
+        if entry.from do
+          response =
+            case result do
+              {:ok, receipt} -> {:ok, Map.put(receipt, :accepted, true)}
+              {:error, error} -> {:error, error}
+            end
+
+          GenServer.reply(entry.from, response)
+        end
+
+        record_result_delivery(next, entry.source, result)
+    end
+  end
+
+  defp deliver_terminal_result(state, name) do
+    agent = state.agents[name]
+    result_id = "result:" <> agent.run_id <> ":" <> Integer.to_string(agent.incarnation)
+
+    if agent.profile != :v2 or agent.status == :interrupted or
+         match?(
+           %{result_id: ^result_id, status: status} when status in [:pending, :accepted],
+           Map.get(agent, :result_delivery)
+         ) do
+      state
+    else
+      source = %{
+        name: name,
+        run_id: agent.run_id,
+        incarnation: agent.incarnation,
+        result_id: result_id
+      }
+
+      next =
+        put_in(
+          state,
+          [:agents, name],
+          Map.put(agent, :result_delivery, %{
+            result_id: result_id,
+            status: :pending,
+            error_class: nil
+          })
+        )
+        |> publish(:result_delivery_pending, name)
+
+      case mailbox_destination(next, agent.parent) do
+        {:ok, parent, destination} ->
+          envelope =
+            communication(
+              %{
+                name: name,
+                agent_id: agent.id,
+                run_id: agent.run_id,
+                incarnation: agent.incarnation
+              },
+              :result,
+              result_id
+            )
+
+          content =
+            case agent.status do
+              :completed ->
+                "Agent " <> name <> " completed: " <> terminal_text(agent.final)
+
+              {:errored, reason} ->
+                "Agent " <> name <> " errored: " <> to_string(reason)
+
+              :shutdown ->
+                "Agent " <> name <> " was shut down."
+            end
+
+          case queue_message(next, parent, destination, content, envelope, nil, source) do
+            {:noreply, queued} -> queued
+          end
+
+        {:error, error} ->
+          record_result_delivery(next, source, {:error, error})
+      end
+    end
+  end
+
+  defp terminal_text(nil), do: "No final message."
+  defp terminal_text(content) when is_binary(content), do: content
+
+  defp terminal_text(content) when is_list(content) do
+    Enum.map_join(content, "\n", fn
+      text when is_binary(text) -> text
+      %{text: text} when is_binary(text) -> text
+      %{"text" => text} when is_binary(text) -> text
+      block -> inspect(block)
+    end)
+  end
+
+  defp terminal_text(content), do: inspect(content)
+
+  defp record_result_delivery(state, nil, _result), do: state
+
+  defp record_result_delivery(state, source, result) do
+    agent = state.agents[source.name]
+
+    if agent.run_id == source.run_id and agent.incarnation == source.incarnation do
+      record =
+        case result do
+          {:ok, receipt} ->
+            %{
+              result_id: source.result_id,
+              status: :accepted,
+              error_class: nil,
+              acceptance: receipt[:acceptance] || :checkpointed
+            }
+
+          {:error, error} ->
+            %{result_id: source.result_id, status: :failed, error_class: error.class}
+        end
+
+      type = if record.status == :accepted, do: :result_delivered, else: :result_delivery_failed
+
+      state
+      |> put_in([:agents, source.name], Map.put(agent, :result_delivery, record))
+      |> publish(type, source.name)
+    else
+      state
+    end
+  end
+
+  defp input_owner(state, pid, identity) do
+    cond do
+      state.session_closed ->
+        nil
+
+      pid == state.parent_pid and identity.run_id == state.parent_run_id and
+        identity.incarnation == state.parent_incarnation and
+          identity.session_binding == state.parent_binding ->
+        state.parent_name
+
+      name = state.run_index[identity.run_id] ->
+        agent = state.agents[name]
+
+        if agent.pid == pid and agent.run_id == identity.run_id and
+             agent.incarnation == identity.incarnation and
+             Keyword.get(agent.opts, :session_binding) == identity.session_binding,
+           do: name,
+           else: nil
+
+      true ->
+        nil
+    end
+  end
+
+  defp reset_input_activity(state, name, carried_mailbox \\ []) do
+    pending =
+      if carried_mailbox != [] or Map.get(state.mailboxes, name, []) != [],
+        do: MapSet.new([:mailbox]),
+        else: MapSet.new()
+
+    %{state | input_activity: Map.put(state.input_activity, name, pending)}
+  end
+
+  defp change_input_activity(state, name, activity) do
+    pending = Map.get(state.input_activity, name, MapSet.new())
+
+    pending =
+      case activity do
+        :mailbox_consumed -> MapSet.delete(pending, :mailbox)
+        :steer_consumed -> MapSet.delete(pending, :steer)
+        other -> MapSet.put(pending, other)
+      end
+
+    %{state | input_activity: Map.put(state.input_activity, name, pending)}
+  end
+
+  defp caller_activity(state, name) do
+    pending = Map.get(state.input_activity, name, MapSet.new())
+
+    cond do
+      MapSet.member?(pending, :steer) -> :steer
+      MapSet.member?(pending, :mailbox) -> :mailbox
+      true -> nil
+    end
+  end
 
   defp caller_metadata(caller),
     do: Map.take(caller, [:run_id, :name, :authority, :goal, :goal_binding])
@@ -1664,7 +2120,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       reason: reason,
       cleanup: cleanup,
       resident: is_pid(agent.pid),
-      host_metadata: agent.host_metadata
+      host_metadata: agent.host_metadata,
+      result_delivery: Map.get(agent, :result_delivery)
     }
   end
 

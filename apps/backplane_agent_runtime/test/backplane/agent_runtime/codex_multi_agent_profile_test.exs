@@ -178,11 +178,6 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
     assert String.starts_with?(child_run_id, "/root/worker:")
     assert Enum.any?(child_messages, &(&1[:content] == "do the task"))
 
-    send(child_provider, {
-      :events,
-      [%{type: :response_completed, message: %{role: :assistant, content: "child result"}}]
-    })
-
     assert_receive {:root_provider, %{messages: spawn_messages}, second_root_provider}
 
     assert %{name: "spawn_agent", result: %{task_name: "/root/worker"}} =
@@ -203,6 +198,13 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
       ]
     })
 
+    assert wait_for_waiters(runtime, 1)
+
+    send(child_provider, {
+      :events,
+      [%{type: :response_completed, message: %{role: :assistant, content: "child result"}}]
+    })
+
     assert_receive {:root_provider, %{messages: final_messages}, final_root_provider}
 
     assert Enum.any?(final_messages, fn
@@ -211,9 +213,10 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
            end)
 
     assert %{name: "wait_agent", result: %{timed_out: false, message: message}} =
-             List.last(final_messages)
+             Enum.find(final_messages, &(&1[:name] == "wait_agent"))
 
-    assert message =~ "/root/worker"
+    assert message == "Wait completed."
+    assert Enum.any?(final_messages, &(&1[:collaboration] && &1.collaboration.kind == :result))
 
     send(final_root_provider, {
       :events,
@@ -283,7 +286,7 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
                "message" => "wait"
              })
 
-    assert_receive {:child_provider, _run_id, _request, _provider}
+    assert_receive {:child_provider, _run_id, _request, provider}
 
     waiter_a =
       Task.async(fn -> call(runtime, :v2, "root", "wait_agent", %{"timeout_ms" => 500}) end)
@@ -293,11 +296,10 @@ defmodule Backplane.AgentRuntime.CodexMultiAgentProfileTest do
 
     assert wait_for_waiters(runtime, 2)
 
-    assert {:ok, %{accepted: true}} =
-             call(runtime, :v2, "root", "send_message", %{
-               "target" => "/root/worker",
-               "message" => "update"
-             })
+    send(provider, {
+      :events,
+      [%{type: :response_completed, message: %{role: :assistant, content: "mailbox result"}}]
+    })
 
     assert {:ok, %{timed_out: false}} = Task.await(waiter_a)
     assert {:ok, %{timed_out: false}} = Task.await(waiter_b)

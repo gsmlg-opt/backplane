@@ -362,6 +362,36 @@ by interruption. Independently running descendants and siblings continue.
 V1 `max_agents` continues to count open identities, and V1 `close_agent` closes
 the target and descendants. Explicit owner-session shutdown cleans up the tree.
 
+### V2 mailbox delivery and waits
+
+V2 `send_message` queues attributed input for a registered running or idle
+identity, including a child's parent/root. It does not steer the recipient or
+start an idle turn. `followup_task` explicitly activates work. Queued mail is
+consumed at the recipient's next natural provider continuation or explicit
+activation; mail arriving while a final response completes does not cause an
+extra provider request.
+
+Terminal child results use the same mailbox boundary with source agent, run,
+incarnation and result identities. Host lifecycle notifications remain separate
+from model input. Duplicate notifications for the same terminal activation do
+not create another accepted result; stale run/incarnation notifications cannot
+deliver a result for a replacement activation. Delivery is best effort, with
+acceptance recorded after the recipient acknowledges it. Failure to reach an
+unavailable, closed or recovery-required recipient is not successful delivery.
+
+V2 `wait_agent` watches the invoking agent's pending mailbox and new steer.
+It returns `Wait completed.`, `Wait interrupted by new input.`, or
+`Wait timed out.` with `timed_out` true only for timeout. Pending steer takes
+priority when both kinds are already queued. Timeout leaves children running.
+V1 wait retains its explicit target/status behavior.
+
+Mailbox acceptance is not an exactly-once durable-delivery guarantee. Active
+Conversation input is checkpointed before acknowledgement. Fresh, unadmitted
+Conversations and idle/unloaded identity queues retain mail in process-local
+state until the next run admits and checkpoints it. Manager replacement does
+not restore those queues. Durable hosts must reconcile their own accepted
+messages and activation intents; observers do not provide mailbox persistence.
+
 ## Codex run resources and cleanup
 
 Codex command sessions and Code Mode cells belong to the executing Conversation,

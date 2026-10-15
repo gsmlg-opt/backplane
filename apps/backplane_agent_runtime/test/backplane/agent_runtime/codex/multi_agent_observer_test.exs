@@ -233,7 +233,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentObserverTest do
     assert failed.reason != ""
     refute failed.reason =~ "offline"
     assert_public(failed)
-    assert record(runtime, child.name) == failed
+    assert_receive {:codex_collaboration, %{type: :result_delivered, agent: delivered}}, 1_000
+    assert delivered.result_delivery.status == :accepted
+    assert Map.delete(delivered, :result_delivery) == Map.delete(failed, :result_delivery)
+    assert record(runtime, child.name) == delivered
   end
 
   test "follow-up keeps agent identity while replacing run and rejects stale terminal events" do

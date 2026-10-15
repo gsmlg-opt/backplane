@@ -572,7 +572,13 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
 
     receive do
       {:provider, :root, %{run_id: ^run, messages: messages}, next} ->
-        {next, List.last(messages).result}
+        result =
+          messages
+          |> Enum.filter(&(&1[:role] == :tool and &1[:name] == name))
+          |> List.last()
+          |> Map.fetch!(:result)
+
+        {next, result}
     after
       5_000 ->
         status = Conversation.status(Process.get({:session_conversation, run}))

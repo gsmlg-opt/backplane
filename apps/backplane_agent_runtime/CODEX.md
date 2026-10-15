@@ -27,7 +27,10 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   from the host. Host snapshots/subscriptions retain closed identities separately
   from model-facing lists. V2 executing capacity and runtime residency are bounded
   independently of retained history; V2 interruption targets one task, while V1
-  close and session shutdown retain recursive cleanup. See `EMBEDDING.md` for the
+  close and session shutdown retain recursive cleanup. V2 messages and terminal
+  child results enter the recipient mailbox without starting an idle turn;
+  `wait_agent` distinguishes mailbox activity, new steer and timeout.
+  See `EMBEDDING.md` for the
   preparation, observer revision, admission and restart boundaries.
 - `:extensions` exposes 27 concrete goal, memory, skill, history, note, and
   message-board tools. The bundled scoped reference state is ephemeral. A host

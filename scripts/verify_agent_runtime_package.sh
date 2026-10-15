@@ -158,7 +158,7 @@ for collaboration_test in codex_multi_agent_profile_test.exs codex_multi_agent_c
   cp "$source_dir/test/backplane/agent_runtime/$collaboration_test" \
     "$conversation_fixture/test/backplane/agent_runtime/$collaboration_test"
 done
-for collaboration_test in multi_agent_v2_lifecycle_test.exs multi_agent_observer_test.exs; do
+for collaboration_test in multi_agent_v2_lifecycle_test.exs multi_agent_observer_test.exs multi_agent_mailbox_test.exs; do
   cp "$source_dir/test/backplane/agent_runtime/codex/$collaboration_test" \
     "$conversation_fixture/test/backplane/agent_runtime/codex/$collaboration_test"
 done

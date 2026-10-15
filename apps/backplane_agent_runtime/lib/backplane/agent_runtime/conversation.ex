@@ -122,6 +122,10 @@ defmodule Backplane.AgentRuntime.Conversation do
   def prompt(pid, content), do: GenServer.call(pid, {:input, :prompt, content}, :infinity)
   def steer(pid, content), do: GenServer.call(pid, {:input, :steering, content}, :infinity)
   def follow_up(pid, content), do: GenServer.call(pid, {:input, :follow_up, content}, :infinity)
+
+  def queue_only(pid, content, communication, expected),
+    do: GenServer.call(pid, {:queue_only, content, communication, expected}, :infinity)
+
   def resolve(pid, id, value), do: GenServer.call(pid, {:resolve, id, value}, :infinity)
 
   def stage_catalog(pid, update),
@@ -145,6 +149,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       messages: Keyword.get(opts, :messages, []),
       steering: [],
       follow_up: [],
+      mailbox: Keyword.get(opts, :mailbox, []),
       turn_id: nil,
       turns: [],
       pending_interaction: nil,
@@ -212,17 +217,19 @@ defmodule Backplane.AgentRuntime.Conversation do
       goal_binding: Keyword.get(opts, :goal_binding),
       goal_delivery: nil,
       provider_progress_from: nil,
-      resource_cleanup: :not_requested
+      resource_cleanup: :not_requested,
+      input_runtimes: input_runtimes(opts, catalog.registry),
+      input_binding_pending: %{}
     }
 
     case Keyword.get(opts, :session_binding) do
       nil ->
-        {:ok, state}
+        {:ok, bind_inputs(state)}
 
       binding ->
         if binding.run_id == run.run_id and binding.run_incarnation == run.incarnation do
           case Session.attach(binding, catalog) do
-            :ok -> {:ok, state}
+            :ok -> {:ok, bind_inputs(state)}
             {:error, error} -> {:stop, error}
           end
         else
@@ -232,6 +239,30 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   @impl true
+  def handle_call({:queue_only, content, communication, expected}, from, s) do
+    cond do
+      expected != input_identity(s) ->
+        {:reply, {:error, Error.new(:forbidden, "stale mailbox destination")}, s}
+
+      s.phase in [:terminal, :storage_failed, :recovery_required, :cancelling] ->
+        {:reply,
+         {:error, Error.new(:unknown_outcome, "mailbox destination is not accepting input")}, s}
+
+      not is_binary(content) or content == "" ->
+        {:reply, {:error, Error.new(:validation, "mailbox message must be text")}, s}
+
+      true ->
+        message = %{
+          role: :user,
+          content: content,
+          id: communication.result_id,
+          collaboration: communication
+        }
+
+        {:noreply, enqueue(%{s | callers: [from | s.callers]}, {:mailbox, message, from})}
+    end
+  end
+
   def handle_call(:status, _from, s),
     do:
       {:reply,
@@ -411,6 +442,37 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   @impl true
+  def handle_info({:codex_input_bound, runtime, identity, {:ok, entries}}, s) do
+    case s.input_binding_pending[runtime] do
+      %{identity: ^identity, timer: timer} ->
+        Process.cancel_timer(timer)
+        conversation = Map.update(s.conversation, :mailbox, entries, &(&1 ++ entries))
+
+        {:noreply,
+         drive(%{
+           s
+           | conversation: conversation,
+             input_binding_pending: Map.delete(s.input_binding_pending, runtime)
+         })}
+
+      _ ->
+        {:noreply, s}
+    end
+  end
+
+  def handle_info({:codex_input_bound, runtime, identity, {:error, error}}, s),
+    do: {:noreply, fail_input_binding(s, runtime, identity, error)}
+
+  def handle_info({:codex_input_binding_timeout, runtime, identity}, s),
+    do:
+      {:noreply,
+       fail_input_binding(
+         s,
+         runtime,
+         identity,
+         Error.new(:unknown_outcome, "collaboration input binding was not acknowledged")
+       )}
+
   def handle_info({:codex_session_close, token}, s) do
     case Keyword.get(s.opts, :session_binding) do
       %{token: ^token} -> {:noreply, stop(s, :cancelled)}
@@ -587,6 +649,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp enqueue(s, job), do: drive(%{s | jobs: :queue.in(job, s.jobs)})
   defp drive(%{commit: commit} = s) when not is_nil(commit), do: s
+  defp drive(%{input_binding_pending: pending} = s) when map_size(pending) > 0, do: s
   defp drive(%{goal_delivery: delivery} = s) when not is_nil(delivery), do: s
   defp drive(%{stopping: stopping} = s) when not is_nil(stopping), do: advance_stop(s)
 
@@ -613,20 +676,66 @@ defmodule Backplane.AgentRuntime.Conversation do
     reply(s, from, {:error, Error.new(:resource_conflict, "run is not accepting input")})
   end
 
+  defp process(s, {:mailbox, message, from}) do
+    if s.phase in [:terminal, :storage_failed, :recovery_required, :cancelling] do
+      reply(
+        s,
+        from,
+        {:error, Error.new(:unknown_outcome, "mailbox destination is not accepting input")}
+      )
+    else
+      mailbox = Map.get(s.conversation, :mailbox, [])
+
+      conversation =
+        Map.put(
+          s.conversation,
+          :mailbox,
+          if(Enum.any?(mailbox, &(&1.id == message.id)), do: mailbox, else: mailbox ++ [message])
+        )
+
+      accepted = fn next ->
+        input_activity(next, :mailbox)
+
+        reply(
+          next,
+          from,
+          {:ok,
+           %{
+             message_id: message.id,
+             acceptance: if(next.run.state == :queued, do: :process_local, else: :checkpointed)
+           }}
+        )
+      end
+
+      if s.run.state == :queued,
+        do: accepted.(%{s | conversation: conversation}),
+        else: checkpoint(s, conversation, accepted)
+    end
+  end
+
   defp process(s, {:input, mode, content, from}) do
     message = %{role: :user, content: content, id: id("message")}
 
     if s.phase == :idle do
+      mailbox = Map.get(s.conversation, :mailbox, [])
       s = %{s | phase: :starting}
 
       commit(s, {:admit, now(), %{state: :running, deadline: s.run.deadline}}, %{}, [], fn s, _ ->
-        begin_prompt(%{s | admission: {from, message.id}}, message, :new)
+        # Pre-admission inbox entries are process-local until the first prompt checkpoint.
+        conversation = Map.put(s.conversation, :mailbox, mailbox)
+
+        begin_prompt(
+          %{s | admission: {from, message.id}, conversation: conversation},
+          message,
+          :new
+        )
       end)
     else
       mode = if mode == :prompt, do: :follow_up, else: mode
       conversation = Map.update!(s.conversation, mode, &(&1 ++ [message]))
 
       checkpoint(s, conversation, fn s ->
+        if mode == :steering, do: input_activity(s, :steer)
         reply(s, from, {:ok, %{message_id: message.id}})
       end)
     end
@@ -706,11 +815,24 @@ defmodule Backplane.AgentRuntime.Conversation do
           })
 
           s = acknowledge_admission(s, :ok)
+
+          if mode == :steering do
+            input_activity(
+              s,
+              if(s.conversation.steering == [], do: :steer_consumed, else: :steer)
+            )
+          end
+
           deliver_goal(s, &start_provider/1)
         end)
 
       {:error, error} ->
         s = acknowledge_admission(s, {:error, error})
+
+        if mode == :steering do
+          input_activity(s, if(s.conversation.steering == [], do: :steer_consumed, else: :steer))
+        end
+
         emit(s, %{type: :prompt_rejected, message_id: message.id, error: error})
 
         if mode == :new,
@@ -896,6 +1018,24 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp start_provider(s) do
+    case Map.get(s.conversation, :mailbox, []) do
+      [] ->
+        do_start_provider(s)
+
+      messages ->
+        conversation =
+          s.conversation
+          |> Map.put(:mailbox, [])
+          |> Map.update!(:messages, &(&1 ++ messages))
+
+        checkpoint(s, conversation, fn next ->
+          input_activity(next, :mailbox_consumed)
+          do_start_provider(next)
+        end)
+    end
+  end
+
+  defp do_start_provider(s) do
     catalog = s.catalog
     identity = Map.merge(identity(s), %{step_id: id("step"), attempt_id: id("attempt")})
 
@@ -1194,6 +1334,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
                 if s.resource_cleanup == :confirmed do
                   unbind_goal(s, fn s ->
+                    input_activity(s, {:settled, Map.get(s.conversation, :mailbox, [])})
+
                     emit(s, %{
                       type: if(outcome == :completed, do: :run_completed, else: :run_failed),
                       outcome: turn
@@ -1498,7 +1640,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp rebase_queued_command(_s, command), do: command
 
   defp merge_conversation(base, current, desired) do
-    Enum.reduce([:messages, :steering, :follow_up], desired, fn key, acc ->
+    Enum.reduce([:messages, :steering, :follow_up, :mailbox], desired, fn key, acc ->
       base_items = Map.get(base, key, [])
       current_items = Map.get(current, key, [])
       desired_items = Map.get(desired, key, [])
@@ -2295,6 +2437,8 @@ defmodule Backplane.AgentRuntime.Conversation do
         s
 
       binding ->
+        input_activity(s, {:settled, Map.get(s.conversation, :mailbox, [])})
+
         case Session.detach(binding) do
           {:ok, _} ->
             s
@@ -2403,6 +2547,76 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp identity(s), do: Map.take(s.run, [:run_id, :incarnation])
+
+  defp input_identity(s),
+    do: Map.put(identity(s), :session_binding, Keyword.get(s.opts, :session_binding))
+
+  defp input_runtimes(opts, registry) do
+    discovered =
+      registry.tools
+      |> Map.values()
+      |> Enum.flat_map(fn descriptor ->
+        case descriptor[:backend_context] do
+          %{family: :collaboration, runtime: runtime} when is_pid(runtime) -> [runtime]
+          _ -> []
+        end
+      end)
+
+    explicit =
+      case Keyword.get(opts, :collaboration_input) do
+        %{runtime: runtime} -> [runtime]
+        _ -> []
+      end
+
+    Enum.uniq(discovered ++ explicit)
+  end
+
+  defp bind_inputs(s) do
+    explicit = Keyword.get(s.opts, :collaboration_input)
+
+    Enum.reduce(s.input_runtimes, s, fn runtime, next ->
+      if is_map(explicit) and explicit.runtime == runtime do
+        next
+      else
+        identity = input_identity(next)
+        send(runtime, {:codex_bind_input, self(), identity})
+
+        timer =
+          Process.send_after(self(), {:codex_input_binding_timeout, runtime, identity}, 5_000)
+
+        put_in(next, [:input_binding_pending, runtime], %{identity: identity, timer: timer})
+      end
+    end)
+  end
+
+  defp fail_input_binding(s, runtime, identity, error) do
+    case s.input_binding_pending[runtime] do
+      %{identity: ^identity, timer: timer} ->
+        Process.cancel_timer(timer)
+        next = Enum.reduce(s.callers, s, &reply(&2, &1, {:error, error}))
+
+        %{
+          next
+          | input_binding_pending: Map.delete(next.input_binding_pending, runtime),
+            phase: :recovery_required,
+            last_error: error,
+            jobs: :queue.new()
+        }
+
+      _ ->
+        s
+    end
+  end
+
+  defp input_activity(s, activity) do
+    Enum.each(
+      s.input_runtimes,
+      &send(&1, {:codex_input_activity, self(), input_identity(s), activity})
+    )
+
+    :ok
+  end
+
   defp now, do: System.system_time(:millisecond)
 
   defp id(prefix),

@@ -11,6 +11,9 @@
 
 ## Unreleased
 
+- Complete V2 queue-only messaging, parent terminal-result delivery and
+  mailbox/steer-driven wait wakeups without implicitly starting idle agents (#70).
+
 - Add authoritative process-local MultiAgent host snapshots and lifecycle
   subscriptions with sanitized records and revision watermarks (#67).
 - Separate V2 execution capacity and bounded child residency from retained
