@@ -25,6 +25,15 @@ defmodule Backplane.LLM.LogQuery do
           optional(:cursor) => {DateTime.t(), binary()}
         }
 
+  @type daily_tokens_result :: [
+          %{
+            date: Date.t(),
+            input_tokens: non_neg_integer(),
+            cached_tokens: non_neg_integer(),
+            output_tokens: non_neg_integer()
+          }
+        ]
+
   @type aggregate_result :: %{
           total_requests: non_neg_integer(),
           total_input_tokens: non_neg_integer(),
@@ -98,6 +107,33 @@ defmodule Backplane.LLM.LogQuery do
   @spec list_by_trace_id(String.t(), list_opts()) :: [ProxyRequest.t()]
   def list_by_trace_id(trace_id, opts \\ %{}) do
     list(%{trace_id: trace_id}, opts)
+  end
+
+  @doc "Returns daily token usage for the 30 UTC calendar days ending on today."
+  @spec daily_tokens(Date.t()) :: daily_tokens_result()
+  def daily_tokens(today \\ Date.utc_today()) do
+    first_date = Date.add(today, -29)
+    since = DateTime.new!(first_date, ~T[00:00:00], "Etc/UTC")
+    until = DateTime.new!(Date.add(today, 1), ~T[00:00:00], "Etc/UTC")
+
+    by_date =
+      ProxyRequest
+      |> where([l], l.inserted_at >= ^since and l.inserted_at < ^until)
+      |> group_by([l], fragment("?::date", l.inserted_at))
+      |> select([l], %{
+        date: type(fragment("?::date", l.inserted_at), :date),
+        input_tokens: coalesce(sum(l.input_tokens), 0),
+        cached_tokens: coalesce(sum(l.cached_tokens), 0),
+        output_tokens: coalesce(sum(l.output_tokens), 0)
+      })
+      |> Repo.all()
+      |> Map.new(&{&1.date, &1})
+
+    first_date
+    |> Date.range(today)
+    |> Enum.map(fn date ->
+      Map.get(by_date, date, %{date: date, input_tokens: 0, cached_tokens: 0, output_tokens: 0})
+    end)
   end
 
   @doc """

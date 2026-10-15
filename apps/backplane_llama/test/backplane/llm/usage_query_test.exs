@@ -52,6 +52,100 @@ defmodule Backplane.LLM.UsageQueryTest do
     |> Repo.insert!()
   end
 
+  defp insert_daily_log(provider, inserted_at, attrs \\ %{}) do
+    provider
+    |> insert_proxy_log(attrs)
+    |> change(inserted_at: inserted_at)
+    |> Repo.update!()
+  end
+
+  describe "daily_tokens/1" do
+    test "returns 30 chronological UTC days with zeros when no logs exist" do
+      today = ~D[2026-10-14]
+      result = UsageQuery.daily_tokens(today)
+
+      assert Enum.map(result, & &1.date) == Enum.to_list(Date.range(~D[2026-09-15], today))
+
+      assert Enum.all?(
+               result,
+               &(&1.input_tokens == 0 and &1.cached_tokens == 0 and &1.output_tokens == 0)
+             )
+    end
+
+    test "sums persisted input and output tokens without adding cached tokens", %{
+      provider: provider
+    } do
+      insert_daily_log(provider, ~U[2026-10-13 00:00:00.000000Z], %{
+        input_tokens: 100,
+        cached_tokens: 80,
+        output_tokens: 25
+      })
+
+      insert_daily_log(provider, ~U[2026-10-13 23:59:59.999999Z], %{
+        input_tokens: 200,
+        cached_tokens: 150,
+        output_tokens: 50
+      })
+
+      insert_daily_log(provider, ~U[2026-10-14 00:00:00.000000Z], %{
+        input_tokens: nil,
+        cached_tokens: nil,
+        output_tokens: nil
+      })
+
+      insert_daily_log(provider, ~U[2026-10-14 12:00:00.000000Z], %{
+        input_tokens: 10,
+        cached_tokens: nil,
+        output_tokens: nil
+      })
+
+      result = UsageQuery.daily_tokens(~D[2026-10-14])
+
+      assert Enum.at(result, -2) == %{
+               date: ~D[2026-10-13],
+               input_tokens: 300,
+               cached_tokens: 230,
+               output_tokens: 75
+             }
+
+      assert List.last(result) == %{
+               date: ~D[2026-10-14],
+               input_tokens: 10,
+               cached_tokens: 0,
+               output_tokens: 0
+             }
+    end
+
+    test "includes both edge days and excludes records outside the UTC window", %{
+      provider: provider
+    } do
+      insert_daily_log(provider, ~U[2026-09-14 23:59:59.999999Z])
+      insert_daily_log(provider, ~U[2026-09-15 00:00:00.000000Z])
+      insert_daily_log(provider, ~U[2026-10-14 23:59:59.999999Z])
+      insert_daily_log(provider, ~U[2026-10-15 00:00:00.000000Z])
+
+      result = UsageQuery.daily_tokens(~D[2026-10-14])
+
+      assert hd(result) == %{
+               date: ~D[2026-09-15],
+               input_tokens: 50,
+               cached_tokens: 10,
+               output_tokens: 25
+             }
+
+      assert List.last(result) == %{
+               date: ~D[2026-10-14],
+               input_tokens: 50,
+               cached_tokens: 10,
+               output_tokens: 25
+             }
+
+      assert Enum.sum(Enum.map(result, & &1.input_tokens)) == 100
+      assert Enum.sum(Enum.map(result, & &1.cached_tokens)) == 20
+      assert Enum.sum(Enum.map(result, & &1.output_tokens)) == 50
+    end
+  end
+
   describe "aggregate/1" do
     test "aggregates usage by provider", %{provider: provider} do
       {:ok, other} =

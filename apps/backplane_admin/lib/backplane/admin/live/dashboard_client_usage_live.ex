@@ -1,8 +1,9 @@
 defmodule Backplane.Admin.DashboardClientUsageLive do
   use Backplane.Admin, :live_view
 
-  import Backplane.Admin.LogsComponents, only: [parse_time_range: 1, time_range_form: 1]
+  import Backplane.Admin.Components.UsageTimeRange, only: [usage_time_range: 1]
 
+  alias Backplane.Admin.Components.UsageTimeRange
   alias Backplane.Clients
   alias Backplane.LLM.LogQuery, as: LlmLogQuery
   alias Backplane.MCP.LogQuery, as: McpLogQuery
@@ -14,7 +15,7 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
        current_path: "/dashboard/usage/clients",
        loading: true,
        rows: [],
-       time_range: parse_time_range(%{})
+       range: "today"
      )}
   end
 
@@ -22,7 +23,7 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
   def handle_params(params, _uri, socket), do: {:noreply, load_usage(socket, params)}
 
   defp load_usage(socket, params) do
-    time_range = parse_time_range(params)
+    {range, time_range} = UsageTimeRange.parse(params["range"])
     clients = safe_call(&Clients.list_clients/0, [])
     llm = safe_call(fn -> LlmLogQuery.aggregate_by_client(time_range) end, %{})
     mcp = safe_call(fn -> McpLogQuery.aggregate_by_client(time_range) end, %{})
@@ -38,7 +39,7 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
         }
       end)
 
-    assign(socket, loading: false, rows: rows, time_range: time_range)
+    assign(socket, loading: false, rows: rows, range: range)
   end
 
   @impl true
@@ -50,10 +51,10 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
         <p class="mt-1 text-sm text-on-surface-variant">LLM models and MCP operations used by each registered client.</p>
       </div>
 
-      <.time_range_form
+      <.usage_time_range
+        id="client-usage-range"
         action={~p"/dashboard/usage/clients"}
-        since={@time_range.since}
-        until={@time_range.until}
+        selected={@range}
       />
 
       <div :if={@loading} class="text-sm text-on-surface-variant">Loading client usage...</div>
