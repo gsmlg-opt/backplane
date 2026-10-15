@@ -223,7 +223,8 @@ defmodule Backplane.LLM.UsageAccumulatorTimingTest do
 
   test "legacy terminal usage remains observable after timing budgets are exhausted" do
     for protocol <- [:legacy, :compact] do
-      pid = accumulator(protocol)
+      # Parsing 10,001 frames can exceed the normal test snapshot wait on busy CI runners.
+      pid = accumulator(protocol, snapshot_timeout: 10_000)
 
       UsageAccumulator.scan_chunk(
         pid,
