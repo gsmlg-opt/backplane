@@ -1,7 +1,7 @@
 defmodule Relayixir.MixProject do
   use Mix.Project
 
-  @version "1.10.22"
+  @version "1.10.23"
   @source_url "https://github.com/gsmlg-dev/relayixir"
 
   def project do
