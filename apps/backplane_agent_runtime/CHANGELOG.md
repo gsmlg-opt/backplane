@@ -11,6 +11,10 @@
 
 ## Unreleased
 
+- Reserve unique child activation attempts before host preparation, retain
+  correlated admission receipts on rejection/failure, and gate input dispatch
+  on synchronous host acknowledgement for spawn and replacement (#71).
+
 - Complete V2 queue-only messaging, parent terminal-result delivery and
   mailbox/steer-driven wait wakeups without implicitly starting idle agents (#70).
 

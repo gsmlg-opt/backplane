@@ -72,6 +72,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, parent_name} <- required_binary(opts, :parent_name),
          {:ok, authority} <- required_map(opts, :parent_authority),
          {:ok, child_options} <- required_callback(opts, :child_options, 3),
+         {:ok, admission_receipt} <- optional_callback(opts, :admission_receipt, 1),
          {:ok, v2_child_limit} <- child_limit(opts),
          {:ok, supervisor} <- DynamicSupervisor.start_link(strategy: :one_for_one) do
       {:ok,
@@ -93,6 +94,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          session_owner: nil,
          session_closed: false,
          child_options: child_options,
+         admission_receipt: admission_receipt,
+         admissions: %{},
          child_supervisor: supervisor,
          subscriber: Keyword.get(opts, :subscriber),
          manager_id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false),
@@ -615,74 +618,77 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp spawn_child(arguments, caller, state, profile) do
     with {:ok, request} <- spawn_request(arguments, profile),
          {:ok, name} <- child_name(caller, request.task_name),
-         :ok <- unique_name(state, name),
-         run_id = child_run_id(name, state.sequence + 1),
-         parent =
-           caller_metadata(caller)
-           |> Map.put(:child, %{
-             agent_id: run_id,
-             name: name,
-             incarnation: 1,
-             activation: :created
-           }),
-         {:ok, opts} <- state.child_options.(request, run_id, parent),
-         :ok <- child_authority(opts, caller.authority),
-         {:ok, opts, host_metadata} <- child_configuration(opts, run_id, 1),
-         {:ok, opts} <- attribute_child(opts, parent),
-         opts = Keyword.put(opts, :subscriber, self()) do
-      agent = %{
-        name: name,
-        id: run_id,
-        run_id: run_id,
-        incarnation: 1,
-        host_metadata: host_metadata,
-        pid: nil,
-        monitor: nil,
-        status: :created,
-        final: nil,
-        result_delivery: nil,
-        opts: opts,
-        request: request,
-        message: request.message,
-        profile: request.profile,
-        parent: caller.name,
-        parent_id:
-          if(caller.name == state.parent_name,
-            do: state.root_id,
-            else: state.agents[caller.name].id
-          ),
-        authority: Keyword.get(opts, :authority, %{}),
-        snapshot: nil,
-        snapshot_identity: nil,
-        closure: :open,
-        execution_reserved: true
-      }
+         :ok <- unique_name(state, name) do
+      parent_id =
+        if caller.name == state.parent_name,
+          do: state.root_id,
+          else: state.agents[caller.name].id
 
-      state =
-        %{
-          state
-          | sequence: state.sequence + 1,
-            agents: Map.put(state.agents, name, agent),
-            run_index: Map.put(state.run_index, run_id, name)
-        }
-        |> publish(:created, name)
+      {state, attempt} =
+        reserve_admission(state, %{
+          name: name,
+          profile: profile,
+          parent_id: parent_id,
+          parent_name: caller.name,
+          incarnation: 1,
+          activation: :created
+        })
 
-      result =
-        if request.profile == :v1,
-          do: %{agent_id: run_id, nickname: nil},
-          else: %{task_name: name, nickname: nil}
+      parent = Map.put(caller_metadata(caller), :child, admission_child(attempt))
 
-      case activate_child(state, name, opts, request.message) do
-        {:ok, next} -> {:reply, {:ok, result}, next}
-        {:error, error, next} -> {:reply, {:error, error}, next}
+      case prepare_child(state, request, attempt, parent) do
+        {:ok, opts, host_metadata} ->
+          opts = Keyword.put(opts, :subscriber, self())
+
+          agent = %{
+            name: name,
+            id: attempt.agent_id,
+            attempt_id: attempt.attempt_id,
+            run_id: attempt.run_id,
+            incarnation: 1,
+            host_metadata: host_metadata,
+            pid: nil,
+            monitor: nil,
+            status: :created,
+            final: nil,
+            result_delivery: nil,
+            opts: opts,
+            request: request,
+            message: request.message,
+            profile: profile,
+            parent: caller.name,
+            parent_id: parent_id,
+            authority: Keyword.get(opts, :authority, %{}),
+            snapshot: nil,
+            snapshot_identity: nil,
+            closure: :open,
+            execution_reserved: true
+          }
+
+          state =
+            %{
+              state
+              | agents: Map.put(state.agents, name, agent),
+                run_index: Map.put(state.run_index, attempt.run_id, name)
+            }
+            |> publish(:created, name)
+
+          result =
+            if profile == :v1,
+              do: %{agent_id: attempt.run_id, nickname: nil},
+              else: %{task_name: name, nickname: nil}
+
+          case activate_child(state, name, opts, request.message) do
+            {:ok, next} -> {:reply, {:ok, result}, next}
+            {:error, error, next} -> {:reply, {:error, error}, next}
+          end
+
+        {:error, error} ->
+          {error, next} = reject_admission(state, attempt, :rejected, error)
+          {:reply, {:error, error}, next}
       end
     else
-      {:error, %Error{} = error} ->
-        {:reply, {:error, error}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, Error.new(:execution_failure, "child failed to start", cause: reason)},
-         state}
+      {:error, error} -> {:reply, {:error, error}, state}
     end
   end
 
@@ -829,74 +835,76 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp start_replacement(state, name, agent, message, snapshot) do
-    with run_id = child_run_id(name, state.sequence + 1),
-         incarnation = agent.incarnation + 1,
-         parent =
-           parent_metadata(state, agent)
-           |> Map.put(:child, %{
-             agent_id: agent.id,
-             name: name,
-             incarnation: incarnation,
-             activation: if(message == nil, do: :resumed, else: :followup)
-           }),
-         {:ok, opts} <- state.child_options.(agent.request, run_id, parent),
-         :ok <- child_authority(opts, parent.authority),
-         :ok <- child_authority(opts, agent.authority),
-         {:ok, opts, host_metadata} <- child_configuration(opts, run_id, incarnation),
-         {:ok, opts} <- carry_limits(opts, snapshot.run),
-         {:ok, opts} <- attribute_child(opts, parent) do
-      opts =
-        opts
-        |> Keyword.put(:messages, snapshot.messages)
-        |> Keyword.put(:subscriber, self())
-        |> Keyword.put(
-          :mailbox,
-          Map.get(snapshot.conversation, :mailbox, []) ++ Map.get(state.mailboxes, name, [])
-        )
+    incarnation = agent.incarnation + 1
 
-      with :ok <- retire_replaced_child(state, agent) do
-        replacement = %{
-          agent
-          | run_id: run_id,
-            incarnation: incarnation,
-            host_metadata: host_metadata,
-            pid: nil,
-            monitor: nil,
-            opts: opts,
-            authority: Keyword.get(opts, :authority, %{}),
-            status: :created,
-            final: nil,
-            result_delivery: nil,
-            snapshot: nil,
-            snapshot_identity: nil,
-            closure: :open,
-            execution_reserved: true
-        }
+    {state, attempt} =
+      reserve_admission(state, %{
+        name: name,
+        profile: agent.profile,
+        agent_id: agent.id,
+        parent_id: agent.parent_id,
+        parent_name: agent.parent,
+        incarnation: incarnation,
+        activation: if(message == nil, do: :resumed, else: :followup)
+      })
 
-        state = %{
-          state
-          | sequence: state.sequence + 1,
-            agents: Map.put(state.agents, name, replacement),
-            run_index: Map.put(state.run_index, run_id, name),
-            monitors: Map.delete(state.monitors, agent.monitor),
-            updates: MapSet.delete(state.updates, name)
-        }
+    parent = Map.put(parent_metadata(state, agent), :child, admission_child(attempt))
 
-        state = reset_input_activity(state, name, Keyword.get(opts, :mailbox, []))
+    case prepare_child(state, agent.request, attempt, parent, snapshot.run, agent.authority) do
+      {:ok, opts, host_metadata} ->
+        opts =
+          opts
+          |> Keyword.put(:messages, snapshot.messages)
+          |> Keyword.put(:subscriber, self())
+          |> Keyword.put(
+            :mailbox,
+            Map.get(snapshot.conversation, :mailbox, []) ++ Map.get(state.mailboxes, name, [])
+          )
 
-        case activate_child(state, name, opts, message) do
-          {:ok, next} -> {:ok, %{next | mailboxes: Map.delete(next.mailboxes, name)}}
-          error -> error
+        case retire_replaced_child(state, agent) do
+          :ok ->
+            replacement = %{
+              agent
+              | run_id: attempt.run_id,
+                attempt_id: attempt.attempt_id,
+                incarnation: incarnation,
+                host_metadata: host_metadata,
+                pid: nil,
+                monitor: nil,
+                opts: opts,
+                authority: Keyword.get(opts, :authority, %{}),
+                status: :created,
+                final: nil,
+                result_delivery: nil,
+                snapshot: nil,
+                snapshot_identity: nil,
+                closure: :open,
+                execution_reserved: true
+            }
+
+            state =
+              %{
+                state
+                | agents: Map.put(state.agents, name, replacement),
+                  run_index: Map.put(state.run_index, attempt.run_id, name),
+                  monitors: Map.delete(state.monitors, agent.monitor),
+                  updates: MapSet.delete(state.updates, name)
+              }
+              |> reset_input_activity(name, Keyword.get(opts, :mailbox, []))
+
+            case activate_child(state, name, opts, message) do
+              {:ok, next} -> {:ok, %{next | mailboxes: Map.delete(next.mailboxes, name)}}
+              error -> error
+            end
+
+          {:error, error} ->
+            {error, next} = reject_admission(state, attempt, :failed, error)
+            {:error, error, reserve_uncertain(next, name, error)}
         end
-      else
-        {:error, error} -> {:error, error, reserve_uncertain(state, name, error)}
-      end
-    else
-      {:error, %Error{} = error} ->
-        {:error, error, state}
 
-      {:error, reason} ->
-        {:error, Error.new(:execution_failure, "child failed to start", cause: reason), state}
+      {:error, error} ->
+        {error, next} = reject_admission(state, attempt, :rejected, error)
+        {:error, error, next}
     end
   end
 
@@ -909,29 +917,32 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp activate_child(state, name, opts, message) do
     opts = Keyword.put(opts, :collaboration_input, %{runtime: self(), name: name})
+    attempt = state.admissions[state.agents[name].attempt_id]
 
-    case start_child(state.child_supervisor, opts) do
+    case admission_operation(fn -> start_child(state.child_supervisor, opts) end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
-        agent = %{state.agents[name] | pid: pid, monitor: ref, status: :running}
+        agent = %{state.agents[name] | pid: pid, monitor: ref}
 
         next =
           state
           |> put_in([:agents, name], agent)
           |> Map.update!(:monitors, &Map.put(&1, ref, {name, agent.run_id}))
-          |> publish(:started, name)
 
-        case maybe_prompt(pid, message) do
-          :ok -> {:ok, next}
-          {:error, error} -> {:error, error, reserve_uncertain(next, name, error)}
+        case record_admission(next, attempt, :created, nil) do
+          {:ok, next} ->
+            next = next |> put_in([:agents, name, :status], :running) |> publish(:started, name)
+
+            case admission_operation(fn -> maybe_prompt(pid, message) end) do
+              :ok -> {:ok, next}
+              {:error, error} -> fail_activation(next, name, attempt, error)
+            end
+
+          {:error, error, next} ->
+            fail_activation(next, name, attempt, error)
         end
 
-      {:error, reason} ->
-        error =
-          if match?(%Error{}, reason),
-            do: reason,
-            else: Error.new(:execution_failure, "child failed to start", cause: reason)
-
+      {:error, error} ->
         agent = %{
           state.agents[name]
           | status: {:errored, :startup_failure},
@@ -939,8 +950,113 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
             closure: :confirmed
         }
 
-        {:error, error, state |> put_in([:agents, name], agent) |> publish(:settled, name)}
+        next = state |> put_in([:agents, name], agent) |> publish(:settled, name)
+        {error, next} = reject_admission(next, attempt, :failed, error)
+        {:error, error, next}
     end
+  end
+
+  defp fail_activation(state, name, attempt, error) do
+    agent = state.agents[name]
+
+    cleanup =
+      admission_operation(fn ->
+        with :ok <- cancel_agent(agent),
+             {:ok, snapshot} <- settled_snapshot(agent),
+             :ok <- safe_replacement(snapshot),
+             :ok <- safe_terminate_child(state.child_supervisor, agent.pid),
+             :ok <- safe_demonitor(agent.monitor),
+             do: {:ok, snapshot}
+      end)
+
+    next =
+      case cleanup do
+        {:ok, snapshot} ->
+          failed = %{
+            agent
+            | status: {:errored, :admission_failure},
+              pid: nil,
+              monitor: nil,
+              execution_reserved: false,
+              closure: :confirmed,
+              snapshot: snapshot,
+              snapshot_identity: snapshot_identity(snapshot)
+          }
+
+          %{
+            state
+            | agents: Map.put(state.agents, name, failed),
+              monitors: Map.delete(state.monitors, agent.monitor)
+          }
+          |> publish(:settled, name)
+
+        {:error, cleanup_error} ->
+          reserve_uncertain(state, name, cleanup_error)
+      end
+
+    {error, next} = reject_admission(next, attempt, :failed, error)
+    {:error, error, next}
+  end
+
+  defp prepare_child(
+         state,
+         request,
+         attempt,
+         parent,
+         previous_run \\ nil,
+         previous_authority \\ nil
+       ) do
+    admission_operation(fn ->
+      with {:ok, opts} <-
+             child_options_reply(state.child_options.(request, attempt.run_id, parent)),
+           :ok <- child_options_shape(opts),
+           :ok <- child_authority(opts, parent.authority),
+           :ok <- previous_child_authority(opts, previous_authority),
+           {:ok, opts, metadata} <-
+             child_configuration(opts, attempt.run_id, attempt.incarnation),
+           {:ok, opts} <- previous_child_limits(opts, previous_run),
+           {:ok, opts} <- attribute_child(opts, parent),
+           do: {:ok, opts, metadata}
+    end)
+  end
+
+  defp child_options_reply({:ok, opts}), do: {:ok, opts}
+  defp child_options_reply({:error, %Error{}} = error), do: error
+  defp child_options_reply(_), do: validation("child options callback returned an invalid result")
+
+  defp child_options_shape(opts) do
+    if is_list(opts) and Keyword.keyword?(opts),
+      do: :ok,
+      else: validation("child options must be a keyword list")
+  end
+
+  defp previous_child_authority(_opts, nil), do: :ok
+  defp previous_child_authority(opts, authority), do: child_authority(opts, authority)
+  defp previous_child_limits(opts, nil), do: {:ok, opts}
+  defp previous_child_limits(opts, run), do: carry_limits(opts, run)
+
+  defp admission_operation(operation) do
+    case operation.() do
+      :ok ->
+        :ok
+
+      {:ok, _} = result ->
+        result
+
+      {:ok, _, _} = result ->
+        result
+
+      {:error, %Error{} = error} ->
+        details = if is_map(error.details), do: error.details, else: %{}
+        {:error, Error.new(error.class, error.message, details: details)}
+
+      _ ->
+        {:error, Error.new(:execution_failure, "child admission operation failed")}
+    end
+  rescue
+    _ -> {:error, Error.new(:execution_failure, "child admission operation raised")}
+  catch
+    _, _ -> {:error, Error.new(:execution_failure, "child admission operation exited")}
   end
 
   defp child_configuration(opts, run_id, incarnation) do
@@ -1168,6 +1284,18 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
         {:ok, agent} ->
           if action == :close and agent.closure == :confirmed do
+            acc =
+              if agent.status != :shutdown and agent.pid == nil and not agent.execution_reserved do
+                closed = %{agent | status: :shutdown}
+
+                acc
+                |> put_in([:agents, child_name], closed)
+                |> Map.update!(:updates, &MapSet.put(&1, child_name))
+                |> publish(:closed, child_name)
+              else
+                acc
+              end
+
             {:cont, {:ok, acc}}
           else
             agent = %{
@@ -2042,12 +2170,133 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp event_error(event), do: inspect(Map.get(event, :outcome, "agent stopped"))
 
+  defp reserve_admission(state, attrs) do
+    sequence = state.sequence + 1
+    run_id = child_run_id(attrs.name, sequence)
+
+    attempt =
+      Map.merge(attrs, %{
+        attempt_id: state.manager_id <> ":" <> Integer.to_string(sequence),
+        manager_id: state.manager_id,
+        sequence: sequence,
+        run_id: run_id,
+        agent_id: Map.get(attrs, :agent_id, run_id),
+        status: :reserved,
+        process_started: false,
+        error_class: nil,
+        reason: nil,
+        receipt_acknowledged: nil,
+        receipt_error_class: nil
+      })
+
+    next = %{
+      state
+      | sequence: sequence,
+        admissions: Map.put(state.admissions, attempt.attempt_id, attempt)
+    }
+
+    {publish_admission(next, attempt), attempt}
+  end
+
+  defp admission_child(attempt),
+    do: Map.take(attempt, [:attempt_id, :agent_id, :name, :run_id, :incarnation, :activation])
+
+  defp record_admission(state, attempt, status, error) do
+    latest = Map.fetch!(state.admissions, attempt.attempt_id)
+
+    receipt = %{
+      latest
+      | status: status,
+        process_started: latest.process_started or status == :created,
+        receipt_acknowledged: nil,
+        receipt_error_class: nil,
+        error_class: if(error, do: error.class),
+        reason: if(error, do: "child_admission_failed")
+    }
+
+    acknowledgement =
+      if state.admission_receipt,
+        do:
+          admission_operation(fn ->
+            receipt_acknowledgement(state.admission_receipt.(receipt))
+          end),
+        else: :ok
+
+    acknowledged = if state.admission_receipt, do: acknowledgement == :ok
+
+    receipt_error =
+      case acknowledgement do
+        :ok -> nil
+        {:error, callback_error} -> callback_error.class
+      end
+
+    receipt = %{receipt | receipt_acknowledged: acknowledged, receipt_error_class: receipt_error}
+
+    next =
+      %{state | admissions: Map.put(state.admissions, attempt.attempt_id, receipt)}
+      |> publish_admission(receipt)
+
+    case acknowledgement do
+      :ok -> {:ok, next}
+      {:error, callback_error} -> {:error, callback_error, next}
+    end
+  end
+
+  defp receipt_acknowledgement(:ok), do: :ok
+  defp receipt_acknowledgement({:error, %Error{}} = error), do: error
+
+  defp receipt_acknowledgement(_),
+    do: validation("admission receipt callback returned an invalid acknowledgement")
+
+  defp reject_admission(state, attempt, status, error) do
+    next =
+      case record_admission(state, attempt, status, error) do
+        {:ok, next} -> next
+        {:error, _callback_error, next} -> next
+      end
+
+    details = if is_map(error.details), do: error.details, else: %{}
+
+    error = %{
+      error
+      | details:
+          Map.merge(details, %{attempt_id: attempt.attempt_id, manager_id: attempt.manager_id})
+    }
+
+    {error, next}
+  end
+
+  defp publish_admission(state, receipt) do
+    next = %{state | revision: state.revision + 1}
+
+    type =
+      case receipt.status do
+        :reserved -> :admission_reserved
+        :created -> :admission_created
+        :rejected -> :admission_rejected
+        :failed -> :admission_failed
+      end
+
+    event = %{
+      manager_id: next.manager_id,
+      revision: next.revision,
+      type: type,
+      admission: receipt
+    }
+
+    recipients = Map.keys(next.observers)
+    recipients = if is_pid(next.subscriber), do: [next.subscriber | recipients], else: recipients
+    Enum.each(Enum.uniq(recipients), &send(&1, {:codex_collaboration, event}))
+    next
+  end
+
   defp public_snapshot(state) do
     %{
       schema_version: 1,
       manager_id: state.manager_id,
       revision: state.revision,
       root_name: state.parent_name,
+      admissions: state.admissions |> Map.values() |> Enum.sort_by(& &1.sequence),
       agents:
         state.agents
         |> Map.values()
@@ -2109,6 +2358,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
     %{
       agent_id: agent.id,
+      attempt_id: agent.attempt_id,
       name: agent.name,
       task_name: agent.name,
       parent_id: agent.parent_id,
@@ -2155,6 +2405,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     case Keyword.get(opts, key) do
       value when is_map(value) -> {:ok, value}
       _ -> {:error, Error.new(:validation, "#{key} is required")}
+    end
+  end
+
+  defp optional_callback(opts, key, arity) do
+    case Keyword.get(opts, key) do
+      nil -> {:ok, nil}
+      callback when is_function(callback, arity) -> {:ok, callback}
+      _ -> validation("#{key} must be a callback with arity #{arity}")
     end
   end
 

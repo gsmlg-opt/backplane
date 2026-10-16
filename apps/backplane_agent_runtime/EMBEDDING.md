@@ -323,7 +323,8 @@ identities, including closed records. `subscribe/2` (subscriber defaults to the
 calling process) installs a monitored observer and returns that snapshot in one
 serialized call. Events use `{:codex_collaboration, event}` with a process-local
 `manager_id`, monotonically increasing `revision`, transition `type`, and the
-complete public `agent` record. Apply events newer than the snapshot watermark,
+complete public `agent` record (or `admission` receipt for admission events).
+Apply events newer than the snapshot watermark,
 deduplicate by manager ID and revision, and fetch another snapshot on a gap or
 manager replacement. `unsubscribe/2` stops subsequent delivery. The model-facing
 `list_agents` retains its separate live-agent projection.
@@ -335,15 +336,46 @@ grants, adapter contexts and raw failures. Creation and start are published befo
 provider execution; cancellation acceptance is not confirmed interruption.
 Unexpected process exit or lost cleanup acknowledgement retains uncertainty.
 
-The existing trusted `child_options(request, run_id, parent_context)` callback
-prepares each admitted activation before execution. `parent_context.child`
-supplies the allocated stable identity, name, incarnation and activation kind.
-Durable hosts must persist the birth/activation intent and store association
-before returning success. They can return non-sensitive `host_metadata` in the options for
-observation; it is removed before starting the Conversation. Preparation failure
-prevents execution. An asynchronous observer is not a durability acknowledgement.
-The host must reconcile prepared intents after manager loss; manager state and
-observer revisions do not survive restart or automatically restore children.
+The trusted `child_options(request, run_id, parent_context)` callback prepares
+each spawn or replacement activation before execution. The manager consumes a
+unique reservation before invoking it. `parent_context.child` supplies the
+`attempt_id`, prospective `run_id`, stable `agent_id`, name, incarnation and
+activation kind. Rejected attempts consume their reservation; retrying the same
+task receives a fresh attempt and run ID. A replacement retains its stable agent
+identity while receiving a fresh attempt and run ID.
+
+Returning `{:ok, options}` acknowledges that the host has persisted the
+birth/activation intent and associated the supplied identity with its store.
+Durable hosts must complete that transaction before returning success. They can
+return non-sensitive JSON-safe `host_metadata` for observation; it is removed
+before starting the Conversation. Preparation rejection, malformed options and
+callback exceptions prevent input dispatch and retain a correlated rejection.
+
+Hosts can also supply `admission_receipt: fn receipt -> :ok | {:error, error} end`
+to persist admission outcomes synchronously. A `:created` receipt confirms that
+the child process was started; its acknowledgement gates initial input dispatch
+and provider/tool effects. It does not promise that input admission or provider
+execution will succeed. Subsequent input failure produces a correlated `:failed`
+receipt. Rejected preparation produces `:rejected`; startup failure produces
+`:failed`. Receipt callback failure prevents input dispatch. Receipts expose safe
+identity and outcome fields, excluding host options, authority and raw failures.
+`process_started` remains true after any later failure, distinguishing failed
+startup from failure after confirmed process creation in a fresh snapshot.
+`receipt_acknowledged` is true or false when a callback is configured, and nil
+otherwise; `receipt_error_class` records a failed acknowledgement separately
+from the admission's `error_class`.
+Use the admission receipt for confirmed process birth; the existing `:created`
+lifecycle event still announces the identity before process startup. Both trusted
+callbacks run inside the manager's serialized operation and must not synchronously
+call back into that manager.
+
+The snapshot's `admissions` list and revisioned `:admission_reserved`,
+`:admission_created`, `:admission_rejected` and `:admission_failed` observer events
+support reconciliation within the manager lifetime. An asynchronous observer is
+not a durability acknowledgement. The host must reconcile prepared intents after
+manager loss; manager state, receipts and observer revisions do not survive
+restart or automatically restore children. Durable reservation/receipt storage
+is a Backplane host integration contract, not a claim of native Codex durability.
 
 V2 `max_concurrent_threads_per_session` includes the root and defaults to four.
 An explicit legacy `max_agents: n`, when the new option is absent, retains an

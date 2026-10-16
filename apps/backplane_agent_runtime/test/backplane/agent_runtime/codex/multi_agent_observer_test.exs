@@ -153,6 +153,39 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentObserverTest do
   defp safe_term?(value),
     do: is_nil(value) or is_binary(value) or is_number(value) or is_atom(value)
 
+  defp next_lifecycle_message do
+    receive do
+      {:codex_collaboration, %{type: type}}
+      when type in [
+             :admission_reserved,
+             :admission_created,
+             :admission_rejected,
+             :admission_failed
+           ] ->
+        next_lifecycle_message()
+
+      message ->
+        message
+    after
+      1_000 -> flunk("expected lifecycle event")
+    end
+  end
+
+  defp discard_admission_events do
+    receive do
+      {:codex_collaboration, %{type: type}}
+      when type in [
+             :admission_reserved,
+             :admission_created,
+             :admission_rejected,
+             :admission_failed
+           ] ->
+        discard_admission_events()
+    after
+      0 -> :ok
+    end
+  end
+
   test "subscription exposes ordered serializable birth and start before provider execution" do
     runtime = start_runtime(host_metadata: %{label: "safe", tracking_id: "ticket"})
 
@@ -170,11 +203,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentObserverTest do
     assert %{agent_id: agent_id, name: "/root/worker", incarnation: 1, activation: :created} =
              context.child
 
-    assert_receive next
+    next = next_lifecycle_message()
     assert {:codex_collaboration, %{type: :created, agent: created} = birth} = next
     assert created.agent_id == agent_id
     assert created.status == :created
-    assert_receive next
+    next = next_lifecycle_message()
     assert {:codex_collaboration, %{type: :started, agent: started} = start} = next
     assert started.status == :running
     assert started.run_id == run_id
@@ -508,6 +541,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentObserverTest do
     child = spawn_child(runtime)
     assert_receive {:codex_collaboration, %{type: :created}}
     assert_receive {:codex_collaboration, %{type: :started}}
+    discard_admission_events()
     assert :ok = MultiAgent.unsubscribe(runtime)
     finish(child)
     assert eventually(fn -> record(runtime, child.name).status == :completed end)
