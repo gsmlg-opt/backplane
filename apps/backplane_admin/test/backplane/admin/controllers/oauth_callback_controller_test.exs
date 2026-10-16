@@ -3,6 +3,7 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest do
 
   import ExUnit.CaptureLog
 
+  alias Backplane.Admin.FigmaOAuth
   alias Backplane.Repo
   alias Backplane.Settings.{Credential, Credentials, OAuthRefresher, OAuthStateStore}
 
@@ -70,6 +71,62 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest do
 
     {:ok, plaintext} = Backplane.Settings.Encryption.decrypt(credential.encrypted_value)
     assert Jason.decode!(plaintext)["oauth_client"] == oauth_client
+  end
+
+  test "exchanges a Figma code as a public client" do
+    oauth_client = %{
+      "client_id" => "public-client",
+      "token_endpoint_auth_method" => "none"
+    }
+
+    state = put_figma_state("public-figma", oauth_client, true)
+    response = get(build_conn(), "/oauth/callback", %{"code" => "public-code", "state" => state})
+
+    assert redirected_to(response) == "/system/credentials"
+    assert {:ok, "public-access-token"} = Credentials.fetch("public-figma")
+  end
+
+  test "exchanges a Figma code with client_secret_post" do
+    oauth_client = %{
+      "client_id" => "post-client",
+      "client_secret" => "post-secret",
+      "token_endpoint_auth_method" => "client_secret_post"
+    }
+
+    state = put_figma_state("post-figma", oauth_client, true)
+    response = get(build_conn(), "/oauth/callback", %{"code" => "post-code", "state" => state})
+
+    assert redirected_to(response) == "/system/credentials"
+    assert {:ok, "post-access-token"} = Credentials.fetch("post-figma")
+  end
+
+  test "manual callback validates the redirect URI and consumes state" do
+    state = put_figma_state("wrong-redirect")
+
+    assert {:error, :figma_callback_redirect_mismatch} =
+             FigmaOAuth.complete_callback_url(
+               "http://attacker.invalid/oauth/callback?code=valid-code&state=#{state}"
+             )
+
+    assert :error = OAuthStateStore.pop(state)
+  end
+
+  test "manual provider denial consumes state without creating a credential" do
+    state = put_figma_state("denied-figma")
+
+    assert {:error, {:provider_error, "access_denied", "The owner cancelled"}} =
+             FigmaOAuth.complete_callback_url(
+               @redirect_uri <>
+                 "?" <>
+                 URI.encode_query(%{
+                   "error" => "access_denied",
+                   "error_description" => "The owner cancelled",
+                   "state" => state
+                 })
+             )
+
+    assert :error = OAuthStateStore.pop(state)
+    refute Repo.get_by(Credential, name: "denied-figma")
   end
 
   test "rejects incomplete successful responses without replacing the usable token", %{
@@ -189,8 +246,16 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest.FigmaTokenEndpoint do
     configured_auth = "Basic " <> Base.encode64("figma+client:secret%3Awith%2Fslash")
     dynamic_auth = "Basic " <> Base.encode64("dynamic-client:dynamic-secret")
 
+    valid_auth? =
+      get_req_header(conn, "authorization") in [[configured_auth], [dynamic_auth]] or
+        (get_req_header(conn, "authorization") == [] and
+           ((conn.body_params["client_id"] == "public-client" and
+               is_nil(conn.body_params["client_secret"])) or
+              (conn.body_params["client_id"] == "post-client" and
+                 conn.body_params["client_secret"] == "post-secret")))
+
     valid_request? =
-      get_req_header(conn, "authorization") in [[configured_auth], [dynamic_auth]] and
+      valid_auth? and
         conn.body_params["grant_type"] == "authorization_code" and
         conn.body_params["redirect_uri"] == @redirect_uri and
         conn.body_params["code_verifier"] == "test-code-verifier" and
@@ -212,6 +277,20 @@ defmodule Backplane.Admin.OAuthCallbackControllerTest.FigmaTokenEndpoint do
         json(conn, 200, %{
           "access_token" => "dynamic-access-token",
           "refresh_token" => "dynamic-refresh-token",
+          "expires_in" => 3600
+        })
+
+      conn.body_params["code"] == "public-code" ->
+        json(conn, 200, %{
+          "access_token" => "public-access-token",
+          "refresh_token" => "public-refresh-token",
+          "expires_in" => 3600
+        })
+
+      conn.body_params["code"] == "post-code" ->
+        json(conn, 200, %{
+          "access_token" => "post-access-token",
+          "refresh_token" => "post-refresh-token",
           "expires_in" => 3600
         })
 

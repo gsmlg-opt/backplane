@@ -11,7 +11,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
     prior_env =
       snapshot_env(
-        ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET]
+        ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD]
       )
 
     Application.put_env(:backplane, OAuthRefresher,
@@ -20,8 +20,10 @@ defmodule Backplane.Settings.OAuthRefresherTest do
       google_token_url: "http://localhost:#{port}/google/token",
       xai_token_url: "http://localhost:#{port}/xai/token",
       figma_token_url: "http://localhost:#{port}/figma/token",
+      figma_registration_url: "http://localhost:#{port}/figma/register",
       figma_mcp_client_id: "test-figma-client",
-      figma_mcp_client_secret: "test-figma-secret"
+      figma_mcp_client_secret: "test-figma-secret",
+      figma_mcp_token_endpoint_auth_method: "client_secret_basic"
     )
 
     on_exit(fn ->
@@ -151,11 +153,14 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
       valid_request? =
         conn.body_params["grant_type"] == "refresh_token" and
-          conn.body_params["resource"] == "https://mcp.figma.com/mcp" and
-          get_req_header(conn, "authorization") == [expected_auth]
+          conn.body_params["resource"] == "https://mcp.figma.com/mcp"
 
-      case {valid_request?, conn.body_params["refresh_token"]} do
-        {true, "good-figma"} ->
+      request =
+        {valid_request?, conn.body_params["refresh_token"], get_req_header(conn, "authorization"),
+         conn.body_params["client_id"], conn.body_params["client_secret"]}
+
+      case request do
+        {true, "good-figma", [^expected_auth], _, _} ->
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(
@@ -168,7 +173,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
             })
           )
 
-        {true, "keep-figma-refresh"} ->
+        {true, "keep-figma-refresh", [^expected_auth], _, _} ->
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(
@@ -180,10 +185,60 @@ defmodule Backplane.Settings.OAuthRefresherTest do
             })
           )
 
+        {true, "public-figma", [], "public-client", nil} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "access_token" => "figma-public-access",
+              "refresh_token" => "figma-public-refresh",
+              "expires_in" => 3600
+            })
+          )
+
+        {true, "post-figma", [], "post-client", "post-secret"} ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "access_token" => "figma-post-access",
+              "refresh_token" => "figma-post-refresh",
+              "expires_in" => 3600
+            })
+          )
+
         _ ->
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(401, Jason.encode!(%{"error" => "invalid_request"}))
+      end
+    end
+
+    post "/figma/register" do
+      if conn.body_params["token_endpoint_auth_method"] == "none" do
+        response =
+          if hd(conn.body_params["redirect_uris"]) =~ "secret-callback" do
+            %{
+              "client_id" => "public-dynamic-client",
+              "client_secret" => "optional-unused-secret",
+              "token_endpoint_auth_method" => "none"
+            }
+          else
+            %{
+              "client_id" => "public-dynamic-client",
+              "token_endpoint_auth_method" => "none"
+            }
+          end
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(201, Jason.encode!(response))
+      else
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{"error" => "invalid_client_metadata"}))
       end
     end
 
@@ -337,6 +392,25 @@ defmodule Backplane.Settings.OAuthRefresherTest do
   end
 
   describe "refresh/2 :figma_oauth" do
+    test "registers a public PKCE client without requiring a secret" do
+      assert {:ok,
+              %{
+                "client_id" => "public-dynamic-client",
+                "token_endpoint_auth_method" => "none"
+              }} =
+               OAuthRefresher.register_figma_mcp_client("http://127.0.0.1:51176/callback")
+    end
+
+    test "accepts an optional secret returned for a public client" do
+      assert {:ok,
+              %{
+                "client_id" => "public-dynamic-client",
+                "client_secret" => "optional-unused-secret",
+                "token_endpoint_auth_method" => "none"
+              }} =
+               OAuthRefresher.register_figma_mcp_client("http://127.0.0.1:51176/secret-callback")
+    end
+
     test "uses Basic client authentication and the MCP resource" do
       assert {:ok,
               %{
@@ -354,10 +428,32 @@ defmodule Backplane.Settings.OAuthRefresherTest do
                OAuthRefresher.refresh(:figma_oauth, "keep-figma-refresh")
     end
 
-    test "requires both configured client credentials", %{port: port} do
+    test "supports public clients without a secret" do
+      assert {:ok, %{access_token: "figma-public-access"}} =
+               OAuthRefresher.refresh(:figma_oauth, "public-figma",
+                 figma_client: %{
+                   "client_id" => "public-client",
+                   "token_endpoint_auth_method" => "none"
+                 }
+               )
+    end
+
+    test "supports client_secret_post" do
+      assert {:ok, %{access_token: "figma-post-access"}} =
+               OAuthRefresher.refresh(:figma_oauth, "post-figma",
+                 figma_client: %{
+                   "client_id" => "post-client",
+                   "client_secret" => "post-secret",
+                   "token_endpoint_auth_method" => "client_secret_post"
+                 }
+               )
+    end
+
+    test "accepts a configured public client ID without a secret", %{port: port} do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
       System.delete_env("FIGMA_MCP_CLIENT_ID")
       System.delete_env("FIGMA_MCP_CLIENT_SECRET")
+      System.delete_env("FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD")
 
       Application.put_env(:backplane, OAuthRefresher,
         figma_token_url: "http://localhost:#{port}/figma/token"
@@ -368,11 +464,11 @@ defmodule Backplane.Settings.OAuthRefresherTest do
 
       Application.put_env(:backplane, OAuthRefresher,
         figma_token_url: "http://localhost:#{port}/figma/token",
-        figma_mcp_client_id: "test-figma-client"
+        figma_mcp_client_id: "public-client"
       )
 
-      assert {:error, :missing_figma_mcp_client_secret} =
-               OAuthRefresher.refresh(:figma_oauth, "good-figma")
+      assert {:ok, %{access_token: "figma-public-access"}} =
+               OAuthRefresher.refresh(:figma_oauth, "public-figma")
 
       Application.put_env(:backplane, OAuthRefresher, configured)
     end

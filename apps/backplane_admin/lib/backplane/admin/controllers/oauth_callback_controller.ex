@@ -10,6 +10,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
 
   require Logger
 
+  alias Backplane.Admin.FigmaOAuth
   alias Backplane.Settings.{Credentials, OAuthRefresher, OAuthStateStore}
 
   @anthropic_token_url "https://platform.claude.com/v1/oauth/token"
@@ -31,33 +32,49 @@ defmodule Backplane.Admin.OAuthCallbackController do
        } = attrs} ->
         attrs = Map.put(attrs, "oauth_state", state)
 
-        case exchange_code(vendor, code, code_verifier, redirect_uri, attrs) do
-          {:ok, tokens, hints} ->
-            case store_callback_tokens(cred_name, vendor, tokens, hints) do
-              {:ok, credential} ->
-                Backplane.Admin.Audit.record(
-                  "credential.oauth_connect",
-                  "credential",
-                  credential.id
-                )
+        result =
+          if vendor == "figma_oauth" do
+            FigmaOAuth.complete_popped(code, attrs)
+          else
+            case exchange_code(vendor, code, code_verifier, redirect_uri, attrs) do
+              {:ok, tokens, hints} ->
+                case store_callback_tokens(cred_name, vendor, tokens, hints) do
+                  {:ok, credential} ->
+                    Backplane.Admin.Audit.record(
+                      "credential.oauth_connect",
+                      "credential",
+                      credential.id
+                    )
 
-                conn
-                |> put_flash(:info, "Connected #{vendor_label(vendor)} as '#{cred_name}'")
-                |> redirect(to: ~p"/system/credentials")
+                    {:ok, credential}
 
-              {:error, reason} ->
-                Logger.warning("OAuth credential store failed: #{inspect(reason)}")
+                  {:error, reason} ->
+                    {:credential_store_error, reason}
+                end
 
-                conn
-                |> put_flash(:error, "Auth succeeded but failed to save credential")
-                |> redirect(to: ~p"/system/credentials")
+              {:error, _reason} = error ->
+                error
             end
+          end
+
+        case result do
+          {:ok, _credential} ->
+            conn
+            |> put_flash(:info, "Connected #{vendor_label(vendor)} as '#{cred_name}'")
+            |> redirect(to: ~p"/system/credentials")
+
+          {:credential_store_error, reason} ->
+            Logger.warning("OAuth credential store failed: #{inspect(reason)}")
+
+            conn
+            |> put_flash(:error, "Auth succeeded but failed to save credential")
+            |> redirect(to: ~p"/system/credentials")
 
           {:error, reason} ->
             Logger.warning("OAuth code exchange failed: #{inspect(reason)}")
 
             conn
-            |> put_flash(:error, "Authorization failed: #{format_error(reason)}")
+            |> put_flash(:error, "Authorization failed: #{format_error(vendor, reason)}")
             |> redirect(to: ~p"/system/credentials")
         end
 
@@ -87,10 +104,6 @@ defmodule Backplane.Admin.OAuthCallbackController do
   end
 
   # ── Private helpers ─────────────────────────────────────────────────────────
-
-  defp store_callback_tokens(name, "figma_oauth", tokens, hints) do
-    Credentials.store_oauth_token(name, "figma_oauth", tokens, "upstream", hints)
-  end
 
   defp store_callback_tokens(name, vendor, tokens, hints) do
     Credentials.store_device_token(name, vendor, tokens, hints)
@@ -189,103 +202,9 @@ defmodule Backplane.Admin.OAuthCallbackController do
     end
   end
 
-  defp exchange_code("figma_oauth", code, code_verifier, redirect_uri, attrs) do
-    with {:ok, oauth_client} <- figma_oauth_client(attrs),
-         {:ok, headers} <-
-           OAuthRefresher.figma_mcp_client_auth_headers(
-             figma_mcp_client_id: oauth_client["client_id"],
-             figma_mcp_client_secret: oauth_client["client_secret"]
-           ) do
-      token_url = OAuthRefresher.figma_token_url()
-
-      body = %{
-        "grant_type" => "authorization_code",
-        "code" => code,
-        "redirect_uri" => redirect_uri,
-        "code_verifier" => code_verifier,
-        "resource" => OAuthRefresher.figma_resource()
-      }
-
-      request_options =
-        token_url
-        |> OAuthRefresher.request_options()
-        |> Keyword.merge(form: body, headers: headers, receive_timeout: @request_timeout_ms)
-
-      case Req.post(token_url, request_options) do
-        {:ok, %{status: 200, body: response}} ->
-          normalize_figma_tokens(response, attrs, oauth_client)
-
-        {:ok, %{status: status, body: response}} ->
-          {:error, {:http, status, sanitized_oauth_error(response)}}
-
-        {:error, reason} ->
-          {:error, {:transport, reason}}
-      end
-    end
-  end
-
   defp exchange_code(vendor, _code, _code_verifier, _redirect_uri, _attrs) do
     {:error, {:unsupported_vendor, vendor}}
   end
-
-  defp figma_oauth_client(%{"oauth_client" => client}) when is_map(client) do
-    if is_binary(client["client_id"]) and String.trim(client["client_id"]) != "" and
-         is_binary(client["client_secret"]) and String.trim(client["client_secret"]) != "" and
-         client["token_endpoint_auth_method"] == "client_secret_basic" do
-      {:ok, client}
-    else
-      {:error, :invalid_figma_oauth_client}
-    end
-  end
-
-  defp figma_oauth_client(_attrs) do
-    with {:ok, client_id, client_secret} <- OAuthRefresher.figma_mcp_client_credentials() do
-      {:ok,
-       %{
-         "client_id" => client_id,
-         "client_secret" => client_secret,
-         "token_endpoint_auth_method" => "client_secret_basic"
-       }}
-    end
-  end
-
-  defp normalize_figma_tokens(
-         %{
-           "access_token" => access_token,
-           "refresh_token" => refresh_token,
-           "expires_in" => expires_in
-         },
-         attrs,
-         oauth_client
-       )
-       when is_binary(access_token) and is_binary(refresh_token) and
-              is_integer(expires_in) and expires_in > 0 do
-    if String.trim(access_token) == "" or String.trim(refresh_token) == "" do
-      {:error, :invalid_figma_token_response}
-    else
-      tokens = %{
-        access_token: access_token,
-        refresh_token: refresh_token,
-        expires_at: System.system_time(:millisecond) + expires_in * 1_000
-      }
-
-      tokens =
-        if attrs["persist_oauth_client"],
-          do: Map.put(tokens, :oauth_client, oauth_client),
-          else: tokens
-
-      {:ok, tokens, %{}}
-    end
-  end
-
-  defp normalize_figma_tokens(_response, _attrs, _oauth_client),
-    do: {:error, :invalid_figma_token_response}
-
-  defp sanitized_oauth_error(response) when is_map(response) do
-    Map.take(response, ["error", "error_description"])
-  end
-
-  defp sanitized_oauth_error(_response), do: %{}
 
   defp build_anthropic_hints(resp) do
     %{}
@@ -376,27 +295,21 @@ defmodule Backplane.Admin.OAuthCallbackController do
   defp vendor_label("figma_oauth"), do: "Figma MCP"
   defp vendor_label(v), do: v
 
-  defp format_error(:missing_figma_mcp_client_id),
-    do: "FIGMA_MCP_CLIENT_ID is not configured"
+  defp format_error("figma_oauth", reason), do: FigmaOAuth.format_error(reason)
 
-  defp format_error(:missing_figma_mcp_client_secret),
-    do: "FIGMA_MCP_CLIENT_SECRET is not configured"
+  defp format_error(_vendor, {:http, status, %{"error_description" => desc}}),
+    do: "#{desc} (#{status})"
 
-  defp format_error(:invalid_figma_token_response),
-    do: "Figma returned an incomplete token response"
+  defp format_error(
+         _vendor,
+         {:http, status, %{"error" => %{"message" => message, "type" => type}}}
+       ),
+       do: "#{message} (#{type}, #{status})"
 
-  defp format_error(:invalid_figma_oauth_client),
-    do: "The Figma OAuth client context is invalid; reconnect the credential"
-
-  defp format_error({:http, status, %{"error_description" => desc}}), do: "#{desc} (#{status})"
-
-  defp format_error({:http, status, %{"error" => %{"message" => message, "type" => type}}}),
-    do: "#{message} (#{type}, #{status})"
-
-  defp format_error({:http, status, %{"error" => %{"message" => message}}}),
+  defp format_error(_vendor, {:http, status, %{"error" => %{"message" => message}}}),
     do: "#{message} (#{status})"
 
-  defp format_error({:http, status, %{"error" => err}}), do: "#{err} (#{status})"
-  defp format_error({:http, status, _}), do: "HTTP #{status}"
-  defp format_error(other), do: inspect(other)
+  defp format_error(_vendor, {:http, status, %{"error" => err}}), do: "#{err} (#{status})"
+  defp format_error(_vendor, {:http, status, _}), do: "HTTP #{status}"
+  defp format_error(_vendor, other), do: inspect(other)
 end

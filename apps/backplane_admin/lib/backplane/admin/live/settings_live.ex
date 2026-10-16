@@ -5,6 +5,7 @@ defmodule Backplane.Admin.SettingsLive do
 
   require Logger
 
+  alias Backplane.Admin.FigmaOAuth
   alias Backplane.LLM.AutoModel
   alias Backplane.LLM.ModelAlias
   alias Backplane.LLM.Provider
@@ -382,42 +383,47 @@ defmodule Backplane.Admin.SettingsLive do
     expected_state = socket.assigns.device_flow_oauth_state
     redirect_uri = socket.assigns.device_flow_redirect_uri
 
-    if code == "" do
-      {:noreply, put_flash(socket, :error, "Authorization code is required")}
-    else
-      case exchange_auth_code(vendor, code, verifier, redirect_uri, expected_state) do
-        {:ok, tokens, hints} ->
-          case Credentials.store_device_token(cred_name, vendor, tokens, hints) do
-            {:ok, credential} ->
-              Backplane.Admin.Audit.record(
-                "credential.oauth_connect",
-                "credential",
-                credential.id
-              )
+    cond do
+      code == "" ->
+        {:noreply, put_flash(socket, :error, "Authorization code is required")}
 
-              {:noreply,
-               socket
-               |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
-               |> push_patch(to: ~p"/system/credentials")}
+      vendor == "figma_oauth" ->
+        complete_figma_callback(socket, code, cred_name)
 
-            {:error, reason} ->
-              {:noreply,
-               assign(socket,
-                 device_flow_state: :error,
-                 device_flow_error:
-                   "Auth succeeded but failed to save credential: #{inspect(reason)}",
-                 device_flow_error_detail: nil
-               )}
-          end
+      true ->
+        case exchange_auth_code(vendor, code, verifier, redirect_uri, expected_state) do
+          {:ok, tokens, hints} ->
+            case Credentials.store_device_token(cred_name, vendor, tokens, hints) do
+              {:ok, credential} ->
+                Backplane.Admin.Audit.record(
+                  "credential.oauth_connect",
+                  "credential",
+                  credential.id
+                )
 
-        {:error, reason} ->
-          {:noreply,
-           assign(socket,
-             device_flow_state: :error,
-             device_flow_error: "Code exchange failed: #{format_exchange_error(reason)}",
-             device_flow_error_detail: format_exchange_error_detail(reason)
-           )}
-      end
+                {:noreply,
+                 socket
+                 |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
+                 |> push_patch(to: ~p"/system/credentials")}
+
+              {:error, reason} ->
+                {:noreply,
+                 assign(socket,
+                   device_flow_state: :error,
+                   device_flow_error:
+                     "Auth succeeded but failed to save credential: #{inspect(reason)}",
+                   device_flow_error_detail: nil
+                 )}
+            end
+
+          {:error, reason} ->
+            {:noreply,
+             assign(socket,
+               device_flow_state: :error,
+               device_flow_error: "Code exchange failed: #{format_exchange_error(reason)}",
+               device_flow_error_detail: format_exchange_error_detail(reason)
+             )}
+        end
     end
   end
 
@@ -528,6 +534,24 @@ defmodule Backplane.Admin.SettingsLive do
          socket
          |> assign(delete_confirm_name: nil)
          |> put_flash(:error, "Failed to delete credential")}
+    end
+  end
+
+  defp complete_figma_callback(socket, callback_url, cred_name) do
+    case FigmaOAuth.complete_callback_url(callback_url) do
+      {:ok, _credential} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Connected Figma MCP as '#{cred_name}'")
+         |> push_patch(to: ~p"/system/credentials")}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket,
+           device_flow_state: :error,
+           device_flow_error: "Authorization failed: #{FigmaOAuth.format_error(reason)}",
+           device_flow_error_detail: nil
+         )}
     end
   end
 
@@ -729,8 +753,15 @@ defmodule Backplane.Admin.SettingsLive do
 
             {:noreply,
              socket
-             |> push_event("open_external_oauth", %{url: auth_url})
-             |> push_patch(to: ~p"/system/credentials")}
+             |> assign(
+               device_flow_state: :waiting_code_input,
+               device_flow_code_verifier: nil,
+               device_flow_oauth_state: state,
+               device_flow_redirect_uri: redirect_uri,
+               device_flow_error: nil,
+               device_flow_error_detail: nil
+             )
+             |> push_event("open_external_oauth", %{url: auth_url})}
 
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, format_figma_oauth_config_error(reason))}
@@ -1821,15 +1852,19 @@ defmodule Backplane.Admin.SettingsLive do
         <div class="space-y-4">
           <p class="text-sm text-on-surface-variant">
             Complete authorization in the browser window that just opened,
-            then paste the code below.
+            then paste {if @device_flow_vendor == "figma_oauth", do: "the full callback URL", else: "the code"} below.
           </p>
           <form phx-submit="submit_auth_code" class="space-y-4" autocomplete="off">
             <.dm_input
               id="oauth-code-input"
               name="code"
-              label="Authorization Code"
+              label={if @device_flow_vendor == "figma_oauth", do: "Callback URL", else: "Authorization Code"}
               value=""
-              placeholder="Paste code#state or the callback URL"
+              placeholder={
+                if @device_flow_vendor == "figma_oauth",
+                  do: "Paste the full http:// or https:// callback URL",
+                  else: "Paste code#state or the callback URL"
+              }
               autocomplete="off"
               required
             />
@@ -2002,7 +2037,7 @@ defmodule Backplane.Admin.SettingsLive do
 
   defp format_figma_oauth_config_error(:partial_figma_mcp_client_credentials),
     do:
-      "Set both FIGMA_MCP_CLIENT_ID and FIGMA_MCP_CLIENT_SECRET, or remove both to register automatically"
+      "FIGMA_MCP_CLIENT_SECRET requires FIGMA_MCP_CLIENT_ID; remove the secret to register automatically"
 
   defp format_figma_oauth_config_error(:invalid_figma_client_registration),
     do: "Figma returned an invalid client registration response"

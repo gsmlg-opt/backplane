@@ -890,9 +890,7 @@ defmodule Backplane.Settings.Credentials do
   defp oauth_refresh_options(_vendor, _parsed), do: {:ok, []}
 
   defp valid_figma_oauth_client?(client) when is_map(client) do
-    is_binary(client["client_id"]) and String.trim(client["client_id"]) != "" and
-      is_binary(client["client_secret"]) and String.trim(client["client_secret"]) != "" and
-      client["token_endpoint_auth_method"] == "client_secret_basic"
+    Backplane.Settings.OAuthRefresher.valid_figma_client_context?(client)
   end
 
   defp valid_figma_oauth_client?(_client), do: false

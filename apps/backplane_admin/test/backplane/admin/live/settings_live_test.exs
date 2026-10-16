@@ -310,7 +310,8 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
           figma_registration_url: "http://localhost:#{port}/figma/register",
           figma_token_url: "http://localhost:#{port}/figma/token",
           figma_mcp_client_id: "test-figma-client",
-          figma_mcp_client_secret: "test-figma-secret"
+          figma_mcp_client_secret: "test-figma-secret",
+          figma_mcp_token_endpoint_auth_method: "client_secret_basic"
         )
       )
 
@@ -632,7 +633,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       |> render_submit()
 
       assert_push_event(view, "open_external_oauth", %{url: auth_url})
-      assert_patched(view, "/system/credentials")
+      assert render(view) =~ "Callback URL"
 
       uri = URI.parse(auth_url)
       query = URI.decode_query(uri.query)
@@ -659,16 +660,24 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
     test "registers a Figma client when explicit credentials are absent", %{conn: conn} do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
-      prior_env = snapshot_env(~w[FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET])
+      prior_env =
+        snapshot_env(
+          ~w[FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD]
+        )
 
       Application.put_env(
         :backplane,
         OAuthRefresher,
-        Keyword.drop(configured, [:figma_mcp_client_id, :figma_mcp_client_secret])
+        Keyword.drop(configured, [
+          :figma_mcp_client_id,
+          :figma_mcp_client_secret,
+          :figma_mcp_token_endpoint_auth_method
+        ])
       )
 
       System.delete_env("FIGMA_MCP_CLIENT_ID")
       System.delete_env("FIGMA_MCP_CLIENT_SECRET")
+      System.delete_env("FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD")
 
       on_exit(fn ->
         Application.put_env(:backplane, OAuthRefresher, configured)
@@ -682,7 +691,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       |> render_submit()
 
       assert_push_event(view, "open_external_oauth", %{url: auth_url})
-      assert_patched(view, "/system/credentials")
+      assert render(view) =~ "Callback URL"
 
       query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
       assert query["client_id"] == "dynamic-figma-client"
@@ -690,26 +699,57 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       assert attrs["oauth_client"] == %{
                "client_id" => "dynamic-figma-client",
-               "client_secret" => "dynamic-figma-secret",
-               "token_endpoint_auth_method" => "client_secret_basic"
+               "token_endpoint_auth_method" => "none"
              }
 
       assert attrs["persist_oauth_client"]
     end
 
+    test "completes Figma authorization from a pasted callback URL", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/system/credentials/new/figma_oauth")
+
+      view
+      |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "manual-figma"})
+      |> render_submit()
+
+      assert_push_event(view, "open_external_oauth", %{url: auth_url})
+      query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+      callback_url =
+        Backplane.WebOrigins.admin_url(
+          "/oauth/callback?" <>
+            URI.encode_query(%{"code" => "manual-code", "state" => query["state"]})
+        )
+
+      html =
+        view
+        |> form("form[phx-submit=submit_auth_code]", %{"code" => callback_url})
+        |> render_submit()
+
+      assert_patched(view, "/system/credentials")
+      assert html =~ "manual-figma"
+      assert {:ok, "figma-manual-access"} = Credentials.fetch("manual-figma")
+      assert :error = OAuthStateStore.pop(query["state"])
+    end
+
     test "rejects partially configured Figma credentials", %{conn: conn} do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
-      prior_env = snapshot_env(~w[FIGMA_MCP_CLIENT_SECRET])
+      prior_env =
+        snapshot_env(
+          ~w[FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD]
+        )
 
       Application.put_env(
         :backplane,
         OAuthRefresher,
         configured
-        |> Keyword.put(:figma_mcp_client_id, "test-figma-client")
-        |> Keyword.delete(:figma_mcp_client_secret)
+        |> Keyword.delete(:figma_mcp_client_id)
+        |> Keyword.put(:figma_mcp_client_secret, "orphan-secret")
       )
 
+      System.delete_env("FIGMA_MCP_CLIENT_ID")
       System.delete_env("FIGMA_MCP_CLIENT_SECRET")
+      System.delete_env("FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD")
 
       on_exit(fn ->
         Application.put_env(:backplane, OAuthRefresher, configured)
@@ -723,7 +763,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         |> form("form[phx-submit=start_device_auth]", %{"cred_name" => "shared-figma"})
         |> render_submit()
 
-      assert html =~ "Set both FIGMA_MCP_CLIENT_ID and FIGMA_MCP_CLIENT_SECRET"
+      assert html =~ "FIGMA_MCP_CLIENT_SECRET requires FIGMA_MCP_CLIENT_ID"
       assert has_element?(view, "form[phx-submit=start_device_auth]")
     end
 
@@ -1392,7 +1432,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
          "grant_types" => ["authorization_code", "refresh_token"],
          "response_types" => ["code"],
          "scope" => "mcp:connect",
-         "token_endpoint_auth_method" => "client_secret_basic"
+         "token_endpoint_auth_method" => "none"
        } do
       conn
       |> put_resp_content_type("application/json")
@@ -1400,14 +1440,39 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
         201,
         Jason.encode!(%{
           "client_id" => "dynamic-figma-client",
-          "client_secret" => "dynamic-figma-secret",
-          "token_endpoint_auth_method" => "client_secret_basic"
+          "token_endpoint_auth_method" => "none"
         })
       )
     else
       conn
       |> put_resp_content_type("application/json")
       |> send_resp(400, Jason.encode!(%{"error" => "invalid_client_metadata"}))
+    end
+  end
+
+  post "/figma/token" do
+    expected_auth = "Basic " <> Base.encode64("test-figma-client:test-figma-secret")
+
+    if get_req_header(conn, "authorization") == [expected_auth] and
+         conn.body_params["grant_type"] == "authorization_code" and
+         conn.body_params["code"] == "manual-code" and
+         conn.body_params["redirect_uri"] == Backplane.WebOrigins.admin_url("/oauth/callback") and
+         is_binary(conn.body_params["code_verifier"]) and
+         conn.body_params["resource"] == "https://mcp.figma.com/mcp" do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(
+        200,
+        Jason.encode!(%{
+          "access_token" => "figma-manual-access",
+          "refresh_token" => "figma-manual-refresh",
+          "expires_in" => 3600
+        })
+      )
+    else
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(%{"error" => "invalid_request"}))
     end
   end
 
