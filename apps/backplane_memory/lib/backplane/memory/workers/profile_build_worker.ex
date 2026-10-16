@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.ProfileBuildWorker do
-  @moduledoc "Oban worker: build or refresh the project intelligence profile from recent session memories."
+  @moduledoc "Styx worker: build or refresh the project intelligence profile from recent session memories."
 
-  use Oban.Worker, queue: :memory, max_attempts: 3
+  use Styx.Worker, queue: :memory, max_attempts: 3
 
   import Ecto.Query
   alias Backplane.Memory.Memories.Memory
@@ -16,9 +16,9 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
 
   @cache_ttl_seconds 3600
 
-  @impl Oban.Worker
+  @impl Styx.Worker
   def perform(
-        %Oban.Job{
+        %Styx.Job{
           args:
             %{
               "project" => project,
@@ -42,7 +42,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     end)
   end
 
-  def perform(%Oban.Job{}), do: {:discard, :ambiguous_partition}
+  def perform(%Styx.Job{}), do: {:discard, :ambiguous_partition}
 
   defp perform_partition(project, partition, force?, job) do
     with {:ok, state_attrs} <- processing_attrs(project, partition) do
@@ -156,7 +156,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
           force: Keyword.get(opts, :force, false)
         }
         |> new()
-        |> Oban.insert()
+        |> Styx.insert()
 
       {:error, reason} = error ->
         record_partition_issue(project, partition, reason)

@@ -191,7 +191,7 @@ defmodule Backplane.Memory.ReadinessTest do
   end
 
   test "pending worker-specific jobs require their referenced owners" do
-    repo().query!("DELETE FROM oban_jobs WHERE worker LIKE 'Elixir.Backplane.Memory.%'")
+    repo().query!("DELETE FROM styx_jobs WHERE worker LIKE 'Elixir.Backplane.Memory.%'")
     assert clear?(Readiness.job_inventory_sql())
 
     for {worker, args} <- [
@@ -204,7 +204,7 @@ defmodule Backplane.Memory.ReadinessTest do
         ] do
       job =
         args
-        |> Oban.Job.new(worker: "Elixir.Backplane.Memory.Workers.#{worker}")
+        |> Styx.Job.new(worker: "Elixir.Backplane.Memory.Workers.#{worker}")
         |> repo().insert!()
 
       refute clear?(Readiness.job_inventory_sql()),
@@ -212,17 +212,17 @@ defmodule Backplane.Memory.ReadinessTest do
 
       assert_waiver_transition!(
         Readiness.job_inventory_sql(),
-        "oban_jobs",
+        "styx_jobs",
         Integer.to_string(job.id)
       )
 
-      repo().query!("UPDATE oban_jobs SET state='completed' WHERE id=$1", [job.id])
+      repo().query!("UPDATE styx_jobs SET state='completed' WHERE id=$1", [job.id])
       assert clear?(Readiness.job_inventory_sql()), worker
     end
   end
 
   test "coalesced repair jobs require a frontier and a captured source in its entitled session" do
-    repo().query!("DELETE FROM oban_jobs WHERE worker LIKE '%Backplane.Memory.%'")
+    repo().query!("DELETE FROM styx_jobs WHERE worker LIKE '%Backplane.Memory.%'")
     partition = empty_partition!()
     host_id = partition_host!(partition)
     session_id = "readiness-#{Ecto.UUID.generate()}"
@@ -232,24 +232,24 @@ defmodule Backplane.Memory.ReadinessTest do
     for spelling <- [worker, "Elixir." <> worker] do
       job =
         %{"host_id" => host_id, "session_id" => session_id}
-        |> Oban.Job.new(worker: spelling)
+        |> Styx.Job.new(worker: spelling)
         |> repo().insert!()
 
-      repo().query!("UPDATE oban_jobs SET worker=$2 WHERE id=$1", [job.id, spelling])
+      repo().query!("UPDATE styx_jobs SET worker=$2 WHERE id=$1", [job.id, spelling])
       refute clear?(Readiness.job_inventory_sql()), "orphan frontier: #{spelling}"
 
       repair_frontier!(host_id, session_id)
       assert clear?(Readiness.job_inventory_sql()), "valid frontier: #{spelling}"
 
       repo().query!(
-        "UPDATE oban_jobs SET args=args || jsonb_build_object('event_id',$2::text) WHERE id=$1",
+        "UPDATE styx_jobs SET args=args || jsonb_build_object('event_id',$2::text) WHERE id=$1",
         [job.id, Ecto.UUID.generate()]
       )
 
       assert clear?(Readiness.job_inventory_sql()), "converted legacy job: #{spelling}"
 
       repo().query!(
-        "UPDATE oban_jobs SET args=jsonb_build_object('host_id',$2::text) WHERE id=$1",
+        "UPDATE styx_jobs SET args=jsonb_build_object('host_id',$2::text) WHERE id=$1",
         [job.id, host_id]
       )
 
@@ -262,7 +262,7 @@ defmodule Backplane.Memory.ReadinessTest do
         repair_frontier!(wrong_host, wrong_session)
 
         repo().query!(
-          "UPDATE oban_jobs SET args=jsonb_build_object('host_id',$2::text,'session_id',$3::text) WHERE id=$1",
+          "UPDATE styx_jobs SET args=jsonb_build_object('host_id',$2::text,'session_id',$3::text) WHERE id=$1",
           [job.id, wrong_host, wrong_session]
         )
 
@@ -271,7 +271,7 @@ defmodule Backplane.Memory.ReadinessTest do
       end
 
       repo().query!(
-        "UPDATE oban_jobs SET args=jsonb_build_object('host_id',$2::text,'session_id',$3::text) WHERE id=$1",
+        "UPDATE styx_jobs SET args=jsonb_build_object('host_id',$2::text,'session_id',$3::text) WHERE id=$1",
         [job.id, host_id, session_id]
       )
 
@@ -287,7 +287,7 @@ defmodule Backplane.Memory.ReadinessTest do
         [Ecto.UUID.dump!(partition.memory_space_id)]
       )
 
-      repo().query!("UPDATE oban_jobs SET state='completed' WHERE id=$1", [job.id])
+      repo().query!("UPDATE styx_jobs SET state='completed' WHERE id=$1", [job.id])
 
       repo().query!(
         "DELETE FROM bpm_projection_repair_frontiers WHERE host_id=$1 AND session_id=$2",
@@ -297,19 +297,19 @@ defmodule Backplane.Memory.ReadinessTest do
   end
 
   test "legacy repair event jobs remain valid for an entitled captured event" do
-    repo().query!("DELETE FROM oban_jobs WHERE worker LIKE '%Backplane.Memory.%'")
+    repo().query!("DELETE FROM styx_jobs WHERE worker LIKE '%Backplane.Memory.%'")
     partition = empty_partition!()
     event_id = captured_source!(partition, "legacy-#{Ecto.UUID.generate()}")
 
     job =
       %{"event_id" => event_id}
-      |> Oban.Job.new(worker: "Backplane.Memory.Workers.ProjectionRepairWorker")
+      |> Styx.Job.new(worker: "Backplane.Memory.Workers.ProjectionRepairWorker")
       |> repo().insert!()
 
     assert clear?(Readiness.job_inventory_sql())
 
     repo().query!(
-      "UPDATE oban_jobs SET args=jsonb_build_object('event_id',$2::text) WHERE id=$1",
+      "UPDATE styx_jobs SET args=jsonb_build_object('event_id',$2::text) WHERE id=$1",
       [
         job.id,
         Ecto.UUID.generate()

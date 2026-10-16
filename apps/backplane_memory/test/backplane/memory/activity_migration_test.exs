@@ -7,8 +7,16 @@ end
 defmodule Backplane.Memory.ActivityMigrationOban do
   use Ecto.Migration
 
-  def up, do: Oban.Migration.up(version: 12, prefix: prefix(), create_schema: false)
-  def down, do: Oban.Migration.down(version: 1, prefix: prefix())
+  def up, do: apply(migration(), :up, [])
+  def down, do: apply(migration(), :down, [])
+
+  defp migration do
+    :backplane_system
+    |> Application.app_dir("priv/repo/migrations/20260410000001_create_oban_tables.exs")
+    |> Code.require_file()
+
+    Backplane.Repo.Migrations.CreateObanTables
+  end
 end
 
 defmodule Backplane.Memory.ActivityMigrationTest do

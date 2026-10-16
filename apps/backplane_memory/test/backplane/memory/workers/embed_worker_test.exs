@@ -22,7 +22,7 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
       vector = Enum.map(1..2560, fn _ -> 0.001 end)
       mock_embed = fn _texts, _mode, _opts -> {:ok, [vector]} end
 
-      assert :ok = EmbedWorker.perform_with_client(%Oban.Job{args: %{"id" => mem.id}}, mock_embed)
+      assert :ok = EmbedWorker.perform_with_client(%Styx.Job{args: %{"id" => mem.id}}, mock_embed)
 
       embedding_after =
         from(m in MemorySchema, where: m.id == ^mem.id, select: m.embedding)
@@ -36,14 +36,14 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
       assert memory_id == mem.id
     end
 
-    test "returns {:error, reason} when embed client fails so Oban retries" do
+    test "returns {:error, reason} when embed client fails so Styx retries" do
       {:ok, mem} =
         Memories.remember("Madrid is in Spain.", canonical_memory_opts("h", agent_id: "a"))
 
       failing_embed = fn _texts, _mode, _opts -> {:error, "vLLM unavailable"} end
 
       assert {:error, "vLLM unavailable"} =
-               EmbedWorker.perform_with_client(%Oban.Job{args: %{"id" => mem.id}}, failing_embed)
+               EmbedWorker.perform_with_client(%Styx.Job{args: %{"id" => mem.id}}, failing_embed)
 
       embedding =
         from(m in MemorySchema, where: m.id == ^mem.id, select: m.embedding)
@@ -56,7 +56,7 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
 
       assert {:error, "vLLM unavailable"} =
                EmbedWorker.perform_with_client(
-                 %Oban.Job{args: %{"id" => mem.id}, attempt: 5, max_attempts: 5},
+                 %Styx.Job{args: %{"id" => mem.id}, attempt: 5, max_attempts: 5},
                  failing_embed
                )
 
@@ -65,7 +65,7 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
     end
 
     test "returns :ok for a non-existent memory id (graceful skip)" do
-      job = %Oban.Job{args: %{"id" => Ecto.UUID.generate()}}
+      job = %Styx.Job{args: %{"id" => Ecto.UUID.generate()}}
       mock_embed = fn _texts, _mode, _opts -> {:ok, [[]]} end
       assert :ok = EmbedWorker.perform_with_client(job, mock_embed)
     end
@@ -78,7 +78,7 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
 
       assert_raise RuntimeError, "embedding exploded", fn ->
         EmbedWorker.perform_with_client(
-          %Oban.Job{args: %{"id" => mem.id}, attempt: 5, max_attempts: 5},
+          %Styx.Job{args: %{"id" => mem.id}, attempt: 5, max_attempts: 5},
           raising_embed
         )
       end
@@ -96,7 +96,7 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
 
       old_task =
         Task.async(fn ->
-          EmbedWorker.perform_with_client(%Oban.Job{args: %{"id" => mem.id}}, fn _texts,
+          EmbedWorker.perform_with_client(%Styx.Job{args: %{"id" => mem.id}}, fn _texts,
                                                                                  _mode,
                                                                                  _opts ->
             send(parent, :old_embed_blocked)
@@ -120,7 +120,7 @@ defmodule Backplane.Memory.Workers.EmbedWorkerTest do
       new_vector = Enum.map(1..2560, fn _ -> 0.002 end)
 
       assert :ok =
-               EmbedWorker.perform_with_client(%Oban.Job{args: %{"id" => mem.id}}, fn _texts,
+               EmbedWorker.perform_with_client(%Styx.Job{args: %{"id" => mem.id}}, fn _texts,
                                                                                       _mode,
                                                                                       _opts ->
                  {:ok, [new_vector]}

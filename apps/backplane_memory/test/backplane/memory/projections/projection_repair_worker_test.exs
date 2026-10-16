@@ -32,7 +32,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
     enqueue = fn host_id, session_id, input_revision ->
       send(owner, {:summary_enqueued, host_id, session_id, input_revision})
-      {:ok, %Oban.Job{state: "available"}}
+      {:ok, %Styx.Job{state: "available"}}
     end
 
     complete = fn _host_id, _session_id ->
@@ -46,7 +46,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
        }}
     end
 
-    job = %Oban.Job{args: %{"event_id" => event_id}}
+    job = %Styx.Job{args: %{"event_id" => event_id}}
     assert :ok = ProjectionRepairWorker.perform(job, complete, enqueue)
     assert_received {:summary_enqueued, "summary-host", "summary-session", "revision-1"}
 
@@ -95,9 +95,9 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       refute_received {:summary_enqueued, _, _, _}
     end
 
-    assert {:error, :oban_unavailable} =
+    assert {:error, :styx_unavailable} =
              ProjectionRepairWorker.perform(job, complete, fn _, _, _ ->
-               {:error, :oban_unavailable}
+               {:error, :styx_unavailable}
              end)
   end
 
@@ -120,7 +120,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   end
 
   test "a late canonical event automatically repairs only its captured session" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       repaired_session = unique("repaired")
       unrelated_session = unique("unrelated")
 
@@ -130,14 +130,14 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       assert accepted(first)
       assert accepted(third)
 
-      assert [repair_job] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [repair_job] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
       assert repair_job.args == %{
                "host_id" => "host-repair",
                "session_id" => repaired_session
              }
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
 
       repaired_subject = Source.subject_id!("host-repair", repaired_session)
 
@@ -156,12 +156,12 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       # The expired gap is now a terminal deadline, so its durable summary job
       # runs separately and records an explicitly incomplete revision.
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
 
       assert accepted(captured_event("host-other", unrelated_session, 1, "agent.session.started"))
 
       # One projection repair plus the episodic successor of the incomplete summary.
-      assert %{success: 2, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 2, failure: 0} = Styx.drain_queue(queue: :memory)
 
       unrelated_subject = Source.subject_id!("host-other", unrelated_session)
       unrelated_before = projection_rows(unrelated_subject)
@@ -172,8 +172,8 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
         })
 
       assert accepted(late)
-      assert [_late_job] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert [_late_job] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
 
       assert %{
                "session" => %{read_model: %{"gaps" => [], "counts" => %{"events" => 3}}},
@@ -206,13 +206,13 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       repaired_before_duplicate = projection_rows(repaired_subject)
       assert duplicate(late)
-      assert [] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
       assert projection_rows(repaired_subject) == repaired_before_duplicate
     end)
   end
 
   test "legacy events do not enqueue projection repair" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       assert {:error, :incomplete_partition} =
                Store.append(%{
                  stream_id: "legacy-#{Ecto.UUID.generate()}",
@@ -222,12 +222,12 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                  content: "legacy"
                })
 
-      assert [] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
     end)
   end
 
   test "a converted legacy pending job prevents a second host session job after a new event" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = unique("upgraded-host")
       session_id = unique("upgraded-session")
 
@@ -235,20 +235,20 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
 
       repo().delete_all(
-        from(job in Oban.Job,
+        from(job in Styx.Job,
           where: job.worker == "Backplane.Memory.Workers.ProjectionRepairWorker"
         )
       )
 
-      assert {:ok, %Oban.Job{id: legacy_job_id}} =
+      assert {:ok, %Styx.Job{id: legacy_job_id}} =
                %{event_id: first_event_id, host_id: host_id, session_id: session_id}
                |> ProjectionRepairWorker.new(unique: nil)
-               |> Oban.insert()
+               |> Styx.insert()
 
       assert accepted(captured_event(host_id, session_id, 2, "agent.prompt.submitted"))
 
-      assert [%Oban.Job{id: ^legacy_job_id, args: args}] =
-               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [%Styx.Job{id: ^legacy_job_id, args: args}] =
+               Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
       assert args == %{
                "event_id" => first_event_id,
@@ -256,30 +256,30 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                "session_id" => session_id
              }
 
-      assert :ok = ProjectionRepairWorker.perform(%Oban.Job{args: args})
+      assert :ok = ProjectionRepairWorker.perform(%Styx.Job{args: args})
 
       assert %RepairFrontier{requested_generation: 2, completed_generation: 2} =
                RepairFrontier.get(repo(), host_id, session_id)
 
-      repo().update_all(from(job in Oban.Job, where: job.id == ^legacy_job_id),
+      repo().update_all(from(job in Styx.Job, where: job.id == ^legacy_job_id),
         set: [state: "completed", completed_at: DateTime.utc_now()]
       )
 
-      assert [] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
     end)
   end
 
   test "an event arriving during repair creates one successor and both executions converge" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = unique("concurrent-host")
       session_id = unique("concurrent-session")
 
       assert accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
 
-      assert [%Oban.Job{id: running_job_id, args: running_args}] =
-               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [%Styx.Job{id: running_job_id, args: running_args}] =
+               Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
-      repo().update_all(from(job in Oban.Job, where: job.id == ^running_job_id),
+      repo().update_all(from(job in Styx.Job, where: job.id == ^running_job_id),
         set: [state: "executing", attempted_at: DateTime.utc_now(), attempt: 1]
       )
 
@@ -293,7 +293,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
           receive do
             :run ->
               ProjectionRepairWorker.perform(
-                %Oban.Job{args: running_args},
+                %Styx.Job{args: running_args},
                 fn ^host_id, ^session_id ->
                   send(parent, :repair_running)
 
@@ -323,7 +323,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
         Task.async(fn ->
           receive do
             :run ->
-              Oban.Testing.with_testing_mode(:manual, fn ->
+              Styx.Testing.with_testing_mode(:manual, fn ->
                 accepted(captured_event(host_id, session_id, 2, "agent.prompt.submitted"))
               end)
           end
@@ -337,41 +337,41 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       assert :ok = Task.await(repair_task, 5_000)
       assert %{"status" => "accepted"} = Task.await(ingest_task, 5_000)
 
-      assert [%Oban.Job{id: successor_id, args: successor_args}] =
-               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [%Styx.Job{id: successor_id, args: successor_args}] =
+               Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
       refute successor_id == running_job_id
 
       assert [["available"], ["executing"]] =
                repo().query!(
                  """
-                 SELECT state FROM oban_jobs
+                 SELECT state FROM styx_jobs
                  WHERE id IN ($1, $2)
                  ORDER BY state
                  """,
                  [running_job_id, successor_id]
                ).rows
 
-      repo().update_all(from(job in Oban.Job, where: job.id == ^running_job_id),
+      repo().update_all(from(job in Styx.Job, where: job.id == ^running_job_id),
         set: [state: "completed", completed_at: DateTime.utc_now()]
       )
 
-      assert :ok = ProjectionRepairWorker.perform(%Oban.Job{args: successor_args})
+      assert :ok = ProjectionRepairWorker.perform(%Styx.Job{args: successor_args})
 
-      repo().update_all(from(job in Oban.Job, where: job.id == ^successor_id),
+      repo().update_all(from(job in Styx.Job, where: job.id == ^successor_id),
         set: [state: "completed", completed_at: DateTime.utc_now()]
       )
 
       assert %RepairFrontier{requested_generation: 2, completed_generation: 2} =
                RepairFrontier.get(repo(), host_id, session_id)
 
-      assert [] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
     end)
   end
 
   @tag timeout: 180_000
   test "Scenario J: 10,000 accepted events coalesce to one pending projection repair job" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = "scale-host-#{Ecto.UUID.generate()}"
       session_id = "scale-session-#{Ecto.UUID.generate()}"
       auth = ingest_auth_context(host_id, %{partition: %{scope: "project:backplane"}})
@@ -411,8 +411,8 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                  RepairFrontier.get(repo(), host_id, session_id)
       end)
 
-      assert [%Oban.Job{args: %{"host_id" => ^host_id, "session_id" => ^session_id}}] =
-               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [%Styx.Job{args: %{"host_id" => ^host_id, "session_id" => ^session_id}}] =
+               Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
       assert %RepairFrontier{
                requested_generation: 101,
@@ -422,7 +422,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       assert revision =~ ~r/^[0-9a-f]{64}$/
 
-      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+      job = %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
 
       assert :ok =
                ProjectionRepairWorker.perform(
@@ -458,8 +458,8 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                completed_revision: ^revision
              } = RepairFrontier.get(repo(), host_id, session_id)
 
-      assert [%Oban.Job{args: %{"host_id" => ^host_id, "session_id" => ^session_id}}] =
-               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [%Styx.Job{args: %{"host_id" => ^host_id, "session_id" => ^session_id}}] =
+               Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
       IO.puts(
         "Scenario J projection scheduling: events=10000 generations=101 pending_jobs=1 completed_generation=101"
@@ -479,7 +479,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   end
 
   test "one accepted store batch advances a session frontier exactly once" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = unique("batch-frontier-host")
       session_id = unique("batch-frontier-session")
       auth = ingest_auth_context(host_id, %{partition: %{scope: "project:backplane"}})
@@ -497,12 +497,12 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       assert %RepairFrontier{requested_generation: 1} =
                RepairFrontier.get(repo(), host_id, session_id)
 
-      assert [_job] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert [_job] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
     end)
   end
 
   test "a revision mismatch marks work stale and a later attempt repairs the authoritative revision" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       :ets.insert(:backplane_settings, {"memory.lesson_auto_extract", true})
       on_exit(fn -> :ets.delete(:backplane_settings, "memory.lesson_auto_extract") end)
 
@@ -513,14 +513,14 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       frontier = RepairFrontier.get(repo(), host_id, session_id)
       RepairFrontier.replace_requested_revision(repo(), frontier, String.duplicate("f", 64))
 
-      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+      job = %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
 
       assert :ok = ProjectionRepairWorker.perform(job)
 
       assert [_successor] =
-               Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+               Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
 
-      assert [] = Oban.Testing.all_enqueued(repo(), worker: LessonCandidateWorker)
+      assert [] = Styx.Testing.all_enqueued(repo(), worker: LessonCandidateWorker)
 
       assert %RepairFrontier{
                requested_generation: 1,
@@ -552,7 +552,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   end
 
   test "lesson scheduling failure rolls back completion and succeeds on retry" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       {:ok, attempts} = Agent.start_link(fn -> 0 end)
 
       Application.put_env(:backplane_memory, :projection_repair_lesson_enqueue, fn _event_id ->
@@ -566,7 +566,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       session_id = unique("lesson-retry-session")
 
       assert accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
-      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+      job = %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
 
       assert {:error, :lesson_unavailable} = ProjectionRepairWorker.perform(job)
 
@@ -583,7 +583,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   end
 
   test "summary scheduling failure rolls back completion and succeeds on retry" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = unique("summary-retry-host")
       session_id = unique("summary-retry-session")
 
@@ -605,7 +605,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
         states: %{"session" => %{status: "complete"}}
       }
 
-      job = %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
+      job = %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
 
       assert {:error, :summary_unavailable} =
                ProjectionRepairWorker.perform(
@@ -621,7 +621,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                ProjectionRepairWorker.perform(
                  job,
                  fn _, _ -> {:ok, result} end,
-                 fn _, _, _ -> {:ok, %Oban.Job{state: "available"}} end
+                 fn _, _, _ -> {:ok, %Styx.Job{state: "available"}} end
                )
 
       assert %RepairFrontier{requested_generation: 1, completed_generation: 1} =
@@ -639,7 +639,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       :ets.delete(:backplane_settings, "memory.lesson_auto_extract")
     end)
 
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       session_id = unique("lesson-correction")
 
       event =
@@ -648,14 +648,14 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
         })
 
       assert %{"server_event_id" => event_id} = accepted(event)
-      assert [_repair] = Oban.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert [_repair] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
 
-      assert [%Oban.Job{args: args}] =
-               Oban.Testing.all_enqueued(repo(), worker: LessonCandidateWorker)
+      assert [%Styx.Job{args: args}] =
+               Styx.Testing.all_enqueued(repo(), worker: LessonCandidateWorker)
 
       assert args == %{"event_id" => event_id, "processing_version" => "lesson-candidate-v1"}
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory_lessons)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory_lessons)
 
       assert %Lesson{status: "candidate", source_kind: "correction", memory_id: memory_id} =
                repo().one(Lesson)
@@ -679,7 +679,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       :ets.delete(:backplane_settings, "memory.lesson_auto_extract")
     end)
 
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       session_id = unique("lesson-remediation")
 
       failed =
@@ -694,11 +694,11 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       assert %{"server_event_id" => failed_event_id} = accepted(failed)
       assert %{"server_event_id" => fixed_event_id} = accepted(fixed)
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
-      assert %{success: 2, failure: 0} = Oban.drain_queue(queue: :memory_lessons)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
+      assert %{success: 2, failure: 0} = Styx.drain_queue(queue: :memory_lessons)
 
       assert :ok =
-               LessonCandidateWorker.perform(%Oban.Job{
+               LessonCandidateWorker.perform(%Styx.Job{
                  args: %{
                    "event_id" => fixed_event_id,
                    "processing_version" => "lesson-candidate-v1"
@@ -738,7 +738,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       :ets.delete(:backplane_settings, "memory.lesson_auto_extract")
     end)
 
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       session_id = unique("lesson-terminal-order")
 
       events = [
@@ -759,8 +759,8 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       [failed_event_id, _lint_event_id, fixed_event_id, _repeat_event_id] =
         Enum.map(events, &accepted(&1)["server_event_id"])
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
-      assert %{success: 4, failure: 0} = Oban.drain_queue(queue: :memory_lessons)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
+      assert %{success: 4, failure: 0} = Styx.drain_queue(queue: :memory_lessons)
 
       assert [%Lesson{memory_id: memory_id}] = repo().all(Lesson)
 
@@ -776,13 +776,13 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   end
 
   test "worker trusts the durable event identity and surfaces failures for retry" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       event =
         captured_event("trusted-host", unique("trusted-session"), 1, "agent.session.started")
 
       assert %{"server_event_id" => event_id} = accepted(event)
 
-      job = %Oban.Job{
+      job = %Styx.Job{
         args: %{
           "event_id" => event_id,
           "host_id" => "attacker-host",
@@ -816,15 +816,15 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
   test "worker treats missing events as successful no-ops and cancels malformed args" do
     assert :ok =
-             ProjectionRepairWorker.perform(%Oban.Job{
+             ProjectionRepairWorker.perform(%Styx.Job{
                args: %{"event_id" => Ecto.UUID.generate()}
              })
 
     assert {:cancel, :invalid_arguments} =
-             ProjectionRepairWorker.perform(%Oban.Job{args: %{}})
+             ProjectionRepairWorker.perform(%Styx.Job{args: %{}})
 
     assert {:cancel, :invalid_arguments} =
-             ProjectionRepairWorker.perform(%Oban.Job{args: %{"event_id" => "  "}})
+             ProjectionRepairWorker.perform(%Styx.Job{args: %{"event_id" => "  "}})
   end
 
   test "locked rebuild entrypoint rejects callers without a transaction" do
@@ -834,7 +834,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
   test "a retryable inline worker result cannot masquerade as a durable repair job" do
     Application.put_env(:backplane_memory, :projection_repair_enqueue, fn _event_id ->
-      {:ok, %Oban.Job{state: "retryable"}}
+      {:ok, %Styx.Job{state: "retryable"}}
     end)
 
     event = captured_event("host-inline", unique("inline"), 1, "agent.session.started")

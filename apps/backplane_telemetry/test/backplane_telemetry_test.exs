@@ -137,7 +137,7 @@ defmodule BackplaneTelemetryTest do
 
   test "captures LLM request events used by UsageCollector baseline", %{log_file: log_file} do
     # Root application may have attached UsageCollector; keep this test focused on
-    # TelemetryLogger capture and avoid inline Oban inserts with a fake provider id.
+    # TelemetryLogger capture and avoid inline Styx inserts with a fake provider id.
     if Code.ensure_loaded?(Backplane.LLM.UsageCollector) and
          function_exported?(Backplane.LLM.UsageCollector, :detach, 0) do
       Backplane.LLM.UsageCollector.detach()

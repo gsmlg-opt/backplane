@@ -1,15 +1,15 @@
 defmodule Backplane.Memory.Workers.ActivityRetentionWorker do
   @moduledoc "Bounded retention purge for durable daily activity projections."
 
-  use Oban.Worker, queue: :memory, max_attempts: 3
+  use Styx.Worker, queue: :memory, max_attempts: 3
 
   alias Backplane.Memory.{Audit, Config}
 
   @default_batch_size 100
   @max_batch_size 1_000
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{args: args}) when is_map(args) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{args: args}) when is_map(args) do
     Backplane.Memory.PipelineTelemetry.span("activity.retention", args, fn ->
       with {:ok, today} <- parse_today(args["today"]),
            {:ok, batch_size} <- parse_batch_size(args["batch_size"]) do
@@ -40,7 +40,7 @@ defmodule Backplane.Memory.Workers.ActivityRetentionWorker do
     if continued do
       %{"today" => Date.to_iso8601(today), "batch_size" => batch_size}
       |> new()
-      |> Oban.insert!()
+      |> Styx.insert!()
     end
 
     %{

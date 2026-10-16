@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.EmbedWorker do
-  @moduledoc "Oban worker: embed a bpm_memories row via the LLM proxy. Fails gracefully — memory stays unembedded on error."
+  @moduledoc "Styx worker: embed a bpm_memories row via the LLM proxy. Fails gracefully — memory stays unembedded on error."
 
-  use Oban.Worker, queue: :memory, max_attempts: 5
+  use Styx.Worker, queue: :memory, max_attempts: 5
 
   import Ecto.Query
 
@@ -14,15 +14,15 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{} = job) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{} = job) do
     Backplane.Memory.PipelineTelemetry.span("embedding", job.args, fn ->
       perform_with_client(job, &Client.embed/3)
     end)
   end
 
   @doc false
-  def perform_with_client(%Oban.Job{args: %{"id" => id}} = job, embed_fn) do
+  def perform_with_client(%Styx.Job{args: %{"id" => id}} = job, embed_fn) do
     case repo().get(Memory, id) do
       nil ->
         :ok
@@ -122,11 +122,11 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
   end
 
   @doc "Enqueue an embed job for the given memory id."
-  @spec enqueue(String.t()) :: {:ok, Oban.Job.t()} | {:error, term()}
+  @spec enqueue(String.t()) :: {:ok, Styx.Job.t()} | {:error, term()}
   def enqueue(id) do
     %{id: id}
     |> new()
-    |> Oban.insert()
+    |> Styx.insert()
   end
 
   defp processing_attrs(%Memory{} = memory) do

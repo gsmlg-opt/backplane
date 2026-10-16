@@ -323,7 +323,7 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
                )
     end
 
-    assert :ok = OAuthTokenRefreshWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = OAuthTokenRefreshWorker.perform(%Styx.Job{args: %{}})
 
     assert decrypt_credential_json("figma-worker-due")["access_token"] ==
              "figma-refreshed-access"

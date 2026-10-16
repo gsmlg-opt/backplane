@@ -82,7 +82,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
         args = incomplete |> stringify_keys() |> Map.put("project", "incomplete")
 
         assert {:discard, :incomplete_partition} =
-                 ProfileBuildWorker.perform(%Oban.Job{args: args})
+                 ProfileBuildWorker.perform(%Styx.Job{args: args})
 
         assert {:error, :incomplete_partition} =
                  ProfileBuildWorker.enqueue("incomplete", incomplete)
@@ -92,7 +92,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       mismatched_args = partition |> stringify_keys() |> Map.put(:host_id, "other-host")
 
       assert {:discard, :partition_mismatch} =
-               ProfileBuildWorker.perform(%Oban.Job{
+               ProfileBuildWorker.perform(%Styx.Job{
                  args: Map.put(mismatched_args, "project", "incomplete")
                })
 
@@ -124,7 +124,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
         claim = Map.put(authoritative, field, wrong)
 
         assert {:discard, :partition_mismatch} =
-                 ProfileBuildWorker.perform(%Oban.Job{
+                 ProfileBuildWorker.perform(%Styx.Job{
                    args: claim |> stringify_keys() |> Map.put("project", project)
                  })
       end
@@ -144,13 +144,13 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
         |> Map.put("project", project)
 
       assert {:discard, :partition_mismatch} =
-               ProfileBuildWorker.perform(%Oban.Job{args: wrong})
+               ProfileBuildWorker.perform(%Styx.Job{args: wrong})
 
       [first] =
         repo().all(from(i in BackfillIssue, where: i.source_table == "memory_profile_generator"))
 
       assert {:discard, :partition_mismatch} =
-               ProfileBuildWorker.perform(%Oban.Job{
+               ProfileBuildWorker.perform(%Styx.Job{
                  args: Map.merge(wrong, %{"content" => "secret", "force" => true})
                })
 
@@ -436,11 +436,11 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
     test "returns the enqueue error without an authoritative project source" do
       project = "test-build-trigger-#{System.unique_integer([:positive])}"
 
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         assert {:error, :incomplete_partition} =
                  Profiles.get_or_build(project, partition(project))
 
-        Oban.Testing.refute_enqueued(repo(),
+        Styx.Testing.refute_enqueued(repo(),
           worker: ProfileBuildWorker,
           args: %{"project" => project}
         )
@@ -451,10 +451,10 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       project = "test-build-source-#{System.unique_integer([:positive])}"
       source = insert_memory("profile source", scope: project)
 
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         assert {:building, nil} = Profiles.get_or_build(project, partition(project))
 
-        assert Oban.Testing.assert_enqueued(repo(),
+        assert Styx.Testing.assert_enqueued(repo(),
                  worker: ProfileBuildWorker,
                  args: %{"project" => project, "memory_space_id" => source.memory_space_id}
                )
@@ -496,7 +496,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
       |> Map.put("project", project)
 
-    %Oban.Job{args: args}
+    %Styx.Job{args: args}
   end
 
   defp insert_summary(partition, project, content) do

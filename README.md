@@ -19,7 +19,7 @@ Skills, memory capture/recall, host-agent integration, and authentication are su
 
 This repository is an Elixir umbrella project. The main application boundaries are:
 
-- `apps/backplane`: boot orchestration, managed-service registration, upstream startup, and Oban job configuration.
+- `apps/backplane`: boot orchestration, managed-service registration, upstream startup, and Styx job configuration.
 - `apps/backplane_system`: shared repository and migrations, settings, credentials, client tokens, configuration, and tool registry.
 - `apps/backplane_mcp`: MCP transport, upstream proxy, native hub/admin tools, managed-service adapters, and math runtime.
 - `apps/backplane_llama`: LLM routing, provider credentials, model aliases, embeddings, rate limiting, and access logs.
@@ -316,7 +316,11 @@ These workflows run only when their owning app directories, workflow files, or p
 ## Project Notes
 
 - PostgreSQL stores runtime configuration, credentials, upstream definitions, clients, skills, provider metadata, model aliases, and usage logs.
-- Oban handles background jobs such as usage writing and retention.
+- [Styx](https://hex.pm/packages/styx) handles background jobs such as usage writing and retention.
+  When upgrading from Oban, stop gateway instances before running `mix ecto.migrate`
+  (or the release migration command), then start the new release. The migration
+  renames the existing queue storage and preserves job IDs, states, arguments, and
+  memory readiness waivers. Job metrics now use the `styx_` prefix.
 - Observability v2 policy is stored under `observability.*` settings. The runtime sink and bounded LLM/MCP/audit writers provide persistence; the legacy usage-writing path is disabled when LLM persistence is enabled. Admin `/system/logs/sinks` reports writer/buffer health.
 - Native math config is stored in the singleton `mcp_native_math_config` table and cached by `Backplane.Math.Config`.
 - Relayixir is embedded as a library; its standalone server is disabled in Backplane.

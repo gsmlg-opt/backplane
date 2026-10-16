@@ -118,7 +118,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
   end
 
   defp perform(host_id, session_id, projection) do
-    SummaryWorker.perform(%Oban.Job{
+    SummaryWorker.perform(%Styx.Job{
       args: %{
         "memory_space_id" => projection.memory_space_id,
         "host_id" => host_id,
@@ -135,7 +135,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
 
   defp episodic_job_count do
     repo().aggregate(
-      from(job in Oban.Job, where: job.worker == ^inspect(EpisodicWorker)),
+      from(job in Styx.Job, where: job.worker == ^inspect(EpisodicWorker)),
       :count
     )
   end
@@ -175,7 +175,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
 
           repo().query!(
             """
-            DELETE FROM oban_jobs
+            DELETE FROM styx_jobs
             WHERE args->>'event_id' IN (
               SELECT id::text FROM bpm_events WHERE host_id = $1 AND session_id = $2
             )

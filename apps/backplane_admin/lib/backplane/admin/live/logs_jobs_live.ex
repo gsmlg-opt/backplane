@@ -48,7 +48,7 @@ defmodule Backplane.Admin.LogsJobsLive do
     ~H"""
     <div>
       <h1 class="mb-2 text-2xl font-bold">Background Jobs</h1>
-      <p class="mb-4 text-sm text-on-surface-variant">Recent Oban job activity.</p>
+      <p class="mb-4 text-sm text-on-surface-variant">Recent Styx job activity.</p>
 
       <.dm_card
         :if={@selected_job}
@@ -106,7 +106,7 @@ defmodule Backplane.Admin.LogsJobsLive do
   defp load_selected_job(nil), do: nil
 
   defp load_selected_job(job_id) do
-    from(j in "oban_jobs",
+    from(j in "styx_jobs",
       where: j.id == ^job_id,
       select: %{
         id: j.id,
@@ -142,7 +142,7 @@ defmodule Backplane.Admin.LogsJobsLive do
   defp parse_job_id(_value), do: nil
 
   defp load_recent_jobs do
-    from(j in "oban_jobs",
+    from(j in "styx_jobs",
       where: j.state in ["completed", "executing", "retryable", "discarded"],
       order_by: [desc: j.attempted_at],
       limit: ^@page_size,

@@ -69,7 +69,7 @@ defmodule Backplane.LLM.UsageCollectorTest do
       assert metadata.provider_id == provider.id
       assert metadata.model == "claude-3-5-sonnet-20241022"
 
-      # Oban is in :inline testing mode, so the job runs immediately.
+      # Styx is in :inline testing mode, so the job runs immediately.
       # Verify the side-effect: a UsageLog record was persisted.
       log = Repo.one(UsageLog)
       assert log != nil

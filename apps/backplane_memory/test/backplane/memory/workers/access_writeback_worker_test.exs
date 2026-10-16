@@ -18,7 +18,7 @@ defmodule Backplane.Memory.Workers.AccessWritebackWorkerTest do
 
       assert before_count == 0
 
-      job = %Oban.Job{args: %{"memory_ids" => [m1.id, m2.id]}}
+      job = %Styx.Job{args: %{"memory_ids" => [m1.id, m2.id]}}
       assert :ok = AccessWritebackWorker.perform(job)
 
       after_row =
@@ -36,7 +36,7 @@ defmodule Backplane.Memory.Workers.AccessWritebackWorkerTest do
       {:ok, mem} =
         Memories.remember("repeated access", canonical_memory_opts("h", agent_id: "a"))
 
-      job = %Oban.Job{args: %{"memory_ids" => [mem.id]}}
+      job = %Styx.Job{args: %{"memory_ids" => [mem.id]}}
 
       :ok = AccessWritebackWorker.perform(job)
       :ok = AccessWritebackWorker.perform(job)

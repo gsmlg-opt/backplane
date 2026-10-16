@@ -41,11 +41,19 @@ export SECRET_KEY_BASE='<production secret>'
 /opt/backplane/bin/backplane migrate
 ```
 
-Run it a second time and require `applied_migrations=0`. The old release may
-continue serving capture during these compatible migrations. Migration 00011
+Run it a second time and require `applied_migrations=0`. For backward-compatible
+additive migrations, the old release may continue serving capture. Migration 00011
 replaces the action-edge partition trigger without changing its rejection
 contract. If the central service is stopped for the process switch, host agents
 continue accepting into their durable local spools.
+
+The Styx migration `20261016000001` is a storage rename and requires downtime.
+Before running the new packaged release's migration command, stop every old
+gateway instance and every other process that produces or executes gateway
+jobs. Run the command above offline, without starting the new application.
+Only start the new release after migration and verification complete. Old Oban
+processes must not run against the renamed Styx storage; connected host agents
+may keep capturing into their local spools during this interval.
 
 ## Forward cutover
 
@@ -61,7 +69,9 @@ uploads continue, and V1 fact/wipe compatibility remains controlled by
 [edge runbook](../operations/host-memory-edge-runbook.md) for cursor recovery.
 
 1. Record the pre-upgrade event watermark and restore-tested backup.
-2. Run the new installed release's migrations twice as above.
+2. Stop all old gateway instances and job producers/executors when upgrading
+   through the Styx storage rename, then run the new installed release's
+   migrations twice as above.
 3. Run the consistency and dry-run rebuild checks.
 4. Replace the application process/image without changing the database.
 5. Verify public health on `4100` and trusted admin health on `4101`.
@@ -79,7 +89,14 @@ do not translate a V1 fact hash into a V2 revision. If schema rollback crosses
 the irreversible migration chain, use the restore/replay sequence below.
 
 A binary rollback is safe only while its schema compatibility has been
-explicitly proven. For any rollback crossing an irreversible migration:
+explicitly proven. To return from Styx to an old Oban binary, stop all new
+gateway instances and job producers/executors first. Reverse only migration
+`20261016000001` with the new release while those processes remain stopped,
+then start the old binary against the restored Oban storage names. This
+reversal preserves queued jobs and does not require reversing the Memory V2
+chain.
+
+For any rollback crossing an irreversible migration:
 
 1. Stop public ingestion at the reverse proxy. Leave host agents running so
    new events queue locally; do not disable capture hooks.

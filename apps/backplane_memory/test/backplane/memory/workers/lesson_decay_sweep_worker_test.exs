@@ -7,7 +7,7 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorkerTest do
   @trace %{actor: "operator", request_id: "decay-sweep", correlation_id: "decay-sweep"}
 
   test "schedules one exact-partition job per durable lesson partition" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       for suffix <- ["a", "b"] do
         partition =
           canonical_partition("host-#{suffix}",
@@ -32,11 +32,11 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorkerTest do
       now = ~U[2026-08-12 03:15:00Z]
 
       assert :ok =
-               LessonDecaySweepWorker.perform(%Oban.Job{
+               LessonDecaySweepWorker.perform(%Styx.Job{
                  args: %{"now" => DateTime.to_iso8601(now)}
                })
 
-      assert jobs = Oban.Testing.all_enqueued(repo(), worker: LessonDecayWorker)
+      assert jobs = Styx.Testing.all_enqueued(repo(), worker: LessonDecayWorker)
       assert length(jobs) == 2
       assert Enum.map(jobs, & &1.args["host_id"]) |> Enum.sort() == ["host-a", "host-b"]
       assert Enum.all?(jobs, &(&1.args["now"] == "2026-08-12T03:15:00Z"))
@@ -45,17 +45,17 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorkerTest do
 
   test "rejects malformed and stale continuation cursors" do
     assert {:cancel, :invalid_arguments} =
-             LessonDecaySweepWorker.perform(%Oban.Job{args: %{"cursor" => ["host"]}})
+             LessonDecaySweepWorker.perform(%Styx.Job{args: %{"cursor" => ["host"]}})
 
     assert {:cancel, :invalid_arguments} =
-             LessonDecaySweepWorker.perform(%Oban.Job{args: %{"cursor" => ["", "c", "s", "n"]}})
+             LessonDecaySweepWorker.perform(%Styx.Job{args: %{"cursor" => ["", "c", "s", "n"]}})
   end
 
   test "nightly cron registers the bounded lesson sweep" do
     {_plugin, opts} =
-      Application.fetch_env!(:backplane, Oban)
+      Application.fetch_env!(:backplane, Styx)
       |> Keyword.fetch!(:plugins)
-      |> Enum.find(fn {plugin, _opts} -> plugin == Oban.Plugins.Cron end)
+      |> Enum.find(fn {plugin, _opts} -> plugin == Styx.Cron end)
 
     assert {"15 3 * * *", LessonDecaySweepWorker} in Keyword.fetch!(opts, :crontab)
   end

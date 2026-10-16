@@ -1,6 +1,6 @@
 defmodule Backplane.Memory.Workers.EvictionWorker do
-  @moduledoc "Nightly Oban cron: decay strength and evict weak memories."
-  use Oban.Worker, queue: :memory, max_attempts: 3
+  @moduledoc "Nightly Styx cron: decay strength and evict weak memories."
+  use Styx.Worker, queue: :memory, max_attempts: 3
 
   import Ecto.Query
   alias Backplane.Memory.Audit
@@ -11,14 +11,14 @@ defmodule Backplane.Memory.Workers.EvictionWorker do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{} = job) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{} = job) do
     Backplane.Memory.PipelineTelemetry.span("eviction", job.args, fn ->
       do_perform(job)
     end)
   end
 
-  defp do_perform(%Oban.Job{args: args}) do
+  defp do_perform(%Styx.Job{args: args}) do
     decay_period = parse_setting("memory.decay_period_days", 30)
     threshold = parse_float_setting("memory.eviction_threshold", 0.1)
     now = DateTime.utc_now()

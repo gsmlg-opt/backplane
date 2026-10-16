@@ -1,21 +1,21 @@
 defmodule Backplane.Jobs.UsageRetention do
   @moduledoc """
-  Oban worker that deletes usage logs older than configured retention days.
+  Styx worker that deletes usage logs older than configured retention days.
   Should be scheduled as a cron job (e.g., daily).
 
   Retention period defaults to 90 days and can be configured via:
       config :backplane, :llm_usage_retention_days, 90
   """
 
-  use Oban.Worker, queue: :llm
+  use Styx.Worker, queue: :llm
 
   import Ecto.Query
 
   alias Backplane.LLM.UsageLog
   alias Backplane.Repo
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{}) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{}) do
     retention_days =
       if settings_available?() do
         Backplane.Observability.Settings.llm_proxy_retention_days()

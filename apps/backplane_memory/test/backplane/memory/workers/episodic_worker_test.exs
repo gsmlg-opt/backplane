@@ -132,7 +132,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     Process.put(:episodic_facts, ["selected fact"])
 
     assert :ok =
-             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => selected.id}})
+             EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => selected.id}})
 
     assert_received {:episodic_input, "selected source"}
     refute_received {:episodic_input, "decoy source"}
@@ -146,7 +146,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   test "traces captured correlation through summary evidence into the automatic remember audit" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = "host-correlation"
       session_id = "session-correlation"
       correlation_id = Ecto.UUID.generate()
@@ -185,7 +185,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
         )
 
       Process.put(:episodic_facts, ["correlated automatic fact"])
-      assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+      assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => summary.id}})
 
       assert [memory] =
                repo().all(from(m in Memory, where: m.content == "correlated automatic fact"))
@@ -207,21 +207,21 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   test "a discarded extraction can be re-enqueued and remains fact-idempotent" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       summary = insert_canonical_summary("host-heal", "session-heal", "healing source")
       Process.put(:episodic_facts, ["healed fact"])
 
       assert {:ok, discarded} = EpisodicWorker.enqueue_summary(summary.id)
       assert discarded.id
 
-      repo().update_all(from(job in Oban.Job, where: job.id == ^discarded.id),
+      repo().update_all(from(job in Styx.Job, where: job.id == ^discarded.id),
         set: [state: "discarded", discarded_at: DateTime.utc_now()]
       )
 
       assert {:ok, replacement} = EpisodicWorker.enqueue_summary(summary.id)
       refute replacement.id == discarded.id
 
-      job = %Oban.Job{args: %{"summary_id" => summary.id}}
+      job = %Styx.Job{args: %{"summary_id" => summary.id}}
       assert :ok = EpisodicWorker.perform(job)
       assert :ok = EpisodicWorker.perform(job)
       assert repo().aggregate(from(m in Memory, where: m.content == "healed fact"), :count) == 1
@@ -236,11 +236,11 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
           %{"session_id" => "legacy", "host_id" => "canonical-ish"},
           %{"session_id" => "legacy", "processing_version" => "summary-v1"}
         ] do
-      assert {:cancel, :invalid_arguments} = EpisodicWorker.perform(%Oban.Job{args: args})
+      assert {:cancel, :invalid_arguments} = EpisodicWorker.perform(%Styx.Job{args: args})
     end
 
     assert {:cancel, :incomplete_partition} =
-             EpisodicWorker.perform(%Oban.Job{args: %{"session_id" => "legacy"}})
+             EpisodicWorker.perform(%Styx.Job{args: %{"session_id" => "legacy"}})
   end
 
   test "incomplete or mismatched summary ownership is durably quarantined" do
@@ -252,7 +252,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     )
 
     assert {:discard, :incomplete_partition} =
-             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => incomplete.id}})
+             EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => incomplete.id}})
 
     assert %BackfillIssue{reason: "incomplete_partition", disposition: "pending"} =
              repo().get_by!(BackfillIssue,
@@ -267,7 +267,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     )
 
     assert {:discard, :partition_mismatch} =
-             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => mismatched.id}})
+             EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => mismatched.id}})
 
     assert %BackfillIssue{reason: "partition_mismatch", disposition: "pending"} =
              repo().get_by!(BackfillIssue,
@@ -330,7 +330,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     :ets.delete(:backplane_settings, "memory.llm_model")
 
     assert {:discard, :incomplete_partition} =
-             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+             EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => summary.id}})
 
     assert %BackfillIssue{reason: "incomplete_partition"} =
              repo().get_by!(BackfillIssue,
@@ -343,7 +343,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     summary = insert_canonical_summary("episodic-state", "session", "content")
     :ets.delete(:backplane_settings, "memory.llm_model")
 
-    assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+    assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => summary.id}})
 
     assert %State{status: "skipped_no_model", last_error: "no_model"} =
              repo().get_by!(State,
@@ -358,7 +358,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     Process.put(:episodic_result, {:error, :llm_unavailable})
 
     assert {:error, :llm_unavailable} =
-             EpisodicWorker.perform(%Oban.Job{
+             EpisodicWorker.perform(%Styx.Job{
                args: %{"summary_id" => summary.id},
                attempt: 1,
                max_attempts: 3
@@ -368,7 +368,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
              repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
 
     assert {:error, :llm_unavailable} =
-             EpisodicWorker.perform(%Oban.Job{
+             EpisodicWorker.perform(%Styx.Job{
                args: %{"summary_id" => summary.id},
                attempt: 3,
                max_attempts: 3
@@ -387,7 +387,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     )
 
     assert {:discard, :stale_input_revision} =
-             EpisodicWorker.perform(%Oban.Job{
+             EpisodicWorker.perform(%Styx.Job{
                args: %{"summary_id" => summary.id},
                attempt: 3,
                max_attempts: 3
@@ -432,7 +432,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
     worker_task =
       Task.async(fn ->
-        EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+        EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => summary.id}})
       end)
 
     Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), worker_task.pid)
@@ -452,7 +452,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
     old_task =
       Task.async(fn ->
-        EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => old.id}})
+        EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => old.id}})
       end)
 
     Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), old_task.pid)
@@ -463,7 +463,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
     new_task =
       Task.async(fn ->
-        EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => newer.id}})
+        EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => newer.id}})
       end)
 
     Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), new_task.pid)
@@ -490,7 +490,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     new = replace_canonical_summary(old, "new content")
     Process.put(:episodic_facts, [])
 
-    assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => new.id}})
+    assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => new.id}})
 
     assert %State{status: "complete", input_revision: revision} =
              repo().get_by!(State, projector: "episodic", subject_id: new.subject_id)
@@ -498,7 +498,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     assert revision == new.input_revision
 
     assert {:discard, :stale_input_revision} =
-             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => old.id}})
+             EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => old.id}})
 
     assert %State{status: "complete", input_revision: ^revision} =
              repo().get_by!(State, projector: "episodic", subject_id: new.subject_id)
@@ -509,7 +509,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     Process.put(:episodic_result, {:raise, "episodic exploded"})
 
     assert_raise RuntimeError, "episodic exploded", fn ->
-      EpisodicWorker.perform(%Oban.Job{
+      EpisodicWorker.perform(%Styx.Job{
         args: %{"summary_id" => summary.id},
         attempt: 3,
         max_attempts: 3
@@ -525,7 +525,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     repo().delete_all(from(s in ProjectedSession, where: s.subject_id == ^summary.subject_id))
 
     assert {:discard, :incomplete_partition} =
-             EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+             EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => summary.id}})
 
     assert %BackfillIssue{reason: "incomplete_partition"} =
              repo().get_by!(BackfillIssue,
@@ -639,7 +639,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
   defp perform(session_id),
     do:
-      EpisodicWorker.perform(%Oban.Job{
+      EpisodicWorker.perform(%Styx.Job{
         args: %{"summary_id" => repo().get_by!(Summary, session_id: session_id).id}
       })
 
@@ -667,7 +667,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   defp summary_job(host_id, session_id, input_revision) do
     session = repo().get!(ProjectedSession, Source.subject_id!(host_id, session_id))
 
-    %Oban.Job{
+    %Styx.Job{
       args: %{
         "memory_space_id" => session.memory_space_id,
         "host_id" => host_id,

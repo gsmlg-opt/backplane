@@ -31,7 +31,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
   end
 
   test "new evidence revisions enqueue while exact idempotent request retries do not" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       assert {:ok, memory} =
                remember("classifier enqueue",
                  idempotency_scope: "classifier-enqueue",
@@ -51,7 +51,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
                )
 
       assert [first_job, second_job] =
-               Oban.Testing.all_enqueued(repo(), worker: RelationClassifierWorker)
+               Styx.Testing.all_enqueued(repo(), worker: RelationClassifierWorker)
 
       assert first_job.args["memory_id"] == memory.id
       assert second_job.args["memory_id"] == memory.id
@@ -107,7 +107,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
   end
 
   test "only newly inserted semantic and procedural memories enqueue classification" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       memories =
         for type <- ~w(working episodic semantic procedural), into: %{} do
           assert {:ok, memory} =
@@ -116,7 +116,7 @@ defmodule Backplane.Memory.Memories.RelationClassifierEnqueueTest do
           {type, memory}
         end
 
-      jobs = Oban.Testing.all_enqueued(repo(), worker: RelationClassifierWorker)
+      jobs = Styx.Testing.all_enqueued(repo(), worker: RelationClassifierWorker)
 
       assert MapSet.new(Enum.map(jobs, & &1.args["memory_id"])) ==
                MapSet.new([memories["semantic"].id, memories["procedural"].id])

@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.LessonCandidateWorker do
   @moduledoc "Extracts one bounded lesson candidate from a durable projected event."
 
-  use Oban.Worker,
+  use Styx.Worker,
     queue: :memory_lessons,
     max_attempts: 3,
     unique: [period: :infinity, states: :all, keys: [:event_id, :processing_version]]
@@ -19,14 +19,14 @@ defmodule Backplane.Memory.Workers.LessonCandidateWorker do
     if Config.lesson_auto_extract?() do
       %{"event_id" => event_id, "processing_version" => @processing_version}
       |> new()
-      |> Oban.insert()
+      |> Styx.insert()
     else
       {:ok, :disabled}
     end
   end
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{
+  @impl Styx.Worker
+  def perform(%Styx.Job{
         args: %{"event_id" => event_id, "processing_version" => @processing_version} = args
       })
       when is_binary(event_id) do
@@ -35,7 +35,7 @@ defmodule Backplane.Memory.Workers.LessonCandidateWorker do
     end)
   end
 
-  def perform(%Oban.Job{args: args}) do
+  def perform(%Styx.Job{args: args}) do
     Backplane.Memory.PipelineTelemetry.span("lesson.candidate", args, fn ->
       {:cancel, :invalid_arguments}
     end)

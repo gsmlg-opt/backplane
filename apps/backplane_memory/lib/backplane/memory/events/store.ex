@@ -599,11 +599,11 @@ defmodule Backplane.Memory.Events.Store do
       frontier = RepairFrontier.advance(repo(), host_id, session_id, revision)
 
       case projection_repair_enqueue(frontier) do
-        {:ok, %Oban.Job{state: state}}
+        {:ok, %Styx.Job{state: state}}
         when state in ["available", "scheduled", "executing", "completed"] ->
           :ok
 
-        {:ok, %Oban.Job{}} ->
+        {:ok, %Styx.Job{}} ->
           {:error, :transaction_rolled_back}
 
         {:error, reason} ->

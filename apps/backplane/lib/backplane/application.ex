@@ -20,7 +20,7 @@ defmodule Backplane.Application do
   def start(_type, _args) do
     validate_config_at_boot()
 
-    children = [{Oban, Application.fetch_env!(:backplane, Oban)}]
+    children = [{Styx, Application.fetch_env!(:backplane, Styx)}]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
 
@@ -46,7 +46,7 @@ defmodule Backplane.Application do
   @impl true
   def prep_stop(state) do
     Logger.info("Shutting down — draining connections (#{@drain_timeout}ms timeout)")
-    Oban.pause_all_queues(Oban)
+    Styx.pause_all_queues(Styx)
     state
   rescue
     e ->

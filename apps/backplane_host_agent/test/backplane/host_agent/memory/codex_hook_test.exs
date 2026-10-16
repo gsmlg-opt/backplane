@@ -77,7 +77,7 @@ defmodule Backplane.HostAgent.Memory.CodexHookTest do
       refute source =~ "Backplane.Repo"
       refute source =~ "Ecto."
       refute source =~ "Backplane.Memory.Service"
-      refute source =~ "Oban"
+      refute source =~ "Styx"
     end
   end
 

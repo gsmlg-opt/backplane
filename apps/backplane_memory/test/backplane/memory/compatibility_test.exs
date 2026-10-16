@@ -81,7 +81,7 @@ defmodule Backplane.Memory.CompatibilityTest do
                  {:tools, 0}
                ])
 
-  @oban_worker_api [
+  @styx_worker_api [
     {:__opts__, 0},
     {:backoff, 1},
     {:new, 1},
@@ -253,7 +253,7 @@ defmodule Backplane.Memory.CompatibilityTest do
 
   test "legacy workers preserve exports, options, and legacy new/1 worker names" do
     for {legacy, current, max_attempts, helpers} <- @worker_contracts do
-      expected_functions = Enum.sort(@oban_worker_api ++ helpers)
+      expected_functions = Enum.sort(@styx_worker_api ++ helpers)
       assert functions(legacy) == expected_functions
       assert expected_functions -- functions(current) == []
 
@@ -283,12 +283,12 @@ defmodule Backplane.Memory.CompatibilityTest do
     assert BackplaneMemory.Workers.AccessWritebackWorker.enqueue([]) ==
              Backplane.Memory.Workers.AccessWritebackWorker.enqueue([])
 
-    access_job = %Oban.Job{args: %{"memory_ids" => []}}
+    access_job = %Styx.Job{args: %{"memory_ids" => []}}
 
     assert BackplaneMemory.Workers.AccessWritebackWorker.perform(access_job) ==
              Backplane.Memory.Workers.AccessWritebackWorker.perform(access_job)
 
-    embed_job = %Oban.Job{args: %{"id" => Ecto.UUID.generate()}}
+    embed_job = %Styx.Job{args: %{"id" => Ecto.UUID.generate()}}
     unused_client = fn _texts, _mode, _opts -> flunk("unused embed client was called") end
 
     assert BackplaneMemory.Workers.EmbedWorker.perform_with_client(embed_job, unused_client) ==

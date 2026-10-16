@@ -36,11 +36,11 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
 
   test "default stale threshold plus cron cadence meets the four-hour SLA" do
     :ets.delete(@settings_table, @stale_key)
-    oban_config = Application.fetch_env!(:backplane, Oban)
+    styx_config = Application.fetch_env!(:backplane, Styx)
 
-    {Oban.Plugins.Cron, cron_options} =
-      Enum.find(oban_config[:plugins], fn
-        {Oban.Plugins.Cron, _options} -> true
+    {Styx.Cron, cron_options} =
+      Enum.find(styx_config[:plugins], fn
+        {Styx.Cron, _options} -> true
         _other -> false
       end)
 
@@ -76,10 +76,10 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert audit.metadata["scope"] == abandonment.scope
     assert audit.metadata["namespace"] == abandonment.namespace
 
-    assert [] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
 
     assert {:ok, %{abandoned: 0, enqueued: 1, swept: 1}} = sweep(shift(now, 60))
-    assert [_job] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
 
     assert [%{metadata: summary_metadata}] =
              Audit.list(operation: "session.summary_enqueued")
@@ -92,7 +92,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert summary_metadata["namespace"] == abandonment.namespace
 
     assert {:ok, %{enqueued: 0, swept: 0}} = sweep(shift(now, 61))
-    assert [_job] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
   end
 
   test "threshold is inclusive" do
@@ -129,10 +129,10 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
                session_id: session_id
              )
 
-    assert [] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
     assert {:ok, %{enqueued: 0}} = sweep(shift(now, 59))
     assert {:ok, %{enqueued: 1}} = sweep(shift(now, 60))
-    assert [_job] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
   end
 
   test "an event arriving after candidate selection prevents false abandonment" do
@@ -145,7 +145,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
 
     task =
       Task.async(fn ->
-        Oban.Testing.with_testing_mode(:manual, fn ->
+        Styx.Testing.with_testing_mode(:manual, fn ->
           FallbackSweep.run(now,
             after_candidates: fn candidates ->
               send(owner, {:candidates_selected, candidates})
@@ -214,7 +214,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
                from(event in Event, where: event.event_type == "agent.session.abandoned")
              )
 
-    assert [_, _] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [_, _] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
   end
 
   test "sequence gaps defer only until grace and a late repair gets a new summary revision" do
@@ -225,10 +225,10 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     ingest!(event("host-gap", gapped, 3, "agent.session.ended", shift(now, -30)))
     assert {:ok, %{gaps: [_gap]}} = Rebuild.session("host-gap", gapped)
     assert {:ok, %{enqueued: 0}} = sweep(now)
-    assert [] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
 
     assert {:ok, %{enqueued: 1}} = sweep(shift(now, 30))
-    assert [incomplete_job] = Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [incomplete_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
 
     ingest!(event("host-gap", gapped, 2, "agent.tool.completed", shift(now, -29)))
     assert {:ok, repaired} = Rebuild.session("host-gap", gapped)
@@ -236,7 +236,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert {:ok, %{enqueued: 1}} = sweep(shift(now, 31))
 
     assert [first_job, second_job] =
-             Oban.Testing.all_enqueued(repo(), worker: SummaryWorker)
+             Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
              |> Enum.sort_by(& &1.id)
 
     assert first_job.args["input_revision"] != second_job.args["input_revision"]
@@ -323,7 +323,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
   end
 
   defp sweep(now) do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       FallbackSweep.run(now)
     end)
   end

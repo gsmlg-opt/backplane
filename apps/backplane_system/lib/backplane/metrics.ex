@@ -147,8 +147,8 @@ defmodule Backplane.Metrics do
         [:backplane, :observability, :events, :duplicate],
         [:backplane, :observability, :events, :dropped],
         [:backplane, :observability, :writer, :failure],
-        [:oban, :job, :stop],
-        [:oban, :job, :exception]
+        [:styx, :job, :stop],
+        [:styx, :job, :exception]
       ],
       &handle_event/4,
       nil
@@ -335,20 +335,20 @@ defmodule Backplane.Metrics do
     inc("observability.writer.failures.#{metadata.domain}", measurements[:count] || 1)
   end
 
-  def handle_event([:oban, :job, :stop], measurements, metadata, _config) do
+  def handle_event([:styx, :job, :stop], measurements, metadata, _config) do
     queue = to_string(metadata.queue)
     worker = to_string(metadata.worker)
-    inc("oban_jobs_completed")
-    inc("oban_jobs.#{queue}")
-    inc("oban_workers.#{worker}")
+    inc("styx_jobs_completed")
+    inc("styx_jobs.#{queue}")
+    inc("styx_workers.#{worker}")
     duration_us = System.convert_time_unit(measurements.duration, :native, :microsecond)
-    record_timing("oban_job_duration", duration_us)
+    record_timing("styx_job_duration", duration_us)
   end
 
-  def handle_event([:oban, :job, :exception], _measurements, metadata, _config) do
+  def handle_event([:styx, :job, :exception], _measurements, metadata, _config) do
     queue = to_string(metadata.queue)
-    inc("oban_jobs_failed")
-    inc("oban_jobs_failed.#{queue}")
+    inc("styx_jobs_failed")
+    inc("styx_jobs_failed.#{queue}")
   end
 
   defp native_to_microseconds(duration) when is_integer(duration) and duration >= 0,

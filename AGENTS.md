@@ -47,7 +47,7 @@ Upstreams independently select `2025-11-25`, `2026-07-28`, or `auto`. Strict mod
 
 This is an umbrella project. Key apps include:
 
-- **`apps/backplane`** (`:backplane`) — Core orchestrator: Oban jobs, native/managed tool registration, upstream boot
+- **`apps/backplane`** (`:backplane`) — Core orchestrator: Styx jobs, native/managed tool registration, upstream boot
 - **`apps/backplane_system`** — Shared Repo, migrations, settings, credentials, clients, accounts, registries, and audit
 - **`apps/backplane_auth`** — OAuth/OIDC, resource authentication, and authorization
 - **`apps/backplane_api`** — Public Phoenix endpoint and API controllers; dev port 4220
@@ -132,7 +132,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `BackplaneLlama.Application` owns Relayixir, model resolution, route loading, rate limiting, and conditional LLM writing.
 - `BackplaneSkills.Application` owns the skills registry and agent MCP management supervision.
 - `BackplaneMonitor.Application` owns plan supervision, the monitor TaskSupervisor, and `Backplane.Monitor.ApiUsageServer`.
-- `Backplane.Application` supervises Oban and performs gateway boot reconciliation.
+- `Backplane.Application` supervises Styx and performs gateway boot reconciliation.
 - `Backplane.Api.Application` and `Backplane.Admin.Application` own their separate Phoenix endpoints.
 - `BackplaneTelemetry.Supervisor` owns observability settings and the runtime sink when v2 policy is active.
 
@@ -150,7 +150,7 @@ After its supervisor starts, the gateway registers native hub/admin tools, recon
 Operational policy lives in `system_settings` keys under `observability.*` (LLM/MCP proxy enable+persist, audit, writer tuning). Boot-time app env flags under `:backplane_telemetry` remain for tests and emergency rollback (`:use_legacy_telemetry_logger` forces the deprecated `BackplaneTelemetry.TelemetryLogger`).
 
 - **Runtime sink** — `Backplane.Observability.RuntimeSink` replaces the legacy catch-all logger when v2 is active.
-- **LLM persistence** — `Backplane.LLM.LogWriter` (+ `AccessEvent`); legacy `UsageCollector`/`UsageWriter` Oban path disabled when persist is on.
+- **LLM persistence** — `Backplane.LLM.LogWriter` (+ `AccessEvent`); legacy `UsageCollector`/`UsageWriter` Styx path disabled when persist is on.
 - **MCP persistence** — `Backplane.MCP.LogWriter`, `Backplane.MCP.ToolLogWriter`, `Backplane.Transport.McpObservability`.
 - **Audit** — `Backplane.Audit.Writer` for `tool_call_log` / `skill_load_log` (hash-only arguments).
 - **Admin** — `/system/logs` (records) and `/system/logs/sinks` (writer/buffer health).
@@ -210,12 +210,12 @@ Key admin routes (see `apps/backplane_admin/lib/backplane/admin/router.ex`):
 - **Auth** (`/auth/overview`) — OAuth providers/clients, RBAC, and authentication audit
 - **Skills** (`/skills`) — Browse, sources, drafts, metadata, and uploads
 - **Memory** (`/memory`) — Spaces, observations, replay, summaries, and crystals
-- **Logs** (`/system/logs`) — LLM/MCP access records, audit trails, Oban job history; `/system/logs/sinks` shows Observability v2 writer/buffer health
+- **Logs** (`/system/logs`) — LLM/MCP access records, audit trails, Styx job history; `/system/logs/sinks` shows Observability v2 writer/buffer health
 - **Settings** (`/system/credentials`) — System settings editor, credentials vault, managed service toggles
 
 ### Key Dependencies
 
-Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Oban (jobs), toml (config), file_system (filesystem watching).
+Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Styx (jobs), toml (config), file_system (filesystem watching).
 
 ## UI Library
 

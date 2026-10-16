@@ -1,13 +1,13 @@
 defmodule Backplane.Memory.Workers.LessonDecayWorker do
   @moduledoc "Thin durable scheduler boundary for exact-partition lesson decay."
 
-  use Oban.Worker, queue: :memory_lessons, max_attempts: 3
+  use Styx.Worker, queue: :memory_lessons, max_attempts: 3
 
   alias Backplane.Memory.Lessons
 
-  @impl Oban.Worker
+  @impl Styx.Worker
   def perform(
-        %Oban.Job{
+        %Styx.Job{
           args: %{
             "host_id" => host_id,
             "client_id" => client_id,
@@ -41,12 +41,12 @@ defmodule Backplane.Memory.Workers.LessonDecayWorker do
     |> Map.new(fn {key, value} -> {to_string(key), value} end)
     |> Map.put("now", DateTime.to_iso8601(now))
     |> new()
-    |> Oban.insert()
+    |> Styx.insert()
   end
 
   defp maybe_continue(%{decayed: 100}, partition, now) do
     case enqueue(partition, now) do
-      {:ok, %Oban.Job{}} -> :ok
+      {:ok, %Styx.Job{}} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end

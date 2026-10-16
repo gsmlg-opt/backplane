@@ -203,7 +203,7 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
 
   defp enqueue_summary(session) do
     case SummaryWorker.enqueue(session.host_id, session.session_id, session.input_revision) do
-      {:ok, %Oban.Job{state: state}} when state in ["available", "scheduled"] ->
+      {:ok, %Styx.Job{state: state}} when state in ["available", "scheduled"] ->
         Audit.log(
           "session.summary_enqueued",
           "system:fallback_sweep",
@@ -225,10 +225,10 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
 
         :enqueued
 
-      {:ok, %Oban.Job{conflict?: true}} ->
+      {:ok, %Styx.Job{conflict?: true}} ->
         :skipped
 
-      {:ok, %Oban.Job{} = job} ->
+      {:ok, %Styx.Job{} = job} ->
         repo().rollback({:summary_job_not_durable, job.state})
 
       {:error, reason} ->
@@ -261,14 +261,14 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
 end
 
 defmodule Backplane.Memory.Workers.FallbackSweepWorker do
-  @moduledoc "Oban entry point for bounded canonical stale-session closure and processing."
+  @moduledoc "Styx entry point for bounded canonical stale-session closure and processing."
 
-  use Oban.Worker, queue: :memory, max_attempts: 2
+  use Styx.Worker, queue: :memory, max_attempts: 2
 
   alias Backplane.Memory.Sessions.FallbackSweep
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{} = job) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{} = job) do
     Backplane.Memory.PipelineTelemetry.span("fallback.sweep", job.args, fn ->
       FallbackSweep.run()
     end)

@@ -51,7 +51,7 @@ defmodule Backplane.Memory.Workers.PipelineTelemetryTest do
     ]
 
     Enum.each(jobs, fn {worker, stage, args} ->
-      _result = worker.perform(%Oban.Job{args: args})
+      _result = worker.perform(%Styx.Job{args: args})
 
       assert_receive {@event, %{count: 1, duration_us: duration_us}, metadata}
       assert duration_us >= 0

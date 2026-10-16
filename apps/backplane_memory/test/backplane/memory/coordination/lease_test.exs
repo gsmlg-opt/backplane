@@ -57,7 +57,7 @@ defmodule Backplane.Memory.Coordination.LeaseTest do
       action_id = action_id()
       {:ok, lease_id} = Lease.acquire(action_id, "agent-1", -1, @partition)
 
-      assert {:ok, %{deleted: 1}} = LeaseCleanupWorker.perform(%Oban.Job{})
+      assert {:ok, %{deleted: 1}} = LeaseCleanupWorker.perform(%Styx.Job{})
 
       assert [%{operation: "coordination.lease.cleanup", target_ids: [^lease_id]}] =
                Audit.list(operation: "coordination.lease.cleanup")
@@ -69,7 +69,7 @@ defmodule Backplane.Memory.Coordination.LeaseTest do
 
       results =
         1..2
-        |> Task.async_stream(fn _ -> LeaseCleanupWorker.perform(%Oban.Job{}) end,
+        |> Task.async_stream(fn _ -> LeaseCleanupWorker.perform(%Styx.Job{}) end,
           max_concurrency: 2,
           timeout: 5_000
         )

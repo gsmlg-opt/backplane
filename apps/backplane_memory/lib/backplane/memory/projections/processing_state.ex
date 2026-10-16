@@ -12,11 +12,11 @@ defmodule Backplane.Memory.Projections.ProcessingState do
   def terminal?(status) when status in @terminal, do: true
   def terminal?(_status), do: false
 
-  def failure_status(%Oban.Job{attempt: attempt, max_attempts: max_attempts})
+  def failure_status(%Styx.Job{attempt: attempt, max_attempts: max_attempts})
       when is_integer(attempt) and is_integer(max_attempts) and attempt >= max_attempts,
       do: "dead_letter"
 
-  def failure_status(%Oban.Job{}), do: "failed"
+  def failure_status(%Styx.Job{}), do: "failed"
 
   def skipped_status(reason) do
     case normalize_reason(reason) |> String.downcase() do

@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   @moduledoc "Durably repairs one captured-session projection from a canonical event identity."
 
-  use Oban.Worker,
+  use Styx.Worker,
     queue: :memory,
     max_attempts: 5
 
@@ -13,8 +13,8 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   alias Backplane.Memory.Projections.{Rebuild, RepairFrontier, Source}
   alias Backplane.Memory.Workers.{LessonCandidateWorker, SummaryWorker}
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{} = job) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{} = job) do
     Backplane.Memory.PipelineTelemetry.span("projection.repair", job.args, fn ->
       rebuild =
         if host_session_args?(job.args),
@@ -31,20 +31,20 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   end
 
   @doc false
-  def perform(%Oban.Job{args: %{"event_id" => event_id}}, rebuild)
+  def perform(%Styx.Job{args: %{"event_id" => event_id}}, rebuild)
       when is_binary(event_id) and is_function(rebuild, 2) do
     perform(
-      %Oban.Job{args: %{"event_id" => event_id}},
+      %Styx.Job{args: %{"event_id" => event_id}},
       rebuild,
       &SummaryWorker.enqueue/3
     )
   end
 
-  def perform(%Oban.Job{}, _rebuild), do: {:cancel, :invalid_arguments}
+  def perform(%Styx.Job{}, _rebuild), do: {:cancel, :invalid_arguments}
 
   @doc false
   def perform(
-        %Oban.Job{
+        %Styx.Job{
           args: %{
             "event_id" => legacy_event_id,
             "host_id" => host_id,
@@ -57,13 +57,13 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
       when is_binary(legacy_event_id) and is_binary(host_id) and is_binary(session_id) and
              is_function(rebuild, 2) and is_function(enqueue_summary, 3) do
     perform(
-      %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}},
+      %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}},
       rebuild,
       enqueue_summary
     )
   end
 
-  def perform(%Oban.Job{args: %{"event_id" => event_id}}, rebuild, enqueue_summary)
+  def perform(%Styx.Job{args: %{"event_id" => event_id}}, rebuild, enqueue_summary)
       when is_binary(event_id) and is_function(rebuild, 2) and is_function(enqueue_summary, 3) do
     case Ecto.UUID.cast(event_id) do
       {:ok, event_id} -> load_and_repair(event_id, rebuild, enqueue_summary)
@@ -72,7 +72,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   end
 
   def perform(
-        %Oban.Job{args: %{"host_id" => host_id, "session_id" => session_id}},
+        %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}},
         rebuild,
         enqueue_summary
       )
@@ -85,12 +85,12 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
     end
   end
 
-  def perform(%Oban.Job{}, _rebuild, _enqueue_summary), do: {:cancel, :invalid_arguments}
+  def perform(%Styx.Job{}, _rebuild, _enqueue_summary), do: {:cancel, :invalid_arguments}
 
   def enqueue(event_id) when is_binary(event_id) do
     %{event_id: event_id}
     |> new()
-    |> Oban.insert()
+    |> Styx.insert()
   end
 
   def enqueue(host_id, session_id) when is_binary(host_id) and is_binary(session_id) do
@@ -102,7 +102,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
         keys: [:host_id, :session_id]
       ]
     )
-    |> Oban.insert()
+    |> Styx.insert()
   end
 
   defp repair_frontier(host_id, session_id, rebuild, enqueue_summary) do
@@ -190,14 +190,14 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
 
   defp ensure_successor(frontier) do
     case enqueue(frontier.host_id, frontier.session_id) do
-      {:ok, %Oban.Job{state: state}}
+      {:ok, %Styx.Job{state: state}}
       when state in ["available", "scheduled", "retryable", "suspended"] ->
         {:ok, :successor_scheduled}
 
-      {:ok, %Oban.Job{conflict?: true}} ->
+      {:ok, %Styx.Job{conflict?: true}} ->
         {:ok, :successor_scheduled}
 
-      {:ok, %Oban.Job{} = job} ->
+      {:ok, %Styx.Job{} = job} ->
         repo().rollback({:successor_job_not_durable, job.state})
 
       {:error, reason} ->
@@ -255,9 +255,9 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   defp maybe_enqueue_summary(event, result, enqueue_summary) do
     if summary_eligible?(result) do
       case enqueue_summary.(event.host_id, event.session_id, result.input_revision) do
-        {:ok, %Oban.Job{state: state}} when state in ["available", "scheduled"] -> :ok
-        {:ok, %Oban.Job{conflict?: true}} -> :ok
-        {:ok, %Oban.Job{} = job} -> {:error, {:summary_job_not_durable, job.state}}
+        {:ok, %Styx.Job{state: state}} when state in ["available", "scheduled"] -> :ok
+        {:ok, %Styx.Job{conflict?: true}} -> :ok
+        {:ok, %Styx.Job{} = job} -> {:error, {:summary_job_not_durable, job.state}}
         {:error, reason} -> {:error, reason}
         other -> {:error, {:unexpected_summary_enqueue_result, other}}
       end
@@ -316,7 +316,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
 
   defp host_session_args?(_args), do: false
 
-  defp maybe_enqueue_legacy_lesson_candidate(%Oban.Job{args: %{"event_id" => event_id}}) do
+  defp maybe_enqueue_legacy_lesson_candidate(%Styx.Job{args: %{"event_id" => event_id}}) do
     enqueue_lesson_candidate(event_id)
   end
 
@@ -346,9 +346,9 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
 
     case result do
       {:ok, :disabled} -> :ok
-      {:ok, %Oban.Job{state: state}} when state in ["available", "scheduled"] -> :ok
-      {:ok, %Oban.Job{conflict?: true}} -> :ok
-      {:ok, %Oban.Job{} = job} -> {:error, {:lesson_candidate_job_not_durable, job.state}}
+      {:ok, %Styx.Job{state: state}} when state in ["available", "scheduled"] -> :ok
+      {:ok, %Styx.Job{conflict?: true}} -> :ok
+      {:ok, %Styx.Job{} = job} -> {:error, {:lesson_candidate_job_not_durable, job.state}}
       {:error, reason} -> {:error, reason}
     end
   end

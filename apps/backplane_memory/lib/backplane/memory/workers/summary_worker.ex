@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.SummaryWorker do
   @moduledoc "Builds deterministic, revisioned summaries from canonical projections."
 
-  use Oban.Worker,
+  use Styx.Worker,
     queue: :memory,
     max_attempts: 3,
     unique: [
@@ -24,9 +24,9 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @impl Oban.Worker
+  @impl Styx.Worker
   def perform(
-        %Oban.Job{
+        %Styx.Job{
           args:
             %{
               "host_id" => host_id,
@@ -52,14 +52,14 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     end)
   end
 
-  def perform(%Oban.Job{args: %{"session_id" => session_id} = args})
+  def perform(%Styx.Job{args: %{"session_id" => session_id} = args})
       when is_binary(session_id) and map_size(args) == 1 do
     Backplane.Memory.PipelineTelemetry.span("summary.legacy", args, fn ->
       perform_legacy(session_id)
     end)
   end
 
-  def perform(%Oban.Job{args: args}) do
+  def perform(%Styx.Job{args: args}) do
     Backplane.Memory.PipelineTelemetry.span("summary", args, fn ->
       {:cancel, :invalid_arguments}
     end)
@@ -69,7 +69,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
   def enqueue(session_id) when is_binary(session_id) do
     %{session_id: session_id}
     |> new(unique: [period: :infinity, states: :all, keys: [:session_id]])
-    |> Oban.insert()
+    |> Styx.insert()
   end
 
   @doc "Enqueues a canonical summary revision."
@@ -103,7 +103,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
                input_revision: input_revision
              }
              |> new()
-             |> Oban.insert()
+             |> Styx.insert()
              |> case do
                {:ok, job} -> job
                {:error, reason} -> repo().rollback(reason)
@@ -441,7 +441,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
           input_revision,
           reason,
           partition,
-          %Oban.Job{}
+          %Styx.Job{}
         )
 
       {:error, _reason} ->

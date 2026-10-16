@@ -658,7 +658,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
         )
 
       assert :ok =
-               OAuthTokenRefreshWorker.perform(%Oban.Job{
+               OAuthTokenRefreshWorker.perform(%Styx.Job{
                  args: %{
                    "credential_name" => "oai-worker-refresh",
                    "refresh_interval_ms" => 7 * 24 * 60 * 60 * 1000
@@ -699,7 +699,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       {:ok, _} = Credentials.import_cli_auth("ant-worker-due", claude_due_json)
       {:ok, _} = Credentials.import_cli_auth("ant-worker-fresh", claude_fresh_json)
 
-      assert :ok = OAuthTokenRefreshWorker.perform(%Oban.Job{args: %{}})
+      assert :ok = OAuthTokenRefreshWorker.perform(%Styx.Job{args: %{}})
 
       due = decrypt_credential_json("ant-worker-due")
       fresh = decrypt_credential_json("ant-worker-fresh")

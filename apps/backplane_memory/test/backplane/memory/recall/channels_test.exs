@@ -447,7 +447,7 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
       |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
       |> Map.put("session_id", session_id)
 
-    assert {:ok, %{nodes_extracted: 1}} = GraphExtractWorker.perform(%Oban.Job{args: args})
+    assert {:ok, %{nodes_extracted: 1}} = GraphExtractWorker.perform(%Styx.Job{args: args})
 
     assert {:ok, plan} =
              QueryPlan.new(

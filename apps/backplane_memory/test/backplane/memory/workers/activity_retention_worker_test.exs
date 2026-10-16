@@ -1,19 +1,19 @@
 defmodule Backplane.Memory.Workers.ActivityRetentionWorkerTest do
   use Backplane.Memory.DataCase, async: false
-  use Oban.Testing, repo: Backplane.Repo
+  use Styx.Testing, repo: Backplane.Repo
 
   alias Backplane.Memory.Audit
   alias Backplane.Memory.Projections.{ActivityContribution, ActivityDaily}
   alias Backplane.Memory.Workers.ActivityRetentionWorker
 
   test "purges only expired aggregate rows in bounded batches and audits the result" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       insert_pair!("expired-a", ~D[2024-08-01])
       insert_pair!("expired-b", ~D[2024-08-02])
       insert_pair!("retained", ~D[2026-08-01])
 
       assert {:ok, %{contributions_deleted: 1, daily_deleted: 1, continued: true}} =
-               ActivityRetentionWorker.perform(%Oban.Job{
+               ActivityRetentionWorker.perform(%Styx.Job{
                  args: %{"today" => "2026-08-12", "batch_size" => 1}
                })
 
@@ -48,9 +48,9 @@ defmodule Backplane.Memory.Workers.ActivityRetentionWorkerTest do
 
   test "nightly cron registers the bounded activity retention purge" do
     {_plugin, opts} =
-      Application.fetch_env!(:backplane, Oban)
+      Application.fetch_env!(:backplane, Styx)
       |> Keyword.fetch!(:plugins)
-      |> Enum.find(fn {plugin, _opts} -> plugin == Oban.Plugins.Cron end)
+      |> Enum.find(fn {plugin, _opts} -> plugin == Styx.Cron end)
 
     assert {"45 3 * * *", ActivityRetentionWorker} in Keyword.fetch!(opts, :crontab)
   end

@@ -30,7 +30,7 @@ defmodule Backplane.Memory.Qualification.PerformanceTest do
     assert measurement.projection_requested_generations == 20
     assert measurement.projection_jobs_durable == 20
     assert measurement.projection_job_subjects_unique == 20
-    assert measurement.measured_path =~ "Oban projection job commit"
+    assert measurement.measured_path =~ "Styx projection job commit"
   end
 
   test "deterministic observation, session, activity, and replay projections stay below 10s p95" do
@@ -46,7 +46,7 @@ defmodule Backplane.Memory.Qualification.PerformanceTest do
     assert measurement.complete_subjects == 100
     assert measurement.p95_lag_ms < 10_000
     assert measurement.worker == "Backplane.Memory.Workers.ProjectionRepairWorker"
-    assert measurement.queue_execution =~ "Oban manual drain"
+    assert measurement.queue_execution =~ "Styx manual drain"
   end
 
   test "at least 95 percent of eligible closed sessions are summarized within four hours" do

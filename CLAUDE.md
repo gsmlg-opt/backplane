@@ -49,7 +49,7 @@ This is an umbrella project. Config lives at the umbrella root (`config/`). Core
 - **`apps/backplane_skills`** (`:backplane_skills`) — Skill storage, search, sync, and host management; exposed through the `skill::*` managed service adapter in `backplane_mcp`.
 - **`apps/backplane_monitor`** (`:backplane_monitor`) — Subscription plan monitoring (z.ai, MiniMax, etc.), per-plan GenServer polling.
 - **`apps/backplane_telemetry`** (`:backplane_telemetry`) — Unified telemetry logger for LLM requests and MCP tool calls.
-- **`apps/backplane`** (`:backplane`) — Top-level application: orchestrates Oban jobs, registers native/managed tools at boot, starts configured upstreams, seeds client cache.
+- **`apps/backplane`** (`:backplane`) — Top-level application: orchestrates Styx jobs, registers native/managed tools at boot, starts configured upstreams, seeds client cache.
 - **`apps/backplane_web`** (`:backplane_web`) — Phoenix admin UI: LiveViews, components, assets.
 - **`apps/backplane_host_agent`** (`:backplane_host_agent`) — Standalone host agent runner that connects back to Backplane over Phoenix channels to sync skills and execute tasks.
 
@@ -177,7 +177,7 @@ BackplaneMonitor.Supervisor (apps/backplane_monitor)
 └── Backplane.Monitor.PlanSupervisor
 
 Backplane.Supervisor (apps/backplane) — top-level orchestrator
-└── Oban (background jobs: UsageWriter, UsageRetention)
+└── Styx (background jobs: UsageWriter, UsageRetention)
 
 BackplaneWeb.Application (apps/backplane_web)
 └── BackplaneWeb.Endpoint (Bandit HTTP server)
@@ -267,11 +267,11 @@ The admin UI is organized into five sections under `/admin`:
 - **MCP** (`/admin/mcp/*`) — Upstream servers, managed services, managed service settings, tool detail, MCP inspector, agent MCP servers
 - **Memory** (`/admin/memory/*`) — Overview, observations, sessions, knowledge graph, actions, audit, config, browse, stats
 - **Skills** (`/admin/skills/*`) — Browse, metadata, upstream sources, drafts, uploads
-- **System** (`/admin/system/*`) — Clients, logs (LLM/MCP access + audit + Oban), observability sinks health, monitor plans, credentials vault, host agents, OAuth callbacks
+- **System** (`/admin/system/*`) — Clients, logs (LLM/MCP access + audit + Styx), observability sinks health, monitor plans, credentials vault, host agents, OAuth callbacks
 
 ### Key Dependencies
 
-Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Oban (jobs), toml (config), file_system (filesystem watching).
+Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Styx (jobs), toml (config), file_system (filesystem watching).
 
 ## UI Library
 

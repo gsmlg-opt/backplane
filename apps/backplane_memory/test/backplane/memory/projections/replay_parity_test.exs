@@ -17,7 +17,7 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
   end
 
   test "shuffled canonical event replay converges to the ordered session and timeline" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       ordered_host = unique("ordered-host")
       ordered_session = unique("ordered-session")
       shuffled_host = unique("shuffled-host")
@@ -29,7 +29,7 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       ingest_all!(ordered_events)
       ordered_raw_before = raw_events(ordered_host, ordered_session)
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
       assert raw_events(ordered_host, ordered_session) == ordered_raw_before
 
       shuffled_prefix = events_at(shuffled_events, [1, 4, 6])
@@ -37,7 +37,7 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       shuffled_prefix_raw_before = raw_events(shuffled_host, shuffled_session)
 
       # One coalesced repair plus the expired-gap summary.
-      assert %{success: 2, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 2, failure: 0} = Styx.drain_queue(queue: :memory)
       assert raw_events(shuffled_host, shuffled_session) == shuffled_prefix_raw_before
 
       shuffled_subject = Source.subject_id!(shuffled_host, shuffled_session)
@@ -54,7 +54,7 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       shuffled_raw_before = raw_events(shuffled_host, shuffled_session)
 
       # One coalesced repair, the superseding summary, and the prior episodic successor.
-      assert %{success: 3, failure: 0} = Oban.drain_queue(queue: :memory)
+      assert %{success: 3, failure: 0} = Styx.drain_queue(queue: :memory)
       assert raw_events(shuffled_host, shuffled_session) == shuffled_raw_before
 
       ordered_subject = Source.subject_id!(ordered_host, ordered_session)

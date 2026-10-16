@@ -59,7 +59,7 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
       |> repo().insert!()
 
     repo().update_all(
-      from(job in "oban_jobs", where: job.id == ^failed_job.id),
+      from(job in "styx_jobs", where: job.id == ^failed_job.id),
       set: [state: "discarded", attempted_at: now, errors: [%{"error" => "graph failed"}]]
     )
 
@@ -147,7 +147,7 @@ defmodule Backplane.Memory.Operations.DashboardMetricsTest do
           "memory_recall_candidates",
           "memory_recall_runs",
           "bpm_projection_states",
-          "oban_jobs",
+          "styx_jobs",
           "llm_logs"
         ] do
       repo().query!("DELETE FROM #{table}")

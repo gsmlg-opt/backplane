@@ -1,12 +1,12 @@
 defmodule Backplane.Memory.Workers.EdgeSyncRetentionWorker do
   @moduledoc "Scheduled bounded retention for recoverable host edge synchronization state."
 
-  use Oban.Worker, queue: :memory, max_attempts: 3
+  use Styx.Worker, queue: :memory, max_attempts: 3
 
   alias Backplane.Memory.EdgeSync.Retention
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{args: args}) when is_map(args) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{args: args}) when is_map(args) do
     opts = [
       max_changes_per_partition: positive(args["max_changes_per_partition"], 10_000),
       max_snapshots_per_partition: positive(args["max_snapshots_per_partition"], 2),
@@ -22,7 +22,7 @@ defmodule Backplane.Memory.Workers.EdgeSyncRetentionWorker do
   end
 
   defp schedule_continuation(%{continued: true}, args) do
-    case args |> __MODULE__.new() |> Oban.insert() do
+    case args |> __MODULE__.new() |> Styx.insert() do
       {:ok, _job} -> :ok
       {:error, reason} -> {:error, reason}
     end

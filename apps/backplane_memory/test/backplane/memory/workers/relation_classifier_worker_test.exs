@@ -51,7 +51,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
 
     assert opts[:queue] == :memory_relation_classifier
     assert opts[:max_attempts] == 3
-    assert Application.fetch_env!(:backplane, Oban)[:queues][:memory_relation_classifier] == 1
+    assert Application.fetch_env!(:backplane, Styx)[:queues][:memory_relation_classifier] == 1
     assert opts[:unique][:period] == :infinity
     assert opts[:unique][:states] == :incomplete
 
@@ -63,7 +63,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
   end
 
   test "a disabled completed revision can be enqueued again after re-enable" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       {:ok, memory} =
         remember("re-enable classifier")
 
@@ -106,7 +106,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
     assert :ok = perform(memory.id)
   end
 
-  test "transient model failures return an error for Oban retry" do
+  test "transient model failures return an error for Styx retry" do
     {_first, second} = ambiguous_pair()
     Application.put_env(:backplane_memory, :llm_module, ScriptedLLM)
     Process.put(:classifier_result, {:error, :provider_down})
@@ -126,7 +126,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorkerTest do
   end
 
   defp perform(memory_id) do
-    RelationClassifierWorker.perform(%Oban.Job{
+    RelationClassifierWorker.perform(%Styx.Job{
       args: %{
         "memory_id" => memory_id,
         "processing_version" => RelationClassifierWorker.processing_version(),

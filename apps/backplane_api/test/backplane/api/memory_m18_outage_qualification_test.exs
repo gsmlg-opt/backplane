@@ -135,7 +135,7 @@ defmodule Backplane.Api.MemoryM18OutageQualificationTest do
     assert length(persisted) == @event_count
 
     for event <- persisted do
-      assert :ok = ProjectionRepairWorker.perform(%Oban.Job{args: %{"event_id" => event.id}})
+      assert :ok = ProjectionRepairWorker.perform(%Styx.Job{args: %{"event_id" => event.id}})
     end
 
     projected_sessions =
@@ -211,7 +211,7 @@ defmodule Backplane.Api.MemoryM18OutageQualificationTest do
     assert event.raw_envelope["namespace"] == event.namespace
     assert Repo.aggregate(from(e in Event, where: e.host_id == ^host.id), :count) == 1
 
-    assert :ok = ProjectionRepairWorker.perform(%Oban.Job{args: %{"event_id" => id}})
+    assert :ok = ProjectionRepairWorker.perform(%Styx.Job{args: %{"event_id" => id}})
 
     assert [%ProjectedSession{} = projected] =
              Repo.all(from(session in ProjectedSession, where: session.host_id == ^host.id))

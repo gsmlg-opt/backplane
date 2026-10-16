@@ -37,7 +37,7 @@ defmodule BackplaneSystem.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:bcrypt_elixir, "~> 3.0"},
       {:req, "~> 0.5", override: true},
-      {:oban, "~> 2.18"},
+      {:styx, "~> 0.1.1"},
       {:tzdata, "~> 1.1"},
       {:boruta, "~> 2.3"},
       {:joken, "~> 2.6"},

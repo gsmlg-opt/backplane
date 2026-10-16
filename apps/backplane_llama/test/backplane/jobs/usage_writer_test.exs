@@ -31,7 +31,7 @@ defmodule Backplane.Jobs.UsageWriterTest do
         "stream" => false
       }
 
-      job = %Oban.Job{args: args}
+      job = %Styx.Job{args: args}
       assert :ok = UsageWriter.perform(job)
 
       log = Repo.one(UsageLog)
@@ -45,7 +45,7 @@ defmodule Backplane.Jobs.UsageWriterTest do
 
     test "returns error for missing required fields" do
       args = %{"model" => "claude-3-5-sonnet-20241022"}
-      job = %Oban.Job{args: args}
+      job = %Styx.Job{args: args}
       assert {:error, %Ecto.Changeset{}} = UsageWriter.perform(job)
     end
 
@@ -58,7 +58,7 @@ defmodule Backplane.Jobs.UsageWriterTest do
         "model" => "claude-3-5-sonnet-20241022"
       }
 
-      job = %Oban.Job{args: args}
+      job = %Styx.Job{args: args}
       assert :ok = UsageWriter.perform(job)
 
       log = Repo.one(UsageLog)

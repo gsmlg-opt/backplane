@@ -1,10 +1,10 @@
 defmodule Backplane.Audit.Pruner do
   @moduledoc """
-  Oban cron worker that prunes audit log entries older than the retention period.
+  Styx cron worker that prunes audit log entries older than the retention period.
   Default retention: 180 days via observability settings.
   """
 
-  use Oban.Worker,
+  use Styx.Worker,
     queue: :default,
     unique: [period: 3600]
 
@@ -15,8 +15,8 @@ defmodule Backplane.Audit.Pruner do
   alias Backplane.Audit.{SkillLoadLog, ToolCallLog}
   alias Backplane.Repo
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{}) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{}) do
     if audit_enabled?() do
       retention_days = audit_retention_days()
       cutoff = DateTime.utc_now() |> DateTime.add(-retention_days * 86_400, :second)

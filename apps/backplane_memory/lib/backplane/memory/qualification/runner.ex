@@ -121,11 +121,11 @@ defmodule Backplane.Memory.Qualification.Runner do
 
       results =
         with_projection_repair(fn ->
-          Oban.Testing.with_testing_mode(:manual, fn ->
+          Styx.Testing.with_testing_mode(:manual, fn ->
             batches
             |> Task.async_stream(
               fn batch ->
-                Oban.Testing.with_testing_mode(:manual, fn ->
+                Styx.Testing.with_testing_mode(:manual, fn ->
                   Ingest.ingest_batch(auth, %{
                     "batch_id" => Ecto.UUID.generate(),
                     "host_id" => host_id,
@@ -186,7 +186,7 @@ defmodule Backplane.Memory.Qualification.Runner do
          projection_jobs_durable: length(projection_jobs),
          projection_job_subjects_unique: projection_job_subjects |> MapSet.new() |> MapSet.size(),
          measured_path:
-           "Ingest.ingest_batch -> Events.Store.append_batch_tagged -> Oban projection job commit"
+           "Ingest.ingest_batch -> Events.Store.append_batch_tagged -> Styx projection job commit"
        }}
     end
   end
@@ -224,7 +224,7 @@ defmodule Backplane.Memory.Qualification.Runner do
       {ingest_result, acknowledged_at} =
         with_projection_repair(fn ->
           result =
-            Oban.Testing.with_testing_mode(:manual, fn ->
+            Styx.Testing.with_testing_mode(:manual, fn ->
               Ingest.ingest_batch(auth, %{
                 "batch_id" => Ecto.UUID.generate(),
                 "host_id" => host_id,
@@ -243,7 +243,7 @@ defmodule Backplane.Memory.Qualification.Runner do
 
         with true <- length(jobs) == sample_count,
              {:ok, lags, complete_subjects, projectors, jobs_completed} <-
-               Oban.Testing.with_testing_mode(:manual, fn ->
+               Styx.Testing.with_testing_mode(:manual, fn ->
                  execute_projection_jobs(jobs, event_by_subject, acknowledged_at)
                end) do
           lag_values = Enum.map(lags, & &1.lag_ms)
@@ -258,7 +258,7 @@ defmodule Backplane.Memory.Qualification.Runner do
              p95_lag_ms: percentile(lag_values, 95),
              max_lag_ms: Enum.max(lag_values),
              worker: inspect(ProjectionRepairWorker),
-             queue_execution: "Oban manual drain through production worker",
+             queue_execution: "Styx manual drain through production worker",
              measurement:
                "ingest acknowledgement to ProjectionRepairWorker job and projection-state completion"
            }}
@@ -316,7 +316,7 @@ defmodule Backplane.Memory.Qualification.Runner do
           {:ok, projection} = Rebuild.session(host_id, session_id)
 
           :ok =
-            SummaryWorker.perform(%Oban.Job{
+            SummaryWorker.perform(%Styx.Job{
               args: %{
                 "memory_space_id" => projection.memory_space_id,
                 "host_id" => host_id,
@@ -554,8 +554,8 @@ defmodule Backplane.Memory.Qualification.Runner do
                                                               {:ok, lags, complete, projectors,
                                                                completed} ->
       event = Map.fetch!(event_by_subject, job_subject(job))
-      drain = Oban.drain_queue(queue: :memory, with_limit: 1)
-      stored_job = repo().get!(Oban.Job, job.id)
+      drain = Styx.drain_queue(queue: :memory, with_limit: 1)
+      stored_job = repo().get!(Styx.Job, job.id)
       states = projection_states(event["host_id"], event["session_id"])
 
       if drain.success == 1 and drain.failure == 0 and stored_job.state == "completed" and
@@ -593,7 +593,7 @@ defmodule Backplane.Memory.Qualification.Runner do
     subjects = MapSet.new(subjects)
 
     repo()
-    |> Oban.Testing.all_enqueued(worker: ProjectionRepairWorker)
+    |> Styx.Testing.all_enqueued(worker: ProjectionRepairWorker)
     |> Enum.filter(&MapSet.member?(subjects, job_subject(&1)))
     |> Enum.sort_by(& &1.id)
   end
@@ -614,13 +614,13 @@ defmodule Backplane.Memory.Qualification.Runner do
     |> MapSet.new()
   end
 
-  defp job_subject(%Oban.Job{args: args}), do: {args["host_id"], args["session_id"]}
+  defp job_subject(%Styx.Job{args: args}), do: {args["host_id"], args["session_id"]}
 
   defp cleanup_projection_jobs([]), do: :ok
 
   defp cleanup_projection_jobs(jobs) do
     job_ids = Enum.map(jobs, & &1.id)
-    repo().delete_all(from(job in Oban.Job, where: job.id in ^job_ids))
+    repo().delete_all(from(job in Styx.Job, where: job.id in ^job_ids))
     :ok
   end
 

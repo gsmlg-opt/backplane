@@ -5,7 +5,7 @@ defmodule Backplane.Memory.Workers.EdgeSyncRetentionWorkerTest do
 
   test "scheduled worker runs recoverable bounded retention" do
     assert {:ok, %{changes: changes, snapshots: snapshots, deliveries: deliveries}} =
-             EdgeSyncRetentionWorker.perform(%Oban.Job{args: %{}})
+             EdgeSyncRetentionWorker.perform(%Styx.Job{args: %{}})
 
     assert changes >= 0
     assert snapshots >= 0
@@ -40,11 +40,11 @@ defmodule Backplane.Memory.Workers.EdgeSyncRetentionWorkerTest do
       "max_partitions" => 1
     }
 
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       assert {:ok, %{changes: 1, continued: true}} =
-               EdgeSyncRetentionWorker.perform(%Oban.Job{args: args})
+               EdgeSyncRetentionWorker.perform(%Styx.Job{args: args})
 
-      assert Oban.Testing.assert_enqueued(
+      assert Styx.Testing.assert_enqueued(
                repo: repo(),
                worker: EdgeSyncRetentionWorker,
                args: args
@@ -60,9 +60,9 @@ defmodule Backplane.Memory.Workers.EdgeSyncRetentionWorkerTest do
 
   test "nightly cron registers edge synchronization retention" do
     {_plugin, opts} =
-      Application.fetch_env!(:backplane, Oban)
+      Application.fetch_env!(:backplane, Styx)
       |> Keyword.fetch!(:plugins)
-      |> Enum.find(fn {plugin, _opts} -> plugin == Oban.Plugins.Cron end)
+      |> Enum.find(fn {plugin, _opts} -> plugin == Styx.Cron end)
 
     assert {"15 4 * * *", EdgeSyncRetentionWorker} in Keyword.fetch!(opts, :crontab)
   end

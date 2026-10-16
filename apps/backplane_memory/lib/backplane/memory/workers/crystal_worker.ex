@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.CrystalWorker do
   @moduledoc "Builds one session crystal per exact subject and processing version after gap grace."
 
-  use Oban.Worker,
+  use Styx.Worker,
     queue: :memory_crystals,
     max_attempts: 5,
     unique: [
@@ -19,8 +19,8 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
   @terminal ~w(stopped completed abandoned)
   @execution_timeout_ms 30_000
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{
+  @impl Styx.Worker
+  def perform(%Styx.Job{
         id: id,
         args: args,
         queue: queue,
@@ -102,7 +102,7 @@ defmodule Backplane.Memory.Workers.CrystalWorker do
           input_revision: input_revision
         }
         |> new()
-        |> Oban.insert()
+        |> Styx.insert()
       end)
       |> case do
         {:ok, job} -> {:ok, job}

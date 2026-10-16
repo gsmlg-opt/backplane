@@ -99,7 +99,7 @@ defmodule Backplane.Memory.Operations.DashboardMetrics do
            count(*) FILTER (WHERE state = ANY($2))::bigint AS depth,
            count(*) FILTER (WHERE state = ANY($3))::bigint AS failures,
            count(*) FILTER (WHERE state = 'discarded')::bigint AS dead_letters
-    FROM oban_jobs
+    FROM styx_jobs
     WHERE queue = ANY($1)
     GROUP BY queue
     ORDER BY queue
@@ -120,7 +120,7 @@ defmodule Backplane.Memory.Operations.DashboardMetrics do
   defp failed_workers do
     sql = """
     SELECT id, queue, worker, state
-    FROM oban_jobs
+    FROM styx_jobs
     WHERE queue = ANY($1) AND state = ANY($2)
     ORDER BY attempted_at DESC NULLS LAST, id DESC
     LIMIT 20
@@ -141,7 +141,7 @@ defmodule Backplane.Memory.Operations.DashboardMetrics do
   defp backlog_counts do
     sql = """
     SELECT worker, count(*)::bigint
-    FROM oban_jobs
+    FROM styx_jobs
     WHERE state = ANY($1)
     GROUP BY worker
     """

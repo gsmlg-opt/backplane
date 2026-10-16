@@ -69,7 +69,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
       }
     ])
 
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
 
     assert %Backplane.Memory.Lessons.Lesson{status: "candidate", source_kind: "consolidation"} =
              repo().one!(Backplane.Memory.Lessons.Lesson)
@@ -81,7 +81,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     insert_unqualified_decoys("alpha")
     Process.put(:procedures, [" common procedure ", "common procedure"])
 
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
 
     inputs = receive_inputs(2)
 
@@ -125,21 +125,21 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   test "reordered retries are effect-free and changed output in a slot conflicts" do
     insert_partition("stable", namespace: "team:stable", client_id: "client", project: "project")
     Process.put(:procedures, [" z procedure ", "a procedure", "a procedure"])
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
 
     counts =
       {repo().aggregate(Memory, :count), repo().aggregate(RememberRequest, :count),
        repo().aggregate(Evidence, :count)}
 
     Process.put(:procedures, ["a procedure", "z procedure"])
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
 
     assert counts ==
              {repo().aggregate(Memory, :count), repo().aggregate(RememberRequest, :count),
               repo().aggregate(Evidence, :count)}
 
     Process.put(:procedures, ["changed", "z procedure"])
-    assert {:error, :idempotency_conflict} = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert {:error, :idempotency_conflict} = ProceduralWorker.perform(%Styx.Job{args: %{}})
 
     assert counts ==
              {repo().aggregate(Memory, :count), repo().aggregate(RememberRequest, :count),
@@ -183,7 +183,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
       project: "project"
     )
 
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
     refute_received {:procedural_input, _}
     assert repo().aggregate(from(m in Memory, where: m.memory_type == "procedural"), :count) == 0
   end
@@ -223,7 +223,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
         set: [details: details]
       )
 
-      assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+      assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
       refute_received {:procedural_input, _}
     end
 
@@ -270,7 +270,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     Process.put(:procedural_result, {:error, :llm_unavailable})
 
     assert {:error, :llm_unavailable} =
-             ProceduralWorker.perform(%Oban.Job{args: %{}, attempt: 1, max_attempts: 2})
+             ProceduralWorker.perform(%Styx.Job{args: %{}, attempt: 1, max_attempts: 2})
 
     assert %State{status: "failed", last_error: "llm_unavailable"} =
              repo().get_by!(State,
@@ -280,7 +280,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
              )
 
     assert {:error, :llm_unavailable} =
-             ProceduralWorker.perform(%Oban.Job{args: %{}, attempt: 2, max_attempts: 2})
+             ProceduralWorker.perform(%Styx.Job{args: %{}, attempt: 2, max_attempts: 2})
 
     assert %State{status: "dead_letter", last_error: "llm_unavailable"} =
              repo().get_by!(State,
@@ -301,7 +301,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     Process.put(:procedural_result, {:raise, "procedural exploded"})
 
     assert_raise RuntimeError, "procedural exploded", fn ->
-      ProceduralWorker.perform(%Oban.Job{args: %{}, attempt: 2, max_attempts: 2})
+      ProceduralWorker.perform(%Styx.Job{args: %{}, attempt: 2, max_attempts: 2})
     end
 
     assert %State{status: "dead_letter", last_error: "procedural exploded"} =
@@ -323,7 +323,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     :persistent_term.put({BlockingLLM, :owner}, self())
     Application.put_env(:backplane_memory, :llm_module, BlockingLLM)
 
-    old_task = Task.async(fn -> ProceduralWorker.perform(%Oban.Job{args: %{}}) end)
+    old_task = Task.async(fn -> ProceduralWorker.perform(%Styx.Job{args: %{}}) end)
     Ecto.Adapters.SQL.Sandbox.allow(repo(), self(), old_task.pid)
     old_task_pid = old_task.pid
     assert_receive {:procedural_generation_blocked, ^old_task_pid}, 5_000
@@ -360,7 +360,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
              )
 
     Application.put_env(:backplane_memory, :llm_module, MockLLM)
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: %{}})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
 
     send(old_task.pid, :release_procedural_generation)
     assert :ok = Task.await(old_task, 5_000)

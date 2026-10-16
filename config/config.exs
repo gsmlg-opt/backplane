@@ -20,7 +20,7 @@ config :backplane_system, Backplane.Repo,
   hostname: "localhost",
   show_sensitive_data_on_connection_error: true
 
-config :backplane, Oban,
+config :backplane, Styx,
   repo: Backplane.Repo,
   queues: [
     default: 10,
@@ -34,7 +34,7 @@ config :backplane, Oban,
     memory_crystals: 1
   ],
   plugins: [
-    {Oban.Plugins.Cron,
+    {Styx.Cron,
      crontab: [
        # Procedural extraction: nightly at 02:00
        {"0 2 * * *", Backplane.Memory.Workers.ProceduralWorker},

@@ -39,9 +39,9 @@ defmodule Backplane.MixProject do
       {:backplane_data_case, in_umbrella: true, only: :test},
 
       # Job processing
-      {:oban, "~> 2.18"},
+      {:styx, "~> 0.1.1"},
 
-      # Timezone data (must start before Oban)
+      # Timezone data (must start before Styx)
       {:tzdata, "~> 1.1"},
 
       # Dev/Test

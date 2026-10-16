@@ -146,7 +146,7 @@ defmodule Backplane.Memory.Operations.Repair do
   defp dispatch("reembed", args, partition) do
     with {:ok, id} <- required(args, "target_id"),
          %Memory{} <- owned_memory(id, partition),
-         {:ok, %Oban.Job{}} <- EmbedWorker.enqueue(id) do
+         {:ok, %Styx.Job{}} <- EmbedWorker.enqueue(id) do
       {:ok, 1, [id], %{repair_scope: "memory_embedding"}}
     else
       nil -> {:error, :not_found}
@@ -158,7 +158,7 @@ defmodule Backplane.Memory.Operations.Repair do
   defp dispatch("graph", args, partition) do
     with {:ok, session_id} <- required(args, "session_id"),
          %ProjectedSession{} = session <- owned_session(session_id, partition),
-         {:ok, %Oban.Job{}} <- GraphExtractWorker.enqueue(session_id, partition) do
+         {:ok, %Styx.Job{}} <- GraphExtractWorker.enqueue(session_id, partition) do
       {:ok, 1, [session.subject_id], %{session_id: session_id}}
     else
       nil -> {:error, :not_found}
@@ -170,7 +170,7 @@ defmodule Backplane.Memory.Operations.Repair do
   defp dispatch("profile", args, partition) do
     with {:ok, project} <- required(args, "project"),
          true <- project_exists?(project, partition),
-         {:ok, %Oban.Job{}} <- ProfileBuildWorker.enqueue(project, partition, force: true) do
+         {:ok, %Styx.Job{}} <- ProfileBuildWorker.enqueue(project, partition, force: true) do
       {:ok, 1, [project], %{project: project}}
     else
       false -> {:error, :not_found}
@@ -205,7 +205,7 @@ defmodule Backplane.Memory.Operations.Repair do
     with {:ok, session_id} <- required(args, "session_id"),
          %ProjectedSession{input_revision: revision} = session
          when is_binary(revision) <- owned_session(session_id, partition),
-         {:ok, %Oban.Job{}} <- SummaryWorker.enqueue(session.host_id, session_id, revision) do
+         {:ok, %Styx.Job{}} <- SummaryWorker.enqueue(session.host_id, session_id, revision) do
       {:ok, 1, [session.subject_id], %{session_id: session_id}}
     else
       nil -> {:error, :not_found}
@@ -251,7 +251,7 @@ defmodule Backplane.Memory.Operations.Repair do
   defp dispatch("dead_letter", _args, partition) do
     jobs =
       repo().all(
-        from(job in Oban.Job,
+        from(job in Styx.Job,
           where: job.state in ["discarded", "cancelled"],
           where: like(job.queue, "memory%"),
           where:
@@ -264,7 +264,7 @@ defmodule Backplane.Memory.Operations.Repair do
         )
       )
 
-    Enum.each(jobs, &Oban.retry_job/1)
+    Enum.each(jobs, &Styx.retry_job/1)
     {:ok, length(jobs), Enum.map(jobs, &to_string(&1.id)), %{bounded: true}}
   end
 

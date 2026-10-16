@@ -77,7 +77,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       results =
         1..2
         |> Task.async_stream(
-          fn _ -> EvictionWorker.perform(%Oban.Job{args: %{"batch_size" => 100}}) end,
+          fn _ -> EvictionWorker.perform(%Styx.Job{args: %{"batch_size" => 100}}) end,
           max_concurrency: 2,
           ordered: false
         )
@@ -108,12 +108,12 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       assert EvictionWorker.candidate_ids(DateTime.utc_now(), 30, 0.1, 2) == expected_ids
 
       assert {:ok, %{evicted: 2}} =
-               EvictionWorker.perform(%Oban.Job{args: %{"batch_size" => 2}})
+               EvictionWorker.perform(%Styx.Job{args: %{"batch_size" => 2}})
 
       assert Enum.count(memories, &archived?(&1.id)) == 2
 
       assert {:ok, %{evicted: 1}} =
-               EvictionWorker.perform(%Oban.Job{args: %{"batch_size" => 2}})
+               EvictionWorker.perform(%Styx.Job{args: %{"batch_size" => 2}})
 
       assert Enum.all?(memories, &archived?(&1.id))
     end
@@ -129,7 +129,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       set_accessed_at(mem.id, old_dt)
       set_confidence(mem.id, 0.1)
 
-      job = %Oban.Job{args: %{}}
+      job = %Styx.Job{args: %{}}
       assert {:ok, %{evicted: evicted}} = EvictionWorker.perform(job)
       assert evicted >= 1
 
@@ -154,7 +154,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
       # accessed_at defaults to nil -> inserted_at (recent), confidence = 1.0
       # strength ~1.0, 1.0 * 1.0 = 1.0 >> 0.1 threshold
 
-      job = %Oban.Job{args: %{}}
+      job = %Styx.Job{args: %{}}
       assert {:ok, _} = EvictionWorker.perform(job)
 
       refute deleted?(mem.id)
@@ -176,7 +176,7 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
 
       set_confidence(mem.id, 0.05)
 
-      job = %Oban.Job{args: %{}}
+      job = %Styx.Job{args: %{}}
       assert {:ok, %{evicted: evicted}} = EvictionWorker.perform(job)
       assert evicted >= 1
       refute deleted?(mem.id)

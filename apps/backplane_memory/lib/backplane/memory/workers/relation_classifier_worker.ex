@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.RelationClassifierWorker do
-  @moduledoc "Oban worker for evidence-backed automatic memory relation candidates."
+  @moduledoc "Styx worker for evidence-backed automatic memory relation candidates."
 
-  use Oban.Worker,
+  use Styx.Worker,
     queue: :memory_relation_classifier,
     max_attempts: 3,
     unique: [
@@ -17,8 +17,8 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorker do
 
   def processing_version, do: @processing_version
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{
+  @impl Styx.Worker
+  def perform(%Styx.Job{
         args: %{
           "memory_id" => memory_id,
           "processing_version" => @processing_version,
@@ -35,7 +35,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorker do
   end
 
   if Mix.env() == :test do
-    def perform(%Oban.Job{
+    def perform(%Styx.Job{
           args: %{
             "memory_id" => memory_id,
             "processing_version" => @processing_version,
@@ -49,7 +49,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorker do
     end
   end
 
-  def perform(%Oban.Job{}), do: {:cancel, :invalid_arguments}
+  def perform(%Styx.Job{}), do: {:cancel, :invalid_arguments}
 
   def enqueue(memory_id, evidence_revision, partition)
       when is_binary(memory_id) and is_binary(evidence_revision) and is_map(partition) do
@@ -60,7 +60,7 @@ defmodule Backplane.Memory.Workers.RelationClassifierWorker do
       partition: partition
     }
     |> new()
-    |> Oban.insert()
+    |> Styx.insert()
   end
 
   if Mix.env() == :test do

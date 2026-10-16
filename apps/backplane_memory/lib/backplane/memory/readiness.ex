@@ -328,7 +328,7 @@ defmodule Backplane.Memory.Readiness do
   def job_inventory_sql do
     """
     SELECT EXISTS (
-      SELECT 1 FROM oban_jobs job
+      SELECT 1 FROM styx_jobs job
       WHERE (job.worker LIKE 'Elixir.Backplane.Memory.%'
           OR job.worker LIKE 'Backplane.Memory.%')
         AND job.state IN ('available','scheduled','retryable','executing')
@@ -400,7 +400,7 @@ defmodule Backplane.Memory.Readiness do
         END) IS NOT TRUE
         AND NOT EXISTS (
           SELECT 1 FROM bpm_memory_space_backfill_issues issue
-          WHERE issue.source_table='oban_jobs' AND issue.source_id=job.id::text
+          WHERE issue.source_table='styx_jobs' AND issue.source_id=job.id::text
             AND issue.disposition='approved_waiver' AND issue.resolved_at IS NOT NULL
         )
     )

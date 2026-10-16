@@ -24,7 +24,7 @@ config :backplane, env: :test
 config :backplane_system, start_audit_writer: false
 config :backplane_auth, allow_insecure_resource_origins: true
 config :backplane, llm_route_loader_enabled: false
-config :backplane, Oban, testing: :inline
+config :backplane, Styx, testing: :inline
 config :backplane_memory, projection_repair_enabled: false
 
 secret_key_base =

@@ -497,7 +497,7 @@ defmodule Backplane.Admin.LogsLiveTest do
       GraphExtractWorker.new(%{"memory_id" => Ecto.UUID.generate()})
       |> Repo.insert!()
 
-    Repo.update_all(from(j in Oban.Job, where: j.id == ^job.id),
+    Repo.update_all(from(j in Styx.Job, where: j.id == ^job.id),
       set: [
         state: "discarded",
         attempted_at: DateTime.utc_now(),

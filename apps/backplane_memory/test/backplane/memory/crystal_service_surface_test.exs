@@ -188,7 +188,7 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
 
     assert {:ok, projection} = Rebuild.session(partition.host_id, session_id)
 
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       assert {:ok, _job} =
                CrystalWorker.enqueue(
                  partition.host_id,
@@ -235,7 +235,7 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
 
     assert {:ok, _projection} = Rebuild.session(partition.host_id, session_id)
 
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       assert {:ok, %{status: "enqueued", job_id: job_id}} =
                Service.call(
                  "memory::crystallize",

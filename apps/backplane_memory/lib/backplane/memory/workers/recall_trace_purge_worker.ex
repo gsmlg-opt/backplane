@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.RecallTracePurgeWorker do
   @moduledoc "Daily bounded retention purge for privacy-filtered recall traces."
 
-  use Oban.Worker, queue: :memory, max_attempts: 3
+  use Styx.Worker, queue: :memory, max_attempts: 3
 
   import Ecto.Query
 
@@ -11,8 +11,8 @@ defmodule Backplane.Memory.Workers.RecallTracePurgeWorker do
   @batch_size 100
   @telemetry_event [:backplane, :memory, :recall_trace, :purge]
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{}) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{}) do
     started_at = System.monotonic_time()
 
     result =

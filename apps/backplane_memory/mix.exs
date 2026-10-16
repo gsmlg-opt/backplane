@@ -37,7 +37,7 @@ defmodule Backplane.Memory.MixProject do
       {:postgrex, "~> 0.19"},
       {:phoenix_pubsub, "~> 2.1"},
       {:req, "~> 0.5", override: true},
-      {:oban, "~> 2.18"},
+      {:styx, "~> 0.1.1"},
       {:tzdata, "~> 1.1"}
     ]
   end

@@ -1,13 +1,13 @@
 defmodule Backplane.Settings.OAuthTokenRefreshWorker do
   @moduledoc """
-  Oban worker that proactively refreshes device OAuth credentials.
+  Styx worker that proactively refreshes device OAuth credentials.
 
   A cron run without args scans for due credentials and enqueues one job per
   credential. Named jobs refresh a single credential, so failures are isolated
-  and visible in Oban without blocking other credentials.
+  and visible in Styx without blocking other credentials.
   """
 
-  use Oban.Worker,
+  use Styx.Worker,
     queue: :llm,
     max_attempts: 3,
     unique: [period: 600, keys: [:credential_name]]
@@ -20,8 +20,8 @@ defmodule Backplane.Settings.OAuthTokenRefreshWorker do
   @default_refresh_interval_ms 7 * 24 * 60 * 60 * 1000
   @default_auth_types ["openai_oauth", "anthropic_oauth", "figma_oauth"]
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"credential_name" => name} = args}) when is_binary(name) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{args: %{"credential_name" => name} = args}) when is_binary(name) do
     case Credentials.refresh_oauth_token(name,
            refresh_window_ms: refresh_window_ms(args),
            refresh_interval_ms: refresh_interval_ms(args)
@@ -41,7 +41,7 @@ defmodule Backplane.Settings.OAuthTokenRefreshWorker do
     end
   end
 
-  def perform(%Oban.Job{args: args}) do
+  def perform(%Styx.Job{args: args}) do
     refresh_window_ms = refresh_window_ms(args)
     refresh_interval_ms = refresh_interval_ms(args)
 
@@ -59,7 +59,7 @@ defmodule Backplane.Settings.OAuthTokenRefreshWorker do
         refresh_interval_ms: refresh_interval_ms
       }
       |> __MODULE__.new()
-      |> Oban.insert()
+      |> Styx.insert()
       |> case do
         {:ok, _job} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}

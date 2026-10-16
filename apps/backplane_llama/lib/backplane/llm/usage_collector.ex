@@ -1,6 +1,6 @@
 defmodule Backplane.LLM.UsageCollector do
   @moduledoc """
-  Legacy telemetry handler that enqueues Oban `UsageWriter` jobs (deprecated).
+  Legacy telemetry handler that enqueues Styx `UsageWriter` jobs (deprecated).
 
   Disabled automatically when Observability v2 LLM durable writes are active via
   `Backplane.Observability.Flags.llm_write?/0`.
@@ -42,7 +42,7 @@ defmodule Backplane.LLM.UsageCollector do
         "error_reason" => metadata[:error_reason]
       }
 
-      Backplane.Jobs.UsageWriter.new(args) |> Oban.insert()
+      Backplane.Jobs.UsageWriter.new(args) |> Styx.insert()
     end
   end
 end

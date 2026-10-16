@@ -23,9 +23,12 @@ defmodule Backplane.Memory.EdgeSync.ChangeCaptureTest do
     end)
 
     for table <-
-          ~w(bpm_memory_spaces bpm_memory_space_entitlements bpm_memory_space_backfill_issues bpm_memories bpm_memory_remember_requests bpm_events bpm_projection_states oban_jobs system_settings) do
+          ~w(bpm_memory_spaces bpm_memory_space_entitlements bpm_memory_space_backfill_issues bpm_memories bpm_memory_remember_requests bpm_events bpm_projection_states system_settings) do
       Repo.query!(~s|CREATE TABLE "#{prefix}".#{table} (LIKE public.#{table} INCLUDING ALL)|)
     end
+
+    # These upgrade fixtures precede the Styx storage rename.
+    Repo.query!(~s|CREATE TABLE "#{prefix}".oban_jobs (LIKE public.styx_jobs INCLUDING ALL)|)
 
     Repo.query!("""
     CREATE FUNCTION "#{prefix}".bpm_reject_memory_provenance_mutation()

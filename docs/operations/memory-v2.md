@@ -61,9 +61,14 @@ not rollback evidence.
      > memory-v2-pre-upgrade.watermark
    ```
 
-6. Run the new release's additive migrations while the old release continues
-   serving capture. Use `mix ecto.migrate` from a source deployment or the
-   installed-release command in `docs/deploy/memory-v2-release.md`.
+6. For backward-compatible additive migrations, the old release may continue
+   serving capture. The Styx migration `20261016000001` instead renames the job
+   storage and requires downtime: stop every old gateway instance and every
+   other process that produces or executes gateway jobs before migrating.
+   Run the new packaged release's `bin/backplane migrate` command without
+   starting its application, as described in
+   `docs/deploy/memory-v2-release.md`. Do not run old Oban processes against the
+   renamed Styx storage. Host agents may continue capturing into local spools.
 7. Run consistency checks and a projection dry run. Only then switch the
    application process/image to the new version.
 8. Observe host spool depth draining to zero, ingest accepted/duplicate/rejected
@@ -73,6 +78,11 @@ not rollback evidence.
 Do not run `mix ecto.rollback` blindly across the Memory V2 chain. Migration
 00006 has `down/0`, but 00007 is explicitly irreversible; crossing it requires
 the restore-plus-event-replay plan.
+
+For a Styx-to-Oban binary rollback, first stop all new gateway instances and
+job producers/executors. Reverse only migration `20261016000001` using the new
+release before starting an old binary; it restores the job storage names and
+preserves queued jobs. An old binary cannot use the Styx storage names.
 
 ## Consistency checks
 

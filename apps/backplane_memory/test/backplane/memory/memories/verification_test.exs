@@ -84,7 +84,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     assert {:ok, projection} = Rebuild.session(host_id, session_id)
 
     assert :ok =
-             SummaryWorker.perform(%Oban.Job{
+             SummaryWorker.perform(%Styx.Job{
                args: %{
                  "host_id" => host_id,
                  "memory_space_id" => projection.memory_space_id,
@@ -98,7 +98,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
              })
 
     summary = repo().one!(Backplane.Memory.Summaries.Summary)
-    assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => summary.id}})
+    assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => summary.id}})
 
     memory =
       repo().one!(
@@ -163,7 +163,7 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       assert {:ok, next_projection} = Rebuild.session(host_id, next_session_id)
 
       assert :ok =
-               SummaryWorker.perform(%Oban.Job{
+               SummaryWorker.perform(%Styx.Job{
                  args: %{
                    "host_id" => host_id,
                    "memory_space_id" => next_projection.memory_space_id,
@@ -179,10 +179,10 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       next_summary =
         repo().one!(from(s in Summary, where: s.subject_id == ^next_projection.subject_id))
 
-      assert :ok = EpisodicWorker.perform(%Oban.Job{args: %{"summary_id" => next_summary.id}})
+      assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => next_summary.id}})
     end
 
-    assert :ok = ProceduralWorker.perform(%Oban.Job{args: partition})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: partition})
 
     procedure =
       repo().one!(

@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.GraphExtractWorker do
-  @moduledoc "Oban worker: extract knowledge graph entities/edges from session observations after session end."
+  @moduledoc "Styx worker: extract knowledge graph entities/edges from session observations after session end."
 
-  use Oban.Worker, queue: :memory, max_attempts: 3
+  use Styx.Worker, queue: :memory, max_attempts: 3
 
   import Ecto.Query
 
@@ -18,9 +18,9 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @impl Oban.Worker
+  @impl Styx.Worker
   def perform(
-        %Oban.Job{
+        %Styx.Job{
           args:
             %{
               "session_id" => session_id,
@@ -44,7 +44,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
     end)
   end
 
-  def perform(%Oban.Job{}), do: {:discard, :ambiguous_partition}
+  def perform(%Styx.Job{}), do: {:discard, :ambiguous_partition}
 
   defp perform_partition(session_id, partition, job) do
     host_id = partition.host_id
@@ -216,7 +216,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
         %{session_id: session_id}
         |> Map.merge(atom_partition(partition))
         |> new()
-        |> Oban.insert()
+        |> Styx.insert()
 
       {:error, reason} = error ->
         record_partition_issue(session_id, partition, reason)

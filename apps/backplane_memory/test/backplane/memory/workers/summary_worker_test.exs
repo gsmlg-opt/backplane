@@ -11,7 +11,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
 
   test "canonical jobs keep same session ids on different hosts separate and exclude legacy decoys" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       session_id = unique("shared")
       first = canonical_session("host-a", session_id, "project-a", "host a observation")
       second = canonical_session("host-b", session_id, "project-b", "host b observation")
@@ -44,13 +44,13 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
                Enum.sort([first.input_revision, second.input_revision])
 
       assert Enum.sort(
-               Enum.map(Oban.Testing.all_enqueued(repo(), worker: EpisodicWorker), & &1.args)
+               Enum.map(Styx.Testing.all_enqueued(repo(), worker: EpisodicWorker), & &1.args)
              ) == Enum.sort(Enum.map(summaries, &%{"summary_id" => &1.id}))
     end)
   end
 
   test "retry is idempotent and a later input revision preserves and supersedes history" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = "host-evolve"
       session_id = unique("evolve")
       initial = canonical_session(host_id, session_id, "project-evolve", "initial useful fact")
@@ -244,7 +244,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
     Observations.register_session("legacy-summary", "legacy-project", opts)
     {:ok, _} = Observations.record("legacy-summary", "legacy observation", opts)
 
-    assert :ok = SummaryWorker.perform(%Oban.Job{args: %{"session_id" => "legacy-summary"}})
+    assert :ok = SummaryWorker.perform(%Styx.Job{args: %{"session_id" => "legacy-summary"}})
     summary = repo().one!(from(s in Summary, where: s.session_id == "legacy-summary"))
     assert summary.subject_id == "legacy:legacy-summary"
     assert summary.host_id == "legacy"
@@ -252,10 +252,10 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   end
 
   test "canonical argument contract is exact" do
-    assert {:cancel, :invalid_arguments} = SummaryWorker.perform(%Oban.Job{args: %{}})
+    assert {:cancel, :invalid_arguments} = SummaryWorker.perform(%Styx.Job{args: %{}})
 
     assert {:cancel, :invalid_arguments} =
-             SummaryWorker.perform(%Oban.Job{
+             SummaryWorker.perform(%Styx.Job{
                args: %{
                  "host_id" => "h",
                  "session_id" => "s",
@@ -265,7 +265,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   end
 
   test "canonical enqueue atomically records pending projection state and exact job args" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       result = canonical_session("host-pending", unique("pending"), "p", "fact")
 
       assert {:ok, job} =
@@ -322,7 +322,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   end
 
   test "concurrent retries serialize to one summary and one episodic job" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       result = canonical_session("host-concurrent-summary", unique("concurrent"), "p", "fact")
 
       outcomes =
@@ -527,7 +527,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
           canonical_partition(host_id, scope: "missing")
       end
 
-    SummaryWorker.perform(%Oban.Job{
+    SummaryWorker.perform(%Styx.Job{
       attempt: Keyword.get(opts, :attempt, 0),
       max_attempts: Keyword.get(opts, :max_attempts, 20),
       args: %{

@@ -564,7 +564,7 @@ defmodule Backplane.Memory.ObservationsTest do
     end
 
     test "first end enqueues one summary while repeat, unknown, and failed ends enqueue none" do
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         enable_dual_write()
         session_id = "end-summary-once"
         failed_session_id = "end-summary-failed"
@@ -588,7 +588,7 @@ defmodule Backplane.Memory.ObservationsTest do
                  Observations.end_session(failed_session_id)
 
         jobs =
-          Oban.Testing.all_enqueued(repo(),
+          Styx.Testing.all_enqueued(repo(),
             worker: SummaryWorker,
             args: %{"session_id" => session_id}
           )
@@ -596,7 +596,7 @@ defmodule Backplane.Memory.ObservationsTest do
         assert length(jobs) == 1
 
         assert [] =
-                 Oban.Testing.all_enqueued(repo(),
+                 Styx.Testing.all_enqueued(repo(),
                    worker: SummaryWorker,
                    args: %{"session_id" => failed_session_id}
                  )

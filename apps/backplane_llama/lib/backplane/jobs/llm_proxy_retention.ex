@@ -1,9 +1,9 @@
 defmodule Backplane.Jobs.LlmProxyRetention do
   @moduledoc """
-  Oban worker that deletes LLM proxy access records older than configured retention.
+  Styx worker that deletes LLM proxy access records older than configured retention.
   """
 
-  use Oban.Worker, queue: :llm
+  use Styx.Worker, queue: :llm
 
   import Ecto.Query
 
@@ -11,8 +11,8 @@ defmodule Backplane.Jobs.LlmProxyRetention do
   alias Backplane.Observability.Settings
   alias Backplane.Repo
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{}) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{}) do
     retention_days = Settings.llm_proxy_retention_days()
     cutoff = DateTime.add(DateTime.utc_now(), -retention_days * 86_400, :second)
 

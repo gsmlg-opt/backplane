@@ -414,7 +414,7 @@ defmodule Backplane.Api.MemoryRouterTest do
              )
 
     response =
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         post(conn, "/api/memory/session/end", %{"session_id" => session_id})
       end)
 
@@ -436,7 +436,7 @@ defmodule Backplane.Api.MemoryRouterTest do
            |> json_response(200) == %{"session_id" => session_id}
 
     {first, repeat, unknown} =
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         first = post(conn, "/api/memory/session/end", %{"session_id" => session_id})
         repeat = post(recycle(conn), "/api/memory/session/end", %{"session_id" => session_id})
 
@@ -636,7 +636,7 @@ defmodule Backplane.Api.MemoryRouterTest do
     assert {:ok, _uuid} = Ecto.UUID.cast(observation_id)
 
     end_conn =
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         post(recycle(conn), "/api/memory/session/end", %{"session_id" => session_id})
       end)
 

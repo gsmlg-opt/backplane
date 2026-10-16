@@ -28,7 +28,7 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
 
     results =
       1..3
-      |> Task.async_stream(fn _ -> RecallTracePurgeWorker.perform(%Oban.Job{}) end,
+      |> Task.async_stream(fn _ -> RecallTracePurgeWorker.perform(%Styx.Job{}) end,
         max_concurrency: 3,
         ordered: false
       )
@@ -48,7 +48,7 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
     assert_receive {:purge_telemetry, %{deleted: deleted}, %{status: :ok}}
     assert deleted in 0..3
 
-    assert {:ok, %{deleted: 0}} = RecallTracePurgeWorker.perform(%Oban.Job{})
+    assert {:ok, %{deleted: 0}} = RecallTracePurgeWorker.perform(%Styx.Job{})
     assert length(Audit.list(operation: "memory.recall_trace.purge")) == length(audits)
   end
 
@@ -84,9 +84,9 @@ defmodule Backplane.Memory.Recall.PurgeWorkerTest do
       end
 
     assert {101, nil} = repo().insert_all(Run, rows)
-    assert {:ok, %{deleted: 100}} = RecallTracePurgeWorker.perform(%Oban.Job{})
+    assert {:ok, %{deleted: 100}} = RecallTracePurgeWorker.perform(%Styx.Job{})
     assert repo().aggregate(Run, :count) == 1
-    assert {:ok, %{deleted: 1}} = RecallTracePurgeWorker.perform(%Oban.Job{})
+    assert {:ok, %{deleted: 1}} = RecallTracePurgeWorker.perform(%Styx.Job{})
   end
 
   defp create_run(label, expired?) do

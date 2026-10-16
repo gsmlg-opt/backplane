@@ -38,7 +38,7 @@ defmodule BackplaneLlama.MixProject do
       {:phoenix, "~> 1.8"},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
-      {:oban, "~> 2.18"},
+      {:styx, "~> 0.1.1"},
       {:req, "~> 0.5", override: true},
       {:jason, "~> 1.4"},
       {:telemetry_poller, "~> 1.1"},

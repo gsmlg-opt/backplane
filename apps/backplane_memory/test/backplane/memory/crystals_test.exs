@@ -219,11 +219,11 @@ defmodule Backplane.Memory.CrystalsTest do
   end
 
   test "normal canonical summary completion enqueues stable crystal work on its isolated queue" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       input = closed_session("host-enqueue", unique("session"), "p", "outcome")
       summarize(input)
 
-      assert [job] = Oban.Testing.all_enqueued(repo(), worker: CrystalWorker)
+      assert [job] = Styx.Testing.all_enqueued(repo(), worker: CrystalWorker)
       assert job.queue == "memory_crystals"
       assert job.max_attempts == 5
 
@@ -249,7 +249,7 @@ defmodule Backplane.Memory.CrystalsTest do
   end
 
   test "failed enqueue remains pending and a retry enqueues idempotently" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       input = closed_session("host-enqueue-retry", unique("session"), "p", "outcome")
       subject_id = Source.subject_id!(input.host_id, input.session_id)
 
@@ -333,7 +333,7 @@ defmodule Backplane.Memory.CrystalsTest do
   end
 
   test "crystal projection state follows enqueue through completion" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       input = closed_session("host-state", unique("session"), "p", "outcome")
       summarize(input)
       subject_id = Source.subject_id!(input.host_id, input.session_id)
@@ -782,7 +782,7 @@ defmodule Backplane.Memory.CrystalsTest do
     assert current.input_revision == newer_revision
     summarize(current)
 
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       assert {:ok, _job} =
                CrystalWorker.enqueue(input.host_id, input.session_id, current.input_revision)
     end)
@@ -799,7 +799,7 @@ defmodule Backplane.Memory.CrystalsTest do
   end
 
   test "invalid enrichment degrades field by field and never stores private raw content" do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       input =
         closed_session(
           "host-private",
@@ -950,9 +950,9 @@ defmodule Backplane.Memory.CrystalsTest do
   end
 
   defp summarize(input) do
-    Oban.Testing.with_testing_mode(:manual, fn ->
+    Styx.Testing.with_testing_mode(:manual, fn ->
       assert :ok =
-               SummaryWorker.perform(%Oban.Job{
+               SummaryWorker.perform(%Styx.Job{
                  args: %{
                    "memory_space_id" => input.memory_space_id,
                    "host_id" => input.host_id,

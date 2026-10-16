@@ -46,23 +46,23 @@ defmodule Backplane.MetricsTest do
     assert after_count > before_count
   end
 
-  test "oban job completion increments counters" do
+  test "styx job completion increments counters" do
     :telemetry.execute(
-      [:oban, :job, :stop],
+      [:styx, :job, :stop],
       %{duration: System.convert_time_unit(10_000, :microsecond, :native)},
       %{queue: :default, worker: "Backplane.Jobs.Reindexer"}
     )
 
     snapshot = Metrics.snapshot()
-    assert snapshot.counters["oban_jobs_completed"] >= 1
-    assert snapshot.counters["oban_jobs.default"] >= 1
-    assert snapshot.counters["oban_workers.Backplane.Jobs.Reindexer"] >= 1
-    assert snapshot.timings["oban_job_duration"].count >= 1
+    assert snapshot.counters["styx_jobs_completed"] >= 1
+    assert snapshot.counters["styx_jobs.default"] >= 1
+    assert snapshot.counters["styx_workers.Backplane.Jobs.Reindexer"] >= 1
+    assert snapshot.timings["styx_job_duration"].count >= 1
   end
 
-  test "oban job exception increments failure counters" do
+  test "styx job exception increments failure counters" do
     :telemetry.execute(
-      [:oban, :job, :exception],
+      [:styx, :job, :exception],
       %{duration: System.convert_time_unit(1000, :microsecond, :native)},
       %{
         queue: :indexing,
@@ -73,8 +73,8 @@ defmodule Backplane.MetricsTest do
     )
 
     snapshot = Metrics.snapshot()
-    assert snapshot.counters["oban_jobs_failed"] >= 1
-    assert snapshot.counters["oban_jobs_failed.indexing"] >= 1
+    assert snapshot.counters["styx_jobs_failed"] >= 1
+    assert snapshot.counters["styx_jobs_failed.indexing"] >= 1
   end
 
   test "telemetry handler records tool call timing" do

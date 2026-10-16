@@ -34,7 +34,7 @@ defmodule Backplane.Jobs.UsageRetentionTest do
 
       assert Repo.aggregate(UsageLog, :count) == 1
 
-      job = %Oban.Job{}
+      job = %Styx.Job{}
       assert :ok = UsageRetention.perform(job)
 
       assert Repo.aggregate(UsageLog, :count) == 0
@@ -49,7 +49,7 @@ defmodule Backplane.Jobs.UsageRetentionTest do
 
       assert Repo.aggregate(UsageLog, :count) == 2
 
-      job = %Oban.Job{}
+      job = %Styx.Job{}
       assert :ok = UsageRetention.perform(job)
 
       assert Repo.aggregate(UsageLog, :count) == 1

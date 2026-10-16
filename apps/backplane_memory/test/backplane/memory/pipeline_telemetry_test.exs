@@ -68,7 +68,7 @@ defmodule Backplane.Memory.PipelineTelemetryTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
-    assert {:cancel, :invalid_arguments} = CrystalWorker.perform(%Oban.Job{args: %{}})
+    assert {:cancel, :invalid_arguments} = CrystalWorker.perform(%Styx.Job{args: %{}})
 
     assert_receive {[:backplane, :memory, :pipeline], %{count: 1, duration_us: duration},
                     %{stage: "crystal"} = metadata}

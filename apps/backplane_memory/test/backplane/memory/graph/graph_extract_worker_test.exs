@@ -140,7 +140,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
                GraphExtractWorker.perform(job(session_id))
     end
 
-    test "returns {:error, reason} when LLM returns error so Oban retries" do
+    test "returns {:error, reason} when LLM returns error so Styx retries" do
       session_id = Ecto.UUID.generate()
       Application.put_env(:backplane_memory, :llm_module, MockLLMError)
       make_memories(session_id, 3)
@@ -221,7 +221,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       args = Map.new(incomplete, fn {key, value} -> {to_string(key), value} end)
 
       assert {:discard, :incomplete_partition} =
-               GraphExtractWorker.perform(%Oban.Job{
+               GraphExtractWorker.perform(%Styx.Job{
                  args: Map.put(args, "session_id", "session")
                })
 
@@ -233,7 +233,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
     mismatched_args = partition |> stringify_keys() |> Map.put(:host_id, "other-host")
 
     assert {:discard, :partition_mismatch} =
-             GraphExtractWorker.perform(%Oban.Job{
+             GraphExtractWorker.perform(%Styx.Job{
                args: Map.put(mismatched_args, "session_id", "session")
              })
 
@@ -264,7 +264,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       claim = Map.put(authoritative, field, wrong)
 
       assert {:discard, :partition_mismatch} =
-               GraphExtractWorker.perform(%Oban.Job{
+               GraphExtractWorker.perform(%Styx.Job{
                  args: claim |> stringify_keys() |> Map.put("session_id", session_id)
                })
     end
@@ -283,13 +283,13 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       |> Map.put("session_id", session_id)
 
     assert {:discard, :partition_mismatch} =
-             GraphExtractWorker.perform(%Oban.Job{args: wrong})
+             GraphExtractWorker.perform(%Styx.Job{args: wrong})
 
     [first] =
       repo().all(from(i in BackfillIssue, where: i.source_table == "memory_graph_generator"))
 
     assert {:discard, :partition_mismatch} =
-             GraphExtractWorker.perform(%Oban.Job{
+             GraphExtractWorker.perform(%Styx.Job{
                args: Map.merge(wrong, %{"content" => "secret", "metadata" => %{"x" => 1}})
              })
 
@@ -317,7 +317,7 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
       |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
       |> Map.put("session_id", session_id)
 
-    %Oban.Job{
+    %Styx.Job{
       args: args,
       attempt: Keyword.get(opts, :attempt, 0),
       max_attempts: Keyword.get(opts, :max_attempts, 20)

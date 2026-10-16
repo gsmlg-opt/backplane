@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.EpisodicWorker do
-  @moduledoc "Oban worker: extract semantic memories from session summary (episodic → semantic)."
+  @moduledoc "Styx worker: extract semantic memories from session summary (episodic → semantic)."
 
-  use Oban.Worker, queue: :memory, max_attempts: 3
+  use Styx.Worker, queue: :memory, max_attempts: 3
 
   import Ecto.Query
 
@@ -14,14 +14,14 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{} = job) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{} = job) do
     Backplane.Memory.PipelineTelemetry.span("episodic", job.args, fn ->
       do_perform(job)
     end)
   end
 
-  defp do_perform(%Oban.Job{args: %{"summary_id" => summary_id} = args} = job)
+  defp do_perform(%Styx.Job{args: %{"summary_id" => summary_id} = args} = job)
        when is_binary(summary_id) and map_size(args) == 1 do
     with {:ok, summary_id} <- Ecto.UUID.cast(summary_id) do
       run_summary(repo().get(Summary, summary_id), job)
@@ -30,11 +30,11 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     end
   end
 
-  defp do_perform(%Oban.Job{args: %{"session_id" => session_id} = args})
+  defp do_perform(%Styx.Job{args: %{"session_id" => session_id} = args})
        when is_binary(session_id) and map_size(args) == 1,
        do: {:cancel, :incomplete_partition}
 
-  defp do_perform(%Oban.Job{}), do: {:cancel, :invalid_arguments}
+  defp do_perform(%Styx.Job{}), do: {:cancel, :invalid_arguments}
 
   defp run_summary(nil, _job), do: :ok
 
@@ -365,10 +365,10 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
   def enqueue(_session_id), do: {:error, :incomplete_partition}
 
   @doc "Enqueue extraction for one exact durable summary revision."
-  @spec enqueue_summary(Ecto.UUID.t()) :: {:ok, Oban.Job.t()} | {:error, term()}
+  @spec enqueue_summary(Ecto.UUID.t()) :: {:ok, Styx.Job.t()} | {:error, term()}
   def enqueue_summary(summary_id) when is_binary(summary_id) do
     %{summary_id: summary_id}
     |> new(unique: [period: :infinity, states: :incomplete, keys: [:summary_id]])
-    |> Oban.insert()
+    |> Styx.insert()
   end
 end

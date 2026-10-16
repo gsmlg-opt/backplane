@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.LessonDecaySweepWorker do
   @moduledoc "Nightly bounded paginator that schedules exact-partition lesson decay."
 
-  use Oban.Worker, queue: :memory_lessons, max_attempts: 3
+  use Styx.Worker, queue: :memory_lessons, max_attempts: 3
 
   import Ecto.Query
 
@@ -11,8 +11,8 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorker do
 
   @page_size 100
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{args: args}) when is_map(args) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{args: args}) when is_map(args) do
     Backplane.Memory.PipelineTelemetry.span("lesson.decay_sweep", args, fn ->
       now = parse_now(args["now"])
 
@@ -72,7 +72,7 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorker do
   defp enqueue_partitions(partitions, now) do
     Enum.reduce_while(partitions, :ok, fn partition, :ok ->
       case LessonDecayWorker.enqueue(partition, now) do
-        {:ok, %Oban.Job{}} -> {:cont, :ok}
+        {:ok, %Styx.Job{}} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
@@ -84,8 +84,8 @@ defmodule Backplane.Memory.Workers.LessonDecaySweepWorker do
 
     case %{"cursor" => cursor, "now" => DateTime.to_iso8601(now)}
          |> new()
-         |> Oban.insert() do
-      {:ok, %Oban.Job{}} -> :ok
+         |> Styx.insert() do
+      {:ok, %Styx.Job{}} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end

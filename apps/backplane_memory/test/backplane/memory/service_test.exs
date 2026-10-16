@@ -939,10 +939,10 @@ defmodule Backplane.Memory.ServiceTest do
           ~w(project memory_space_id host_id client_id source_client_id scope namespace)
         )
 
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         assert {:error, :incomplete_partition} = trusted_call("memory::profile", args)
 
-        Oban.Testing.refute_enqueued(repo(),
+        Styx.Testing.refute_enqueued(repo(),
           worker: ProfileBuildWorker,
           args: %{"project" => project}
         )
@@ -960,7 +960,7 @@ defmodule Backplane.Memory.ServiceTest do
         job_args = Map.put(job_args, "memory_space_id", memory.memory_space_id)
         assert {:ok, %{status: "building"}} = trusted_call("memory::profile", args)
 
-        assert Oban.Testing.assert_enqueued(
+        assert Styx.Testing.assert_enqueued(
                  repo(),
                  worker: ProfileBuildWorker,
                  args: job_args
@@ -979,10 +979,10 @@ defmodule Backplane.Memory.ServiceTest do
           ~w(project memory_space_id host_id client_id source_client_id scope namespace)
         )
 
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         assert {:error, :incomplete_partition} = trusted_call("memory::profile_refresh", args)
 
-        Oban.Testing.refute_enqueued(repo(),
+        Styx.Testing.refute_enqueued(repo(),
           worker: ProfileBuildWorker,
           args: %{"project" => project}
         )
@@ -1002,7 +1002,7 @@ defmodule Backplane.Memory.ServiceTest do
         assert {:ok, %{status: "queued", project: ^project}} =
                  trusted_call("memory::profile_refresh", args)
 
-        assert Oban.Testing.assert_enqueued(
+        assert Styx.Testing.assert_enqueued(
                  repo(),
                  worker: ProfileBuildWorker,
                  args: job_args
@@ -1186,10 +1186,10 @@ defmodule Backplane.Memory.ServiceTest do
         |> Map.take(~w(memory_space_id host_id client_id source_client_id scope namespace))
         |> Map.put("project", missing_session)
 
-      Oban.Testing.with_testing_mode(:manual, fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
         assert {:error, :incomplete_partition} = trusted_call("memory::consolidate", args)
 
-        Oban.Testing.refute_enqueued(repo(),
+        Styx.Testing.refute_enqueued(repo(),
           worker: ProfileBuildWorker,
           args: %{"project" => missing_session}
         )
@@ -1209,7 +1209,7 @@ defmodule Backplane.Memory.ServiceTest do
         assert {:ok, %{status: "queued", session_id: ^missing_session}} =
                  trusted_call("memory::consolidate", args)
 
-        assert Oban.Testing.assert_enqueued(
+        assert Styx.Testing.assert_enqueued(
                  repo(),
                  worker: ProfileBuildWorker,
                  args: job_args

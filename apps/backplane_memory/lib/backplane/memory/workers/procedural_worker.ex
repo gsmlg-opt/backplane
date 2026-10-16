@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Workers.ProceduralWorker do
-  @moduledoc "Oban worker: extract procedural memories from semantic memories (semantic → procedural). Nightly cron."
+  @moduledoc "Styx worker: extract procedural memories from semantic memories (semantic → procedural). Nightly cron."
 
-  use Oban.Worker, queue: :memory, max_attempts: 2
+  use Styx.Worker, queue: :memory, max_attempts: 2
 
   import Ecto.Query
   require Logger
@@ -21,8 +21,8 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @impl Oban.Worker
-  def perform(%Oban.Job{} = job) do
+  @impl Styx.Worker
+  def perform(%Styx.Job{} = job) do
     Backplane.Memory.PipelineTelemetry.span("procedural", job.args, fn ->
       do_perform(job)
     end)
