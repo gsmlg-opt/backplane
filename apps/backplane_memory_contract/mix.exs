@@ -4,7 +4,7 @@ defmodule Backplane.MemoryContract.MixProject do
   def project do
     [
       app: :backplane_memory_contract,
-      version: "1.10.24",
+      version: "1.10.25",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
