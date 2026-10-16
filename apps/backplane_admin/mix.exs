@@ -45,16 +45,11 @@ defmodule BackplaneAdmin.MixProject do
       {:phoenix_ecto, "~> 4.6"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_live_dashboard, "~> 0.8"},
-      {:phoenix_duskmoon, "~> 9.16.7"},
+      {:phoenix_duskmoon, "~> 10.0.3"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
-      {:duskmoon_bundler_runtime, "~> 9.16.7"},
-      {:duskmoon_bundler, "~> 9.16.7", runtime: Mix.env() != :prod},
-      # TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#188
-      # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#188 - align the shared HTTP family.
-      {:http_fetch, "~> 0.21.2", override: true},
-      {:http_web_socket, "~> 0.21.2", override: true},
-      {:http_event_source, "~> 0.21.2", override: true},
+      {:duskmoon_bundler_runtime, "~> 10.0.1"},
+      {:duskmoon_bundler, "~> 10.0.1", runtime: Mix.env() != :prod},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0"},
       {:lazy_html, ">= 0.1.0"}
