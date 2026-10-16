@@ -174,13 +174,20 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
       row["type"] |> to_string() |> String.trim() |> String.upcase(),
       normalize_integer(row["notnull"]),
       normalize_default(row["dflt_value"]),
-      normalize_integer(row["pk"])
+      normalize_primary_key(row["pk"])
     }
   end
 
   defp normalize_integer(value) when is_integer(value), do: value
   defp normalize_integer(value) when is_binary(value), do: String.to_integer(value)
   defp normalize_integer(_value), do: -1
+
+  defp normalize_primary_key(value) do
+    case normalize_integer(value) do
+      position when position > 0 -> 1
+      position -> position
+    end
+  end
 
   defp normalize_default(nil), do: nil
 
@@ -191,8 +198,8 @@ defmodule Backplane.HostAgent.Memory.Edge.Migrator do
     |> String.replace(~r/^\((.*)\)$/, "\\1")
   end
 
-  # libSQL reports every composite primary-key member as `pk = 1` from
-  # table_info. Read its backing primary-key index to preserve key order.
+  # Older runtimes report composite primary-key membership as `pk = 1`; newer
+  # runtimes report ordinal positions. The backing index validates key order.
   defp primary_key?(store, table, expected) do
     with {:ok, %{rows: indexes}} <- Store.query(store, "PRAGMA index_list(#{table})"),
          %{"name" => index} <-

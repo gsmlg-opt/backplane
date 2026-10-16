@@ -64,7 +64,9 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
       {:wrong_default, "applied_revision INTEGER NOT NULL DEFAULT 0",
        "applied_revision INTEGER NOT NULL DEFAULT 1"},
       {:wrong_primary_key, "PRIMARY KEY (memory_space_id, scope, namespace)",
-       "PRIMARY KEY (memory_space_id, scope)"}
+       "PRIMARY KEY (memory_space_id, scope)"},
+      {:wrong_primary_key_order, "PRIMARY KEY (memory_space_id, scope, namespace)",
+       "PRIMARY KEY (scope, memory_space_id, namespace)"}
     ]
 
     for version <- [1, 2, 3], {name, source, replacement} <- mutations do
