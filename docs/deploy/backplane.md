@@ -45,32 +45,48 @@ volumes:
   pgdata:
 ```
 
-The container entrypoint is `/app/bin/backplane start`. Port `4100` is the
+The container entrypoint is `/app/bin/backplane`, with `start` as its default command. Port `4100` is the
 public API/MCP/LLM surface; port `4101` is the separate admin UI and must remain
 reachable only from a trusted network.
 
 ### Run database migrations
 
-Database migrations are run explicitly from the packaged release after the
-PostgreSQL service is ready. They are not run automatically when the container
-starts:
+Database migrations are run explicitly from the new packaged release after
+PostgreSQL is ready. They are not run automatically when the container starts.
+When upgrading through the Styx migration `20261016000001`, stop all old gateway
+instances and any other job producers/executors before migrating: the migration
+renames Oban storage, so old processes cannot keep using it. Keep PostgreSQL
+running and configure the Compose service with the new image before these steps:
 
 ```sh
-docker compose exec backplane /app/bin/backplane migrate
+docker compose stop backplane
+docker compose pull backplane
+docker compose run --rm backplane migrate
+docker compose up -d backplane
 ```
 
-For a container started without Compose, use the same release command with its
-container name or ID:
+For Docker without Compose, stop all old gateway containers and run a one-off
+container from the new image with the same environment, config mount, and
+PostgreSQL network as the gateway. Pass `migrate` instead of `start`:
 
 ```sh
-docker exec <container> /app/bin/backplane migrate
+docker run --rm --network <database-network> --env-file <gateway-env-file> \
+  -v "$PWD/backplane.toml:/etc/backplane/backplane.toml:ro" \
+  ghcr.io/gsmlg-dev/backplane:{{VERSION}} migrate
 ```
+
+Start the new gateway only after migration succeeds. For a binary rollback,
+stop new job producers/executors and reverse only the Styx migration using the
+new release before starting old Oban binaries; see `memory-v2-release.md`.
 
 ## Option 2 — OTP release tarball
 
 Download the tarball for your platform from this release page
 (`backplane-<version>-linux-x64.tar.gz` or `linux-arm64`), verify the
-`.sha256`, then:
+`.sha256`, then install and run the new release as below. For an upgrade through
+`20261016000001`, first stop every old gateway and job producer/executor. Keep
+them stopped until the new release has migrated the database; do not extract
+over a running release:
 
 ```sh
 tar -xzf backplane-<version>-linux-x64.tar.gz -C /opt
