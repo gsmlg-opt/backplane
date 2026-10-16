@@ -4,7 +4,7 @@ defmodule Backplane.Memory.MixProject do
   def project do
     [
       app: :backplane_memory,
-      version: "1.10.23",
+      version: "1.10.24",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
