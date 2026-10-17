@@ -418,12 +418,13 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     Req.Test.stub(GoogleAntigravity, fn conn ->
       assert {"authorization", "Bearer google-access"} in conn.req_headers
 
-      assert conn.request_path ==
-               "/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
+      case conn.request_path do
+        "/v1internal:retrieveUserQuotaSummary" ->
+          Req.Test.json(conn, google_antigravity_usage_body())
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(google_antigravity_usage_body()))
+        "/v1internal:loadCodeAssist" ->
+          Req.Test.json(conn, %{})
+      end
     end)
 
     plan = %Plan{

@@ -370,55 +370,32 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
         <div :if={@credits != []} class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div
             :for={credit <- @credits}
+            data-google-quota-group={map_value(credit, "id")}
             class="rounded border border-outline-variant bg-surface-container-low p-4"
           >
-            <div class="mb-3 flex items-start justify-between gap-3">
-              <div>
-                <div class="text-sm font-semibold">{map_value(credit, "label")}</div>
-                <div :if={map_value(credit, "description")} class="text-xs text-on-surface-variant">
-                  {map_value(credit, "description")}
-                </div>
+            <div class="mb-3">
+              <div class="text-sm font-semibold">{map_value(credit, "label")}</div>
+              <div :if={map_value(credit, "description")} class="text-xs text-on-surface-variant">
+                {map_value(credit, "description")}
               </div>
-              <.dm_badge
-                :if={not is_nil(map_value(credit, "used_percent"))}
-                variant={percentage_variant(map_value(credit, "used_percent"))}
-                size="sm"
-              >
-                {map_value(credit, "used_percent")}% used
-              </.dm_badge>
-            </div>
-
-            <div :if={not is_nil(map_value(credit, "used_percent"))} class="mb-3">
-              <.usage_bar percentage={map_value(credit, "used_percent")} />
             </div>
 
             <div
               :if={map_value(credit, "buckets") && map_value(credit, "buckets") != []}
               class="mt-3 space-y-2 border-t border-outline-variant/60 pt-3"
             >
-              <div
+              <.google_quota_window
                 :for={sub <- map_value(credit, "buckets")}
-                class="flex flex-col gap-1 text-xs"
-              >
-                <div class="flex items-center justify-between">
-                  <span class="font-medium text-on-surface">{map_value(sub, "label")}</span>
-                  <span class="text-on-surface-variant font-medium">
-                    {map_value(sub, "used_percent")}% used
-                  </span>
-                </div>
-                <.usage_bar percentage={map_value(sub, "used_percent")} />
-                <div :if={map_value(sub, "reset_time")} class="text-[10px] text-on-surface-variant">
-                  Resets {format_reset_at(map_value(sub, "reset_time"))}
-                </div>
-              </div>
+                window={sub}
+                label={map_value(sub, "label")}
+              />
             </div>
 
-            <div
-              :if={is_nil(map_value(credit, "used_percent")) && (!map_value(credit, "buckets") || map_value(credit, "buckets") == [])}
-              class="text-xs text-on-surface-variant"
-            >
-              Usage not reported
-            </div>
+            <.google_quota_window
+              :if={!map_value(credit, "buckets") || map_value(credit, "buckets") == []}
+              window={credit}
+              label="Quota remaining"
+            />
           </div>
         </div>
 
@@ -439,6 +416,59 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
         </div>
       </div>
     </.dm_card>
+    """
+  end
+
+  defp google_quota_window(assigns) do
+    raw_remaining = google_quota_remaining_percent(assigns.window)
+    remaining = if is_number(raw_remaining), do: Float.round(raw_remaining, 2)
+    reset_time = map_value(assigns.window, "reset_time")
+
+    assigns =
+      assigns
+      |> assign(:remaining, remaining)
+      |> assign(:quota_available, raw_remaining == 100)
+      |> assign(:reset_time, reset_time)
+      |> assign(
+        :refresh_in,
+        if(is_number(raw_remaining) and raw_remaining < 100,
+          do: google_quota_refresh_in(reset_time)
+        )
+      )
+
+    ~H"""
+    <div class="space-y-2 text-xs">
+      <div class="flex items-center justify-between gap-3">
+        <span class="font-medium">{@label}</span>
+        <span class="font-medium text-on-surface-variant">
+          {if is_number(@remaining),
+            do: "#{:erlang.float_to_binary(@remaining / 1, decimals: 2)}% remaining",
+            else: "Quota unavailable"}
+        </span>
+      </div>
+      <div
+        :if={is_number(@remaining)}
+        role="progressbar"
+        aria-label={@label}
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow={@remaining}
+        aria-valuetext={"#{:erlang.float_to_binary(@remaining / 1, decimals: 2)}% remaining"}
+        class="h-2.5 w-full rounded-full bg-surface-container-high"
+      >
+        <div
+          class={["h-2.5 rounded-full", bar_color(100 - @remaining)]}
+          style={"width: #{@remaining}%"}
+        >
+        </div>
+      </div>
+      <div class="text-on-surface-variant">
+        <span :if={@quota_available}>Quota available</span>
+        <span :if={@refresh_in}>Refreshes in {@refresh_in} ·</span>
+        <span :if={@reset_time}>Resets {format_reset_at(@reset_time)}</span>
+        <span :if={!@reset_time && !@quota_available}>No reset reported</span>
+      </div>
+    </div>
     """
   end
 
@@ -697,22 +727,23 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   defp google_antigravity_credits(credits) when is_list(credits) do
     credits = Enum.filter(credits, &is_map/1)
-    model_credits = Enum.filter(credits, &google_antigravity_model_credit?/1)
 
-    if model_credits == [] do
-      Enum.sort_by(credits, &google_antigravity_credit_sort_key/1)
-    else
-      grouped =
-        model_credits
-        |> Enum.filter(&(google_antigravity_model_group(&1) != :unsupported))
-        |> Enum.group_by(&google_antigravity_model_group/1)
+    {model_credits, supplied_groups} =
+      Enum.split_with(credits, &google_antigravity_model_credit?/1)
 
-      [:gemini, :claude_gpt_oss]
-      |> Enum.map(fn group ->
-        google_antigravity_group_credit(group, Map.get(grouped, group, []))
-      end)
-      |> Enum.sort_by(&google_antigravity_credit_sort_key/1)
-    end
+    grouped =
+      model_credits
+      |> Enum.filter(&(google_antigravity_model_group(&1) != :unsupported))
+      |> Enum.group_by(&google_antigravity_model_group/1)
+
+    fallback_groups =
+      for group <- [:gemini, :claude_gpt_oss, :argon],
+          Map.has_key?(grouped, group),
+          not Enum.any?(supplied_groups, &(google_antigravity_supplied_group(&1) == group)) do
+        google_antigravity_group_credit(group, Map.fetch!(grouped, group))
+      end
+
+    Enum.sort_by(supplied_groups ++ fallback_groups, &google_antigravity_credit_sort_key/1)
   end
 
   defp google_antigravity_credits(_), do: []
@@ -721,6 +752,8 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     case map_value(credit, "id") do
       "gemini-models" -> "0"
       "claude-gpt-oss-models" -> "1"
+      "claude-and-gpt-models" -> "1"
+      "gemini-4-argon" -> "2"
       "prompt" -> "0"
       "flow" -> "1"
       "flex" -> "2"
@@ -734,9 +767,17 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     has_sub_buckets = is_list(map_value(credit, "buckets")) and map_value(credit, "buckets") != []
 
     not has_sub_buckets and id not in ["prompt", "flow", "flex"] and
-      (not is_nil(map_value(credit, "remaining_fraction")) or
-         not is_nil(map_value(credit, "reset_time")) or
-         map_value(credit, "label") in ["Requests", "Wtus"])
+      (map_value(credit, "label") in ["Requests", "Wtus"] or
+         (google_antigravity_model_group(credit) != :unsupported and
+            is_nil(map_value(credit, "description"))))
+  end
+
+  defp google_antigravity_supplied_group(credit) do
+    case map_value(credit, "id") do
+      "gemini-models" -> :gemini
+      id when id in ["claude-gpt-oss-models", "claude-and-gpt-models"] -> :claude_gpt_oss
+      _ -> google_antigravity_model_group(credit)
+    end
   end
 
   defp google_antigravity_model_group(credit) do
@@ -749,6 +790,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     id = String.replace(id, "_", "-")
 
     cond do
+      String.starts_with?(id, "gemini-") and String.contains?(id, "argon") -> :argon
       google_antigravity_gemini_model?(id) -> :gemini
       google_antigravity_claude_gpt_oss_model?(id) -> :claude_gpt_oss
       true -> :unsupported
@@ -769,30 +811,59 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
       String.contains?(id, "gpt-oss-120b")
   end
 
-  defp google_antigravity_group_credit(:gemini, credits) do
+  defp google_antigravity_group_credit(group, credits) do
+    {id, label, description} =
+      case group do
+        :gemini ->
+          {"gemini-models", "Gemini Models", "Gemini Flash and Gemini Pro quota usage"}
+
+        :claude_gpt_oss ->
+          {"claude-gpt-oss-models", "Claude / GPT-OSS Models",
+           "Claude Sonnet/Opus and GPT-OSS quota usage"}
+
+        :argon ->
+          {"gemini-4-argon", "Gemini 4 Argon", "Separate Gemini 4 Argon quota usage"}
+      end
+
+    most_constrained =
+      Enum.min_by(credits, &(google_quota_remaining_percent(&1) || 101))
+
     %{
-      id: "gemini-models",
-      label: "Gemini Models",
-      description: "Gemini 3.5 Flash and Gemini 3.1 Pro quota usage",
-      used_percent: google_antigravity_max_used_percent(credits)
+      id: id,
+      label: label,
+      description: description,
+      remaining_fraction: map_value(most_constrained, "remaining_fraction"),
+      used_percent: map_value(most_constrained, "used_percent"),
+      reset_time: map_value(most_constrained, "reset_time")
     }
   end
 
-  defp google_antigravity_group_credit(:claude_gpt_oss, credits) do
-    %{
-      id: "claude-gpt-oss-models",
-      label: "Claude / GPT-OSS Models",
-      description: "Claude Sonnet/Opus 4.6 and GPT-OSS 120B quota usage",
-      used_percent: google_antigravity_max_used_percent(credits)
-    }
+  defp google_quota_remaining_percent(window) do
+    remaining = map_value(window, "remaining_fraction")
+    used = map_value(window, "used_percent")
+
+    cond do
+      is_number(remaining) and remaining >= 0 and remaining <= 1 ->
+        remaining * 100 / 1
+
+      is_number(used) and used >= 0 and used <= 100 ->
+        (100 - used) / 1
+
+      true ->
+        nil
+    end
   end
 
-  defp google_antigravity_max_used_percent(credits) do
-    credits
-    |> Enum.map(&map_value(&1, "used_percent"))
-    |> Enum.filter(&is_number/1)
-    |> Enum.max(fn -> nil end)
+  defp google_quota_refresh_in(reset_time) when is_binary(reset_time) do
+    with {:ok, datetime, _offset} <- DateTime.from_iso8601(reset_time),
+         seconds when seconds > 0 <- DateTime.diff(datetime, DateTime.utc_now()) do
+      "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
+    else
+      _ -> nil
+    end
   end
+
+  defp google_quota_refresh_in(_), do: nil
 
   defp google_antigravity_links(links) when is_map(links) do
     [

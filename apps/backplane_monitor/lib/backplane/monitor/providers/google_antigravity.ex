@@ -2,7 +2,8 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   @moduledoc """
   Fetches Google Antigravity usage with a Google OAuth access token.
 
-  The response is normalized into prompt, flow, and flex credit buckets.
+  The response preserves model groups and their independent quota windows,
+  with legacy credit buckets supported as a fallback.
   """
 
   import Bitwise
@@ -11,7 +12,8 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   @default_endpoint "https://daily-cloudcode-pa.googleapis.com"
   @fallback_endpoint "https://cloudcode-pa.googleapis.com"
   @default_url "#{@default_endpoint}/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
-  @default_user_agent "antigravity-cli"
+  # Google gates Gemini and Argon quota visibility on the Antigravity CLI identity.
+  @default_user_agent "antigravity/cli/1.4.0 (aidev_client; os_type=linux; arch=amd64)"
   @default_receive_timeout 15_000
   @credits_url "https://antigravity.google/g1-credits"
   @activity_url "https://antigravity.google/g1-activity"
@@ -74,7 +76,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   def normalize_usage_response(_), do: {:error, :invalid_usage_response}
 
   defp request_usage(access_token, config) do
-    if test_env?() or not is_nil(config_value(config, "api_url")) do
+    if not is_nil(config_value(config, "api_url")) do
       request_usage_legacy(access_token, config)
     else
       request_usage_rest(access_token, config)
@@ -83,7 +85,9 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
 
   defp request_usage_rest(access_token, config) do
     endpoint = config_value(config, "endpoint") || @default_endpoint
-    project = config_value(config, "project") || config_value(config, "cloudaicompanion_project") || ""
+
+    project =
+      config_value(config, "project") || config_value(config, "cloudaicompanion_project") || ""
 
     case request_rest_quota(access_token, endpoint, project, config) do
       {:ok, raw} ->
@@ -92,7 +96,10 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
         raw =
           raw
           |> Map.put_new("paid_tier", code_assist["paidTier"] || code_assist["paid_tier"])
-          |> Map.put_new("current_tier", code_assist["currentTier"] || code_assist["current_tier"])
+          |> Map.put_new(
+            "current_tier",
+            code_assist["currentTier"] || code_assist["current_tier"]
+          )
           |> maybe_put_upgrade_link_in_raw(code_assist)
 
         case normalize_usage_response(raw) do
@@ -115,7 +122,10 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
               raw =
                 raw
                 |> Map.put_new("paid_tier", code_assist["paidTier"] || code_assist["paid_tier"])
-                |> Map.put_new("current_tier", code_assist["currentTier"] || code_assist["current_tier"])
+                |> Map.put_new(
+                  "current_tier",
+                  code_assist["currentTier"] || code_assist["current_tier"]
+                )
                 |> maybe_put_upgrade_link_in_raw(code_assist)
 
               case normalize_usage_response(raw) do
@@ -238,10 +248,6 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     else
       raw
     end
-  end
-
-  defp test_env? do
-    Application.fetch_env(:backplane, :google_antigravity_monitor_req_options) != :error
   end
 
   defp request_usage_legacy(access_token, config) do
@@ -574,6 +580,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     %{
       id: to_string(id),
       label: display_name || titleize(id),
+      description: value(group, "description"),
       available: nil,
       used: nil,
       monthly: nil,
@@ -592,16 +599,29 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
 
     label =
       cond do
-        duration_seconds >= 500_000 -> "Weekly Limit"
-        duration_seconds >= 14_000 -> "5-Hour Limit"
-        duration_seconds > 0 -> "#{div(duration_seconds, 3600)}h Limit"
-        true -> "Limit"
+        is_binary(value(bucket, "display_name")) and value(bucket, "display_name") != "" ->
+          value(bucket, "display_name")
+
+        value(bucket, "window") == "weekly" or duration_seconds == 604_800 ->
+          "Weekly Limit"
+
+        value(bucket, "window") == "5h" or duration_seconds == 18_000 ->
+          "5-Hour Limit"
+
+        duration_seconds > 0 ->
+          "#{div(duration_seconds, 3600)}h Limit"
+
+        true ->
+          "Limit"
       end
 
     remaining_fraction = number_or_nil(value(bucket, "remaining_fraction"))
     used_percent = used_percent_from_remaining_fraction(remaining_fraction)
 
     %{
+      id: value(bucket, "bucket_id"),
+      window: value(bucket, "window"),
+      description: value(bucket, "description"),
       label: label,
       used_percent: used_percent,
       remaining_fraction: remaining_fraction,

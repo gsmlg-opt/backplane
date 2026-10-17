@@ -300,8 +300,10 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     Req.Test.stub(GoogleAntigravity, fn conn ->
       assert {"authorization", "Bearer google-access"} in conn.req_headers
 
-      assert conn.request_path ==
-               "/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
+      assert conn.request_path in [
+               "/v1internal:retrieveUserQuotaSummary",
+               "/v1internal:loadCodeAssist"
+             ]
 
       body = %{
         "buckets" => [
@@ -368,9 +370,8 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     assert html =~ "Usage Groups"
     assert html =~ "Gemini Models"
     assert html =~ "Claude / GPT-OSS Models"
-    assert html =~ "60% used"
-    assert html =~ "20% used"
-    assert html =~ "0% used"
+    assert html =~ "40.00% remaining"
+    assert html =~ "80.00% remaining"
     refute html =~ "Other Models"
     refute html =~ "claude-opus-4-6-thinking"
     refute html =~ "gpt-oss-120b"
@@ -458,10 +459,190 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
     assert html =~ "Gemini Models"
     assert html =~ "Weekly Limit"
     assert html =~ "5-Hour Limit"
-    assert html =~ "14% used"
-    assert html =~ "1% used"
+    assert html =~ "86.00% remaining"
+    assert html =~ "99.00% remaining"
     assert html =~ "Claude and GPT models"
-    assert html =~ "55% used"
+    assert html =~ "45.00% remaining"
+  end
+
+  test "Google quota groups display precise remaining windows and preserve Argon alongside legacy models" do
+    html =
+      render_google_credits([
+        %{
+          id: "gemini-models",
+          label: "Gemini Models",
+          description: "Models within this group: Gemini Flash, Gemini Pro",
+          used_percent: 14.1,
+          buckets: [
+            %{
+              label: "Weekly Limit Remaining",
+              remaining_fraction: 0.9597,
+              used_percent: 4,
+              reset_time: "2026-10-24T12:00:00Z"
+            },
+            %{
+              label: "Five Hour Limit Remaining",
+              remaining_fraction: 0.859,
+              used_percent: 14,
+              reset_time: "2026-10-17T18:00:00Z"
+            }
+          ]
+        },
+        %{
+          id: "claude-and-gpt-models",
+          label: "Claude and GPT Models",
+          description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+          buckets: [%{label: "Weekly Limit Remaining", remaining_fraction: 1.0}]
+        },
+        %{
+          id: "gemini-4-argon",
+          label: "Gemini 4 Argon",
+          description: "For paid Pro plans, Argon quota is separate.",
+          buckets: [
+            %{
+              label: "Gemini 4 Argon Weekly Limit",
+              remaining_fraction: 0.8314,
+              reset_time: "2026-10-24T12:50:00Z"
+            }
+          ]
+        },
+        %{id: "gemini-3.1-pro-high", label: "Wtus", remaining_fraction: 0.4, used_percent: 60}
+      ])
+
+    assert html =~ "Models within this group: Gemini Flash, Gemini Pro"
+    assert html =~ "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS"
+    assert html =~ "Gemini 4 Argon Weekly Limit"
+    assert html =~ "For paid Pro plans, Argon quota is separate."
+    assert html =~ "95.97% remaining"
+    assert html =~ "85.90% remaining"
+    assert html =~ "83.14% remaining"
+    assert html =~ "100.00% remaining"
+    assert html =~ "Quota available"
+    assert html =~ "10/24 12:00 UTC"
+    assert html =~ "10/24 12:50 UTC"
+    assert html =~ "width: 95.97%"
+    refute html =~ "% used"
+    assert length(Floki.find(Floki.parse_document!(html), "[data-google-quota-group]")) == 3
+  end
+
+  test "Google quota windows distinguish unavailable values from full and exhausted quota" do
+    html =
+      render_google_credits([
+        %{
+          id: "gemini-models",
+          label: "Gemini Models",
+          buckets: [
+            %{label: "Weekly Limit", remaining_fraction: nil, used_percent: nil},
+            %{label: "Five Hour Limit", remaining_fraction: 0, used_percent: 100}
+          ]
+        }
+      ])
+
+    assert html =~ "Quota unavailable"
+    assert html =~ "0.00% remaining"
+    refute html =~ "100.00% remaining"
+    refute html =~ "Quota available"
+    assert html =~ "No reset reported"
+    assert length(Floki.find(Floki.parse_document!(html), "[role=progressbar]")) == 1
+  end
+
+  test "Google legacy model quotas retain reset information and separate Argon without inventing windows" do
+    html =
+      render_google_credits([
+        %{
+          id: "gemini-3.1-pro-high",
+          label: "Wtus",
+          remaining_fraction: 0.9597,
+          used_percent: 4,
+          reset_time: "2026-10-24T12:00:00Z"
+        },
+        %{
+          id: "gemini-4-argon",
+          label: "Wtus",
+          remaining_fraction: 0.8314,
+          used_percent: 17,
+          reset_time: "2026-10-24T12:50:00Z"
+        }
+      ])
+
+    assert html =~ "Gemini 4 Argon"
+    assert html =~ "95.97% remaining"
+    assert html =~ "83.14% remaining"
+    assert html =~ "10/24 12:00 UTC"
+    assert html =~ "10/24 12:50 UTC"
+    refute html =~ "Weekly Limit"
+    refute html =~ "Five Hour Limit"
+    assert length(Floki.find(Floki.parse_document!(html), "[data-google-quota-group]")) == 2
+  end
+
+  test "Google quota reset countdowns accompany future reset times only" do
+    future_reset = DateTime.utc_now() |> DateTime.add(164 * 3600 + 7 * 60 + 30)
+
+    html =
+      render_google_credits([
+        %{
+          id: "gemini-models",
+          label: "Gemini Models",
+          buckets: [
+            %{
+              label: "Weekly Limit",
+              remaining_fraction: 0.95,
+              reset_time: DateTime.to_iso8601(future_reset)
+            },
+            %{
+              label: "Five Hour Limit",
+              remaining_fraction: 0.85,
+              reset_time: "2000-01-01T00:00:00Z"
+            },
+            %{label: "Unknown reset", remaining_fraction: 0.75, reset_time: "unknown"},
+            %{
+              label: "Full quota",
+              remaining_fraction: 1.0,
+              reset_time: DateTime.to_iso8601(future_reset)
+            }
+          ]
+        }
+      ])
+
+    assert html =~ "Refreshes in 164h 7m"
+    assert html =~ "Quota available"
+    assert length(Regex.scan(~r/Refreshes in/, html)) == 1
+  end
+
+  test "Google quota rounded to 100 percent keeps its partial-quota reset countdown" do
+    future_reset = DateTime.utc_now() |> DateTime.add(3600 + 7 * 60 + 30)
+
+    html =
+      render_google_credits([
+        %{
+          id: "gemini-models",
+          label: "Gemini Models",
+          buckets: [
+            %{
+              label: "Weekly Limit",
+              remaining_fraction: 0.99996,
+              reset_time: DateTime.to_iso8601(future_reset)
+            }
+          ]
+        }
+      ])
+
+    assert html =~ "100.00% remaining"
+    assert html =~ "Refreshes in 1h 7m"
+    refute html =~ "Quota available"
+  end
+
+  defp render_google_credits(credits) do
+    render_component(&Backplane.Admin.DashboardPlanUsageLive.render/1,
+      loading: false,
+      plan_data: [
+        %{
+          plan: %Plan{id: "quota-render", name: "Google AI Pro", provider: "google_ai"},
+          fetched_at: ~U[2026-10-17 12:00:00Z],
+          usage: {:ok, %{provider: "google_ai", credits: credits}}
+        }
+      ]
+    )
   end
 
   defp openai_token_set(access_token, refresh_token, account_id) do
