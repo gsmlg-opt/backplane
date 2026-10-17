@@ -8,7 +8,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   use GenServer
 
-  alias Backplane.AgentRuntime.{Conversation, Error, Goal}
+  alias Backplane.AgentRuntime.{Conversation, Error, Goal, ToolEffects}
 
   alias Backplane.AgentRuntime.Execution
 
@@ -53,7 +53,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  @spec call(map()) :: {:ok, map()} | {:error, Error.t()}
+  @spec call(map()) :: ToolEffects.result()
   def call(%{backend_context: %{runtime: runtime, profile: profile}} = operation)
       when is_pid(runtime) and profile in [:v1, :v2] do
     GenServer.call(runtime, {:tool, profile, operation}, :infinity)
@@ -245,10 +245,25 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           },
           else: state
 
-      dispatch(action, operation.arguments, from, caller, state)
+      case dispatch(action, operation.arguments, from, caller, state) do
+        {:reply, {:refused, error}, next} -> rejection_reply(operation, error, next)
+        result -> result
+      end
     else
-      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      {:error, %Error{} = error} -> rejection_reply(operation, error, state)
     end
+  end
+
+  # Only explicit refusal branches may assert non-dispatch. Legacy direct callers
+  # without an invocation identity retain their ordinary error result.
+  defp rejection_reply(operation, error, state) do
+    result =
+      case ToolEffects.reject(operation, error) do
+        {:rejected, _} = rejection -> rejection
+        {:error, _} -> {:error, error}
+      end
+
+    {:reply, result, state}
   end
 
   defp close_session_state(state) do
@@ -460,10 +475,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          :ok <- unique_name(state, name) do
       case prepare_activation(state, profile) do
         {:ok, state} -> spawn_child(arguments, caller, state, profile)
+        {:refused, error, state} -> {:reply, {:refused, error}, state}
         {:error, error, state} -> {:reply, {:error, error}, state}
       end
     else
-      {:error, error} -> {:reply, {:error, error}, state}
+      {:error, error} -> {:reply, {:refused, error}, state}
     end
   end
 
@@ -520,8 +536,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         nil
       )
     else
-      {:error, error} -> {:reply, {:error, error}, state}
-      _ -> {:reply, validation("message is required"), state}
+      {:error, error} ->
+        {:reply, {:refused, error}, state}
+
+      _ ->
+        {:error, error} = validation("message is required")
+        {:reply, {:refused, error}, state}
     end
   end
 
@@ -533,13 +553,23 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     with true <-
            (is_binary(message) and String.trim(message) != "") or
              validation("message is required"),
-         {:ok, name, agent} <- resolve_target(state, target),
-         {:ok, state} <- deliver(state, name, agent, action, message) do
-      state = %{state | updates: MapSet.put(state.updates, name)}
-      {:reply, {:ok, %{accepted: true}}, wake_waiters(state)}
+         {:ok, name, agent} <- resolve_target(state, target) do
+      case deliver(state, name, agent, action, message) do
+        {:ok, state} ->
+          state = %{state | updates: MapSet.put(state.updates, name)}
+          {:reply, {:ok, %{accepted: true}}, wake_waiters(state)}
+
+        {:refused, error, next} ->
+          {:reply, {:refused, error}, next}
+
+        {:error, error, next} ->
+          {:reply, {:error, error}, next}
+
+        {:error, error} ->
+          {:reply, {:error, error}, state}
+      end
     else
-      {:error, %Error{} = error, next} -> {:reply, {:error, error}, next}
-      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      {:error, %Error{} = error} -> {:reply, {:refused, error}, state}
     end
   end
 
@@ -550,12 +580,22 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     with true <-
            (is_binary(message) and String.trim(message) != "") or
              validation("message or items is required"),
-         {:ok, name, agent} <- resolve_target(state, arguments["target"]),
-         {:ok, state} <- deliver(state, name, agent, action, message) do
-      {:reply, {:ok, %{submission_id: unique_id("submission")}}, state}
+         {:ok, name, agent} <- resolve_target(state, arguments["target"]) do
+      case deliver(state, name, agent, action, message) do
+        {:ok, state} ->
+          {:reply, {:ok, %{submission_id: unique_id("submission")}}, state}
+
+        {:refused, error, next} ->
+          {:reply, {:refused, error}, next}
+
+        {:error, error, next} ->
+          {:reply, {:error, error}, next}
+
+        {:error, error} ->
+          {:reply, {:error, error}, state}
+      end
     else
-      {:error, %Error{} = error, next} -> {:reply, {:error, error}, next}
-      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      {:error, %Error{} = error} -> {:reply, {:refused, error}, state}
     end
   end
 
@@ -576,7 +616,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           {:reply, {:error, error}, wake_waiters(next)}
       end
     else
-      {:error, error} -> {:reply, {:error, error}, state}
+      {:error, error} -> {:reply, {:refused, error}, state}
     end
   end
 
@@ -597,21 +637,20 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         end
 
       {:error, %Error{} = error} ->
-        {:reply, {:error, error}, state}
+        {:reply, {:refused, error}, state}
     end
   end
 
   defp dispatch(:resume, arguments, _from, _caller, state) do
     with {:ok, name, agent} <- resolve_target(state, arguments["id"]),
-         true <- agent.status == :shutdown or validation("agent is not closed"),
-         {:ok, state} <- replace_agent(state, name, agent, nil) do
-      {:reply, {:ok, %{status: :running}}, state}
+         true <- agent.status == :shutdown or validation("agent is not closed") do
+      case replace_agent(state, name, agent, nil) do
+        {:ok, next} -> {:reply, {:ok, %{status: :running}}, next}
+        {:error, error, next} -> {:reply, {:error, error}, next}
+        {:error, error} -> {:reply, {:error, error}, state}
+      end
     else
-      {:error, %Error{} = error, next} ->
-        {:reply, {:error, error}, next}
-
-      {:error, %Error{} = error} ->
-        {:reply, {:error, error}, state}
+      {:error, %Error{} = error} -> {:reply, {:refused, error}, state}
     end
   end
 
@@ -792,6 +831,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     with :ok <- cancel_agent(agent),
          {:ok, state} <- replace_agent(state, name, agent, message) do
       {:ok, state}
+    else
+      # Cancellation already ran, so replacement refusal cannot prove non-dispatch.
+      {:refused, error, next} -> {:error, error, next}
+      error -> error
     end
   end
 
@@ -829,6 +872,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          :ok <- safe_replacement(snapshot) do
       case prepare_activation(state, admission_profile, name) do
         {:ok, next} -> start_replacement(next, name, next.agents[name], message, snapshot)
+        {:refused, error, next} -> {:refused, error, next}
         {:error, error, next} -> {:error, error, next}
       end
     end
@@ -1584,7 +1628,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp prepare_activation(state, :v1, _replacing) do
     case capacity(state) do
       :ok -> {:ok, state}
-      {:error, error} -> {:error, error, state}
+      {:error, error} -> {:refused, error, state}
     end
   end
 
@@ -1594,8 +1638,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         name != replacing and Map.get(agent, :execution_reserved, agent.status != :shutdown)
       end)
 
+    # Only this check precedes residency eviction and every admission callback.
     if reserved >= state.v2_child_limit do
-      {:error, Error.new(:resource_conflict, "agent execution limit reached"), state}
+      {:refused, Error.new(:resource_conflict, "agent execution limit reached"), state}
     else
       make_resident_room(state, replacing)
     end

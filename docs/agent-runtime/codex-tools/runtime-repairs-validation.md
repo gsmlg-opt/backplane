@@ -411,3 +411,48 @@ These checks establish the package capability and deterministic content-budget
 contracts. They do not establish production Sigma provider execution, Codex
 behavioral parity or publication of the version; release evidence belongs to
 the release workflow.
+
+## Collaboration pre-effect refusal — 2026-10-17 (issue #72)
+
+Issue [#72](https://github.com/gsmlg-opt/backplane/issues/72) reports a published
+V2 capacity refusal becoming parent `run_cancelled` / `unknown_outcome`. The
+manager rejected the fourth child before reservation, but its generic error
+provided no non-dispatch proof for the mutating `spawn_agent` descriptor.
+Explicit pre-effect refusals now use the existing `ToolEffects.reject/2`
+contract with the exact runtime operation; the parent receives a structured
+tool error and can request another provider response. This does not broaden
+generic error settlement or reconcile work that may already have started.
+
+The pinned Codex source remains
+`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. Its
+[`ensure_execution_capacity`](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/core/src/agent/control/execution.rs#L32-L48)
+returns `AgentLimitReached`;
+[`spawn`](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/core/src/agent/control/spawn.rs#L649-L674)
+checks it before residency/spawn reservation. The
+[V2 tool handler](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs#L184-L217)
+maps the failure through
+[`collab_spawn_error`](https://github.com/openai/codex/blob/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/core/src/tools/handlers/multi_agents_common.rs#L66-L75)
+to `FunctionCallError::RespondToModel`. Backplane's invocation-bound proof is
+the adaptation required by its commit-before-dispatch and uncertain-effect
+settlement contract; it does not assert parity for all collaboration failures.
+
+Regression references, relative to the runtime package's
+`test/backplane/agent_runtime/` directory:
+
+- `conversation_multi_agent_rejections_test.exs` uses the published V2 profile,
+  a real parent Conversation and three held child providers at total limit four.
+  It checks the next parent request and structured refusal, unchanged children
+  and admission records, no fourth preparation/receipt and cleared parent intent.
+- `codex/multi_agent_rejection_proofs_test.exs` checks exact-operation proof for
+  spawn/terminal-follow-up capacity, duplicate names and missing V1/V2 targets;
+  changed identity or arguments fail closed. Partial legacy calls and
+  post-reservation preparation errors retain generic uncertain settlement,
+  including preparation errors with the same class as capacity refusal.
+- Existing `conversation_rejections_test.exs` and
+  `conversation_uncertain_effects_test.exs` retain coverage for cancellation,
+  late/replayed rejection, dispatched mutation errors, timeouts and worker death.
+
+These deterministic package regressions do not exercise production consumer
+adapters, durable host stores or live providers. Recorded execution results for
+this follow-up belong to its scoped/package validation run, separate from the
+historical totals above.

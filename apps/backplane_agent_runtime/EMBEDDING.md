@@ -164,6 +164,17 @@ settling that invocation. The host must use the exact runtime operation; changed
 incomplete or replayed identities fail closed. `:unknown_outcome` cannot be
 converted to a rejection.
 
+The built-in collaboration backend uses this contract for explicit refusals
+before effects, including capacity before child reservation, duplicate task
+names and missing targets (#72). With a total V2 limit of four, a root with three
+executing children receives a structured `:resource_conflict` tool error on its
+fourth spawn and can continue; the admitted children remain running. That
+refusal creates no child preparation or admission receipt. Fully identified
+runtime operations receive rejection proof; legacy direct calls with incomplete
+identity retain plain errors. Errors after admission reservation or host
+preparation, attempted delivery/interruption, or unconfirmed cleanup are not
+reclassified, even when they use the same error class as a capacity refusal.
+
 Do not call this helper for an error returned by an already-dispatched tool,
 for a timeout/crash, or based on missing backend records. Plain errors and error
 metadata claiming non-execution retain their existing uncertainty classification.

@@ -11,6 +11,11 @@
 
 ## Unreleased
 
+- Return invocation-bound rejection proof for collaboration refusals before
+  effects, including V2 execution capacity. Real parent Conversations receive a
+  structured tool error and continue without reserving another child (#72).
+  Failures after reservation, dispatch, or unconfirmed cleanup remain uncertain.
+
 - Reserve unique child activation attempts before host preparation, retain
   correlated admission receipts on rejection/failure, and gate input dispatch
   on synchronous host acknowledgement for spawn and replacement (#71).

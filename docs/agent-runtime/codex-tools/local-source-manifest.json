@@ -105,8 +105,8 @@
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/multi_agent.ex",
-      "sha256": "1fc4f0ac8462a390bece7cfa5888a5cecc73057defcf4e2f115d52c1471827f0",
-      "bytes": 85086
+      "sha256": "5ad679552927389c4bda2da701f573525d0323836d3f9d6ab815bb1fa277e82d",
+      "bytes": 86490
     },
     {
       "path": "apps/backplane_agent_runtime/lib/backplane/agent_runtime/codex/path_guard.ex",

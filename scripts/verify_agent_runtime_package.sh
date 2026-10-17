@@ -154,11 +154,11 @@ cp "$source_dir/test/backplane/agent_runtime/input_schema_test.exs" \
 cp "$source_dir/test/backplane/agent_runtime/store_conformance_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/store_conformance_test.exs"
 mkdir -p "$conversation_fixture/test/backplane/agent_runtime/codex"
-for collaboration_test in codex_multi_agent_profile_test.exs codex_multi_agent_close_test.exs; do
+for collaboration_test in codex_multi_agent_profile_test.exs codex_multi_agent_close_test.exs conversation_multi_agent_rejections_test.exs; do
   cp "$source_dir/test/backplane/agent_runtime/$collaboration_test" \
     "$conversation_fixture/test/backplane/agent_runtime/$collaboration_test"
 done
-for collaboration_test in multi_agent_v2_lifecycle_test.exs multi_agent_observer_test.exs multi_agent_mailbox_test.exs multi_agent_birth_test.exs; do
+for collaboration_test in multi_agent_v2_lifecycle_test.exs multi_agent_observer_test.exs multi_agent_mailbox_test.exs multi_agent_birth_test.exs multi_agent_rejection_proofs_test.exs; do
   cp "$source_dir/test/backplane/agent_runtime/codex/$collaboration_test" \
     "$conversation_fixture/test/backplane/agent_runtime/codex/$collaboration_test"
 done
