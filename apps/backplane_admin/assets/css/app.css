@@ -196,6 +196,39 @@
   color: var(--admin-sidebar-text);
 }
 
+.admin-desktop-sidebar {
+  --dm-left-menu-width: 15rem;
+
+  display: none;
+}
+
+.admin-desktop-sidebar .nested-menu {
+  width: 100%;
+}
+
+.admin-desktop-sidebar .nested-menu,
+.admin-desktop-sidebar .nested-menu a,
+.admin-desktop-sidebar .nested-menu summary {
+  color: inherit;
+}
+
+.admin-desktop-sidebar details[id*="-group-links-"] > summary {
+  display: none;
+}
+
+.admin-desktop-sidebar details[id*="-group-links-"] > ul {
+  padding-inline-start: 0;
+}
+
+.admin-desktop-sidebar [data-left-menu-toggle] {
+  color: var(--admin-sidebar-text);
+}
+
+.admin-desktop-sidebar :is(a, summary, [data-left-menu-toggle]):focus-visible {
+  outline: 2px solid var(--admin-sidebar-text);
+  outline-offset: 2px;
+}
+
 .admin-sidebar-nav {
   display: flex;
   gap: 0.375rem;
@@ -243,18 +276,23 @@
   font-weight: 800;
 }
 
-.admin-sidebar-link:hover {
+.admin-sidebar-link:hover,
+.admin-desktop-sidebar .nested-menu a:hover,
+.admin-desktop-sidebar .nested-menu summary:hover,
+.admin-desktop-sidebar [data-left-menu-toggle]:hover {
   background: color-mix(in oklch, var(--admin-sidebar-active), transparent 88%);
   color: var(--admin-sidebar-text);
 }
 
-.admin-sidebar-link.is-active {
+.admin-sidebar-link.is-active,
+.admin-desktop-sidebar .nested-menu a[aria-current="page"] {
   background: var(--admin-sidebar-active);
   color: var(--admin-sidebar-active-text);
   box-shadow: 0 1rem 2rem color-mix(in oklch, var(--admin-sidebar-active), transparent 82%);
 }
 
-.admin-sidebar-link.is-active:hover {
+.admin-sidebar-link.is-active:hover,
+.admin-desktop-sidebar .nested-menu a[aria-current="page"]:hover {
   color: var(--admin-sidebar-active-text);
 }
 
@@ -286,55 +324,14 @@
 }
 
 @media (min-width: 1024px) {
-  .admin-sidebar {
-    min-height: calc(100vh - 4rem);
-  }
-
-  .admin-sidebar-nav {
-    flex-direction: column;
-    gap: 0.375rem;
-    overflow: visible;
-    padding: 1.5rem 1rem 1rem;
-  }
-
-  .admin-sidebar-section {
-    align-self: stretch;
-    margin-bottom: 0.625rem;
-    padding: 0 0.75rem;
-  }
-
-  .admin-sidebar-link,
-  .admin-sidebar-group-title {
+  .admin-desktop-sidebar {
     display: flex;
-    min-height: 2.875rem;
-    padding: 0.625rem 0.875rem;
-    width: 100%;
   }
+}
 
-  .admin-sidebar-link {
-    font-size: 0.9375rem;
-  }
-
-  .admin-sidebar-link:hover {
-    transform: translateX(2px);
-  }
-
-  .admin-sidebar-icon {
-    flex-basis: 1.25rem;
-    height: 1.25rem;
-    width: 1.25rem;
-  }
-
-  .admin-sidebar-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .admin-sidebar-group-title {
-    min-height: auto;
-    padding-bottom: 0.125rem;
-    padding-top: 0.625rem;
+@media (min-width: 1280px) {
+  .admin-desktop-sidebar {
+    --dm-left-menu-width: 16rem;
   }
 }
 

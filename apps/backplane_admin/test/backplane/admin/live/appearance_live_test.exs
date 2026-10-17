@@ -10,12 +10,40 @@ defmodule Backplane.Admin.AppearanceLiveTest do
     assert has_element?(view, "h1", "Appearance")
 
     # Segmented buttons
-    assert has_element?(view, ~s(#appearance-theme-switcher button[data-theme-value="default"]), "Auto")
-    assert has_element?(view, ~s(#appearance-theme-switcher button[data-theme-value="sunshine"]), "Light")
-    assert has_element?(view, ~s(#appearance-theme-switcher button[data-theme-value="moonlight"]), "Dark")
+    assert has_element?(
+             view,
+             ~s(#appearance-theme-switcher button[data-theme-value="default"]),
+             "Auto"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#appearance-theme-switcher button[data-theme-value="sunshine"]),
+             "Light"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#appearance-theme-switcher button[data-theme-value="moonlight"]),
+             "Dark"
+           )
 
     # Sidebar navigation under System shows Appearance link active
-    assert has_element?(view, ~s(.admin-sidebar-link[href="/system/appearance"][aria-current="page"]), "Appearance")
+    assert has_element?(
+             view,
+             ~s(.admin-sidebar-link[href="/system/appearance"][aria-current="page"]),
+             "Appearance"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#admin-sidebar a[href="/system/appearance"][aria-label="Appearance"][aria-current="page"])
+           )
+
+    assert has_element?(
+             view,
+             ~s(#admin-sidebar-navigation[data-active-nav="system-appearance"])
+           )
 
     # Appbar does not contain the old theme switcher
     refute has_element?(view, "#admin-theme-switcher")

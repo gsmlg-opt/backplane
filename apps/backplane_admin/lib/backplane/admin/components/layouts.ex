@@ -197,6 +197,44 @@ defmodule Backplane.Admin.Layouts do
     end
   end
 
+  def left_nav_groups(current_path) do
+    current_path
+    |> left_nav_items()
+    |> Enum.chunk_by(fn item -> if Map.has_key?(item, :items), do: item.label end)
+    |> Enum.map(fn
+      [%{items: items} = group] ->
+        %{
+          id: group.label |> String.downcase() |> String.replace(" ", "-"),
+          label: group.label,
+          items: Enum.map(items, &left_menu_item/1)
+        }
+
+      items ->
+        %{
+          id: "links-" <> left_nav_item_id(hd(items)),
+          label: left_nav_heading(current_path),
+          items: Enum.map(items, &left_menu_item/1)
+        }
+    end)
+  end
+
+  def active_left_nav_id(current_path) do
+    current_path
+    |> left_nav_items()
+    |> Enum.flat_map(fn item -> Map.get(item, :items, [item]) end)
+    |> Enum.find_value("", fn item ->
+      if active_left_nav?(current_path, item), do: left_nav_item_id(item)
+    end)
+  end
+
+  defp left_menu_item(item) do
+    %{id: left_nav_item_id(item), label: item.label, to: item.path, icon: item.icon}
+  end
+
+  defp left_nav_item_id(item) do
+    item.path |> String.trim_leading("/") |> String.replace("/", "-")
+  end
+
   def left_nav_heading(current_path) do
     case admin_section(current_path) do
       :dashboard -> "Dashboard"

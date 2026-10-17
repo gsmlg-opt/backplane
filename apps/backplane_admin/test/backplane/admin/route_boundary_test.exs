@@ -69,9 +69,37 @@ defmodule Backplane.Admin.RouteBoundaryTest do
   } do
     {:ok, view, html} = live(conn, "/memory")
 
-    items =
-      html
-      |> Floki.parse_fragment!()
+    expected_items = [
+      {"Overview", "/memory"},
+      {"Activity", "/memory/activity"},
+      {"Sessions", "/memory/sessions"},
+      {"Timeline", "/memory/timeline"},
+      {"Replay", "/memory/replay"},
+      {"Memories", "/memory/memories"},
+      {"Lessons", "/memory/lessons"},
+      {"Crystals", "/memory/crystals"},
+      {"Graph", "/memory/graph"},
+      {"Profile", "/memory/profile"},
+      {"Actions", "/memory/actions"},
+      {"Recall Inspector", "/memory/recall"},
+      {"Audit", "/memory/audit"},
+      {"Config", "/memory/config"}
+    ]
+
+    document = Floki.parse_fragment!(html)
+
+    desktop_items =
+      document
+      |> Floki.find("#admin-sidebar a[aria-label]")
+      |> Enum.map(fn link ->
+        {
+          link |> Floki.attribute("aria-label") |> List.first(),
+          link |> Floki.attribute("href") |> List.first()
+        }
+      end)
+
+    mobile_items =
+      document
       |> Floki.find(~s(nav[aria-label="Memory navigation"] a.admin-sidebar-link))
       |> Enum.map(fn link ->
         {
@@ -80,24 +108,26 @@ defmodule Backplane.Admin.RouteBoundaryTest do
         }
       end)
 
-    assert items == [
-             {"Overview", "/memory"},
-             {"Activity", "/memory/activity"},
-             {"Sessions", "/memory/sessions"},
-             {"Timeline", "/memory/timeline"},
-             {"Replay", "/memory/replay"},
-             {"Memories", "/memory/memories"},
-             {"Lessons", "/memory/lessons"},
-             {"Crystals", "/memory/crystals"},
-             {"Graph", "/memory/graph"},
-             {"Profile", "/memory/profile"},
-             {"Actions", "/memory/actions"},
-             {"Recall Inspector", "/memory/recall"},
-             {"Audit", "/memory/audit"},
-             {"Config", "/memory/config"}
-           ]
+    assert desktop_items == expected_items
+    assert mobile_items == expected_items
+
+    assert has_element?(
+             view,
+             ~s(#admin-sidebar[aria-label="Memory navigation"])
+           )
+
+    assert has_element?(
+             view,
+             ~s(#admin-sidebar [data-left-menu-toggle][aria-controls="admin-sidebar-scroll"][aria-expanded="true"])
+           )
+
+    assert has_element?(view, "#admin-sidebar-scroll")
+    assert has_element?(view, ~s(#admin-sidebar a[href="/memory"][aria-current="page"]))
 
     for group <- ~w(Observe Knowledge Coordinate Operate) do
+      id = String.downcase(group)
+
+      assert has_element?(view, "#admin-sidebar-group-#{id} > summary", group)
       assert has_element?(view, ".admin-sidebar-group-title", group)
     end
   end
@@ -118,6 +148,40 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     groups =
       html
       |> Floki.parse_fragment!()
+      |> Floki.find("#admin-sidebar-group-monitor, #admin-sidebar-group-log")
+      |> Enum.map(fn group ->
+        {
+          group |> Floki.find("summary") |> Floki.text() |> String.trim(),
+          group
+          |> Floki.find("a[aria-label]")
+          |> Enum.map(fn link ->
+            {link |> Floki.attribute("aria-label") |> List.first(),
+             link |> Floki.attribute("href") |> List.first()}
+          end)
+        }
+      end)
+
+    expected_groups = [
+      {"Monitor",
+       [
+         {"Plan Usage", "/system/monitor/plans"},
+         {"API Usage", "/system/monitor/api-usage"}
+       ]},
+      {"Log",
+       [
+         {"LLM Log", "/system/logs/llm"},
+         {"MCP Log", "/system/logs/mcp"},
+         {"Audit Log", "/system/logs/audit"},
+         {"Job", "/system/logs/jobs"},
+         {"Sink", "/system/logs/sinks"}
+       ]}
+    ]
+
+    assert groups == expected_groups
+
+    mobile_groups =
+      html
+      |> Floki.parse_fragment!()
       |> Floki.find(~s(nav[aria-label="System navigation"] .admin-sidebar-group))
       |> Enum.map(fn group ->
         {
@@ -131,23 +195,58 @@ defmodule Backplane.Admin.RouteBoundaryTest do
         }
       end)
 
-    assert groups == [
-             {"Monitor",
-              [
-                {"Plan Usage", "/system/monitor/plans"},
-                {"API Usage", "/system/monitor/api-usage"}
-              ]},
-             {"Log",
-              [
-                {"LLM Log", "/system/logs/llm"},
-                {"MCP Log", "/system/logs/mcp"},
-                {"Audit Log", "/system/logs/audit"},
-                {"Job", "/system/logs/jobs"},
-                {"Sink", "/system/logs/sinks"}
-              ]}
-           ]
+    assert mobile_groups == expected_groups
+
+    refute has_element?(view, "#admin-sidebar-group-monitor #admin-sidebar-group-log")
+    refute has_element?(view, "#admin-sidebar-group-log #admin-sidebar-group-monitor")
 
     refute has_element?(view, ~s(a[href="/system/logs"]), "Logs")
+  end
+
+  test "same-section links keep the sidebar configuration and publish the destination route", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/system/appearance")
+
+    assert [sidebar] =
+             Enum.filter(live_children(view), fn child ->
+               String.starts_with?(child.id, "admin-sidebar-live-")
+             end)
+
+    assert has_element?(
+             view,
+             ~s(#admin-sidebar a[href="/system/config"][data-phx-link="redirect"])
+           )
+
+    assert has_element?(
+             view,
+             ~s(#admin-sidebar-navigation[data-active-nav="system-appearance"])
+           )
+
+    # LiveViewTest follows navigation by mounting a new client, so process
+    # continuity for sticky children is verified in the browser.
+    {:ok, next_view, _html} =
+      view
+      |> element(~s(#admin-sidebar a[href="/system/config"]))
+      |> render_click()
+      |> follow_redirect(conn, "/system/config")
+
+    assert [next_sidebar] =
+             Enum.filter(live_children(next_view), fn child ->
+               String.starts_with?(child.id, "admin-sidebar-live-")
+             end)
+
+    assert next_sidebar.id == sidebar.id
+
+    assert has_element?(
+             next_view,
+             ~s(#admin-sidebar a[href="/system/config"][aria-current="page"])
+           )
+
+    assert has_element?(
+             next_view,
+             ~s(#admin-sidebar-navigation[data-active-nav="system-config"])
+           )
   end
 
   test "Memory V2 uses the DuskMoon primary appbar background", %{conn: conn} do

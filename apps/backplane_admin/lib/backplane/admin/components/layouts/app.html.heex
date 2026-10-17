@@ -63,10 +63,22 @@
   </header>
 
   <div class="min-h-[calc(100vh-4rem)] bg-surface-container-low lg:flex">
-    <aside class="admin-sidebar lg:w-60 lg:shrink-0 xl:w-64">
+    <.dm_left_menu
+      id="admin-sidebar"
+      sticky
+      socket={@socket}
+      groups={Backplane.Admin.Layouts.left_nav_groups(current_path)}
+      active={Backplane.Admin.Layouts.active_left_nav_id(current_path)}
+      brand={%{label: left_nav_heading, icon: "menu"}}
+      nav_label={left_nav_heading <> " navigation"}
+      storage_key="backplane:sidebar-collapsed"
+      class="admin-sidebar admin-desktop-sidebar sticky top-16 h-[calc(100dvh-4rem)]"
+    />
+
+    <aside class="admin-sidebar lg:hidden">
       <nav class="admin-sidebar-nav" aria-label={left_nav_heading <> " navigation"}>
         <div class="admin-sidebar-section">{left_nav_heading}</div>
-        <div :for={item <- left_nav_items} class="contents lg:block">
+        <div :for={item <- left_nav_items} class="contents">
           <div :if={Map.has_key?(item, :items)} class="admin-sidebar-group">
             <div class="admin-sidebar-group-title">
               <.dm_mdi :if={item[:icon]} name={item[:icon]} class="admin-sidebar-icon" />
