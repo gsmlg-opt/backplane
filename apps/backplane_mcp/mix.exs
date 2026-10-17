@@ -4,7 +4,7 @@ defmodule BackplaneMcp.MixProject do
   def project do
     [
       app: :backplane_mcp,
-      version: "1.10.25",
+      version: "1.10.26",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
