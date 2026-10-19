@@ -226,6 +226,7 @@ defmodule Backplane.CIWorkflowTest do
       "Start PostgreSQL 17 with pgvector",
       "Prepare test database",
       "Compile selected app",
+      "Install admin asset dependencies",
       "Run tests"
     ])
 
@@ -254,6 +255,12 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(job, %{
       "name" => "Compile selected app",
       "run" => ~s(mix "do" --app ${{ matrix.app }} cmd mix compile)
+    })
+
+    assert_step(job, %{
+      "name" => "Install admin asset dependencies",
+      "if" => "matrix.app == 'backplane_admin'",
+      "run" => "mix npm.install --frozen"
     })
 
     assert_step(job, %{

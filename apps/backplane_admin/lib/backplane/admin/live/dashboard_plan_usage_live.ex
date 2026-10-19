@@ -427,7 +427,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     assigns =
       assigns
       |> assign(:remaining, remaining)
-      |> assign(:quota_available, raw_remaining == 100)
+      |> assign(:quota_available, raw_remaining == 100.0)
       |> assign(:reset_time, reset_time)
       |> assign(
         :refresh_in,

@@ -22,8 +22,7 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
 
       for {signal, id} <- [
             {:first, "concurrent-1"},
-            {:second, "concurrent-2"},
-            {:third, "concurrent-3"}
+            {:second, "concurrent-2"}
           ] do
         Task.start(fn ->
           req = tool_call_request("wait_signal", %{"signal" => Atom.to_string(signal)}, id)
@@ -33,12 +32,18 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
 
       assert_receive {:tool_running, first_pid, :first}, 1_000
       assert_receive {:tool_running, second_pid, :second}, 1_000
-      refute_received {:tool_running, _, :third}
+
+      Task.start(fn ->
+        req = tool_call_request("wait_signal", %{"signal" => "third"}, "concurrent-3")
+        send(caller, {:reply, :third, GenServer.call(session, {:mcp_request, req, ctx}, 5_000)})
+      end)
 
       SyncHelpers.await_state(
         session,
         &(map_size(&1.in_flight) == 2 and :queue.len(&1.request_queue) == 1)
       )
+
+      refute_received {:tool_running, _, :third}
 
       send(first_pid, {:proceed, :first})
 
@@ -151,9 +156,9 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
           req = tool_call_request("increment", %{}, "id-#{n}")
           send(caller, {:reply, n, GenServer.call(session, {:mcp_request, req, ctx}, 5_000)})
         end)
-      end
 
-      SyncHelpers.await_state(session, &(:queue.len(&1.request_queue) == 3))
+        SyncHelpers.await_state(session, &(:queue.len(&1.request_queue) == n - 1))
+      end
 
       send(blocker_pid, {:proceed, :first})
 

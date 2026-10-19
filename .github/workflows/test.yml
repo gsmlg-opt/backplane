@@ -120,6 +120,10 @@ jobs:
       - name: Compile selected app
         run: mix "do" --app ${{ matrix.app }} cmd mix compile
 
+      - name: Install admin asset dependencies
+        if: matrix.app == 'backplane_admin'
+        run: mix npm.install --frozen
+
       - name: Run tests
         run: |
           if [ "${{ matrix.app }}" = "backplane_memory" ]; then
