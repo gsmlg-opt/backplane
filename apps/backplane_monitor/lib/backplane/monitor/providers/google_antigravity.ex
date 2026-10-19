@@ -76,10 +76,10 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
   def normalize_usage_response(_), do: {:error, :invalid_usage_response}
 
   defp request_usage(access_token, config) do
-    if not is_nil(config_value(config, "api_url")) do
-      request_usage_legacy(access_token, config)
-    else
+    if is_nil(config_value(config, "api_url")) do
       request_usage_rest(access_token, config)
+    else
+      request_usage_legacy(access_token, config)
     end
   end
 
