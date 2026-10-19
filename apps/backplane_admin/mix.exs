@@ -46,6 +46,7 @@ defmodule BackplaneAdmin.MixProject do
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_live_dashboard, "~> 0.8"},
       {:phoenix_duskmoon, "~> 10.0.4"},
+      {:phoenix_session_process, "~> 1.0.1"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 10.0.1"},

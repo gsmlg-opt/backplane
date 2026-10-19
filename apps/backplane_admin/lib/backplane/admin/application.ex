@@ -6,6 +6,7 @@ defmodule Backplane.Admin.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      {Phoenix.SessionProcess, []},
       Backplane.Admin.Endpoint
     ]
 

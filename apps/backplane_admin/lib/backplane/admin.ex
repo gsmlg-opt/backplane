@@ -33,6 +33,7 @@ defmodule Backplane.Admin do
         layout: {Backplane.Admin.Layouts, :app}
 
       on_mount(Backplane.Admin.ThemeHook)
+      on_mount(Backplane.Admin.SidebarSessionHook)
 
       unquote(html_helpers())
     end

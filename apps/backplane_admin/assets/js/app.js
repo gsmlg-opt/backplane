@@ -1,7 +1,8 @@
 import "phoenix_html"
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
-import * as DuskmoonHooks from "../../../../deps/phoenix_duskmoon/assets/js/hooks/index.js"
+import * as DuskmoonHooks from "phoenix_duskmoon/hooks"
+import {AdminSidebarSession, SessionLeftMenu} from "./hooks/sidebar_session.js"
 
 // Register only the DuskMoon custom elements used by the admin UI.
 // Avoid registerAll() from @duskmoon-dev/elements because it imports
@@ -274,7 +275,7 @@ const ThemeSegmentControl = {
 let csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
 let liveSocket = new LiveSocket("/live", Socket, {
   params: {_csrf_token: csrfToken},
-  hooks: {...DuskmoonHooks, ReplayKeyboard, ThemeSegmentControl}
+  hooks: {...DuskmoonHooks, DuskmoonLeftMenu: SessionLeftMenu, AdminSidebarSession, ReplayKeyboard, ThemeSegmentControl}
 })
 
 // Close dialogs when buttons inside dialog forms are clicked

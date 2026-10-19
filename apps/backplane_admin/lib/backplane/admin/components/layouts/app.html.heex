@@ -62,16 +62,19 @@
     </div>
   </header>
 
-  <div class="min-h-[calc(100vh-4rem)] bg-surface-container-low lg:flex">
+  <div
+    id="admin-sidebar-session"
+    phx-hook="AdminSidebarSession"
+    data-sidebar-collapsed={to_string(@sidebar_collapsed)}
+    class="min-h-[calc(100vh-4rem)] bg-surface-container-low lg:flex"
+  >
     <.dm_left_menu
       id="admin-sidebar"
       sticky
       socket={@socket}
       groups={Backplane.Admin.Layouts.left_nav_groups(current_path)}
       active={Backplane.Admin.Layouts.active_left_nav_id(current_path)}
-      brand={%{label: left_nav_heading, icon: "menu"}}
       nav_label={left_nav_heading <> " navigation"}
-      storage_key="backplane:sidebar-collapsed"
       class="admin-sidebar admin-desktop-sidebar sticky top-16 h-[calc(100dvh-4rem)]"
     />
 

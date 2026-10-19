@@ -13,13 +13,6 @@ defmodule Backplane.Admin.Endpoint do
     longpoll: false
   )
 
-  plug(Plug.Static,
-    at: "/",
-    from: :backplane_admin,
-    gzip: false,
-    only: Backplane.Admin.static_paths()
-  )
-
   if code_reloading? do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
     plug(Phoenix.LiveReloader)
@@ -27,9 +20,17 @@ defmodule Backplane.Admin.Endpoint do
 
     plug(DuskmoonBundler.DevServer,
       profile: :backplane_admin,
-      root: "apps/backplane_admin/assets/js"
+      root: Path.expand("../../../assets/js", __DIR__),
+      prefix: "/assets/js"
     )
   end
+
+  plug(Plug.Static,
+    at: "/",
+    from: :backplane_admin,
+    gzip: false,
+    only: Backplane.Admin.static_paths()
+  )
 
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])

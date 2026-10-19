@@ -90,6 +90,24 @@ config :backplane_admin, Backplane.Admin.Endpoint,
   pubsub_server: Backplane.PubSub,
   live_view: [signing_salt: "bkpln_admin_lv_salt"]
 
+backplane_root = Path.expand("..", __DIR__)
+
+# TODO(upstream): duskmoon-dev/duskmoon-bundler#3
+# WORKAROUND(upstream): duskmoon-dev/duskmoon-bundler#3
+# Dev watchers share a Tailwind scanner and scan watch_dirs instead of tailwind.sources.
+web_asset_watch_dirs =
+  Enum.map(
+    [
+      "apps/backplane_api/lib",
+      "apps/backplane_api/assets",
+      "apps/backplane_admin/lib",
+      "apps/backplane_admin/assets",
+      "deps/phoenix_duskmoon/lib",
+      "deps/phoenix_duskmoon/assets/js"
+    ],
+    &Path.join(backplane_root, &1)
+  )
+
 config :duskmoon_bundler, :backplane_api,
   entry: "apps/backplane_api/assets/js/app.js",
   root: "apps/backplane_api/assets",
@@ -108,28 +126,34 @@ config :duskmoon_bundler, :backplane_api,
   ],
   server: [
     prefix: "/assets",
-    watch_dirs: ["apps/backplane_api/lib", "apps/backplane_api/assets"]
+    watch_dirs: web_asset_watch_dirs
   ]
 
 config :duskmoon_bundler, :backplane_admin,
-  entry: "apps/backplane_admin/assets/js/app.js",
-  root: "apps/backplane_admin/assets",
-  outdir: "apps/backplane_admin/priv/static/assets",
-  resolve_dirs: ["apps", "deps"],
+  entry: Path.join(backplane_root, "apps/backplane_admin/assets/js/app.js"),
+  root: Path.join(backplane_root, "apps/backplane_admin/assets"),
+  outdir: Path.join(backplane_root, "apps/backplane_admin/priv/static/assets"),
+  resolve_dirs: Enum.map(["apps", "deps"], &Path.join(backplane_root, &1)),
   external: ~w(/fonts/* /images/*),
   sourcemap: :hidden,
   tailwind: [
-    css: "apps/backplane_admin/assets/css/app.css",
+    css: Path.join(backplane_root, "apps/backplane_admin/assets/css/app.css"),
     sources: [
-      %{base: "apps/backplane_admin/lib", pattern: "**/*.{ex,heex}"},
-      %{base: "apps/backplane_admin/assets", pattern: "**/*.{css,js,ts,jsx,tsx}"},
-      %{base: "deps/phoenix_duskmoon/lib", pattern: "**/*.{ex,heex}"},
-      %{base: "deps/phoenix_duskmoon/assets/js", pattern: "**/*.{js,ts,jsx,tsx}"}
+      %{base: Path.join(backplane_root, "apps/backplane_admin/lib"), pattern: "**/*.{ex,heex}"},
+      %{
+        base: Path.join(backplane_root, "apps/backplane_admin/assets"),
+        pattern: "**/*.{css,js,ts,jsx,tsx}"
+      },
+      %{base: Path.join(backplane_root, "deps/phoenix_duskmoon/lib"), pattern: "**/*.{ex,heex}"},
+      %{
+        base: Path.join(backplane_root, "deps/phoenix_duskmoon/assets/js"),
+        pattern: "**/*.{js,ts,jsx,tsx}"
+      }
     ]
   ],
   server: [
     prefix: "/assets",
-    watch_dirs: ["apps/backplane_admin/lib", "apps/backplane_admin/assets"]
+    watch_dirs: web_asset_watch_dirs
   ]
 
 config :logger, :console,

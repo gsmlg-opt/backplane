@@ -35,6 +35,31 @@ defmodule Backplane.Admin.EndpointTest do
     refute :backplane_host_agent in reloadable_apps
   end
 
+  test "admin dev assets resolve while the working directory is another umbrella app" do
+    File.cd!(Path.expand("../../../../backplane_memory", __DIR__), fn ->
+      config =
+        DuskmoonBundler.DevServer.init(profile: :backplane_admin, vendor_prebundle: false)
+
+      entry =
+        Plug.Test.conn(:get, "/assets/js/app.js")
+        |> DuskmoonBundler.DevServer.call(config)
+
+      assert entry.status == 200
+
+      assert [_, hooks_url] =
+               Regex.run(
+                 ~r/["'](\/@vendor\/phoenix_duskmoon__slash__hooks\.js[^"']*)["']/,
+                 entry.resp_body
+               )
+
+      hooks = Plug.Test.conn(:get, hooks_url) |> DuskmoonBundler.DevServer.call(config)
+
+      assert hooks.status == 200
+      assert hooks.resp_body =~ ~r/export\s*\{[^}]*\bDuskmoonLeftMenu\b/s
+      assert hooks.resp_body =~ ~r/export\s*\{[^}]*\bDuskmoonLeftMenuNavigation\b/s
+    end)
+  end
+
   test "dev admin endpoint accepts remote connections without credential configuration" do
     System.put_env("BACKPLANE_ADMIN_USERNAME", "dev-admin")
     System.put_env("BACKPLANE_ADMIN_PASSWORD", "dev-secret")
@@ -75,7 +100,9 @@ defmodule Backplane.Admin.EndpointTest do
   test "admin theme state is owned by the DuskMoon hook" do
     app_js = File.read!(Path.expand("../../../assets/js/app.js", __DIR__))
 
-    assert app_js =~ "hooks: {...DuskmoonHooks, ReplayKeyboard, ThemeSegmentControl}"
+    assert app_js =~
+             "hooks: {...DuskmoonHooks, DuskmoonLeftMenu: SessionLeftMenu, AdminSidebarSession, ReplayKeyboard, ThemeSegmentControl}"
+
     refute app_js =~ ".theme-controller-dropdown"
     refute app_js =~ ~s|removeAttribute("data-theme")|
     assert app_js =~ "new MutationObserver(syncThemeColor)"
