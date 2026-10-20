@@ -88,40 +88,18 @@ defmodule BackplaneSkills.Fixtures do
   def build_client(overrides \\ []) do
     name = Keyword.get(overrides, :name, "test-client-#{unique()}")
 
-    token =
-      Keyword.get(
-        overrides,
-        :token,
-        "bp_test_#{:crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)}"
-      )
-
     %{
       name: name,
-      token_hash: Keyword.get(overrides, :token_hash, Bcrypt.hash_pwd_salt(token)),
       scopes: Keyword.get(overrides, :scopes, ["*"]),
       active: Keyword.get(overrides, :active, true),
       metadata: Keyword.get(overrides, :metadata, %{})
     }
   end
 
-  @doc "Insert a client into the database. Returns {client, plaintext_token}."
+  @doc "Insert a client with a server-issued token. Returns {client, plaintext_token}."
   @spec insert_client(keyword()) :: {Backplane.Clients.Client.t(), String.t()}
   def insert_client(overrides \\ []) do
-    token =
-      Keyword.get(
-        overrides,
-        :token,
-        "bp_test_#{:crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)}"
-      )
-
-    overrides = Keyword.put(overrides, :token_hash, Bcrypt.hash_pwd_salt(token))
-    attrs = build_client(overrides)
-
-    client =
-      %Backplane.Clients.Client{}
-      |> Backplane.Clients.Client.changeset(attrs)
-      |> Repo.insert!()
-
+    {:ok, client, token} = Backplane.Clients.issue_client(build_client(overrides))
     {client, token}
   end
 

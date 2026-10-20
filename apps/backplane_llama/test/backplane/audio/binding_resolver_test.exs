@@ -168,28 +168,22 @@ defmodule Backplane.Audio.BindingResolverTest do
              Backplane.LLM.ModelResolver.resolve(:openai, "minimax-audio/speech-2.8-turbo")
 
     # Invoke the existing public list route while retaining its auth behavior.
-    token = Application.get_env(:backplane, :auth_token)
-    Application.put_env(:backplane, :auth_token, "audio-list-test")
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{name: "audio-list-test", scopes: ["llm::models"]})
 
-    try do
-      conn =
-        Plug.Test.conn(:get, "/v1/models")
-        |> Plug.Conn.put_req_header("authorization", "Bearer audio-list-test")
-        |> Backplane.LLM.Router.call(Backplane.LLM.Router.init([]))
+    conn =
+      Plug.Test.conn(:get, "/v1/models")
+      |> Plug.Conn.put_req_header("authorization", "Bearer #{token}")
+      |> Backplane.LLM.Router.call(Backplane.LLM.Router.init([]))
 
-      assert conn.status == 200
-      result = Jason.decode!(conn.resp_body)
-      assert Enum.sort(Map.keys(result)) == ["data", "object"]
-      assert result["object"] == "list"
-      names = Enum.map(result["data"], & &1["id"])
-      assert "tts" in names
-      assert "speech-2.8-turbo" in names
-      assert "minimax-audio/speech-2.8-turbo" in names
-    after
-      if is_nil(token),
-        do: Application.delete_env(:backplane, :auth_token),
-        else: Application.put_env(:backplane, :auth_token, token)
-    end
+    assert conn.status == 200
+    result = Jason.decode!(conn.resp_body)
+    assert Enum.sort(Map.keys(result)) == ["data", "object"]
+    assert result["object"] == "list"
+    names = Enum.map(result["data"], & &1["id"])
+    assert "tts" in names
+    assert "speech-2.8-turbo" in names
+    assert "minimax-audio/speech-2.8-turbo" in names
   end
 
   test "policy cross limits and voice policy reject malformed configuration" do

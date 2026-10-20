@@ -16,6 +16,7 @@ defmodule Backplane.Transport.TaskManager do
 
   alias Backplane.Repo
   alias Backplane.Skills.Host
+  alias Backplane.Transport.SensitiveResults
 
   @table :backplane_mcp_tasks
   @cleanup_interval :timer.minutes(5)
@@ -28,7 +29,8 @@ defmodule Backplane.Transport.TaskManager do
 
   Returns `{:ok, task_id}` where `task_id` is a unique string identifier.
   """
-  @spec create(String.t(), map(), String.t() | nil, map()) :: {:ok, String.t()}
+  @spec create(String.t(), map(), String.t() | nil, map()) ::
+          {:ok, String.t()} | {:error, String.t()}
   def create(tool_name, arguments, session_id, auth) when is_map(auth) do
     GenServer.call(__MODULE__, {:create, tool_name, arguments, session_id, auth})
   end
@@ -98,31 +100,12 @@ defmodule Backplane.Transport.TaskManager do
 
   @impl true
   def handle_call({:create, tool_name, arguments, session_id, auth}, _from, state) do
-    task_id = generate_task_id()
-    now = DateTime.utc_now()
-
-    task =
-      Task.async(fn ->
-        Backplane.Transport.McpHandler.dispatch_tool_call(tool_name, arguments, auth)
-      end)
-
-    task_state = %{
-      id: task_id,
-      status: :working,
-      tool_name: tool_name,
-      arguments: arguments,
-      session_id: session_id,
-      created_at: now,
-      updated_at: now,
-      result: nil,
-      owner: owner_key(auth),
-      task_ref: task.ref
-    }
-
-    :ets.insert(@table, {task_id, task_state})
-    refs = Map.put(state.refs, task.ref, task_id)
-
-    {:reply, {:ok, task_id}, %{state | refs: refs}}
+    if SensitiveResults.tool?(tool_name) do
+      {:reply, {:error, "This tool requires a synchronous call; its result cannot be retained"},
+       state}
+    else
+      create_task(tool_name, arguments, session_id, auth, state)
+    end
   end
 
   def handle_call({:cancel, task_id, owner}, _from, state) do
@@ -172,6 +155,34 @@ defmodule Backplane.Transport.TaskManager do
         :ets.insert(@table, {task_id, updated})
         {:reply, :ok, state}
     end
+  end
+
+  defp create_task(tool_name, arguments, session_id, auth, state) do
+    task_id = generate_task_id()
+    now = DateTime.utc_now()
+
+    task =
+      Task.async(fn ->
+        Backplane.Transport.McpHandler.dispatch_tool_call(tool_name, arguments, auth)
+      end)
+
+    task_state = %{
+      id: task_id,
+      status: :working,
+      tool_name: tool_name,
+      arguments: arguments,
+      session_id: session_id,
+      created_at: now,
+      updated_at: now,
+      result: nil,
+      owner: owner_key(auth),
+      task_ref: task.ref
+    }
+
+    :ets.insert(@table, {task_id, task_state})
+    refs = Map.put(state.refs, task.ref, task_id)
+
+    {:reply, {:ok, task_id}, %{state | refs: refs}}
   end
 
   @impl true

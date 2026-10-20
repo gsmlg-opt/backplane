@@ -32,7 +32,6 @@ defmodule Backplane.Application do
           start_configured_upstreams()
           start_db_upstreams()
           Backplane.Clients.init_cache()
-          upsert_config_clients()
 
           {:ok, pid}
 
@@ -152,20 +151,6 @@ defmodule Backplane.Application do
   rescue
     e ->
       Logger.warning("Failed to load DB upstreams: #{Exception.message(e)}")
-  end
-
-  defp upsert_config_clients do
-    seeds = Application.get_env(:backplane, :client_seeds, [])
-
-    for %{name: name} = seed when is_binary(name) <- seeds do
-      case Backplane.Clients.upsert_from_config(seed) do
-        {:ok, _client} ->
-          Logger.info("Upserted client from config: #{name}")
-
-        {:error, reason} ->
-          Logger.warning("Failed to upsert client #{name}: #{inspect(reason)}")
-      end
-    end
   end
 
   defp validate_config_at_boot do

@@ -33,8 +33,8 @@ The public dev endpoint listens on `http://localhost:4220`; the admin dev endpoi
 
 ### Authentication Boundaries
 
-- `Backplane.Auth.ResourceAuthPlug` validates OAuth resource access tokens, DB client bearer tokens, and configured legacy bearer tokens. Client/OAuth access is scoped; legacy tokens retain unrestricted compatibility access even when DB clients exist.
-- Missing credentials are accepted only when the resource has no enabled OAuth client, no DB clients exist, and no legacy token is configured. Open access is for local development only; invalid supplied credentials are rejected.
+- `Backplane.Auth.ResourceAuthPlug` validates OAuth resource access tokens and server-issued `bp2_` DB client bearer tokens. Both are scoped. Configured shared bearer tokens are retired; nonempty legacy credential configuration fails startup.
+- Missing credentials are accepted only when the resource has no enabled OAuth client and no DB clients exist. Inactive and unissued clients still protect the resource. Open access is for local development only; invalid supplied credentials are rejected.
 - The admin endpoint is intentionally a trusted-operator surface without application-level authentication. Restrict it through network/deployment controls; do not treat public API authentication as admin protection.
 
 ### MCP Protocol Compatibility
@@ -175,7 +175,7 @@ Use the shared Repo through app-owned contexts. Schema and migration changes bel
 
 ### Configuration
 
-TOML (`backplane.toml`) is boot-only. The minimal example covers gateway host/port and database URL. The loader also supports legacy auth tokens, boot upstreams/client seeds, cache, and audit settings; see `Backplane.Config` and `config/runtime.exs` for the supported schema. Production endpoint binding and secrets use environment variables.
+TOML (`backplane.toml`) is boot-only. The minimal example covers gateway host/port and database URL. The loader also supports boot upstreams, metadata-only client seeds, cache, and audit settings; see `Backplane.Config` and `config/runtime.exs` for the supported schema. Client credentials are issued through trusted management APIs; token-bearing seeds and legacy shared bearer configuration fail startup. Production endpoint binding and secrets use environment variables.
 
 All operational configuration — upstream MCP servers, LLM providers, credentials, managed service toggles, client tokens — is stored in PostgreSQL and managed through the admin endpoint. No TOML entries are needed for operational concerns.
 

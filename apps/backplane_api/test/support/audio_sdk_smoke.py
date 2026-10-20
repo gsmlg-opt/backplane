@@ -5,9 +5,9 @@ import sys
 import openai
 
 assert openai.__version__ == "2.26.0", openai.__version__
-base_url, model, sample, output = sys.argv[1:]
+base_url, model, sample, output, token = sys.argv[1:]
 assert base_url.startswith("http://127.0.0.1:")
-client = openai.OpenAI(base_url=base_url + "/v1", api_key="audio-loopback-client", max_retries=0, timeout=30)
+client = openai.OpenAI(base_url=base_url + "/v1", api_key=token, max_retries=0, timeout=30)
 response = client.audio.speech.create(model=model, input="SDK sample", voice="default", response_format="wav")
 pathlib.Path(output, "sdk.wav").write_bytes(response.content)
 with client.audio.speech.with_streaming_response.create(model=model, input="SDK stream", voice="default", response_format="mp3") as response:

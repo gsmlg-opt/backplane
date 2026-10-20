@@ -1,7 +1,6 @@
 [backplane]
 host = "127.0.0.1"
 port = 8080
-auth_token = "test-secret-token"
 
 [database]
 url = "postgres://localhost/backplane_test"

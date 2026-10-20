@@ -23,12 +23,64 @@ defmodule Backplane.Config.Validator do
   """
   @spec validate!(keyword()) :: :ok
   def validate!(config) do
+    validate_client_credentials!(config)
+
     for warning <- validate(config) do
       Logger.warning("Config: #{warning}")
     end
 
     :ok
   end
+
+  @doc false
+  def validate_client_credentials!(config) do
+    backplane = config[:backplane] || %{}
+
+    for key <- [:auth_token, :auth_tokens] do
+      if value(backplane, key) not in [nil, "", []] do
+        raise ArgumentError, "Deprecated client credential configuration: #{key}"
+      end
+    end
+
+    seeds = config[:clients] || []
+
+    unless is_list(seeds) do
+      raise ArgumentError, "Invalid clients configuration: expected metadata-only list"
+    end
+
+    for seed <- seeds do
+      unless is_map(seed) do
+        raise ArgumentError, "Invalid clients configuration: expected metadata-only map"
+      end
+
+      for key <- [:token, :token_hash, :token_digest, :scheme, :credential_scheme] do
+        if Map.has_key?(seed, key) or Map.has_key?(seed, Atom.to_string(key)) do
+          raise ArgumentError, "Deprecated clients credential configuration: #{key}"
+        end
+      end
+    end
+
+    :ok
+  end
+
+  @doc false
+  def validate_runtime_client_credentials! do
+    for name <- ["BACKPLANE_AUTH_TOKEN", "BACKPLANE_AUTH_TOKENS"] do
+      if System.get_env(name) not in [nil, ""] do
+        raise ArgumentError, "Deprecated client credential environment variable: #{name}"
+      end
+    end
+
+    validate_client_credentials!(
+      backplane: %{
+        auth_token: Application.get_env(:backplane, :auth_token),
+        auth_tokens: Application.get_env(:backplane, :auth_tokens)
+      },
+      clients: Application.get_env(:backplane, :client_seeds, [])
+    )
+  end
+
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
   defp validate_upstreams(warnings, upstreams) do
     warnings

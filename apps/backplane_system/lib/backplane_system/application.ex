@@ -7,6 +7,8 @@ defmodule BackplaneSystem.Application do
 
   @impl true
   def start(_type, _args) do
+    Backplane.Config.Validator.validate_runtime_client_credentials!()
+
     children =
       [
         Backplane.Repo,
@@ -29,8 +31,29 @@ defmodule BackplaneSystem.Application do
              name: BackplaneSystem.Supervisor
            ) do
       Backplane.Clients.init_cache()
-      {:ok, supervisor}
+
+      case seed_clients() do
+        :ok ->
+          {:ok, supervisor}
+
+        {:error, _reason} = error ->
+          Supervisor.stop(supervisor)
+          error
+      end
     end
+  end
+
+  @doc false
+  def seed_clients do
+    Application.get_env(:backplane, :client_seeds, [])
+    |> Enum.reduce_while(:ok, fn seed, :ok ->
+      case Backplane.Clients.upsert_from_config(seed) do
+        {:ok, _client} -> {:cont, :ok}
+        {:error, _reason} -> {:halt, {:error, :invalid_client_seed}}
+      end
+    end)
+  rescue
+    _error -> {:error, :client_seed_unavailable}
   end
 
   @impl true

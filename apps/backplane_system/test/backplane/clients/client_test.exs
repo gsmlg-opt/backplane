@@ -5,14 +5,61 @@ defmodule Backplane.Clients.ClientTest do
 
   @valid_attrs %{
     name: "test-client",
-    token_hash: "$2b$12$somehash",
     scopes: ["docs::*", "git::*"]
   }
 
   describe "changeset" do
-    test "valid with name, token_hash, scopes" do
+    test "credential fields are rejected and removed from params" do
+      for key <- ~w(token token_hash token_digest scheme credential_scheme) do
+        attrs = Map.new(@valid_attrs, fn {key, value} -> {to_string(key), value} end)
+        changeset = Client.changeset(%Client{}, Map.put(attrs, key, "secret-value"))
+        refute changeset.valid?
+        refute inspect(changeset) =~ "secret-value"
+        refute Map.has_key?(changeset.params, key)
+      end
+    end
+
+    test "digest is redacted from inspected clients" do
+      digest = :crypto.strong_rand_bytes(32)
+      client = %Client{token_digest: digest}
+      refute inspect(client) =~ inspect(digest)
+      refute inspect(client) =~ "token_digest:"
+    end
+
+    test "valid with name and scopes" do
       changeset = Client.changeset(%Client{}, @valid_attrs)
       assert changeset.valid?
+    end
+
+    test "database permits null credentials and enforces digest length and uniqueness" do
+      for name <- ["unissued-one", "unissued-two"] do
+        assert {:ok, _} =
+                 %Client{} |> Client.changeset(%{@valid_attrs | name: name}) |> Repo.insert()
+      end
+
+      digest = :crypto.strong_rand_bytes(32)
+
+      assert {:ok, _} =
+               %Client{}
+               |> Client.changeset(%{@valid_attrs | name: "issued"})
+               |> Ecto.Changeset.put_change(:token_digest, digest)
+               |> Repo.insert()
+
+      assert {:error, duplicate} =
+               %Client{}
+               |> Client.changeset(%{@valid_attrs | name: "duplicate"})
+               |> Ecto.Changeset.put_change(:token_digest, digest)
+               |> Repo.insert()
+
+      assert %{token_digest: ["has already been taken"]} = errors_on(duplicate)
+
+      assert {:error, malformed} =
+               %Client{}
+               |> Client.changeset(%{@valid_attrs | name: "malformed"})
+               |> Ecto.Changeset.put_change(:token_digest, <<1, 2, 3>>)
+               |> Repo.insert()
+
+      assert %{token_digest: [_]} = errors_on(malformed)
     end
 
     test "requires name uniqueness" do

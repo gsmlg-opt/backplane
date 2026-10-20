@@ -1,105 +1,67 @@
 defmodule Backplane.Tools.AdminTest do
-  use BackplaneMcp.DataCase, async: true
+  use BackplaneMcp.DataCase, async: false
 
-  import BackplaneMcp.Fixtures
-
-  alias Backplane.Tools.Admin
   alias Backplane.Clients
+  alias Backplane.Tools.Admin
 
-  describe "admin::list-clients" do
-    test "returns all clients" do
-      {_c1, _token1} = insert_client(name: "client-a")
-      {_c2, _token2} = insert_client(name: "client-b")
+  test "creates a client with a server-issued token and lists metadata only" do
+    assert {:ok, result} = upsert("new-client", %{"scopes" => ["docs::*"]})
+    assert result.name == "new-client"
+    assert result.scopes == ["docs::*"]
+    assert result.active
+    assert String.starts_with?(result.token, "bp2_")
+    assert byte_size(result.token) == 47
+    assert {:ok, client} = Clients.verify_token(result.token)
+    assert client.id == result.id
 
-      assert {:ok, %{clients: clients}} = Admin.call(%{"_handler" => "list_clients"})
-      assert length(clients) == 2
+    assert {:ok, %{clients: [listed]}} = Admin.call(%{"_handler" => "list_clients"})
+    refute Map.has_key?(listed, :token)
+    refute Map.has_key?(listed, :token_digest)
+    refute Map.has_key?(listed, :token_hash)
+    refute inspect(listed) =~ result.token
+  end
 
-      names = Enum.map(clients, & &1.name) |> Enum.sort()
-      assert names == ["client-a", "client-b"]
-    end
+  test "ordinary updates preserve the token and do not return it again" do
+    assert {:ok, created} = upsert("existing")
+    assert {:ok, updated} = upsert("existing", %{"scopes" => ["git::*"]})
+    assert updated.id == created.id
+    assert updated.scopes == ["git::*"]
+    refute Map.has_key?(updated, :token)
+    assert {:ok, client} = Clients.verify_token(created.token)
+    assert client.scopes == ["git::*"]
+  end
 
-    test "excludes token_hash from response" do
-      {_c, _token} = insert_client(name: "client-a")
+  test "only explicit rotation replaces the credential" do
+    assert {:ok, created} = upsert("rotate-me")
+    assert {:ok, updated} = upsert("rotate-me", %{"rotate_token" => true})
+    assert updated.id == created.id
+    assert updated.token != created.token
+    assert :error = Clients.verify_token(created.token)
+    assert {:ok, client} = Clients.verify_token(updated.token)
+    assert client.id == created.id
+  end
 
-      {:ok, %{clients: [client]}} = Admin.call(%{"_handler" => "list_clients"})
+  test "rejects custom or internal credential inputs without changing or disclosing them" do
+    assert {:ok, created} = upsert("protected")
 
-      assert Map.has_key?(client, :id)
-      assert Map.has_key?(client, :name)
-      assert Map.has_key?(client, :scopes)
-      assert Map.has_key?(client, :active)
-      refute Map.has_key?(client, :token_hash)
+    for field <- ["token", "token_hash", "token_digest", "scheme", "credential_scheme"] do
+      secret = "must-not-appear-#{field}"
+      assert {:error, reason} = upsert("protected", %{field => secret})
+      refute inspect(reason) =~ secret
+      assert {:ok, _client} = Clients.verify_token(created.token)
     end
   end
 
-  describe "admin::upsert-client" do
-    test "creates new client with hashed token" do
-      assert {:ok, result} =
-               Admin.call(%{
-                 "_handler" => "upsert_client",
-                 "name" => "new-client",
-                 "token" => "secret",
-                 "scopes" => ["docs::*"]
-               })
-
-      assert result.name == "new-client"
-      assert result.scopes == ["docs::*"]
-      assert result.active == true
-      assert is_binary(result.id)
-
-      client = Clients.get_client_by_name("new-client")
-      assert client != nil
-      assert Bcrypt.verify_pass("secret", client.token_hash)
+  test "invalid rotation flags cannot rotate or create a client" do
+    for value <- ["true", 1, nil] do
+      assert {:error, _reason} = upsert("invalid", %{"rotate_token" => value})
+      assert Clients.get_client_by_name("invalid") == nil
     end
+  end
 
-    test "updates existing client scopes" do
-      {:ok, _created} =
-        Admin.call(%{
-          "_handler" => "upsert_client",
-          "name" => "existing",
-          "token" => "original-token",
-          "scopes" => ["docs::*"]
-        })
-
-      {:ok, updated} =
-        Admin.call(%{
-          "_handler" => "upsert_client",
-          "name" => "existing",
-          "scopes" => ["git::*", "docs::*"]
-        })
-
-      assert updated.name == "existing"
-      assert updated.scopes == ["git::*", "docs::*"]
-    end
-
-    test "rotates token when provided on update" do
-      {:ok, _created} =
-        Admin.call(%{
-          "_handler" => "upsert_client",
-          "name" => "rotate-me",
-          "token" => "old-token",
-          "scopes" => ["*"]
-        })
-
-      {:ok, _updated} =
-        Admin.call(%{
-          "_handler" => "upsert_client",
-          "name" => "rotate-me",
-          "token" => "new-token",
-          "scopes" => ["*"]
-        })
-
-      client = Clients.get_client_by_name("rotate-me")
-      refute Bcrypt.verify_pass("old-token", client.token_hash)
-      assert Bcrypt.verify_pass("new-token", client.token_hash)
-    end
-
-    test "returns error when token missing on create" do
-      assert {:error, _reason} =
-               Admin.call(%{
-                 "_handler" => "upsert_client",
-                 "name" => "no-token",
-                 "scopes" => ["docs::*"]
-               })
-    end
+  defp upsert(name, attrs \\ %{}) do
+    Admin.call(
+      Map.merge(%{"_handler" => "upsert_client", "name" => name, "scopes" => ["*"]}, attrs)
+    )
   end
 end

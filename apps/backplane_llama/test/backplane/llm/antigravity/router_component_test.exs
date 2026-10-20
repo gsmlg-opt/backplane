@@ -43,7 +43,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
     old_proxy = Application.get_env(:backplane_llama, :antigravity_http_proxy)
     old_token = Application.get_env(:backplane, :auth_token)
     Application.put_env(:backplane_llama, :antigravity_http_proxy, CapturingProxy)
-    Application.put_env(:backplane, :auth_token, "backplane-client")
+    Application.delete_env(:backplane, :auth_token)
 
     on_exit(fn ->
       restore_env(:backplane_llama, :antigravity_http_proxy, old_proxy)
@@ -225,7 +225,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
         Jason.encode!(generation_body())
       )
       |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", "Bearer backplane-client")
+      |> put_req_header("authorization", "Bearer #{client_token()}")
       |> put_req_header("x-goog-user-project", "caller-project")
       |> put_req_header("cookie", "private-cookie")
       |> put_req_header("x-machine-session-id", "caller-header")
@@ -257,10 +257,9 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
   end
 
   test "actual database client authentication cannot use invoke scope for enrollment" do
-    {:ok, _} =
-      Backplane.Clients.create_client(%{
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{
         name: "AG scoped client",
-        token: "ag-invoke-token",
         scopes: ["llm::invoke"],
         active: true
       })
@@ -272,7 +271,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
         ~s({"tierId":"free-tier"})
       )
       |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", "Bearer ag-invoke-token")
+      |> put_req_header("authorization", "Bearer #{token}")
       |> Router.call([])
 
     assert result.status == 403
@@ -301,7 +300,7 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
     :post
     |> conn(path, Jason.encode!(body))
     |> put_req_header("content-type", "application/json")
-    |> put_req_header("authorization", "Bearer backplane-client")
+    |> put_req_header("authorization", "Bearer #{client_token()}")
     |> Router.call(Router.init([]))
   end
 
@@ -313,6 +312,16 @@ defmodule Backplane.LLM.Antigravity.RouterComponentTest do
         "opaque" => %{"signature" => "keep-me"}
       }
     }
+  end
+
+  defp client_token do
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{
+        name: "router-client-#{System.unique_integer([:positive])}",
+        scopes: ["*"]
+      })
+
+    token
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)

@@ -43,12 +43,11 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     endpoint: endpoint,
     tmp_dir: tmp_dir
   } do
-    token = "skill-protocol-http-#{System.unique_integer([:positive])}"
+    client_name = "skill-protocol-http-#{System.unique_integer([:positive])}"
 
-    assert {:ok, _client_record} =
-             Clients.create_client(%{
-               name: token,
-               token: token,
+    assert {:ok, _client_record, token} =
+             Clients.issue_client(%{
+               name: client_name,
                scopes: ["skill::read"]
              })
 

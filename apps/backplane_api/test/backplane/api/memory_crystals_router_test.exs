@@ -141,13 +141,11 @@ defmodule Backplane.Api.MemoryCrystalsRouterTest do
     assert {:ok, canonical_partition} =
              MemorySpaces.provision_private_host(host.id, host.memory_scope)
 
-    token = "#{prefix}-#{System.unique_integer([:positive])}"
     client_id = "host:#{host.id}"
 
-    {:ok, client} =
-      Clients.create_client(%{
+    {:ok, client, token} =
+      Clients.issue_client(%{
         name: "#{prefix} client",
-        token: token,
         scopes: scopes,
         active: true,
         metadata: %{"memory_partition_id" => client_id}

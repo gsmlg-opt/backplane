@@ -204,7 +204,11 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
       restore(:backplane_llama, :audio_allow_http_loopback, old_loopback)
     end)
 
-    Application.put_env(:backplane, :auth_token, "audio-loopback-client")
+    Application.delete_env(:backplane, :auth_token)
+
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{name: "audio-loopback-client", scopes: ["llm::*"]})
+
     Application.put_env(:backplane_llama, :audio_allow_http_loopback, true)
     :ok = Config.set_policy(%{})
     :ok = Config.set_enabled(true)
@@ -282,6 +286,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     Agent.update(state, &Map.put(&1, :requested_model, "#{provider.name}/speech"))
 
     %{
+      token: token,
       base: "http://127.0.0.1:#{port}",
       port: port,
       model: "#{provider.name}/speech",
@@ -368,7 +373,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
       assert audio["strategy"] == "passthrough"
       assert audio["sample_rate"] == 24000
       assert_receive {:dispatch_observed, true}
-      refute body =~ "audio-loopback-client"
+      refute body =~ ctx.token
       clean!()
     end
   end
@@ -611,7 +616,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
     headers = [
       {"content-type", "application/json"},
-      {"authorization", "Bearer audio-loopback-client"}
+      {"authorization", "Bearer #{ctx.token}"}
     ]
 
     {:ok, conn, first} = Mint.HTTP.request(conn, "POST", "/v1/audio/speech", headers, body)
@@ -692,7 +697,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
     headers = [
       {"content-type", "application/json"},
-      {"authorization", "Bearer audio-loopback-client"}
+      {"authorization", "Bearer #{ctx.token}"}
     ]
 
     {:ok, conn, ref} = Mint.HTTP.request(conn, "POST", "/v1/audio/speech", headers, body)
@@ -722,7 +727,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
     headers = [
       {"content-type", "application/json"},
-      {"authorization", "Bearer audio-loopback-client"}
+      {"authorization", "Bearer #{ctx.token}"}
     ]
 
     {:ok, conn, _ref} = Mint.HTTP.request(conn, "POST", "/v1/audio/speech", headers, body)
@@ -778,7 +783,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     {output, code} =
       System.cmd(
         python,
-        [script, ctx.base, ctx.model, Path.join(ctx.dir, "fixture.flac"), ctx.dir],
+        [script, ctx.base, ctx.model, Path.join(ctx.dir, "fixture.flac"), ctx.dir, ctx.token],
         stderr_to_stdout: true
       )
 
@@ -825,7 +830,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     Req.post!(ctx.base <> "/v1/audio/speech",
       json: %{model: ctx.model, input: "Hello", voice: "default", response_format: format},
       headers: [
-        {"authorization", "Bearer audio-loopback-client"},
+        {"authorization", "Bearer #{ctx.token}"},
         {"accept-encoding", accept_encoding}
       ],
       retry: false,
@@ -846,7 +851,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
            filename: "clip.flac", content_type: "application/octet-stream"}
       ],
       headers: [
-        {"authorization", "Bearer audio-loopback-client"},
+        {"authorization", "Bearer #{ctx.token}"},
         {"accept-encoding", "identity"}
       ],
       retry: false,
@@ -867,7 +872,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
         conn,
         "POST",
         "/v1/audio/speech",
-        [{"content-type", "application/json"}, {"authorization", "Bearer audio-loopback-client"}],
+        [{"content-type", "application/json"}, {"authorization", "Bearer #{ctx.token}"}],
         body
       )
 
@@ -907,7 +912,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   defp wire_request(ctx) do
     body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
 
-    "POST /v1/audio/speech HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer audio-loopback-client\r\nContent-Type: application/json\r\nContent-Length: #{byte_size(body)}\r\n\r\n" <>
+    "POST /v1/audio/speech HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer #{ctx.token}\r\nContent-Type: application/json\r\nContent-Length: #{byte_size(body)}\r\n\r\n" <>
       body
   end
 

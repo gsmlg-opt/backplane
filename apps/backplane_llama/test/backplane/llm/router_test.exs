@@ -305,7 +305,7 @@ defmodule Backplane.LLM.RouterTest do
       end
     end
 
-    test "PAT scopes apply while legacy and open modes retain full LLM access" do
+    test "PAT scopes apply, retired shared tokens fail, and open mode retains LLM access" do
       {_client, unrelated_pat} = pat_fixture!(scopes: ["unrelated::scope"])
 
       denied_models = public_authenticated_llm_request(:get, "/v1/models", unrelated_pat)
@@ -339,7 +339,7 @@ defmodule Backplane.LLM.RouterTest do
 
       Application.put_env(:backplane, :auth_token, "legacy-secret")
 
-      assert public_authenticated_llm_request(:get, "/v1/models", "legacy-secret").status == 200
+      assert public_authenticated_llm_request(:get, "/v1/models", "legacy-secret").status == 401
 
       legacy_invoke =
         public_authenticated_llm_request(
@@ -349,7 +349,7 @@ defmodule Backplane.LLM.RouterTest do
           %{"model" => "unknown/model", "input" => "hi"}
         )
 
-      assert legacy_invoke.status == 404
+      assert legacy_invoke.status == 401
 
       Application.delete_env(:backplane, :auth_token)
       Backplane.Repo.delete_all(Backplane.Clients.Client)
@@ -1052,12 +1052,9 @@ defmodule Backplane.LLM.RouterTest do
   end
 
   defp pat_fixture!(attrs) do
-    token = Keyword.get(attrs, :token, "pat-#{System.unique_integer([:positive])}")
-
-    {:ok, client} =
-      Backplane.Clients.create_client(%{
+    {:ok, client, token} =
+      Backplane.Clients.issue_client(%{
         name: "PAT #{System.unique_integer([:positive])}",
-        token: token,
         scopes: Keyword.fetch!(attrs, :scopes),
         active: true
       })

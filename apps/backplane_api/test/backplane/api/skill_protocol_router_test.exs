@@ -138,12 +138,11 @@ defmodule Backplane.Api.SkillProtocolRouterTest do
   end
 
   test "client tokens require skill read scope before catalog disclosure", %{conn: conn} do
-    denied_token = "denied-#{System.unique_integer([:positive])}"
+    denied_name = "denied-#{System.unique_integer([:positive])}"
 
-    assert {:ok, _client} =
-             Clients.create_client(%{
-               name: denied_token,
-               token: denied_token,
+    assert {:ok, _client, denied_token} =
+             Clients.issue_client(%{
+               name: denied_name,
                scopes: ["llm::models"]
              })
 
