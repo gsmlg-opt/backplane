@@ -28,7 +28,6 @@ defmodule Backplane.Admin.MemoryActivityLive do
         current_path: "/memory/activity",
         partitions: partitions,
         partition: partition,
-        selected_partition_index: if(partition, do: "0"),
         filters: %{},
         period: "daily",
         distribution_page: 1,

@@ -54,9 +54,6 @@ defmodule Backplane.Admin.MemoryLessonsLive do
 
       {:noreply, canonicalize(socket, params, canonical)}
     else
-      {:error, :partition_required} ->
-        {:noreply, assign(socket, partition: nil, selected: nil, query_error: nil)}
-
       {:error, :not_found} ->
         {:ok, partition} = partition_result
         {:noreply, assign(socket, partition: partition, selected: nil, query_error: :not_found)}

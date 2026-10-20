@@ -29,6 +29,14 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     {:ok, _foreign} =
       active_lesson(partition_fixture("other-lessons"), "Foreign lesson", "backplane")
 
+    render_patch(view, "/memory/lessons?status=invalid")
+    assert has_element?(view, "#lesson-query-error")
+
+    render_patch(view, "/memory/lessons")
+    refute has_element?(view, "#lesson-query-error")
+    assert has_element?(view, "#memory-lessons-table", "Render lesson")
+    assert has_element?(view, "#memory-lessons-table", "Foreign lesson")
+
     {:ok, view, _html} =
       live(
         recycle(conn),

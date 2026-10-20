@@ -79,7 +79,7 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
       <aside :if={@selected} id="memory-detail" class="mt-6">
         <.dm_card variant="bordered" padding="sm">
           <h2 class="text-lg font-semibold">Memory detail</h2>
-          <div id="memory-detail-source" class="mt-3"><.source_identity record={@selected.memory} /></div>
+          <div id="memory-detail-source" class="mt-3"><.source_identity record={@selected.memory} detail /></div>
           <p class="mt-3 whitespace-pre-wrap">{@selected.memory.content}</p>
           <div class="mt-4 flex flex-wrap gap-3 text-sm">
             <.link :if={@selected.memory.session_id not in [nil, ""]} navigate={~p"/memory/sessions/#{@selected.memory.session_id}?#{partition_query(record_partition(@selected.memory, @partition))}"} class="text-primary underline">Session</.link>

@@ -44,6 +44,65 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
     refute has_element?(view, ~s(#memory-detail a[href^="/memory/sessions/"]))
     refute has_element?(view, ~s(#memory-detail a[href^="/memory/replay?"]))
     assert has_element?(view, "#memory-evidence", "No durable evidence")
+    assert has_element?(view, "#memory-detail-source", "Repository unresolved")
+  end
+
+  test "detail retains each stored repository and path association and escapes historical values",
+       %{
+         conn: conn
+       } do
+    sources = [
+      %{
+        "repository_id" => "example.org/Team/Repository",
+        "checkout_root" => "/work/checkouts/first",
+        "cwd" => "/work/checkouts/first/apps"
+      },
+      %{
+        "repository_id" => "example.org/Team/Repository",
+        "checkout_root" => "/work/checkouts/second",
+        "cwd" => "/work/checkouts/second/lib"
+      },
+      %{"cwd" => "/offline/<script>source</script>"}
+    ]
+
+    project = "/historical/<b>project</b>"
+
+    memory =
+      memory!("Multiple stored source associations", nil)
+      |> Memory.changeset(%{metadata: %{"repository_sources" => sources, "project" => project}})
+      |> Backplane.Repo.update!()
+
+    {:ok, inventory, _html} = live(conn, "/memory/memories")
+    assert has_element?(inventory, "#memory-memories-table", "example.org/Team/Repository")
+    refute has_element?(inventory, "#memory-memories-table", "/work/checkouts/first")
+
+    {:ok, detail, _html} = live(recycle(conn), "/memory/memories/#{memory.id}")
+    assert has_element?(detail, "#memory-detail-source", @query["host"])
+    assert has_element?(detail, "#memory-detail-source", "Legacy project: #{project}")
+    refute has_element?(detail, "#memory-detail-source script")
+    refute has_element?(detail, "#memory-detail-source b")
+
+    associations =
+      detail
+      |> element("#memory-detail-source")
+      |> render()
+      |> Floki.parse_fragment!()
+      |> Floki.find(".memory-repository-source")
+      |> Enum.map(fn source -> Enum.map(Floki.find(source, "dd"), &Floki.text/1) end)
+
+    assert associations == [
+             [
+               "example.org/Team/Repository",
+               "/work/checkouts/first",
+               "/work/checkouts/first/apps"
+             ],
+             [
+               "example.org/Team/Repository",
+               "/work/checkouts/second",
+               "/work/checkouts/second/lib"
+             ],
+             ["Unresolved", "/offline/<script>source</script>"]
+           ]
   end
 
   test "memory with a session retains partition-scoped session and replay links", %{conn: conn} do

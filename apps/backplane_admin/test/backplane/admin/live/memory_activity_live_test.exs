@@ -172,6 +172,17 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     {:ok, filtered, _} = live(recycle(conn), "/memory/activity?host=zz-host")
     assert has_element?(filtered, "#activity-summary-events", "7")
     refute has_element?(filtered, "#activity-project-breakdown", "alpha")
+
+    render_patch(filtered, "/memory/activity")
+    assert has_element?(filtered, "#activity-summary-events", "8")
+    assert has_element?(filtered, "#memory-source-host[value='']")
+
+    render_patch(filtered, "/memory/activity?project=" <> String.duplicate("x", 513))
+    assert has_element?(filtered, "#activity-query-error")
+
+    render_patch(filtered, "/memory/activity?host=zz-host")
+    refute has_element?(filtered, "#activity-query-error")
+    assert has_element?(filtered, "#activity-summary-events", "7")
   end
 
   test "reuses live host-agent capture and delivery health for the selected host", %{conn: conn} do

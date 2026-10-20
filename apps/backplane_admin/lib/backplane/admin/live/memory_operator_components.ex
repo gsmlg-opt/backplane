@@ -32,6 +32,7 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
   end
 
   attr(:record, :map, required: true)
+  attr(:detail, :boolean, default: false)
 
   def source_identity(assigns) do
     metadata =
@@ -40,11 +41,27 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
     repositories =
       Map.get(assigns.record, :repository_sources) || metadata["repository_sources"] || []
 
-    assigns = assign(assigns, :repositories, repositories)
+    assigns =
+      assign(assigns,
+        repositories: repositories,
+        project: Map.get(assigns.record, :project) || metadata["project"]
+      )
 
     ~H"""
     <span class="block break-all text-xs">{Map.get(@record, :host_id) || "Unknown source"}</span>
-    <span :for={source <- @repositories} class="block break-all text-xs text-on-surface-variant">{source["repository_id"] || source["checkout_root"] || source["cwd"] || "Unknown repository"}</span>
+    <span :if={!@detail} :for={source <- @repositories} class="block break-all text-xs text-on-surface-variant">{source["repository_id"] || source["checkout_root"] || source["cwd"] || "Unknown repository"}</span>
+    <div :if={@detail} class="mt-2 space-y-2 text-sm">
+      <p :if={@repositories == []} class="text-on-surface-variant">Repository unresolved: no stored source association.</p>
+      <dl :for={source <- @repositories} class="memory-repository-source grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1">
+        <dt class="text-on-surface-variant">Repository</dt>
+        <dd class="break-all">{source["repository_id"] || "Unresolved"}</dd>
+        <dt :if={source["checkout_root"]} class="text-on-surface-variant">Checkout root</dt>
+        <dd :if={source["checkout_root"]} class="break-all">{source["checkout_root"]}</dd>
+        <dt :if={source["cwd"]} class="text-on-surface-variant">Working directory</dt>
+        <dd :if={source["cwd"]} class="break-all">{source["cwd"]}</dd>
+      </dl>
+      <p :if={@project} class="break-all"><span class="text-on-surface-variant">Legacy project:</span> {@project}</p>
+    </div>
     """
   end
 
