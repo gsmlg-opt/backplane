@@ -10,6 +10,61 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
   alias Backplane.Memory.Workers.ProfileBuildWorker
   alias Backplane.MemorySpaces.BackfillIssue
 
+  describe "rejected incoming profile requests" do
+    test "a foreign project rejection leaves the requester's reads and edge partition ready" do
+      project = "foreign-profile-#{System.unique_integer([:positive])}"
+      source = insert_memory("source belongs to A", scope: project)
+      requester = registered_partition()
+
+      {:ok, own_memory} =
+        Memories.remember("B remains readable", Map.to_list(requester) ++ [agent_id: "agent-b"])
+
+      assert {:ok, _} =
+               Backplane.MemorySpaces.resolve_host_partition(
+                 requester.host_id,
+                 requester.scope,
+                 requester.namespace
+               )
+
+      issues_before = repo().all(from(i in BackfillIssue, order_by: i.id))
+
+      Styx.Testing.with_testing_mode(:manual, fn ->
+        assert {:error, :partition_mismatch} = ProfileBuildWorker.enqueue(project, requester)
+        assert [] == Styx.Testing.all_enqueued(repo(), worker: ProfileBuildWorker)
+      end)
+
+      assert Backplane.MemorySpaces.partition_ready?(requester.host_id, requester)
+
+      assert {:ok, _} =
+               repo().transaction(fn ->
+                 Backplane.Memory.EdgeSync.PostgresStore.authorize!(
+                   requester.host_id,
+                   stringify_keys(requester)
+                 )
+               end)
+
+      assert [visible] = Memories.list([], requester)
+      assert visible.id == own_memory.id
+      refute visible.id == source.id
+      assert repo().all(from(i in BackfillIssue, order_by: i.id)) == issues_before
+      refute repo().exists?(Profile)
+      refute repo().exists?(from(s in State, where: s.projector == "profile"))
+    end
+
+    test "an invalid or absent project request creates no migration ambiguity" do
+      requester = canonical_partition("requester")
+      issues_before = repo().all(from(i in BackfillIssue, order_by: i.id))
+
+      assert {:error, :incomplete_partition} =
+               ProfileBuildWorker.enqueue("absent", requester)
+
+      assert {:error, :incomplete_partition} =
+               ProfileBuildWorker.enqueue("absent", Map.delete(requester, :host_id))
+
+      assert repo().all(from(i in BackfillIssue, order_by: i.id)) == issues_before
+    end
+  end
+
   defp insert_memory(content, opts) do
     metadata =
       opts |> Keyword.get(:metadata, %{}) |> Map.put_new("project", Keyword.fetch!(opts, :scope))
@@ -26,6 +81,142 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
       )
 
     mem
+  end
+
+  describe "waive_rejected_request_issue/3" do
+    setup do
+      project = "rejected-profile-#{System.unique_integer([:positive])}"
+      insert_memory("foreign source", scope: project)
+      requester = registered_partition()
+      issue = historical_request_issue(project, requester)
+
+      operator = %{
+        kind: :trusted_operator,
+        ref: "local-operator",
+        request_id: Ecto.UUID.generate(),
+        evidence_ref: "qualification/rejected-profile-request.json"
+      }
+
+      %{project: project, requester: requester, issue: issue, operator: operator}
+    end
+
+    test "waives only the exact attested request issue, retaining history and denial", c do
+      refute Backplane.MemorySpaces.partition_ready?(c.requester.host_id, c.requester)
+
+      assert {:ok, waived} = waive(c.issue, c.operator)
+      assert waived.disposition == "approved_waiver"
+      assert %DateTime{} = waived.resolved_at
+      assert waived.details == c.issue.details
+      assert waived.source_id == c.issue.source_id
+      assert waived.inserted_at == c.issue.inserted_at
+      assert Backplane.MemorySpaces.partition_ready?(c.requester.host_id, c.requester)
+
+      assert {:ok, _} =
+               repo().transaction(fn ->
+                 Backplane.Memory.EdgeSync.PostgresStore.authorize!(
+                   c.requester.host_id,
+                   stringify_keys(c.requester)
+                 )
+               end)
+
+      assert {:error, :partition_mismatch} =
+               ProfileBuildWorker.enqueue(c.project, c.requester)
+
+      assert repo().get!(BackfillIssue, c.issue.id).disposition == "approved_waiver"
+      assert {:error, :issue_changed} = waive(c.issue, c.operator)
+
+      assert [audit] = Backplane.Memory.Audit.list(operation: "memory.repair")
+      assert audit.actor == c.operator.ref
+      assert audit.target_ids == [c.issue.id]
+      assert audit.metadata["evidence_ref"] == c.operator.evidence_ref
+      assert audit.metadata["request_id"] == c.operator.request_id
+      refute repo().exists?(Profile)
+    end
+
+    test "preserves unrelated and genuine persisted-data blockers", c do
+      {:ok, legacy} =
+        Memories.record_partition_issue(
+          "bpm_memories",
+          Ecto.UUID.generate(),
+          :incomplete_partition,
+          Map.put(c.requester, :namespace, "private")
+        )
+
+      {:ok, generator} =
+        Memories.record_partition_issue(
+          "memory_profile_generator",
+          "genuine-worker-ambiguity",
+          :incomplete_partition,
+          c.requester
+        )
+
+      assert {:ok, _} = waive(c.issue, c.operator)
+      assert repo().get!(BackfillIssue, legacy.id).disposition == "pending"
+      assert repo().get!(BackfillIssue, generator.id).disposition == "pending"
+      refute Backplane.MemorySpaces.partition_ready?(c.requester.host_id, c.requester)
+      assert {:error, :not_rejected_request_issue} = waive(legacy, c.operator)
+      assert {:error, :not_rejected_request_issue} = waive(generator, c.operator)
+    end
+
+    test "requires exact source, details, pending state, hash and reviewed operator evidence",
+         c do
+      for changed <- [
+            %{source_id: "changed"},
+            %{source_table: "bpm_memories"},
+            %{reason: "incomplete_partition"},
+            %{disposition: "resolved"},
+            %{details: Map.put(c.issue.details, "scope", "other")},
+            %{updated_at: DateTime.add(c.issue.updated_at, -1)}
+          ] do
+        assert {:error, :issue_changed} = waive(Map.merge(c.issue, changed), c.operator)
+      end
+
+      for invalid <- [%{}, %{c.operator | kind: :host_agent}, %{c.operator | evidence_ref: ""}] do
+        assert {:error, :invalid_operator_attestation} = waive(c.issue, invalid)
+      end
+
+      changed = c.issue |> Ecto.Changeset.change(source_id: "wrong-hash") |> repo().update!()
+      assert {:error, :not_rejected_request_issue} = waive(changed, c.operator)
+      assert repo().get!(BackfillIssue, c.issue.id).disposition == "pending"
+      assert [] == Backplane.Memory.Audit.list(operation: "memory.repair")
+    end
+
+    test "refuses an issue with persisted worker work for the claimed tuple", c do
+      Styx.Testing.with_testing_mode(:manual, fn ->
+        c.requester
+        |> Map.put(:project, c.project)
+        |> ProfileBuildWorker.new()
+        |> Styx.insert!()
+
+        assert {:error, :persisted_profile_work} = waive(c.issue, c.operator)
+      end)
+
+      assert repo().get!(BackfillIssue, c.issue.id).disposition == "pending"
+    end
+
+    test "refuses an issue if the claim now has real project sources", c do
+      assert {:ok, _} =
+               Memories.remember(
+                 "now a real project source",
+                 Map.to_list(c.requester) ++ [agent_id: "b", metadata: %{"project" => c.project}]
+               )
+
+      assert {:error, :not_rejected_request_issue} = waive(c.issue, c.operator)
+      assert repo().get!(BackfillIssue, c.issue.id).disposition == "pending"
+    end
+
+    test "retired project sources still require persisted-data review", c do
+      {:ok, memory} =
+        Memories.remember(
+          "retired source",
+          Map.to_list(c.requester) ++ [agent_id: "b", metadata: %{"project" => c.project}]
+        )
+
+      assert :ok = Memories.forget(memory.id, c.requester)
+
+      assert {:error, :persisted_profile_work} = waive(c.issue, c.operator)
+      assert repo().get!(BackfillIssue, c.issue.id).disposition == "pending"
+    end
   end
 
   describe "perform/1" do
@@ -488,6 +679,44 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorkerTest do
 
   defp partition(project) do
     canonical_partition("host-1", client_id: "host:host-1", scope: project)
+  end
+
+  defp registered_partition do
+    host_id = Ecto.UUID.generate()
+    scope = "profile-requester-#{host_id}"
+
+    repo().query!(
+      "INSERT INTO skill_hosts(id,name,memory_scope,inserted_at,updated_at) VALUES($1,$2,$3,now(),now())",
+      [Ecto.UUID.dump!(host_id), "profile-requester-#{host_id}", scope]
+    )
+
+    {:ok, partition} = Backplane.MemorySpaces.provision_private_host(host_id, scope)
+    Map.merge(partition, %{host_id: host_id, client_id: "host:#{host_id}"})
+  end
+
+  defp historical_request_issue(project, requester) do
+    claim = Map.take(requester, [:memory_space_id, :host_id, :client_id, :scope, :namespace])
+
+    source_id =
+      :crypto.hash(:sha256, :erlang.term_to_binary([project, claim], [:deterministic]))
+      |> Base.encode16(case: :lower)
+
+    {:ok, issue} =
+      Memories.record_partition_issue(
+        "memory_profile_generator",
+        source_id,
+        :partition_mismatch,
+        Map.put(claim, :project, project)
+      )
+
+    repo().get!(BackfillIssue, issue.id)
+  end
+
+  defp waive(issue, operator) do
+    expected =
+      Map.take(issue, [:source_table, :source_id, :reason, :disposition, :details, :updated_at])
+
+    apply(ProfileBuildWorker, :waive_rejected_request_issue, [issue.id, expected, operator])
   end
 
   defp job(project, scope \\ nil) do

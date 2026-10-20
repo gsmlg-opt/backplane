@@ -11,6 +11,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.{ProcessingState, ProjectedSession}
+  alias Backplane.MemorySpaces.BackfillIssue
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -158,10 +159,145 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
         |> new()
         |> Styx.insert()
 
-      {:error, reason} = error ->
-        record_partition_issue(project, partition, reason)
+      {:error, _reason} = error ->
+        # Rejected requests are not evidence of ambiguous persisted data. Recording
+        # them as backfill issues would fence an otherwise valid requester's space.
         error
     end
+  end
+
+  @doc """
+  Waives one historical issue known from reviewed evidence to be a rejected
+  incoming profile request. This is a trusted-operator domain operation, not a
+  host API: old issue rows do not distinguish requests from persisted jobs.
+
+  `expected` must contain the exact source_table, source_id, reason, disposition,
+  details and updated_at read by the operator. The attestation requires
+  kind: :trusted_operator, a nonblank ref, request_id UUID and evidence_ref.
+  `request_id` correlates this recovery operation, not the original request.
+  The original issue details are retained; the waiver and evidence reference are
+  audited atomically. Existing persisted project work requires separate review.
+  """
+  def waive_rejected_request_issue(issue_id, expected, operator) do
+    with :ok <- validate_waiver_operator(operator),
+         {:ok, issue_id} <- Ecto.UUID.cast(issue_id),
+         true <- is_map(expected) do
+      repo().transaction(fn ->
+        issue = repo().one(from(i in BackfillIssue, where: i.id == ^issue_id, lock: "FOR UPDATE"))
+        fields = [:source_table, :source_id, :reason, :disposition, :details, :updated_at]
+
+        unless issue && Map.take(issue, fields) == expected && issue.disposition == "pending" &&
+                 is_nil(issue.resolved_at) do
+          repo().rollback(:issue_changed)
+        end
+
+        {project, claim} = rejected_request_claim!(issue)
+
+        if persisted_profile_work?(project, claim), do: repo().rollback(:persisted_profile_work)
+
+        updated =
+          issue
+          |> BackfillIssue.changeset(%{
+            disposition: "approved_waiver",
+            resolved_at: DateTime.utc_now()
+          })
+          |> repo().update!()
+
+        :ok =
+          Backplane.Memory.Audit.log(
+            "memory.repair",
+            operator.ref,
+            [issue.id],
+            Map.merge(claim, %{
+              kind: "rejected_profile_request",
+              result: "approved_waiver",
+              source_id: issue.source_id,
+              request_id: operator.request_id,
+              evidence_ref: operator.evidence_ref
+            })
+          )
+
+        updated
+      end)
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  defp validate_waiver_operator(%{kind: :trusted_operator} = operator) do
+    if Enum.all?([:ref, :evidence_ref], fn key ->
+         value = operator[key]
+         is_binary(value) and byte_size(value) <= 1024 and String.trim(value) != ""
+       end) and match?({:ok, _}, Ecto.UUID.cast(operator[:request_id])) do
+      :ok
+    else
+      {:error, :invalid_operator_attestation}
+    end
+  end
+
+  defp validate_waiver_operator(_), do: {:error, :invalid_operator_attestation}
+
+  defp rejected_request_claim!(issue) do
+    project = issue.details["project"]
+    claim = issue_partition(issue.details)
+
+    with "memory_profile_generator" <- issue.source_table,
+         "partition_mismatch" <- issue.reason,
+         true <- is_binary(project) and String.trim(project) != "",
+         true <-
+           Enum.sort(Map.keys(issue.details)) ==
+             ~w(client_id host_id memory_space_id namespace project scope),
+         true <- issue.source_id == partition_issue_id(project, claim),
+         {:ok, claim} <- PartitionIdentity.validate_generator(claim),
+         {:error, :partition_mismatch} <- generator_partition(project, claim) do
+      {project, claim}
+    else
+      _ -> repo().rollback(:not_rejected_request_issue)
+    end
+  end
+
+  defp persisted_profile_work?(project, claim) do
+    args =
+      claim
+      |> Map.put(:project, project)
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
+
+    worker = Styx.Worker.to_string(__MODULE__)
+
+    # Include deleted sources, unfinished sessions and terminal jobs: absence of
+    # active profile inputs alone does not prove this was an incoming request.
+    repo().exists?(
+      from(m in Memory,
+        where:
+          m.memory_space_id == ^claim.memory_space_id and m.scope == ^claim.scope and
+            m.namespace == ^claim.namespace and fragment("?->>'project'", m.metadata) == ^project
+      )
+    ) or
+      repo().exists?(
+        from(s in ProjectedSession,
+          where:
+            s.memory_space_id == ^claim.memory_space_id and s.scope == ^claim.scope and
+              s.namespace == ^claim.namespace and s.project == ^project
+        )
+      ) or
+      repo().exists?(
+        from(p in Profile,
+          where:
+            p.memory_space_id == ^claim.memory_space_id and p.scope == ^claim.scope and
+              p.namespace == ^claim.namespace and p.project == ^project
+        )
+      ) or
+      repo().exists?(
+        from(j in Styx.Job,
+          where: j.worker == ^worker and fragment("? @> ?::jsonb", j.args, ^args)
+        )
+      ) or
+      repo().exists?(
+        from(s in Backplane.Memory.Projections.State,
+          where: s.projector == "profile" and s.subject_id == ^profile_subject(project, claim)
+        )
+      )
   end
 
   defp fresh?(nil), do: false
@@ -431,18 +567,19 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
     claim = issue_partition(partition)
     details = Map.put(claim, :project, project)
 
-    source_id =
-      [project, claim]
-      |> :erlang.term_to_binary([:deterministic])
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
-
     Backplane.Memory.Memories.record_partition_issue(
       "memory_profile_generator",
-      source_id,
+      partition_issue_id(project, claim),
       reason,
       details
     )
+  end
+
+  defp partition_issue_id(project, claim) do
+    [project, claim]
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   defp issue_partition(partition) do
@@ -526,15 +663,6 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
       Enum.sort(memory_revisions ++ lesson_revisions ++ crystal_revisions ++ summary_revisions)
       |> Enum.join("\n")
 
-    subject = [
-      partition.memory_space_id,
-      partition.host_id,
-      partition.client_id,
-      partition.scope,
-      partition.namespace,
-      project
-    ]
-
     {:ok,
      %{
        memory_space_id: partition.memory_space_id,
@@ -544,12 +672,24 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
        namespace: partition.namespace,
        projector: "profile",
        subject_type: "memory_profile",
-       subject_id:
-         Base.url_encode64(:erlang.term_to_binary(subject, [:deterministic]), padding: false),
+       subject_id: profile_subject(project, partition),
        processing_version: "profile-v1",
        input_revision: :crypto.hash(:sha256, revisions) |> Base.encode16(case: :lower),
        output_revision: nil
      }}
+  end
+
+  defp profile_subject(project, partition) do
+    [
+      partition.memory_space_id,
+      partition.host_id,
+      partition.client_id,
+      partition.scope,
+      partition.namespace,
+      project
+    ]
+    |> :erlang.term_to_binary([:deterministic])
+    |> Base.url_encode64(padding: false)
   end
 
   defp record_processing_outcome(project, partition, attrs, {:ok, _result}, _job),
