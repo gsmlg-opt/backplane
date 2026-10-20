@@ -226,8 +226,7 @@ defmodule Backplane.Memory.Workers.ProfileBuildWorker do
   end
 
   defp validate_waiver_operator(%{kind: :trusted_operator} = operator) do
-    if Enum.all?([:ref, :evidence_ref], fn key ->
-         value = operator[key]
+    if Enum.all?([operator[:ref], operator[:evidence_ref]], fn value ->
          is_binary(value) and byte_size(value) <= 1024 and String.trim(value) != ""
        end) and match?({:ok, _}, Ecto.UUID.cast(operator[:request_id])) do
       :ok
