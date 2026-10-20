@@ -29,10 +29,7 @@ defmodule Backplane.HostAgent.MixProject do
   defp deps do
     [
       # TODO(upstream): gsmlg-dev/phoenix_socket_client#98
-      {:phoenix_socket_client, "~> 0.8"},
-      # TODO(upstream): gsmlg-dev/phoenix_socket_client#107
-      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#107 - align the shared WebSocket transport.
-      {:http_web_socket, "~> 0.21.2", override: true},
+      {:phoenix_socket_client, "~> 0.8.8"},
       {:req, "~> 0.5", override: true},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},
