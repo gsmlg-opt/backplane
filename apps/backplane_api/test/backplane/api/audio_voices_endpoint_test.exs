@@ -46,9 +46,9 @@ defmodule Backplane.Api.AudioVoicesEndpointTest do
     assert request(wrong_audience).status == 401
   end
 
-  test "legacy access remains compatible alongside DB clients" do
+  test "retired shared token is rejected alongside DB clients" do
     Application.put_env(:backplane, :auth_token, "voices-legacy")
-    assert request("voices-legacy").status == 200
+    assert request("voices-legacy").status == 401
   end
 
   test "enabled audio without eligible speech providers returns an empty list", %{token: token} do
@@ -243,10 +243,12 @@ defmodule Backplane.Api.AudioVoicesEndpointTest do
   end
 
   defp client(scopes) do
-    token = "voices-client-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Backplane.Clients.create_client(%{name: token, token: token, scopes: scopes, active: true})
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{
+        name: "endpoint-client-#{System.unique_integer([:positive])}",
+        scopes: scopes,
+        active: true
+      })
 
     token
   end

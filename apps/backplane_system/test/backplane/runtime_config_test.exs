@@ -3,6 +3,8 @@ defmodule Backplane.RuntimeConfigTest do
 
   @env_vars ~w(
     BACKPLANE_CONFIG
+    BACKPLANE_AUTH_TOKEN
+    BACKPLANE_AUTH_TOKENS
     SECRET_KEY_BASE
     BACKPLANE_ADMIN_USERNAME
     BACKPLANE_ADMIN_PASSWORD
@@ -37,6 +39,37 @@ defmodule Backplane.RuntimeConfigTest do
 
     refute Keyword.has_key?(backplane_config, :admin_username)
     refute Keyword.has_key?(backplane_config, :admin_password)
+  end
+
+  @tag :tmp_dir
+  test "deprecated shared token environment fails before runtime endpoints are configured", %{
+    tmp_dir: tmp_dir
+  } do
+    System.put_env("BACKPLANE_CONFIG", write_runtime_toml(tmp_dir))
+    System.put_env("SECRET_KEY_BASE", secret_key_base())
+
+    for name <- ["BACKPLANE_AUTH_TOKEN", "BACKPLANE_AUTH_TOKENS"] do
+      System.put_env(name, "never-print-secret")
+      error = assert_raise ArgumentError, fn -> read_runtime_config() end
+      assert Exception.message(error) =~ name
+      refute Exception.message(error) =~ "never-print-secret"
+      System.delete_env(name)
+    end
+  end
+
+  test "application startup rejects shared app configuration before starting children" do
+    old = Application.get_env(:backplane, :auth_token)
+    Application.put_env(:backplane, :auth_token, "never-print-secret")
+
+    try do
+      error = assert_raise ArgumentError, fn -> BackplaneSystem.Application.start(:normal, []) end
+      assert Exception.message(error) =~ "auth_token"
+      refute Exception.message(error) =~ "never-print-secret"
+    after
+      if old == nil,
+        do: Application.delete_env(:backplane, :auth_token),
+        else: Application.put_env(:backplane, :auth_token, old)
+    end
   end
 
   defp read_runtime_config do

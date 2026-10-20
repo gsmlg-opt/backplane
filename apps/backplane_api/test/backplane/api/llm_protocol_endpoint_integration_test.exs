@@ -254,7 +254,11 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     observability_test_disabled =
       Application.get_env(:backplane_telemetry, :observability_v2_test_disabled)
 
-    Application.put_env(:backplane, :auth_token, "endpoint-client-token")
+    Application.delete_env(:backplane, :auth_token)
+
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{name: "endpoint-client", scopes: ["llm::*"]})
+
     Application.delete_env(:backplane, :auth_tokens)
     Application.put_env(:backplane_telemetry, :observability_v2_enabled, true)
     Application.put_env(:backplane_telemetry, :observability_v2_llm_write, true)
@@ -345,11 +349,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       )
     end)
 
-    %{endpoint_port: endpoint_port, upstream_port: upstream_port}
+    %{endpoint_port: endpoint_port, token: token, upstream_port: upstream_port}
   end
 
   test "ordinary Responses traverses the listening API endpoint and submits once", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
     request_body =
       Jason.encode!(%{
@@ -357,7 +362,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
         "input" => "hello"
       })
 
-    response = post_over_socket(endpoint_port, "/v1/responses", request_body)
+    response = post_over_socket(token, endpoint_port, "/v1/responses", request_body)
 
     assert response =~ "HTTP/1.1 200 OK"
     assert response =~ ~S("id":"resp_endpoint_1")
@@ -370,7 +375,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
              [{"authorization", "Bearer sk-endpoint-provider"}]
 
     refute Enum.any?(captured.headers, fn {name, value} ->
-             name == "x-api-key" or value == "Bearer endpoint-client-token"
+             name == "x-api-key" or value == "Bearer #{token}"
            end)
 
     log = one_log!()
@@ -390,11 +395,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "semantic non-stream JSON over chunked transfer is observed exactly once", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
     request =
       Task.async(fn ->
-        post_over_socket(endpoint_port, "/v1/responses", request_body("chunked-json"))
+        post_over_socket(token, endpoint_port, "/v1/responses", request_body("chunked-json"))
       end)
 
     assert_receive {:chunked_json_partial, upstream_pid}, 2_000
@@ -423,9 +429,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "chunked non-stream overflow preserves bytes and records incomplete unknown usage", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
-    response = post_over_socket(endpoint_port, "/v1/responses", request_body("chunked-overflow"))
+    response =
+      post_over_socket(token, endpoint_port, "/v1/responses", request_body("chunked-overflow"))
+
     response_parts = split_http_response(response)
     native_body = OpenAIUpstream.oversized_chunked_json_body()
 
@@ -445,10 +454,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "fragmented Responses SSE retains trailing usage through the listening endpoint", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
     response =
       post_over_socket(
+        token,
         endpoint_port,
         "/v1/responses",
         request_body("stream", %{"stream" => true})
@@ -469,6 +480,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
 
   test "generic Codex Responses SSE preserves bytes and records complete usage", %{
     endpoint_port: endpoint_port,
+    token: token,
     upstream_port: upstream_port
   } do
     credential = "endpoint-codex-provider-key"
@@ -522,6 +534,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
 
     response =
       post_over_socket(
+        token,
         endpoint_port,
         "/v1/responses",
         Jason.encode!(%{"model" => model_name, "input" => "codex-stream", "stream" => true})
@@ -544,7 +557,8 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "native SSE forwards unknown events before the upstream completes and preserves bytes", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
     {:ok, socket} =
       :gen_tcp.connect(
@@ -558,7 +572,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
       :ok =
         :gen_tcp.send(
           socket,
-          http_request("/v1/responses", request_body("early-stream", %{"stream" => true}))
+          http_request(token, "/v1/responses", request_body("early-stream", %{"stream" => true}))
         )
 
       assert_receive {:early_stream_partial, upstream_pid}, 2_000
@@ -583,8 +597,11 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert get_in(log.metadata, ["protocol_observation", "protocol_terminal"]) == "completed"
   end
 
-  test "native errors remain observable without rewriting", %{endpoint_port: endpoint_port} do
-    response = post_over_socket(endpoint_port, "/v1/responses", request_body("error"))
+  test "native errors remain observable without rewriting", %{
+    endpoint_port: endpoint_port,
+    token: token
+  } do
+    response = post_over_socket(token, endpoint_port, "/v1/responses", request_body("error"))
 
     assert response =~ "HTTP/1.1 400 Bad Request"
     assert String.downcase(response) =~ "x-upstream-request-id: upstream-error-123"
@@ -599,9 +616,10 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "malformed native JSON is unchanged and recorded incomplete", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
-    response = post_over_socket(endpoint_port, "/v1/responses", request_body("malformed"))
+    response = post_over_socket(token, endpoint_port, "/v1/responses", request_body("malformed"))
 
     assert response =~ "HTTP/1.1 200 OK"
     assert response =~ "{malformed"
@@ -614,9 +632,10 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "refusal remains native success with its business finish reason", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
-    response = post_over_socket(endpoint_port, "/v1/responses", request_body("refusal"))
+    response = post_over_socket(token, endpoint_port, "/v1/responses", request_body("refusal"))
 
     assert response =~ "HTTP/1.1 200 OK"
     assert response =~ "resp_endpoint_refusal"
@@ -629,9 +648,11 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "output limit remains native success with an incomplete protocol terminal", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
-    response = post_over_socket(endpoint_port, "/v1/responses", request_body("output-limit"))
+    response =
+      post_over_socket(token, endpoint_port, "/v1/responses", request_body("output-limit"))
 
     assert response =~ "HTTP/1.1 200 OK"
     assert response =~ "resp_endpoint_limit"
@@ -644,10 +665,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   test "truncated SSE is forwarded and recorded as an incomplete observation", %{
-    endpoint_port: endpoint_port
+    endpoint_port: endpoint_port,
+    token: token
   } do
     response =
       post_over_socket(
+        token,
         endpoint_port,
         "/v1/responses",
         request_body("truncated", %{"stream" => true})
@@ -664,8 +687,12 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert get_in(log.metadata, ["protocol_observation", "protocol_terminal"]) == "interrupted"
   end
 
-  test "downstream disconnect submits and writes exactly once", %{endpoint_port: endpoint_port} do
+  test "downstream disconnect submits and writes exactly once", %{
+    endpoint_port: endpoint_port,
+    token: token
+  } do
     post_and_disconnect(
+      token,
       endpoint_port,
       "/v1/responses",
       request_body("disconnect", %{"stream" => true})
@@ -724,23 +751,23 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     Backplane.Repo.all(from(l in ProxyRequest, where: l.requested_model == ^model))
   end
 
-  defp post_over_socket(port, path, body) do
+  defp post_over_socket(token, port, path, body) do
     {:ok, socket} =
       :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false, packet: :raw], 2_000)
 
     try do
-      :ok = :gen_tcp.send(socket, http_request(path, body))
+      :ok = :gen_tcp.send(socket, http_request(token, path, body))
       receive_all(socket, [])
     after
       :gen_tcp.close(socket)
     end
   end
 
-  defp post_and_disconnect(port, path, body) do
+  defp post_and_disconnect(token, port, path, body) do
     {:ok, socket} =
       :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false, packet: :raw], 2_000)
 
-    :ok = :gen_tcp.send(socket, http_request(path, body))
+    :ok = :gen_tcp.send(socket, http_request(token, path, body))
     :ok = receive_until(socket, "first", [], 2_000)
     :ok = :inet.setopts(socket, linger: {true, 0})
     :gen_tcp.close(socket)
@@ -778,13 +805,13 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     end
   end
 
-  defp http_request(path, body) do
+  defp http_request(token, path, body) do
     [
       "POST ",
       path,
       " HTTP/1.1\r\n",
       "host: 127.0.0.1\r\n",
-      "x-api-key: endpoint-client-token\r\n",
+      "x-api-key: #{token}\r\n",
       "content-type: application/json\r\n",
       "content-length: ",
       Integer.to_string(byte_size(body)),

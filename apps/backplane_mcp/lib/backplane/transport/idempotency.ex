@@ -10,6 +10,7 @@ defmodule Backplane.Transport.Idempotency do
 
   import Plug.Conn
   alias Backplane.MCP.{Info, ModernServer}
+  alias Backplane.Transport.SensitiveResults
 
   @behaviour Plug
 
@@ -26,6 +27,9 @@ defmodule Backplane.Transport.Idempotency do
   @impl true
   def call(conn, _opts) do
     cond do
+      SensitiveResults.request?(conn.body_params) ->
+        sensitive_response(conn)
+
       event_stream_requested?(conn) ->
         assign(conn, :mcp_idempotency_status, "bypass")
 
@@ -44,6 +48,31 @@ defmodule Backplane.Transport.Idempotency do
           _ ->
             conn
         end
+    end
+  end
+
+  defp sensitive_response(conn) do
+    conn =
+      conn
+      |> assign(:mcp_idempotency_status, "bypass")
+      |> put_resp_header("cache-control", "no-store")
+      |> register_before_send(&put_resp_header(&1, "cache-control", "no-store"))
+
+    if get_req_header(conn, "idempotency-key") == [] do
+      conn
+    else
+      id = if is_map(conn.body_params), do: conn.body_params["id"]
+
+      body = %{
+        jsonrpc: "2.0",
+        id: id,
+        error: %{code: -32_600, message: "Sensitive tool results do not support Idempotency-Key"}
+      }
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(400, Jason.encode!(body))
+      |> halt()
     end
   end
 

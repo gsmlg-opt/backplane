@@ -104,7 +104,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     old_proxy = Application.get_env(:backplane_llama, :google_http_proxy)
     old_token = Application.get_env(:backplane, :auth_token)
     Application.put_env(:backplane_llama, :google_http_proxy, CapturingProxy)
-    Application.put_env(:backplane, :auth_token, "backplane-client")
+    Application.delete_env(:backplane, :auth_token)
 
     on_exit(fn ->
       restore_env(:backplane_llama, :google_http_proxy, old_proxy)
@@ -159,7 +159,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
       :post
       |> conn("/v1beta/models/pro:generateContent", request_body)
       |> put_req_header("content-type", "application/json")
-      |> put_req_header("x-goog-api-key", "backplane-client")
+      |> put_req_header("x-goog-api-key", client_token())
       |> put_req_header("user-agent", "native-google-client")
       |> put_req_header("x-goog-user-project", "native-project")
       |> Router.call(Router.init([]))
@@ -213,7 +213,8 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
       "sessionId" => "agy-session"
     }
 
-    response = google_call("agy-gemini", "generateContent", body)
+    token = client_token()
+    response = google_call("agy-gemini", "generateContent", body, token)
     assert response.status == 200
 
     assert get_in(Jason.decode!(response.resp_body), ["candidates", Access.at(0), "content"]) !=
@@ -226,7 +227,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
 
     assert {"authorization", "Bearer antigravity-google-secret"} in upstream.inject_request_headers
 
-    refute inspect(upstream.inject_request_headers) =~ "backplane-client"
+    refute inspect(upstream.inject_request_headers) =~ token
     native = Jason.decode!(opts[:body])
     assert native["project"] == "managed-project"
     assert native["model"] == "gemini-3.8-flash-low"
@@ -256,7 +257,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     catalog =
       :get
       |> conn("/v1beta/models")
-      |> put_req_header("x-goog-api-key", "backplane-client")
+      |> put_req_header("x-goog-api-key", client_token())
       |> Router.call([])
 
     assert catalog.status == 200
@@ -283,7 +284,8 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
             }
           }
         ] do
-      response = google_call("agy-count", "countTokens", body)
+      token = client_token()
+      response = google_call("agy-count", "countTokens", body, token)
       assert response.status == 200
       assert Jason.decode!(response.resp_body) == %{"totalTokens" => 2}
       assert get_resp_header(response, "retry-after") == ["7"]
@@ -295,7 +297,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
 
       assert {"authorization", "Bearer antigravity-google-secret"} in upstream.inject_request_headers
 
-      refute inspect(upstream.inject_request_headers) =~ "backplane-client"
+      refute inspect(upstream.inject_request_headers) =~ token
 
       assert Jason.decode!(opts[:body]) == %{
                "request" => %{
@@ -402,10 +404,9 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     %{provider: provider} = create_antigravity_provider()
     {:ok, _} = ModelAlias.put("agy-scoped", "#{provider.name}/gemini-3.8-flash-low")
 
-    {:ok, _} =
-      Backplane.Clients.create_client(%{
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{
         name: "Google models only",
-        token: "google-models-token",
         scopes: ["llm::models"],
         active: true
       })
@@ -417,7 +418,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
         Jason.encode!(%{"contents" => []})
       )
       |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", "Bearer google-models-token")
+      |> put_req_header("authorization", "Bearer #{token}")
       |> Router.call([])
 
     assert result.status == 403
@@ -430,7 +431,7 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
         Jason.encode!(%{"contents" => []})
       )
       |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", "Bearer google-models-token")
+      |> put_req_header("authorization", "Bearer #{token}")
       |> Router.call([])
 
     assert count_result.status == 403
@@ -513,12 +514,22 @@ defmodule Backplane.LLM.Google.RouterComponentTest do
     %{provider: provider, api: api, model: model, surface: surface}
   end
 
-  defp google_call(model, operation, body) do
+  defp google_call(model, operation, body, token \\ client_token()) do
     :post
     |> conn("/v1beta/models/#{model}:#{operation}", Jason.encode!(body))
     |> put_req_header("content-type", "application/json")
-    |> put_req_header("x-goog-api-key", "backplane-client")
+    |> put_req_header("x-goog-api-key", token)
     |> Router.call([])
+  end
+
+  defp client_token do
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{
+        name: "router-client-#{System.unique_integer([:positive])}",
+        scopes: ["*"]
+      })
+
+    token
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)

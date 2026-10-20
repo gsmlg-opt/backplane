@@ -66,22 +66,19 @@ defmodule Backplane.Api.AudioContractEndpointTest do
     assert_cleaned(conn)
   end
 
-  test "legacy token retains access alongside DB clients and authorized client uploads clean up" do
+  test "retired shared token is rejected while authorized client uploads clean up" do
     token = client(["llm::invoke"])
     Application.put_env(:backplane, :auth_token, "audio-legacy")
-
-    for bearer <- [token, "audio-legacy"] do
-      conn = upload(bearer)
-      assert conn.status == 503
-      assert get_resp_header(conn, "x-request-id") != []
-      assert_cleaned(conn)
-    end
-
+    assert_unread("audio-legacy", 401)
+    conn = upload(token)
+    assert conn.status == 503
+    assert get_resp_header(conn, "x-request-id") != []
+    assert_cleaned(conn)
     assert :ok = Backplane.Clients.Activity.flush()
   end
 
   test "authorized multipart duplicates, truncation and storage errors clean up immediately" do
-    Application.put_env(:backplane, :auth_token, "audio-legacy")
+    token = client(["llm::invoke"])
     parts = [{"file", "clip.wav", "bytes"}, {"model", nil, "asr"}]
 
     for body <- [
@@ -92,7 +89,7 @@ defmodule Backplane.Api.AudioContractEndpointTest do
       conn =
         request(
           "/v1/audio/transcriptions",
-          "audio-legacy",
+          token,
           body,
           "multipart/form-data; boundary=boundary"
         )
@@ -112,7 +109,7 @@ defmodule Backplane.Api.AudioContractEndpointTest do
     :ets.insert(Plug.Upload.Dir, {self(), "/dev/null"})
 
     try do
-      conn = upload("audio-legacy")
+      conn = upload(token)
       assert conn.status == 503
       assert Jason.decode!(conn.resp_body)["error"]["code"] == "upload_unavailable"
       assert :ets.lookup(Plug.Upload.Path, self()) == []
@@ -123,28 +120,28 @@ defmodule Backplane.Api.AudioContractEndpointTest do
   end
 
   test "file bytes and speech JSON bytes are bounded independently of content length" do
-    Application.put_env(:backplane, :auth_token, "audio-legacy")
+    token = client(["llm::invoke"])
     :ok = Config.set_policy(%{"upload_bytes" => 4, "speech_json_bytes" => 8})
-    assert upload("audio-legacy").status == 413
+    assert upload(token).status == 413
     assert :ets.lookup(Plug.Upload.Path, self()) == []
-    conn = request("/v1/audio/speech", "audio-legacy", ~s({"input":"hello"}), "application/json")
+    conn = request("/v1/audio/speech", token, ~s({"input":"hello"}), "application/json")
     assert conn.status == 413
   end
 
   test "conversation JSON retains exact raw bytes through the public endpoint" do
-    Application.put_env(:backplane, :auth_token, "audio-legacy")
+    token = client(["llm::invoke"])
     body = ~s({ "model" : "missing/model", "messages": [], "extra": "keep" })
-    conn = request("/v1/chat/completions", "audio-legacy", body, "application/json")
+    conn = request("/v1/chat/completions", token, body, "application/json")
     assert conn.status == 404
     assert conn.assigns.raw_body == body
     assert conn.body_params["extra"] == "keep"
   end
 
   test "admitted malformed JSON and unresolved requests finalize exactly once" do
-    Application.put_env(:backplane, :auth_token, "audio-legacy")
+    token = client(["llm::invoke"])
 
     for body <- ["{", ~s({"model":"missing/speech","input":"Private input","voice":"v"})] do
-      conn = request("/v1/audio/speech", "audio-legacy", body, "application/json")
+      conn = request("/v1/audio/speech", token, body, "application/json")
       assert conn.status in [400, 503]
       assert_receive {:observed_audio, attrs}
       assert attrs["outcome"] == "error"
@@ -210,10 +207,12 @@ defmodule Backplane.Api.AudioContractEndpointTest do
   end
 
   defp client(scopes) do
-    token = "audio-client-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Backplane.Clients.create_client(%{name: token, token: token, scopes: scopes, active: true})
+    {:ok, _client, token} =
+      Backplane.Clients.issue_client(%{
+        name: "endpoint-client-#{System.unique_integer([:positive])}",
+        scopes: scopes,
+        active: true
+      })
 
     token
   end

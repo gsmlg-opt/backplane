@@ -9,6 +9,8 @@ parse_csv_env = fn name ->
 end
 
 if config_env() == :prod do
+  Backplane.Config.Validator.validate_runtime_client_credentials!()
+
   config :backplane_system, Backplane.Repo, types: Backplane.PostgrexTypes
 
   config_path = System.get_env("BACKPLANE_CONFIG", "backplane.toml")
@@ -28,7 +30,6 @@ if config_env() == :prod do
       config :backplane,
         host: bp.host,
         port: bp.port,
-        auth_token: bp.auth_token,
         config_path: config_path
     end
 

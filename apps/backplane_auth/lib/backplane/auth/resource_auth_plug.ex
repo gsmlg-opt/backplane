@@ -1,6 +1,6 @@
 defmodule Backplane.Auth.ResourceAuthPlug do
   @moduledoc """
-  Authenticates OAuth, database client, and legacy bearer credentials for a
+  Authenticates OAuth and indexed database client bearer credentials for a
   canonical protected resource.
   """
 
@@ -12,7 +12,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   alias Backplane.Clients
 
   @type resource_auth :: %{
-          kind: :oauth | :client_token | :legacy | :open,
+          kind: :oauth | :client_token | :open,
           subject: String.t() | nil,
           client_id: String.t() | nil,
           principal_metadata: map(),
@@ -55,11 +55,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
         client_token_success(conn, resource, client)
 
       :error ->
-        if valid_legacy_token?(token) do
-          unrestricted_success(conn, resource, :legacy)
-        else
-          reject_supplied(conn, resource, opts)
-        end
+        reject_supplied(conn, resource, opts)
 
       {:error, reason} when reason in [:unavailable, :overloaded] ->
         unavailable(conn, opts)
@@ -71,7 +67,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
       OAuth.enabled_client_for_resource?(resource) ->
         oauth_reject(conn, resource, opts, nil)
 
-      Clients.any_clients?() or legacy_configured?() ->
+      Clients.any_clients?() ->
         compatibility_reject(conn, opts)
 
       true ->
@@ -248,29 +244,6 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
       _parts ->
         :invalid
-    end
-  end
-
-  defp legacy_configured?, do: configured_legacy_tokens() != []
-
-  defp valid_legacy_token?(token) do
-    Enum.any?(configured_legacy_tokens(), fn
-      candidate when is_binary(candidate) and byte_size(candidate) == byte_size(token) ->
-        Plug.Crypto.secure_compare(token, candidate)
-
-      _candidate ->
-        false
-    end)
-  end
-
-  defp configured_legacy_tokens do
-    tokens = Application.get_env(:backplane, :auth_tokens, [])
-    single = Application.get_env(:backplane, :auth_token)
-
-    case {tokens, single} do
-      {list, _single} when is_list(list) and list != [] -> list
-      {_list, token} when is_binary(token) -> [token]
-      _configuration -> []
     end
   end
 end

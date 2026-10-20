@@ -19,7 +19,8 @@ defmodule Backplane.Accounts.BorutaFoundationTest do
 
   test "boruta tables use oauth prefixes and leave machine clients intact" do
     assert table_exists?("clients")
-    assert column_exists?("clients", "token_hash")
+    refute column_exists?("clients", "token_hash")
+    assert column_definition("clients", "token_digest") == {"bytea", "YES", nil}
 
     assert table_exists?("oauth_clients")
     assert table_exists?("oauth_scopes")

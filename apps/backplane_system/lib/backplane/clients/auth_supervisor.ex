@@ -7,9 +7,7 @@ defmodule Backplane.Clients.AuthSupervisor do
   @impl true
   def init(_opts) do
     children = [
-      {Task.Supervisor,
-       name: Backplane.Clients.Tasks,
-       max_children: Backplane.Clients.AuthCache.options()[:max_workers] + 2},
+      {Task.Supervisor, name: Backplane.Clients.Tasks, max_children: 2},
       {Backplane.Clients.AuthCache, []},
       {Backplane.Clients.Activity, []}
     ]

@@ -175,15 +175,16 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       provider: provider
     } do
       setup_openai_model(provider, port, "responses-test")
-      legacy = "bp-first-consumer-token"
-      Application.put_env(:backplane, :auth_token, legacy)
+
+      {:ok, _client, token} =
+        Clients.issue_client(%{name: "bp-first-consumer-token", scopes: ["llm::invoke"]})
 
       conn =
         public_llm_request(
           :post,
           "/v1/responses",
           %{"model" => "test-integration/responses-test", "input" => "hello"},
-          legacy
+          token
         )
 
       assert conn.status == 200
@@ -200,7 +201,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
                [{"authorization", "Bearer sk-test-integration"}]
 
       refute Enum.any?(captured.headers, fn {name, value} ->
-               name == "x-api-key" or value == "Bearer #{legacy}"
+               name == "x-api-key" or value == "Bearer #{token}"
              end)
     end
 
@@ -210,8 +211,9 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       provider: provider
     } do
       setup_openai_model(provider, port, "responses-malformed")
-      legacy = "bp-malformed-json-token"
-      Application.put_env(:backplane, :auth_token, legacy)
+
+      {:ok, _client, token} =
+        Clients.issue_client(%{name: "bp-malformed-json-token", scopes: ["llm::invoke"]})
 
       conn =
         public_llm_request(
@@ -221,7 +223,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
             "model" => "test-integration/responses-malformed",
             "input" => "malformed-nested"
           },
-          legacy
+          token
         )
 
       expected =
@@ -321,7 +323,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       assert repeated_v1_conn.status == 200
     end
 
-    test "replaces OAuth, PAT, and legacy credentials before forwarding to an OpenAI provider",
+    test "replaces OAuth and PAT credentials upstream and rejects retired shared credentials",
          %{auth_store: auth_store, port: port, provider: provider} do
       {:ok, api} =
         ProviderApi.create(%{
@@ -354,12 +356,9 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       oauth_token =
         resource_access_token_fixture!(user, oauth_client, ["llm::invoke"], :v1)
 
-      pat = "pat-provider-isolation"
-
-      assert {:ok, pat_client} =
-               Clients.create_client(%{
+      assert {:ok, pat_client, pat} =
+               Clients.issue_client(%{
                  name: "Provider isolation PAT",
-                 token: pat,
                  scopes: ["llm::invoke"],
                  active: true
                })
@@ -367,7 +366,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       legacy = "legacy-provider-isolation"
       Application.put_env(:backplane, :auth_token, legacy)
 
-      for inbound_bearer <- [oauth_token.value, pat, legacy] do
+      for inbound_bearer <- [oauth_token.value, pat] do
         conn =
           public_llm_request(
             :post,
@@ -403,6 +402,22 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
 
         refute "Bearer #{inbound_bearer}" in authorization_values
       end
+
+      submissions = Agent.get(auth_store, & &1.submissions)
+
+      rejected =
+        public_llm_request(
+          :post,
+          "/v1/chat/completions",
+          %{
+            "model" => "test-integration/gpt-credential-isolation",
+            "messages" => [%{"role" => "user", "content" => "hi"}]
+          },
+          legacy
+        )
+
+      assert rejected.status == 401
+      assert Agent.get(auth_store, & &1.submissions) == submissions
     end
 
     test "rejects an unavailable cross-protocol route before contacting upstream", %{
@@ -614,8 +629,9 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       provider: provider
     } do
       setup_openai_model(provider, port, "responses-malformed-stream")
-      legacy = "bp-malformed-sse-token"
-      Application.put_env(:backplane, :auth_token, legacy)
+
+      {:ok, _client, token} =
+        Clients.issue_client(%{name: "bp-malformed-sse-token", scopes: ["llm::invoke"]})
 
       conn =
         public_llm_request(
@@ -626,7 +642,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
             "input" => "malformed-nested",
             "stream" => true
           },
-          legacy
+          token
         )
 
       expected =

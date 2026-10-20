@@ -9,7 +9,7 @@ defmodule Backplane.ConfigTest do
 
       assert config[:backplane].host == "0.0.0.0"
       assert config[:backplane].port == 4100
-      assert config[:backplane].auth_token == nil
+      refute Map.has_key?(config[:backplane], :auth_token)
     end
 
     test "loads full config with all sections populated" do
@@ -17,7 +17,7 @@ defmodule Backplane.ConfigTest do
 
       assert config[:backplane].host == "127.0.0.1"
       assert config[:backplane].port == 8080
-      assert config[:backplane].auth_token == "test-secret-token"
+      refute Map.has_key?(config[:backplane], :auth_token)
     end
 
     test "parses upstream servers with stdio transport" do
@@ -39,23 +39,35 @@ defmodule Backplane.ConfigTest do
       assert http.prefix == "pg"
     end
 
-    test "reads auth_token from hub section" do
-      config = Backplane.Config.load!("#{@fixtures_path}/full.toml")
-      assert config[:backplane].auth_token == "test-secret-token"
+    @tag :tmp_dir
+    test "rejects deprecated TOML shared tokens without printing their values", %{
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, "tokens.toml")
+
+      for setting <- [
+            ~s(auth_token = "never-print-secret"),
+            ~s(auth_tokens = ["never-print-secret"])
+          ] do
+        File.write!(path, "[backplane]\n" <> setting)
+        error = assert_raise ArgumentError, fn -> Backplane.Config.load!(path) end
+        refute Exception.message(error) =~ "never-print-secret"
+      end
     end
 
     @tag :tmp_dir
-    test "reads auth_tokens list from backplane section", %{tmp_dir: tmp_dir} do
-      path = Path.join(tmp_dir, "tokens.toml")
+    test "rejects credential-bearing TOML seeds and loads metadata-only seeds", %{
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, "clients.toml")
+      File.write!(path, "[[clients]]\nname = \"seed\"\ntoken = \"never-print-secret\"")
+      error = assert_raise ArgumentError, fn -> Backplane.Config.load!(path) end
+      refute Exception.message(error) =~ "never-print-secret"
 
-      File.write!(path, """
-      [backplane]
-      port = 4100
-      auth_tokens = ["token-a", "token-b"]
-      """)
+      File.write!(path, "[[clients]]\nname = \"seed\"\nscopes = [\"docs::*\"]\nactive = false")
 
-      config = Backplane.Config.load!(path)
-      assert config[:backplane].auth_tokens == ["token-a", "token-b"]
+      assert [%{name: "seed", scopes: ["docs::*"], active: false, metadata: %{}}] =
+               Backplane.Config.load!(path)[:clients]
     end
 
     test "defaults port to 4100 when omitted" do

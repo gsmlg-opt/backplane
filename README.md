@@ -160,7 +160,7 @@ Production public/API HTTP binding is controlled by `BACKPLANE_API_PORT`, `BACKP
 Production admin HTTP binding is controlled by `BACKPLANE_ADMIN_PORT`; if it is not set, it defaults to `4101`.
 Development binds the admin endpoint to `0.0.0.0:4221`. Production binds both endpoints to `0.0.0.0`; restrict admin access at the network or reverse-proxy boundary. The TOML `[backplane]` host/port fields do not override the Phoenix endpoint bindings above.
 
-Boot-only TOML settings currently cover database URL, legacy MCP auth token, optional boot-time upstreams, optional pre-seeded clients, cache, and audit settings. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through the admin endpoint, including:
+Boot-only TOML settings currently cover database URL, optional boot-time upstreams, metadata-only client seeds, cache, and audit settings. Shared bearer configuration and token-bearing client seeds are rejected at startup. Day-to-day operational configuration is stored in PostgreSQL and mostly edited through the admin endpoint, including:
 
 - upstream MCP servers
 - client tokens and scopes
@@ -176,10 +176,11 @@ Native math limits and timeouts live in the singleton `mcp_native_math_config` t
 `Backplane.Auth.ResourceAuthPlug` accepts these MCP bearer credentials concurrently:
 
 - **OAuth resource tokens**: verified for the MCP protected resource, with token scopes passed to tool authorization.
-- **Opaque client tokens**: verified against PostgreSQL-backed clients and scoped to allowed tools.
-- **Legacy tokens**: configured bearer tokens retain all-tool access, even when client rows exist.
+- **Server-issued client tokens**: `bp2_` credentials resolve through a SHA-256 digest index and are scoped to allowed tools. The server returns the token only when issuing or rotating it; ordinary edits preserve it.
 
-A request without a bearer credential is allowed only when there is no enabled OAuth client for the resource, no database client, and no configured legacy token. Invalid supplied credentials are rejected even in this open configuration. Open access is convenient for local development but should not be used for exposed deployments.
+A request without a bearer credential is allowed only when there is no enabled OAuth client for the resource and no database client. Inactive or unissued client rows still protect the resource. Invalid supplied credentials are rejected even in this open configuration. Open access is convenient for local development but should not be used for exposed deployments.
+
+The indexed-credential migration invalidates all old database client tokens and removes shared bearer authentication. Follow the [credential cutover procedure](docs/operations/token-auth-indexed.md) when upgrading; client identities and scopes are preserved for reissuance.
 
 The LLM `/v1` and `/skill-protocol/v1` surfaces use the same resource authentication layer with their own authorization checks. This does not add login protection to the admin endpoint.
 

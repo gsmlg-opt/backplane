@@ -1,5 +1,10 @@
 # Existing-token authentication hotfix (P0)
 
+Historical report for the bcrypt-compatible implementation. The [indexed client
+credential redesign](token-auth-indexed.md) replaces this path and its capacity
+settings. The measurements below describe P0 only; `scripts/benchmark_client_auth.exs`
+now measures indexed credentials. Reproducing P0 requires its original revision.
+
 Implemented September 30, 2026 against `301ffd41bfadfc806af7d71dc773359ce57c0d02`.
 P1 issuance, indexed credentials, migrations, and credential rotation are **not**
 part of this patch. Bcrypt cost is unchanged. No changes are authored in

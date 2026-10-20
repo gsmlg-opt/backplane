@@ -70,57 +70,44 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
            }
   end
 
-  test "authenticates the configured legacy token" do
+  test "rejects retired configured shared tokens" do
     Application.put_env(:backplane, :auth_token, "legacy-secret")
 
-    conn =
-      :post
-      |> conn("/mcp")
-      |> bearer("legacy-secret")
-      |> authenticate(:mcp)
+    rejected = conn(:post, "/mcp") |> bearer("legacy-secret") |> authenticate(:mcp)
 
-    assert conn.assigns.resource_auth == %{
-             kind: :legacy,
-             subject: nil,
-             client_id: nil,
-             principal_metadata: %{},
-             resource: :mcp,
-             scopes: ["*"]
-           }
-
-    assert conn.assigns.tool_scopes == ["*"]
-    refute Map.has_key?(conn.assigns, :client)
+    assert rejected.status == 401
+    refute rejected.assigns[:resource_auth]
   end
 
   test "accepts case-insensitive Bearer schemes" do
-    Application.put_env(:backplane, :auth_token, "legacy-secret")
+    {_client, token} = pat_fixture!()
 
     for scheme <- ["bearer", "BEARER"] do
       conn =
         :post
         |> conn("/mcp")
-        |> put_req_header("authorization", "#{scheme} legacy-secret")
+        |> put_req_header("authorization", "#{scheme} #{token}")
         |> authenticate(:mcp)
 
-      assert conn.assigns.resource_auth.kind == :legacy
+      assert conn.assigns.resource_auth.kind == :client_token
       refute conn.halted
     end
   end
 
   test "trims whitespace around Bearer credentials" do
-    Application.put_env(:backplane, :auth_token, "legacy-secret")
+    {_client, token} = pat_fixture!()
 
     conn =
       :post
       |> conn("/mcp")
-      |> put_req_header("authorization", "Bearer  legacy-secret ")
+      |> put_req_header("authorization", "Bearer  #{token} ")
       |> authenticate(:mcp)
 
-    assert conn.assigns.resource_auth.kind == :legacy
+    assert conn.assigns.resource_auth.kind == :client_token
     refute conn.halted
   end
 
-  test "falls back to the legacy token after a PAT miss" do
+  test "a PAT miss never falls back to the retired shared token" do
     pat_fixture!()
     Application.put_env(:backplane, :auth_token, "legacy-secret")
 
@@ -130,8 +117,8 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
       |> bearer("legacy-secret")
       |> authenticate(:mcp)
 
-    assert conn.assigns.resource_auth.kind == :legacy
-    assert conn.assigns.resource_auth.scopes == ["*"]
+    assert conn.status == 401
+    refute conn.assigns[:resource_auth]
     refute Map.has_key?(conn.assigns, :client)
   end
 
@@ -331,37 +318,30 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     end
   end
 
-  test "a non-empty legacy token list takes precedence over the single token" do
+  test "shared token lists cannot authorize any configured value" do
     Application.put_env(:backplane, :auth_token, "single-token")
-    Application.put_env(:backplane, :auth_tokens, ["new-token", "old-token"])
 
-    rejected =
-      conn(:post, "/mcp")
-      |> bearer("single-token")
-      |> authenticate(:mcp)
+    Application.put_env(:backplane, :auth_tokens, [
+      "bp2_" <> Base.url_encode64(:binary.copy(<<1>>, 32), padding: false),
+      "old-token"
+    ])
 
-    accepted =
-      conn(:post, "/mcp")
-      |> bearer("old-token")
-      |> authenticate(:mcp)
-
-    assert rejected.status == 401
-    assert accepted.assigns.resource_auth.kind == :legacy
+    for token <- [
+          "single-token",
+          "old-token",
+          "bp2_" <> Base.url_encode64(:binary.copy(<<1>>, 32), padding: false)
+        ] do
+      rejected = conn(:post, "/mcp") |> bearer(token) |> authenticate(:mcp)
+      assert rejected.status == 401
+      refute rejected.assigns[:resource_auth]
+    end
   end
 
-  test "an empty or non-list legacy token list falls back to the single token" do
-    Application.put_env(:backplane, :auth_token, "single-token")
-
-    for tokens <- [[], "not-a-list", nil] do
-      Application.put_env(:backplane, :auth_tokens, tokens)
-
-      conn =
-        conn(:post, "/mcp")
-        |> bearer("single-token")
-        |> authenticate(:mcp)
-
-      assert conn.assigns.resource_auth.kind == :legacy
-    end
+  test "a client without an issued credential still protects the resource" do
+    assert {:ok, _client} = Clients.create_client(%{name: "unissued", scopes: ["*"]})
+    rejected = conn(:post, "/mcp") |> authenticate(:mcp)
+    assert rejected.status == 401
+    refute rejected.assigns[:resource_auth]
   end
 
   test "required_scope decorates OAuth challenges but does not authorize" do
@@ -446,12 +426,9 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
   end
 
   defp pat_fixture!(attrs \\ []) do
-    token = Keyword.get(attrs, :token, "pat-#{System.unique_integer([:positive])}")
-
-    {:ok, client} =
-      Clients.create_client(%{
+    {:ok, client, token} =
+      Clients.issue_client(%{
         name: "PAT #{System.unique_integer([:positive])}",
-        token: token,
         scopes: Keyword.get(attrs, :scopes, ["*"]),
         active: Keyword.get(attrs, :active, true),
         metadata: Keyword.get(attrs, :metadata, %{})

@@ -2,10 +2,9 @@ defmodule Backplane.Clients do
   @moduledoc """
   Context module for managing MCP client identities and scoped tool access.
 
-  Verification evidence and current authorization snapshots live in supervised
-  ETS tables. Warm checks avoid database queries and client enumeration;
-  mutations invalidate authority before writing and periodic refresh bounds
-  cross-node freshness independently of reusable verification evidence.
+  Server-issued credentials are resolved by a digest index in supervised ETS.
+  Mutations invalidate authority before writing; leased authorization snapshots
+  bound cross-node freshness without request SQL or client enumeration.
   """
 
   import Ecto.Query
@@ -14,9 +13,9 @@ defmodule Backplane.Clients do
   alias Backplane.Clients.{Activity, AuthCache}
   alias Backplane.Repo
 
-  @verification_table :backplane_client_token_verifications
-  @verification_slots 1_024
-  @verification_ttl_ms 60_000
+  # Ecto SQL telemetry includes raw params and result rows; schema Inspect
+  # redaction does not protect credentials there. Keep this policy query-local.
+  @credential_query_opts [log: false, telemetry_event: nil]
 
   # --- ETS Cache ---
 
@@ -51,135 +50,30 @@ defmodule Backplane.Clients do
 
   # --- Token Verification ---
 
-  @doc """
-  Verify a bounded bearer credential. Warm evidence is checked against current
-  authorization; cold legacy bcrypt scans are bounded and coalesced per node.
-  """
-  @spec verify_token(String.t()) ::
-          {:ok, Client.t()} | :error | {:error, :unavailable | :overloaded}
-  def verify_token(token) when is_binary(token) do
+  @doc "Verify a server-issued credential using its indexed digest."
+  @spec verify_token(String.t()) :: {:ok, Client.t()} | :error | {:error, :unavailable}
+  def verify_token(token) do
     cond do
-      not token_size_valid?(token) -> :error
+      not AuthCache.token_format_valid?(token) -> :error
       Application.get_env(:backplane, :env) == :test -> sandbox_verify_token(token)
       true -> AuthCache.verify(token)
     end
   end
 
-  def verify_token(_), do: :error
-
+  # Request header parsing also serves OAuth, whose format is independent.
   def token_size_valid?(token), do: AuthCache.token_size_valid?(token)
 
   defp sandbox_verify_token(token) do
-    generation = verification_generation()
-    clients = active_clients_for_verification()
     digest = :crypto.hash(:sha256, token)
-    key = verification_key(digest, clients)
 
-    case cached_verification(key, generation, clients) do
-      {:ok, client} ->
-        touch_last_seen(client)
-        {:ok, client}
-
-      :miss ->
-        :error
-
-      :uncached ->
-        verify_and_cache(token, key, generation, clients)
-    end
-  end
-
-  defp active_clients_for_verification do
-    Client |> where(active: true) |> Repo.all()
-  end
-
-  defp verification_key(digest, clients) do
-    if Application.get_env(:backplane, :env) == :test do
-      # Tests can mutate sandbox rows directly. The fingerprint invalidates a
-      # miss after such a mutation; self() isolates parallel sandbox owners.
-      fingerprint =
-        clients
-        |> Enum.map(&{&1.id, &1.token_hash})
-        |> Enum.sort()
-        |> :erlang.phash2()
-
-      {self(), digest, fingerprint}
-    else
-      digest
-    end
-  end
-
-  defp verify_and_cache(token, key, generation, clients) do
-    case Enum.find(clients, fn client -> Bcrypt.verify_pass(token, client.token_hash) end) do
+    case Repo.get_by(Client, [token_digest: digest, active: true], @credential_query_opts) do
       nil ->
-        cache_verification(key, generation, :miss)
         :error
 
       client ->
-        cache_verification(key, generation, {:client, client.id, client.token_hash})
-        touch_last_seen(client)
+        Activity.record(client.id)
         {:ok, client}
     end
-  end
-
-  defp cached_verification(_key, generation, _clients)
-       when not is_integer(generation) or rem(generation, 2) != 0,
-       do: :uncached
-
-  defp cached_verification(key, generation, clients) do
-    slot = :erlang.phash2(key, @verification_slots)
-
-    case :ets.lookup(@verification_table, slot) do
-      [{^slot, ^key, ^generation, expires_at, result}] ->
-        if expires_at > System.monotonic_time(:millisecond) and
-             verification_generation() == generation do
-          resolve_cached_verification(result, clients)
-        else
-          :uncached
-        end
-
-      _other ->
-        :uncached
-    end
-  rescue
-    ArgumentError -> :uncached
-  end
-
-  defp resolve_cached_verification(:miss, _clients), do: :miss
-
-  defp resolve_cached_verification({:client, id, token_hash}, clients) do
-    case Enum.find(clients, &(&1.id == id and &1.token_hash == token_hash)) do
-      nil -> :uncached
-      client -> {:ok, client}
-    end
-  end
-
-  defp cache_verification(_key, generation, _result)
-       when not is_integer(generation) or rem(generation, 2) != 0,
-       do: :ok
-
-  defp cache_verification(key, generation, result) do
-    if verification_generation() == generation do
-      slot = :erlang.phash2(key, @verification_slots)
-      expires_at = System.monotonic_time(:millisecond) + @verification_ttl_ms
-      :ets.insert(@verification_table, {slot, key, generation, expires_at, result})
-    end
-
-    :ok
-  rescue
-    ArgumentError -> :ok
-  end
-
-  defp verification_generation do
-    case :ets.lookup(@verification_table, :generation) do
-      [{:generation, generation}] -> generation
-      _other -> nil
-    end
-  rescue
-    ArgumentError -> nil
-  end
-
-  defp touch_last_seen(%Client{id: id}) do
-    Activity.record(id)
   end
 
   # --- Scope Matching ---
@@ -222,40 +116,86 @@ defmodule Backplane.Clients do
 
   @spec list_clients() :: [Client.t()]
   def list_clients do
-    Client |> order_by(:name) |> Repo.all()
+    Client |> order_by(:name) |> Repo.all(@credential_query_opts)
   end
 
   @spec get_client(String.t()) :: Client.t() | nil
-  def get_client(id), do: Repo.get(Client, id)
+  def get_client(id), do: Repo.get(Client, id, @credential_query_opts)
 
   @spec get_client_by_name(String.t()) :: Client.t() | nil
-  def get_client_by_name(name), do: Repo.get_by(Client, name: name)
+  def get_client_by_name(name), do: Repo.get_by(Client, [name: name], @credential_query_opts)
 
   @spec create_client(map()) :: {:ok, Client.t()} | {:error, Ecto.Changeset.t()}
   def create_client(attrs) when is_map(attrs) do
-    attrs = hash_token_in_attrs(attrs)
-
     mutate_client(%Client{}, :put, fn ->
       %Client{}
       |> Client.changeset(attrs)
-      |> Repo.insert()
+      |> Repo.insert(@credential_query_opts)
     end)
   end
 
+  @doc "Create a client and return its server-generated credential once."
+  def issue_client(attrs) when is_map(attrs) do
+    token = generate_token()
+
+    result =
+      mutate_client(%Client{}, :put, fn ->
+        %Client{}
+        |> Client.changeset(attrs)
+        |> Ecto.Changeset.put_change(:token_digest, :crypto.hash(:sha256, token))
+        |> Repo.insert(@credential_query_opts)
+      end)
+
+    issued_result(result, token)
+  end
+
+  @doc "Replace a client's sole credential and return the new token once."
+  def rotate_client_token(%Client{} = client, attrs \\ %{}) do
+    token = generate_token()
+
+    result =
+      mutate_client(client, :put, fn ->
+        Repo.get!(Client, client.id, @credential_query_opts)
+        |> Client.changeset(attrs)
+        |> Ecto.Changeset.put_change(:token_digest, :crypto.hash(:sha256, token))
+        |> Repo.update(@credential_query_opts)
+      end)
+
+    issued_result(result, token)
+  end
+
+  @doc "Revoke the client's credential without removing its identity or scopes."
+  def revoke_client_token(%Client{} = client) do
+    mutate_client(client, :put, fn ->
+      Repo.get!(Client, client.id, @credential_query_opts)
+      |> Client.changeset(%{})
+      |> Ecto.Changeset.put_change(:token_digest, nil)
+      |> Repo.update(@credential_query_opts)
+    end)
+  end
+
+  defp generate_token,
+    do: "bp2_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+  defp issued_result({:ok, client}, token), do: {:ok, client, token}
+
+  defp issued_result({:error, %Ecto.Changeset{} = changeset}, _token),
+    do: {:error, Ecto.Changeset.delete_change(changeset, :token_digest)}
+
+  defp issued_result(error, _token), do: error
+
   @spec update_client(Client.t(), map()) :: {:ok, Client.t()} | {:error, Ecto.Changeset.t()}
   def update_client(%Client{} = client, attrs) do
-    attrs = hash_token_in_attrs(attrs)
-
     mutate_client(client, :put, fn ->
-      Repo.get!(Client, client.id)
+      Repo.get!(Client, client.id, @credential_query_opts)
       |> Client.changeset(attrs)
-      |> Repo.update()
+      |> Repo.update(@credential_query_opts)
     end)
   end
 
   @spec delete_client(Client.t()) :: {:ok, Client.t()} | {:error, Ecto.Changeset.t()}
   def delete_client(%Client{} = client) do
-    mutate_client(client, :delete, fn -> Repo.delete(client) end)
+    mutate_client(client, :delete, fn -> Repo.delete(client, @credential_query_opts) end)
   end
 
   @doc """
@@ -267,7 +207,7 @@ defmodule Backplane.Clients do
   @spec any_clients?() :: boolean()
   def any_clients? do
     if Application.get_env(:backplane, :env) == :test do
-      Repo.exists?(Client)
+      Repo.exists?(Client, @credential_query_opts)
     else
       AuthCache.any_clients?()
     end
@@ -278,22 +218,14 @@ defmodule Backplane.Clients do
   # --- Config Upsert ---
 
   @spec upsert_from_config(map()) :: {:ok, Client.t()} | {:error, Ecto.Changeset.t()}
-  def upsert_from_config(%{name: name, token: token, scopes: scopes}) do
-    token_hash = Bcrypt.hash_pwd_salt(token)
+  def upsert_from_config(attrs) when is_map(attrs) do
+    name = attrs[:name] || attrs["name"]
 
-    mutate_client(%Client{}, :put, fn ->
-      case get_client_by_name(name) do
-        nil ->
-          %Client{}
-          |> Client.changeset(%{name: name, token_hash: token_hash, scopes: scopes})
-          |> Repo.insert()
-
-        existing ->
-          existing
-          |> Client.changeset(%{token_hash: token_hash, scopes: scopes})
-          |> Repo.update()
-      end
-    end)
+    # The ordinary changeset rejects all credential attrs, including config imports.
+    case get_client_by_name(name) do
+      nil -> create_client(attrs)
+      existing -> update_client(existing, attrs)
+    end
   end
 
   # --- Helpers ---
@@ -346,29 +278,5 @@ defmodule Backplane.Clients do
 
     if Application.get_env(:backplane, :env) == :test, do: refresh_cache()
     :ok
-  end
-
-  defp hash_token_in_attrs(attrs) do
-    token = attrs[:token] || attrs["token"]
-
-    if token do
-      hash = Bcrypt.hash_pwd_salt(token)
-
-      attrs
-      |> Map.drop([:token, "token"])
-      |> then(fn a ->
-        if has_atom_keys?(a),
-          do: Map.put(a, :token_hash, hash),
-          else: Map.put(a, "token_hash", hash)
-      end)
-    else
-      attrs
-    end
-  end
-
-  defp has_atom_keys?(map) when map_size(map) == 0, do: true
-
-  defp has_atom_keys?(map) do
-    map |> Map.keys() |> hd() |> is_atom()
   end
 end

@@ -149,32 +149,13 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     assert invoke.status == 404
   end
 
-  test "legacy credentials retain full MCP and v1 access" do
+  test "retired shared credentials cannot access MCP or v1" do
     Application.put_env(:backplane, :auth_token, "legacy-compatibility")
-
-    names =
-      "legacy-compatibility"
-      |> post_mcp("tools/list", %{})
-      |> json_response(200)
-      |> get_in(["result", "tools"])
-      |> Enum.map(& &1["name"])
-
-    assert "compat::allowed" in names
-    assert "compat::blocked" in names
-    assert v1_request(:get, "/v1/models", "legacy-compatibility").status == 200
-
-    invoke =
-      v1_request(
-        :post,
-        "/v1/responses",
-        "legacy-compatibility",
-        %{"model" => "unknown/model", "input" => "hi"}
-      )
-
-    assert invoke.status == 404
+    assert post_mcp("legacy-compatibility", "tools/list", %{}).status == 401
+    assert v1_request(:get, "/v1/models", "legacy-compatibility").status == 401
   end
 
-  test "surfaces stay open without PAT legacy or assigned OAuth clients" do
+  test "surfaces stay open without client rows or assigned OAuth clients" do
     assert post_mcp(nil, "initialize", %{}).status == 200
     assert v1_request(:get, "/v1/models").status == 200
   end
@@ -234,17 +215,16 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
     assert Jason.decode!(models.resp_body) == %{"error" => "insufficient_scope"}
   end
 
-  test "removing the last assignment restores legacy policy without OAuth metadata" do
+  test "removing the last assignment cannot revive retired shared credentials" do
     Application.put_env(:backplane, :auth_token, "legacy-after-oauth")
     oauth_client = oauth_client_fixture!(resources: [:mcp], scopes: ["compat::allowed"])
-
     assert_oauth_challenge(post_mcp(nil, "initialize", %{}), :mcp)
     _client = update_resources!(oauth_client, [])
 
-    assert_compatibility_challenge(post_mcp(nil, "initialize", %{}))
-    assert_compatibility_challenge(v1_request(:get, "/v1"))
-    assert post_mcp("legacy-after-oauth", "initialize", %{}).status == 200
-    assert v1_request(:get, "/v1/models", "legacy-after-oauth").status == 200
+    assert post_mcp(nil, "initialize", %{}).status == 200
+    assert v1_request(:get, "/v1/models").status == 200
+    assert post_mcp("legacy-after-oauth", "initialize", %{}).status == 401
+    assert v1_request(:get, "/v1/models", "legacy-after-oauth").status == 401
   end
 
   test "OAuth clients with an empty resource allowlist preserve open resource policy" do
@@ -258,12 +238,9 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   end
 
   defp pat_fixture!(attrs) do
-    token = "pat-#{System.unique_integer([:positive])}"
-
-    assert {:ok, client} =
-             Clients.create_client(%{
+    assert {:ok, client, token} =
+             Clients.issue_client(%{
                name: "Compatibility PAT #{System.unique_integer([:positive])}",
-               token: token,
                scopes: Keyword.fetch!(attrs, :scopes),
                active: true
              })

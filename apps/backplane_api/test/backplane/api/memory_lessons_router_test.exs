@@ -25,12 +25,9 @@ defmodule Backplane.Api.MemoryLessonsRouterTest do
     assert {:ok, canonical_partition} =
              MemorySpaces.provision_private_host(host.id, host.memory_scope)
 
-    token = "lesson-rest-#{System.unique_integer([:positive])}"
-
-    {:ok, client} =
-      Clients.create_client(%{
+    {:ok, client, token} =
+      Clients.issue_client(%{
         name: "Memory lesson REST client",
-        token: token,
         scopes: ["memory.read", "memory.write", "memory.admin"],
         active: true,
         metadata: %{"memory_partition_id" => "host:#{host.id}"}

@@ -12,7 +12,7 @@ defmodule Backplane.Config do
   Loads configuration from a TOML file path.
 
   Returns a keyword list with parsed configuration sections:
-  - `:backplane` — host, port, auth_token
+  - `:backplane` — host, port
   - `:database` — url
   - `:upstream` — list of upstream MCP server configs
   - `:clients` — list of pre-seeded client configs
@@ -35,6 +35,11 @@ defmodule Backplane.Config do
   end
 
   defp parse(raw) do
+    Backplane.Config.Validator.validate_client_credentials!(
+      backplane: raw["backplane"] || %{},
+      clients: raw["clients"] || []
+    )
+
     [
       backplane: parse_backplane(raw["backplane"] || %{}),
       database: parse_database(raw["database"] || %{}),
@@ -49,9 +54,7 @@ defmodule Backplane.Config do
   defp parse_backplane(section) do
     %{
       host: section["host"] || @default_host,
-      port: section["port"] || @default_port,
-      auth_token: section["auth_token"],
-      auth_tokens: section["auth_tokens"]
+      port: section["port"] || @default_port
     }
   end
 
@@ -122,8 +125,9 @@ defmodule Backplane.Config do
     Enum.map(clients, fn client ->
       %{
         name: client["name"],
-        token: client["token"],
-        scopes: client["scopes"] || []
+        scopes: client["scopes"] || [],
+        active: Map.get(client, "active", true),
+        metadata: client["metadata"] || %{}
       }
     end)
   end

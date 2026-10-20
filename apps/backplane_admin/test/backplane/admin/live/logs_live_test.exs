@@ -35,7 +35,6 @@ defmodule Backplane.Admin.LogsLiveTest do
     {:ok, client} =
       Clients.create_client(%{
         name: "LLM log detail client #{System.unique_integer([:positive])}",
-        token: "llm-log-detail-token",
         scopes: ["llm::invoke"]
       })
 
@@ -79,7 +78,6 @@ defmodule Backplane.Admin.LogsLiveTest do
     {:ok, client} =
       Clients.create_client(%{
         name: "LLM log list client #{System.unique_integer([:positive])}",
-        token: "llm-log-list-token",
         scopes: ["llm::invoke"]
       })
 

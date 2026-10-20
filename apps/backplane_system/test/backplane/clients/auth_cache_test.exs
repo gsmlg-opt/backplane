@@ -5,14 +5,10 @@ defmodule Backplane.Clients.AuthCacheTest do
 
   setup do
     supervisor = start_supervised!({Task.Supervisor, []})
-
-    {:ok, source} =
-      Agent.start_link(fn ->
-        [%Client{id: "client", active: true, token_hash: "hash", scopes: ["docs::*"]}]
-      end)
-
+    token = token()
+    client = %Client{id: "client", active: true, token_digest: digest(token), scopes: ["docs::*"]}
+    {:ok, source} = Agent.start_link(fn -> [client] end)
     {:ok, clock} = Agent.start_link(fn -> 0 end)
-    parent = self()
 
     cache =
       start_supervised!(
@@ -22,342 +18,290 @@ defmodule Backplane.Clients.AuthCacheTest do
          named_tables: false,
          load: fn -> Agent.get(source, & &1) end,
          clock: fn -> Agent.get(clock, & &1) end,
-         refresh_interval_ms: 1_000_000,
-         verify: fn token, hash ->
-           send(parent, {:bcrypt, token, hash})
-           token == "valid"
-         end}
+         refresh_interval_ms: 1_000_000}
       )
 
     handle = AuthCache.handle(cache)
     assert :ok = AuthCache.refresh(handle)
-    %{cache: cache, handle: handle, source: source, clock: clock, supervisor: supervisor}
+
+    %{
+      cache: cache,
+      handle: handle,
+      source: source,
+      clock: clock,
+      supervisor: supervisor,
+      token: token,
+      client: client
+    }
   end
 
-  test "production warm lookup survives the old TTL and unchanged refresh", context do
-    assert {:ok, client} = AuthCache.verify("valid", context.handle)
-    assert_receive {:bcrypt, "valid", "hash"}
-    Agent.update(context.clock, fn _ -> 61_000 end)
-    assert {:error, :unavailable} = AuthCache.verify("valid", context.handle)
-    assert :ok = AuthCache.refresh(context.handle)
-    assert {:ok, ^client} = AuthCache.verify("valid", context.handle)
-    refute_receive {:bcrypt, _, _}
+  test "first success and unique misses read indexes without owner or loader", context do
+    :sys.suspend(context.cache)
+    :sys.suspend(context.source)
+
+    try do
+      assert {:ok, client} = AuthCache.verify(context.token, context.handle)
+      assert client.id == context.client.id
+      for _ <- 1..1_000, do: assert(:error = AuthCache.verify(token(), context.handle))
+      assert :ets.info(context.handle.digests, :size) == 1
+      assert :ets.info(context.handle.clients, :size) == 1
+      refute Map.has_key?(context.handle, :evidence)
+      refute Map.has_key?(context.handle, :negatives)
+      assert {:message_queue_len, 0} = Process.info(context.cache, :message_queue_len)
+      assert Task.Supervisor.children(context.supervisor) == []
+    after
+      :sys.resume(context.source)
+      :sys.resume(context.cache)
+    end
   end
 
-  test "current scopes are authority and late verification cannot resurrect rotation", context do
-    assert {:ok, _} = AuthCache.verify("valid", context.handle)
-    assert_receive {:bcrypt, _, _}
-    [client] = Agent.get(context.source, & &1)
-    edited = %{client | scopes: ["git::*"]}
-    assert :ok = AuthCache.mutate(context.handle, {:put, edited})
-    assert {:ok, verified} = AuthCache.verify("valid", context.handle)
-    assert verified.scopes == ["git::*"]
-    refute_receive {:bcrypt, _, _}
-    assert :ok = AuthCache.mutate(context.handle, {:put, %{edited | active: false}})
-    assert :error = AuthCache.verify("valid", context.handle)
-  end
-
-  test "unavailable snapshot is protected and oversized secrets never reach bcrypt", context do
-    assert AuthCache.any_clients?(context.handle)
-    assert :error = AuthCache.verify(String.duplicate("x", 16_385), context.handle)
-    refute_receive {:bcrypt, _, _}
-  end
-
-  test "refresh reclaims callers that died before submitting an admitted request", context do
-    caller = spawn(fn -> :ok end)
-    reference = Process.monitor(caller)
-    assert_receive {:DOWN, ^reference, :process, ^caller, _reason}
-    :ets.insert(context.handle.ingress, {0, make_ref(), caller})
-    send(context.cache, :refresh)
-    eventually(fn -> assert %{ingress: 0} = AuthCache.stats(context.handle) end)
-  end
-
-  test "one cold scan serves concurrent callers; overload never blocks warm traffic", context do
-    parent = self()
-
-    cache =
-      new_cache(context,
-        verify: fn token, _hash ->
-          send(parent, {:started, self(), token})
-          receive do: (:finish -> token in ["valid", "cold"])
-        end,
-        max_waiters: 3
-      )
-
-    handle = AuthCache.handle(cache)
-    :ok = AuthCache.refresh(handle)
-
-    warmup = Task.async(fn -> AuthCache.verify("valid", handle) end)
-    assert_receive {:started, worker, "valid"}
-    send(worker, :finish)
-    assert {:ok, _} = Task.await(warmup)
-
-    first = Task.async(fn -> AuthCache.verify("cold", handle) end)
-    assert_receive {:started, worker, "cold"}
-    second = Task.async(fn -> AuthCache.verify("cold", handle) end)
-    third = Task.async(fn -> AuthCache.verify("cold", handle) end)
-    eventually(fn -> assert %{workers: 1, waiters: 3, ingress: 3} = AuthCache.stats(handle) end)
-    assert {:error, :overloaded} = AuthCache.verify("different", handle)
-    assert {:ok, _} = AuthCache.verify("valid", handle)
-    refute_receive {:started, _, _}
-    send(worker, :finish)
-    assert {:ok, _} = Task.await(first)
-    assert {:ok, _} = Task.await(second)
-    assert {:ok, _} = Task.await(third)
-    assert %{workers: 0, waiters: 0, ingress: 0} = AuthCache.stats(handle)
-  end
-
-  test "rotation and disable fence a late worker against the current hash", context do
-    parent = self()
-
-    cache =
-      new_cache(context,
-        verify: fn _token, _hash ->
-          send(parent, {:started, self()})
-          receive do: (:finish -> true)
+  test "request index work has a fixed bound for one and ten thousand clients", c do
+    for count <- [1, 10_000] do
+      clients =
+        for n <- 1..count do
+          %{
+            c.client
+            | id: "client-#{n}",
+              token_digest: if(n == 1, do: c.client.token_digest, else: digest(token()))
+          }
         end
-      )
 
-    handle = AuthCache.handle(cache)
-    :ok = AuthCache.refresh(handle)
-    pending = Task.async(fn -> AuthCache.verify("valid", handle) end)
-    assert_receive {:started, worker}
-    [client] = Agent.get(context.source, & &1)
-    :ok = AuthCache.mutate(handle, {:put, %{client | token_hash: "new-hash"}})
-    send(worker, :finish)
-    assert :error = Task.await(pending)
-    assert AuthCache.stats(handle).positives == 0
+      Agent.update(c.source, fn _ -> clients end)
+      assert :ok = AuthCache.refresh(c.handle)
 
-    pending = Task.async(fn -> AuthCache.verify("valid", handle) end)
-    assert_receive {:started, worker}
-    :ok = AuthCache.mutate(handle, {:put, %{client | active: false}})
-    send(worker, :finish)
-    assert :error = Task.await(pending)
+      assert indexed_lookup_counts(
+               fn ->
+                 assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+                 assert :error = AuthCache.verify(token(), c.handle)
+               end,
+               c.handle
+             ) == %{digest: 2, client: 1, control: 4, scan: 0}
+    end
   end
 
-  test "older refreshes cannot overwrite a mutation or a newer refresh", context do
-    {revision, _loader} = GenServer.call(context.cache, :refresh_ticket)
-    [client] = Agent.get(context.source, & &1)
-    :ok = AuthCache.mutate(context.handle, {:put, %{client | active: false}})
+  test "current scopes, active state, rotation, revoke and deletion are authoritative", c do
+    edited = %{c.client | scopes: ["git::*"]}
+    assert :ok = AuthCache.mutate(c.handle, {:put, edited})
+    assert {:ok, ^edited} = AuthCache.verify(c.token, c.handle)
+    replacement = token()
+    rotated = %{edited | token_digest: digest(replacement)}
+    assert :ok = AuthCache.mutate(c.handle, {:put, rotated})
+    assert :error = AuthCache.verify(c.token, c.handle)
+    assert {:ok, ^rotated} = AuthCache.verify(replacement, c.handle)
+    assert :ok = AuthCache.mutate(c.handle, {:put, %{rotated | active: false}})
+    assert :error = AuthCache.verify(replacement, c.handle)
+    assert AuthCache.stats(c.handle).digests == 0
+    assert :ok = AuthCache.mutate(c.handle, {:put, %{rotated | token_digest: nil}})
+    assert :error = AuthCache.verify(replacement, c.handle)
+    assert AuthCache.any_clients?(c.handle)
+    assert :ok = AuthCache.mutate(c.handle, {:delete, rotated.id})
+    refute AuthCache.any_clients?(c.handle)
+  end
+
+  test "malformed, old and noncanonical tokens cannot authenticate", c do
+    for invalid <- [
+          nil,
+          "",
+          "old-token",
+          "bp2_" <> String.duplicate("x", 44),
+          "bp2_" <> String.duplicate("!", 43),
+          String.duplicate("x", 16_385)
+        ] do
+      assert :error = AuthCache.verify(invalid, c.handle)
+    end
+
+    assert AuthCache.token_format_valid?(c.token)
+    refute AuthCache.token_format_valid?(String.slice(c.token, 0, 46) <> "B")
+  end
+
+  test "lease expires and unchanged refresh restores direct lookup", c do
+    assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+    Agent.update(c.clock, fn _ -> 30_000 end)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+    assert {:error, :unavailable} = AuthCache.verify(token(), c.handle)
+    assert AuthCache.any_clients?(c.handle)
+    assert :ok = AuthCache.refresh(c.handle)
+    assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+  end
+
+  test "failed refresh cannot extend last authorization lease", c do
+    Agent.update(c.source, fn _ -> :error end)
+    Agent.update(c.clock, fn _ -> 29_999 end)
+    assert {:error, :unavailable} = AuthCache.refresh(c.handle)
+    assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+    Agent.update(c.clock, fn _ -> 30_000 end)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+  end
+
+  test "older refresh cannot overwrite mutation or newer refresh", c do
+    {revision, _} = GenServer.call(c.cache, :refresh_ticket)
+    assert :ok = AuthCache.mutate(c.handle, {:put, %{c.client | token_digest: nil}})
 
     assert {:error, :unavailable} =
-             GenServer.call(context.cache, {:publish, revision, {:ok, [client], 0}})
+             GenServer.call(c.cache, {:publish, revision, {:ok, [c.client], 0}})
 
-    assert :error = AuthCache.verify("valid", context.handle)
-    {old_revision, _loader} = GenServer.call(context.cache, :refresh_ticket)
-    :ok = AuthCache.refresh(context.handle)
+    assert :error = AuthCache.verify(c.token, c.handle)
+    {old_revision, _} = GenServer.call(c.cache, :refresh_ticket)
+    assert :ok = AuthCache.refresh(c.handle)
 
     assert {:error, :unavailable} =
-             GenServer.call(context.cache, {:publish, old_revision, {:ok, [], 0}})
+             GenServer.call(c.cache, {:publish, old_revision, {:ok, [], 0}})
 
-    assert AuthCache.any_clients?(context.handle)
+    assert AuthCache.any_clients?(c.handle)
   end
 
-  test "failed refresh retains evidence only within the authorization lease", context do
-    assert {:ok, _} = AuthCache.verify("valid", context.handle)
-    assert_receive {:bcrypt, _, _}
-    Agent.update(context.source, fn _ -> :error end)
-    Agent.update(context.clock, fn _ -> 29_999 end)
-    assert {:error, :unavailable} = AuthCache.refresh(context.handle)
-    assert {:ok, _} = AuthCache.verify("valid", context.handle)
-    Agent.update(context.clock, fn _ -> 30_000 end)
-    assert {:error, :unavailable} = AuthCache.verify("valid", context.handle)
-    assert AuthCache.any_clients?(context.handle)
-    refute_receive {:bcrypt, _, _}
+  test "mutation barrier prevents authorization and refresh until publication", c do
+    assert :ok = AuthCache.begin_mutation(c.handle)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+    assert {:error, :unavailable} = AuthCache.refresh(c.handle)
+    assert AuthCache.any_clients?(c.handle)
+    assert :ok = AuthCache.mutate(c.handle, {:put, c.client})
+    assert {:ok, _} = AuthCache.verify(c.token, c.handle)
   end
 
-  test "slow loads cannot extend the lease of an old database snapshot", context do
+  test "aborted and dead mutation writers remain fail closed until reload", c do
+    assert :ok = AuthCache.begin_mutation(c.handle)
+    assert :ok = AuthCache.abort_mutation(c.handle)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+    assert :ok = AuthCache.refresh(c.handle)
+    parent = self()
+
+    writer =
+      spawn(fn ->
+        AuthCache.begin_mutation(c.handle)
+        send(parent, :blocked)
+      end)
+
+    assert_receive :blocked
+    eventually(fn -> refute :sys.get_state(c.cache).blocked end)
+    refute Process.alive?(writer)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+  end
+
+  test "slow loads count their lease from before database query", c do
     parent = self()
 
     cache =
-      new_cache(context,
-        clock: fn -> Agent.get(context.clock, & &1) end,
+      new_cache(c,
         load: fn ->
           send(parent, {:loading, self()})
-          receive do: (:finish -> Agent.get(context.source, & &1))
+          receive do: (:finish -> [c.client])
         end
       )
 
     handle = AuthCache.handle(cache)
     assert_receive {:loading, worker}
-    Agent.update(context.clock, fn _ -> 30_000 end)
+    Agent.update(c.clock, fn _ -> 30_000 end)
     send(worker, :finish)
     eventually(fn -> assert :sys.get_state(cache).refresh == nil end)
-    assert AuthCache.any_clients?(handle)
-    assert {:error, :unavailable} = AuthCache.verify("valid", handle)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, handle)
   end
 
-  test "publication and mutation barriers fail closed without discarding unchanged evidence",
-       context do
-    assert {:ok, _} = AuthCache.verify("valid", context.handle)
-    assert_receive {:bcrypt, _, _}
-    :ok = AuthCache.begin_mutation(context.handle)
-    assert {:error, :unavailable} = AuthCache.verify("valid", context.handle)
-    assert {:error, :unavailable} = AuthCache.refresh(context.handle)
-    assert AuthCache.any_clients?(context.handle)
-    [client] = Agent.get(context.source, & &1)
-    :ok = AuthCache.mutate(context.handle, {:put, client})
-    assert {:ok, _} = AuthCache.verify("valid", context.handle)
-    refute_receive {:bcrypt, _, _}
-  end
-
-  test "positive capacity is independent of unique invalid traffic", context do
-    cache =
-      new_cache(context,
-        positive_capacity: 2,
-        verify: fn token, _hash -> String.starts_with?(token, "valid") end
-      )
-
-    handle = AuthCache.handle(cache)
-    :ok = AuthCache.refresh(handle)
-
-    for token <- ["valid-1", "valid-2", "valid-3"],
-        do: assert({:ok, _} = AuthCache.verify(token, handle))
-
-    evidence = :ets.tab2list(handle.evidence)
-    for number <- 1..100, do: assert(:error = AuthCache.verify("invalid-#{number}", handle))
-    assert AuthCache.stats(handle).positives == 2
-    assert :ets.tab2list(handle.evidence) == evidence
-    refute inspect(evidence) =~ "valid"
-  end
-
-  test "negative hits are direct, bounded, expire, and cannot hide creation", context do
-    parent = self()
-
-    cache =
-      new_cache(context,
-        negative_capacity: 2,
-        clock: fn -> Agent.get(context.clock, & &1) end,
-        verify: fn token, hash ->
-          send(parent, {:bcrypt, token, hash})
-          token == "valid"
-        end
-      )
-
-    handle = AuthCache.handle(cache)
-    :ok = AuthCache.refresh(handle)
-    assert :error = AuthCache.verify("missing", handle)
-    assert_receive {:bcrypt, "missing", "hash"}
-    assert :ok = AuthCache.refresh(handle)
-    assert :error = AuthCache.verify("missing", handle)
-    refute_receive {:bcrypt, _, _}
-    Agent.update(context.clock, fn _ -> 5_000 end)
-    assert :error = AuthCache.verify("missing", handle)
-    assert_receive {:bcrypt, "missing", "hash"}
-
-    for token <- ["another", "third"], do: assert(:error = AuthCache.verify(token, handle))
-    assert %{negatives: 2} = AuthCache.stats(handle)
-    [client] = Agent.get(context.source, & &1)
-    assert :ok = AuthCache.mutate(handle, {:delete, client.id})
-    assert :error = AuthCache.verify("valid", handle)
-    assert :ok = AuthCache.mutate(handle, {:put, %{client | token_hash: "new-hash"}})
-    assert {:ok, _client} = AuthCache.verify("valid", handle)
-    assert %{negatives: 0} = AuthCache.stats(handle)
-  end
-
-  test "deadline keeps the permit until the supervised worker actually exits", context do
-    parent = self()
-
-    cache =
-      new_cache(context,
-        verification_timeout_ms: 50,
-        verify: fn _, _ ->
-          send(parent, {:started, self()})
-          receive do: (:finish -> true)
-        end
-      )
-
-    handle = AuthCache.handle(cache)
-    :ok = AuthCache.refresh(handle)
-    pending = Task.async(fn -> AuthCache.verify("cold", handle) end)
-    assert_receive {:started, worker}
-    reference = Process.monitor(worker)
-    assert {:error, :unavailable} = Task.await(pending)
-    assert Process.alive?(worker)
-    assert %{workers: 1, waiters: 0, ingress: 0} = AuthCache.stats(handle)
-    assert {:error, :overloaded} = AuthCache.verify("other", handle)
-    send(worker, :finish)
-    assert_receive {:DOWN, ^reference, :process, ^worker, :normal}
-    eventually(fn -> assert %{workers: 0, waiters: 0, ingress: 0} = AuthCache.stats(handle) end)
-  end
-
-  test "dead waiters and failed workers release bounded admission tickets", context do
-    parent = self()
-
-    cache =
-      new_cache(context,
-        verify: fn _, _ ->
-          send(parent, {:started, self()})
-          receive do: (:crash -> exit(:verification_failed))
-        end
-      )
-
-    handle = AuthCache.handle(cache)
-    :ok = AuthCache.refresh(handle)
-    caller = spawn(fn -> AuthCache.verify("cold", handle) end)
-    assert_receive {:started, worker}
-    Process.exit(caller, :kill)
-    eventually(fn -> assert %{workers: 1, waiters: 0, ingress: 0} = AuthCache.stats(handle) end)
-    send(worker, :crash)
-    eventually(fn -> assert %{workers: 0} = AuthCache.stats(handle) end)
-  end
-
-  test "unknown empty state stays protected until an authoritative empty load", context do
-    cache = new_cache(context, load: fn -> :error end)
+  test "unknown empty state stays protected until authoritative empty load", c do
+    cache = new_cache(c, load: fn -> :error end)
     handle = AuthCache.handle(cache)
     assert {:error, :unavailable} = AuthCache.refresh(handle)
     assert AuthCache.any_clients?(handle)
-    assert {:error, :unavailable} = AuthCache.verify("valid", handle)
-    {revision, _loader} = GenServer.call(cache, :refresh_ticket)
-    assert :ok = GenServer.call(cache, {:publish, revision, {:ok, [], context.handle.clock.()}})
+    assert {:error, :unavailable} = AuthCache.verify(c.token, handle)
+    {revision, _} = GenServer.call(cache, :refresh_ticket)
+    assert :ok = GenServer.call(cache, {:publish, revision, {:ok, [], 0}})
     refute AuthCache.any_clients?(handle)
   end
 
-  test "remote invalidation blocks stale authorization immediately even when reload fails",
-       context do
-    assert {:ok, _client} = AuthCache.verify("valid", context.handle)
-    assert_receive {:bcrypt, _, _}
-    Agent.update(context.source, fn _ -> :error end)
-    send(context.cache, {:client_auth_invalidated, :other@node, "client"})
-    GenServer.call(context.cache, :stats)
-    assert {:error, :unavailable} = AuthCache.verify("valid", context.handle)
-    assert AuthCache.any_clients?(context.handle)
-
-    Agent.update(context.source, fn _ ->
-      [%Client{id: "client", token_hash: "hash", active: false}]
-    end)
-
-    :ok = AuthCache.refresh(context.handle)
-    assert :error = AuthCache.verify("valid", context.handle)
+  test "remote invalidation blocks stale state even when reload fails", c do
+    Agent.update(c.source, fn _ -> :error end)
+    send(c.cache, {:client_auth_invalidated, :other@node, c.client.id})
+    AuthCache.stats(c.handle)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+    assert AuthCache.any_clients?(c.handle)
+    Agent.update(c.source, fn _ -> [%{c.client | active: false}] end)
+    assert :ok = AuthCache.refresh(c.handle)
+    assert :error = AuthCache.verify(c.token, c.handle)
   end
 
-  test "unchanged refresh during a scan does not turn a genuine miss into unavailable", context do
+  test "restart invalidates old handles and reload creates a new incarnation", c do
+    assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+    old_control = c.handle.control
+    cache = new_cache(c)
+    handle = AuthCache.handle(cache)
+    assert :ok = AuthCache.refresh(handle)
+    assert handle.control != old_control
+    GenServer.stop(c.cache)
+    assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+    assert AuthCache.any_clients?(c.handle)
+    assert {:ok, _} = AuthCache.verify(c.token, handle)
+  end
+
+  defp indexed_lookup_counts(fun, handle) do
     parent = self()
 
-    cache =
-      new_cache(context,
-        verify: fn _, _ ->
-          send(parent, {:started, self()})
-          receive do: (:finish -> false)
-        end
-      )
+    tracer =
+      spawn(fn ->
+        collect_lookups(parent, handle, %{digest: 0, client: 0, control: 0, scan: 0})
+      end)
 
-    handle = AuthCache.handle(cache)
-    :ok = AuthCache.refresh(handle)
-    pending = Task.async(fn -> AuthCache.verify("invalid", handle) end)
-    assert_receive {:started, worker}
-    :ok = AuthCache.refresh(handle)
-    send(worker, :finish)
-    assert :error = Task.await(pending)
+    :erlang.trace_pattern({:ets, :lookup, 2}, true, [])
+    :erlang.trace_pattern({:ets, :tab2list, 1}, true, [])
+    :erlang.trace(self(), true, [:call, {:tracer, tracer}])
+
+    try do
+      fun.()
+      reference = :erlang.trace_delivered(self())
+      assert_receive {:trace_delivered, _, ^reference}
+      send(tracer, :read)
+      assert_receive {:lookup_counts, ^tracer, counts}
+      counts
+    after
+      :erlang.trace(self(), false, [:call])
+      :erlang.trace_pattern({:ets, :lookup, 2}, false, [])
+      :erlang.trace_pattern({:ets, :tab2list, 1}, false, [])
+      send(tracer, :stop)
+    end
   end
 
-  defp new_cache(context, opts) do
+  defp collect_lookups(parent, handle, counts) do
+    receive do
+      :read ->
+        send(parent, {:lookup_counts, self(), counts})
+        collect_lookups(parent, handle, counts)
+
+      :stop ->
+        :ok
+
+      {:trace, _, :call, {:ets, :lookup, [table, _]}} ->
+        key =
+          cond do
+            table == handle.digests -> :digest
+            table == handle.clients -> :client
+            table == handle.control -> :control
+            true -> nil
+          end
+
+        collect_lookups(
+          parent,
+          handle,
+          if(key, do: Map.update!(counts, key, &(&1 + 1)), else: counts)
+        )
+
+      {:trace, _, :call, {:ets, :tab2list, _}} ->
+        collect_lookups(parent, handle, Map.update!(counts, :scan, &(&1 + 1)))
+
+      _ ->
+        collect_lookups(parent, handle, counts)
+    end
+  end
+
+  defp token, do: "bp2_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+  defp digest(token), do: :crypto.hash(:sha256, token)
+
+  defp new_cache(c, opts \\ []) do
     defaults = [
       name: nil,
       named_tables: false,
-      task_supervisor: context.supervisor,
+      task_supervisor: c.supervisor,
+      clock: fn -> Agent.get(c.clock, & &1) end,
       refresh_interval_ms: 1_000_000,
-      load: fn -> Agent.get(context.source, & &1) end
+      load: fn -> Agent.get(c.source, & &1) end
     ]
 
     start_supervised!({AuthCache, Keyword.merge(defaults, opts)}, id: make_ref())

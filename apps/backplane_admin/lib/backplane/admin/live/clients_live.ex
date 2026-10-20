@@ -18,7 +18,7 @@ defmodule Backplane.Admin.ClientsLive do
 
   @impl true
   def handle_params(_params, _uri, socket) do
-    {:noreply, load_clients(socket)}
+    {:noreply, socket |> assign(generated_token: nil) |> load_clients()}
   end
 
   @impl true
@@ -26,14 +26,13 @@ defmodule Backplane.Admin.ClientsLive do
 
   @impl true
   def handle_event("new", _, socket) do
-    token = generate_token()
     changeset = Client.changeset(%Client{}, %{scopes: ["*"]})
 
     {:noreply,
      assign(socket,
        editing: :new,
        form: to_form(changeset),
-       generated_token: token,
+       generated_token: nil,
        scope_input: ""
      )}
   end
@@ -88,10 +87,10 @@ defmodule Backplane.Admin.ClientsLive do
     changeset =
       case socket.assigns.editing do
         :new ->
-          Client.changeset(%Client{}, prepare_params(params, socket.assigns.generated_token))
+          Client.changeset(%Client{}, prepare_params(params))
 
         %Client{} = client ->
-          Client.changeset(client, prepare_params(params, nil))
+          Client.changeset(client, prepare_params(params))
       end
 
     {:noreply, assign(socket, form: to_form(Map.put(changeset, :action, :validate)))}
@@ -110,7 +109,7 @@ defmodule Backplane.Admin.ClientsLive do
             {:noreply,
              socket
              |> put_flash(:info, "Client #{client.name} deleted")
-             |> assign(editing: nil, form: nil)
+             |> assign(editing: nil, form: nil, generated_token: nil)
              |> load_clients()}
 
           {:error, _} ->
@@ -119,22 +118,39 @@ defmodule Backplane.Admin.ClientsLive do
     end
   end
 
-  def handle_event("regenerate_token", _, socket) do
-    {:noreply, assign(socket, generated_token: generate_token())}
+  def handle_event("dismiss_token", _, socket) do
+    {:noreply, assign(socket, generated_token: nil)}
+  end
+
+  def handle_event("rotate_token", _, %{assigns: %{editing: %Client{} = client}} = socket) do
+    case Clients.rotate_client_token(client) do
+      {:ok, updated, token} ->
+        Backplane.Admin.Audit.record("client.token_rotated", "client", updated.id)
+
+        {:noreply,
+         socket
+         |> assign(editing: nil, form: nil, generated_token: token)
+         |> put_flash(:info, "Token replaced for #{updated.name}")
+         |> load_clients()}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to rotate client token")}
+    end
+  end
+
+  def handle_event("rotate_token", _, socket) do
+    {:noreply, put_flash(socket, :error, "Select a client before rotating its token")}
   end
 
   defp create_client(socket, params) do
-    token = socket.assigns.generated_token
-    attrs = prepare_params(params, token)
-
-    case Clients.create_client(Map.put(attrs, "token", token)) do
-      {:ok, client} ->
+    case Clients.issue_client(prepare_params(params)) do
+      {:ok, client, token} ->
         Backplane.Admin.Audit.record("client.create", "client", client.id)
 
         {:noreply,
          socket
          |> put_flash(:info, "Client #{client.name} created")
-         |> assign(editing: nil, form: nil, generated_token: nil)
+         |> assign(editing: nil, form: nil, generated_token: token)
          |> load_clients()}
 
       {:error, changeset} ->
@@ -143,14 +159,7 @@ defmodule Backplane.Admin.ClientsLive do
   end
 
   defp update_client(socket, client, params) do
-    attrs = prepare_params(params, nil)
-    # If a new token was generated during edit, include it
-    attrs =
-      if socket.assigns.generated_token do
-        Map.put(attrs, "token", socket.assigns.generated_token)
-      else
-        attrs
-      end
+    attrs = prepare_params(params)
 
     case Clients.update_client(client, attrs) do
       {:ok, client} ->
@@ -167,7 +176,7 @@ defmodule Backplane.Admin.ClientsLive do
     end
   end
 
-  defp prepare_params(params, token) do
+  defp prepare_params(params) do
     scopes =
       (params["scopes"] || "")
       |> String.split(",", trim: true)
@@ -176,13 +185,7 @@ defmodule Backplane.Admin.ClientsLive do
 
     scopes = if scopes == [], do: ["*"], else: scopes
 
-    attrs = Map.put(params, "scopes", scopes)
-
-    if token do
-      Map.put(attrs, "token_hash", "placeholder")
-    else
-      attrs
-    end
+    Map.put(params, "scopes", scopes)
   end
 
   defp load_clients(socket) do
@@ -194,10 +197,6 @@ defmodule Backplane.Admin.ClientsLive do
       end
 
     assign(socket, loading: false, clients: clients)
-  end
-
-  defp generate_token do
-    "bp_" <> (:crypto.strong_rand_bytes(24) |> Base.url_encode64(padding: false))
   end
 
   defp relative_time(nil), do: "Never"
@@ -226,7 +225,7 @@ defmodule Backplane.Admin.ClientsLive do
         <:title>
           {if @editing == :new, do: "New Client", else: "Edit Client"}
         </:title>
-        <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
+        <.form id="client-form" for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
           <.dm_input
             id="client-name"
             name="client[name]"
@@ -254,21 +253,16 @@ defmodule Backplane.Admin.ClientsLive do
           </p>
           <.form_error field={@form[:scopes]} />
 
-          <div :if={@generated_token} class="bg-surface-container border border-warning rounded-lg p-4">
-            <label class="block text-sm font-medium text-warning mb-2">
-              Bearer Token
-              <span class="text-on-surface-variant">(copy now — shown only once)</span>
-            </label>
-            <div class="flex items-center gap-2">
-              <code class="flex-1 text-sm text-warning bg-surface-container-high px-3 py-2 rounded font-mono break-all">
-                {@generated_token}
-              </code>
-              <.dm_btn variant="ghost" size="xs" phx-click="regenerate_token">Regenerate</.dm_btn>
-            </div>
-          </div>
-
-          <div :if={@editing != :new && !@generated_token}>
-            <.dm_btn variant="warning" size="xs" phx-click="regenerate_token">Rotate Token</.dm_btn>
+          <div :if={@editing != :new}>
+            <.dm_btn
+              type="button"
+              variant="warning"
+              size="xs"
+              phx-click="rotate_token"
+              confirm="Replace this client's token now? Its current token will stop working."
+            >
+              {if is_nil(@editing.token_digest), do: "Issue Token", else: "Rotate Token"}
+            </.dm_btn>
           </div>
 
           <div class="flex gap-2">
@@ -278,8 +272,16 @@ defmodule Backplane.Admin.ClientsLive do
         </.form>
       </.dm_card>
 
+      <.dm_card :if={@generated_token} variant="bordered" class="mb-6 border-warning">
+        <:title>Bearer Token — copy now, shown only once</:title>
+        <code id="issued-token" class="block text-sm text-warning font-mono break-all">
+          {@generated_token}
+        </code>
+        <.dm_btn type="button" size="xs" phx-click="dismiss_token">Dismiss</.dm_btn>
+      </.dm_card>
+
       <div :if={@clients == []} class="text-on-surface-variant">
-        No clients configured. All MCP requests use legacy token authentication.
+        No clients configured. Create a client to issue a scoped access token.
       </div>
 
       <div class="space-y-4">
@@ -295,6 +297,9 @@ defmodule Backplane.Admin.ClientsLive do
                   {if client.active, do: "Active", else: "Inactive"}
                 </.dm_badge>
               </div>
+              <.dm_badge :if={is_nil(client.token_digest)} variant="warning" size="sm">
+                Not issued
+              </.dm_badge>
               <div class="flex flex-wrap gap-1 mt-2">
                 <.dm_badge
                   :for={scope <- client.scopes}

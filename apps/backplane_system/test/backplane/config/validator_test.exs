@@ -3,6 +3,33 @@ defmodule Backplane.Config.ValidatorTest do
 
   alias Backplane.Config.Validator
 
+  test "deprecated shared credentials fail startup without revealing values" do
+    for key <- [:auth_token, :auth_tokens] do
+      secret = "never-print-this-secret"
+      value = if key == :auth_tokens, do: [secret], else: secret
+
+      error =
+        assert_raise ArgumentError, fn ->
+          Validator.validate!(backplane: %{key => value})
+        end
+
+      assert Exception.message(error) =~ Atom.to_string(key)
+      refute Exception.message(error) =~ secret
+    end
+  end
+
+  test "token-bearing client seeds fail startup without revealing values" do
+    for key <- [:token, :token_hash, :token_digest, :scheme, :credential_scheme] do
+      error =
+        assert_raise ArgumentError, fn ->
+          Validator.validate!(clients: [%{key => "never-print-this-secret", :name => "seed"}])
+        end
+
+      assert Exception.message(error) =~ "clients"
+      refute Exception.message(error) =~ "never-print-this-secret"
+    end
+  end
+
   test "validate returns no warnings for valid config" do
     config = [
       backplane: %{port: 4100},

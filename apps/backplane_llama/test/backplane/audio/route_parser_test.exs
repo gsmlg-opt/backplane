@@ -49,14 +49,8 @@ defmodule Backplane.Audio.RouteParserTest do
   end
 
   test "authentication rejects malformed multipart before parsing" do
-    token = Application.get_env(:backplane, :auth_token)
-    Application.put_env(:backplane, :auth_token, "expected-audio-token")
-
-    on_exit(fn ->
-      if is_nil(token),
-        do: Application.delete_env(:backplane, :auth_token),
-        else: Application.put_env(:backplane, :auth_token, token)
-    end)
+    {:ok, _client, _token} =
+      Backplane.Clients.issue_client(%{name: "audio-parser-client", scopes: ["llm::invoke"]})
 
     conn =
       conn(:post, "/v1/audio/transcriptions", "not multipart")
