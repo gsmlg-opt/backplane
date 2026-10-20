@@ -17,6 +17,7 @@ defmodule Backplane.Memory.Projections.SessionProjector do
       "namespace" => field(first, :namespace),
       "session_id" => field(first, :session_id),
       "project" => first_value(ordered, :project),
+      "repository_sources" => Backplane.Memory.Provenance.event_sources(ordered),
       "agent_id" => first_value(ordered, :agent_id),
       "status" => lifecycle_status(ordered),
       "started_at" => started_at(ordered),
@@ -27,6 +28,7 @@ defmodule Backplane.Memory.Projections.SessionProjector do
       "source_event_ids" => Enum.map(ordered, & &1.id),
       "gaps" => Enum.sort(gaps)
     }
+    |> Backplane.MemoryRepository.metadata()
   end
 
   defp counts(events) do

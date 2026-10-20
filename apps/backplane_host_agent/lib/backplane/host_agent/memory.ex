@@ -24,6 +24,7 @@ defmodule Backplane.HostAgent.Memory do
   def remember(args, opts \\ []) when is_map(args) do
     store = store(opts)
     config = memory_config(opts)
+    args = Backplane.HostAgent.Memory.GitContext.enrich_arguments(args)
 
     with {:ok, content} <- Reducer.required_string(args, "content"),
          {:ok, scope} <- Reducer.resolve_scope(args, config),

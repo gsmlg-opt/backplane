@@ -4,8 +4,10 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
   import Backplane.Admin.MemoryComponents
 
   alias Backplane.Memory.Recall.Store
+  alias Backplane.Memory.Operations.Inventory
+  import Backplane.Admin.MemoryOperatorComponents, only: [browse_scope: 1, partition_query: 1]
 
-  @partition_params ~w(memory_space_id host client scope namespace)
+  @partition_params ~w(memory_space_id host client scope namespace project repository)
   @candidate_kinds ~w(memory lesson crystal summary observation)
   @candidate_page_size 50
 
@@ -30,15 +32,13 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case partition(params) do
-      {:ok, partition} -> load(socket, params, partition)
-      {:error, :invalid_partition} -> {:noreply, assign(socket, partition: nil)}
-    end
+    {:ok, partition} = partition(params)
+    load(socket, params, partition)
   end
 
   defp load(%{assigns: %{live_action: :index}} = socket, params, partition) do
     {query, options, invalid?} = normalize_list_params(params, partition)
-    result = safe_store(fn -> Store.list(partition, options) end)
+    result = safe_store(fn -> Inventory.recall(partition, options) end)
 
     case result do
       {:ok, page} ->
@@ -72,7 +72,13 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
   end
 
   defp load(%{assigns: %{live_action: :show}} = socket, params, partition) do
-    case safe_store(fn -> Store.get(params["recall_run_id"], partition) end) do
+    result =
+      safe_store(fn ->
+        with {:ok, identity} <- Inventory.identity(:recall, params["recall_run_id"], partition),
+             do: Store.get(params["recall_run_id"], identity)
+      end)
+
+    case result do
       {:ok, run, candidates} ->
         {filters, invalid?} = normalize_candidate_filters(params)
         list_params = Map.drop(params, ["recall_run_id", "selection", "kind", "candidate_cursor"])
@@ -139,23 +145,6 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
     ~H"""
     <div id="memory-recall-inspector">
       <.memory_page_header title="Recall Inspector" subtitle="Partition-safe Recall V2 execution traces" />
-
-      <.dm_card :if={is_nil(@partition)} id="recall-partition-empty" variant="bordered" padding="lg">
-        <h2 class="text-lg font-semibold">Select an exact memory partition</h2>
-        <p class="mt-2 text-sm text-on-surface-variant">
-          Supply host, client, scope, and namespace in the URL to inspect recall traces.
-        </p>
-        <form method="get" action="/memory/recall" class="mt-4 grid gap-3 sm:grid-cols-2">
-          <fieldset class="contents">
-            <legend class="sr-only">Exact memory partition</legend>
-            <label :for={field <- @partition_params} class="text-sm font-medium">
-              {partition_label(field)}
-              <input name={field} class="input mt-1 w-full" required maxlength="512" />
-            </label>
-          </fieldset>
-          <button class="btn btn-primary" type="submit">Inspect partition</button>
-        </form>
-      </.dm_card>
 
       <.dm_alert :if={@query_error} id="recall-query-error" variant="error" title="Recall unavailable" compact>
         Memory data is unavailable. Retry after checking the database connection.
@@ -279,24 +268,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
     """
   end
 
-  defp partition(params) do
-    values = Enum.map(@partition_params, &{&1, params[&1]})
-
-    if Enum.all?(values, fn {_key, value} ->
-         is_binary(value) and String.trim(value) != "" and byte_size(String.trim(value)) <= 512
-       end) do
-      {:ok,
-       %{
-         memory_space_id: String.trim(params["memory_space_id"]),
-         host_id: String.trim(params["host"]),
-         client_id: String.trim(params["client"]),
-         scope: String.trim(params["scope"]),
-         namespace: String.trim(params["namespace"])
-       }}
-    else
-      {:error, :invalid_partition}
-    end
-  end
+  defp partition(params), do: {:ok, browse_scope(params)}
 
   defp safe_store(fun) do
     fun.()
@@ -377,20 +349,9 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
 
   defp maybe_invalid_flash(socket, false), do: socket
 
-  defp canonical_partition(partition) do
-    %{
-      "memory_space_id" => partition.memory_space_id,
-      "host" => partition.host_id,
-      "client" => partition.client_id,
-      "scope" => partition.scope,
-      "namespace" => partition.namespace
-    }
-  end
+  defp canonical_partition(partition), do: partition_query(partition)
 
   defp index_path(query), do: "/memory/recall?#{URI.encode_query(query)}"
-
-  defp partition_label("memory_space_id"), do: "Memory space ID"
-  defp partition_label(field), do: String.capitalize(field)
 
   defp detail_path(id, query) do
     "/memory/recall/#{id}?#{URI.encode_query(query)}"

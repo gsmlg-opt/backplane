@@ -4,7 +4,7 @@ defmodule Backplane.Admin.MemoryAuditLive do
   import Backplane.Admin.MemoryComponents, only: [memory_link_button: 1, memory_page_header: 1]
   import Backplane.Admin.MemoryOperatorComponents
 
-  alias Backplane.Memory.Audit
+  alias Backplane.Memory.Operations.Inventory
 
   @page_size 50
 
@@ -18,38 +18,39 @@ defmodule Backplane.Admin.MemoryAuditLive do
          partition: nil,
          rows: [],
          offset: 0,
-         error: nil
+         next_offset: nil,
+         total: 0,
+         error: nil,
+         operation: nil,
+         actor: nil,
+         target: nil
        )}
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case exact_partition(params) do
-      {:ok, partition} ->
-        offset = page(params["offset"])
+    partition = browse_scope(params)
+    offset = page(params["offset"])
 
-        opts =
-          [limit: @page_size, offset: offset]
-          |> maybe(:operation, params["operation"])
-          |> maybe(:actor, params["actor"])
+    opts =
+      [limit: @page_size, offset: offset]
+      |> maybe(:operation, params["operation"])
+      |> maybe(:actor, params["actor"])
+      |> maybe(:target, params["target"])
 
-        rows = Audit.list(partition, opts)
-        target = blank_nil(params["target"])
-        rows = if target, do: Enum.filter(rows, &target?(&1.target_ids, target)), else: rows
+    {:ok, result} = Inventory.audit(partition, opts)
 
-        {:noreply,
-         assign(socket,
-           partition: partition,
-           rows: rows,
-           offset: offset,
-           error: nil,
-           operation: blank_nil(params["operation"]),
-           actor: blank_nil(params["actor"]),
-           target: target
-         )}
-
-      _ ->
-        {:noreply, assign(socket, partition: nil, rows: [], error: nil)}
-    end
+    {:noreply,
+     assign(socket,
+       partition: partition,
+       rows: result.entries,
+       offset: offset,
+       next_offset: result.next_offset,
+       total: result.total,
+       error: nil,
+       operation: blank_nil(params["operation"]),
+       actor: blank_nil(params["actor"]),
+       target: blank_nil(params["target"])
+     )}
   rescue
     error -> {:noreply, assign(socket, error: error)}
   end
@@ -63,20 +64,15 @@ defmodule Backplane.Admin.MemoryAuditLive do
        )}
 
   @impl true
-  def render(%{partition: nil} = assigns) do
-    ~H"""
-    <.partition_gate id="audit-partition" title="Audit" subtitle="Append-only memory governance history" path="/memory/audit" extra={[{"operation", "Operation (optional)"}, {"actor", "Actor (optional)"}, {"target", "Target ID (optional)"}]} />
-    """
-  end
-
   def render(assigns) do
     ~H"""
     <div id="memory-audit">
       <.memory_page_header title="Audit" subtitle="Append-only memory governance history" />
       <.dm_alert :if={@error} id="audit-error" variant="error" title="Audit unavailable">Audit entries could not be loaded.</.dm_alert>
+      <p id="audit-count" class="mb-3 text-sm">{@total} matching audit</p>
       <.dm_card :if={@rows == [] and !@error} id="audit-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No audit entries match</h2></.dm_card>
       <div class="overflow-x-auto"><.dm_table :if={@rows != []} id="memory-audit-table" data={@rows} compact hover zebra><:col :let={row} label="Operation">{row.operation}</:col><:col :let={row} label="Actor">{row.actor}</:col><:col :let={row} label="Targets"><code>{Jason.encode!(row.target_ids)}</code></:col><:col :let={row} label="Created">{format_datetime(row.created_at)}</:col></.dm_table></div>
-      <nav aria-label="Audit pagination" class="mt-4 flex justify-end gap-2"><.memory_link_button :if={@offset > 0} id="audit-previous" patch={page_path(assigns, max(0, @offset - @page_size))}>Previous</.memory_link_button><.memory_link_button :if={length(@rows) == @page_size} id="audit-next" patch={page_path(assigns, @offset + @page_size)}>Next</.memory_link_button></nav>
+      <nav aria-label="Audit pagination" class="mt-4 flex justify-end gap-2"><.memory_link_button :if={@offset > 0} id="audit-previous" patch={page_path(assigns, max(0, @offset - @page_size))}>Previous</.memory_link_button><.memory_link_button :if={@next_offset != nil} id="audit-next" patch={page_path(assigns, @offset + @page_size)}>Next</.memory_link_button></nav>
       <div class="mt-5 flex gap-3 text-sm"><.link navigate={~p"/memory/actions?#{partition_query(@partition)}"} class="text-primary underline">Actions</.link><.link navigate={~p"/memory/config"} class="text-primary underline">Config</.link></div>
     </div>
     """
@@ -86,12 +82,6 @@ defmodule Backplane.Admin.MemoryAuditLive do
   defp maybe(opts, key, value), do: Keyword.put(opts, key, String.trim(value))
   defp blank_nil(nil), do: nil
   defp blank_nil(value), do: if(String.trim(value) == "", do: nil, else: String.trim(value))
-  defp target?(values, target) when is_list(values), do: target in Enum.map(values, &to_string/1)
-
-  defp target?(values, target) when is_map(values),
-    do: target in Enum.map(Map.values(values), &to_string/1)
-
-  defp target?(_, _), do: false
 
   defp page_path(assigns, offset) do
     query =

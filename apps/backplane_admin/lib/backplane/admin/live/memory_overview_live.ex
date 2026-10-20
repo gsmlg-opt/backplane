@@ -6,6 +6,8 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   import Backplane.Admin.MemoryComponents
 
   alias Backplane.Memory.Operations
+  alias Backplane.Memory.Operations.Inventory
+  import Backplane.Admin.MemoryOperatorComponents, only: [browse_scope: 1, partition_query: 1]
   alias Backplane.Memory.Operations.Repair
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Skills.AgentManage
@@ -28,6 +30,10 @@ defmodule Backplane.Admin.MemoryOverviewLive do
      assign(socket,
        current_path: "/memory",
        regions: nil,
+       inventory: %{entries: [], total: 0},
+       inventory_error: nil,
+       inventory_scope: %{},
+       inventory_query: "",
        repair_result: nil,
        capture_limit: 50,
        capture_agents: capture_agents()
@@ -35,8 +41,20 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   end
 
   @impl true
-  def handle_params(_params, _uri, socket) do
-    {:noreply, assign(socket, regions: Operations.overview())}
+  def handle_params(params, _uri, socket) do
+    scope = browse_scope(params)
+
+    socket =
+      assign(socket,
+        regions: Operations.overview(),
+        inventory_scope: scope,
+        inventory_query: params["q"] || ""
+      )
+
+    case Inventory.memories(scope, q: params["q"], limit: 8) do
+      {:ok, page} -> {:noreply, assign(socket, inventory: page, inventory_error: nil)}
+      {:error, reason} -> {:noreply, assign(socket, inventory_error: reason)}
+    end
   end
 
   @impl true
@@ -84,6 +102,19 @@ defmodule Backplane.Admin.MemoryOverviewLive do
         title="Memory"
         subtitle="Authoritative streams, committed events, and guarded V2 rollout"
       />
+
+      <.dm_card id="memory-collection" variant="bordered" padding="sm" class="mb-5">
+        <h2 class="text-lg font-semibold">Memory collection</h2>
+        <form method="get" action="/memory" class="mt-3 flex flex-wrap items-end gap-3">
+          <input :for={{key, value} <- partition_query(@inventory_scope)} type="hidden" name={key} value={value} />
+          <.dm_input name="q" label="Search memories" value={@inventory_query} />
+          <.dm_btn type="submit" native_submit variant="primary">Search</.dm_btn>
+        </form>
+        <.dm_alert :if={@inventory_error} id="memory-collection-error" variant="error" title="Collection unavailable">The stored collection could not be queried. Retry the query.</.dm_alert>
+        <p :if={!@inventory_error} id="memory-collection-count" class="mt-3 text-sm">{@inventory.total} matching memories across stored sources</p>
+        <ul :if={!@inventory_error} class="mt-3 space-y-2"><li :for={memory <- @inventory.entries}><.link navigate={~p"/memory/memories/#{memory.id}"} class="text-primary underline">{memory.content}</.link><span class="ml-2 text-xs text-on-surface-variant">{memory.host_id || "Unknown source"}</span></li></ul>
+        <.link navigate={~p"/memory/memories?#{Map.put(partition_query(@inventory_scope), "q", @inventory_query)}"} class="mt-4 inline-block text-primary underline">Browse all matching memories</.link>
+      </.dm_card>
 
       <.dm_card
         :if={is_nil(@regions)}

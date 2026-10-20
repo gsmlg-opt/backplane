@@ -272,6 +272,7 @@ defmodule Backplane.Memory.Ingest do
     with {:ok, payload} <- Filter.apply_payload(event["payload"]),
          {:ok, source_client_id} <- filter_optional_provenance(event["client_id"]),
          {:ok, source_scope} <- filter_optional_provenance(event["scope"]) do
+      payload = Backplane.MemoryRepository.metadata(payload)
       payload_hash = EventValidator.payload_hash(payload)
 
       {:ok,

@@ -6,6 +6,8 @@ defmodule Backplane.Admin.MemoryActionsLive do
 
   alias Backplane.Memory.Operations
 
+  alias Backplane.Memory.Operations.Inventory
+
   @page_size 25
 
   @impl true
@@ -25,10 +27,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case exact_partition(params) do
-      {:ok, partition} -> load(socket, partition, params)
-      _ -> {:noreply, assign(socket, partition: nil, rows: [], selected: nil, error: nil)}
-    end
+    load(socket, browse_scope(params), params)
   end
 
   @impl true
@@ -37,16 +36,10 @@ defmodule Backplane.Admin.MemoryActionsLive do
       {:noreply, push_patch(socket, to: ~p"/memory/actions?#{selection_query(raw, ["project"])}")}
 
   @impl true
-  def render(%{partition: nil} = assigns) do
-    ~H"""
-    <.partition_gate id="actions-partition" title="Actions" subtitle="Partition-owned coordination work" path="/memory/actions" extra={[{"project", "Project"}]} />
-    """
-  end
-
   def render(assigns) do
     ~H"""
     <div id="memory-actions">
-      <.memory_page_header title="Actions" subtitle="Partition-owned coordination work" />
+      <.memory_page_header title="Actions" subtitle="Stored coordination work" />
       <.dm_alert :if={@error} id="actions-error" variant="error" title="Actions unavailable">The bounded exact-partition query failed.</.dm_alert>
       <.dm_card :if={@selected} id="action-detail" variant="bordered" padding="lg" class="mb-5">
         <div class="flex flex-wrap items-start justify-between gap-3">
@@ -72,10 +65,11 @@ defmodule Backplane.Admin.MemoryActionsLive do
           <% end %>
         </div>
       </.dm_card>
-      <.dm_card :if={@rows == [] and !@error} id="actions-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No actions in this partition</h2></.dm_card>
+      <.dm_card :if={@rows == [] and !@error} id="actions-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No actions match</h2></.dm_card>
       <div class="overflow-x-auto">
         <.dm_table :if={@rows != []} id="memory-actions-table" data={@rows} compact hover zebra>
           <:col :let={action} label="Action"><.link patch={detail_path(@partition, @project, @offset, action.id)} class="text-primary underline">{action.title}</.link></:col>
+          <:col :let={action} label="Source"><.source_identity record={action} /></:col>
           <:col :let={action} label="Status"><.dm_badge variant={status_variant(action.status)} size="sm">{action.status}</.dm_badge></:col>
           <:col :let={action} label="Priority">{action.priority}</:col>
           <:col :let={action} label="Project">{action.project || "—"}</:col>
@@ -96,7 +90,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
     project = blank_nil(params["project"])
     opts = [limit: @page_size, offset: offset] ++ if(project, do: [project: project], else: [])
 
-    case Operations.list_actions(partition, opts) do
+    case Inventory.actions(partition, opts) do
       {:ok, result} ->
         selected = load_detail(params["action"], partition)
 
@@ -119,8 +113,10 @@ defmodule Backplane.Admin.MemoryActionsLive do
   defp load_detail(nil, _partition), do: nil
 
   defp load_detail(action_id, partition) do
-    case Operations.get_action_detail(action_id, partition) do
-      {:ok, detail} -> detail
+    with {:ok, identity} <- Inventory.identity(:action, action_id, partition),
+         {:ok, detail} <- Operations.get_action_detail(action_id, identity) do
+      detail
+    else
       _ -> nil
     end
   end

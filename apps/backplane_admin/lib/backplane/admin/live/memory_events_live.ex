@@ -4,6 +4,10 @@ defmodule Backplane.Admin.MemoryEventsLive do
   import Backplane.Admin.MemoryComponents
 
   alias Backplane.Memory.Operations
+  alias Backplane.Memory.Operations.Inventory
+  alias Backplane.Admin.MemoryOperatorComponents
+
+  @selection_keys ~w(memory_space_id host client scope namespace repository)
 
   @memory_setting_keys [
     "memory.pipeline.enabled",
@@ -23,6 +27,8 @@ defmodule Backplane.Admin.MemoryEventsLive do
        current_path: "/memory/events",
        rollout: Operations.rollout_state(),
        filters: %{},
+       selection: %{},
+       selection_error: nil,
        page: %{events: [], next_cursor: nil, filters: %{}},
        selected_event: nil,
        query_error: nil,
@@ -32,21 +38,29 @@ defmodule Backplane.Admin.MemoryEventsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    query = Map.drop(params, ["event_id"])
-    page_result = Operations.timeline(query)
+    {:ok, selection, partition} = event_selection(params)
+    load_events(params, assign(socket, selection: selection, selection_error: nil), partition)
+  end
+
+  defp load_events(params, socket, partition) do
+    query = Map.drop(params, ["event_id" | @selection_keys])
+    page_result = Inventory.events(partition, query)
 
     event_result =
       case socket.assigns.live_action do
-        :show -> Operations.get_event(params["event_id"])
+        :show -> selected_event(params["event_id"], partition)
         :index -> {:ok, nil}
       end
 
     case {page_result, event_result} do
+      {_page, {:error, :selection_mismatch}} ->
+        {:noreply, unavailable_selection(socket)}
+
       {_page, {:error, :not_found}} ->
         {:noreply,
          socket
          |> put_flash(:error, "The selected event no longer exists.")
-         |> push_navigate(to: ~p"/memory/events")}
+         |> push_navigate(to: events_path(:index, nil, socket.assigns.selection))}
 
       {{:ok, page}, {:ok, selected_event}} ->
         socket =
@@ -105,7 +119,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
          events_path(
            socket.assigns.live_action,
            event_id,
-           query
+           Map.merge(query, socket.assigns.selection)
          ),
        replace: true
      )}
@@ -114,6 +128,9 @@ defmodule Backplane.Admin.MemoryEventsLive do
   @impl true
   def handle_info({:memory_event_inserted, summary}, socket) do
     cond do
+      socket.assigns.selection_error != nil ->
+        {:noreply, socket}
+
       not Operations.notification_matches?(summary, socket.assigns.filters) ->
         {:noreply, socket}
 
@@ -144,6 +161,10 @@ defmodule Backplane.Admin.MemoryEventsLive do
         subtitle="Authoritative Memory V2 event explorer"
       />
 
+      <.dm_alert :if={@selection_error} id="event-selection-unavailable" variant="warning" title="Event unavailable" compact>
+        The selected event is unavailable in this exact partition. Supply a complete, valid partition selection.
+      </.dm_alert>
+
       <.dm_alert
         :if={@query_error}
         id="event-query-error"
@@ -168,7 +189,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
             events_path(
               @live_action,
               @selected_event && @selected_event.id,
-              Map.delete(@filters, "cursor")
+              Map.merge(Map.delete(@filters, "cursor"), @selection)
             )
           }
           replace
@@ -263,7 +284,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
       </.form>
 
       <.memory_empty_state
-        :if={is_nil(@query_error) and @page.events == [] and is_nil(@selected_event)}
+        :if={is_nil(@query_error) and is_nil(@selection_error) and @page.events == [] and is_nil(@selected_event)}
         title="No events match these filters"
         rollout={@rollout}
       />
@@ -287,7 +308,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
             >
               <:col :let={event} label="Event">
                 <.link
-                  href={event_detail_path(event.id, @filters)}
+                  href={event_detail_path(event.id, Map.merge(@filters, @selection))}
                   class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
                 >
                   {event.event_type}
@@ -324,7 +345,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
                 events_path(
                   @live_action,
                   @selected_event && @selected_event.id,
-                  Map.put(@filters, "cursor", @page.next_cursor)
+                  Map.merge(Map.put(@filters, "cursor", @page.next_cursor), @selection)
                 )
               }
             >
@@ -342,7 +363,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
               </div>
               <.memory_link_button
                 id="event-close-detail"
-                patch={events_path(:index, nil, @filters)}
+                patch={events_path(:index, nil, Map.merge(@filters, @selection))}
                 size="sm"
                 variant="ghost"
               >
@@ -414,8 +435,35 @@ defmodule Backplane.Admin.MemoryEventsLive do
     """
   end
 
+  defp event_selection(params) do
+    filters = MemoryOperatorComponents.browse_scope(params)
+    {:ok, Map.take(MemoryOperatorComponents.partition_query(filters), @selection_keys), filters}
+  end
+
+  defp selected_event(id, filters) do
+    with {:ok, event} <- Operations.get_event(id) do
+      case Inventory.identity(:event, id, filters) do
+        {:ok, _identity} -> {:ok, event}
+        {:error, :not_found} -> {:error, :selection_mismatch}
+        error -> error
+      end
+    end
+  end
+
+  defp unavailable_selection(socket) do
+    assign(socket,
+      page: %{events: [], next_cursor: nil, filters: %{}},
+      filters: %{},
+      selected_event: nil,
+      query_error: nil,
+      selection_error: :unavailable,
+      new_events_available: false
+    )
+  end
+
   defp replace_event_query(socket, params, canonical, invalid?) do
     submitted = Map.drop(params, ["event_id"])
+    canonical = Map.merge(canonical, socket.assigns.selection)
 
     if connected?(socket) and (invalid? or submitted != canonical) do
       socket =

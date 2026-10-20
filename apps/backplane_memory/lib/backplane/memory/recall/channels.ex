@@ -157,13 +157,17 @@ defmodule Backplane.Memory.Recall.Channels do
         |> Enum.take(@graph_node_cap)
         |> Enum.map(&elem(&1, 0))
 
-      durable_event_ids =
+      durable_events =
         Event
         |> exact_partition(plan)
         |> where([event], event.id in ^ids)
         |> order_by([event], asc: event.id)
-        |> select([event], event.id)
         |> repo().all()
+
+      durable_event_ids = Enum.map(durable_events, & &1.id)
+
+      sources_by_event =
+        Map.new(durable_events, &{&1.id, Backplane.Memory.Provenance.event_sources([&1])})
 
       matching_memory_sources =
         Evidence
@@ -211,7 +215,8 @@ defmodule Backplane.Memory.Recall.Channels do
             case Adapters.observation(%Adapters.ObservationRow{
                    observation: observation,
                    partition: partition(plan),
-                   source_refs: refs
+                   source_refs: refs,
+                   repository_sources: Map.get(sources_by_event, observation.event_id, [])
                  }) do
               {:ok, candidate} ->
                 [{candidate, 1.0 / (1 + observation_depths[observation.event_id])}]
@@ -312,7 +317,7 @@ defmodule Backplane.Memory.Recall.Channels do
       )
       |> order_by([source, _event], asc: source.summary_id, asc: source.event_id)
       |> limit(^(max(length(summary_ids), 1) * 256))
-      |> select([source, _event], {source.summary_id, source.event_id})
+      |> select([source, event], {source.summary_id, event})
       |> repo().all()
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
@@ -321,12 +326,14 @@ defmodule Backplane.Memory.Recall.Channels do
         refs_by_summary
         |> Map.get(summary.id, [])
         |> Enum.take(256)
-        |> Enum.map(&%Adapters.SourceRef{type: :event, id: &1})
+        |> Enum.map(&%Adapters.SourceRef{type: :event, id: &1.id})
 
       case Adapters.summary(%Adapters.SummaryRow{
              summary: summary,
              partition: partition(plan),
-             source_refs: refs
+             source_refs: refs,
+             repository_sources:
+               Backplane.Memory.Provenance.event_sources(Map.get(refs_by_summary, summary.id, []))
            }) do
         {:ok, candidate} -> [{candidate, score}]
         {:error, _reason} -> []

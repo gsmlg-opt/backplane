@@ -3,6 +3,16 @@ defmodule Backplane.Admin.MemoryLessonsLive do
 
   import Backplane.Admin.MemoryComponents
 
+  import Backplane.Admin.MemoryOperatorComponents,
+    only: [
+      partition_query: 1,
+      browse_scope: 1,
+      record_partition: 1,
+      record_partition: 2,
+      source_identity: 1
+    ]
+
+  alias Backplane.Memory.Operations.Inventory
   alias Backplane.Memory.Lessons
 
   @partition_params ~w(memory_space_id host client scope namespace)
@@ -25,9 +35,11 @@ defmodule Backplane.Admin.MemoryLessonsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    with {:ok, partition} <- partition_from_params(params),
+    partition_result = partition_from_params(params)
+
+    with {:ok, partition} <- partition_result,
          {:ok, filters} <- filters_from_params(params),
-         {:ok, page} <- Lessons.list_admin(partition, filter_options(filters)),
+         {:ok, page} <- Inventory.lessons(partition, filter_options(filters)),
          {:ok, selected} <- load_selected(socket.assigns.live_action, params, partition) do
       canonical = canonical_query(partition, filters)
 
@@ -46,10 +58,8 @@ defmodule Backplane.Admin.MemoryLessonsLive do
         {:noreply, assign(socket, partition: nil, selected: nil, query_error: nil)}
 
       {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "The selected lesson was not found in this partition.")
-         |> push_navigate(to: ~p"/memory/lessons")}
+        {:ok, partition} = partition_result
+        {:noreply, assign(socket, partition: partition, selected: nil, query_error: :not_found)}
 
       {:error, reason} ->
         {:noreply, assign(socket, query_error: reason)}
@@ -91,7 +101,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
       if reason == "" do
         {:error, :reason_required}
       else
-        govern(selected.lesson.memory_id, action, reason, socket.assigns.partition)
+        govern(selected.lesson.memory_id, action, reason, record_partition(selected.memory))
       end
 
     case result do
@@ -102,7 +112,8 @@ defmodule Backplane.Admin.MemoryLessonsLive do
           selected.lesson.memory_id
         )
 
-        {:ok, selected} = Lessons.get_admin(selected.lesson.memory_id, socket.assigns.partition)
+        {:ok, selected} =
+          Lessons.get_admin(selected.lesson.memory_id, record_partition(selected.memory))
 
         {:noreply,
          socket
@@ -124,23 +135,8 @@ defmodule Backplane.Admin.MemoryLessonsLive do
       <.memory_page_header title="Lessons" subtitle="Procedural knowledge and governed lifecycle" />
 
       <.dm_alert :if={@query_error} id="lesson-query-error" variant="error" title="Lessons unavailable" compact>
-        Lesson data could not be loaded. Retry after checking the database connection.
+        The selected lesson may be missing or unavailable. Check the partition or retry the query.
       </.dm_alert>
-
-      <.dm_card :if={is_nil(@partition)} variant="bordered" padding="lg">
-        <h2 class="text-lg font-semibold">Select an exact partition</h2>
-        <p class="mt-1 text-sm text-on-surface-variant">
-          Host, client, scope, and namespace are all required. Lessons are never queried across partitions.
-        </p>
-        <.form id="lesson-partition-form" for={%{}} as={:partition} phx-submit="select_partition" class="mt-4 grid gap-3 sm:grid-cols-2">
-          <.dm_input id="lesson-memory-space" name="partition[memory_space_id]" label="Memory space ID" value="" required />
-          <.dm_input id="lesson-host" name="partition[host]" label="Host" value="" required />
-          <.dm_input id="lesson-client" name="partition[client]" label="Client" value="" required />
-          <.dm_input id="lesson-scope" name="partition[scope]" label="Scope" value="" required />
-          <.dm_input id="lesson-namespace" name="partition[namespace]" label="Namespace" value="" required />
-          <div class="sm:col-span-2"><.dm_btn type="submit" variant="primary">Open partition</.dm_btn></div>
-        </.form>
-      </.dm_card>
 
       <div :if={@partition}>
         <.form id="lesson-filters" for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="grid gap-3 sm:grid-cols-2">
@@ -149,13 +145,14 @@ defmodule Backplane.Admin.MemoryLessonsLive do
         </.form>
 
         <.dm_card :if={@page.entries == []} variant="bordered" padding="lg" class="mt-4 text-center">
-          <h2 class="text-lg font-semibold">No lessons match this partition</h2>
+          <h2 class="text-lg font-semibold">No lessons match</h2>
           <p class="mt-1 text-sm text-on-surface-variant">Change the state or project filter to inspect other lessons.</p>
         </.dm_card>
 
         <div class="mt-4 overflow-x-auto">
           <.dm_table :if={@page.entries != []} id="memory-lessons-table" data={@page.entries} compact hover zebra class="min-w-[84rem]" phx-mounted={fix_dm_table_rowgroup_roles("memory-lessons-table")}>
             <:col :let={entry} label="Rule"><.link href={lesson_detail_path(entry.lesson.memory_id, @partition, @filters)} class="font-medium text-primary underline underline-offset-2">{entry.memory.content}</.link></:col>
+            <:col :let={entry} label="Source host / repository"><.source_identity record={entry.memory} /></:col>
             <:col :let={entry} label="State"><.dm_badge variant={state_variant(entry.lesson.status)} size="sm"><span id={"lesson-row-state-#{entry.lesson.memory_id}"}>{entry.lesson.status}</span></.dm_badge></:col>
             <:col :let={entry} label="Confidence">{format_decimal(entry.memory.confidence)}</:col>
             <:col :let={entry} label="Reinforcement">{entry.lesson.reinforcement_count}</:col>
@@ -173,7 +170,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
           <.memory_link_button :if={@page.page < @page.total_pages} id="lessons-next-page" patch={lessons_page_path(@partition, @filters, @page.page + 1)}>Next</.memory_link_button>
         </nav>
 
-        <.lesson_detail :if={@selected} entry={@selected} partition={@partition} filters={@filters} />
+        <.lesson_detail :if={@selected} entry={@selected} partition={record_partition(@selected.memory, @partition)} filters={@filters} />
       </div>
     </div>
     """
@@ -216,8 +213,8 @@ defmodule Backplane.Admin.MemoryLessonsLive do
               <div class="flex flex-wrap gap-2"><.dm_badge variant={if evidence.evidence_kind == "contradicts", do: "warning", else: "info"} size="sm">{evidence.evidence_kind}</.dm_badge><span>score {format_decimal(evidence.support_score)}</span></div>
               <p class="mt-2 whitespace-pre-wrap break-words">{evidence.excerpt || "No excerpt"}</p>
               <div class="mt-2 flex flex-wrap gap-3 font-mono text-xs">
-                <.link :if={evidence.source_event_id} navigate={~p"/memory/events/#{evidence.source_event_id}"} class="text-primary underline">Event {evidence.source_event_id}</.link>
-                <.link :if={evidence_session_id(evidence, @entry.memory)} navigate={~p"/memory/streams?#{%{"session" => evidence_session_id(evidence, @entry.memory)}}"} class="text-primary underline">Session {evidence_session_id(evidence, @entry.memory)}</.link>
+                <.link :if={evidence.source_event_id} navigate={~p"/memory/events/#{evidence.source_event_id}?#{partition_query(@partition)}"} class="text-primary underline">Event {evidence.source_event_id}</.link>
+                <.link :if={evidence_session_id(evidence, @entry.memory)} navigate={~p"/memory/sessions/#{evidence_session_id(evidence, @entry.memory)}?#{partition_query(@partition)}"} class="text-primary underline">Session {evidence_session_id(evidence, @entry.memory)}</.link>
               </div>
             </li>
           </ul>
@@ -235,7 +232,13 @@ defmodule Backplane.Admin.MemoryLessonsLive do
     """
   end
 
-  defp load_selected(:show, %{"id" => id}, partition), do: Lessons.get_admin(id, partition)
+  defp load_selected(:show, %{"id" => id}, partition) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         {:ok, identity} <- Inventory.identity(:lesson, id, partition),
+         do: Lessons.get_admin(id, identity),
+         else: (_ -> {:error, :not_found})
+  end
+
   defp load_selected(_action, _params, _partition), do: {:ok, nil}
 
   defp govern(id, "promote", reason, partition),
@@ -257,27 +260,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
     %{actor: "admin_ui:backplane_admin", request_id: request_id, correlation_id: request_id}
   end
 
-  defp partition_from_params(params) do
-    values = Map.take(params, @partition_params)
-
-    if map_size(values) == 0 do
-      {:error, :partition_required}
-    else
-      normalized = Map.new(values, fn {key, value} -> {key, String.trim(value || "")} end)
-
-      if Enum.all?(@partition_params, &(Map.get(normalized, &1) not in [nil, ""])),
-        do:
-          {:ok,
-           %{
-             memory_space_id: normalized["memory_space_id"],
-             host_id: normalized["host"],
-             client_id: normalized["client"],
-             scope: normalized["scope"],
-             namespace: normalized["namespace"]
-           }},
-        else: {:error, :partition_required}
-    end
-  end
+  defp partition_from_params(params), do: {:ok, browse_scope(params)}
 
   defp filters_from_params(params) do
     status = blank_to_nil(params["status"])
@@ -302,13 +285,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
     ]
 
   defp canonical_query(partition, filters) do
-    %{
-      "memory_space_id" => partition.memory_space_id,
-      "host" => partition.host_id,
-      "client" => partition.client_id,
-      "scope" => partition.scope,
-      "namespace" => partition.namespace
-    }
+    partition_query(partition)
     |> Map.merge(Map.take(filters, ["status", "project"]))
     |> maybe_put_page(filters["page"])
     |> maybe_put_per_page(filters["per_page"])

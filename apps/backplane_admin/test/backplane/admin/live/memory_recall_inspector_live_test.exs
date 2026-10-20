@@ -15,13 +15,13 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
     %{partition: partition, query: partition_query(partition)}
   end
 
-  test "requires a complete URL partition before listing traces", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/memory/recall")
-    assert has_element?(view, "#recall-partition-empty", "Select an exact memory partition")
-    assert has_element?(view, "input[name='memory_space_id'][required]")
-
-    {:ok, view, _html} = live(recycle(conn), "/memory/recall?host=incomplete&client=client")
-    assert has_element?(view, "#recall-partition-empty")
+  test "opens directly and treats partial source parameters as optional filters", %{conn: conn} do
+    for path <- ["/memory/recall", "/memory/recall?host=incomplete&client=client"] do
+      {:ok, view, html} = live(recycle(conn), path)
+      assert has_element?(view, "#memory-recall-inspector")
+      assert has_element?(view, "#memory-source-filters")
+      refute html =~ "Select an exact memory partition"
+    end
   end
 
   test "lists only the exact partition and preserves it in detail links", %{
@@ -126,16 +126,19 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
     assert html =~ "Provenance unavailable (legacy trace)"
   end
 
-  test "malformed IDs and incomplete or wrong partitions share literal 404", %{
+  test "malformed IDs and conflicting source filters share literal 404", %{
     conn: conn,
     partition: partition,
     query: query
   } do
     run = trace_fixture(partition, "safe")
 
+    for query <- ["", "?host=#{partition.host_id}"] do
+      assert get(recycle(conn), "/memory/recall/#{run.id}" <> query) |> response(200) =~ run.id
+    end
+
     for path <- [
           "/memory/recall/not-a-uuid?" <> URI.encode_query(query),
-          "/memory/recall/#{run.id}?host=#{partition.host_id}",
           "/memory/recall/#{run.id}?" <>
             URI.encode_query(Map.put(query, "scope", "personal"))
         ] do

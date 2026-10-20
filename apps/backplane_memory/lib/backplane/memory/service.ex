@@ -3171,6 +3171,7 @@ defmodule Backplane.Memory.Service do
 
         new_metadata =
           Map.merge(mem.metadata || %{}, args["metadata"] || %{})
+          |> Backplane.MemoryRepository.metadata()
 
         {1, _} =
           repo.update_all(

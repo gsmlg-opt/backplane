@@ -23,14 +23,14 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
     %{partition: partition}
   end
 
-  test "requires an exact partition and lists only its crystals", %{
+  test "opens directly and supports optional legacy crystal filters", %{
     conn: conn,
     partition: partition
   } do
     {:ok, view, html} = live(conn, "/memory/crystals")
-    assert html =~ "Select an exact partition"
+    refute html =~ "Select an exact partition"
     refute has_element?(view, "#memory-crystals-table")
-    assert has_element?(view, "#crystal-memory-space[required]")
+    assert has_element?(view, "#memory-source-filters")
 
     crystal = crystal("Visible crystal", partition)
     _foreign = crystal("Foreign crystal", partition_fixture("other-crystal"))
@@ -97,7 +97,10 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
     assert target_id == crystal.id
   end
 
-  test "foreign partition detail is literal not found", %{conn: conn, partition: partition} do
+  test "foreign partition detail returns a readable 404 without private content", %{
+    conn: conn,
+    partition: partition
+  } do
     crystal = crystal("Private detail", partition)
     foreign = partition_fixture("foreign-crystal-detail")
 
@@ -111,7 +114,11 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
           "namespace" => foreign.namespace
         })
 
-    assert conn |> get(path) |> response(404) == "not found"
+    html = conn |> get(path) |> html_response(404)
+    assert html =~ "memory-missing-detail"
+    assert html =~ "Return to Memory inventory"
+    refute html =~ crystal.title
+    refute html =~ crystal.narrative
   end
 
   test "source detail rejects an unlinked or foreign source", %{

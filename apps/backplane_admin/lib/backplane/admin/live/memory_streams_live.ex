@@ -4,6 +4,8 @@ defmodule Backplane.Admin.MemoryStreamsLive do
   import Backplane.Admin.MemoryComponents
 
   alias Backplane.Memory.Operations
+  alias Backplane.Memory.Operations.Inventory
+  alias Backplane.Admin.MemoryOperatorComponents
 
   @memory_setting_keys [
     "memory.pipeline.enabled",
@@ -51,7 +53,17 @@ defmodule Backplane.Admin.MemoryStreamsLive do
         do: Map.take(params, ["before", "after"]),
         else: %{}
 
-    inventory_result = Operations.list_streams(inventory_params)
+    scope = MemoryOperatorComponents.browse_scope(inventory_params)
+    source = MemoryOperatorComponents.partition_query(scope)
+
+    inventory_params =
+      Map.drop(inventory_params, ~w(memory_space_id host client scope namespace repository))
+
+    inventory_result =
+      case Inventory.streams(scope, inventory_params) do
+        {:ok, page} -> {:ok, %{page | filters: Map.merge(page.filters, source)}}
+        error -> error
+      end
 
     detail_result =
       case socket.assigns.live_action do
@@ -109,7 +121,13 @@ defmodule Backplane.Admin.MemoryStreamsLive do
          streams_path(
            socket.assigns.live_action,
            stream_id,
-           query
+           Map.merge(
+             query,
+             Map.take(
+               socket.assigns.memory_navigation,
+               ~w(memory_space_id host client scope namespace repository)
+             )
+           )
          ),
        replace: true
      )}

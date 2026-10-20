@@ -26,7 +26,8 @@ defmodule Backplane.HostAgent.Memory.Hooks.ClaudeCode do
          {:ok, occurred_at} <- occurred_at(source) do
       payload = %{
         "hook" => canonical_hook,
-        "source" => Map.drop(source, ["host_id", :host_id])
+        "source" => Map.drop(source, ["host_id", :host_id]),
+        "repository_sources" => Backplane.HostAgent.Memory.GitContext.discover(project(source))
       }
 
       source_id = source_id(source)

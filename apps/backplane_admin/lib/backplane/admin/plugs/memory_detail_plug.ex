@@ -1,7 +1,12 @@
 defmodule Backplane.Admin.MemoryDetailPlug do
   @moduledoc false
 
+  use Backplane.Admin, :html
+
   import Plug.Conn
+
+  alias Backplane.Memory.Operations.Inventory
+  import Backplane.Admin.MemoryOperatorComponents, only: [browse_scope: 1]
 
   alias Backplane.Memory.Operations
   alias Backplane.Memory.Lessons
@@ -21,7 +26,7 @@ defmodule Backplane.Admin.MemoryDetailPlug do
   def call(%{path_params: %{"recall_run_id" => id}} = conn, _opts) do
     conn = fetch_query_params(conn)
 
-    with {:ok, partition} <- recall_partition(conn.query_params),
+    with {:ok, partition} <- Inventory.identity(:recall, id, browse_scope(conn.query_params)),
          {:ok, _run, _candidates} <- safe_recall_get(id, partition) do
       conn
     else
@@ -33,20 +38,22 @@ defmodule Backplane.Admin.MemoryDetailPlug do
   def call(%{path_params: %{"id" => id}, path_info: ["memory", "lessons", _]} = conn, _opts) do
     conn = fetch_query_params(conn)
 
-    with {:ok, partition} <- recall_partition(conn.query_params) do
-      guard_resource(conn, safe_lesson_get(id, partition))
+    with {:ok, partition} <- Inventory.identity(:lesson, id, browse_scope(conn.query_params)) do
+      guard_detail(conn, safe_lesson_get(id, partition), "/memory/lessons")
     else
-      {:error, _reason} -> not_found(conn)
+      {:error, :unavailable} -> unavailable(conn)
+      {:error, _reason} -> guard_detail(conn, {:error, :not_found}, "/memory/lessons")
     end
   end
 
   def call(%{path_params: %{"id" => id}, path_info: ["memory", "crystals", _]} = conn, _opts) do
     conn = fetch_query_params(conn)
 
-    with {:ok, partition} <- recall_partition(conn.query_params) do
-      guard_resource(conn, safe_crystal_get(id, partition))
+    with {:ok, partition} <- Inventory.identity(:crystal, id, browse_scope(conn.query_params)) do
+      guard_detail(conn, safe_crystal_get(id, partition), "/memory/crystals")
     else
-      {:error, _reason} -> not_found(conn)
+      {:error, :unavailable} -> unavailable(conn)
+      {:error, _reason} -> guard_detail(conn, {:error, :not_found}, "/memory/crystals")
     end
   end
 
@@ -59,7 +66,8 @@ defmodule Backplane.Admin.MemoryDetailPlug do
       ) do
     conn = fetch_query_params(conn)
 
-    with {:ok, partition} <- recall_partition(conn.query_params) do
+    with {:ok, partition} <-
+           Inventory.identity(:crystal, crystal_id, browse_scope(conn.query_params)) do
       guard_resource(conn, safe_crystal_source(kind, crystal_id, source_id, partition))
     else
       {:error, _reason} -> not_found(conn)
@@ -67,6 +75,39 @@ defmodule Backplane.Admin.MemoryDetailPlug do
   end
 
   def call(conn, _opts), do: conn
+
+  defp guard_detail(conn, {:ok, _resource}, _path), do: conn
+
+  defp guard_detail(conn, {:error, :not_found}, path) do
+    query =
+      conn.query_params
+      |> Map.take(~w(memory_space_id host client scope namespace project repository))
+      |> URI.encode_query()
+
+    return_path = path <> "?" <> query
+    body = missing_detail(%{return_path: return_path}) |> Phoenix.HTML.Safe.to_iodata()
+    conn |> put_resp_content_type("text/html") |> send_resp(404, body) |> halt()
+  end
+
+  defp guard_detail(conn, {:error, _reason}, _path), do: unavailable(conn)
+
+  defp missing_detail(assigns) do
+    ~H"""
+    <!DOCTYPE html>
+    <html lang="en" data-theme="sunshine">
+      <head><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Memory unavailable</title>
+        <link rel="stylesheet" href={DuskmoonBundler.static_path(Backplane.Admin.Endpoint, "/assets/css/app.css", profile: :backplane_admin, outdir: "priv/static/assets")} />
+      </head>
+      <body class="bg-surface text-on-surface p-6">
+        <.dm_card id="memory-missing-detail" padding="lg">
+          <h1 class="text-2xl font-semibold">Memory unavailable</h1>
+          <p class="mt-3">This record is missing, deleted, or unavailable for the current filters.</p>
+          <.link href={@return_path} class="mt-4 inline-block text-primary underline">Return to Memory inventory</.link>
+        </.dm_card>
+      </body>
+    </html>
+    """
+  end
 
   defp guard_resource(conn, {:ok, _resource}), do: conn
 
@@ -78,30 +119,6 @@ defmodule Backplane.Admin.MemoryDetailPlug do
     unavailable(conn)
   end
 
-  defp recall_partition(params) do
-    with {:ok, memory_space_id} <- partition_value(params["memory_space_id"]),
-         {:ok, host_id} <- partition_value(params["host"]),
-         {:ok, client_id} <- partition_value(params["client"]),
-         {:ok, scope} <- partition_value(params["scope"]),
-         {:ok, namespace} <- partition_value(params["namespace"]) do
-      {:ok,
-       %{
-         memory_space_id: memory_space_id,
-         host_id: host_id,
-         client_id: client_id,
-         scope: scope,
-         namespace: namespace
-       }}
-    end
-  end
-
-  defp partition_value(value) when is_binary(value) do
-    value = String.trim(value)
-    if value != "" and byte_size(value) <= 512, do: {:ok, value}, else: {:error, :not_found}
-  end
-
-  defp partition_value(_value), do: {:error, :not_found}
-
   defp safe_recall_get(id, partition) do
     Store.get(id, partition)
   rescue
@@ -111,7 +128,9 @@ defmodule Backplane.Admin.MemoryDetailPlug do
   end
 
   defp safe_lesson_get(id, partition) do
-    Lessons.get_admin(id, partition)
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         do: Lessons.get_admin(id, partition),
+         else: (_ -> {:error, :not_found})
   rescue
     _error -> {:error, :unavailable}
   catch
@@ -119,7 +138,9 @@ defmodule Backplane.Admin.MemoryDetailPlug do
   end
 
   defp safe_crystal_get(id, partition) do
-    Crystals.get(id, partition)
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         do: Crystals.get(id, partition),
+         else: (_ -> {:error, :not_found})
   rescue
     _error -> {:error, :unavailable}
   catch

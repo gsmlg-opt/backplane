@@ -18,13 +18,13 @@ defmodule Backplane.Memory.Recall.Adapters do
   defmodule SummaryRow do
     @moduledoc "A durable summary enriched by its exact partition and source events."
     @enforce_keys [:summary, :partition, :source_refs]
-    defstruct [:summary, :partition, :source_refs]
+    defstruct [:summary, :partition, :source_refs, repository_sources: []]
   end
 
   defmodule ObservationRow do
     @moduledoc "A projected observation retrieval result with its source event."
     @enforce_keys [:observation, :partition, :source_refs]
-    defstruct [:observation, :partition, :source_refs]
+    defstruct [:observation, :partition, :source_refs, repository_sources: []]
   end
 
   defmodule LessonRow do
@@ -49,6 +49,8 @@ defmodule Backplane.Memory.Recall.Adapters do
         scope: value(partition, :scope),
         namespace: value(partition, :namespace),
         project: artifact |> value(:metadata, %{}) |> value(:project),
+        source_host_id: value(artifact, :host_id),
+        repository_sources: artifact |> value(:metadata, %{}) |> value(:repository_sources, []),
         session_id: value(artifact, :session_id),
         confidence: value(artifact, :confidence, 1.0),
         strength: metadata_number(artifact, :strength, 1.0),
@@ -82,6 +84,8 @@ defmodule Backplane.Memory.Recall.Adapters do
         scope: value(partition, :scope),
         namespace: value(partition, :namespace),
         project: artifact |> value(:metadata, %{}) |> value(:project),
+        source_host_id: value(artifact, :host_id),
+        repository_sources: artifact |> value(:metadata, %{}) |> value(:repository_sources, []),
         session_id: value(artifact, :session_id),
         confidence: value(artifact, :confidence, 1.0),
         strength: 1.0,
@@ -103,7 +107,7 @@ defmodule Backplane.Memory.Recall.Adapters do
 
   def crystal(_row), do: {:error, :invalid_retrieval_row}
 
-  def summary(%SummaryRow{summary: artifact, partition: partition, source_refs: refs}) do
+  def summary(%SummaryRow{summary: artifact, partition: partition, source_refs: refs} = row) do
     with :ok <- artifact_partition(artifact, partition),
          {:ok, source_refs, source_ids} <- source_refs(refs, :event, nil, nil) do
       Candidate.new(
@@ -116,19 +120,23 @@ defmodule Backplane.Memory.Recall.Adapters do
           source_refs,
           source_ids
         )
+        |> Map.put(:repository_sources, row.repository_sources)
       )
     end
   end
 
   def summary(_row), do: {:error, :invalid_retrieval_row}
 
-  def observation(%ObservationRow{observation: artifact, partition: partition, source_refs: refs}) do
+  def observation(
+        %ObservationRow{observation: artifact, partition: partition, source_refs: refs} = row
+      ) do
     id = value(artifact, :event_id)
 
     with :ok <- artifact_partition(artifact, partition),
          {:ok, source_refs, [^id] = source_ids} <- source_refs(refs, :event, id, :event) do
       Candidate.new(
         common(artifact, partition, :observation, :working, id, source_refs, source_ids)
+        |> Map.put(:repository_sources, row.repository_sources)
       )
     else
       {:ok, _source_refs, _other_ids} -> {:error, :invalid_provenance}
@@ -156,6 +164,8 @@ defmodule Backplane.Memory.Recall.Adapters do
         scope: value(partition, :scope),
         namespace: value(partition, :namespace),
         project: memory |> value(:metadata, %{}) |> value(:project),
+        source_host_id: value(memory, :host_id),
+        repository_sources: memory |> value(:metadata, %{}) |> value(:repository_sources, []),
         session_id: value(memory, :session_id),
         confidence: value(memory, :confidence, 1.0),
         strength: max(0.0, 1.0 - value(lesson, :decay_rate, 0.0)),
@@ -195,6 +205,7 @@ defmodule Backplane.Memory.Recall.Adapters do
       scope: value(partition, :scope),
       namespace: value(partition, :namespace),
       project: value(artifact, :project),
+      source_host_id: value(artifact, :host_id),
       session_id: value(artifact, :session_id),
       confidence: value(artifact, :confidence, 1.0),
       strength: value(artifact, :strength, 1.0),

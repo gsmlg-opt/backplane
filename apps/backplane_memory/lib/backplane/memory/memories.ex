@@ -94,6 +94,12 @@ defmodule Backplane.Memory.Memories do
              {:ok, evidence} <- normalize_evidence(Keyword.get(opts, :evidence, []), partition),
              {:ok, filtered} <- Filter.apply(content),
              attrs = build_attrs(filtered, opts, partition),
+             attrs =
+               Map.update!(
+                 attrs,
+                 :metadata,
+                 &Backplane.Memory.Provenance.metadata(&1, evidence, partition)
+               ),
              {:ok, request_hash} <- CanonicalRequest.hash(attrs, evidence) do
           persist_remember(attrs, opts, request_hash, evidence)
         end
@@ -1153,13 +1159,48 @@ defmodule Backplane.Memory.Memories do
 
     case find_duplicate(attrs) do
       %MemorySchema{} = memory ->
-        {memory, false}
+        {merge_repository_sources!(memory, attrs.metadata), false}
 
       nil ->
         case repo().insert(MemorySchema.changeset(%MemorySchema{}, attrs)) do
           {:ok, memory} -> {memory, true}
           {:error, changeset} -> repo().rollback(changeset)
         end
+    end
+  end
+
+  defp merge_repository_sources!(%MemorySchema{deleted_at: deleted_at} = memory, _metadata)
+       when not is_nil(deleted_at),
+       do: memory
+
+  defp merge_repository_sources!(memory, metadata) do
+    sources =
+      if is_map(metadata),
+        do: Backplane.MemoryRepository.sources(metadata["repository_sources"]),
+        else: []
+
+    if sources == [] or
+         Backplane.MemoryRepository.metadata(memory.metadata, sources) == memory.metadata do
+      memory
+    else
+      # Source associations are additive. Serialize on the actual reused row,
+      # independently of the producing host, without changing content identity.
+      advisory_lock!("memory-provenance", [memory.id])
+
+      current =
+        MemorySchema
+        |> where([m], m.id == ^memory.id)
+        |> select([m], struct(m, ^@non_vector_fields))
+        |> lock("FOR NO KEY UPDATE")
+        |> repo().one!()
+
+      merged = Backplane.MemoryRepository.metadata(current.metadata, sources)
+
+      if current.deleted_at || merged == current.metadata do
+        current
+      else
+        current |> MemorySchema.changeset(%{metadata: merged}) |> repo().update!()
+      end
     end
   end
 

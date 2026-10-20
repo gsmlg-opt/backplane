@@ -39,6 +39,14 @@ The system needs an owner identity that remains stable while hosts, source runti
 
 ## Decision
 
+### Operator browsing clarification (2026-10-21)
+
+Canonical ownership and authenticated public-client checks remain internal application boundaries. They do **not** require an operator to choose a host, project, memory space, client, scope, or namespace before opening Memory. The existing trusted-admin surface browses the central collection across historical host-associated spaces with bounded database queries. Source host and Git repository are optional filters; neither grants access or combines ownership. Record-specific actions resolve the stored record's canonical identity and retain scoped mutation semantics.
+
+Mandatory provenance-selection UI and tests are superseded by this clarification. Historical space mappings, identifiers, evidence, lifecycle state, and tombstones remain intact. The correction does not authorize rewriting historical project paths into guessed remote repository identities. See [the implementation and verification report](provenance-correction.md).
+
+### Canonical ownership
+
 Memory V2 adopts an explicit canonical memory-space model:
 
 | Field | Authoritative meaning |
@@ -85,7 +93,7 @@ This ADR deliberately does not prescribe a concrete table, migration name, ident
 9. A caller may omit a partition claim only when the server can derive exactly one complete authorized partition. Zero or ambiguous mappings fail closed.
 10. Any supplied owner, host, scope, or namespace claim that conflicts with the resolved canonical partition is rejected before persistence and before an accepted ACK.
 11. An accepted ACK means the persisted event is complete enough for authorized canonical projection. Later optional processing may fail, but partition absence or conflict cannot be deferred to a worker.
-12. Every query, mutation, rebuild, governance action, and edge-feed selection uses the same canonical partition semantics.
+12. Public reads, mutations, rebuilds, governance actions, and edge-feed selection use the same canonical partition semantics. The trusted-admin inventory may read across stored spaces; record-specific operations still resolve the stored canonical target.
 13. Cross-host delivery requires explicit entitlement to the same `memory_space_id`; project similarity alone is insufficient.
 14. Revoking a host entitlement stops future reads, writes, and delivery for that host without changing the memory space's identity or deleting canonical memory by implication.
 15. Changing a host's default `memory_scope` affects new capture only. Previously authorized or populated subpartitions remain mapped and readable until an explicit, audited migration or revocation disposes of them.

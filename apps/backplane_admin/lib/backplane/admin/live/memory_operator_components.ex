@@ -1,53 +1,81 @@
 defmodule Backplane.Admin.MemoryOperatorComponents do
   use Backplane.Admin, :html
 
-  import Backplane.Admin.MemoryComponents
-
   @partition_keys ~w(memory_space_id host client scope namespace)
 
-  attr(:id, :string, required: true)
-  attr(:title, :string, required: true)
-  attr(:subtitle, :string, required: true)
   attr(:path, :string, required: true)
-  attr(:values, :map, default: %{})
-  attr(:extra, :list, default: [])
+  attr(:selection, :map, default: %{})
+  attr(:filters, :map, default: %{})
 
-  def partition_gate(assigns) do
+  def source_filters(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :filters,
+        Map.take(
+          assigns.filters,
+          ~w(q type session sort event_type tool minimum_importance error file from to status operation actor target query agent run stream state limit agent_id)
+        )
+      )
+
     ~H"""
-    <div id={@id}>
-      <.memory_page_header title={@title} subtitle={@subtitle} />
-      <.dm_card variant="bordered" padding="lg">
-        <h2 class="text-lg font-semibold">Select an exact partition</h2>
-        <p class="mt-1 text-sm text-on-surface-variant">
-          Memory space, host, client, scope, and namespace are required before partitioned data is queried.
-        </p>
-        <.form
-          id={@id <> "-form"}
-          for={%{}}
-          as={:partition}
-          phx-submit="select_partition"
-          class="mt-4 grid gap-3 sm:grid-cols-2"
-        >
-          <.dm_input id={@id <> "-memory-space"} name="partition[memory_space_id]" label="Memory space" value={@values["memory_space_id"] || ""} required />
-          <.dm_input id={@id <> "-host"} name="partition[host]" label="Host" value={@values["host"] || ""} required />
-          <.dm_input id={@id <> "-client"} name="partition[client]" label="Client" value={@values["client"] || ""} required />
-          <.dm_input id={@id <> "-scope"} name="partition[scope]" label="Scope" value={@values["scope"] || ""} required />
-          <.dm_input id={@id <> "-namespace"} name="partition[namespace]" label="Namespace" value={@values["namespace"] || ""} required />
-          <.dm_input
-            :for={{key, label} <- @extra}
-            id={@id <> "-" <> key}
-            name={"partition[#{key}]"}
-            label={label}
-            value={@values[key] || ""}
-            required
-          />
-          <div class="sm:col-span-2">
-            <.dm_btn type="submit" variant="primary">Open partition</.dm_btn>
-          </div>
-        </.form>
-      </.dm_card>
-    </div>
+    <form id="memory-source-filters" method="get" action={@path} class="mb-5 flex flex-wrap items-end gap-3">
+      <input :for={{key, value} <- @filters} type="hidden" name={key} value={value} />
+      <input :for={{key, value} <- Map.take(@selection, ~w(memory_space_id client scope namespace))} type="hidden" name={key} value={value} />
+      <.dm_input id="memory-source-host" name="host" label="Source host (optional)" value={@selection["host"] || ""} />
+      <.dm_input id="memory-source-repository" name="repository" label="Repository (optional)" value={@selection["repository"] || ""} />
+      <.dm_input id="memory-source-project" name="project" label="Legacy project (optional)" value={@selection["project"] || ""} />
+      <.dm_btn type="submit" native_submit variant="primary">Apply source filters</.dm_btn>
+      <.link href={@path <> "?" <> URI.encode_query(@filters)} class="text-primary underline">All sources</.link>
+    </form>
     """
+  end
+
+  attr(:record, :map, required: true)
+
+  def source_identity(assigns) do
+    metadata =
+      Map.get(assigns.record, :metadata) || Map.get(assigns.record, :source_records) || %{}
+
+    repositories =
+      Map.get(assigns.record, :repository_sources) || metadata["repository_sources"] || []
+
+    assigns = assign(assigns, :repositories, repositories)
+
+    ~H"""
+    <span class="block break-all text-xs">{Map.get(@record, :host_id) || "Unknown source"}</span>
+    <span :for={source <- @repositories} class="block break-all text-xs text-on-surface-variant">{source["repository_id"] || source["checkout_root"] || source["cwd"] || "Unknown repository"}</span>
+    """
+  end
+
+  def browse_scope(params) do
+    for {url, key} <- [
+          {"memory_space_id", :memory_space_id},
+          {"host", :host_id},
+          {"client", :client_id},
+          {"scope", :scope},
+          {"namespace", :namespace},
+          {"project", :project},
+          {"repository", :repository}
+        ],
+        value = params[url],
+        nonempty?(value),
+        into: %{},
+        do: {key, String.trim(value)}
+  end
+
+  def record_partition(record, fallback \\ %{}) do
+    Map.merge(
+      fallback,
+      Map.take(record, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
+    )
   end
 
   def exact_partition(params) when is_map(params) do
@@ -68,18 +96,26 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
   end
 
   def partition_query(partition) when is_map(partition) do
-    %{
-      "memory_space_id" => partition.memory_space_id,
-      "host" => partition.host_id,
-      "client" => partition.client_id,
-      "scope" => partition.scope,
-      "namespace" => partition.namespace
-    }
+    for {key, url} <- [
+          {:memory_space_id, "memory_space_id"},
+          {:host_id, "host"},
+          {:client_id, "client"},
+          {:scope, "scope"},
+          {:namespace, "namespace"},
+          {:project, "project"},
+          {:repository, "repository"}
+        ],
+        value = Map.get(partition, key),
+        value not in [nil, ""],
+        into: %{},
+        do: {url, value}
   end
+
+  def partition_query(_partition), do: %{}
 
   def selection_query(raw, extra_keys \\ []) do
     raw
-    |> Map.take(@partition_keys ++ extra_keys)
+    |> Map.take(@partition_keys ++ ["repository", "project"] ++ extra_keys)
     |> Map.new(fn {key, value} -> {key, String.trim(value || "")} end)
     |> Map.reject(fn {_key, value} -> value == "" end)
   end
@@ -104,5 +140,6 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
   def format_datetime(%NaiveDateTime{} = value), do: Calendar.strftime(value, "%Y-%m-%d %H:%M:%S")
   def format_datetime(value), do: to_string(value)
 
-  defp nonempty?(value), do: is_binary(value) and String.trim(value) != ""
+  defp nonempty?(value),
+    do: is_binary(value) and byte_size(value) <= 512 and String.trim(value) != ""
 end

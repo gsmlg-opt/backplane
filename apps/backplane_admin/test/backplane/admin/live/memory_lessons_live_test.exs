@@ -15,14 +15,14 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     %{partition: partition_fixture("lessons-ui")}
   end
 
-  test "requires an exact partition and renders bounded lesson fields", %{
+  test "opens directly and supports optional legacy lesson filters", %{
     conn: conn,
     partition: partition
   } do
     {:ok, view, html} = live(conn, "/memory/lessons")
-    assert html =~ "Select an exact partition"
+    refute html =~ "Select an exact partition"
     refute has_element?(view, "#memory-lessons-table")
-    assert has_element?(view, "#lesson-memory-space[required]")
+    assert has_element?(view, "#memory-source-filters")
 
     {:ok, lesson} = active_lesson(partition, "Render lesson", "backplane")
 

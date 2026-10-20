@@ -16,9 +16,11 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
       "namespace" => field(first, :namespace),
       "session_id" => field(first, :session_id),
       "project" => first_value(ordered, :project),
+      "repository_sources" => Backplane.Memory.Provenance.event_sources(ordered),
       "agent_id" => first_value(ordered, :agent_id),
       "observations" => Enum.map(ordered, &observation/1)
     }
+    |> Backplane.MemoryRepository.metadata()
   end
 
   defp observation(event) do
@@ -28,6 +30,7 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
     %{
       "event_id" => event.id,
       "project" => event.project,
+      "repository_sources" => Backplane.Memory.Provenance.event_sources([event]),
       "agent_id" => event.agent_id,
       "source_sequence" => event.source_sequence,
       "event_type" => event.event_type,
@@ -40,6 +43,7 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
       "file_paths" => file_paths(event.payload),
       "commit_hash" => binary_value(source, "commit_hash")
     }
+    |> Backplane.MemoryRepository.metadata()
   end
 
   defp message(event, source) do

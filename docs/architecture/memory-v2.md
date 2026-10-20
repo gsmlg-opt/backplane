@@ -1,5 +1,7 @@
 # Backplane Memory V2 foundation architecture
 
+The [2026-10-21 operator browsing clarification](../memory/adr-memory-space-partition.md#operator-browsing-clarification-2026-10-21) supersedes any requirement to choose source provenance before browsing. The trusted admin reads the central collection across existing canonical spaces, with optional host/repository filters. Public-client partition authorization remains enforced. Local checkout paths and Git repository identities are distinct provenance; neither is ownership.
+
 Status: PR 0B architecture record. This document freezes the current Memory
 boundary and records the event-stream target that begins in PR 1. It does not
 claim that event storage or dual-write exists in PR 0B.

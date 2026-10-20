@@ -15,6 +15,8 @@ defmodule Backplane.Admin.MemoryReplayLive do
   import Backplane.Admin.MemoryComponents
 
   alias Backplane.Memory.{Replay, ReplayNotifier}
+  alias Backplane.Memory.Operations.Inventory
+  import Backplane.Admin.MemoryOperatorComponents, only: [browse_scope: 1]
 
   @partition_params ~w(memory_space_id host client scope namespace)
   @speeds [0.5, 1.0, 2.0, 4.0]
@@ -36,6 +38,10 @@ defmodule Backplane.Admin.MemoryReplayLive do
         detail_authorized?: Map.get(session, "memory_replay_detail_authorized", false) == true,
         partition: nil,
         session_id: nil,
+        session_choices: [],
+        session_query: %{},
+        session_offset: 0,
+        session_next: nil,
         events: [],
         kinds: [],
         active_kinds: MapSet.new(),
@@ -50,7 +56,32 @@ defmodule Backplane.Admin.MemoryReplayLive do
       )
 
     initial_params = Map.get(session, "memory_replay_params", params)
-    {:ok, maybe_load(socket, initial_params)}
+    {:ok, socket |> load_choices(initial_params) |> maybe_load(initial_params)}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, socket |> load_choices(params) |> maybe_load(params)}
+  end
+
+  defp load_choices(socket, params) do
+    scope = browse_scope(params)
+    offset = Backplane.Admin.MemoryOperatorComponents.page(params["offset"])
+
+    case Inventory.sessions(scope, limit: 25, offset: offset) do
+      {:ok, page} ->
+        assign(socket,
+          session_choices: page.entries,
+          session_query: Backplane.Admin.MemoryOperatorComponents.partition_query(scope),
+          session_offset: offset,
+          session_next: page.next_offset
+        )
+
+      {:error, reason} ->
+        assign(socket, query_error: reason)
+    end
+  rescue
+    error -> assign(socket, query_error: error)
   end
 
   @impl true
@@ -234,7 +265,7 @@ defmodule Backplane.Admin.MemoryReplayLive do
       data-active-kinds={Jason.encode!(MapSet.to_list(@active_kinds))}
       data-speed={@speed}
     >
-      <.memory_page_header title="Replay" subtitle="Privacy-filtered historical playback for one exact partition and session" />
+      <.memory_page_header title="Replay" subtitle="Privacy-filtered historical playback for one stored session" />
 
       <.dm_alert :if={!@authorized?} id="replay-unauthorized" variant="error" title="Replay unavailable" compact>
         Trusted operator access is required.
@@ -242,17 +273,21 @@ defmodule Backplane.Admin.MemoryReplayLive do
 
       <div :if={@authorized?}>
         <.form id="replay-selector" for={%{}} as={:replay} phx-submit="select_partition" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-          <.dm_input id="replay-memory-space" name="replay[memory_space_id]" label="Memory space" value={partition_value(@partition, :memory_space_id)} required />
-          <.dm_input id="replay-host" name="replay[host]" label="Host" value={partition_value(@partition, :host_id)} required />
-          <.dm_input id="replay-client" name="replay[client]" label="Client" value={partition_value(@partition, :client_id)} required />
-          <.dm_input id="replay-scope" name="replay[scope]" label="Scope" value={partition_value(@partition, :scope)} required />
-          <.dm_input id="replay-namespace" name="replay[namespace]" label="Namespace" value={partition_value(@partition, :namespace)} required />
           <.dm_input id="replay-session" name="replay[session]" label="Session" value={@session_id || ""} required />
           <div class="sm:col-span-2 lg:col-span-6"><.dm_btn type="submit" variant="primary">Load replay</.dm_btn></div>
         </.form>
 
+        <.dm_card :if={is_nil(@session_id)} id="replay-session-inventory" padding="sm">
+          <h2 class="font-semibold">Choose a stored session</h2>
+          <p :if={@session_choices == []} class="mt-2 text-sm">No projected sessions match.</p>
+          <ul class="mt-3 space-y-2">
+            <li :for={row <- @session_choices}><.link navigate={"/memory/replay?" <> URI.encode_query(Map.put(Backplane.Admin.MemoryOperatorComponents.partition_query(row), "session", row.session_id))} class="text-primary underline">{row.session_id} · {row.host_id || "Unknown source"} · {row.project || "Unknown repository"}</.link></li>
+          </ul>
+          <.link :if={@session_next} navigate={"/memory/replay?" <> URI.encode_query(Map.put(@session_query, "offset", @session_next))} class="mt-3 inline-block text-primary underline">Next sessions</.link>
+        </.dm_card>
+
         <.dm_alert :if={@query_error} id="replay-query-error" variant="error" title="Replay unavailable" compact class="mt-4">
-          The exact partition and session could not be loaded.
+          The selected session could not be loaded for the current filters.
         </.dm_alert>
 
         <.dm_alert :if={@truncated?} id="replay-truncated" variant="warning" title="Replay truncated" compact class="mt-4">
@@ -361,9 +396,14 @@ defmodule Backplane.Admin.MemoryReplayLive do
 
   defp maybe_load(socket, params) when is_map(params) do
     cond do
-      not socket.assigns.authorized? -> socket
-      map_size(Map.take(params, @partition_params ++ ["session"])) == 0 -> socket
-      true -> load(socket, params)
+      not socket.assigns.authorized? ->
+        socket
+
+      params["session"] in [nil, ""] ->
+        assign(socket, partition: nil, session_id: nil, events: [], query_error: nil)
+
+      true ->
+        load(socket, params)
     end
   end
 
@@ -440,20 +480,12 @@ defmodule Backplane.Admin.MemoryReplayLive do
   end
 
   defp selector(params) do
-    values = Map.new(@partition_params ++ ["session"], &{&1, String.trim(params[&1] || "")})
+    session_id = String.trim(params["session"] || "")
 
-    if Enum.all?(values, fn {_key, value} -> value != "" and byte_size(value) <= 512 end) do
-      {:ok,
-       %{
-         memory_space_id: values["memory_space_id"],
-         host_id: values["host"],
-         client_id: values["client"],
-         scope: values["scope"],
-         namespace: values["namespace"]
-       }, values["session"]}
-    else
-      {:error, :partition_required}
-    end
+    with true <- session_id != "" and byte_size(session_id) <= 512,
+         {:ok, identity} <- Inventory.identity(:session, session_id, browse_scope(params)),
+         do: {:ok, identity, session_id},
+         else: (_ -> {:error, :partition_required})
   end
 
   defp load_all(partition, session_id),
@@ -573,9 +605,6 @@ defmodule Backplane.Admin.MemoryReplayLive do
   end
 
   defp parse_position(_raw), do: 1
-
-  defp partition_value(nil, _key), do: ""
-  defp partition_value(partition, key), do: Map.fetch!(partition, key)
 
   defp partition_query(partition),
     do: %{

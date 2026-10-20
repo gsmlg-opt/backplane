@@ -1,5 +1,11 @@
 # Memory V2 Operations Runbook
 
+## Browse central memory
+
+Open `/memory` or `/memory/memories` on the trusted admin endpoint (development: `http://localhost:4221`). Browsing does not require a host, repository, space, client, scope, or namespace selection. Existing host-associated spaces remain separate internally and are included in the operator inventory. Source filters narrow the collection; clearing them returns to the full inventory. Source metadata never changes public MCP/REST authorization.
+
+Host identity records authenticated ingress, not a payload's claimed host name. Repository identity describes the source Git remote, while checkout root, working directory, and historical `project` values describe local source paths. A missing remote remains unknown and does not prevent capture or an explicit write. Do not infer repository identity from a basename, register a project to browse, or recreate memory tables to upgrade. Record-specific actions keep the selected record's stored canonical target. See [the correction report](../memory/provenance-correction.md) for actual validation and delivery status.
+
 This runbook covers the production Memory V2 data plane. Canonical
 `bpm_events` rows are the accepted history; projections, summaries, activity,
 lessons, and crystals are derived or governed records. Never delete or rewrite

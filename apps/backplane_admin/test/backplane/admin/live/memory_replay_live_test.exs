@@ -1,4 +1,18 @@
 defmodule Backplane.Admin.MemoryReplayLiveTest do
+  # Isolated mounts do not support handle_params. Delegate the actual replay
+  # callbacks to exercise signed-session authorization without a router grant.
+  defmodule IsolatedReplay do
+    use Backplane.Admin, :live_view
+    @impl true
+    defdelegate mount(params, session, socket), to: Backplane.Admin.MemoryReplayLive
+    @impl true
+    defdelegate render(assigns), to: Backplane.Admin.MemoryReplayLive
+    @impl true
+    defdelegate handle_event(event, params, socket), to: Backplane.Admin.MemoryReplayLive
+    @impl true
+    defdelegate handle_info(message, socket), to: Backplane.Admin.MemoryReplayLive
+  end
+
   use Backplane.Admin.LiveCase, async: false
 
   alias Backplane.Memory.Coordination.Action
@@ -40,13 +54,13 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
     assert {:ok, _result} = Rebuild.session(@partition.host_id, session)
 
     {:ok, routed_view, _html} =
-      live(conn, "/memory/replay?" <> URI.encode_query(replay_params(session)))
+      live(conn, "/memory/replay?" <> URI.encode_query(%{"session" => session}))
 
     assert has_element?(routed_view, "#replay-player")
     assert has_element?(routed_view, "#replay-detail-json")
 
     {:ok, denied_view, _html} =
-      live_isolated(conn, Backplane.Admin.MemoryReplayLive,
+      live_isolated(conn, IsolatedReplay,
         session: %{
           "memory_replay_params" =>
             replay_params(session)
@@ -59,7 +73,7 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
     refute has_element?(denied_view, "#replay-player")
 
     {:ok, metadata_view, _html} =
-      live_isolated(conn, Backplane.Admin.MemoryReplayLive,
+      live_isolated(conn, IsolatedReplay,
         session: %{
           "memory_replay_authorized" => true,
           "memory_replay_detail_authorized" => false,
@@ -194,20 +208,24 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
     refute has_element?(restricted_view, "#replay-detail-json")
   end
 
-  test "rejects missing or foreign exact partition identity", %{conn: conn} do
+  test "offers stored sessions when none is selected and rejects conflicting source filters", %{
+    conn: conn
+  } do
     session = session_id("partition")
     append!(session, 1, "agent.prompt.submitted", %{"source" => %{"prompt" => "private prompt"}})
     assert {:ok, _result} = Rebuild.session(@partition.host_id, session)
 
     {:ok, missing_view, missing_html} =
-      live_isolated(conn, Backplane.Admin.MemoryReplayLive,
+      live_isolated(conn, IsolatedReplay,
         session: %{
           "memory_replay_authorized" => true,
-          "memory_replay_params" => %{"host" => @partition.host_id, "session" => session}
+          "memory_replay_params" => %{"host" => @partition.host_id}
         }
       )
 
-    assert has_element?(missing_view, "#replay-query-error")
+    assert has_element?(missing_view, "#replay-session-inventory")
+    refute has_element?(missing_view, "#replay-query-error")
+    refute has_element?(missing_view, "#replay-player")
     refute missing_html =~ "private prompt"
 
     {:ok, foreign_view, foreign_html} =
@@ -296,7 +314,7 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
   defp open_replay(conn, session, extra_session \\ %{}) do
     params = replay_params(session)
 
-    live_isolated(conn, Backplane.Admin.MemoryReplayLive,
+    live_isolated(conn, IsolatedReplay,
       session:
         Map.merge(
           %{

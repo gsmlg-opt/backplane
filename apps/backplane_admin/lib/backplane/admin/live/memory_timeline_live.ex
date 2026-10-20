@@ -4,7 +4,7 @@ defmodule Backplane.Admin.MemoryTimelineLive do
   import Backplane.Admin.MemoryComponents, only: [memory_link_button: 1, memory_page_header: 1]
   import Backplane.Admin.MemoryOperatorComponents
 
-  alias Backplane.Memory.Projections.ReadModels
+  alias Backplane.Memory.Operations.Inventory
 
   @page_size 50
 
@@ -20,15 +20,14 @@ defmodule Backplane.Admin.MemoryTimelineLive do
          session: nil,
          filters: empty_filters(),
          offset: 0,
+         next_offset: nil,
+         total: 0,
          error: nil
        )}
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case exact_partition(params) do
-      {:ok, partition} -> load(socket, partition, params)
-      _ -> {:noreply, assign(socket, partition: nil, rows: [], offset: 0, error: nil)}
-    end
+    load(socket, browse_scope(params), params)
   end
 
   @impl true
@@ -49,12 +48,6 @@ defmodule Backplane.Admin.MemoryTimelineLive do
   end
 
   @impl true
-  def render(%{partition: nil} = assigns) do
-    ~H"""
-    <.partition_gate id="timeline-partition" title="Timeline" subtitle="Projected observations in deterministic source order" path="/memory/timeline" extra={[{"session", "Session (optional)"}]} />
-    """
-  end
-
   def render(assigns) do
     ~H"""
     <div id="memory-timeline">
@@ -70,6 +63,7 @@ defmodule Backplane.Admin.MemoryTimelineLive do
         <div class="flex items-end"><button type="submit" class="rounded bg-primary px-4 py-2 text-on-primary">Apply filters</button></div>
       </.form>
       <.dm_alert :if={@error} id="timeline-error" variant="error" title="Timeline unavailable">The bounded projection query failed.</.dm_alert>
+      <p id="timeline-count" class="mb-3 text-sm">{@total} matching observations</p>
       <.dm_card :if={@rows == [] and !@error} id="timeline-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No projected observations</h2><p class="mt-1 text-sm text-on-surface-variant">The session may be pending, skipped, or have no accepted observations.</p></.dm_card>
       <ol :if={@rows != []} id="memory-timeline-list" class="space-y-3">
         <li :for={row <- @rows} class="rounded-xl border border-outline-variant bg-surface-container p-4 text-on-surface">
@@ -83,7 +77,7 @@ defmodule Backplane.Admin.MemoryTimelineLive do
       </ol>
       <nav aria-label="Timeline pagination" class="mt-4 flex justify-end gap-2">
         <.memory_link_button :if={@offset > 0} id="timeline-previous" patch={page_path(@partition, @session, @filters, max(0, @offset - @page_size))}>Previous</.memory_link_button>
-        <.memory_link_button :if={length(@rows) == @page_size} id="timeline-next" patch={page_path(@partition, @session, @filters, @offset + @page_size)}>Next</.memory_link_button>
+        <.memory_link_button :if={@next_offset != nil} id="timeline-next" patch={page_path(@partition, @session, @filters, @offset + @page_size)}>Next</.memory_link_button>
       </nav>
     </div>
     """
@@ -107,20 +101,14 @@ defmodule Backplane.Admin.MemoryTimelineLive do
 
     opts = if session, do: Keyword.put(opts, :session_id, session), else: opts
 
-    case ReadModels.timeline(opts) do
-      {:ok, subjects} ->
-        rows =
-          Enum.flat_map(subjects, fn subject ->
-            Enum.map(
-              subject.observations,
-              &Map.merge(&1, %{processing_status: subject.processing_status})
-            )
-          end)
-
+    case Inventory.timeline(partition, opts) do
+      {:ok, %{entries: rows} = result} ->
         {:noreply,
          assign(socket,
            partition: partition,
            rows: rows,
+           next_offset: result.next_offset,
+           total: result.total,
            offset: offset,
            session: session,
            filters: filters,

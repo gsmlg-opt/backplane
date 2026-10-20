@@ -4,7 +4,9 @@ defmodule Backplane.Admin.MemoryGraphLive do
   import Backplane.Admin.MemoryComponents, only: [memory_page_header: 1]
   import Backplane.Admin.MemoryOperatorComponents
 
-  alias Backplane.Memory.{Config, Graph}
+  alias Backplane.Memory.Config
+
+  alias Backplane.Memory.Operations.Inventory
 
   @impl true
   def mount(_params, _session, socket),
@@ -16,19 +18,16 @@ defmodule Backplane.Admin.MemoryGraphLive do
          stats: nil,
          domain: "knowledge",
          relations: [],
+         offset: 0,
+         next_offset: nil,
+         total: 0,
          graph_state: :disabled,
          error: nil
        )}
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case exact_partition(params) do
-      {:ok, partition} ->
-        load(socket, partition, domain(params["domain"]))
-
-      _ ->
-        {:noreply, assign(socket, partition: nil, stats: nil, graph_state: :disabled, error: nil)}
-    end
+    load(socket, browse_scope(params), domain(params["domain"]), page(params["offset"]))
   rescue
     error -> {:noreply, assign(socket, error: error)}
   end
@@ -38,20 +37,14 @@ defmodule Backplane.Admin.MemoryGraphLive do
     do: {:noreply, push_patch(socket, to: ~p"/memory/graph?#{selection_query(raw)}")}
 
   @impl true
-  def render(%{partition: nil} = assigns) do
-    ~H"""
-    <.partition_gate id="graph-partition" title="Graph" subtitle="Partition-owned knowledge graph inventory" path="/memory/graph" />
-    """
-  end
-
   def render(assigns) do
     ~H"""
     <div id="memory-graph">
-      <.memory_page_header title="Graph" subtitle="Partition-owned knowledge graph inventory" />
+      <.memory_page_header title="Graph" subtitle="Stored knowledge graph inventory" />
       <.dm_alert :if={@error} id="graph-error" variant="error" title="Graph unavailable">Graph aggregates could not be loaded.</.dm_alert>
       <.dm_alert :if={@graph_state == :disabled} id="graph-disabled" variant="warning" title="Graph disabled">Enable the Memory pipeline and relation classifier to build graph data.</.dm_alert>
       <.dm_alert :if={@graph_state == :provider_unavailable} id="graph-provider-unavailable" variant="warning" title="Graph provider unavailable">Configure the Memory LLM provider before graph extraction can run.</.dm_alert>
-      <.dm_card :if={@graph_state == :empty} id="graph-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No graph data in this partition</h2></.dm_card>
+      <.dm_card :if={@graph_state == :empty} id="graph-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No graph data matches</h2></.dm_card>
       <nav id="graph-domain-filters" class="mb-4 flex gap-2" aria-label="Graph relation domains">
         <.link :for={domain <- ~w(knowledge lifecycle provenance)} id={"graph-domain-#{domain}"} patch={~p"/memory/graph?#{domain_query(@partition, domain)}"} class="rounded border px-3 py-1 text-sm">{String.capitalize(domain)} ({Map.get(@stats && @stats.relation_count_by_domain || %{}, domain, 0)})</.link>
       </nav>
@@ -66,7 +59,12 @@ defmodule Backplane.Admin.MemoryGraphLive do
           </li>
         </ul>
       </.dm_card>
-      <div :if={@graph_state == :ready} class="grid gap-4 lg:grid-cols-2">
+      <p id="graph-count" class="mt-3 text-sm">{@total} matching relations in this domain</p>
+      <nav aria-label="Graph pagination" class="mt-3 flex gap-3">
+        <.link :if={@offset > 0} patch={~p"/memory/graph?#{Map.put(domain_query(@partition, @domain), "offset", max(0, @offset - 50))}"}>Previous</.link>
+        <.link :if={@next_offset} patch={~p"/memory/graph?#{Map.put(domain_query(@partition, @domain), "offset", @next_offset)}"}>Next</.link>
+      </nav>
+      <div :if={@stats} id="graph-node-counts" class="grid gap-4 lg:grid-cols-2">
         <.dm_card variant="bordered" padding="sm"><h2 class="font-semibold">Nodes by type</h2><ul class="mt-3 space-y-2"><li :for={{type, count} <- sorted(@stats.node_count_by_type)} class="flex justify-between"><span>{type}</span><strong>{count}</strong></li></ul></.dm_card>
         <.dm_card variant="bordered" padding="sm"><h2 class="font-semibold">Edges by relation</h2><ul class="mt-3 space-y-2"><li :for={{relation, count} <- sorted(@stats.edge_count_by_relation)} class="flex justify-between"><span>{relation}</span><strong>{count}</strong></li></ul></.dm_card>
       </div>
@@ -75,45 +73,30 @@ defmodule Backplane.Admin.MemoryGraphLive do
     """
   end
 
-  defp load(socket, partition, domain) do
-    cond do
-      not Config.pipeline_enabled?() or not Config.relation_classifier_enabled?() ->
-        {:noreply,
-         assign(socket,
-           partition: partition,
-           domain: domain,
-           relations: [],
-           stats: nil,
-           graph_state: :disabled,
-           error: nil
-         )}
+  defp load(socket, partition, domain, offset) do
+    {stats, page} = Inventory.graph(partition, domain, offset: offset)
+    relations = page.entries
 
-      is_nil(Application.get_env(:backplane_memory, :llm_client)) ->
-        {:noreply,
-         assign(socket,
-           partition: partition,
-           domain: domain,
-           relations: [],
-           stats: nil,
-           graph_state: :provider_unavailable,
-           error: nil
-         )}
+    state =
+      cond do
+        not Config.pipeline_enabled?() or not Config.relation_classifier_enabled?() -> :disabled
+        is_nil(Application.get_env(:backplane_memory, :llm_client)) -> :provider_unavailable
+        empty?(stats) -> :empty
+        true -> :ready
+      end
 
-      true ->
-        stats = Graph.stats(partition)
-        relations = Graph.relations(partition, domain)
-        state = if empty?(stats), do: :empty, else: :ready
-
-        {:noreply,
-         assign(socket,
-           partition: partition,
-           domain: domain,
-           relations: relations,
-           stats: stats,
-           graph_state: state,
-           error: nil
-         )}
-    end
+    {:noreply,
+     assign(socket,
+       partition: partition,
+       domain: domain,
+       relations: relations,
+       offset: offset,
+       next_offset: page.next_offset,
+       total: page.total,
+       stats: stats,
+       graph_state: state,
+       error: nil
+     )}
   end
 
   defp empty?(stats), do: stats.node_count_by_type == %{} and stats.edge_count_by_relation == %{}

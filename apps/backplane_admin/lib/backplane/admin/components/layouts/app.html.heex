@@ -72,7 +72,7 @@
       id="admin-sidebar"
       sticky
       socket={@socket}
-      groups={Backplane.Admin.Layouts.left_nav_groups(current_path)}
+      groups={Backplane.Admin.Layouts.left_nav_groups(current_path, assigns[:memory_navigation] || %{})}
       active={Backplane.Admin.Layouts.active_left_nav_id(current_path)}
       nav_label={left_nav_heading <> " navigation"}
       class="admin-sidebar admin-desktop-sidebar sticky top-16 h-[calc(100dvh-4rem)]"
@@ -120,7 +120,12 @@
     <main class="min-w-0 flex-1 flex flex-col">
       <div class="admin-content mx-auto max-w-7xl w-full flex-1 flex flex-col px-4 py-6 sm:px-6 lg:px-8">
         <.dm_flash_group flash={@flash} />
-        {@inner_content}
+        <Backplane.Admin.MemoryOperatorComponents.source_filters :if={assigns[:memory_navigation]}
+          selection={@memory_navigation}
+          filters={assigns[:memory_route_params] || %{}}
+          path={Backplane.Admin.Layouts.memory_selection_path(current_path)} />
+        <.dm_alert :if={assigns[:memory_refresh_error]} id="memory-refresh-error" variant="error" title="Refresh unavailable">{assigns[:memory_refresh_error]}</.dm_alert>
+    {@inner_content}
       </div>
     </main>
   </div>

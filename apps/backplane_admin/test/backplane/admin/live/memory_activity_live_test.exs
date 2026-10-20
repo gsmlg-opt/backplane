@@ -43,7 +43,7 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     {:ok, view, html} = activity_live(conn)
 
     assert html =~ "Activity"
-    assert has_element?(view, "#activity-exact-host", @partition.host_id)
+    assert has_element?(view, "#memory-source-host[value=\"#{@partition.host_id}\"]")
     assert has_element?(view, "#activity-host-filter[readonly][value='#{@partition.host_id}']")
     retention_days = Backplane.Memory.Config.activity_retention_days()
     assert element_count(view, "#activity-heatmap [data-date]") == retention_days
@@ -61,7 +61,7 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     assert has_element?(view, "#activity-agent-breakdown", "agent-a")
     assert has_element?(view, "#activity-agent-breakdown", "agent-b")
     assert has_element?(view, "#activity-host-breakdown", @partition.host_id)
-    assert has_element?(view, "#activity-host-breakdown", "foreign-host")
+    refute has_element?(view, "#activity-host-breakdown", "foreign-host")
     assert has_element?(view, "#activity-trends th", "Actions")
     assert has_element?(view, "#activity-trends th", "Recalls")
     refute has_element?(view, "#activity-project-breakdown", "foreign")
@@ -152,34 +152,26 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     assert has_element?(reconnected, "#activity-recent-events", "task.completed")
   end
 
-  test "fails closed without a complete durable partition", %{conn: conn} do
+  test "empty installations show an empty activity collection without source setup", %{conn: conn} do
     repo().delete_all(ActivityContribution)
     repo().delete_all(ActivityDaily)
     {:ok, view, html} = live(conn, "/memory/activity")
-    assert html =~ "Activity partition unavailable"
-    refute has_element?(view, "#activity-heatmap")
+    refute html =~ "Activity partition unavailable"
+    assert has_element?(view, "#activity-heatmap")
+    assert has_element?(view, "#activity-summary-events", "0")
   end
 
-  test "selects only server-enumerated durable partitions", %{conn: conn} do
+  test "global activity aggregates every durable source and optional URL filters", %{conn: conn} do
     today = Date.utc_today()
     insert_activity!(today, "alpha", "agent", "memory.recalled", 1)
     insert_activity!(today, "beta", "agent", "task.completed", 7, host_id: "zz-host")
-
-    {:ok, view, _html} = activity_live(conn)
-    assert has_element?(view, "#activity-exact-host", @partition.host_id)
-
-    option_index = partition_option_index(view, "zz-host")
-
-    view
-    |> form("#activity-partition-selector", %{"selection" => %{"index" => option_index}})
-    |> render_change()
-
-    assert has_element?(view, "#activity-exact-host", "zz-host")
-    assert has_element?(view, "#activity-summary-events", "7")
-
-    render_change(view, "select_partition", %{"selection" => %{"index" => "999"}})
-
-    assert has_element?(view, "#activity-exact-host", "zz-host")
+    {:ok, view, _} = live(conn, "/memory/activity")
+    assert has_element?(view, "#activity-summary-events", "8")
+    assert has_element?(view, "#activity-host-breakdown", "zz-host")
+    assert has_element?(view, "#activity-host-breakdown", @partition.host_id)
+    {:ok, filtered, _} = live(recycle(conn), "/memory/activity?host=zz-host")
+    assert has_element?(filtered, "#activity-summary-events", "7")
+    refute has_element?(filtered, "#activity-project-breakdown", "alpha")
   end
 
   test "reuses live host-agent capture and delivery health for the selected host", %{conn: conn} do
@@ -231,29 +223,8 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
   end
 
   defp activity_live(conn, partition \\ @partition) do
-    {:ok, view, html} = live(conn, "/memory/activity")
-    option_index = partition_option_index(view, partition.host_id)
-
-    if has_element?(view, "#activity-partition option[selected][value='#{option_index}']") do
-      {:ok, view, html}
-    else
-      view
-      |> form("#activity-partition-selector", %{"selection" => %{"index" => option_index}})
-      |> render_change()
-
-      {:ok, view, render(view)}
-    end
-  end
-
-  defp partition_option_index(view, host_id) do
-    view
-    |> render()
-    |> Floki.parse_fragment!()
-    |> Floki.find("#activity-partition-selector option")
-    |> Enum.find_value(fn option ->
-      if Floki.text(option) =~ host_id,
-        do: option |> Floki.attribute("value") |> List.first()
-    end)
+    query = Backplane.Admin.MemoryOperatorComponents.partition_query(partition)
+    live(conn, "/memory/activity?" <> URI.encode_query(query))
   end
 
   defp insert_activity!(date, project, agent, event_type, count, overrides \\ []) do

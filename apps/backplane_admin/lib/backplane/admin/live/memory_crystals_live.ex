@@ -3,6 +3,16 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
 
   import Backplane.Admin.MemoryComponents
 
+  import Backplane.Admin.MemoryOperatorComponents,
+    only: [
+      browse_scope: 1,
+      partition_query: 1,
+      record_partition: 1,
+      record_partition: 2,
+      source_identity: 1
+    ]
+
+  alias Backplane.Memory.Operations.Inventory
   alias Backplane.Memory.{Audit, Crystals, CrystalSources}
 
   @partition_params ~w(memory_space_id host client scope namespace)
@@ -24,7 +34,9 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    with {:ok, partition} <- partition_from_params(params),
+    partition_result = partition_from_params(params)
+
+    with {:ok, partition} <- partition_result,
          {:ok, query} <- query_from_params(params),
          {:ok, page} <- load_page(partition, query, params["after"]),
          {:ok, selected, selected_source} <-
@@ -44,10 +56,15 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
          assign(socket, partition: nil, selected: nil, selected_source: nil, query_error: nil)}
 
       {:error, :not_found} ->
+        {:ok, partition} = partition_result
+
         {:noreply,
-         socket
-         |> put_flash(:error, "The selected crystal was not found in this partition.")
-         |> push_navigate(to: ~p"/memory/crystals")}
+         assign(socket,
+           partition: partition,
+           selected: nil,
+           selected_source: nil,
+           query_error: :not_found
+         )}
 
       {:error, reason} ->
         {:noreply, assign(socket, query_error: reason)}
@@ -73,7 +90,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
   end
 
   def handle_event("rerun", _params, %{assigns: %{selected: detail}} = socket) do
-    result = rerun(detail, socket.assigns.partition)
+    result = rerun(detail, record_partition(detail.crystal))
 
     case result do
       {:ok, result} ->
@@ -83,7 +100,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
             else: "memory_crystal.rerun"
 
         Backplane.Admin.Audit.record(action, "memory_crystal", detail.crystal.id)
-        audit_rerun(detail, socket.assigns.partition, rerun_result(result))
+        audit_rerun(detail, record_partition(detail.crystal), rerun_result(result))
 
         {:noreply,
          put_flash(socket, :info, "Crystal processing was queued or confirmed idempotently.")}
@@ -100,21 +117,8 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
       <.memory_page_header title="Crystals" subtitle="Structured completed-work digests with typed provenance" />
 
       <.dm_alert :if={@query_error} id="crystal-query-error" variant="error" title="Crystals unavailable" compact>
-        Crystal data could not be loaded. Check the partition and pagination cursor.
+        The selected crystal may be missing or unavailable. Check the partition and pagination cursor.
       </.dm_alert>
-
-      <.dm_card :if={is_nil(@partition)} variant="bordered" padding="lg">
-        <h2 class="text-lg font-semibold">Select an exact partition</h2>
-        <p class="mt-1 text-sm text-on-surface-variant">Host, client, scope, and namespace are required.</p>
-        <.form id="crystal-partition-form" for={%{}} as={:partition} phx-submit="select_partition" class="mt-4 grid gap-3 sm:grid-cols-2">
-          <.dm_input id="crystal-memory-space" name="partition[memory_space_id]" label="Memory space ID" value="" required />
-          <.dm_input id="crystal-host" name="partition[host]" label="Host" value="" required />
-          <.dm_input id="crystal-client" name="partition[client]" label="Client" value="" required />
-          <.dm_input id="crystal-scope" name="partition[scope]" label="Scope" value="" required />
-          <.dm_input id="crystal-namespace" name="partition[namespace]" label="Namespace" value="" required />
-          <div class="sm:col-span-2"><.dm_btn type="submit" variant="primary">Open partition</.dm_btn></div>
-        </.form>
-      </.dm_card>
 
       <div :if={@partition}>
         <.form id="crystal-filters" for={%{}} as={:filters} phx-change="search" phx-submit="search" class="max-w-xl">
@@ -122,12 +126,13 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
         </.form>
 
         <.dm_card :if={@page.entries == []} variant="bordered" padding="lg" class="mt-4 text-center">
-          <h2 class="text-lg font-semibold">No crystals match this partition</h2>
+          <h2 class="text-lg font-semibold">No crystals match</h2>
         </.dm_card>
 
         <div class="mt-4 overflow-x-auto">
           <.dm_table :if={@page.entries != []} id="memory-crystals-table" data={@page.entries} compact hover zebra>
             <:col :let={crystal} label="Title"><.link href={detail_path(crystal.id, @partition, @query)} class="font-medium text-primary underline underline-offset-2">{crystal.title}</.link></:col>
+            <:col :let={crystal} label="Source host / repository"><.source_identity record={crystal} /></:col>
             <:col :let={crystal} label="Source">{crystal.source_kind}</:col>
             <:col :let={crystal} label="Project">{crystal.project || "—"}</:col>
             <:col :let={crystal} label="State"><.dm_badge variant={if crystal.status == "complete", do: "success", else: "warning"} size="sm">{crystal.status}</.dm_badge></:col>
@@ -140,7 +145,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
           <.memory_link_button id="crystals-next-page" patch={next_path(@partition, @query, @page.next_cursor)}>Next</.memory_link_button>
         </nav>
 
-        <.crystal_detail :if={@selected} detail={@selected} partition={@partition} query={@query} />
+        <.crystal_detail :if={@selected} detail={@selected} partition={record_partition(@selected.crystal, @partition)} query={@query} />
         <.source_detail :if={@selected_source} source={@selected_source} />
       </div>
     </div>
@@ -184,7 +189,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
             <.link :if={@detail.crystal.source_kind == "session" or @detail.source_summary_ids != []} navigate={source_path(@detail.crystal.id, "sessions", @detail.crystal.source_session_id, @partition, @query)} class="text-primary underline">Session {@detail.crystal.source_session_id}</.link>
             <.link :for={id <- @detail.source_action_ids} navigate={source_path(@detail.crystal.id, "actions", id, @partition, @query)} class="font-mono text-primary underline">Action {id}</.link>
             <.link :for={id <- @detail.lesson_memory_ids} navigate={~p"/memory/lessons/#{id}?#{partition_query(@partition)}"} class="text-primary underline">Lesson {id}</.link>
-            <.link :for={id <- @detail.source_event_ids} navigate={~p"/memory/events/#{id}"} class="text-primary underline">Event {id}</.link>
+            <.link :for={id <- @detail.source_event_ids} navigate={~p"/memory/events/#{id}?#{partition_query(@partition)}"} class="text-primary underline">Event {id}</.link>
             <.link :for={id <- @detail.source_summary_ids} navigate={source_path(@detail.crystal.id, "summaries", id, @partition, @query)} class="font-mono text-primary underline">Summary {id}</.link>
           </div>
         </section>
@@ -221,18 +226,15 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
     """
   end
 
-  defp load_page(partition, "", cursor),
-    do: Crystals.list(partition, limit: @per_page, after: cursor)
-
-  defp load_page(partition, query, nil) do
-    with {:ok, entries} <- Crystals.search(query, partition, limit: @per_page),
-         do: {:ok, %{entries: entries, next_cursor: nil}}
-  end
-
-  defp load_page(_partition, _query, _cursor), do: {:error, :invalid_cursor}
+  defp load_page(partition, query, cursor),
+    do: Inventory.crystals(partition, limit: @per_page, q: query, after: cursor)
 
   defp load_selected(:show, %{"id" => id}, partition) do
-    with {:ok, detail} <- Crystals.get(id, partition), do: {:ok, detail, nil}
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         {:ok, identity} <- Inventory.identity(:crystal, id, partition),
+         {:ok, detail} <- Crystals.get(id, identity),
+         do: {:ok, detail, nil},
+         else: (_ -> {:error, :not_found})
   end
 
   defp load_selected(:source_action, params, partition),
@@ -247,8 +249,9 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
   defp load_selected(_action, _params, _partition), do: {:ok, nil, nil}
 
   defp load_source(%{"id" => crystal_id, "source_id" => source_id}, partition, kind) do
-    with {:ok, detail} <- Crystals.get(crystal_id, partition),
-         {:ok, source} <- get_source(kind, crystal_id, source_id, partition) do
+    with {:ok, identity} <- Inventory.identity(:crystal, crystal_id, partition),
+         {:ok, detail} <- Crystals.get(crystal_id, identity),
+         {:ok, source} <- get_source(kind, crystal_id, source_id, identity) do
       {:ok, detail, source_result(kind, source)}
     end
   end
@@ -339,29 +342,7 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
     )
   end
 
-  defp partition_from_params(params) do
-    values = Map.take(params, @partition_params)
-
-    if map_size(values) == 0 do
-      {:error, :partition_required}
-    else
-      normalized = Map.new(values, fn {key, value} -> {key, String.trim(value || "")} end)
-
-      if Enum.all?(@partition_params, &valid_identifier?(normalized[&1])),
-        do:
-          {:ok,
-           %{
-             memory_space_id: normalized["memory_space_id"],
-             host_id: normalized["host"],
-             client_id: normalized["client"],
-             scope: normalized["scope"],
-             namespace: normalized["namespace"]
-           }},
-        else: {:error, :partition_required}
-    end
-  end
-
-  defp valid_identifier?(value), do: is_binary(value) and value != "" and byte_size(value) <= 512
+  defp partition_from_params(params), do: {:ok, browse_scope(params)}
 
   defp query_from_params(%{"query" => query}) when is_binary(query) do
     query = String.trim(query)
@@ -369,15 +350,6 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
   end
 
   defp query_from_params(_params), do: {:ok, ""}
-
-  defp partition_query(partition),
-    do: %{
-      "memory_space_id" => partition.memory_space_id,
-      "host" => partition.host_id,
-      "client" => partition.client_id,
-      "scope" => partition.scope,
-      "namespace" => partition.namespace
-    }
 
   defp query_params(partition, ""), do: partition_query(partition)
   defp query_params(partition, query), do: Map.put(partition_query(partition), "query", query)

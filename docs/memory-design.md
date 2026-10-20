@@ -2,6 +2,8 @@
 
 Central, self-hosted agent memory. Backplane is the sole owner; storage is Postgres + pgvector. Samgita is uninvolved.
 
+Current browsing clarification: the trusted operator opens Memory directly and sees the central collection, including existing host-associated spaces. Source host and repository are automatically recorded provenance and optional filters. Internal canonical ownership and public credential scopes remain enforced; the original v1 tenancy description below is historical and does not relax the current [canonical ownership ADR](memory/adr-memory-space-partition.md). Repository identity is distinct from a local checkout path; unknown historical remotes are not inferred from paths. See [the correction report](memory/provenance-correction.md) for implementation and verification status.
+
 ## Topology
 
 ```

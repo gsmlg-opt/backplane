@@ -35,26 +35,36 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     :ok
   end
 
-  test "partitioned operator pages fail closed until canonical identity and provenance are selected",
-       %{
-         conn: conn
-       } do
-    for {path, gate_id} <- [
-          {"/memory/sessions", "sessions-partition"},
-          {"/memory/timeline", "timeline-partition"},
-          {"/memory/memories", "memories-partition"},
-          {"/memory/graph", "graph-partition"},
-          {"/memory/profile", "profile-partition"},
-          {"/memory/actions", "actions-partition"},
-          {"/memory/audit", "audit-partition"}
+  test "ordinary inventories open directly with optional source filters", %{conn: conn} do
+    for {path, root} <- [
+          {"/memory", "memory-collection"},
+          {"/memory/sessions", "memory-sessions"},
+          {"/memory/timeline", "memory-timeline"},
+          {"/memory/memories", "memory-memories"},
+          {"/memory/lessons", "memory-lessons"},
+          {"/memory/crystals", "memory-crystals"},
+          {"/memory/graph", "memory-graph"},
+          {"/memory/profile", "memory-profile"},
+          {"/memory/actions", "memory-actions"},
+          {"/memory/audit", "memory-audit"},
+          {"/memory/pipeline", "memory-pipeline"},
+          {"/memory/activity", "memory-activity"},
+          {"/memory/replay", "memory-replay"},
+          {"/memory/recall", "memory-recall-inspector"},
+          {"/memory/events", "memory-events"},
+          {"/memory/streams", "memory-streams"}
         ] do
-      {:ok, view, _html} = live(recycle(conn), path)
-      assert has_element?(view, "##{gate_id}")
-      assert has_element?(view, "##{gate_id}-memory-space[required]")
-      assert has_element?(view, "##{gate_id}-host[required]")
-      assert has_element?(view, "##{gate_id}-client[required]")
-      assert has_element?(view, "##{gate_id}-scope[required]")
-      assert has_element?(view, "##{gate_id}-namespace[required]")
+      {:ok, view, html} = live(recycle(conn), path)
+      assert has_element?(view, "##{root}")
+      assert has_element?(view, "#memory-source-filters")
+      refute html =~ "Select an exact partition"
+      refute html =~ "Register a host to provision"
+      refute has_element?(view, "#memory-access")
+
+      for error_id <-
+            ~w(memory-collection-error sessions-error timeline-error memories-error lesson-query-error crystal-query-error graph-error profile-error actions-error audit-error pipeline-states-error activity-query-error recall-query-error replay-query-error event-query-error stream-query-error) do
+        refute has_element?(view, "##{error_id}"), "#{path} rendered #{error_id}"
+      end
     end
   end
 
@@ -229,7 +239,12 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
         partition: partition,
         rows: [],
         selected: %{
-          memory: %{id: Ecto.UUID.generate(), content: "Memory", session_id: "session-a"},
+          memory:
+            Map.merge(partition, %{
+              id: Ecto.UUID.generate(),
+              content: "Memory",
+              session_id: "session-a"
+            }),
           evidence: [
             %{
               source_type: "event",
@@ -257,13 +272,25 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
         offset: 0,
         page_size: 25,
         error: nil,
+        detail_error: nil,
+        filters: %{},
+        total_count: 0,
         current_path: "/memory/memories"
       })
 
-    assert html =~ ~s(href="/memory/events/#{event_id}")
-    assert html =~ "/memory/sessions?"
-    assert html =~ "/memory/replay?"
-    assert html =~ "session=session-a"
+    links = html |> Floki.parse_fragment!() |> Floki.attribute("a", "href")
+
+    for {path, expected_query} <- [
+          {"/memory/events/#{event_id}", @partition},
+          {"/memory/sessions/session-a", @partition},
+          {"/memory/replay", Map.put(@partition, "session", "session-a")}
+        ] do
+      destination = Enum.find(links, &(URI.parse(&1).path == path))
+      assert destination
+
+      assert destination |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query() ==
+               expected_query
+    end
   end
 
   test "config is finite, filterable, typed, trusted-route editable, and audited", %{conn: conn} do

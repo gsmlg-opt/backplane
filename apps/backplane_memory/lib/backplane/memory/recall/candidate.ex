@@ -12,6 +12,8 @@ defmodule Backplane.Memory.Recall.Candidate do
   @required @partition ++ [:id, :kind, :memory_type, :content, :source_ids]
   @optional [
     :project,
+    :source_host_id,
+    :repository_sources,
     :session_id,
     :confidence,
     :strength,
@@ -39,7 +41,15 @@ defmodule Backplane.Memory.Recall.Candidate do
                     :expires_at,
                     :application_count
                   ]
-  defstruct @enforce_keys ++ [:project, :session_id, evidence_ids: [], source_refs: []]
+  defstruct @enforce_keys ++
+              [
+                :project,
+                :source_host_id,
+                :session_id,
+                evidence_ids: [],
+                source_refs: [],
+                repository_sources: []
+              ]
 
   @type t :: %__MODULE__{}
 
@@ -59,6 +69,7 @@ defmodule Backplane.Memory.Recall.Candidate do
          {:ok, scope} <- required_string(attrs, :scope, 512),
          {:ok, namespace} <- required_string(attrs, :namespace, 512),
          {:ok, project} <- optional_string(attrs, :project, 1_024),
+         {:ok, source_host_id} <- optional_string(attrs, :source_host_id, 512),
          {:ok, session_id} <- optional_string(attrs, :session_id, 1_024),
          {:ok, confidence} <- unit_float(Map.get(attrs, :confidence, 1.0), :confidence),
          {:ok, strength} <- unit_float(Map.get(attrs, :strength, 1.0), :strength),
@@ -102,6 +113,9 @@ defmodule Backplane.Memory.Recall.Candidate do
          scope: scope,
          namespace: namespace,
          project: project,
+         source_host_id: source_host_id,
+         repository_sources:
+           Backplane.MemoryRepository.sources(Map.get(attrs, :repository_sources, [])),
          session_id: session_id,
          confidence: confidence,
          strength: strength,

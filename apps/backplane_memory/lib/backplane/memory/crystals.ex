@@ -297,6 +297,13 @@ defmodule Backplane.Memory.Crystals do
       }
     }
 
+    memory_attrs =
+      Map.update!(
+        memory_attrs,
+        :metadata,
+        &Backplane.Memory.Provenance.metadata(&1, [%{source_summary_id: summary.id}], partition)
+      )
+
     memory = %Memory{} |> Memory.changeset(memory_attrs) |> repo().insert!()
 
     output = %{
@@ -753,6 +760,12 @@ defmodule Backplane.Memory.Crystals do
             project: a.project,
             created_by: a.created_by,
             tags: a.tags,
+            host_id: a.host_id,
+            source_memory_ids: type(a.source_memory_ids, {:array, :binary_id}),
+            source_lesson_ids: type(a.source_lesson_ids, {:array, :binary_id}),
+            source_crystal_ids: type(a.source_crystal_ids, {:array, :binary_id}),
+            source_observation_ids: type(a.source_observation_ids, {:array, :binary_id}),
+            source_session_ids: type(a.source_session_ids, {:array, :string}),
             created_at: a.created_at,
             updated_at: a.updated_at
           },
@@ -843,6 +856,7 @@ defmodule Backplane.Memory.Crystals do
         metadata: %{
           "kind" => "crystal",
           "source_kind" => "action_chain",
+          "repository_sources" => Backplane.Memory.Provenance.action_sources(actions, partition),
           "project" => project,
           "processing_version" => version
         }

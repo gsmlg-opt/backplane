@@ -23,6 +23,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
       |> Map.drop(@reserved_provenance_aliases)
       |> maybe_put("source_client_id", event["client_id"])
       |> maybe_put("source_scope", event["scope"])
+      |> Map.put("host_id", host_id)
       |> Map.put("client_id", partition_id)
       |> Map.put("memory_space_id", memory_space_id)
       |> Map.put("scope", scope)

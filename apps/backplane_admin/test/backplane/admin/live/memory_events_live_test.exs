@@ -659,6 +659,94 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
     assert Process.alive?(view.pid)
   end
 
+  @tag :provenance_navigation
+  test "exact event selection survives normalization, filtering, pagination and close", %{
+    conn: conn
+  } do
+    event = event_fixture(project: "provenance-navigation", content: "selected event")
+    event_fixture(project: event.project, host_id: event.host_id, client_id: event.client_id)
+
+    selection = %{
+      "memory_space_id" => event.memory_space_id,
+      "host" => event.host_id,
+      "client" => event.client_id,
+      "scope" => event.scope,
+      "namespace" => event.namespace
+    }
+
+    query = Map.merge(selection, %{"project" => event.project, "limit" => "1"})
+    {:ok, view, _html} = live(conn, query_path("/memory/events/#{event.id}", query))
+    assert has_element?(view, "#event-identity", event.id)
+
+    assert has_element?(
+             view,
+             ~s(#event-close-detail[href="#{query_path("/memory/events", query)}"])
+           )
+
+    refute render(view) =~ "One invalid event parameter"
+
+    older =
+      view
+      |> element("#event-load-older")
+      |> render()
+      |> Floki.parse_fragment!()
+      |> Floki.attribute("a", "href")
+      |> hd()
+
+    assert Map.take(URI.decode_query(URI.parse(older).query), Map.keys(selection)) == selection
+    render_patch(view, older)
+    assert_patch(view, older)
+    assert has_element?(view, "#event-identity", event.id)
+    view |> form("#event-filters", filters: %{"project" => event.project}) |> render_change()
+    filtered = assert_patch(view)
+    assert Map.take(URI.decode_query(URI.parse(filtered).query), Map.keys(selection)) == selection
+    refute URI.decode_query(URI.parse(filtered).query)["cursor"]
+    assert has_element?(view, "#event-identity", event.id)
+    view |> element("#event-close-detail") |> render_click()
+    closed = assert_patch(view)
+    assert URI.parse(closed).path == "/memory/events"
+    assert Map.take(URI.decode_query(URI.parse(closed).query), Map.keys(selection)) == selection
+  end
+
+  @tag :provenance_navigation
+  test "event detail rejects conflicting source filters without exposing content", %{
+    conn: conn
+  } do
+    event = event_fixture(content: "private provenance event")
+
+    selection = %{
+      "memory_space_id" => event.memory_space_id,
+      "host" => event.host_id,
+      "client" => event.client_id,
+      "scope" => event.scope,
+      "namespace" => event.namespace
+    }
+
+    for {key, bad} <- [
+          {"memory_space_id", Ecto.UUID.generate()},
+          {"memory_space_id", "invalid"},
+          {"host", "other-host"},
+          {"client", "other-client"},
+          {"scope", "other-scope"},
+          {"namespace", "other-namespace"}
+        ] do
+      {:ok, view, _} =
+        live(
+          recycle(conn),
+          query_path("/memory/events/#{event.id}", Map.put(selection, key, bad))
+        )
+
+      assert has_element?(view, "#event-selection-unavailable")
+      refute has_element?(view, "#event-identity")
+      refute render(view) =~ event.content
+    end
+
+    {:ok, global, _} = live(recycle(conn), "/memory/events/#{event.id}")
+    assert has_element?(global, "#event-identity", event.id)
+    {:ok, cleared, _} = live(recycle(conn), "/memory/events/#{event.id}?host=")
+    assert has_element?(cleared, "#event-identity", event.id)
+  end
+
   defp append_events!(project, count) do
     base = ~U[2026-07-16 00:00:00.000000Z]
     stream_id = unique("#{project}-stream")

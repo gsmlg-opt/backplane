@@ -64,7 +64,7 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     assert Enum.sort(ids) == Enum.sort([first.id, second.id])
 
     assert_raise Ecto.ConstraintError, fn ->
-      repo().delete!(repo().one!(from link in SourceAction, limit: 1))
+      repo().delete!(repo().one!(from(link in SourceAction, limit: 1)))
     end
 
     error =
@@ -99,7 +99,87 @@ defmodule Backplane.Memory.CrystalActionChainTest do
              )
 
     assert %SourceAction{terminal_override: true} =
-             repo().one!(from l in SourceAction, where: l.crystal_id == ^crystal.id)
+             repo().one!(from(l in SourceAction, where: l.crystal_id == ^crystal.id))
+  end
+
+  test "locked action snapshot retains every typed repository source without crossing canonical ownership" do
+    partition = %{@partition | namespace: "private"}
+    direct = provenance_memory("memory", partition)
+    lesson_memory = provenance_memory("lesson", partition)
+    crystal_memory = provenance_memory("crystal", partition)
+
+    repo().insert!(
+      Lesson.changeset(%Lesson{}, %{
+        memory_id: lesson_memory.id,
+        status: "candidate",
+        source_kind: "manual"
+      })
+    )
+
+    {:ok, source_action} =
+      Action.create(
+        %{
+          "title" => "Source crystal",
+          "status" => "done",
+          "source_memory_ids" => [crystal_memory.id]
+        },
+        [],
+        partition
+      )
+
+    assert {:ok, source_crystal} = Crystals.build_action_chain(source_action.id, partition)
+
+    session_event = provenance_event("source-session", "session", partition)
+    observation_event = provenance_event("source-observation", "observation", partition)
+
+    foreign =
+      canonical_partition("foreign-provenance-host",
+        client_id: partition.client_id,
+        scope: partition.scope,
+        namespace: partition.namespace
+      )
+
+    foreign_memory = provenance_memory("foreign-memory", foreign)
+    foreign_event = provenance_event("source-session", "foreign-event", foreign)
+
+    {:ok, action} =
+      Action.create(
+        %{
+          "title" => "Retain all source associations",
+          "status" => "done",
+          "project" => "/historical/action/path",
+          "source_memory_ids" => [direct.id, foreign_memory.id],
+          "source_lesson_ids" => [lesson_memory.id],
+          "source_crystal_ids" => [source_crystal.id],
+          "source_session_ids" => [session_event.session_id],
+          "source_observation_ids" => [observation_event.id, foreign_event.id]
+        },
+        [],
+        partition
+      )
+
+    before_rows = action_history()
+    assert {:ok, crystal} = Crystals.build_action_chain(action.id, partition)
+    memory = repo().get!(Memory, crystal.memory_id)
+
+    assert Enum.map(memory.metadata["repository_sources"], & &1["repository_id"]) ==
+             Enum.map(
+               ~w(crystal lesson memory observation session),
+               &"git.example/fixtures/#{&1}"
+             )
+
+    assert Enum.all?(memory.metadata["repository_sources"], &is_binary(&1["cwd"]))
+    assert memory.metadata["project"] == "/historical/action/path"
+
+    assert Map.take(memory, [:memory_space_id, :scope, :namespace, :host_id]) ==
+             Map.take(partition, [:memory_space_id, :scope, :namespace, :host_id])
+
+    assert {:ok, %{source_action_ids: [id]}} = Crystals.get(crystal.id, partition)
+    assert id == action.id
+    assert action_history() == before_rows
+    assert {:ok, repeated} = Crystals.build_action_chain(action.id, partition)
+    assert repeated.id == crystal.id
+    assert repo().get!(Memory, memory.id).metadata == memory.metadata
   end
 
   test "action-chain crystal persists and indexes only privacy-filtered structured fields" do
@@ -211,8 +291,9 @@ defmodule Backplane.Memory.CrystalActionChainTest do
 
     assert %Evidence{source_crystal_id: crystal_id} =
              repo().one!(
-               from e in Evidence,
+               from(e in Evidence,
                  where: e.memory_id == ^lesson.memory_id and not is_nil(e.source_crystal_id)
+               )
              )
 
     assert crystal_id == crystal.id
@@ -244,10 +325,11 @@ defmodule Backplane.Memory.CrystalActionChainTest do
 
     assert %LessonLink{relation_type: "reinforced"} =
              repo().one!(
-               from link in LessonLink,
+               from(link in LessonLink,
                  where:
                    link.crystal_id == ^second_crystal.id and
                      link.lesson_memory_id == ^lesson.memory_id
+               )
              )
   end
 
@@ -305,6 +387,52 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     refute Config.crystal_action_enabled?()
     {:ok, action} = create_action("Done", "done")
     assert {:error, :crystal_action_disabled} = Crystals.build_action_chain(action.id, @partition)
+  end
+
+  defp provenance_memory(name, partition) do
+    {:ok, memory} =
+      Memories.remember(
+        "Provenance fixture #{name}",
+        Map.to_list(partition) ++
+          [
+            agent_id: "tester",
+            metadata: %{
+              "repository_sources" => [
+                %{"repository_id" => "git.example/fixtures/#{name}", "cwd" => "/#{name}"}
+              ]
+            }
+          ]
+      )
+
+    memory
+  end
+
+  defp provenance_event(session, name, partition) do
+    alias Backplane.Memory.IngestFixtures
+
+    event =
+      IngestFixtures.valid_event(%{
+        "host_id" => partition.host_id,
+        "session_id" => session,
+        "idempotency_key" => "provenance:#{name}",
+        "payload" => %{
+          "message" => name,
+          "repository_sources" => [
+            %{"repository_id" => "git.example/fixtures/#{name}", "cwd" => "/#{name}"}
+          ]
+        }
+      })
+
+    auth = IngestFixtures.ingest_auth_context(partition.host_id, %{partition: partition})
+
+    assert {:ok, %{"results" => [%{"status" => "accepted", "server_event_id" => id}]}} =
+             Backplane.Memory.Ingest.ingest_batch(auth, %{
+               "batch_id" => Ecto.UUID.generate(),
+               "host_id" => partition.host_id,
+               "events" => [event]
+             })
+
+    repo().get!(Backplane.Memory.Events.Event, id)
   end
 
   defp create_action(title, status, description \\ nil),
@@ -389,7 +517,7 @@ defmodule Backplane.Memory.CrystalActionChainTest do
   end
 
   defp action_history,
-    do: repo().all(from a in Action, order_by: a.id, select: {a.id, a.status, a.updated_at})
+    do: repo().all(from(a in Action, order_by: a.id, select: {a.id, a.status, a.updated_at}))
 
   defp assert_partition_move_rejected(crystal, action, expected_constraint) do
     # Flush valid fixture events before transactional DDL. PostgreSQL rejects

@@ -327,6 +327,9 @@ defmodule Backplane.Memory.Recall.Pipeline do
       final_score: trace.scores.final,
       score_breakdown: trace.scores,
       source_ids: candidate.source_ids,
+      source_host_id: candidate.source_host_id,
+      project: candidate.project,
+      repository_sources: candidate.repository_sources,
       confidence: candidate.confidence,
       lifecycle_state: candidate.lifecycle_state,
       token_estimate: trace.token_estimate

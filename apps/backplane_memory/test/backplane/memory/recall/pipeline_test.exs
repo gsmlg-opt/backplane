@@ -30,6 +30,19 @@ defmodule Backplane.Memory.Recall.PipelineTest do
   test "FTS-only recall returns normalized provenance-bearing results within budget" do
     candidate = candidate(content: "bounded result", tokens: 5)
 
+    candidate = %{
+      candidate
+      | source_host_id: "original-source-host",
+        project: "/historical/project",
+        repository_sources: [
+          %{
+            "repository_id" => "git.example/org/repo",
+            "checkout_root" => "/one",
+            "cwd" => "/one/sub"
+          }
+        ]
+    }
+
     assert {:ok, result} =
              Pipeline.run(
                Map.merge(@partition, %{
@@ -63,6 +76,9 @@ defmodule Backplane.Memory.Recall.PipelineTest do
     assert selected.final_score > 0
     assert selected.score_breakdown.rrf > 0
     assert selected.source_ids == candidate.source_ids
+    assert selected.source_host_id == "original-source-host"
+    assert selected.project == "/historical/project"
+    assert selected.repository_sources == candidate.repository_sources
     assert selected.confidence == 1.0
     assert selected.lifecycle_state == :active
     assert selected.token_estimate == 5
@@ -163,7 +179,8 @@ defmodule Backplane.Memory.Recall.PipelineTest do
               correlation_id: ^correlation_id,
               query_embedding_model: "embed-model",
               reranker_model: "rerank-model"
-            }, [stored]} =
+            },
+            [stored]} =
              Store.get(run_id, @partition)
 
     assert stored.selected

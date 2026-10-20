@@ -4,7 +4,9 @@ defmodule Backplane.Admin.MemorySessionsLive do
   import Backplane.Admin.MemoryComponents, only: [memory_link_button: 1, memory_page_header: 1]
   import Backplane.Admin.MemoryOperatorComponents
 
-  alias Backplane.Memory.Projections.{ReadModels, SessionDetail}
+  alias Backplane.Memory.Projections.SessionDetail
+
+  alias Backplane.Memory.Operations.Inventory
 
   @page_size 25
 
@@ -19,25 +21,29 @@ defmodule Backplane.Admin.MemorySessionsLive do
          rows: [],
          detail: nil,
          offset: 0,
+         next_offset: nil,
+         total: 0,
          error: nil
        )}
 
   @impl true
   def handle_params(params, _uri, socket) do
-    case exact_partition(params) do
-      {:ok, partition} ->
-        load(socket, partition, params)
-
-      {:error, :partition_required} ->
-        {:noreply, assign(socket, partition: nil, rows: [], detail: nil, offset: 0, error: nil)}
-    end
+    load(socket, browse_scope(params), params)
   end
 
   defp load(%{assigns: %{live_action: :show}} = socket, partition, %{"session_id" => session_id}) do
-    case SessionDetail.get(partition, session_id) do
-      {:ok, detail} ->
-        {:noreply, assign(socket, partition: partition, detail: detail, rows: [], error: nil)}
+    with {:ok, identity} <- Inventory.identity(:session, session_id, partition),
+         {:ok, detail} <- SessionDetail.get(identity, session_id) do
+      partition = identity
 
+      {:noreply,
+       assign(socket,
+         partition: partition,
+         detail: detail,
+         rows: [],
+         error: nil
+       )}
+    else
       {:error, reason} ->
         {:noreply, assign(socket, partition: partition, detail: nil, rows: [], error: reason)}
     end
@@ -52,10 +58,18 @@ defmodule Backplane.Admin.MemorySessionsLive do
       |> put_filter(:session_id, params["session"])
       |> Keyword.merge(Map.to_list(partition))
 
-    case ReadModels.sessions(opts) do
-      {:ok, rows} ->
+    case Inventory.sessions(partition, opts) do
+      {:ok, %{entries: rows} = result} ->
         {:noreply,
-         assign(socket, partition: partition, rows: rows, detail: nil, offset: offset, error: nil)}
+         assign(socket,
+           partition: partition,
+           rows: rows,
+           detail: nil,
+           offset: offset,
+           next_offset: result.next_offset,
+           total: result.total,
+           error: nil
+         )}
 
       {:error, reason} ->
         {:noreply, assign(socket, partition: partition, detail: nil, error: reason)}
@@ -67,12 +81,6 @@ defmodule Backplane.Admin.MemorySessionsLive do
     do: {:noreply, push_patch(socket, to: ~p"/memory/sessions?#{selection_query(raw)}")}
 
   @impl true
-  def render(%{partition: nil} = assigns) do
-    ~H"""
-    <.partition_gate id="sessions-partition" title="Sessions" subtitle="Canonical projected sessions and processing state" path="/memory/sessions" />
-    """
-  end
-
   def render(%{live_action: :show} = assigns) do
     ~H"""
     <div id="memory-session-detail">
@@ -118,29 +126,31 @@ defmodule Backplane.Admin.MemorySessionsLive do
     <div id="memory-sessions">
       <.memory_page_header title="Sessions" subtitle="Canonical projected sessions and processing state" />
       <.dm_alert :if={@error} id="sessions-error" variant="error" title="Sessions unavailable">The bounded session query failed.</.dm_alert>
-      <.dm_card :if={@rows == [] and !@error} id="sessions-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No sessions in this partition</h2></.dm_card>
+      <p id="sessions-count" class="mb-3 text-sm">{@total} matching sessions</p>
+      <.dm_card :if={@rows == [] and !@error} id="sessions-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No sessions match</h2></.dm_card>
       <div class="overflow-x-auto">
         <.dm_table :if={@rows != []} id="memory-sessions-table" data={@rows} compact hover zebra>
-          <:col :let={row} label="Session"><.link navigate={~p"/memory/sessions/#{row.session_id}?#{partition_query(@partition)}"} class="text-primary underline">{row.session_id}</.link></:col>
+          <:col :let={row} label="Session"><.link navigate={~p"/memory/sessions/#{row.session_id}?#{partition_query(row)}"} class="text-primary underline">{row.session_id}</.link></:col>
+          <:col :let={row} label="Source"><.source_identity record={row} /></:col>
           <:col :let={row} label="Project">{row.project || "—"}</:col>
           <:col :let={row} label="Lifecycle"><.dm_badge variant={status_variant(row.status)} size="sm">{row.status}</.dm_badge></:col>
           <:col :let={row} label="Processing"><.dm_badge variant={status_variant(row.processing_status)} size="sm">{row.processing_status}</.dm_badge></:col>
           <:col :let={row} label="Started">{format_datetime(row.started_at)}</:col>
           <:col :let={row} label="Links">
             <div class="flex gap-2">
-              <.link navigate={~p"/memory/timeline?#{Map.merge(partition_query(@partition), %{"session" => row.session_id})}"} class="text-primary underline">Timeline</.link>
-              <.link navigate={~p"/memory/replay?#{Map.merge(partition_query(@partition), %{"session" => row.session_id})}"} class="text-primary underline">Replay</.link>
-              <.link navigate={~p"/memory/sessions?#{Map.merge(partition_query(@partition), %{"session" => row.session_id})}"} class="text-primary underline">Session summary</.link>
-              <.link navigate={~p"/memory/actions?#{Map.merge(partition_query(@partition), %{"project" => row.project || ""})}"} class="text-primary underline">Actions</.link>
-              <.link navigate={~p"/memory/lessons?#{partition_query(@partition)}"} class="text-primary underline">Lessons</.link>
-              <.link navigate={~p"/memory/crystals?#{partition_query(@partition)}"} class="text-primary underline">Crystals</.link>
+              <.link navigate={~p"/memory/timeline?#{Map.merge(partition_query(row), %{"session" => row.session_id})}"} class="text-primary underline">Timeline</.link>
+              <.link navigate={~p"/memory/replay?#{Map.merge(partition_query(row), %{"session" => row.session_id})}"} class="text-primary underline">Replay</.link>
+              <.link navigate={~p"/memory/sessions/#{row.session_id}?#{partition_query(row)}"} class="text-primary underline">Session summary</.link>
+              <.link navigate={~p"/memory/actions?#{Map.merge(partition_query(row), %{"project" => row.project || ""})}"} class="text-primary underline">Actions</.link>
+              <.link navigate={~p"/memory/lessons?#{partition_query(row)}"} class="text-primary underline">Lessons</.link>
+              <.link navigate={~p"/memory/crystals?#{partition_query(row)}"} class="text-primary underline">Crystals</.link>
             </div>
           </:col>
         </.dm_table>
       </div>
       <nav aria-label="Session pagination" class="mt-4 flex justify-end gap-2">
         <.memory_link_button :if={@offset > 0} id="sessions-previous" patch={~p"/memory/sessions?#{Map.put(partition_query(@partition), "offset", max(0, @offset - @page_size))}"}>Previous</.memory_link_button>
-        <.memory_link_button :if={length(@rows) == @page_size} id="sessions-next" patch={~p"/memory/sessions?#{Map.put(partition_query(@partition), "offset", @offset + @page_size)}"}>Next</.memory_link_button>
+        <.memory_link_button :if={@next_offset != nil} id="sessions-next" patch={~p"/memory/sessions?#{Map.put(partition_query(@partition), "offset", @offset + @page_size)}"}>Next</.memory_link_button>
       </nav>
     </div>
     """

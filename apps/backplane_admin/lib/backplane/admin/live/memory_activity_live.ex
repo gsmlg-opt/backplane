@@ -3,11 +3,11 @@ defmodule Backplane.Admin.MemoryActivityLive do
 
   import Backplane.Admin.MemoryComponents
 
-  alias Backplane.Memory.{Activity, ActivityNotifier, Config}
-  alias Backplane.Memory.Operations.Activity, as: OperatorActivity
+  alias Backplane.Memory.{ActivityNotifier, Config}
+  alias Backplane.Memory.Operations.Inventory
+  import Backplane.Admin.MemoryOperatorComponents, only: [browse_scope: 1, partition_query: 1]
   alias Backplane.Skills.AgentManage
 
-  @distribution_limit 100
   @distribution_page_size 10
   @filter_keys ~w(project agent_id event_type)
   @periods ~w(daily monthly yearly)
@@ -15,8 +15,8 @@ defmodule Backplane.Admin.MemoryActivityLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    partitions = load_partitions()
-    partition = List.first(partitions)
+    partitions = []
+    partition = %{}
 
     if connected?(socket) do
       :ok = ActivityNotifier.subscribe()
@@ -45,26 +45,27 @@ defmodule Backplane.Admin.MemoryActivityLive do
         live_update: false
       )
 
-    {:ok, if(partition, do: reload(socket), else: socket)}
+    {:ok, socket}
   end
 
   @impl true
-  def handle_event("select_partition", %{"selection" => %{"index" => raw_index}}, socket) do
-    with {index, ""} when index >= 0 <- Integer.parse(raw_index),
-         partition when not is_nil(partition) <- Enum.at(socket.assigns.partitions, index) do
-      {:noreply,
-       socket
-       |> assign(
-         partition: partition,
-         selected_partition_index: Integer.to_string(index),
-         filters: %{},
-         distribution_page: 1,
-         host_health: host_health(partition),
-         live_update: false
-       )
-       |> reload()}
-    else
-      _invalid -> {:noreply, socket}
+  def handle_params(params, _uri, socket) do
+    partition = browse_scope(params)
+
+    case normalize_filters(Map.take(params, @filter_keys)) do
+      {:ok, filters} ->
+        {:noreply,
+         socket
+         |> assign(
+           partition: partition,
+           filters: filters,
+           distribution_page: 1,
+           host_health: host_health(partition)
+         )
+         |> reload()}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, query_error: reason)}
     end
   end
 
@@ -73,9 +74,10 @@ defmodule Backplane.Admin.MemoryActivityLive do
     case normalize_filters(raw) do
       {:ok, filters} ->
         {:noreply,
-         socket
-         |> assign(filters: filters, distribution_page: 1, live_update: false)
-         |> reload()}
+         push_patch(socket,
+           to:
+             ~p"/memory/activity?#{Map.merge(Map.drop(partition_query(socket.assigns.partition), @filter_keys), filters)}"
+         )}
 
       {:error, reason} ->
         {:noreply, assign(socket, query_error: reason)}
@@ -123,11 +125,7 @@ defmodule Backplane.Admin.MemoryActivityLive do
 
     ~H"""
     <div id="memory-activity">
-      <.memory_page_header title="Activity" subtitle="Durable exact-partition activity projections" />
-
-      <.dm_alert :if={is_nil(@partition)} id="activity-partition-unavailable" variant="error" title="Activity partition unavailable" compact>
-        No complete durable activity partition is available.
-      </.dm_alert>
+      <.memory_page_header title="Activity" subtitle="Durable activity across stored sources" />
 
       <.dm_alert :if={@query_error} id="activity-query-error" variant="error" title="Activity unavailable" compact>
         Activity projections could not be loaded with the selected filters.
@@ -137,36 +135,7 @@ defmodule Backplane.Admin.MemoryActivityLive do
         The view was reloaded from PostgreSQL after projection commit.
       </.dm_alert>
 
-      <.form
-        :if={@partitions != []}
-        id="activity-partition-selector"
-        for={%{}}
-        as={:selection}
-        phx-change="select_partition"
-        class="mt-4 max-w-3xl"
-      >
-        <.dm_select
-          id="activity-partition"
-          name="selection[index]"
-          label="Durable activity partition"
-          value={@selected_partition_index}
-          options={partition_options(@partitions)}
-        />
-        <p class="mt-1 text-xs text-on-surface-variant">
-          Partitions are enumerated from durable server-side activity data for this trusted operator UI.
-        </p>
-      </.form>
-
       <div :if={@partition}>
-        <.dm_card variant="bordered" padding="sm">
-          <dl class="grid gap-2 text-sm sm:grid-cols-4">
-            <div><dt class="text-on-surface-variant">Host</dt><dd id="activity-exact-host" class="font-mono">{@partition.host_id}</dd></div>
-            <div><dt class="text-on-surface-variant">Client</dt><dd class="font-mono">{@partition.client_id}</dd></div>
-            <div><dt class="text-on-surface-variant">Scope</dt><dd>{@partition.scope}</dd></div>
-            <div><dt class="text-on-surface-variant">Namespace</dt><dd>{@partition.namespace}</dd></div>
-          </dl>
-        </.dm_card>
-
         <section class="mt-4" aria-labelledby="activity-host-health-title">
           <h2 id="activity-host-health-title" class="text-lg font-semibold">
             Host capture and delivery health
@@ -209,7 +178,7 @@ defmodule Backplane.Admin.MemoryActivityLive do
         </section>
 
         <.form id="activity-filters" for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="mt-4 grid gap-3 md:grid-cols-4">
-          <.dm_input id="activity-host-filter" name="filters[host_id]" label="Host" value={@partition.host_id} readonly />
+          <.dm_input id="activity-host-filter" name="filters[host_id]" label="Host" value={Map.get(@partition, :host_id) || "All sources"} readonly />
           <.dm_input id="activity-project-filter" name="filters[project]" label="Project" value={@filters["project"]} phx-debounce="300" />
           <.dm_input id="activity-agent-filter" name="filters[agent_id]" label="Agent" value={@filters["agent_id"]} phx-debounce="300" />
           <.dm_input id="activity-event-filter" name="filters[event_type]" label="Event type" value={@filters["event_type"]} phx-debounce="300" />
@@ -300,7 +269,7 @@ defmodule Backplane.Admin.MemoryActivityLive do
         <section class="mt-6" aria-labelledby="activity-recent-events-title">
           <h2 id="activity-recent-events-title" class="text-lg font-semibold">Recent live events</h2>
           <p class="text-sm text-on-surface-variant">
-            Privacy-safe canonical summaries from the selected exact partition.
+            Privacy-safe canonical summaries from matching sources.
           </p>
           <div class="mt-3 overflow-x-auto">
             <.dm_table id="activity-recent-events" data={@recent_events} compact hover zebra>
@@ -360,46 +329,22 @@ defmodule Backplane.Admin.MemoryActivityLive do
     partition = socket.assigns.partition
     opts = activity_options(socket.assigns.filters)
 
-    with {:ok, heatmap} <- Activity.heatmap(partition, opts),
-         {:ok, trends} <- Activity.trends(partition, opts),
-         {:ok, distribution} <-
-           Activity.breakdown(
-             partition,
-             :event_type,
-             Keyword.put(opts, :limit, @distribution_limit)
-           ),
-         {:ok, project_breakdown} <-
-           Activity.breakdown(partition, :project, Keyword.put(opts, :limit, @distribution_limit)),
-         {:ok, agent_breakdown} <-
-           Activity.breakdown(
-             partition,
-             :agent_id,
-             Keyword.put(opts, :limit, @distribution_limit)
-           ),
-         {:ok, host_breakdown} <-
-           OperatorActivity.host_breakdown(
-             Map.take(partition, [:memory_space_id, :client_id, :scope, :namespace]),
-             Keyword.put(opts, :limit, @distribution_limit)
-           ),
-         {:ok, recent_events} <- Activity.recent_events(partition, Keyword.put(opts, :limit, 20)),
-         {:ok, summary} <- Activity.summary(partition, opts) do
-      last_page = distribution_pages(distribution)
+    case Inventory.activity(partition, opts) do
+      {:ok, report} ->
+        report =
+          Map.put(
+            report,
+            :distribution_page,
+            min(socket.assigns.distribution_page, distribution_pages(report.distribution))
+          )
 
-      assign(socket,
-        heatmap: heatmap,
-        trends: trends,
-        distribution: distribution,
-        project_breakdown: project_breakdown,
-        agent_breakdown: agent_breakdown,
-        host_breakdown: host_breakdown,
-        recent_events: recent_events,
-        distribution_page: min(socket.assigns.distribution_page, last_page),
-        summary: summary,
-        query_error: nil
-      )
-    else
-      {:error, reason} -> assign(socket, query_error: reason)
+        assign(socket, Map.merge(report, %{query_error: nil}))
+
+      {:error, reason} ->
+        assign(socket, query_error: reason)
     end
+  rescue
+    error -> assign(socket, query_error: error)
   end
 
   defp activity_options(filters) do
@@ -437,7 +382,8 @@ defmodule Backplane.Admin.MemoryActivityLive do
 
   defp relevant_update?(summary, partition, range) when is_map(summary) and is_map(partition) do
     Enum.all?(@partition_keys, fn key ->
-      Map.get(summary, String.to_atom(key)) == Map.fetch!(partition, String.to_atom(key))
+      is_nil(Map.get(partition, String.to_atom(key))) or
+        Map.get(summary, String.to_atom(key)) == Map.get(partition, String.to_atom(key))
     end) and date_ranges_overlap?(summary[:date_from], summary[:date_to], range)
   end
 
@@ -457,31 +403,6 @@ defmodule Backplane.Admin.MemoryActivityLive do
 
   defp distribution_pages(rows),
     do: rows |> length() |> Kernel./(@distribution_page_size) |> Float.ceil() |> trunc()
-
-  defp load_partitions do
-    case OperatorActivity.partitions(limit: 100) do
-      {:ok, partitions} -> partitions
-      {:error, _reason} -> []
-    end
-  rescue
-    _error -> []
-  catch
-    :exit, _reason -> []
-  end
-
-  defp partition_options(partitions) do
-    partitions
-    |> Enum.with_index()
-    |> Enum.map(fn {partition, index} ->
-      label =
-        Enum.join(
-          [partition.host_id, partition.client_id, partition.scope, partition.namespace],
-          " / "
-        )
-
-      {Integer.to_string(index), label}
-    end)
-  end
 
   defp aggregate_trends(rows, "daily") do
     Enum.map(rows, &Map.put(&1, :period, Date.to_iso8601(&1.date)))

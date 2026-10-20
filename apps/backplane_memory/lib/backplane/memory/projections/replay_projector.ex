@@ -33,10 +33,12 @@ defmodule Backplane.Memory.Projections.ReplayProjector do
         "tool_output" => first_value([source["tool_response"], source["result"]]),
         "tool_name" => first_string([event.tool_name, source["tool_name"]]),
         "status" => event.status,
-        "commit_hash" => source["commit_hash"]
+        "commit_hash" => source["commit_hash"],
+        "repository_sources" => Backplane.Memory.Provenance.event_sources([event])
       }
       |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
       |> Map.new(fn {key, value} -> {key, filter(value)} end)
+      |> Backplane.MemoryRepository.metadata()
 
     %{
       "event_id" => event.id,

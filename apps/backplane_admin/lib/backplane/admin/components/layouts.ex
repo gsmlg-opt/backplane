@@ -218,6 +218,30 @@ defmodule Backplane.Admin.Layouts do
     end)
   end
 
+  def left_nav_groups(current_path, selection) when map_size(selection) == 0,
+    do: left_nav_groups(current_path)
+
+  def left_nav_groups(current_path, selection) do
+    query = URI.encode_query(selection)
+
+    Enum.map(left_nav_groups(current_path), fn group ->
+      Map.update!(group, :items, fn items ->
+        Enum.map(items, fn item ->
+          if String.starts_with?(item.to, "/memory"),
+            do: %{item | to: item.to <> "?" <> query},
+            else: item
+        end)
+      end)
+    end)
+  end
+
+  def memory_selection_path(path) do
+    case String.split(path, "/", trim: true) do
+      ["memory", section | _] -> "/memory/" <> section
+      _ -> "/memory"
+    end
+  end
+
   def active_left_nav_id(current_path) do
     current_path
     |> left_nav_items()
