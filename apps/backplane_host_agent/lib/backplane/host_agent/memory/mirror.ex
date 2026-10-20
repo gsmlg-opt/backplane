@@ -49,7 +49,10 @@ defmodule Backplane.HostAgent.Memory.Mirror do
          true <- partition?(Map.take(args, ["memory_space_id", "scope", "namespace"])),
          true <- is_integer(Map.get(args, "limit", 20)) and Map.get(args, "limit", 20) > 0,
          true <-
-           is_binary(Map.get(args, "query", "")) and byte_size(Map.get(args, "query", "")) <= 4096 do
+           is_binary(Map.get(args, "query", "")) and byte_size(Map.get(args, "query", "")) <= 4096,
+         true <-
+           operation != "list" or
+             (is_binary(Map.get(args, "q", "")) and byte_size(Map.get(args, "q", "")) <= 4096) do
       Store.read(
         store(opts),
         operation,

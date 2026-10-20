@@ -383,6 +383,62 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert {:error, :protection_unavailable} = Mirror.offline_read("list", @partition, opts)
   end
 
+  test "offline list q filters case-insensitive substrings before the limit", c do
+    assert {:ok, _} =
+             Mirror.apply_delivery(
+               delta(1, [
+                 upsert(1, "a", "unrelated neighbor"),
+                 upsert(2, "b", "prefix UNIQUE Sentinel suffix")
+               ]),
+               c.opts
+             )
+
+    assert {:ok, filtered} =
+             Mirror.offline_read(
+               "list",
+               Map.merge(@partition, %{"q" => "unique SENT", "limit" => 1}),
+               c.opts
+             )
+
+    assert [%{"canonical_id" => "b", "content" => "prefix UNIQUE Sentinel suffix"} = row] =
+             filtered["items"]
+
+    refute Map.has_key?(row, "id")
+    assert filtered["mode"] == "offline"
+    assert filtered["consistency"] == "bounded_stale"
+
+    for args <- [@partition, Map.put(@partition, "q", "")] do
+      assert {:ok, unfiltered} = Mirror.offline_read("list", args, c.opts)
+      assert Enum.map(unfiltered["items"], & &1["canonical_id"]) == ["a", "b"]
+    end
+
+    assert {:ok, %{"items" => []}} =
+             Mirror.offline_read("list", Map.put(@partition, "q", "missing"), c.opts)
+
+    assert {:ok, %{"items" => [%{"canonical_id" => "a"}]}} =
+             Mirror.offline_read(
+               "recall",
+               Map.merge(@partition, %{"query" => "NEIGHBOR", "q" => "sentinel"}),
+               c.opts
+             )
+  end
+
+  test "offline list q uses the existing query type and byte bounds", c do
+    assert {:ok, _} = Mirror.apply_delivery(delta(1, [upsert(1, "a", "source")]), c.opts)
+
+    for invalid <- [nil, false, 1, [], %{}, String.duplicate("x", 4097)] do
+      assert {:error, :invalid_request} =
+               Mirror.offline_read("list", Map.put(@partition, "q", invalid), c.opts)
+    end
+
+    assert {:ok, %{"items" => []}} =
+             Mirror.offline_read(
+               "list",
+               Map.put(@partition, "q", String.duplicate("x", 4096)),
+               c.opts
+             )
+  end
+
   test "server eligible disputed memories remain readable", c do
     delivery =
       delta(1, [upsert(1, "a", "disputed fact")])

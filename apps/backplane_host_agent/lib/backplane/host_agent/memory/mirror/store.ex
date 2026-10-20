@@ -384,7 +384,9 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
 
         Map.merge(stats, metadata)
       else
-        query = if operation == "recall", do: Map.get(args, "query", ""), else: ""
+        query =
+          if operation == "recall", do: Map.get(args, "query", ""), else: Map.get(args, "q", "")
+
         base = Map.put(metadata, "items", [])
         items = read_items!(conn, filters, values, query, args["limit"], base)
         touch_items!(conn, args, p["active_generation"], items, timestamp)
