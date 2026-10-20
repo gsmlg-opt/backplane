@@ -377,6 +377,132 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "dead_letter", 2)
   end
 
+  test "closed real channel retries the same durable row without retaining request payload", %{
+    store: store,
+    opts: opts
+  } do
+    marker = "private-closed-channel-content"
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => marker}, opts)
+
+    assert {:ok, %Result{rows: [%{"seq" => seq}]}} =
+             Store.query(store, "SELECT seq FROM memory_outbox WHERE memory_id = ?", [id])
+
+    {:ok, channel} = Agent.start_link(fn -> nil end)
+    GenServer.stop(channel)
+
+    assert {:error, {:channel_exit, {:noproc, _}}} =
+             Syncer.drain_once(
+               store: store,
+               channel: channel,
+               now_fun: fn -> "2026-06-17T00:00:00Z" end,
+               jitter_fun: fn -> 0.5 end
+             )
+
+    assert_outbox(store, id, "retry_wait", 1)
+
+    assert {:ok,
+            %Result{
+              rows: [
+                %{
+                  "seq" => ^seq,
+                  "last_error" => error,
+                  "next_attempt_at" => due,
+                  "dead_lettered_at" => nil
+                }
+              ]
+            }} =
+             Store.query(store, "SELECT * FROM memory_outbox WHERE memory_id = ?", [id])
+
+    assert is_binary(error) and byte_size(error) <= 512
+    refute error =~ marker
+    refute error =~ id
+    refute error =~ "memory_sync"
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(
+               store: store,
+               channel: self(),
+               channel_module: FakeChannel,
+               now_fun: fn -> due end
+             )
+
+    assert_receive {:memory_push, "memory_sync", %{"items" => [%{"id" => ^id, "seq" => ^seq}]}}
+    assert_outbox(store, id, "done", 1)
+
+    assert {:ok, %Result{rows: [%{"seq" => ^seq, "memory_id" => ^id}]}} =
+             Store.query(store, "SELECT seq,memory_id FROM memory_outbox", [])
+  end
+
+  test "closed real channel at final attempt dead-letters without tuple serialization failure", %{
+    store: store,
+    opts: opts
+  } do
+    marker = "private-final-attempt-content"
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => marker}, opts)
+    {:ok, channel} = Agent.start_link(fn -> nil end)
+    GenServer.stop(channel)
+
+    assert {:error, {:channel_exit, {:noproc, _}}} =
+             Syncer.drain_once(store: store, channel: channel, max_attempts: 1)
+
+    assert_outbox(store, id, "dead_letter", 1)
+
+    assert {:ok, %Result{rows: [%{"last_error" => error, "next_attempt_at" => nil}]}} =
+             Store.query(store, "SELECT * FROM memory_outbox WHERE memory_id = ?", [id])
+
+    assert is_binary(error) and byte_size(error) <= 512
+    refute error =~ marker
+    refute error =~ id
+    refute error =~ "memory_sync"
+  end
+
+  test "caught atom exits are tagged but returned errors retain their original shape", %{
+    store: store,
+    opts: opts
+  } do
+    for {reply, expected} <- [
+          {fn _ -> exit(:disconnected) end, {:channel_exit, :disconnected}},
+          {{:error, :disconnected}, :disconnected},
+          {{:error, {:reconnect_failed, :socket_timeout}}, {:reconnect_failed, :socket_timeout}}
+        ] do
+      {:ok, %{"id" => id}} =
+        Memory.remember(%{"content" => "transport shape #{inspect(expected)}"}, opts)
+
+      Process.put({FakeChannel, :reply}, reply)
+
+      assert {:error, ^expected} =
+               Syncer.drain_once(
+                 store: store,
+                 channel: self(),
+                 channel_module: FakeChannel,
+                 max_attempts: 1
+               )
+
+      assert_outbox(store, id, "dead_letter", 1)
+    end
+  end
+
+  test "v1 authorization partition and protocol item errors remain permanent", %{
+    store: store,
+    opts: opts
+  } do
+    for reason <- ["unauthorized", "partition_mismatch", "invalid_protocol"] do
+      {:ok, %{"id" => id}} = Memory.remember(%{"content" => reason}, opts)
+
+      Process.put({FakeChannel, :reply}, fn _ ->
+        {:ok, %{"items" => [%{"id" => id, "status" => "error", "error" => reason}]}}
+      end)
+
+      assert {:ok, %{"drained" => 1}} =
+               Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+      assert_outbox(store, id, "dead_letter", 1)
+
+      assert {:ok, %Result{rows: [%{"last_error" => ^reason, "next_attempt_at" => nil}]}} =
+               Store.query(store, "SELECT * FROM memory_outbox WHERE memory_id = ?", [id])
+    end
+  end
+
   test "clamps configured sync batches to 50 items", %{store: store, opts: opts} do
     Enum.each(1..51, fn index ->
       assert {:ok, _} = Memory.remember(%{"content" => "item #{index}"}, opts)

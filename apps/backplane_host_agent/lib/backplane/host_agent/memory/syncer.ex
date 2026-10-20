@@ -285,7 +285,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   defp push_sync(channel_module, channel, payload) do
     channel_module.push(channel, "memory_sync", payload)
   catch
-    :exit, reason -> {:error, reason}
+    :exit, reason -> {:error, {:channel_exit, reason}}
   end
 
   defp apply_acks(opts, outbox_rows, ack_items) do
@@ -395,16 +395,29 @@ defmodule Backplane.HostAgent.Memory.Syncer do
       Store.execute(
         store,
         "UPDATE memory_outbox SET state = 'dead_letter', attempts = ?, last_error = ?, dead_lettered_at = ?, next_attempt_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
-        [attempts, to_string(error), now, now, row["seq"]]
+        [attempts, error_text(error), now, now, row["seq"]]
       )
     else
       Store.execute(
         store,
         "UPDATE memory_outbox SET state = 'retry_wait', attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE seq = ? AND state = 'inflight'",
-        [attempts, to_string(error), retry_at(now, attempts, opts), now, row["seq"]]
+        [attempts, error_text(error), retry_at(now, attempts, opts), now, row["seq"]]
       )
     end
   end
+
+  # GenServer call exits contain the original request arguments. Retain the
+  # failure classification without persisting those payloads or raising while
+  # trying to convert a structured transport/application error to a string.
+  defp error_text({reason, {module, :call, _args}}) when module in [GenServer, :gen_server],
+    do: error_text(reason)
+
+  defp error_text({wrapper, reason}) when is_atom(wrapper),
+    do: String.slice(Atom.to_string(wrapper) <> ": " <> error_text(reason), 0, 512)
+
+  defp error_text(error) when is_atom(error), do: Atom.to_string(error)
+  defp error_text(error) when is_binary(error), do: String.slice(error, 0, 512)
+  defp error_text(_error), do: "unclassified command error"
 
   defp reset_pending(_opts, []), do: :ok
 
