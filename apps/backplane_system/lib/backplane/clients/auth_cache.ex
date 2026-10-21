@@ -78,12 +78,17 @@ defmodule Backplane.Clients.AuthCache do
   end
 
   def any_clients?(handle \\ default_handle()) do
-    case snapshot(handle) do
-      {:ok, _epoch, _loaded_at, any?} -> any?
-      _unavailable -> true
+    case fetch_any_clients(handle) do
+      {:ok, any?} -> any?
+      {:error, :unavailable} -> true
     end
+  end
+
+  @spec fetch_any_clients(map()) :: {:ok, boolean()} | {:error, :unavailable}
+  def fetch_any_clients(handle \\ default_handle()) do
+    with {:ok, _epoch, _loaded_at, any?} <- snapshot(handle), do: {:ok, any?}
   rescue
-    ArgumentError -> true
+    ArgumentError -> {:error, :unavailable}
   end
 
   def refresh(handle \\ default_handle()) do

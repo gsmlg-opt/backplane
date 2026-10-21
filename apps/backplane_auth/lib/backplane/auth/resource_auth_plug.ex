@@ -63,15 +63,14 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   end
 
   defp authenticate_missing(conn, resource, opts) do
-    cond do
-      OAuth.enabled_client_for_resource?(resource) ->
-        oauth_reject(conn, resource, opts, nil)
-
-      Clients.any_clients?() ->
-        compatibility_reject(conn, opts)
-
-      true ->
-        unrestricted_success(conn, resource, :open)
+    if OAuth.enabled_client_for_resource?(resource) do
+      oauth_reject(conn, resource, opts, nil)
+    else
+      case Clients.fetch_any_clients() do
+        {:ok, true} -> compatibility_reject(conn, opts)
+        {:ok, false} -> unrestricted_success(conn, resource, :open)
+        {:error, :unavailable} -> unavailable(conn, opts)
+      end
     end
   end
 

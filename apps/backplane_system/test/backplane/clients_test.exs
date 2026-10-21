@@ -5,6 +5,33 @@ defmodule Backplane.ClientsTest do
 
   alias Backplane.Clients
 
+  test "client presence distinguishes authoritative empty and inactive unissued rows" do
+    assert {:ok, false} = Clients.fetch_any_clients()
+    refute Clients.any_clients?()
+
+    assert {:ok, client} =
+             Clients.create_client(%{
+               name: "inactive-unissued-presence",
+               scopes: ["*"],
+               active: false
+             })
+
+    assert is_nil(client.token_digest)
+    assert {:ok, true} = Clients.fetch_any_clients()
+    assert Clients.any_clients?()
+
+    assert {:ok, _} = Clients.delete_client(client)
+    assert {:ok, false} = Clients.fetch_any_clients()
+    refute Clients.any_clients?()
+  end
+
+  test "client presence reports unavailable when the sandbox database query fails" do
+    Ecto.Adapters.SQL.query!(Repo, "SET LOCAL search_path TO pg_catalog")
+
+    assert {:error, :unavailable} = Clients.fetch_any_clients()
+    assert Clients.any_clients?()
+  end
+
   test "trusted issuance uses indexed credentials and rotation revokes its predecessor" do
     assert {:ok, client, token} = Clients.issue_client(%{name: "indexed", scopes: ["*"]})
     assert byte_size(token) == 47
@@ -60,6 +87,7 @@ defmodule Backplane.ClientsTest do
                  Clients.create_client(%{name: "secret-sql-unissued", scopes: ["*"]})
 
         assert Clients.any_clients?()
+        assert {:ok, true} = Clients.fetch_any_clients()
         assert {:ok, _} = Clients.delete_client(unissued)
         Ecto.Adapters.SQL.query!(Repo, "SELECT 1 AS unrelated_sql_probe", [])
 

@@ -2,17 +2,22 @@ defmodule Backplane.Auth.ResourceAuthProductionTest do
   use Backplane.Auth.DataCase, async: false
   import Plug.Conn
   import Plug.Test
+  import Backplane.Auth.Fixtures
+  alias Backplane.Auth.Resources
   alias Backplane.Auth.ResourceAuthPlug
   alias Backplane.Clients
   alias Backplane.Clients.AuthCache
 
   setup do
     previous = Application.get_env(:backplane, :env)
+    previous_url = Application.get_env(:backplane, :api_url)
     Application.put_env(:backplane, :env, :prod)
+    Application.put_env(:backplane, :api_url, "https://backplane.example.test")
     :ok = Clients.refresh_cache()
 
     on_exit(fn ->
       Application.put_env(:backplane, :env, previous)
+      Application.put_env(:backplane, :api_url, previous_url)
     end)
 
     :ok
@@ -75,24 +80,53 @@ defmodule Backplane.Auth.ResourceAuthProductionTest do
     token = "bp2_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
     :ok = AuthCache.begin_mutation()
 
-    for format <- [:default, :google] do
-      rejected =
-        conn(:post, "/mcp") |> put_req_header("x-api-key", token) |> authenticate(format)
+    try do
+      for resource <- Resources.keys(), format <- [:default, :google] do
+        requests = [
+          conn(:post, Resources.path(resource)),
+          conn(:post, Resources.path(resource)) |> put_req_header("x-api-key", token)
+        ]
 
-      assert rejected.status == 503
-      assert get_resp_header(rejected, "retry-after") == ["1"]
-      refute rejected.assigns[:resource_auth]
-      body = Jason.decode!(rejected.resp_body)
+        for request <- requests do
+          rejected = authenticate(request, format, resource)
+          assert rejected.status == 503
+          assert rejected.halted
+          assert get_resp_header(rejected, "retry-after") == ["1"]
+          assert get_resp_header(rejected, "www-authenticate") == []
+          refute rejected.assigns[:resource_auth]
+          body = Jason.decode!(rejected.resp_body)
 
-      if format == :google,
-        do: assert(body["error"]["status"] == "UNAVAILABLE"),
-        else: assert(is_binary(body["error"]))
+          if format == :google,
+            do: assert(body["error"]["status"] == "UNAVAILABLE"),
+            else: assert(body["error"] == "Authentication temporarily unavailable")
+        end
+      end
+    after
+      :ok = AuthCache.abort_mutation()
+      :ok = Clients.refresh_cache()
     end
+  end
 
-    missing = conn(:post, "/mcp") |> authenticate()
-    assert missing.status == 401
-    :ok = AuthCache.abort_mutation()
-    :ok = Clients.refresh_cache()
+  test "OAuth protection remains resource-specific while the client cache is unavailable" do
+    oauth_client_fixture!(resources: [:mcp])
+    :ok = AuthCache.begin_mutation()
+
+    try do
+      protected = conn(:post, "/mcp") |> authenticate()
+      assert protected.status == 401
+      assert [challenge] = get_resp_header(protected, "www-authenticate")
+      assert challenge =~ Resources.metadata_uri(:mcp)
+
+      for resource <- [:v1, :skill_protocol] do
+        unavailable = conn(:get, "/") |> authenticate(:default, resource)
+        assert unavailable.status == 503
+        assert get_resp_header(unavailable, "retry-after") == ["1"]
+        refute unavailable.assigns[:resource_auth]
+      end
+    after
+      :ok = AuthCache.abort_mutation()
+      :ok = Clients.refresh_cache()
+    end
   end
 
   test "oversized and conflicting headers fail before cache admission" do
@@ -135,8 +169,9 @@ defmodule Backplane.Auth.ResourceAuthProductionTest do
     :ok = Clients.refresh_cache()
   end
 
-  defp authenticate(conn, format \\ :default),
-    do: ResourceAuthPlug.call(conn, ResourceAuthPlug.init(resource: :mcp, error_format: format))
+  defp authenticate(conn, format \\ :default, resource \\ :mcp),
+    do:
+      ResourceAuthPlug.call(conn, ResourceAuthPlug.init(resource: resource, error_format: format))
 
   defp eventually(assertion, attempts \\ 100) do
     assertion.()

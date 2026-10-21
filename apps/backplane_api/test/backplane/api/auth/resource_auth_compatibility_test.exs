@@ -6,6 +6,7 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   alias Backplane.Auth
   alias Backplane.Auth.Resources
   alias Backplane.Clients
+  alias Backplane.Clients.AuthCache
   alias Backplane.Registry.{Tool, ToolRegistry}
 
   defmodule CompatibilityTool do
@@ -158,6 +159,55 @@ defmodule Backplane.Api.Auth.ResourceAuthCompatibilityTest do
   test "surfaces stay open without client rows or assigned OAuth clients" do
     assert post_mcp(nil, "initialize", %{}).status == 200
     assert v1_request(:get, "/v1/models").status == 200
+  end
+
+  test "tokenless resources report indexed cache unavailability and recover open access" do
+    previous_env = Application.get_env(:backplane, :env)
+    previous_enabled = Application.get_env(:backplane_skills, :skill_protocol_v1_enabled)
+    Application.put_env(:backplane, :env, :prod)
+    Application.put_env(:backplane_skills, :skill_protocol_v1_enabled, true)
+
+    on_exit(fn ->
+      restore_env(:env, previous_env)
+
+      if is_nil(previous_enabled),
+        do: Application.delete_env(:backplane_skills, :skill_protocol_v1_enabled),
+        else: Application.put_env(:backplane_skills, :skill_protocol_v1_enabled, previous_enabled)
+    end)
+
+    requests = [
+      fn -> post_mcp(nil, "initialize", %{}) end,
+      fn -> v1_request(:get, "/v1/models") end,
+      fn -> v1_request(:get, "/skill-protocol/v1/catalog") end
+    ]
+
+    :ok = Clients.refresh_cache()
+    for request <- requests, do: assert(request.().status == 200)
+    :ok = AuthCache.begin_mutation()
+
+    try do
+      for request <- requests do
+        unavailable = request.()
+        assert unavailable.status == 503
+        assert get_resp_header(unavailable, "retry-after") == ["1"]
+        assert get_resp_header(unavailable, "www-authenticate") == []
+
+        assert Jason.decode!(unavailable.resp_body) == %{
+                 "error" => "Authentication temporarily unavailable"
+               }
+
+        refute unavailable.assigns[:resource_auth]
+      end
+    after
+      :ok = AuthCache.abort_mutation()
+      :ok = Clients.refresh_cache()
+    end
+
+    for request <- requests do
+      recovered = request.()
+      assert recovered.status == 200
+      assert recovered.assigns.resource_auth.kind == :open
+    end
   end
 
   test "a supplied bad bearer rejects both otherwise-open resources" do

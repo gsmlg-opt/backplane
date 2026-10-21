@@ -40,6 +40,7 @@ defmodule Backplane.Clients.AuthCacheTest do
     :sys.suspend(context.source)
 
     try do
+      assert {:ok, true} = AuthCache.fetch_any_clients(context.handle)
       assert {:ok, client} = AuthCache.verify(context.token, context.handle)
       assert client.id == context.client.id
       for _ <- 1..1_000, do: assert(:error = AuthCache.verify(token(), context.handle))
@@ -94,8 +95,10 @@ defmodule Backplane.Clients.AuthCacheTest do
     assert :ok = AuthCache.mutate(c.handle, {:put, %{rotated | token_digest: nil}})
     assert :error = AuthCache.verify(replacement, c.handle)
     assert AuthCache.any_clients?(c.handle)
+    assert {:ok, true} = AuthCache.fetch_any_clients(c.handle)
     assert :ok = AuthCache.mutate(c.handle, {:delete, rotated.id})
     refute AuthCache.any_clients?(c.handle)
+    assert {:ok, false} = AuthCache.fetch_any_clients(c.handle)
   end
 
   test "malformed, old and noncanonical tokens cannot authenticate", c do
@@ -116,12 +119,15 @@ defmodule Backplane.Clients.AuthCacheTest do
 
   test "lease expires and unchanged refresh restores direct lookup", c do
     assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+    assert {:ok, true} = AuthCache.fetch_any_clients(c.handle)
     Agent.update(c.clock, fn _ -> 30_000 end)
     assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
     assert {:error, :unavailable} = AuthCache.verify(token(), c.handle)
     assert AuthCache.any_clients?(c.handle)
+    assert {:error, :unavailable} = AuthCache.fetch_any_clients(c.handle)
     assert :ok = AuthCache.refresh(c.handle)
     assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+    assert {:ok, true} = AuthCache.fetch_any_clients(c.handle)
   end
 
   test "failed refresh cannot extend last authorization lease", c do
@@ -129,8 +135,10 @@ defmodule Backplane.Clients.AuthCacheTest do
     Agent.update(c.clock, fn _ -> 29_999 end)
     assert {:error, :unavailable} = AuthCache.refresh(c.handle)
     assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+    assert {:ok, true} = AuthCache.fetch_any_clients(c.handle)
     Agent.update(c.clock, fn _ -> 30_000 end)
     assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
+    assert {:error, :unavailable} = AuthCache.fetch_any_clients(c.handle)
   end
 
   test "older refresh cannot overwrite mutation or newer refresh", c do
@@ -155,8 +163,10 @@ defmodule Backplane.Clients.AuthCacheTest do
     assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
     assert {:error, :unavailable} = AuthCache.refresh(c.handle)
     assert AuthCache.any_clients?(c.handle)
+    assert {:error, :unavailable} = AuthCache.fetch_any_clients(c.handle)
     assert :ok = AuthCache.mutate(c.handle, {:put, c.client})
     assert {:ok, _} = AuthCache.verify(c.token, c.handle)
+    assert {:ok, true} = AuthCache.fetch_any_clients(c.handle)
   end
 
   test "aborted and dead mutation writers remain fail closed until reload", c do
@@ -202,10 +212,12 @@ defmodule Backplane.Clients.AuthCacheTest do
     handle = AuthCache.handle(cache)
     assert {:error, :unavailable} = AuthCache.refresh(handle)
     assert AuthCache.any_clients?(handle)
+    assert {:error, :unavailable} = AuthCache.fetch_any_clients(handle)
     assert {:error, :unavailable} = AuthCache.verify(c.token, handle)
     {revision, _} = GenServer.call(cache, :refresh_ticket)
     assert :ok = GenServer.call(cache, {:publish, revision, {:ok, [], 0}})
     refute AuthCache.any_clients?(handle)
+    assert {:ok, false} = AuthCache.fetch_any_clients(handle)
   end
 
   test "remote invalidation blocks stale state even when reload fails", c do
@@ -214,9 +226,11 @@ defmodule Backplane.Clients.AuthCacheTest do
     AuthCache.stats(c.handle)
     assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
     assert AuthCache.any_clients?(c.handle)
+    assert {:error, :unavailable} = AuthCache.fetch_any_clients(c.handle)
     Agent.update(c.source, fn _ -> [%{c.client | active: false}] end)
     assert :ok = AuthCache.refresh(c.handle)
     assert :error = AuthCache.verify(c.token, c.handle)
+    assert {:ok, true} = AuthCache.fetch_any_clients(c.handle)
   end
 
   test "restart invalidates old handles and reload creates a new incarnation", c do
@@ -229,7 +243,9 @@ defmodule Backplane.Clients.AuthCacheTest do
     GenServer.stop(c.cache)
     assert {:error, :unavailable} = AuthCache.verify(c.token, c.handle)
     assert AuthCache.any_clients?(c.handle)
+    assert {:error, :unavailable} = AuthCache.fetch_any_clients(c.handle)
     assert {:ok, _} = AuthCache.verify(c.token, handle)
+    assert {:ok, true} = AuthCache.fetch_any_clients(handle)
   end
 
   defp indexed_lookup_counts(fun, handle) do

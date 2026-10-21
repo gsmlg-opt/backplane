@@ -199,20 +199,31 @@ defmodule Backplane.Clients do
   end
 
   @doc """
-  Check if any clients exist.
+  Check if any clients exist, treating unavailable state as protected.
+  """
+  @spec any_clients?() :: boolean()
+  def any_clients? do
+    case fetch_any_clients() do
+      {:ok, any?} -> any?
+      {:error, :unavailable} -> true
+    end
+  end
+
+  @doc """
+  Check if any clients exist without conflating unavailable state with client presence.
 
   In test environment, queries the DB directly (sandbox-isolated).
   In production, reads the fresh authorization lease (O(1), no DB hit).
   """
-  @spec any_clients?() :: boolean()
-  def any_clients? do
+  @spec fetch_any_clients() :: {:ok, boolean()} | {:error, :unavailable}
+  def fetch_any_clients do
     if Application.get_env(:backplane, :env) == :test do
-      Repo.exists?(Client, @credential_query_opts)
+      {:ok, Repo.exists?(Client, @credential_query_opts)}
     else
-      AuthCache.any_clients?()
+      AuthCache.fetch_any_clients()
     end
   rescue
-    _ -> true
+    _ -> {:error, :unavailable}
   end
 
   # --- Config Upsert ---
