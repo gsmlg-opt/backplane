@@ -61,6 +61,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
   alias Backplane.McpProtocol.Server.Registry
   alias Backplane.McpProtocol.Server.Supervisor, as: ServerSupervisor
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.Plug, as: StreamableHTTPPlug
+  alias Backplane.McpProtocol.Test.HTTPServer
 
   @version "2026-07-28"
   @subscription_id_key "io.modelcontextprotocol/subscriptionId"
@@ -90,12 +91,18 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
       session_config
     )
 
-    :persistent_term.erase({ServerSupervisor, ModernHTTPSubscriptionTask5Server, :authorization_config})
+    :persistent_term.erase(
+      {ServerSupervisor, ModernHTTPSubscriptionTask5Server, :authorization_config}
+    )
 
     on_exit(fn ->
-      :persistent_term.erase({ServerSupervisor, ModernHTTPSubscriptionTask5Server, :session_config})
+      :persistent_term.erase(
+        {ServerSupervisor, ModernHTTPSubscriptionTask5Server, :session_config}
+      )
 
-      :persistent_term.erase({ServerSupervisor, ModernHTTPSubscriptionTask5Server, :authorization_config})
+      :persistent_term.erase(
+        {ServerSupervisor, ModernHTTPSubscriptionTask5Server, :authorization_config}
+      )
     end)
 
     %{
@@ -104,7 +111,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
     }
   end
 
-  test "listen owns a request SSE stream, acknowledges first, filters events, and completes gracefully", context do
+  test "listen owns a request SSE stream, acknowledges first, filters events, and completes gracefully",
+       context do
     request =
       modern_request("subscriptions/listen", "listen-http", %{
         "notifications" => %{
@@ -188,7 +196,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
            } = complete
   end
 
-  test "listen forces SSE when JSON is the first Accept preference and ordinary POST stays concurrent", context do
+  test "listen forces SSE when JSON is the first Accept preference and ordinary POST stays concurrent",
+       context do
     listen =
       modern_request("subscriptions/listen", "open-listen", %{
         "notifications" => %{"toolsListChanged" => true}
@@ -207,7 +216,10 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
 
     assert ordinary.status == 200
     assert get_resp_header(ordinary, "content-type") == ["application/json; charset=utf-8"]
-    assert %{"id" => "ordinary", "result" => %{"resultType" => "complete"}} = JSON.decode!(ordinary.resp_body)
+
+    assert %{"id" => "ordinary", "result" => %{"resultType" => "complete"}} =
+             JSON.decode!(ordinary.resp_body)
+
     refute Task.yield(stream_task, 0)
 
     assert :ok = Subscriptions.close(context.subscriptions)
@@ -219,7 +231,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
            ]
   end
 
-  test "pins the subscribed hub PID and exits when it dies even after an immediate named restart", context do
+  test "pins the subscribed hub PID and exits when it dies even after an immediate named restart",
+       context do
     assert :ok = stop_supervised(Subscriptions)
 
     {:ok, original_hub} =
@@ -259,9 +272,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
   end
 
   test "a real client disconnect silently removes the request-owned subscription", context do
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
 
-    Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
+    HTTPServer.expect_once(http_server, "POST", "/mcp", fn conn ->
       StreamableHTTPPlug.call(conn, context.opts)
     end)
 
@@ -285,7 +298,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
       body
     ]
 
-    assert {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, bypass.port, [:binary, active: false])
+    assert {:ok, socket} =
+             :gen_tcp.connect({127, 0, 0, 1}, http_server.port, [:binary, active: false])
+
     on_exit(fn -> :gen_tcp.close(socket) end)
 
     assert :ok = :gen_tcp.send(socket, request)
@@ -294,7 +309,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
     response = receive_until(socket, "notifications/subscriptions/acknowledged")
     assert response =~ "HTTP/1.1 200"
     refute response =~ ~s("resultType":"complete")
-    assert :ok = Bypass.pass(bypass)
+    assert :ok = HTTPServer.verify!(http_server)
 
     assert :ok = :gen_tcp.close(socket)
 
@@ -316,11 +331,18 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
     ]
 
     for params <- invalid_filters do
-      conn = post_modern(context.opts, modern_request("subscriptions/listen", "invalid-filter", params))
+      conn =
+        post_modern(
+          context.opts,
+          modern_request("subscriptions/listen", "invalid-filter", params)
+        )
 
       assert conn.status == 400
       assert get_resp_header(conn, "content-type") == ["application/json; charset=utf-8"]
-      assert %{"id" => "invalid-filter", "error" => %{"code" => -32_602}} = JSON.decode!(conn.resp_body)
+
+      assert %{"id" => "invalid-filter", "error" => %{"code" => -32_602}} =
+               JSON.decode!(conn.resp_body)
+
       assert map_size(:sys.get_state(context.subscriptions).subscriptions) == 0
     end
   end
@@ -383,7 +405,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
     end
   end
 
-  test "SSE-only Accept rejects spoofed listen headers on legacy and ordinary modern requests", context do
+  test "SSE-only Accept rejects spoofed listen headers on legacy and ordinary modern requests",
+       context do
     legacy_request = %{
       "jsonrpc" => "2.0",
       "id" => "legacy-spoof",
@@ -496,7 +519,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernSubscripti
         end
 
       {:error, reason} ->
-        flunk("socket closed before receiving #{inspect(expected)}: #{inspect(reason)}; got #{inspect(received)}")
+        flunk(
+          "socket closed before receiving #{inspect(expected)}: #{inspect(reason)}; got #{inspect(received)}"
+        )
     end
   end
 

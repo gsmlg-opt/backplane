@@ -1,19 +1,22 @@
 defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidatorTest do
   use ExUnit.Case, async: true
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   alias Backplane.McpProtocol.Server.Authorization
   alias Backplane.McpProtocol.Server.Authorization.IntrospectionValidator
 
   @moduletag capture_log: true
 
   setup do
-    bypass = Bypass.open()
-    {:ok, bypass: bypass}
+    http_server = HTTPServer.open()
+    {:ok, http_server: http_server}
   end
 
-  defp build_config(bypass, extra_validator_opts \\ []) do
+  defp build_config(http_server, extra_validator_opts \\ []) do
     validator_opts =
-      [introspection_endpoint: OAuthTestHelper.introspection_url(bypass)] ++ extra_validator_opts
+      [introspection_endpoint: OAuthTestHelper.introspection_url(http_server)] ++
+        extra_validator_opts
 
     Authorization.parse_config!(
       authorization_servers: ["https://auth.example.com"],
@@ -23,25 +26,25 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidatorTest 
   end
 
   describe "validate_token/2 — active token" do
-    test "returns ok with claims for active token", %{bypass: bypass} do
-      OAuthTestHelper.setup_introspection_bypass(bypass, respond: :active)
-      config = build_config(bypass)
+    test "returns ok with claims for active token", %{http_server: http_server} do
+      OAuthTestHelper.setup_introspection_http_server(http_server, respond: :active)
+      config = build_config(http_server)
 
       assert {:ok, claims} = IntrospectionValidator.validate_token("my-token", config)
       assert claims["active"] == true
       assert claims["sub"] == "test-user"
     end
 
-    test "sends token as form-encoded body", %{bypass: bypass} do
+    test "sends token as form-encoded body", %{http_server: http_server} do
       test_pid = self()
 
-      Bypass.expect_once(bypass, "POST", "/introspect", fn conn ->
+      HTTPServer.expect_once(http_server, "POST", "/introspect", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         send(test_pid, {:body, body})
         Plug.Conn.send_resp(conn, 200, OAuthTestHelper.active_introspection_response())
       end)
 
-      config = build_config(bypass)
+      config = build_config(http_server)
       assert {:ok, _claims} = IntrospectionValidator.validate_token("my-special-token", config)
 
       assert_receive {:body, body}
@@ -52,18 +55,19 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidatorTest 
   end
 
   describe "validate_token/2 — inactive token" do
-    test "returns error for inactive token", %{bypass: bypass} do
-      OAuthTestHelper.setup_introspection_bypass(bypass, respond: :inactive)
-      config = build_config(bypass)
+    test "returns error for inactive token", %{http_server: http_server} do
+      OAuthTestHelper.setup_introspection_http_server(http_server, respond: :inactive)
+      config = build_config(http_server)
 
-      assert {:error, :token_inactive} = IntrospectionValidator.validate_token("bad-token", config)
+      assert {:error, :token_inactive} =
+               IntrospectionValidator.validate_token("bad-token", config)
     end
   end
 
   describe "validate_token/2 — HTTP errors" do
-    test "returns error on non-200 response", %{bypass: bypass} do
-      OAuthTestHelper.setup_introspection_bypass(bypass, respond: {:error, 500})
-      config = build_config(bypass)
+    test "returns error on non-200 response", %{http_server: http_server} do
+      OAuthTestHelper.setup_introspection_http_server(http_server, respond: {:error, 500})
+      config = build_config(http_server)
 
       assert {:error, {:introspection_error, 500}} =
                IntrospectionValidator.validate_token("any-token", config)
@@ -82,16 +86,18 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidatorTest 
   end
 
   describe "Basic auth credentials" do
-    test "includes Authorization header when credentials are configured", %{bypass: bypass} do
+    test "includes Authorization header when credentials are configured", %{
+      http_server: http_server
+    } do
       test_pid = self()
 
-      Bypass.expect_once(bypass, "POST", "/introspect", fn conn ->
+      HTTPServer.expect_once(http_server, "POST", "/introspect", fn conn ->
         auth_header = Plug.Conn.get_req_header(conn, "authorization")
         send(test_pid, {:auth, auth_header})
         Plug.Conn.send_resp(conn, 200, OAuthTestHelper.active_introspection_response())
       end)
 
-      config = build_config(bypass, client_id: "my-client", client_secret: "my-secret")
+      config = build_config(http_server, client_id: "my-client", client_secret: "my-secret")
       assert {:ok, _claims} = IntrospectionValidator.validate_token("token", config)
 
       assert_receive {:auth, [auth_value]}
@@ -101,10 +107,12 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidatorTest 
       assert auth_value == "Basic #{expected}"
     end
 
-    test "URL-encodes credentials containing reserved characters per RFC 6749 §2.3.1", %{bypass: bypass} do
+    test "URL-encodes credentials containing reserved characters per RFC 6749 §2.3.1", %{
+      http_server: http_server
+    } do
       test_pid = self()
 
-      Bypass.expect_once(bypass, "POST", "/introspect", fn conn ->
+      HTTPServer.expect_once(http_server, "POST", "/introspect", fn conn ->
         auth_header = Plug.Conn.get_req_header(conn, "authorization")
         send(test_pid, {:auth, auth_header})
         Plug.Conn.send_resp(conn, 200, OAuthTestHelper.active_introspection_response())
@@ -112,7 +120,7 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidatorTest 
 
       client_id = "my:client"
       client_secret = "my secret"
-      config = build_config(bypass, client_id: client_id, client_secret: client_secret)
+      config = build_config(http_server, client_id: client_id, client_secret: client_secret)
       assert {:ok, _claims} = IntrospectionValidator.validate_token("token", config)
 
       assert_receive {:auth, [auth_value]}
@@ -124,16 +132,16 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidatorTest 
       refute auth_value == "Basic #{Base.encode64("#{client_id}:#{client_secret}")}"
     end
 
-    test "sends no Authorization header when no credentials", %{bypass: bypass} do
+    test "sends no Authorization header when no credentials", %{http_server: http_server} do
       test_pid = self()
 
-      Bypass.expect_once(bypass, "POST", "/introspect", fn conn ->
+      HTTPServer.expect_once(http_server, "POST", "/introspect", fn conn ->
         auth_header = Plug.Conn.get_req_header(conn, "authorization")
         send(test_pid, {:auth, auth_header})
         Plug.Conn.send_resp(conn, 200, OAuthTestHelper.active_introspection_response())
       end)
 
-      config = build_config(bypass)
+      config = build_config(http_server)
       assert {:ok, _claims} = IntrospectionValidator.validate_token("token", config)
 
       assert_receive {:auth, []}

@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   alias Backplane.McpProtocol.Protocol.Registry
   alias Backplane.McpProtocol.Transport.RequestContext
   alias Backplane.McpProtocol.Transport.StreamableHTTP
@@ -10,23 +12,21 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
   @test_http_opts [max_reconnections: 0]
 
   setup do
-    {:ok, _applications} = Application.ensure_all_started(:bypass)
-
     unless Process.whereis(Backplane.McpProtocol.Finch) do
       start_supervised!({Finch, name: Backplane.McpProtocol.Finch})
     end
 
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     Process.group_leader(self(), self())
-    {:ok, bypass: bypass}
+    {:ok, http_server: http_server}
   end
 
   test "owns one incremental POST/SSE stream while ordinary HTTP calls remain concurrent", %{
-    bypass: bypass
+    http_server: http_server
   } do
     test_pid = self()
 
-    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+    HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = JSON.decode!(body)
       send(test_pid, {:http_method, request["method"]})
@@ -61,7 +61,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
       end
     end)
 
-    {:ok, transport} = start_transport(bypass, receive_timeout: 50, request_timeout: 50)
+    {:ok, transport} = start_transport(http_server, receive_timeout: 50, request_timeout: 50)
     flush_negotiate()
 
     {encoded, context} = listen_request("listen-http")
@@ -147,15 +147,15 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     refute_receive :unexpected_http_cancellation, 50
 
     stop_transport(transport)
-    assert :ok = Bypass.down(bypass)
+    assert :ok = HTTPServer.down(http_server)
   end
 
   test "delivers a final response before the clean EOF terminal from the same stream", %{
-    bypass: bypass
+    http_server: http_server
   } do
     test_pid = self()
 
-    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+    HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = JSON.decode!(body)
       Process.flag(:trap_exit, true)
@@ -165,7 +165,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
       stream_commands(conn, test_pid)
     end)
 
-    {:ok, transport} = start_transport(bypass)
+    {:ok, transport} = start_transport(http_server)
     flush_negotiate()
     {encoded, context} = listen_request("ordered-final")
 
@@ -197,11 +197,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     refute_receive {:"$gen_cast", {:response, _message}}, 30
 
     stop_transport(transport)
-    assert :ok = Bypass.down(bypass)
+    assert :ok = HTTPServer.down(http_server)
   end
 
   test "resolves rotating provider headers for every request-scoped stream", %{
-    bypass: bypass
+    http_server: http_server
   } do
     counter = start_supervised!({Agent, fn -> 0 end})
     test_pid = self()
@@ -211,7 +211,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
       {:ok, %{"authorization" => "Bearer token-#{value}"}}
     end
 
-    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+    HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = JSON.decode!(body)
       [authorization] = Plug.Conn.get_req_header(conn, "authorization")
@@ -234,7 +234,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     {:ok, transport} =
       StreamableHTTP.start_link(
         client: self(),
-        base_url: "http://localhost:#{bypass.port}",
+        base_url: "http://localhost:#{http_server.port}",
         mcp_path: "/mcp",
         headers: %{"authorization" => "Bearer old", "x-static" => "one"},
         headers_provider: provider,
@@ -263,10 +263,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     stop_transport(transport)
   end
 
-  test "killing a stream controller terminates its exact Finch worker", %{bypass: bypass} do
+  test "killing a stream controller terminates its exact Finch worker", %{
+    http_server: http_server
+  } do
     test_pid = self()
 
-    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+    HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
       {:ok, _body, conn} = Plug.Conn.read_body(conn)
       Process.flag(:trap_exit, true)
       conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
@@ -275,7 +277,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
       stream_commands(conn, test_pid)
     end)
 
-    {:ok, transport} = start_transport(bypass)
+    {:ok, transport} = start_transport(http_server)
     flush_negotiate()
     {encoded, context} = listen_request("kill-controller")
 
@@ -299,13 +301,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker, _reason}
 
     stop_transport(transport)
-    assert :ok = Bypass.down(bypass)
+    assert :ok = HTTPServer.down(http_server)
   end
 
-  test "halts an unterminated SSE frame at the bounded buffer limit", %{bypass: bypass} do
+  test "halts an unterminated SSE frame at the bounded buffer limit", %{http_server: http_server} do
     test_pid = self()
 
-    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+    HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
       {:ok, _body, conn} = Plug.Conn.read_body(conn)
       Process.flag(:trap_exit, true)
       conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
@@ -314,7 +316,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
       stream_commands(conn, test_pid)
     end)
 
-    {:ok, transport} = start_transport(bypass)
+    {:ok, transport} = start_transport(http_server)
     flush_negotiate()
     {encoded, context} = listen_request("bounded-buffer")
 
@@ -331,15 +333,15 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     assert_receive {:mcp_stream_error, ^stream, :sse_buffer_too_large}
 
     stop_transport(transport)
-    assert :ok = Bypass.down(bypass)
+    assert :ok = HTTPServer.down(http_server)
   end
 
   test "rejects non-SSE and non-success responses once without delivering body data", %{
-    bypass: bypass
+    http_server: http_server
   } do
     test_pid = self()
 
-    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+    HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = JSON.decode!(body)
       send(test_pid, {:attempt, request["id"]})
@@ -360,7 +362,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
       end
     end)
 
-    {:ok, transport} = start_transport(bypass)
+    {:ok, transport} = start_transport(http_server)
     flush_negotiate()
 
     for {id, expected} <- [
@@ -387,10 +389,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     stop_transport(transport)
   end
 
-  defp start_transport(bypass, http_options \\ [receive_timeout: 5_000]) do
+  defp start_transport(http_server, http_options \\ [receive_timeout: 5_000]) do
     StreamableHTTP.start_link(
       client: self(),
-      base_url: "http://localhost:#{bypass.port}",
+      base_url: "http://localhost:#{http_server.port}",
       mcp_path: "/mcp",
       transport_opts: @test_http_opts,
       http_options: http_options

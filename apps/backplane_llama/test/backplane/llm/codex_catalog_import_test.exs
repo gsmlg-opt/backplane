@@ -232,20 +232,21 @@ defmodule Backplane.LLM.CodexCatalogImportTest do
     stub_models([raw])
     assert {:ok, _} = CodexCatalog.import_provider(provider.id)
 
-    bypass = Bypass.open()
+    http_server =
+      BackplaneLlama.Test.HTTPServer.open("POST", "/backend-api/codex/responses", fn conn ->
+        {:ok, body, conn} = read_body(conn)
+        assert Jason.decode!(body)["model"] == "gpt-catalog-a"
+        assert ["Bearer catalog-access-token"] = get_req_header(conn, "authorization")
+
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, ~s({"id":"response-test","output":[]}))
+      end)
 
     {:ok, _} =
-      ProviderApi.update(api, %{base_url: "http://127.0.0.1:#{bypass.port}/backend-api/codex"})
-
-    Bypass.expect_once(bypass, "POST", "/backend-api/codex/responses", fn conn ->
-      {:ok, body, conn} = read_body(conn)
-      assert Jason.decode!(body)["model"] == "gpt-catalog-a"
-      assert ["Bearer catalog-access-token"] = get_req_header(conn, "authorization")
-
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(200, ~s({"id":"response-test","output":[]}))
-    end)
+      ProviderApi.update(api, %{
+        base_url: "http://127.0.0.1:#{http_server.port}/backend-api/codex"
+      })
 
     conn =
       conn(:post, "/v1/responses", Jason.encode!(%{"model" => "gpt-catalog-a", "input" => "hi"}))

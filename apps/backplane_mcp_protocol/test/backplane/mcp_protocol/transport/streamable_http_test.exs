@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   alias Backplane.McpProtocol.Client
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.Message
@@ -12,15 +14,15 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   @test_http_opts [max_reconnections: 0]
 
   setup do
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     Process.group_leader(self(), self())
 
-    {:ok, bypass: bypass}
+    {:ok, http_server: http_server}
   end
 
   describe "start_link/1" do
-    test "successfully starts with valid options", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "successfully starts with valid options", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
 
       {:ok, stub_client} = StubClient.start_link()
       :ok = StubClient.subscribe()
@@ -46,8 +48,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "uses default mcp_path when not specified", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "uses default mcp_path when not specified", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
       {:ok, transport} =
@@ -63,8 +65,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "accepts an exact MCP endpoint URL without appending mcp_path", %{bypass: bypass} do
-      url = "http://localhost:#{bypass.port}/custom/mcp?tenant=one"
+    test "accepts an exact MCP endpoint URL without appending mcp_path", %{
+      http_server: http_server
+    } do
+      url = "http://localhost:#{http_server.port}/custom/mcp?tenant=one"
       {:ok, stub_client} = StubClient.start_link()
 
       {:ok, transport} =
@@ -90,14 +94,14 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "raises when both url and base_url are supplied", %{bypass: bypass} do
+    test "raises when both url and base_url are supplied", %{http_server: http_server} do
       {:ok, stub_client} = StubClient.start_link()
 
       assert_raise ArgumentError, ~r/only one of url or base_url/, fn ->
         StreamableHTTP.start_link(
           client: stub_client,
-          url: "http://localhost:#{bypass.port}/custom/mcp",
-          base_url: "http://localhost:#{bypass.port}",
+          url: "http://localhost:#{http_server.port}/custom/mcp",
+          base_url: "http://localhost:#{http_server.port}",
           transport_opts: @test_http_opts
         )
       end
@@ -129,10 +133,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "client negotiation integration" do
-    test "an unrecognized HTTP 400 falls back to legacy initialize", %{bypass: bypass} do
+    test "an unrecognized HTTP 400 falls back to legacy initialize", %{http_server: http_server} do
       test_pid = self()
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         send(test_pid, {:negotiation_request, request["method"]})
@@ -163,7 +167,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         end
       end)
 
-      {client, transport} = start_http_negotiation_client(bypass, :fallback)
+      {client, transport} = start_http_negotiation_client(http_server, :fallback)
 
       assert :ok = Client.await_ready(client, timeout: 2_000)
       assert :sys.get_state(client).timeout == 1_000
@@ -182,7 +186,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
     end
 
     for status <- [200, 400] do
-      test "method not found over HTTP #{status} falls back through tools/list", %{bypass: bypass} do
+      test "method not found over HTTP #{status} falls back through tools/list", %{
+        http_server: http_server
+      } do
         test_pid = self()
         fallback_version = Protocol.fallback_version()
 
@@ -192,7 +198,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
           "inputSchema" => %{"type" => "object", "additionalProperties" => true}
         }
 
-        Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+        HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
           {:ok, body, conn} = Plug.Conn.read_body(conn)
           request = JSON.decode!(body)
           send(test_pid, {:negotiation_request, request["method"]})
@@ -244,7 +250,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
           end
         end)
 
-        {client, transport} = start_http_negotiation_client(bypass, unquote(status))
+        {client, transport} = start_http_negotiation_client(http_server, unquote(status))
 
         assert :ok = Client.await_ready(client, timeout: 2_000)
 
@@ -277,10 +283,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       end
     end
 
-    test "HTTP 400 method not found with a mismatched id stays modern", %{bypass: bypass} do
+    test "HTTP 400 method not found with a mismatched id stays modern", %{
+      http_server: http_server
+    } do
       test_pid = self()
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         send(test_pid, {:negotiation_request, request["method"]})
@@ -304,7 +312,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         end
       end)
 
-      {client, transport} = start_http_negotiation_client(bypass, :mismatched_response)
+      {client, transport} = start_http_negotiation_client(http_server, :mismatched_response)
 
       assert {:error, %Error{reason: :send_failure}} =
                Client.await_ready(client, timeout: 2_000)
@@ -320,10 +328,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       assert Process.alive?(transport)
     end
 
-    test "HTTP 400 hybrid result and error response stays modern", %{bypass: bypass} do
+    test "HTTP 400 hybrid result and error response stays modern", %{http_server: http_server} do
       test_pid = self()
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         send(test_pid, {:negotiation_request, request["method"]})
@@ -348,7 +356,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         end
       end)
 
-      {client, transport} = start_http_negotiation_client(bypass, :hybrid_response)
+      {client, transport} = start_http_negotiation_client(http_server, :hybrid_response)
 
       assert {:error, %Error{reason: :send_failure}} =
                Client.await_ready(client, timeout: 2_000)
@@ -364,10 +372,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       assert Process.alive?(transport)
     end
 
-    test "a pinned modern client surfaces method not found from HTTP 400", %{bypass: bypass} do
+    test "a pinned modern client surfaces method not found from HTTP 400", %{
+      http_server: http_server
+    } do
       test_pid = self()
 
-      Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect_once(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         send(test_pid, {:negotiation_request, request["method"]})
@@ -384,7 +394,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       end)
 
       {client, transport} =
-        start_http_negotiation_client(bypass, :recognized_error, "2026-07-28")
+        start_http_negotiation_client(http_server, :recognized_error, "2026-07-28")
 
       assert {:error, %Error{reason: :method_not_found}} =
                Client.await_ready(client, timeout: 2_000)
@@ -402,11 +412,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "send_message/3" do
-    test "sends HTTP POST request with JSON response", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "sends HTTP POST request with JSON response", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
 
         assert body =~ "ping"
@@ -436,11 +446,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "handles 202 Accepted response", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles 202 Accepted response", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         assert body =~ "initialized"
 
@@ -462,11 +472,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "handles SSE response", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles SSE response", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         assert body =~ "ping"
 
@@ -495,11 +505,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "handles HTTP error responses", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles HTTP error responses", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         Plug.Conn.resp(conn, 500, "Internal Server Error")
       end)
 
@@ -518,11 +528,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "handles unsupported content type", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles unsupported content type", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/html")
         Plug.Conn.resp(conn, 200, "<html>Not JSON or SSE</html>")
       end)
@@ -544,12 +554,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "session management" do
-    test "handles session ID from response headers", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles session ID from response headers", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
       session_id = "test-session-123"
 
-      Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect_once(http_server, "POST", "/mcp", fn conn ->
         conn =
           conn
           |> Plug.Conn.put_resp_header("content-type", "application/json")
@@ -558,7 +568,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"1","result":{}}|)
       end)
 
-      Bypass.expect(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "DELETE", "/mcp", fn conn ->
         assert [^session_id] = Plug.Conn.get_req_header(conn, "mcp-session-id")
         Plug.Conn.resp(conn, 200, "")
       end)
@@ -583,12 +593,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "includes session ID in subsequent requests", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "includes session ID in subsequent requests", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
       session_id = "test-session-456"
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         session_headers = Plug.Conn.get_req_header(conn, "mcp-session-id")
 
         case session_headers do
@@ -608,7 +618,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         end
       end)
 
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn ->
         assert [^session_id] = Plug.Conn.get_req_header(conn, "mcp-session-id")
         Plug.Conn.resp(conn, 200, "")
       end)
@@ -637,11 +647,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "headers and options" do
-    test "passes custom headers to requests", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "passes custom headers to requests", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         assert "auth-token" ==
                  conn |> Plug.Conn.get_req_header("authorization") |> List.first()
 
@@ -672,8 +682,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "resolves rotating provider headers for every POST", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "resolves rotating provider headers for every POST", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
       counter = start_supervised!({Agent, fn -> 0 end})
       test_pid = self()
@@ -683,7 +693,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         {:ok, %{"authorization" => "Bearer token-#{value}"}}
       end
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         [authorization] = Plug.Conn.get_req_header(conn, "authorization")
@@ -716,8 +726,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "returns a sanitized POST error for an invalid headers provider", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "returns a sanitized POST error for an invalid headers provider", %{
+      http_server: http_server
+    } do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
       {:ok, transport} =
@@ -729,7 +741,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
           transport_opts: @test_http_opts
         )
 
-      {:ok, ping} = Message.encode_request(%{"method" => "ping", "params" => %{}}, "invalid-provider")
+      {:ok, ping} =
+        Message.encode_request(%{"method" => "ping", "params" => %{}}, "invalid-provider")
 
       assert {:error, :invalid_headers_provider_result} =
                StreamableHTTP.send_message(transport, ping, timeout: 5_000)
@@ -740,8 +753,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "resolves rotating provider headers for legacy GET and DELETE", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "resolves rotating provider headers for legacy GET and DELETE", %{
+      http_server: http_server
+    } do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
       counter = start_supervised!({Agent, fn -> 0 end})
       session_id = "rotating-header-session"
@@ -752,7 +767,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         {:ok, %{"authorization" => "Bearer token-#{value}"}}
       end
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         [authorization] = Plug.Conn.get_req_header(conn, "authorization")
         send(test_pid, {:post_authorization, authorization})
 
@@ -764,7 +779,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"1","result":{}}|)
       end)
 
-      Bypass.stub(bypass, "GET", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/mcp", fn conn ->
         [authorization] = Plug.Conn.get_req_header(conn, "authorization")
         [^session_id] = Plug.Conn.get_req_header(conn, "mcp-session-id")
         send(test_pid, {:get_authorization, authorization, self()})
@@ -776,7 +791,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         end
       end)
 
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn ->
         [authorization] = Plug.Conn.get_req_header(conn, "authorization")
         [^session_id] = Plug.Conn.get_req_header(conn, "mcp-session-id")
         send(test_pid, {:delete_authorization, authorization})
@@ -813,8 +828,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "backs off legacy SSE retries when request headers cannot be resolved", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "backs off legacy SSE retries when request headers cannot be resolved", %{
+      http_server: http_server
+    } do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
       counter = start_supervised!({Agent, fn -> 0 end})
       session_id = "headers-retry-session"
@@ -831,7 +848,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
         end
       end
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         conn =
           conn
           |> Plug.Conn.put_resp_header("content-type", "application/json")
@@ -863,14 +880,14 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "forwards custom :headers to the SSE GET request", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "forwards custom :headers to the SSE GET request", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
       session_id = "test-session-headers"
       test_pid = self()
 
       # First POST establishes the session (and must also receive the auth header)
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         auth = conn |> Plug.Conn.get_req_header("authorization") |> List.first()
         send(test_pid, {:post_auth, auth})
 
@@ -884,13 +901,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
 
       # The SSE GET that follows session establishment — assert auth header arrives,
       # then short-circuit with 405 so we don't have to fake a real stream.
-      Bypass.stub(bypass, "GET", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/mcp", fn conn ->
         auth = conn |> Plug.Conn.get_req_header("authorization") |> List.first()
         send(test_pid, {:sse_auth, auth})
         Plug.Conn.resp(conn, 405, "")
       end)
 
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn -> Plug.Conn.resp(conn, 200, "") end)
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn -> Plug.Conn.resp(conn, 200, "") end)
 
       {:ok, transport} =
         StreamableHTTP.start_link(
@@ -914,12 +931,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "handles custom mcp_path", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles custom mcp_path", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       custom_path = "/api/v1/mcp"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/api/v1/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/api/v1/mcp", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
         Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"1","result":{}}|)
       end)
@@ -946,13 +963,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "timeout handling" do
-    test "respects custom timeout option", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "respects custom timeout option", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
       # Server delay > default GenServer.call timeout would matter; shrink to
       # a tiny duration since we're verifying option propagation, not real time.
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         Process.sleep(60)
         conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
         Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"1","result":{}}|)
@@ -976,14 +993,14 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "respects timeout > Mint default receive_timeout", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "respects timeout > Mint default receive_timeout", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
       # Original test used 20s vs 15s Mint default. We test the same option
       # propagation path with a server delay that would exceed a hypothetical
       # short receive_timeout if the option weren't being passed through.
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         Process.sleep(60)
         conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
         Plug.Conn.resp(conn, 200, ~s|{"jsonrpc":"2.0","id":"1","result":{}}|)
@@ -1008,11 +1025,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "error handling" do
-    test "handles network connection failures", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles network connection failures", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.down(bypass)
+      HTTPServer.down(http_server)
 
       {:ok, transport} =
         StreamableHTTP.start_link(
@@ -1031,11 +1048,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "accept header behavior" do
-    test "advertises both content types when SSE is disabled (default)", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "advertises both content types when SSE is disabled (default)", %{
+      http_server: http_server
+    } do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         # Per the MCP spec, every POST advertises both content types
         assert_dual_accept(conn)
 
@@ -1061,11 +1080,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "advertises both content types when SSE enabled but no session yet", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "advertises both content types when SSE enabled but no session yet", %{
+      http_server: http_server
+    } do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp", fn conn ->
         # Both content types are advertised even before a session exists
         assert_dual_accept(conn)
 
@@ -1094,14 +1115,16 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       StubClient.clear_messages()
     end
 
-    test "sends SSE accept header when SSE enabled AND session exists", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "sends SSE accept header when SSE enabled AND session exists", %{
+      http_server: http_server
+    } do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
       session_id = "test-session-789"
 
       # Both requests advertise the dual Accept header; only the second
       # carries the established session id.
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         session_headers = Plug.Conn.get_req_header(conn, "mcp-session-id")
 
         case session_headers do
@@ -1126,12 +1149,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       end)
 
       # Handle SSE GET connection attempt after session is acquired
-      Bypass.stub(bypass, "GET", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/mcp", fn conn ->
         Plug.Conn.resp(conn, 405, "")
       end)
 
       # Handle DELETE request during shutdown
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn ->
         Plug.Conn.resp(conn, 200, "")
       end)
 
@@ -1166,8 +1189,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   end
 
   describe "shutdown" do
-    test "gracefully shuts down transport", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "gracefully shuts down transport", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
       {:ok, transport} =
@@ -1205,10 +1228,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
     assert "text/event-stream" in media_types
   end
 
-  defp start_http_negotiation_client(bypass, suffix, protocol_version \\ :auto) do
+  defp start_http_negotiation_client(http_server, suffix, protocol_version \\ :auto) do
     client_name = Module.concat(__MODULE__, "#{suffix}Client")
     transport_name = Module.concat(__MODULE__, "#{suffix}Transport")
-    server_url = "http://localhost:#{bypass.port}"
+    server_url = "http://localhost:#{http_server.port}"
 
     _supervisor =
       start_supervised!(%{

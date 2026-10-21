@@ -4,6 +4,7 @@ if Code.ensure_loaded?(JOSE) do
 
     alias Backplane.McpProtocol.Server.Authorization
     alias Backplane.McpProtocol.Server.Authorization.JWTValidator
+    alias Backplane.McpProtocol.Test.HTTPServer
 
     @moduletag capture_log: true
 
@@ -26,8 +27,8 @@ if Code.ensure_loaded?(JOSE) do
       token
     end
 
-    defp build_config(bypass, extra_opts \\ []) do
-      jwks_url = "http://localhost:#{bypass.port}/jwks"
+    defp build_config(http_server, extra_opts \\ []) do
+      jwks_url = "http://localhost:#{http_server.port}/jwks"
 
       base_opts = [
         authorization_servers: ["https://auth.example.com"],
@@ -38,8 +39,8 @@ if Code.ensure_loaded?(JOSE) do
       Authorization.parse_config!(base_opts)
     end
 
-    defp setup_jwks_bypass(bypass, jwks) do
-      Bypass.stub(bypass, "GET", "/jwks", fn conn ->
+    defp setup_jwks_http_server(http_server, jwks) do
+      HTTPServer.stub(http_server, "GET", "/jwks", fn conn ->
         Plug.Conn.send_resp(conn, 200, JSON.encode!(jwks))
       end)
     end
@@ -59,9 +60,9 @@ if Code.ensure_loaded?(JOSE) do
 
     describe "validate_token/2 — valid token" do
       test "returns ok with claims for valid signed token", %{private_key: key, public_jwks: jwks} do
-        bypass = Bypass.open()
-        setup_jwks_bypass(bypass, jwks)
-        config = build_config(bypass)
+        http_server = HTTPServer.open()
+        setup_jwks_http_server(http_server, jwks)
+        config = build_config(http_server)
 
         token = sign_token(key, valid_claims())
 
@@ -71,9 +72,9 @@ if Code.ensure_loaded?(JOSE) do
       end
 
       test "validates issuer when configured", %{private_key: key, public_jwks: jwks} do
-        bypass = Bypass.open()
-        setup_jwks_bypass(bypass, jwks)
-        config = build_config(bypass, issuer: "https://auth.example.com")
+        http_server = HTTPServer.open()
+        setup_jwks_http_server(http_server, jwks)
+        config = build_config(http_server, issuer: "https://auth.example.com")
 
         token = sign_token(key, valid_claims())
 
@@ -83,9 +84,9 @@ if Code.ensure_loaded?(JOSE) do
 
     describe "validate_token/2 — invalid signature" do
       test "returns error for token signed with different key", %{public_jwks: jwks} do
-        bypass = Bypass.open()
-        setup_jwks_bypass(bypass, jwks)
-        config = build_config(bypass)
+        http_server = HTTPServer.open()
+        setup_jwks_http_server(http_server, jwks)
+        config = build_config(http_server)
 
         {other_key, _} = generate_rsa_keypair()
         token = sign_token(other_key, valid_claims())
@@ -94,9 +95,9 @@ if Code.ensure_loaded?(JOSE) do
       end
 
       test "returns error for malformed token", %{public_jwks: jwks} do
-        bypass = Bypass.open()
-        setup_jwks_bypass(bypass, jwks)
-        config = build_config(bypass)
+        http_server = HTTPServer.open()
+        setup_jwks_http_server(http_server, jwks)
+        config = build_config(http_server)
 
         assert {:error, _} = JWTValidator.validate_token("not.a.jwt", config)
       end
@@ -104,9 +105,9 @@ if Code.ensure_loaded?(JOSE) do
 
     describe "validate_token/2 — issuer validation" do
       test "returns error when issuer does not match", %{private_key: key, public_jwks: jwks} do
-        bypass = Bypass.open()
-        setup_jwks_bypass(bypass, jwks)
-        config = build_config(bypass, issuer: "https://expected.example.com")
+        http_server = HTTPServer.open()
+        setup_jwks_http_server(http_server, jwks)
+        config = build_config(http_server, issuer: "https://expected.example.com")
 
         claims = Map.put(valid_claims(), "iss", "https://other.example.com")
         token = sign_token(key, claims)
@@ -115,9 +116,9 @@ if Code.ensure_loaded?(JOSE) do
       end
 
       test "skips issuer validation when not configured", %{private_key: key, public_jwks: jwks} do
-        bypass = Bypass.open()
-        setup_jwks_bypass(bypass, jwks)
-        config = build_config(bypass)
+        http_server = HTTPServer.open()
+        setup_jwks_http_server(http_server, jwks)
+        config = build_config(http_server)
 
         claims = Map.delete(valid_claims(), "iss")
         token = sign_token(key, claims)
@@ -139,12 +140,12 @@ if Code.ensure_loaded?(JOSE) do
       end
 
       test "returns error on non-200 JWKS response", %{public_jwks: jwks} do
-        bypass = Bypass.open()
-        setup_jwks_bypass(bypass, jwks)
-        # Close Bypass to simulate 503
-        Bypass.down(bypass)
+        http_server = HTTPServer.open()
+        setup_jwks_http_server(http_server, jwks)
+        # Close Bandit HTTP server to simulate 503
+        HTTPServer.down(http_server)
 
-        config = build_config(bypass)
+        config = build_config(http_server)
 
         assert {:error, _} = JWTValidator.validate_token("any.token.here", config)
       end

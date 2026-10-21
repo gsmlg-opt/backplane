@@ -3,6 +3,13 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
 
   alias Backplane.Registry.Tool
 
+  defmodule HTTPPlug do
+    @moduledoc false
+
+    def init(callback), do: callback
+    def call(conn, callback), do: callback.(conn)
+  end
+
   setup do
     tools = :ets.tab2list(:backplane_tools)
     :ets.delete_all_objects(:backplane_tools)
@@ -67,10 +74,9 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
   end
 
   test "HTTP connect preserves the negotiated session for follow-up requests", %{conn: conn} do
-    bypass = Bypass.open()
     test_pid = self()
 
-    Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+    callback = fn %Plug.Conn{method: "POST", request_path: "/mcp"} = conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = Jason.decode!(body)
       method = request["method"]
@@ -130,13 +136,25 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
         "ping" ->
           json_response(conn, request, %{})
       end
-    end)
+    end
+
+    listener =
+      start_supervised!(
+        {Bandit,
+         plug: {HTTPPlug, callback},
+         ip: {127, 0, 0, 1},
+         port: 0,
+         startup_log: false,
+         thousand_island_options: [shutdown_timeout: 0]}
+      )
+
+    {:ok, {_, port}} = ThousandIsland.listener_info(listener)
 
     {:ok, view, _html} = live(conn, "/mcp/inspector")
 
     render_change(view, "update_config", %{
       "transport" => "http",
-      "url" => "http://localhost:#{bypass.port}/mcp",
+      "url" => "http://localhost:#{port}/mcp",
       "auth_scheme" => "none",
       "credential" => ""
     })
@@ -173,7 +191,7 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
 
     render_change(view, "update_config", %{
       "transport" => "http",
-      "url" => "http://localhost:#{bypass.port}/mcp?changed=true"
+      "url" => "http://localhost:#{port}/mcp?changed=true"
     })
 
     render_click(view, "connect")

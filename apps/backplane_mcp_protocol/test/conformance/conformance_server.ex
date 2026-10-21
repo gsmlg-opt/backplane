@@ -7,6 +7,10 @@ defmodule Conformance.Server do
   @default_ip {127, 0, 0, 1}
   @default_port 4105
 
+  def child_spec(opts) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, type: :supervisor}
+  end
+
   def start_link(opts \\ []) do
     ip = Keyword.get(opts, :ip, @default_ip)
     port = Keyword.get(opts, :port, @default_port)
@@ -15,12 +19,15 @@ defmodule Conformance.Server do
     allowed_origins = ["http://127.0.0.1:#{port}", "http://localhost:#{port}"]
 
     http =
-      Plug.Cowboy.child_spec(
+      Bandit.child_spec(
         scheme: :http,
-        plug: {StreamableHTTPPlug, server: Conformance.Server.Protocol, allowed_origins: allowed_origins},
-        options: [ip: ip, port: port],
-        ref: Conformance.Server.HTTP
+        plug:
+          {StreamableHTTPPlug,
+           server: Conformance.Server.Protocol, allowed_origins: allowed_origins},
+        ip: ip,
+        port: port
       )
+      |> Map.put(:id, Conformance.Server.HTTP)
 
     children = [
       {Conformance.Server.Protocol, transport: {:streamable_http, start: true}},
@@ -103,7 +110,10 @@ defmodule Conformance.Server do
     end
 
     def handle_request(
-          %{"method" => "prompts/get", "params" => %{"name" => "test_input_required_result_prompt"} = params},
+          %{
+            "method" => "prompts/get",
+            "params" => %{"name" => "test_input_required_result_prompt"} = params
+          },
           frame
         ) do
       handle_mrtr_prompt(params, frame)
@@ -496,7 +506,8 @@ defmodule Conformance.Server do
 
         :error ->
           input_required(frame, %{
-            "user_context" => elicitation("What context should the prompt use?", "context", "string")
+            "user_context" =>
+              elicitation("What context should the prompt use?", "context", "string")
           })
       end
     end

@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaValidationTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   import ExUnit.CaptureLog
 
   alias Backplane.McpProtocol.Server.Registry
@@ -60,7 +62,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
 
       strict_attachment =
         {:schema, %{name: {:required, {:string, {:transform, &String.trim/1}}}},
-         {:additional_keys, {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
+         {:additional_keys,
+          {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
 
       attachments_schema = %{attachments: {:list, {:custom, Schema.validator(strict_attachment)}}}
 
@@ -69,11 +72,15 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
       |> register_validator("strict-root", Schema.validator(strict_attachment))
       |> register_validator(
         "direct-peri-single",
-        Schema.validator(%{attachments: {:list, {:custom, fn value -> Peri.validate(root_schema, value) end}}})
+        Schema.validator(%{
+          attachments: {:list, {:custom, fn value -> Peri.validate(root_schema, value) end}}
+        })
       )
       |> register_validator(
         "direct-peri-list",
-        Schema.validator(%{attachments: {:list, {:custom, fn value -> Peri.validate(%{name: :string}, value) end}}})
+        Schema.validator(%{
+          attachments: {:list, {:custom, fn value -> Peri.validate(%{name: :string}, value) end}}
+        })
       )
       |> register_validator("root", fn params -> Peri.validate(root_schema, params) end)
       |> register_validator(
@@ -94,9 +101,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
   setup do
     :persistent_term.put({FixtureServer, :test_pid}, self())
     start_supervised!({FixtureServer, transport: {:streamable_http, start: true}})
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     opts = StreamableHTTPPlug.init(server: FixtureServer)
-    Bypass.stub(bypass, "POST", "/mcp", &StreamableHTTPPlug.call(&1, opts))
+    HTTPServer.stub(http_server, "POST", "/mcp", &StreamableHTTPPlug.call(&1, opts))
 
     on_exit(fn ->
       :persistent_term.erase({FixtureServer, :test_pid})
@@ -106,13 +113,14 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
       end
     end)
 
-    %{url: "http://127.0.0.1:#{bypass.port}/mcp"}
+    %{url: "http://127.0.0.1:#{http_server.port}/mcp"}
   end
 
   for version <- ["2026-07-28", "2025-11-25"] do
     @version version
 
-    test "#{version} returns a root custom validation error and accepts subsequent calls", context do
+    test "#{version} returns a root custom validation error and accepts subsequent calls",
+         context do
       assert_validation_survives(
         context.url,
         @version,
@@ -188,19 +196,26 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
       )
     end
 
-    test "#{version} rejects unknown attachment fields with their full list path before dispatch", context do
+    test "#{version} rejects unknown attachment fields with their full list path before dispatch",
+         context do
       assert_validation_survives(
         context.url,
         @version,
         "attachments",
-        %{"attachments" => [%{"name" => "first"}, %{"name" => "second", "unknown_field" => "value"}]},
+        %{
+          "attachments" => [
+            %{"name" => "first"},
+            %{"name" => "second", "unknown_field" => "value"}
+          ]
+        },
         "attachments.1.unknown_field: unsupported attachment field",
         %{"attachments" => [%{"name" => " first "}, %{"name" => " second "}]},
         %{"attachments" => [%{"name" => "first"}, %{"name" => "second"}]}
       )
     end
 
-    test "#{version} returns useful additional-keys validation errors and preserves transformations", context do
+    test "#{version} returns useful additional-keys validation errors and preserves transformations",
+         context do
       assert_validation_survives(
         context.url,
         @version,
@@ -232,7 +247,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
         refute_received {:tool_dispatched, _, _}
 
         for id <- [3, 4] do
-          {response, body} = post(url, tool_request(version, name, valid, id), version, session_id)
+          {response, body} =
+            post(url, tool_request(version, name, valid, id), version, session_id)
+
           assert response.status == 200
           assert body["id"] == id
           assert body["result"]["structuredContent"] == expected
@@ -311,7 +328,10 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
     headers =
       if version == "2026-07-28" do
         headers = headers ++ [{"mcp-method", message["method"]}]
-        if message["method"] == "tools/call", do: headers ++ [{"mcp-name", message["params"]["name"]}], else: headers
+
+        if message["method"] == "tools/call",
+          do: headers ++ [{"mcp-name", message["params"]["name"]}],
+          else: headers
       else
         headers
       end
@@ -325,5 +345,6 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
     {response, body}
   end
 
-  defp header(response, name), do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
+  defp header(response, name),
+    do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
 end

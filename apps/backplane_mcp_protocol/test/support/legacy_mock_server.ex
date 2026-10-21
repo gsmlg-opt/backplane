@@ -7,6 +7,8 @@ defmodule LegacyMockServer do
     capabilities: [:tools],
     protocol_versions: ["2025-11-25", "2025-06-18"]
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   import Plug.Conn
 
   alias Backplane.McpProtocol.Server.Component.Schema
@@ -29,11 +31,11 @@ defmodule LegacyMockServer do
 
   def mount_http(test_pid) when is_pid(test_pid) do
     :persistent_term.put(@test_pid_key, test_pid)
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     opts = StreamableHTTPPlug.init(server: __MODULE__)
 
     for method <- ["GET", "POST", "DELETE"] do
-      Bypass.stub(bypass, method, "/mcp", fn conn ->
+      HTTPServer.stub(http_server, method, "/mcp", fn conn ->
         if get_req_header(conn, "mcp-method") == ["server/discover"] do
           send(test_pid, :legacy_mock_discovery_refused)
 
@@ -46,7 +48,7 @@ defmodule LegacyMockServer do
       end)
     end
 
-    %{bypass: bypass, url: "http://127.0.0.1:#{bypass.port}"}
+    %{http_server: http_server, url: "http://127.0.0.1:#{http_server.port}"}
   end
 
   def stdio_transport do
@@ -118,7 +120,11 @@ defmodule LegacyMockServer do
     }
   end
 
-  defp legacy_response(%{"id" => id, "method" => "tools/call", "params" => %{"arguments" => arguments}}) do
+  defp legacy_response(%{
+         "id" => id,
+         "method" => "tools/call",
+         "params" => %{"arguments" => arguments}
+       }) do
     %{
       "jsonrpc" => "2.0",
       "id" => id,

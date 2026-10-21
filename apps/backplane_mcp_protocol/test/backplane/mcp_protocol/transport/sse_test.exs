@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.SSETest do
   use ExUnit.Case, async: false
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   alias Backplane.McpProtocol.MCP.Message
   alias Backplane.McpProtocol.Test.SyncHelpers
   alias Backplane.McpProtocol.Transport.SSE
@@ -9,21 +11,21 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
   @test_http_opts [max_reconnections: 0]
 
   setup do
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     Process.group_leader(self(), self())
 
-    {:ok, bypass: bypass}
+    {:ok, http_server: http_server}
   end
 
   describe "start_link/1" do
-    test "successfully establishes SSE connection", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "successfully establishes SSE connection", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
 
       # Start a stub client to avoid interference with other tests
       {:ok, stub_client} = StubClient.start_link()
 
       # Let the SSE connection establish and send an endpoint event
-      Bypass.expect(bypass, "GET", "/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         conn = Plug.Conn.send_chunked(conn, 200)
 
@@ -61,15 +63,15 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
 
   describe "send_message/2" do
     test "sends message to endpoint after receiving endpoint event", %{
-      bypass: bypass
+      http_server: http_server
     } do
-      server_url = "http://localhost:#{bypass.port}"
+      server_url = "http://localhost:#{http_server.port}"
 
       # Start a stub client
       {:ok, stub_client} = StubClient.start_link()
 
       # Set up SSE connection
-      Bypass.expect(bypass, "GET", "/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         conn = Plug.Conn.send_chunked(conn, 200)
 
@@ -84,7 +86,7 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       end)
 
       # Set up POST endpoint that will receive messages
-      Bypass.expect(bypass, "POST", "/messages/123", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/messages/123", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
 
         # Verify we got a message
@@ -124,14 +126,14 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       SSE.shutdown(transport)
     end
 
-    test "fails to send message when no endpoint is available", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "fails to send message when no endpoint is available", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
 
       # Start a stub client for this test
       {:ok, stub_client} = StubClient.start_link()
 
       # Set up the SSE connection but don't send an endpoint event
-      Bypass.stub(bypass, "GET", "/sse", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         Plug.Conn.send_chunked(conn, 200)
       end)
@@ -154,14 +156,14 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       StubClient.clear_messages()
     end
 
-    test "handles HTTP error responses", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles HTTP error responses", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
 
       # Start a stub client for this test to avoid client termination affecting transport
       {:ok, stub_client} = StubClient.start_link()
 
       # Set up the SSE connection
-      Bypass.expect(bypass, "GET", "/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         conn = Plug.Conn.send_chunked(conn, 200)
 
@@ -177,7 +179,7 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       end)
 
       # Set up the POST endpoint to return an error
-      Bypass.expect(bypass, "POST", "/messages/123", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/messages/123", fn conn ->
         Plug.Conn.resp(conn, 500, "Internal Server Error")
       end)
 
@@ -204,8 +206,8 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
   end
 
   describe "handling SSE events" do
-    test "processes message events correctly", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "processes message events correctly", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
 
       # Create a test message
       test_message = "test message data"
@@ -215,7 +217,7 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       StubClient.subscribe()
 
       # Set up the SSE connection
-      Bypass.expect(bypass, "GET", "/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         conn = Plug.Conn.send_chunked(conn, 200)
 
@@ -262,15 +264,15 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       SSE.shutdown(transport)
     end
 
-    test "handles server disconnection", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "handles server disconnection", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
 
       # Start a stub client
       {:ok, stub_client} = StubClient.start_link()
 
-      # Set up the SSE connection - bypass is needed but we don't assert
+      # Set up the SSE connection - http_server is needed but we don't assert
       # any specific behavior since we're testing disconnection
-      Bypass.stub(bypass, "GET", "/sse", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/sse", fn conn ->
         Plug.Conn.resp(conn, 200, "")
       end)
 
@@ -295,11 +297,11 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
   end
 
   describe "handling headers and options" do
-    test "passes custom headers to requests", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}"
+    test "passes custom headers to requests", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "GET", "/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/sse", fn conn ->
         assert "auth-token" ==
                  conn |> Plug.Conn.get_req_header("authorization") |> List.first()
 
@@ -312,7 +314,7 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
         conn
       end)
 
-      Bypass.expect(bypass, "POST", "/messages/123", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/messages/123", fn conn ->
         assert "application/json" ==
                  conn |> Plug.Conn.get_req_header("accept") |> List.first()
 
@@ -345,11 +347,11 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
   end
 
   describe "handling endpoint URLs" do
-    test "properly handles relative endpoint URLs", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}/mcp"
+    test "properly handles relative endpoint URLs", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}/mcp"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "GET", "/mcp/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/mcp/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         conn = Plug.Conn.send_chunked(conn, 200)
 
@@ -359,7 +361,7 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
         conn
       end)
 
-      Bypass.expect(bypass, "POST", "/mcp/messages/123", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp/messages/123", fn conn ->
         Plug.Conn.resp(conn, 200, "")
       end)
 
@@ -381,12 +383,12 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       StubClient.clear_messages()
     end
 
-    test "properly handles absolute endpoint URLs", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}/mcp"
+    test "properly handles absolute endpoint URLs", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}/mcp"
       absolute_endpoint = "http://api.example.com/messages/session-123"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "GET", "/mcp/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/mcp/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         conn = Plug.Conn.send_chunked(conn, 200)
 
@@ -413,12 +415,12 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
       StubClient.clear_messages()
     end
 
-    test "handles path duplication from MCP servers", %{bypass: bypass} do
-      server_url = "http://localhost:#{bypass.port}/mcp"
+    test "handles path duplication from MCP servers", %{http_server: http_server} do
+      server_url = "http://localhost:#{http_server.port}/mcp"
       duplicate_path = "/mcp/messages/123"
       {:ok, stub_client} = StubClient.start_link()
 
-      Bypass.expect(bypass, "GET", "/mcp/sse", fn conn ->
+      HTTPServer.expect(http_server, "GET", "/mcp/sse", fn conn ->
         conn = Plug.Conn.put_resp_header(conn, "content-type", "text/event-stream")
         conn = Plug.Conn.send_chunked(conn, 200)
 
@@ -428,7 +430,7 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
         conn
       end)
 
-      Bypass.expect(bypass, "POST", "/mcp/messages/123", fn conn ->
+      HTTPServer.expect(http_server, "POST", "/mcp/messages/123", fn conn ->
         Plug.Conn.resp(conn, 200, "")
       end)
 

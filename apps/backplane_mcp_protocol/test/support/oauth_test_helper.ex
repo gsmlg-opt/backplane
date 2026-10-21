@@ -3,8 +3,10 @@ defmodule OAuthTestHelper do
   Helpers for testing OAuth 2.1 authorization in Backplane.McpProtocol servers.
 
   Provides token building, mock validator construction, and fixtures for
-  Bypass-based HTTP endpoint mocking.
+  Bandit HTTP server-based HTTP endpoint mocking.
   """
+
+  alias Backplane.McpProtocol.Test.HTTPServer
 
   @doc """
   Builds a normalized claims map suitable for injecting into `Context.auth`.
@@ -68,17 +70,17 @@ defmodule OAuthTestHelper do
   end
 
   @doc """
-  Configures a Bypass instance to serve an introspection endpoint.
+  Configures a Bandit HTTP server instance to serve an introspection endpoint.
 
   The `respond` option controls what the endpoint returns:
   - `:active` — returns an active token response (default)
   - `:inactive` — returns an inactive token response
   - `{:error, status}` — returns an error HTTP status
   """
-  def setup_introspection_bypass(bypass, opts \\ []) do
+  def setup_introspection_http_server(http_server, opts \\ []) do
     respond = Keyword.get(opts, :respond, :active)
 
-    Bypass.expect_once(bypass, "POST", "/introspect", fn conn ->
+    HTTPServer.expect_once(http_server, "POST", "/introspect", fn conn ->
       case respond do
         :active ->
           Plug.Conn.send_resp(conn, 200, active_introspection_response(opts))
@@ -93,10 +95,10 @@ defmodule OAuthTestHelper do
   end
 
   @doc """
-  Returns the introspection endpoint URL for a Bypass instance.
+  Returns the introspection endpoint URL for a Bandit HTTP server instance.
   """
-  def introspection_url(bypass) do
-    "http://localhost:#{bypass.port}/introspect"
+  def introspection_url(http_server) do
+    "http://localhost:#{http_server.port}/introspect"
   end
 end
 

@@ -10,6 +10,8 @@ defmodule ModernMockServer do
     ],
     protocol_versions: ["2026-07-28"]
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   alias Backplane.McpProtocol.Server.Component.Schema
   alias Backplane.McpProtocol.Server.Frame
   alias Backplane.McpProtocol.Server.Modern.RequestContext
@@ -92,16 +94,16 @@ defmodule ModernMockServer do
 
   def mount_http(test_pid) when is_pid(test_pid) do
     :persistent_term.put(@test_pid_key, test_pid)
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     opts = StreamableHTTPPlug.init(server: __MODULE__)
 
     for method <- ["GET", "POST", "DELETE"] do
-      Bypass.stub(bypass, method, "/mcp", fn conn ->
+      HTTPServer.stub(http_server, method, "/mcp", fn conn ->
         StreamableHTTPPlug.call(conn, opts)
       end)
     end
 
-    %{bypass: bypass, url: "http://127.0.0.1:#{bypass.port}"}
+    %{http_server: http_server, url: "http://127.0.0.1:#{http_server.port}"}
   end
 
   def await_subscription!(attempts \\ 100)
@@ -109,7 +111,10 @@ defmodule ModernMockServer do
   def await_subscription!(0), do: raise("modern mock subscription did not open")
 
   def await_subscription!(attempts) do
-    case __MODULE__ |> Registry.subscriptions_name() |> :sys.get_state() |> map_size(:subscriptions) do
+    case __MODULE__
+         |> Registry.subscriptions_name()
+         |> :sys.get_state()
+         |> map_size(:subscriptions) do
       count when count > 0 ->
         :ok
 

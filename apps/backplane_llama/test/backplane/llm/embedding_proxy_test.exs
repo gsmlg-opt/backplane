@@ -32,42 +32,41 @@ defmodule Backplane.LLM.EmbeddingProxyTest do
       client: client,
       token: token
     } do
-      bypass = Bypass.open()
+      http_server =
+        BackplaneLlama.Test.HTTPServer.open("POST", @upstream_path, fn upstream ->
+          {:ok, body, upstream} = read_body(upstream)
+
+          assert Jason.decode!(body) == %{
+                   "model" => "openai/text-embedding-3-large",
+                   "input" => ["captured evidence"],
+                   "dimensions" => 2560,
+                   "encoding_format" => "float"
+                 }
+
+          assert get_req_header(upstream, "authorization") == ["Bearer embedding-upstream-token"]
+          assert get_req_header(upstream, "x-api-key") == []
+
+          upstream
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            200,
+            Jason.encode!(%{
+              "object" => "list",
+              "data" => [%{"index" => 0, "embedding" => List.duplicate(0.1, 2560)}]
+            })
+          )
+        end)
 
       {:ok, %{provider: embedding_provider, model: model}} =
         Embedding.create_provider_with_model(%{
           "name" => "embedding-route",
           "credential" => "embedding-route-credential",
-          "base_url" => "http://localhost:#{bypass.port}" <> @base_path,
+          "base_url" => "http://localhost:#{http_server.port}" <> @base_path,
           "enabled" => true,
           "model" => "openai/text-embedding-3-large",
           "model_enabled" => true,
           "metadata" => ~s({"dimensions":2560})
         })
-
-      Bypass.expect_once(bypass, "POST", @upstream_path, fn upstream ->
-        {:ok, body, upstream} = read_body(upstream)
-
-        assert Jason.decode!(body) == %{
-                 "model" => "openai/text-embedding-3-large",
-                 "input" => ["captured evidence"],
-                 "dimensions" => 2560,
-                 "encoding_format" => "float"
-               }
-
-        assert get_req_header(upstream, "authorization") == ["Bearer embedding-upstream-token"]
-        assert get_req_header(upstream, "x-api-key") == []
-
-        upstream
-        |> put_resp_content_type("application/json")
-        |> send_resp(
-          200,
-          Jason.encode!(%{
-            "object" => "list",
-            "data" => [%{"index" => 0, "embedding" => List.duplicate(0.1, 2560)}]
-          })
-        )
-      end)
 
       request =
         Jason.encode!(%{

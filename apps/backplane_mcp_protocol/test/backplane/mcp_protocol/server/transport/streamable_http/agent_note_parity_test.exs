@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   alias Backplane.McpProtocol.Server.Registry
   alias Backplane.McpProtocol.Server.Supervisor, as: ServerSupervisor
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.Plug, as: StreamableHTTPPlug
@@ -88,11 +90,11 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
 
   setup do
     start_supervised!({FixtureServer, transport: {:streamable_http, start: true}})
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     opts = StreamableHTTPPlug.init(server: FixtureServer)
 
     for method <- ["POST", "GET", "DELETE"] do
-      Bypass.stub(bypass, method, "/mcp", &StreamableHTTPPlug.call(&1, opts))
+      HTTPServer.stub(http_server, method, "/mcp", &StreamableHTTPPlug.call(&1, opts))
     end
 
     on_exit(fn ->
@@ -101,7 +103,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
       end
     end)
 
-    %{url: "http://127.0.0.1:#{bypass.port}/mcp"}
+    %{url: "http://127.0.0.1:#{http_server.port}/mcp"}
   end
 
   test "discovers capabilities and cache metadata without initializing a session", context do
@@ -121,7 +123,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     assert_no_sessions()
   end
 
-  test "cacheable tool lists preserve hints and replace callback-supplied server identity", context do
+  test "cacheable tool lists preserve hints and replace callback-supplied server identity",
+       context do
     for id <- [1, 2] do
       {response, body} = post(context.url, request("tools/list", %{}, id))
 
@@ -153,7 +156,11 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     end
 
     wrong_body_version =
-      put_in(message, ["params", "_meta", "io.modelcontextprotocol/protocolVersion"], "2025-06-18")
+      put_in(
+        message,
+        ["params", "_meta", "io.modelcontextprotocol/protocolVersion"],
+        "2025-06-18"
+      )
 
     {response, body} = post(context.url, wrong_body_version)
     assert_rpc_error(response, body, 3, -32_020)
@@ -165,8 +172,16 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
 
     malformed = [
       update_in(message, ["params"], &Map.delete(&1, "_meta")),
-      update_in(message, ["params", "_meta"], &Map.delete(&1, "io.modelcontextprotocol/protocolVersion")),
-      update_in(message, ["params", "_meta"], &Map.delete(&1, "io.modelcontextprotocol/clientCapabilities"))
+      update_in(
+        message,
+        ["params", "_meta"],
+        &Map.delete(&1, "io.modelcontextprotocol/protocolVersion")
+      ),
+      update_in(
+        message,
+        ["params", "_meta"],
+        &Map.delete(&1, "io.modelcontextprotocol/clientCapabilities")
+      )
     ]
 
     for message <- malformed do
@@ -175,7 +190,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     end
   end
 
-  test "mutation success, no-op and domain errors remain complete structured tool results", context do
+  test "mutation success, no-op and domain errors remain complete structured tool results",
+       context do
     for {id, outcome, structured, is_error} <- [
           {5, "changed", %{"changed" => true, "revision" => 2}, false},
           {6, "noop", %{"changed" => false, "revision" => 2}, false},
@@ -204,7 +220,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     assert_no_sessions()
   end
 
-  test "malformed mutation arguments return JSON-RPC invalid params without a tool result", context do
+  test "malformed mutation arguments return JSON-RPC invalid params without a tool result",
+       context do
     for arguments <- [
           %{},
           %{"outcome" => nil},
@@ -242,13 +259,22 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     meta = %{
       "io.modelcontextprotocol/protocolVersion" => @version,
       "io.modelcontextprotocol/clientCapabilities" => %{},
-      "io.modelcontextprotocol/clientInfo" => %{"name" => "http-parity-client", "version" => "1.0.0"}
+      "io.modelcontextprotocol/clientInfo" => %{
+        "name" => "http-parity-client",
+        "version" => "1.0.0"
+      }
     }
 
-    %{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => Map.put(params, "_meta", meta)}
+    %{
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "method" => method,
+      "params" => Map.put(params, "_meta", meta)
+    }
   end
 
-  defp tool_request(arguments, id), do: request("tools/call", %{"name" => "mutate", "arguments" => arguments}, id)
+  defp tool_request(arguments, id),
+    do: request("tools/call", %{"name" => "mutate", "arguments" => arguments}, id)
 
   defp post(url, message, overrides \\ []) do
     headers = [
@@ -266,7 +292,9 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
       end
 
     headers =
-      Enum.reduce(overrides, headers, fn {name, value}, headers -> List.keystore(headers, name, 0, {name, value}) end)
+      Enum.reduce(overrides, headers, fn {name, value}, headers ->
+        List.keystore(headers, name, 0, {name, value})
+      end)
 
     assert {:ok, response} =
              :post
@@ -276,7 +304,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     {response, JSON.decode!(response.body)}
   end
 
-  defp header(response, name), do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
+  defp header(response, name),
+    do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
 
   defp assert_rpc_error(response, body, id, code) do
     assert response.status == 400
@@ -288,10 +317,14 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
   end
 
   defp assert_server_info(result) do
-    assert result["_meta"][@server_info_key] == %{"name" => "http-parity-fixture", "version" => "1.0.0"}
+    assert result["_meta"][@server_info_key] == %{
+             "name" => "http-parity-fixture",
+             "version" => "1.0.0"
+           }
   end
 
   defp assert_no_sessions do
-    assert DynamicSupervisor.count_children(Registry.session_supervisor_name(FixtureServer)).active == 0
+    assert DynamicSupervisor.count_children(Registry.session_supervisor_name(FixtureServer)).active ==
+             0
   end
 end

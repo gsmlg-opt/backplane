@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.McpProtocol.Test.HTTPServer
+
   import ExUnit.CaptureLog
 
   alias Backplane.McpProtocol.Client
@@ -16,9 +18,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
   @test_http_opts [max_reconnections: 0]
 
   setup do
-    bypass = Bypass.open()
+    http_server = HTTPServer.open()
     Process.group_leader(self(), self())
-    {:ok, bypass: bypass}
+    {:ok, http_server: http_server}
   end
 
   describe "build/3" do
@@ -226,7 +228,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         initialize = context(:legacy, "initialize", %{}, protocol_version: version)
         post_initialize = context(:legacy, "ping", %{}, protocol_version: version)
 
-        assert {:ok, initialize_headers} = Headers.build(%{}, encode("initialize", %{}), initialize)
+        assert {:ok, initialize_headers} =
+                 Headers.build(%{}, encode("initialize", %{}), initialize)
+
         refute Map.has_key?(initialize_headers, "mcp-protocol-version")
 
         assert {:ok, headers} = Headers.build(%{}, encode("ping", %{}), post_initialize)
@@ -242,12 +246,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
   describe "Streamable HTTP era isolation" do
     test "modern requests remain session-free across repeated POSTs and never start GET or DELETE",
          %{
-           bypass: bypass
+           http_server: http_server
          } do
       test_pid = self()
       secret = "secret-modern-header-value"
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         send(test_pid, {:request, conn.method, conn.req_headers})
@@ -273,18 +277,18 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         end
       end)
 
-      Bypass.stub(bypass, "GET", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/mcp", fn conn ->
         send(test_pid, {:request, conn.method, conn.req_headers})
         Plug.Conn.resp(conn, 405, "")
       end)
 
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn ->
         send(test_pid, {:request, conn.method, conn.req_headers})
         Plug.Conn.resp(conn, 200, "")
       end)
 
       {stub_client, transport} =
-        start_http_transport(bypass,
+        start_http_transport(http_server,
           enable_sse: true,
           headers: %{
             "Authorization" => secret,
@@ -324,13 +328,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
 
     test "legacy initialize owns its session, starts GET SSE, and shutdown sends one authenticated DELETE",
          %{
-           bypass: bypass
+           http_server: http_server
          } do
       test_pid = self()
       session_id = "legacy-session"
       secret = "legacy-auth-secret"
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         send(test_pid, {:request, conn.method, conn.req_headers})
@@ -347,7 +351,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         )
       end)
 
-      Bypass.stub(bypass, "GET", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/mcp", fn conn ->
         send(test_pid, {:request, conn.method, conn.req_headers})
 
         case Plug.Conn.get_req_header(conn, "last-event-id") do
@@ -360,13 +364,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         end
       end)
 
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn ->
         send(test_pid, {:request, conn.method, conn.req_headers})
         Plug.Conn.resp(conn, 200, "")
       end)
 
       {stub_client, transport} =
-        start_http_transport(bypass,
+        start_http_transport(http_server,
           enable_sse: true,
           headers: %{"Authorization" => secret}
         )
@@ -407,10 +411,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
       GenServer.stop(stub_client)
     end
 
-    test "a non-initialize explicit legacy response cannot create a session", %{bypass: bypass} do
+    test "a non-initialize explicit legacy response cannot create a session", %{
+      http_server: http_server
+    } do
       test_pid = self()
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
 
@@ -426,12 +432,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         )
       end)
 
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn ->
         send(test_pid, {:request, conn.method})
         Plug.Conn.resp(conn, 200, "")
       end)
 
-      {stub_client, transport} = start_http_transport(bypass)
+      {stub_client, transport} = start_http_transport(http_server)
       params = %{}
 
       assert :ok =
@@ -449,11 +455,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
     end
 
     test "auto negotiation sends modern discover then legacy initialize on one transport", %{
-      bypass: bypass
+      http_server: http_server
     } do
       test_pid = self()
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         headers = Map.new(conn.req_headers)
@@ -494,7 +500,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         end
       end)
 
-      Bypass.stub(bypass, "GET", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "GET", "/mcp", fn conn ->
         send(test_pid, {:negotiation_request, "GET", Map.new(conn.req_headers), self()})
 
         receive do
@@ -504,7 +510,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         end
       end)
 
-      Bypass.stub(bypass, "DELETE", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "DELETE", "/mcp", fn conn ->
         send(test_pid, {:negotiation_request, "DELETE", Map.new(conn.req_headers)})
         Plug.Conn.resp(conn, 200, "")
       end)
@@ -525,7 +531,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
                  transport:
                    {:streamable_http,
                     [
-                      base_url: "http://localhost:#{bypass.port}",
+                      base_url: "http://localhost:#{http_server.port}",
                       mcp_path: "/mcp",
                       enable_sse: true,
                       transport_opts: @test_http_opts
@@ -614,7 +620,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
     end
 
     test "logs and telemetry expose header names but not authorization or parameter values", %{
-      bypass: bypass
+      http_server: http_server
     } do
       secret = "task7-secret-sentinel"
       test_pid = self()
@@ -630,7 +636,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
 
       on_exit(fn -> :telemetry.detach(handler) end)
 
-      Bypass.stub(bypass, "POST", "/mcp", fn conn ->
+      HTTPServer.stub(http_server, "POST", "/mcp", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
         request = JSON.decode!(body)
         conn = Plug.Conn.put_resp_header(conn, "content-type", "application/json")
@@ -643,7 +649,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
       end)
 
       {stub_client, transport} =
-        start_http_transport(bypass, headers: %{"Authorization" => secret})
+        start_http_transport(http_server, headers: %{"Authorization" => secret})
 
       params = modern_params(%{})
 
@@ -670,7 +676,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
     end
   end
 
-  defp start_http_transport(bypass, opts \\ []) do
+  defp start_http_transport(http_server, opts \\ []) do
     {:ok, stub_client} = StubClient.start_link()
 
     {:ok, transport} =
@@ -678,7 +684,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.HeadersTest do
         Keyword.merge(
           [
             client: stub_client,
-            base_url: "http://localhost:#{bypass.port}",
+            base_url: "http://localhost:#{http_server.port}",
             mcp_path: "/mcp",
             transport_opts: @test_http_opts
           ],
