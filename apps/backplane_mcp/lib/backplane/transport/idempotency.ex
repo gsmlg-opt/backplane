@@ -61,7 +61,7 @@ defmodule Backplane.Transport.Idempotency do
     if get_req_header(conn, "idempotency-key") == [] do
       conn
     else
-      id = if is_map(conn.body_params), do: conn.body_params["id"]
+      id = plain_map(conn.body_params)["id"]
 
       body = %{
         jsonrpc: "2.0",

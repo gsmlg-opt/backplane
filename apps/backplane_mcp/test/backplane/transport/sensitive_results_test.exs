@@ -41,6 +41,7 @@ defmodule Backplane.Transport.SensitiveResultsTest do
       assert connection.status == 400
       assert get_resp_header(connection, "cache-control") == ["no-store"]
       assert Jason.decode!(connection.resp_body)["error"]["code"] == -32600
+      assert Jason.decode!(connection.resp_body)["id"] == body["id"]
       assert Clients.get_client_by_name("sensitive-client") == nil
       assert cache_entries() == before
     end
