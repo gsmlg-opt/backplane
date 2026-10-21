@@ -170,7 +170,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert refresh["if"] == "matrix.release == 'backplane'"
 
     assert refresh["run"] ==
-             ~s(mix "do" --app backplane_admin compile --force --warnings-as-errors)
+             ~s(mix "do" --app backplane_admin cmd mix compile --force --warnings-as-errors)
 
     assert verify["if"] == "matrix.release == 'backplane'"
     assert verify["run"] =~ "_build/prod/rel/backplane/bin/backplane eval"
@@ -188,6 +188,85 @@ defmodule Backplane.ReleaseConfigTest do
 
     refute nil in positions
     assert positions == Enum.sort(positions)
+  end
+
+  @tag :tmp_dir
+  test "metadata refresh recompiles admin without compiling unrelated umbrella apps", %{
+    tmp_dir: directory
+  } do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+
+    refresh =
+      workflow["jobs"]["build"]["steps"]
+      |> Enum.find(&(&1["name"] == "Refresh compiled admin build metadata"))
+
+    File.write!(Path.join(directory, "mix.exs"), """
+    defmodule ReleaseScopeFixture.MixProject do
+      use Mix.Project
+      def project, do: [apps_path: "apps", version: "0.1.0"]
+    end
+    """)
+
+    for app <- ~w(backplane_admin unrelated_app) do
+      app_directory = Path.join([directory, "apps", app])
+      File.mkdir_p!(Path.join(app_directory, "lib"))
+
+      File.write!(Path.join(app_directory, "mix.exs"), """
+      defmodule #{Macro.camelize(app)}.MixProject do
+        use Mix.Project
+        def project, do: [app: :#{app}, version: "0.1.0", build_path: "../../_build"]
+      end
+      """)
+    end
+
+    File.write!(Path.join(directory, "apps/backplane_admin/lib/metadata.ex"), """
+    defmodule ReleaseMetadataFixture do
+      @revision System.fetch_env!("FIXTURE_COMPILED_SHA")
+      def revision, do: @revision
+    end
+    """)
+
+    File.write!(
+      Path.join(directory, "apps/unrelated_app/lib/unrelated.ex"),
+      ~s(raise "unrelated umbrella app must not be compiled by admin metadata refresh")
+    )
+
+    env = [{"MIX_ENV", "prod"}, {"ERL_FLAGS", "+S 2:2"}, {"MIX_BUILD_PATH", nil}]
+
+    {output, status} =
+      System.cmd("mix", ["compile"],
+        cd: Path.join(directory, "apps/backplane_admin"),
+        stderr_to_stdout: true,
+        env: [{"FIXTURE_COMPILED_SHA", "previous-sha"} | env]
+      )
+
+    assert status == 0, output
+
+    {output, status} =
+      System.cmd("bash", ["-c", refresh["run"]],
+        cd: directory,
+        stderr_to_stdout: true,
+        env: [{"FIXTURE_COMPILED_SHA", "current-sha"} | env]
+      )
+
+    assert status == 0, output
+    refute File.dir?(Path.join(directory, "_build/prod/lib/unrelated_app/ebin"))
+
+    {output, status} =
+      System.cmd(
+        "elixir",
+        [
+          "-pa",
+          Path.join(directory, "_build/prod/lib/backplane_admin/ebin"),
+          "-e",
+          "IO.puts(ReleaseMetadataFixture.revision())"
+        ],
+        stderr_to_stdout: true,
+        env: [{"FIXTURE_COMPILED_SHA", nil} | env]
+      )
+
+    assert status == 0, output
+    assert String.trim(output) == "current-sha"
   end
 
   test "compiled release metadata verification rejects stale builds despite runtime overrides" do
