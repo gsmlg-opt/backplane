@@ -1936,3 +1936,35 @@ tombstoned and must remain terminal, without regenerated embeddings/relations.
 Task123 prepares a bounded supported operator controller only; no old-job recovery
 has yet run. Source recovery A16 is the last reserved original stage round,
 separate from the exhausted general compatibility pool.
+
+## Final local acceptance and delivery (2026-10-21)
+
+Local L01–L18 are accepted at the composite evidence levels above. The final
+relation-classifier regression is39/0; exact178-file Memory1413/0 (5 unchanged
+exclusions), exact14-file Admin134/0, scoped quality and dev strict compilation
+passed. Earlier API143/0, Host553/0, System56/0, Skills26/0, Contract15/0,
+Llama3/0, Bun10/0, policy12/0, release22/0, workflow8/0 and Python283/0
+precede A20 and are retained evidence, not fresh reruns after it.
+
+Memory implementation/documentation is committed as `86ad63e5`; selective release
+support is `db610c33`. Both were pushed to `origin/main`. The root is the only
+worktree, so no remaining worktree merge was required. The explicit242-path task
+manifest excludes `backplane-memory-provenance-codex-task.md`, private `.devenv`
+evidence, generated assets and credentials. Those unrelated bytes are preserved.
+
+Release is incomplete. Required gates on the preceding9fde SHA were red:
+MCP idempotency Dialyzer, AdminAudit `regenerate_token`, Relayixir
+`cleanup_unconfirmed`, and MCP protocol SSE `no process` (cause unproved).
+Broad strict Credo also retains the required upstream TODO at `config/config.exs:99`.
+These failures were not repaired or waived within this Memory task. New pushed-SHA
+CI must be inspected before release; permission to continue Memory does not waive
+required gates. No version bump, release dispatch, package publication or deployment
+has occurred. The selective release must include `backplane_memory_contract` among
+the eight affected apps and retain actual qualification, six platform builds,
+installed smoke, checksums and Docker publication. See the runbook release section.
+
+Open `http://localhost:4221/memory` without a host selection. The optional host
+filters show the primary and isolated source data; repository remains provenance.
+Public API is on4220 and the local host direct/MCP facades are4222/4223. The local
+stack remains healthy and running; tested lifecycle commands and nonsecret example
+configuration are in the runbook. No cross-machine verification was performed.

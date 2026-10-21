@@ -908,3 +908,26 @@ the gateway application is stopped. Do not remove a consumed recovery guard or
 blindly rerun an action with an unknown outcome. Reconcile read-only and prepare a
 new reviewed recovery plan. The local acceptance artifacts retain the initial
 preflight failure, exact no-mutation proof and narrower recovery separately.
+
+## Delivery checkpoint after local acceptance
+
+Memory source/docs: `86ad63e5`; selective release support: `db610c33`, both pushed
+to `origin/main`. The only remaining root worktree file is the deliberately excluded
+`backplane-memory-provenance-codex-task.md`. Local evidence remains under
+`.devenv/provenance-correction/resumed-101/`; final L18 acceptance is
+`l18-final-acceptance129.json`, with independent split recovery and explicit
+scheduler-delta review alongside it.
+
+Required CI on the new pushed SHA must pass before versioning/dispatch. Prior
+required gates are red; do not bypass them. Inspect actual runs with:
+
+```sh
+gh run list --repo gsmlg-opt/backplane --branch main --limit 5
+gh run view RUN_ID --repo gsmlg-opt/backplane --log-failed
+```
+
+Only after required gates pass, use an unused version and the existing selective
+release workflow. The affected app list is
+`backplane_admin,backplane_api,backplane_host_agent,backplane_llama,backplane_memory,backplane_memory_contract,backplane_skills,backplane_system`.
+Commit/review the scoped version change before dispatch so Docker and OTP artifacts
+agree. Require gates on that exact immutable SHA. No release is claimed here.
