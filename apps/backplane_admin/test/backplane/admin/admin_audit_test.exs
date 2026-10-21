@@ -2,6 +2,7 @@ defmodule Backplane.Admin.AdminAuditTest do
   use Backplane.Admin.LiveCase, async: false
   alias Backplane.Admin.Audit
   alias Backplane.Admin.Audit.Event
+  alias Backplane.Clients
   alias Backplane.Repo
 
   test "audit insertion failures are reported and do not create records" do
@@ -80,30 +81,49 @@ defmodule Backplane.Admin.AdminAuditTest do
     Repo.delete_all(Event)
     {:ok, view, _} = live_with_sandbox(conn, "/system/clients")
     render_click(view, "new")
-    render_click(view, "regenerate_token")
+    render_click(view, "rotate_token")
     render_click(view, "validate", %{"client" => %{"name" => "", "scopes" => "*"}})
     render_click(view, "save", %{"client" => %{"name" => "", "scopes" => "*"}})
     assert [] = Audit.list()
     name = "audit-client-#{System.unique_integer([:positive])}"
-    render_click(view, "save", %{"client" => %{"name" => name, "scopes" => "*"}})
+    issued_html = render_click(view, "save", %{"client" => %{"name" => name, "scopes" => "*"}})
+    assert [issued_token] = Regex.run(~r/bp2_[A-Za-z0-9_-]{43}/, issued_html)
     assert [%{action: "client.create", target_id: id}] = Audit.list()
+    assert {:ok, %{id: ^id}} = Clients.verify_token(issued_token)
     render_click(view, "edit", %{"id" => id})
-    render_click(view, "regenerate_token")
+    rotated_html = render_click(view, "rotate_token")
+    assert [rotated_token] = Regex.run(~r/bp2_[A-Za-z0-9_-]{43}/, rotated_html)
+    refute rotated_token == issued_token
+    assert :error = Clients.verify_token(issued_token)
+    assert {:ok, %{id: ^id}} = Clients.verify_token(rotated_token)
+
+    assert [
+             %{action: "client.token_rotated", target_type: "client", target_id: ^id},
+             %{action: "client.create", target_type: "client", target_id: ^id}
+           ] = Audit.list()
+
+    render_click(view, "dismiss_token")
+    render_click(view, "edit", %{"id" => id})
     render_click(view, "save", %{"client" => %{"name" => name, "scopes" => "llm::invoke"}})
     render_click(view, "toggle_active", %{"id" => id})
     render_click(view, "delete", %{"id" => id})
 
     assert [
-             %{action: "client.delete"},
-             %{action: "client.toggle"},
-             %{action: "client.update"},
-             %{action: "client.create"}
+             %{action: "client.delete", target_type: "client", target_id: ^id},
+             %{action: "client.toggle", target_type: "client", target_id: ^id},
+             %{action: "client.update", target_type: "client", target_id: ^id},
+             %{action: "client.token_rotated", target_type: "client", target_id: ^id},
+             %{action: "client.create", target_type: "client", target_id: ^id}
            ] = Audit.list()
 
     records = Repo.all(Event)
     refute inspect(records) =~ name
     refute inspect(records) =~ "bp_"
+    refute inspect(records) =~ "bp2_"
+    refute inspect(records) =~ issued_token
+    refute inspect(records) =~ rotated_token
     refute inspect(records) =~ "token_hash"
+    refute inspect(records) =~ "token_digest"
     {:ok, audit_view, html} = live_with_sandbox(conn, "/system/logs/audit?action=client.delete")
     assert html =~ "client.delete"
     refute html =~ "client.create"
