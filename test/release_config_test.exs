@@ -3,6 +3,197 @@ ExUnit.start()
 defmodule Backplane.ReleaseConfigTest do
   use ExUnit.Case, async: true
 
+  @runtime_release_apps ~w(backplane_admin backplane_api backplane_host_agent backplane_llama backplane_memory backplane_skills backplane_system)
+  @mcp_examples ~w(apps/backplane_mcp_protocol/README.md apps/backplane_mcp_protocol/pages/introduction.md apps/backplane_mcp_protocol/pages/building-a-server.md)
+
+  test "version script preserves unified versioning by default and with explicit all" do
+    for selection <- [[], ["all"]] do
+      directory = version_fixture()
+      {_output, 0} = set_version(directory, ["v9.8.7" | selection])
+      snapshot = version_snapshot(directory)
+
+      for {path, contents} <- snapshot do
+        if String.ends_with?(path, "mix.exs") do
+          assert contents =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+        else
+          assert contents =~ ~s({:backplane_mcp_protocol, "~> 9.8.7"})
+        end
+      end
+
+      refute Enum.any?(Map.keys(snapshot), &String.ends_with?(&1, ".bak"))
+    end
+  end
+
+  test "selected versioning preserves every unselected manifest and MCP example" do
+    directory = version_fixture()
+    before = version_snapshot(directory)
+    {_output, 0} = set_version(directory, ["9.8.7" | @runtime_release_apps])
+    after_snapshot = version_snapshot(directory)
+    selected = ["mix.exs" | Enum.map(@runtime_release_apps, &"apps/#{&1}/mix.exs")]
+
+    assert Map.keys(before) |> Enum.sort() == Map.keys(after_snapshot) |> Enum.sort()
+
+    for {path, contents} <- before do
+      if path in selected do
+        assert after_snapshot[path] != contents
+        assert after_snapshot[path] =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+      else
+        assert after_snapshot[path] == contents, "unexpected change to #{path}"
+      end
+    end
+  end
+
+  test "selecting the MCP package updates only its manifest, examples and root" do
+    directory = version_fixture()
+    before = version_snapshot(directory)
+    {_output, 0} = set_version(directory, ["9.8.7", "backplane_mcp_protocol"])
+    after_snapshot = version_snapshot(directory)
+    selected = ["mix.exs", "apps/backplane_mcp_protocol/mix.exs" | @mcp_examples]
+
+    for {path, contents} <- before do
+      assert after_snapshot[path] != contents == path in selected, path
+    end
+  end
+
+  test "version script validates every selection before writing" do
+    for arguments <- [
+          ["invalid", "backplane_host_agent"],
+          ["9.8.7", "backplane_host_agent", "unknown_app"],
+          ["9.8.7", "backplane_host_agent", "../backplane_memory"],
+          ["9.8.7", "all", "backplane_host_agent"],
+          ["9.8.7", "backplane_host_agent", "all"],
+          ["9.8.7", ""]
+        ] do
+      directory = version_fixture()
+      before = version_snapshot(directory)
+      {_output, status} = set_version(directory, arguments)
+
+      assert status != 0, "accepted invalid arguments: #{inspect(arguments)}"
+      assert version_snapshot(directory) == before
+    end
+  end
+
+  test "version script validates all manifests and selected examples before writing" do
+    for broken_path <- ["apps/backplane_system/mix.exs", List.last(@mcp_examples)] do
+      directory = version_fixture()
+      File.write!(Path.join(directory, broken_path), "no version field\n")
+      before = version_snapshot(directory)
+      {_output, status} = set_version(directory, ["9.8.7"])
+
+      assert status != 0
+      assert version_snapshot(directory) == before
+    end
+  end
+
+  test "release defaults to full publication and explicitly gates selective runtime releases" do
+    workflow = File.read!(".github/workflows/release.yml")
+
+    assert workflow =~ ~r/release_apps:.*?type: string.*?default: all/s
+    assert workflow =~ "RELEASE_APPS_INPUT: ${{ inputs.release_apps }}"
+    assert workflow =~ "release_apps: ${{ steps.gate.outputs.release_apps }}"
+    assert workflow =~ "release_apps: ${{ needs.qualify-memory-v2.outputs.release_apps }}"
+    assert workflow =~ "Selective runtime releases must include backplane_host_agent"
+    assert workflow =~ "Selective runtime releases cannot publish Hex packages"
+    assert workflow =~ ~s(IFS=',' read -r -a release_apps <<< "$RELEASE_APPS")
+    assert workflow =~ ~s(bash scripts/set-version.sh "$RELEASE_VERSION" "${release_apps[@]}")
+    assert workflow =~ "if: needs.publish.outputs.release_apps == 'all'"
+
+    assert workflow =~
+             ~r/docker-image:.*?if: >-\s+\$\{\{ !cancelled\(\) &&\s+needs.publish.result == 'success' &&\s+\(needs.hex-packages.result == 'success' \|\|\s+\(needs.publish.outputs.release_apps != 'all' &&\s+needs.hex-packages.result == 'skipped'\)\) \}\}/s
+  end
+
+  test "release input gate accepts full or selected runtime apps and rejects invalid scope" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+
+    gate =
+      workflow["jobs"]["qualify-memory-v2"]["steps"]
+      |> Enum.find(&(&1["id"] == "gate"))
+
+    directory = version_fixture()
+    binary_directory = Path.join(directory, "bin")
+    File.mkdir_p!(binary_directory)
+    git = Path.join(binary_directory, "git")
+    File.write!(git, "#!/usr/bin/env bash\nprintf '%s\\n' fixture-sha\n")
+    File.chmod!(git, 0o755)
+    output_path = Path.join(directory, "gate-output")
+
+    selections = ["all", Enum.join(@runtime_release_apps, ",")]
+
+    invalid_selections = [
+      "",
+      "backplane_memory",
+      "backplane_host_agent,unknown_app",
+      "backplane_host_agent,../backplane_memory",
+      "backplane_host_agent,",
+      "backplane_host_agent,,backplane_memory",
+      "all,backplane_host_agent"
+    ]
+
+    hex_selections =
+      Enum.map(
+        ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol),
+        &"backplane_host_agent,#{&1}"
+      )
+
+    for selection <- selections ++ invalid_selections ++ hex_selections do
+      File.write!(output_path, "")
+
+      {output, status} =
+        System.cmd("bash", ["-c", gate["run"]],
+          cd: directory,
+          stderr_to_stdout: true,
+          env: [
+            {"PATH", binary_directory <> ":" <> System.fetch_env!("PATH")},
+            {"GITHUB_OUTPUT", output_path},
+            {"WORKFLOW_REF", "refs/heads/main"},
+            {"RELEASE_VERSION_INPUT", "9.8.7"},
+            {"RELEASE_APPS_INPUT", selection}
+          ]
+        )
+
+      if selection in selections do
+        assert status == 0, output
+        assert File.read!(output_path) =~ "release_apps=#{selection}\n"
+      else
+        assert status != 0, "accepted invalid release_apps: #{inspect(selection)}"
+        assert File.read!(output_path) == ""
+      end
+    end
+  end
+
+  test "Docker allows deliberately skipped Hex only for selective successful releases" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    condition = workflow["jobs"]["docker-image"]["if"]
+    results = ~w(success failure skipped cancelled)
+
+    for selection <- ["all", Enum.join(@runtime_release_apps, ",")],
+        publish <- results,
+        hex <- results,
+        cancelled <- [false, true] do
+      expression =
+        condition
+        |> String.trim()
+        |> String.replace_prefix("${{", "")
+        |> String.replace_suffix("}}", "")
+        |> String.replace("!cancelled()", to_string(!cancelled))
+        |> String.replace("needs.publish.result", inspect(publish))
+        |> String.replace("needs.hex-packages.result", inspect(hex))
+        |> String.replace("needs.publish.outputs.release_apps", inspect(selection))
+        |> String.replace("'success'", ~s("success"))
+        |> String.replace("'skipped'", ~s("skipped"))
+        |> String.replace("'all'", ~s("all"))
+
+      {actual, []} = Code.eval_string(expression)
+
+      expected =
+        !cancelled and publish == "success" and
+          (hex == "success" or (selection != "all" and hex == "skipped"))
+
+      assert actual == expected,
+             "selection=#{selection} publish=#{publish} hex=#{hex} cancelled=#{cancelled}"
+    end
+  end
+
   test "umbrella defines backplane and host agent releases" do
     releases = Mix.Project.config() |> Keyword.fetch!(:releases)
 
@@ -270,5 +461,39 @@ defmodule Backplane.ReleaseConfigTest do
 
     assert proxy =~ "127.0.0.1:4101"
     assert proxy =~ "must resolve only on a trusted network"
+  end
+
+  defp version_fixture do
+    directory =
+      Path.join(
+        System.tmp_dir!(),
+        "backplane-release-version-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
+
+    for path <- ["mix.exs" | Path.wildcard("apps/*/mix.exs")] ++ @mcp_examples do
+      destination = Path.join(directory, path)
+      File.mkdir_p!(Path.dirname(destination))
+      File.cp!(path, destination)
+    end
+
+    directory
+  end
+
+  defp version_snapshot(directory) do
+    directory
+    |> Path.join("**/*")
+    |> Path.wildcard()
+    |> Enum.filter(&File.regular?/1)
+    |> Map.new(fn path -> {Path.relative_to(path, directory), File.read!(path)} end)
+  end
+
+  defp set_version(directory, arguments) do
+    System.cmd("bash", [Path.expand("scripts/set-version.sh") | arguments],
+      cd: directory,
+      stderr_to_stdout: true
+    )
   end
 end

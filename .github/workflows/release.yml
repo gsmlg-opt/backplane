@@ -7,6 +7,11 @@ on:
         description: "Release version, with or without leading v"
         required: true
         type: string
+      release_apps:
+        description: "all for unified OTP/Hex/Docker; comma-separated runtime app names for OTP/Docker only (must include backplane_host_agent)"
+        required: false
+        type: string
+        default: all
 
 permissions:
   contents: read
@@ -29,6 +34,7 @@ jobs:
     outputs:
       gated_sha: ${{ steps.gate.outputs.sha }}
       version: ${{ steps.gate.outputs.version }}
+      release_apps: ${{ steps.gate.outputs.release_apps }}
 
     env:
       MIX_ENV: test
@@ -45,6 +51,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION_INPUT: ${{ inputs.version }}
+          RELEASE_APPS_INPUT: ${{ inputs.release_apps }}
           WORKFLOW_REF: ${{ github.ref }}
         run: |
           if [[ "$WORKFLOW_REF" != "refs/heads/main" ]]; then
@@ -66,8 +73,39 @@ jobs:
             exit 1
           fi
 
+          release_apps="$RELEASE_APPS_INPUT"
+          if [[ "$release_apps" != "all" ]]; then
+            if [[ ! "$release_apps" =~ ^[a-z][a-z0-9_]*(,[a-z][a-z0-9_]*)*$ ]]; then
+              echo "release_apps must be all or comma-separated runtime app names" >&2
+              exit 1
+            fi
+
+            IFS=',' read -r -a selected_apps <<< "$release_apps"
+            has_host_agent=false
+            for app in "${selected_apps[@]}"; do
+              if [[ ! -f "apps/$app/mix.exs" ]]; then
+                echo "Unknown release app: $app" >&2
+                exit 1
+              fi
+
+              case "$app" in
+                backplane_agent_runtime|backplane_ai_protocol|backplane_skill_protocol|backplane_mcp_protocol)
+                  echo "Selective runtime releases cannot publish Hex packages; use all" >&2
+                  exit 1
+                  ;;
+                backplane_host_agent) has_host_agent=true ;;
+              esac
+            done
+
+            if [[ "$has_host_agent" != "true" ]]; then
+              echo "Selective runtime releases must include backplane_host_agent for integration packaging" >&2
+              exit 1
+            fi
+          fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "release_apps=$release_apps" >> "$GITHUB_OUTPUT"
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -249,6 +287,7 @@ jobs:
     env:
       GATED_SHA: ${{ needs.qualify-memory-v2.outputs.gated_sha }}
       RELEASE_VERSION: ${{ needs.qualify-memory-v2.outputs.version }}
+      RELEASE_APPS: ${{ needs.qualify-memory-v2.outputs.release_apps }}
 
     strategy:
       fail-fast: false
@@ -319,8 +358,11 @@ jobs:
             release-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-
             release-${{ matrix.target.runner }}-${{ matrix.target.name }}-
 
-      - name: Unify app versions
-        run: bash scripts/set-version.sh "$RELEASE_VERSION"
+      - name: Set selected app versions
+        shell: bash
+        run: |
+          IFS=',' read -r -a release_apps <<< "$RELEASE_APPS"
+          bash scripts/set-version.sh "$RELEASE_VERSION" "${release_apps[@]}"
 
       - name: Install dependencies
         run: |
@@ -549,6 +591,7 @@ jobs:
     outputs:
       version: ${{ needs.qualify-memory-v2.outputs.version }}
       gated_sha: ${{ needs.qualify-memory-v2.outputs.gated_sha }}
+      release_apps: ${{ needs.qualify-memory-v2.outputs.release_apps }}
 
     steps:
       - name: Checkout
@@ -556,10 +599,14 @@ jobs:
         with:
           ref: ${{ needs.qualify-memory-v2.outputs.gated_sha }}
 
-      - name: Unify app versions
+      - name: Set selected app versions
+        shell: bash
         env:
           RELEASE_VERSION: ${{ needs.qualify-memory-v2.outputs.version }}
-        run: bash scripts/set-version.sh "$RELEASE_VERSION"
+          RELEASE_APPS: ${{ needs.qualify-memory-v2.outputs.release_apps }}
+        run: |
+          IFS=',' read -r -a release_apps <<< "$RELEASE_APPS"
+          bash scripts/set-version.sh "$RELEASE_VERSION" "${release_apps[@]}"
 
       - name: Prepare deploy docs and release notes
         shell: bash
@@ -608,6 +655,7 @@ jobs:
   hex-packages:
     name: Publish ${{ matrix.package.name }} to Hex
     needs: publish
+    if: needs.publish.outputs.release_apps == 'all'
     runs-on: ubuntu-24.04
 
     strategy:
@@ -639,7 +687,7 @@ jobs:
       - name: Unify app versions
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
-        run: bash scripts/set-version.sh "$RELEASE_VERSION"
+        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -703,6 +751,12 @@ jobs:
     needs:
       - publish
       - hex-packages
+    if: >-
+      ${{ !cancelled() &&
+          needs.publish.result == 'success' &&
+          (needs.hex-packages.result == 'success' ||
+           (needs.publish.outputs.release_apps != 'all' &&
+            needs.hex-packages.result == 'skipped')) }}
     uses: ./.github/workflows/docker-image.yml
     permissions:
       contents: read
