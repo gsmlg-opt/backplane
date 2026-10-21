@@ -1,4 +1,4 @@
-if Code.ensure_loaded?(:gun) do
+if Code.ensure_loaded?(HTTP.WebSocket) do
   defmodule Mix.Tasks.Backplane.McpProtocol.Websocket.Interactive do
     @shortdoc "Test the WebSocket transport implementation interactively."
 
@@ -27,7 +27,7 @@ if Code.ensure_loaded?(:gun) do
 
     def run(args) do
       # Start required applications without requiring a project
-      Application.ensure_all_started([:backplane_mcp_protocol, :peri, :gun])
+      Application.ensure_all_started([:backplane_mcp_protocol, :peri, :http_web_socket])
 
       # Parse arguments and set log level
       {parsed, _} =
@@ -48,7 +48,9 @@ if Code.ensure_loaded?(:gun) do
       header = UI.header("ANUBIS MCP WEBSOCKET INTERACTIVE")
       IO.puts(header)
 
-      IO.puts("#{UI.colors().info}Connecting to WebSocket server at: #{server_url}#{UI.colors().reset}\n")
+      IO.puts(
+        "#{UI.colors().info}Connecting to WebSocket server at: #{server_url}#{UI.colors().reset}\n"
+      )
 
       SupervisedShell.start(
         transport_module: WebSocket,

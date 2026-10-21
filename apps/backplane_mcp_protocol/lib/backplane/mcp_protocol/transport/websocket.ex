@@ -1,4 +1,4 @@
-if Code.ensure_loaded?(:gun) do
+if Code.ensure_loaded?(HTTP.WebSocket) do
   defmodule Backplane.McpProtocol.Transport.WebSocket do
     @moduledoc """
     A transport implementation that uses WebSockets for bidirectional communication
@@ -19,6 +19,8 @@ if Code.ensure_loaded?(:gun) do
 
     alias Backplane.McpProtocol.Telemetry
     alias Backplane.McpProtocol.Transport.Behaviour, as: Transport
+    alias HTTP.WebSocket, as: HttpWebSocket
+    alias HTTP.WebSocket.Event
 
     @type t :: GenServer.server()
 
@@ -43,15 +45,20 @@ if Code.ensure_loaded?(:gun) do
     - `:name` - The name of the transport process, respecting the `GenServer` "Name Registration" section.
     - `:client` - The client to send the messages to, respecting the `GenServer` "Name Registration" section.
     - `:server` - The server configuration.
-    - `:headers` - The headers to send with the HTTP requests.
-    - `:transport_opts` - The underlying transport options to pass to Gun.
+    - `:headers` - The headers to send with the WebSocket upgrade request.
+    - `:transport_opts` - A keyword list or map of options passed to `HTTP.WebSocket.new/3`,
+      including the library's supported string map keys. The transport always overrides
+      owner and headers, including string keys. Only browser mode with legacy delivery
+      is supported; ACK delivery and proxy mode are rejected. Incoming text messages
+      are forwarded to the client; binary messages are ignored. TLS verification uses
+      the library defaults unless explicitly configured through these options.
     """
     @type option ::
             {:name, GenServer.name()}
             | {:client, GenServer.server()}
             | {:server, server}
             | {:headers, map()}
-            | {:transport_opts, keyword}
+            | {:transport_opts, keyword() | map()}
             | GenServer.option()
 
     defschema(:options_schema, %{
@@ -95,21 +102,24 @@ if Code.ensure_loaded?(:gun) do
 
     @impl GenServer
     def init(%{} = opts) do
-      server_url = URI.append_path(opts.server[:base_url], opts.server[:base_path])
-      ws_url = URI.append_path(server_url, opts.server[:ws_path])
+      ws_url =
+        opts.server[:base_url]
+        |> URI.append_path(opts.server[:base_path])
+        |> URI.append_path(opts.server[:ws_path])
+        |> normalize_websocket_scheme()
 
-      state = Map.merge(opts, %{ws_url: ws_url, gun_pid: nil, stream_ref: nil})
-
-      metadata = %{
-        transport: :websocket,
-        ws_url: URI.to_string(ws_url),
-        client: opts.client
-      }
+      state =
+        Map.merge(opts, %{
+          ws_url: ws_url,
+          socket: nil,
+          socket_monitor: nil,
+          connection_state: :opening
+        })
 
       Telemetry.execute(
         Telemetry.event_transport_init(),
         %{system_time: System.system_time()},
-        metadata
+        %{transport: :websocket, ws_url: URI.to_string(ws_url), client: opts.client}
       )
 
       {:ok, state, {:continue, :connect}}
@@ -117,23 +127,15 @@ if Code.ensure_loaded?(:gun) do
 
     @impl GenServer
     def handle_continue(:connect, state) do
-      uri = URI.parse(state.ws_url)
-      protocol = if uri.scheme == "https", do: :https, else: :http
-      port = uri.port || if protocol == :https, do: 443, else: 80
-
-      state =
-        Map.merge(state, %{
-          host: uri.host,
-          port: port,
-          protocol: protocol
-        })
+      uri = state.ws_url
+      port = uri.port || if(uri.scheme == "wss", do: 443, else: 80)
 
       metadata = %{
         transport: :websocket,
-        ws_url: URI.to_string(state.ws_url),
+        ws_url: URI.to_string(uri),
         host: uri.host,
         port: port,
-        protocol: protocol
+        protocol: Map.get(%{"ws" => :ws, "wss" => :wss}, uri.scheme)
       }
 
       Telemetry.execute(
@@ -142,19 +144,18 @@ if Code.ensure_loaded?(:gun) do
         metadata
       )
 
-      gun_opts = %{
-        protocols: [:http],
-        http_opts: %{keepalive: :infinity}
-      }
+      result =
+        with {:ok, options} <- websocket_options(state.transport_opts, state.headers) do
+          HttpWebSocket.new(uri, [], options)
+        end
 
-      gun_opts = Map.merge(gun_opts, Map.new(state.transport_opts))
-
-      case open_connection(uri.host, port, gun_opts) do
-        {:ok, gun_pid} ->
-          handle_connection_established(gun_pid, uri, state)
+      case result do
+        %HttpWebSocket{} = socket ->
+          monitor = Process.monitor(socket.pid)
+          {:noreply, %{state | socket: socket, socket_monitor: monitor}}
 
         {:error, reason} ->
-          Logging.transport_event("gun_open_failed", %{reason: reason}, level: :error)
+          Logging.transport_event("websocket_open_failed", %{reason: reason}, level: :error)
 
           Telemetry.execute(
             Telemetry.event_transport_error(),
@@ -162,63 +163,32 @@ if Code.ensure_loaded?(:gun) do
             Map.put(metadata, :error, reason)
           )
 
-          {:stop, {:gun_open_failed, reason}, state}
+          {:stop, {:websocket_open_failed, reason}, state}
       end
-    end
-
-    defp open_connection(host, port, gun_opts) do
-      :gun.open(to_charlist(host), port, gun_opts)
-    end
-
-    defp handle_connection_established(gun_pid, uri, state) do
-      Logging.transport_event("gun_opened", %{host: uri.host, port: uri.port})
-      Process.monitor(gun_pid)
-
-      case :gun.await_up(gun_pid, 5000) do
-        {:ok, _protocol} ->
-          initiate_websocket_upgrade(gun_pid, uri, state)
-
-        {:error, reason} ->
-          Logging.transport_event("gun_await_up_failed", %{reason: reason}, level: :error)
-
-          {:stop, {:gun_await_up_failed, reason}, state}
-      end
-    end
-
-    defp initiate_websocket_upgrade(gun_pid, uri, state) do
-      headers =
-        state.headers
-        |> Map.to_list()
-        |> Enum.map(fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
-
-      path = uri.path || "/"
-      path = if uri.query, do: "#{path}?#{uri.query}", else: path
-      stream_ref = :gun.ws_upgrade(gun_pid, to_charlist(path), headers)
-      Logging.transport_event("ws_upgrade_requested", %{path: path})
-
-      {:noreply, %{state | gun_pid: gun_pid, stream_ref: stream_ref}}
     end
 
     @impl GenServer
-    def handle_call({:send, message}, _from, %{gun_pid: pid, stream_ref: stream_ref} = state)
-        when not is_nil(pid) and not is_nil(stream_ref) do
-      metadata = %{
-        transport: :websocket,
-        message_size: byte_size(message)
-      }
-
+    def handle_call({:send, message}, _from, %{connection_state: :open, socket: socket} = state) do
       Telemetry.execute(
         Telemetry.event_transport_send(),
         %{system_time: System.system_time()},
-        metadata
+        %{transport: :websocket, message_size: byte_size(message)}
       )
 
-      :ok = :gun.ws_send(pid, stream_ref, {:text, message})
-      Logging.transport_event("ws_message_sent", String.slice(message, 0, 100))
-      {:reply, :ok, state}
+      case HttpWebSocket.send(socket, message) do
+        :ok ->
+          Logging.transport_event("ws_message_sent", String.slice(message, 0, 100))
+          {:reply, :ok, state}
+
+        {:error, reason} ->
+          Logging.transport_event("ws_send_failed", %{reason: reason}, level: :error)
+          {:reply, {:error, :send_failed}, state}
+      end
     rescue
-      e ->
-        Logging.transport_event("ws_send_failed", %{error: Exception.message(e)}, level: :error)
+      error ->
+        Logging.transport_event("ws_send_failed", %{error: Exception.message(error)},
+          level: :error
+        )
 
         {:reply, {:error, :send_failed}, state}
     end
@@ -229,156 +199,177 @@ if Code.ensure_loaded?(:gun) do
 
     @impl GenServer
     def handle_info(
-          {:gun_ws, pid, stream_ref, {:text, data}},
-          %{gun_pid: pid, stream_ref: stream_ref, client: client} = state
+          {HttpWebSocket, socket, %Event.Open{}},
+          %{socket: socket, connection_state: :opening, client: client} = state
         ) do
+      Logging.transport_event("ws_upgrade_success", "WebSocket connection established")
+      GenServer.cast(client, :initialize)
+      {:noreply, %{state | connection_state: :open}}
+    end
+
+    def handle_info(
+          {HttpWebSocket, socket, %Event.Message{data: data}},
+          %{socket: socket, connection_state: :open, client: client} = state
+        )
+        when is_binary(data) do
       Logging.transport_event("ws_message_received", String.slice(data, 0, 100))
 
       Telemetry.execute(
         Telemetry.event_transport_receive(),
         %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          message_size: byte_size(data)
-        }
+        %{transport: :websocket, message_size: byte_size(data)}
       )
 
       GenServer.cast(client, {:response, data})
       {:noreply, state}
     end
 
-    def handle_info({:gun_ws, pid, stream_ref, :close}, %{gun_pid: pid, stream_ref: stream_ref} = state) do
+    def handle_info(
+          {HttpWebSocket, socket, %Event.Close{code: nil}},
+          %{socket: socket} = state
+        ) do
       Logging.transport_event("ws_closed", "Connection closed by server", level: :warning)
 
       Telemetry.execute(
         Telemetry.event_transport_disconnect(),
         %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          reason: :normal_close
-        }
+        %{transport: :websocket, reason: :normal_close}
       )
 
-      {:stop, :normal, state}
+      {:stop, :normal, clear_socket(state)}
     end
 
-    def handle_info({:gun_ws, pid, stream_ref, {:close, code, reason}}, %{gun_pid: pid, stream_ref: stream_ref} = state) do
+    def handle_info(
+          {HttpWebSocket, socket, %Event.Close{code: code, reason: reason}},
+          %{socket: socket} = state
+        ) do
       Logging.transport_event("ws_closed", %{code: code, reason: reason}, level: :warning)
 
       Telemetry.execute(
         Telemetry.event_transport_disconnect(),
         %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          code: code,
-          reason: reason
-        }
+        %{transport: :websocket, code: code, reason: reason}
       )
 
-      {:stop, {:ws_closed, code, reason}, state}
+      {:stop, {:ws_closed, code, reason}, clear_socket(state)}
     end
 
     def handle_info(
-          {:gun_upgrade, pid, stream_ref, ["websocket"], _headers},
-          %{gun_pid: pid, stream_ref: stream_ref, client: client} = state
+          {HttpWebSocket, socket, %Event.Error{reason: reason}},
+          %{socket: socket, connection_state: connection_state} = state
         ) do
-      Logging.transport_event(
-        "ws_upgrade_success",
-        "WebSocket connection established"
-      )
-
-      GenServer.cast(client, :initialize)
-      {:noreply, state}
-    end
-
-    def handle_info({:gun_response, pid, stream_ref, _, status, headers}, %{gun_pid: pid, stream_ref: stream_ref} = state) do
-      Logging.transport_event(
-        "ws_upgrade_rejected",
-        %{status: status, headers: headers},
-        level: :error
-      )
-
-      {:stop, {:ws_upgrade_rejected, status}, state}
-    end
-
-    def handle_info({:gun_error, pid, stream_ref, reason}, %{gun_pid: pid, stream_ref: stream_ref} = state) do
-      Logging.transport_event("gun_error", %{reason: reason}, level: :error)
-      {:stop, {:gun_error, reason}, state}
-    end
-
-    def handle_info({:DOWN, _ref, :process, pid, reason}, %{gun_pid: pid} = state) do
-      Logging.transport_event("gun_down", %{reason: reason}, level: :error)
+      Logging.transport_event("websocket_error", %{reason: reason}, level: :error)
 
       Telemetry.execute(
         Telemetry.event_transport_error(),
         %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          error: :connection_down,
-          reason: reason
-        }
+        %{transport: :websocket, error: connection_state, reason: reason}
       )
 
-      {:stop, {:gun_down, reason}, state}
+      {:stop, {:websocket_error, reason}, state}
     end
 
-    def handle_info(msg, state) do
-      Logging.transport_event("unexpected_message", %{message: msg})
+    def handle_info(
+          {:DOWN, monitor, :process, pid, reason},
+          %{socket: %HttpWebSocket{pid: pid}, socket_monitor: monitor} = state
+        ) do
+      Logging.transport_event("websocket_down", %{reason: reason}, level: :error)
+
+      Telemetry.execute(
+        Telemetry.event_transport_error(),
+        %{system_time: System.system_time()},
+        %{transport: :websocket, error: :connection_down, reason: reason}
+      )
+
+      {:stop, {:websocket_down, reason}, %{state | socket: nil, socket_monitor: nil}}
+    end
+
+    def handle_info(message, state) do
+      Logging.transport_event("unexpected_message", %{message: message})
       {:noreply, state}
     end
 
     @impl GenServer
-    def handle_cast(:close_connection, %{gun_pid: pid} = state) when not is_nil(pid) do
-      Telemetry.execute(
-        Telemetry.event_transport_disconnect(),
-        %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          reason: :client_closed
-        }
-      )
-
-      :ok = :gun.close(pid)
-      {:stop, :normal, state}
-    end
-
     def handle_cast(:close_connection, state) do
+      reason = if state.socket, do: :client_closed, else: :client_closed_before_connected
+
       Telemetry.execute(
         Telemetry.event_transport_disconnect(),
         %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          reason: :client_closed_before_connected
-        }
+        %{transport: :websocket, reason: reason}
       )
 
-      {:stop, :normal, state}
+      close_socket(state.socket)
+      {:stop, :normal, clear_socket(state)}
     end
 
     @impl GenServer
-    def terminate(reason, %{gun_pid: pid} = _state) when not is_nil(pid) do
+    def terminate(reason, state) do
       Telemetry.execute(
         Telemetry.event_transport_terminate(),
         %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          reason: reason
-        }
+        %{transport: :websocket, reason: reason}
       )
 
       Telemetry.execute(
         Telemetry.event_transport_disconnect(),
         %{system_time: System.system_time()},
-        %{
-          transport: :websocket,
-          reason: reason
-        }
+        %{transport: :websocket, reason: reason}
       )
 
-      :gun.close(pid)
+      close_socket(state.socket)
       :ok
     end
 
-    def terminate(_reason, _state), do: :ok
+    defp websocket_options(options, headers) when is_map(options) or is_list(options) do
+      with :ok <- validate_websocket_options(options) do
+        options =
+          Enum.reject(options, fn {key, _value} ->
+            key in [:owner, "owner", :headers, "headers", :mode, "mode", :delivery, "delivery"]
+          end)
+
+        {:ok,
+         [owner: self(), headers: Map.to_list(headers), mode: :browser, delivery: :legacy] ++
+           options}
+      end
+    end
+
+    defp websocket_options(_options, _headers), do: {:error, :invalid_transport_options}
+
+    defp validate_websocket_options(options) do
+      Enum.reduce_while(options, :ok, fn
+        {key, value}, :ok
+        when key in [:delivery, "delivery"] and value not in [:legacy, "legacy"] ->
+          {:halt, {:error, {:unsupported_transport_option, :delivery}}}
+
+        {key, value}, :ok when key in [:mode, "mode"] and value not in [:browser, "browser"] ->
+          {:halt, {:error, {:unsupported_transport_option, :mode}}}
+
+        {key, _value}, :ok when is_atom(key) or is_binary(key) ->
+          {:cont, :ok}
+
+        _option, :ok ->
+          {:halt, {:error, :invalid_transport_options}}
+      end)
+    end
+
+    defp normalize_websocket_scheme(%URI{scheme: "http"} = uri), do: %{uri | scheme: "ws"}
+    defp normalize_websocket_scheme(%URI{scheme: "https"} = uri), do: %{uri | scheme: "wss"}
+
+    defp normalize_websocket_scheme(%URI{} = uri), do: uri
+
+    defp clear_socket(%{socket_monitor: monitor} = state) when is_reference(monitor) do
+      Process.demonitor(monitor, [:flush])
+      %{state | socket: nil, socket_monitor: nil}
+    end
+
+    defp clear_socket(state), do: %{state | socket: nil, socket_monitor: nil}
+
+    defp close_socket(%HttpWebSocket{} = socket) do
+      HttpWebSocket.close(socket)
+      :ok
+    end
+
+    defp close_socket(nil), do: :ok
   end
 end
