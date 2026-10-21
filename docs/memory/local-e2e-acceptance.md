@@ -1,9 +1,47 @@
 # Memory local end-to-end acceptance
 
-Status: **local L01–L18 accepted; source CI green; Memory qualification passed; release command verified locally; final CI/publication pending**.
+Status: **local L01–L18 accepted; v1.10.28 released; all required release gates passed**.
 L13 and L18 use the explicitly documented composite evidence levels. Verification
-is local development only. The broader task is not released. The current source
+is local development only. The affected deliverables are published as full1.10.28. The current source
 and repair counters are in [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
+
+## Final delivery receipt
+
+Full release [v1.10.28](https://github.com/gsmlg-opt/backplane/releases/tag/v1.10.28)
+targets `4bd3011c461f6a68c6de4ae7330578048205d71a`.
+[Run39572105271](https://github.com/gsmlg-opt/backplane/actions/runs/39572105271)
+passed all15 jobs. Source CI39571096526 passed all5 jobs; Test39571096522
+passed all18 apps. No required red gate was waived.
+
+- Six OTP archives/checksums downloaded and verified: Backplane Linux x64/arm64;
+  host-agent Linux x64/arm64 and macOS x64/arm64. Both Backplane packages passed
+  fresh compiled metadata and assets checks; all four hosts passed native database
+  smoke. Installed Linux-x64 migration, second-pass no-op and HTTP assets passed.
+- Published qualification manifest pins the gated source. All five hashes match,
+  and all six published files are byte-identical to the CI artifact. Browser122,
+  Recall CI and Memory CI pass. CI profiles are not authoritative performance
+  results; LongMemEval-compatible output remains retrieval-only/non-comparable.
+- `backplane_agent_runtime`, `backplane_ai_protocol`, `backplane_skill_protocol`
+  and `backplane_mcp_protocol`1.10.28 are present in Hex; all four HexDocs return200.
+- GHCR `ghcr.io/gsmlg-dev/backplane:1.10.28` and `:latest` resolve to
+  `sha256:d5f6edbc1d73e9d4143f7828ece6485f0062bfda14bedf05275c7c67e5818d7f`.
+  Registry manifests/config verify source4bd3011c, version1.10.28 and Linux amd64.
+  This is one Docker platform, distinct from the six OTP archives. The image was
+  inspected without executing another runtime or claiming deployment.
+
+Evidence under `.devenv/provenance-correction/resumed-101/`:
+`release143-{run,github,hex-verification,docker-verification}.json`,
+`release143-{qualification-verification,published-qualification-verification}.json`,
+`release143-workflow.log`, `release143-download/dist/`, and `completion-audit140.json`.
+The independent completion audit found no additional product gap. All10 final
+L18 receipt pins and all11 L13 pins match. Audit114's old in-flight107 log hash
+matches its original140-byte prefix; the final failure was appended, while the
+successful117 report remains separately pinned. Original failures are retained.
+Fresh two-host direct/MCP health is in `continuation140-actual-health.json`.
+Task30Sol1/Astra0; Task72Sol2/Astra5; added pool4used/1remaining. No new repair
+round was consumed by publication or this documentation receipt.
+
+## Historical delivery attempts
 
 Release39553644831 at44f03fca failed before builds/publication on the removed
 `#replay-memory-space` selector. Task72 Astra5 reproduces that failure locally,
@@ -16,11 +54,11 @@ not a replacement for the retained dev L01–L18 evidence. Evidence:
 `.devenv/provenance-correction/task72-astra5-browser/{before,after}.json`,
 `{before,after,focused}.log`. At that checkpoint: Task72Sol2/Astra5, pool3used/2remaining.
 
-Current delivery boundary: selective run39556407249 and full run39557514211
+At the previous delivery boundary, selective run39556407249 and full run39557514211
 were cancelled. Latest full run39560571890 at4ec9bd95 passed Memory qualification
 and four host-agent builds, then failed both Backplane builds at the new Admin
 metadata refresh. Its command inadvertently force-compiles the umbrella;
-Task30 corrected app scope in an isolated worktree. Publication has not occurred.
+Task30 corrected app scope in an isolated worktree before the successful release above.
 Release tests25/0 and workflow contracts8/0 pass. The warm production compile
 changes only Admin; compiled version1.10.28/SHA4ec9bd95/prod pass with runtime
 metadata overrides removed, and the root production build remains unchanged.

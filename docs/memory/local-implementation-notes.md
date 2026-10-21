@@ -1,17 +1,22 @@
 # Local Memory implementation and verification boundaries
 
-Delivery is incomplete. Local L01–L18 have accepted evidence at the explicit
-levels in [the acceptance report](local-e2e-acceptance.md). Browser qualification
-compatibility307b04cd and its source CI passed. Later main3be889c3 adds Auth#73
-and full1.10.28 preparation; main4ec9bd95 adds packaged build-provenance validation.
-Release39560571890 passes Memory qualification and four host-agent builds, but
-fails the Admin metadata refresh step in both Backplane builds. Task30 repairs
-that command's app scope through recursive `cmd`, preserving forced compilation, warnings-as-errors,
-compiled SHA/version/prod verification and production Edge protection. Publication
-has not occurred. Release tests25/0, workflow contracts8/0 and a warm production
-compile confirm only Admin changes and fresh compiled SHA/version/prod metadata
-survives removal of runtime overrides. The root production build is unchanged.
-The earlier selective plan is retained as historical evidence.
+Local L01–L18 acceptance and full1.10.28 delivery are complete at the evidence
+levels in [the acceptance report](local-e2e-acceptance.md). Gated source
+`4bd3011c461f6a68c6de4ae7330578048205d71a` passed CI/Test and all15 release jobs
+in run39572105271. Six archive checksums, published qualification files, four
+Hex/HexDocs releases and GHCR tags/digest/source labels were independently checked.
+This establishes publication and CI packaging/smoke, not a production deployment;
+functional acceptance remains local dev with explicit composite/fault-test limits.
+
+Browser compatibility307b04cd fixes the removed-selector consumer. Task30's
+`cd745d85` scopes forced Admin compilation through recursive `cmd`, preserving
+warnings-as-errors, fresh compiled SHA/version/prod verification and production
+Edge protection. A real miniature umbrella regression demonstrates stale-cache
+refresh while an unrelated failing sibling remains uncompiled. Release tests25/0,
+workflow contracts8/0 and warm production compilation passed. Local first-cache
+relocation rebuilt normal dependencies; the warm repeat changed only Admin.
+Neither validation altered the root production build. Earlier failed/cancelled
+runs and the superseded selective plan remain historical evidence.
 
 The replay browser uses the existing server-resolved reconnect key and compares
 all five partition fields plus session against the seeded fixture before playback,

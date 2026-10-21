@@ -15,7 +15,7 @@ Baseline: `c7044093f0aedcb97434a0c0caba03b864c99bb3`; clean `main` inspected bef
 - [x] Execute L01–L18; retain sanitized evidence and distinguish live, contract and fault tests.
 - [x] Verify real LLM and embedding routes, automatic Styx processing and recovery.
 - [x] Write local runbook, acceptance report and coherent implementation explanation.
-- [ ] Pass required scoped quality/release gates; commit, push and release affected deliverables.
+- [x] Pass required scoped quality/release gates; commit, push and release affected deliverables.
 - [x] Restore healthy configuration and leave the reviewable fixture stack running.
 
 L01–L12 and L14–L17 have live passing evidence at the levels recorded in the
@@ -89,7 +89,21 @@ These are source-level findings, not live acceptance results. Regressions were a
 
 ### Current resume boundary (2026-10-21, authorized continuation)
 
-Latest full release39560571890 at4ec9bd95 passes Memory qualification and four
+**Complete: local L01–L18 accepted and full1.10.28 published.** Source4bd3011c
+passed CI39571096526/Test39571096522 and all15 jobs of release39572105271.
+Six archive checksums and six published qualification files match; four Hex and
+HexDocs releases are readable. GHCR1.10.28/latest share verified digest
+`sha256:d5f6edbc1d73e9d4143f7828ece6485f0062bfda14bedf05275c7c67e5818d7f`
+and source/version labels (Linux amd64). See the acceptance report's final receipt.
+Task30Sol1/Astra0; Task72Sol2/Astra5; added pool4used/1remaining. The worktree
+was merged, removed and its branch deleted; unrelated task file remains untracked.
+Local fixture services remain healthy. No production deployment or cross-machine
+functional acceptance is claimed. The earlier records below are historical.
+
+#### Prior release failures and bounded corrections
+
+
+Earlier full release39560571890 at4ec9bd95 passes Memory qualification and four
 host-agent builds, but both Backplane builds fail the new metadata refresh.
 Task30Sol repair1 passed in isolation in `.trees/fix-release-admin-compile`: scope the
 forced warnings-as-errors compilation through recursive `cmd`, preserving
@@ -102,7 +116,7 @@ supersedes the selective version plan with a full1.10.28 release. No publication
 
 Release39553644831 at44f03fca failed before builds/publication while waiting for
 `canonical memory-space identity` in the seeded browser qualification. Version
-1.10.28 remains unpublished. Task72 Astra5 repaired the stale
+1.10.28 was unpublished at that failure. Task72 Astra5 repaired the stale
 `#replay-memory-space` consumer; direct opening and optional provenance filters
 remain authoritative. No timeout extension or skipped assertion is authorized.
 ROUTE task=72 agent=task72_browser_compat_recovery reason=SOL_REPEATED_FAILURE inherited recovery.
@@ -128,7 +142,7 @@ full Relayixir296/0, strict app compilation and formatting passed. All worker
 commands terminated; parent owns final CI/versioning/publication. See the final
 acceptance report for exact contract changes and evidence.
 
-Current overlay: **local L01–L18 accepted; source CI green; full1.10.28 prepared, final CI/publication pending**.
+Current overlay: **local L01–L18 accepted; source CI green; full1.10.28 published by39572105271**.
 The preceding five-round pool is exhausted, including stages04A20 and Task64A12;
 cumulative stages04Sol2/Astra20, ceiling21. The user authorized five further
 repair rounds in the current continuation. Round1 corrected Task72's

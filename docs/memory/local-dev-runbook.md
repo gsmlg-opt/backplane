@@ -1,6 +1,6 @@
 # Memory local development runbook
 
-Status: **local L01–L18 accepted; source CI green; Memory qualification passed; release command verified locally; final CI/publication pending**.
+Status: **local L01–L18 accepted; v1.10.28 released; all required release gates passed**.
 The evidence levels and retained failures are in [acceptance](local-e2e-acceptance.md).
 
 The local stack remains running: public `http://localhost:4220`, Admin
@@ -28,12 +28,19 @@ composite repeat/restart/recovery evidence; no cross-machine validation occurred
 The preceding pool is exhausted. The newly authorized five-round pool allocates
 four rounds to Task72 registration/browser compatibility, Relayixir observation and the release compile scope, with1 unallocated; prior counters are retained.
 Stages04Sol2/Astra20 ceiling21; Task127 instrumentationSol1/2 consumed no product round. See [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
-The nine-app selective attempt at307b04cd was cancelled. Subsequent main
-3be889c3 prepared full1.10.28 alongside Auth#73; preserve that newer release plan.
-Release39560571890 at4ec9bd95 passed Memory qualification and all four host-agent
-builds, but both Backplane builds failed the new Admin metadata refresh command.
-Task30 repairs only its compile scope, verified by25 release tests,8 workflow
-contracts and an actual production warm compile/metadata check; publication remains pending, with no gate waived.
+Full [v1.10.28](https://github.com/gsmlg-opt/backplane/releases/tag/v1.10.28)
+was published by [run39572105271](https://github.com/gsmlg-opt/backplane/actions/runs/39572105271)
+at gated source `4bd3011c461f6a68c6de4ae7330578048205d71a`. All15 release
+jobs passed: Memory qualification, six archives, installed migration/idempotency
+and HTTP assets, four Hex packages, Docker and release-note update. All six
+downloaded archive checksums match; all six published qualification files match
+CI. All four Hex1.10.28 APIs and HexDocs are readable. GHCR `:1.10.28` and
+`:latest` resolve to `sha256:d5f6edbc1d73e9d4143f7828ece6485f0062bfda14bedf05275c7c67e5818d7f`,
+with matching source/version labels; the image platform is Linux amd64.
+See [the acceptance report](local-e2e-acceptance.md) for evidence and limits.
+The preceding selective attempts remain historical; full preparation3be889c3
+was preserved. Task30's app-scope correction is `cd745d85`; its isolated worktree
+was merged and removed. No production Edge protection was changed.
 
 Use the status above and the acceptance report for the current outcome. Earlier
 probe observations below retain their original evidence boundaries; a historical
