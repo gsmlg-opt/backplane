@@ -89,6 +89,26 @@ These are source-level findings, not live acceptance results. Regressions were a
 
 ### Current resume boundary (2026-10-21, authorized continuation)
 
+The owner has now included the three repository-local release dependencies in
+this task: MCP idempotency Dialyzer, Admin client-token audit compatibility and
+Relayixir HTTPS-proxy cleanup. Their earlier exclusion remains historical; no
+required gate is waived. Main starts this continuation at `b73ce125`.
+ROUTE task=136 agent=release_mcp_admin_dependencies reason=Sol initial implementation for newly included MCP/Admin gates.
+ROUTE task=137 agent=release_relayixir_dependency reason=Sol initial implementation for newly included Relayixir gate.
+Task136MCP/136Admin began Sol0/Astra0 and their initial fixes passed. Task137's
+initial focused check exposed a timer/DOWN observation race at the exact guard
+deadline; Sol repair1 adds a shared250ms observation allowance without extending
+the production deadline. The current five-round pool is2used/3remaining, retaining
+Task72 Sol2/Astra4 and all earlier Memory counters. Two implementation workers
+own disjoint files; Mix/build validation is serialized. Scope expansion
+is not authorization to suppress warnings or weaken cleanup/authentication tests.
+
+Task136 MCP30/0 and Admin9/0 passed; target MCP warning removed locally,9
+retained Llama opacity warnings keep local dev Dialyzer red. Task137 focused13/0,
+full Relayixir296/0, strict app compilation and formatting passed. All worker
+commands terminated; parent owns final CI/versioning/publication. See the final
+acceptance report for exact contract changes and evidence.
+
 Current overlay: **local L01–L18 accepted; release blocked by required CI gates**.
 The preceding five-round pool is exhausted, including stages04A20 and Task64A12;
 cumulative stages04Sol2/Astra20, ceiling21. The user authorized five further

@@ -526,7 +526,7 @@ pushed; no publication occurred for Task30.
 
 After all gates and main CI pass, choose an unused strict semantic version and
 replace the placeholders below. These are eventual delivery commands, **not
-executed release evidence**. The current task's eight affected apps, including
+executed release evidence**. The current task's nine affected apps, including
 the shared Memory contract, are explicit so
 unchanged umbrella apps and Hex packages retain their versions:
 
@@ -534,7 +534,7 @@ unchanged umbrella apps and Hex packages retain their versions:
 memory_release_version='REPLACE_WITH_UNUSED_SEMVER'
 gh workflow run release.yml --repo gsmlg-opt/backplane --ref main \
   -f version="$memory_release_version" \
-  -f release_apps='backplane_admin,backplane_api,backplane_host_agent,backplane_llama,backplane_memory,backplane_memory_contract,backplane_skills,backplane_system'
+  -f release_apps='backplane_admin,backplane_api,backplane_host_agent,backplane_llama,backplane_mcp,backplane_memory,backplane_memory_contract,backplane_skills,backplane_system'
 gh run list --repo gsmlg-opt/backplane --workflow release.yml
 gh run watch REPLACE_WITH_RUN_ID --repo gsmlg-opt/backplane --exit-status
 gh release view "v$memory_release_version" --repo gsmlg-opt/backplane
@@ -952,7 +952,7 @@ gh run view RUN_ID --repo gsmlg-opt/backplane --log-failed
 
 Only after required gates pass, use an unused version and the existing selective
 release workflow. The affected app list is
-`backplane_admin,backplane_api,backplane_host_agent,backplane_llama,backplane_memory,backplane_memory_contract,backplane_skills,backplane_system`.
+`backplane_admin,backplane_api,backplane_host_agent,backplane_llama,backplane_mcp,backplane_memory,backplane_memory_contract,backplane_skills,backplane_system`.
 Commit/review the scoped version change before dispatch so Docker and OTP artifacts
 agree. Require gates on that exact immutable SHA. No release is claimed here.
 
@@ -964,3 +964,16 @@ Dialyzer warnings. Full local Dialyzer remains red on one retained MCP warning
 and nine untouched Llama opaque Task warnings; do not treat it as a green root
 check. Inspect the final pushed-SHA CI before any release. Latest repair pool is
 5used/0remaining, Task64Sol2/Astra12; stages04 remainsSol2/Astra20.
+
+
+## Included repository release dependencies
+
+The owner expanded this task to include the MCP idempotency warning, the client
+rotation audit regression and the Relayixir HTTPS-proxy cleanup regression.
+Earlier exclusions above describe historical checkpoints, not the current scope.
+MCP runtime changes add `backplane_mcp` to the selective release list. Admin
+and Relayixir compatibility tests must follow current issued-token and Fetch
+cleanup contracts; no warning suppression, secret logging or false cleanup
+confirmation is authorized. Test/documentation-only changes do not require an
+otherwise unaffected app version bump. Release still requires actual green gates
+on the final immutable main SHA.

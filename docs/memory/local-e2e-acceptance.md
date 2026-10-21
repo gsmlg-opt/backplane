@@ -2041,3 +2041,40 @@ recorded with the worker handoff under
 A parent static scan found211 distinct top-level test modules and no duplicates.
 Task72 cumulative counters are Sol2/Astra4; the new pool has1 used/4 remaining.
 This test-only correction changes no runtime authority, provenance or data.
+
+
+### Repository-local release dependencies included by the owner
+
+The owner explicitly expanded this task beyond Memory to resolve the three
+repository-local red gates. Earlier exclusions are historical, not current
+permission boundaries. Required gates remain unwaived.
+
+Task136 fixes the MCP warning by reusing `plain_map/1` for sensitive rejection
+IDs instead of branching on Plug.Conn's already-map-typed body parameters.
+Sensitive-tool tests retain no-store/no-side-effect/cache assertions and now
+verify the response ID. AdminAudit exercises current persisted `rotate_token`,
+checks the exact `client.token_rotated` audit, confirms old-token revocation and
+new-token validity, reopens the closed editor and rejects secrets/digests in audit.
+The removed `regenerate_token` UI event is not restored. Final focused results:
+MCP30/0 and Admin9/0; formatting/diff pass. Dev Dialyzer removes the target MCP
+warning but exits2 for9 retained Llama Task opacity warnings. Test-env Dialyzer
+could not run without a test PLT. Actual final-SHA CI remains required.
+Evidence: `resumed-101/task136-mcp-admin-report.json`.
+
+Task137 reconciles the HTTPS-proxy test with installed Fetch0.21.14's documented
+TLS-setup cleanup boundary. A failed handshake exposing no socket stays
+`cleanup_unconfirmed`; the test proves prompt rejection, no direct origin
+connection, retained aborted guard/controller and both normal exits after the
+original6000ms deadline. A shared250ms test-only DOWN observation allowance
+covers the timer callback/termination scheduling; the production timer is
+unchanged. Established TLS cleanup assertions remain strict. No dependency
+workaround or upstream issue was needed. Red reproduction matched CI; focused
+13/0, full Relayixir296/0, separate strict app compile, formatting and diff passed.
+Evidence: `resumed-101/task137-{red,focused-repair1,full,format}.log`.
+
+Task136MCP/136Admin initial implementations passed (Sol0/Astra0). Task137 used
+Sol repair1/Astra0 for the exact-timer observation race; the current five-round
+pool is2used/3remaining, with all historical Memory counters preserved.
+Only MCP runtime code changed, so `backplane_mcp` joins the existing eight-app
+selective release list. Relayixir test/docs changes require no version churn.
+These local checks do not claim that final CI, versioning or publication passed.
