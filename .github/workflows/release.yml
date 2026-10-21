@@ -380,12 +380,37 @@ jobs:
         if: matrix.release == 'backplane'
         run: mix assets.deploy
 
+      - name: Refresh compiled admin build metadata
+        if: matrix.release == 'backplane'
+        run: mix "do" --app backplane_admin compile --force --warnings-as-errors
+
       - name: Build OTP release
         env:
           RELEASE_NAME: ${{ matrix.release }}
         run: |
           rm -rf -- "_build/prod/rel/$RELEASE_NAME"
           mix release "$RELEASE_NAME" --overwrite --version "$RELEASE_VERSION"
+
+      - name: Verify compiled release metadata
+        if: matrix.release == 'backplane'
+        env:
+          RELEASE_DISTRIBUTION: none
+        run: |
+          _build/prod/rel/backplane/bin/backplane eval '
+            Enum.each(
+              ~w(BACKPLANE_GIT_REF BACKPLANE_GIT_SHA VCS_REF BACKPLANE_BUILD_DATE BACKPLANE_RELEASE_DATE),
+              &System.delete_env/1
+            )
+            info = Backplane.Admin.BuildInfo.current()
+            expected = %{
+              version: System.fetch_env!("RELEASE_VERSION"),
+              git_sha: System.fetch_env!("GATED_SHA"),
+              environment: "prod"
+            }
+            unless Map.take(info, Map.keys(expected)) == expected do
+              raise "Release build metadata mismatch: #{inspect(info)}; expected #{inspect(expected)}"
+            end
+          '
 
       - name: Verify packaged web assets
         if: matrix.release == 'backplane'

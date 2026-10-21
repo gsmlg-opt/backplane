@@ -161,6 +161,107 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
+  test "release refreshes compiled admin metadata and verifies it before archiving" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    steps = workflow["jobs"]["build"]["steps"]
+    refresh = Enum.find(steps, &(&1["name"] == "Refresh compiled admin build metadata"))
+    verify = Enum.find(steps, &(&1["name"] == "Verify compiled release metadata"))
+
+    assert refresh["if"] == "matrix.release == 'backplane'"
+
+    assert refresh["run"] ==
+             ~s(mix "do" --app backplane_admin compile --force --warnings-as-errors)
+
+    assert verify["if"] == "matrix.release == 'backplane'"
+    assert verify["run"] =~ "_build/prod/rel/backplane/bin/backplane eval"
+
+    ordered_steps = [
+      "Build web assets",
+      "Refresh compiled admin build metadata",
+      "Build OTP release",
+      "Verify compiled release metadata",
+      "Archive OTP release"
+    ]
+
+    positions =
+      Enum.map(ordered_steps, fn name -> Enum.find_index(steps, &(&1["name"] == name)) end)
+
+    refute nil in positions
+    assert positions == Enum.sort(positions)
+  end
+
+  test "compiled release metadata verification rejects stale builds despite runtime overrides" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+
+    verify =
+      workflow["jobs"]["build"]["steps"]
+      |> Enum.find(&(&1["name"] == "Verify compiled release metadata"))
+
+    directory = version_fixture()
+    release_cli = Path.join(directory, "_build/prod/rel/backplane/bin/backplane")
+    File.mkdir_p!(Path.dirname(release_cli))
+
+    File.write!(release_cli, """
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$1" == eval ]]
+    exec "$FIXTURE_ELIXIR" -r "$FIXTURE_BUILD_INFO" -e "$2"
+    """)
+
+    File.chmod!(release_cli, 0o755)
+    build_info = Path.join(directory, "build_info.exs")
+
+    metadata_env =
+      ~w(BACKPLANE_GIT_REF BACKPLANE_GIT_SHA VCS_REF BACKPLANE_BUILD_DATE BACKPLANE_RELEASE_DATE)
+
+    File.write!(build_info, """
+    defmodule Backplane.Admin.BuildInfo do
+      def current do
+        for key <- #{inspect(metadata_env)} do
+          if System.get_env(key), do: raise("runtime metadata override survived: " <> key)
+        end
+
+        %{
+          git_sha: System.fetch_env!("FIXTURE_COMPILED_SHA"),
+          version: System.fetch_env!("FIXTURE_COMPILED_VERSION"),
+          environment: System.fetch_env!("FIXTURE_COMPILED_ENV")
+        }
+      end
+    end
+    """)
+
+    for {sha, version, environment, valid?} <- [
+          {"current-sha", "9.8.7", "prod", true},
+          {"previous-release-sha", "9.8.7", "prod", false},
+          {"current-sha", "9.8.6", "prod", false},
+          {"current-sha", "9.8.7", "dev", false}
+        ] do
+      {output, status} =
+        System.cmd("bash", ["-c", verify["run"]],
+          cd: directory,
+          stderr_to_stdout: true,
+          env:
+            [
+              {"ERL_FLAGS", "+S 2:2"},
+              {"FIXTURE_ELIXIR", System.find_executable("elixir")},
+              {"FIXTURE_BUILD_INFO", build_info},
+              {"FIXTURE_COMPILED_SHA", sha},
+              {"FIXTURE_COMPILED_VERSION", version},
+              {"FIXTURE_COMPILED_ENV", environment},
+              {"GATED_SHA", "current-sha"},
+              {"RELEASE_VERSION", "9.8.7"}
+            ] ++ Enum.map(metadata_env, &{&1, "runtime-override"})
+        )
+
+      if valid? do
+        assert status == 0, output
+      else
+        assert status != 0, "accepted stale metadata: #{inspect({sha, version, environment})}"
+        assert output =~ "Release build metadata mismatch"
+      end
+    end
+  end
+
   test "Docker allows deliberately skipped Hex only for selective successful releases" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
     condition = workflow["jobs"]["docker-image"]["if"]
