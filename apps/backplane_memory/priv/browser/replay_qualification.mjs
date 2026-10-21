@@ -123,6 +123,19 @@ async function main() {
   const evaluate = (expression) => cdp.evaluate(expression)
   const waitFor = (expression, description, timeout) =>
     eventually(() => evaluate(expression), description, timeout)
+  // Replay resolves stored identity server-side. Its reconnect key carries that
+  // identity even though provenance fields are no longer selector inputs.
+  const expectedIdentity = Object.fromEntries(new URL(url).searchParams)
+  const identityFields = ["memory_space_id", "host", "client", "scope", "namespace", "session"]
+  if (!identityFields.every((field) => expectedIdentity[field])) {
+    throw new Error("Qualification URL requires the complete seeded replay identity")
+  }
+  const canonicalIdentity = `(() => {
+    const identity = new URLSearchParams(document.querySelector('#memory-replay')?.dataset.stateKey || '')
+    const expected = ${JSON.stringify(expectedIdentity)}
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identity.get('memory_space_id') || '') &&
+      ${JSON.stringify(identityFields)}.every(field => identity.getAll(field).length === 1 && identity.get(field) === expected[field])
+  })()`
   const click = async (selector) => {
     const point = await evaluate(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)})
@@ -138,7 +151,7 @@ async function main() {
 
   await waitFor("document.querySelectorAll('[id^=replay-event-]').length >= 121", "121 replay rows")
   await waitFor("document.querySelector('[data-phx-main]')?.classList.contains('phx-connected')", "LiveView join")
-  await waitFor("/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(document.querySelector('#replay-memory-space')?.value || '')", "canonical memory-space identity")
+  await waitFor(canonicalIdentity, "canonical memory-space identity and exact seeded partition")
   await waitFor("document.querySelector('#replay-event-1')?.getAttribute('aria-current') === 'true'", "initial cursor")
 
   await click("#replay-next")
@@ -186,9 +199,11 @@ async function main() {
     connectionType: "wifi"
   })
   await waitFor("document.querySelector('#replay-event-101')?.getAttribute('aria-current') === 'true' && document.querySelector('[data-phx-main]')?.classList.contains('phx-connected')", "reconnected cursor", 20_000)
+  await waitFor(canonicalIdentity, "reconnected canonical replay identity")
 
   console.log("READY_FOR_PUBSUB")
   await waitFor("document.querySelector('#replay-event-122') !== null", "live PubSub event", 20_000)
+  await waitFor(canonicalIdentity, "canonical replay identity after PubSub update")
 
   const browserVersion = await cdp.send("Browser.getVersion")
   const report = {

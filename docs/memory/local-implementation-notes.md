@@ -1,8 +1,13 @@
 # Local Memory implementation and verification boundaries
 
 Delivery is incomplete. This document explains accepted ownership and the
-verified implementation slices. Source CI at587af33f is green; release qualification
-and publication remain pending, and no release is claimed.
+verified implementation slices. Source and version CI at44f03fca are green. Release39553644831 failed
+in the browser qualification identity check; publication was skipped. No release
+is claimed. Task72 browser compatibility now passes locally; corrected-source CI and a new
+release run remain required. The browser reads the existing server-resolved
+reconnect key and compares all five partition fields plus session to the seeded
+fixture before playback, after reconnect and after PubSub. Provenance selector
+inputs are not required; production UI/authorization behavior is unchanged.
 See [the acceptance report](local-e2e-acceptance.md) for L01–L18.
 
 ## Authority and transport

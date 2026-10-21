@@ -58,6 +58,15 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
 
     assert has_element?(routed_view, "#replay-player")
     assert has_element?(routed_view, "#replay-detail-json")
+    refute has_element?(routed_view, "#replay-memory-space")
+
+    assert [state_key] =
+             routed_view
+             |> render()
+             |> Floki.parse_document!()
+             |> Floki.attribute("#memory-replay", "data-state-key")
+
+    assert URI.decode_query(state_key) == replay_params(session)
 
     {:ok, denied_view, _html} =
       live_isolated(conn, IsolatedReplay,
@@ -71,6 +80,7 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
 
     assert has_element?(denied_view, "#replay-unauthorized")
     refute has_element?(denied_view, "#replay-player")
+    refute has_element?(denied_view, "#memory-replay[data-state-key]")
 
     {:ok, metadata_view, _html} =
       live_isolated(conn, IsolatedReplay,
@@ -228,13 +238,22 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
     refute has_element?(missing_view, "#replay-player")
     refute missing_html =~ "private prompt"
 
-    {:ok, foreign_view, foreign_html} =
-      open_replay(conn, session, %{
-        "memory_replay_params" => replay_params(session) |> Map.put("client", "foreign-client")
-      })
+    for {field, foreign_value} <- [
+          {"memory_space_id", Ecto.UUID.generate()},
+          {"host", "foreign-host"},
+          {"client", "foreign-client"},
+          {"scope", "foreign-scope"},
+          {"namespace", "shared"}
+        ] do
+      {:ok, foreign_view, foreign_html} =
+        open_replay(conn, session, %{
+          "memory_replay_params" => Map.put(replay_params(session), field, foreign_value)
+        })
 
-    assert has_element?(foreign_view, "#replay-query-error")
-    refute foreign_html =~ "private prompt"
+      assert has_element?(foreign_view, "#replay-query-error")
+      refute has_element?(foreign_view, "#memory-replay[data-state-key]")
+      refute foreign_html =~ "private prompt"
+    end
   end
 
   test "reloads the selected replay on a content-free PubSub notifier", %{conn: conn} do

@@ -89,6 +89,14 @@ These are source-level findings, not live acceptance results. Regressions were a
 
 ### Current resume boundary (2026-10-21, authorized continuation)
 
+Release39553644831 at44f03fca failed before builds/publication while waiting for
+`canonical memory-space identity` in the seeded browser qualification. Version
+1.10.28 remains unpublished. Task72 Astra5 repaired the stale
+`#replay-memory-space` consumer; direct opening and optional provenance filters
+remain authoritative. No timeout extension or skipped assertion is authorized.
+ROUTE task=72 agent=task72_browser_compat_recovery reason=SOL_REPEATED_FAILURE inherited recovery.
+Task72 retains Sol2/Astra5 (ceiling8); current pool3used/2remaining.
+
 The owner has now included the three repository-local release dependencies in
 this task: MCP idempotency Dialyzer, Admin client-token audit compatibility and
 Relayixir HTTPS-proxy cleanup. Their earlier exclusion remains historical; no
@@ -98,9 +106,9 @@ ROUTE task=137 agent=release_relayixir_dependency reason=Sol initial implementat
 Task136MCP/136Admin began Sol0/Astra0 and their initial fixes passed. Task137's
 initial focused check exposed a timer/DOWN observation race at the exact guard
 deadline; Sol repair1 adds a shared250ms observation allowance without extending
-the production deadline. The current five-round pool is2used/3remaining, retaining
-Task72 Sol2/Astra4 and all earlier Memory counters. Two implementation workers
-own disjoint files; Mix/build validation is serialized. Scope expansion
+the production deadline. The current five-round pool is3used/2remaining, retaining
+Task72 Sol2/Astra5 and all earlier Memory counters. The earlier
+MCP/Admin/Relayixir and Task72 validation commands are terminal; parent owns integration. Scope expansion
 is not authorization to suppress warnings or weaken cleanup/authentication tests.
 
 Task136 MCP30/0 and Admin9/0 passed; target MCP warning removed locally,9
@@ -109,12 +117,13 @@ full Relayixir296/0, strict app compilation and formatting passed. All worker
 commands terminated; parent owns final CI/versioning/publication. See the final
 acceptance report for exact contract changes and evidence.
 
-Current overlay: **local L01–L18 accepted; source CI green; version1.10.28 prepared, release pending**.
+Current overlay: **local L01–L18 accepted; source CI green; version1.10.28 prepared, corrected-source CI/release pending**.
 The preceding five-round pool is exhausted, including stages04A20 and Task64A12;
 cumulative stages04Sol2/Astra20, ceiling21. The user authorized five further
-repair rounds in the current continuation. Round1 is allocated to Task72's
-provenance-test module collision: Sol2/Astra3 before repair, now Sol2/Astra4.
-The remaining four new rounds are unallocated; historical counters are retained.
+repair rounds in the current continuation. Round1 corrected Task72's
+provenance-test module collision (Sol2/Astra3→4); round2 corrected Relayixir's
+timer observation; round3 corrected Task72's browser consumer (Astra4→5).
+Two new rounds remain unallocated; historical counters are retained.
 ROUTE task=72 agent=task72_registration_recovery reason=SOL_REPEATED_FAILURE inherited Task72 recovery; bounded test-registration correction.
 Task133 diagnosis and Task134 requirement audit were read-only and consumed no
 repair round. Two test files share `Backplane.Memory.MemoriesTest` with20 and1

@@ -1,9 +1,20 @@
 # Memory local end-to-end acceptance
 
-Status: **local L01–L18 accepted; source CI green; release qualification/publication pending**.
+Status: **local L01–L18 accepted; source CI green; browser compatibility verified locally; corrected-source CI/release pending**.
 L13 and L18 use the explicitly documented composite evidence levels. Verification
 is local development only. The broader task is not released. The current source
 and repair counters are in [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
+
+Release39553644831 at44f03fca failed before builds/publication on the removed
+`#replay-memory-space` selector. Task72 Astra5 reproduces that failure locally,
+then corrects only the browser consumer and Replay LiveView regressions. Actual
+`MIX_ENV=test mix memory.replay.browser_qualify` now passes with Chrome156,
+122 seeded events, full fixture identity, controls, cursor, reconnect and PubSub.
+Replay LiveView6/0, scoped format, JavaScript syntax and diff checks pass; independent
+Sol review reports no findings. These are seeded test-only qualification results,
+not a replacement for the retained dev L01–L18 evidence. Evidence:
+`.devenv/provenance-correction/task72-astra5-browser/{before,after}.json`,
+`{before,after,focused}.log`. Task72Sol2/Astra5; latest pool3used/2remaining.
 
 Test-count correction: historical1413/0 and1394/0 runs loaded two files with
 one shared ExUnit module name. Those counts are retained observations, not proof
@@ -42,7 +53,7 @@ only its captured attempt counter increasing; all other captured fields stay exa
 Both hosts' direct/MCP health is online/canonical/stalefalse/pending0; temporary
 relay/B and operator processes are stopped, original local services remain running.
 The preceding pool is exhausted. The newly authorized five-round pool allocates
-round1 to Task72 test registration, with4 unallocated. Stages04Sol2/Astra20,
+three rounds to Task72 registration, Relayixir observation repair and Task72 browser compatibility, with2 unallocated. Stages04Sol2/Astra20,
 ceiling21; Task127 tooling consumed no product round (Sol instrumentation repair1/2).
 
 Final evidence under `.devenv/provenance-correction/resumed-101/`:

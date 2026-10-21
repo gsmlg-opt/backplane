@@ -1,6 +1,6 @@
 # Memory local development runbook
 
-Status: **local L01–L18 accepted; source CI green; release qualification/publication pending**.
+Status: **local L01–L18 accepted; source CI green; browser compatibility verified locally; corrected-source CI/release pending**.
 The evidence levels and retained failures are in [acceptance](local-e2e-acceptance.md).
 
 The local stack remains running: public `http://localhost:4220`, Admin
@@ -26,7 +26,7 @@ error histories remain intact. Eleven historical provenance additions are
 attributed, not described as byte-identical rows. L18 is accepted from the retained
 composite repeat/restart/recovery evidence; no cross-machine validation occurred.
 The preceding pool is exhausted. The newly authorized five-round pool allocates
-round1 to Task72 test registration, with4 unallocated; prior counters are retained.
+three rounds to Task72 registration, Relayixir observation repair and Task72 browser compatibility, with2 unallocated; prior counters are retained.
 Stages04Sol2/Astra20 ceiling21; Task127 instrumentationSol1/2 consumed no product round. See [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
 Version1.10.28 is prepared for the nine-app selective release; publication is pending. Required gates remain unwaived.
 
