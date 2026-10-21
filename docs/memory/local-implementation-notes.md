@@ -540,3 +540,15 @@ Changed inputs or model continue through classification. Manual candidate APIs
 retain strict equality and conflict behavior, and arbitrary conflicts are never
 converted to success. The implementation and live recovery have separate
 verification receipts in the acceptance report.
+
+
+Shared EdgeSync delivery accepts either a legacy UUID or the existing authenticated
+host actor (kind, host/token IDs, scopes and optional source client). Its public
+specifications now describe both supported inputs consistently for negotiation,
+next and ACK. The stale UUID-only specification caused three invalid-call warnings
+and made two Channel v2 comparisons appear unreachable. This is a type-contract
+correction; runtime authentication, partition checks and grant semantics are
+unchanged. Focused21/0 and scoped quality checks pass; all five Channel warnings
+disappear. Full local Dialyzer still reports unrelated retained/opaque warnings,
+so the root check is not called green. See the final acceptance report for exact
+CI results and release limits.

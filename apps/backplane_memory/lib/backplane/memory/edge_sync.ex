@@ -2,7 +2,17 @@ defmodule Backplane.Memory.EdgeSync do
   @moduledoc "Stateless, explicitly versioned canonical host memory delivery."
   alias Backplane.Memory.{Config, EdgeSync.PostgresStore}
 
-  @spec negotiate(Ecto.UUID.t(), map()) :: {:ok, map()} | {:error, map()}
+  @type subject ::
+          Ecto.UUID.t()
+          | %{
+              :kind => :host_agent,
+              :host_id => Ecto.UUID.t(),
+              :auth_token_id => Ecto.UUID.t(),
+              :scopes => [String.t()],
+              optional(:source_client_id) => String.t() | nil
+            }
+
+  @spec negotiate(subject(), map()) :: {:ok, map()} | {:error, map()}
   def negotiate(host, offer), do: safe(fn -> do_negotiate(host, offer) end)
 
   defp do_negotiate(host, offer) when is_map(offer) do
@@ -35,7 +45,7 @@ defmodule Backplane.Memory.EdgeSync do
 
   defp do_negotiate(_, _), do: {:error, :invalid_request}
 
-  @spec next(Ecto.UUID.t(), map()) :: {:ok, map()} | {:error, map()}
+  @spec next(subject(), map()) :: {:ok, map()} | {:error, map()}
   def next(host, request) do
     safe(fn ->
       with :ok <- request_valid(host, request),
@@ -50,7 +60,7 @@ defmodule Backplane.Memory.EdgeSync do
     end)
   end
 
-  @spec ack(Ecto.UUID.t(), map()) :: {:ok, map()} | {:error, map()}
+  @spec ack(subject(), map()) :: {:ok, map()} | {:error, map()}
   def ack(host, request) do
     safe(fn ->
       with :ok <- request_valid(host, request),

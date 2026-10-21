@@ -36,7 +36,7 @@ original hashes. The known insufficient-input Graph stage remains pending, with
 only its captured attempt counter increasing; all other captured fields stay exact.
 Both hosts' direct/MCP health is online/canonical/stalefalse/pending0; temporary
 relay/B and operator processes are stopped, original local services remain running.
-Latest pool4used/1remaining; stages04Sol2/Astra20, ceiling21. No additional product
+Latest pool5used/0remaining; stages04Sol2/Astra20, ceiling21. No additional product
 round was consumed by Task127 tooling (Sol instrumentation repair1/2).
 
 Final evidence under `.devenv/provenance-correction/resumed-101/`:
@@ -1968,3 +1968,25 @@ filters show the primary and isolated source data; repository remains provenance
 Public API is on4220 and the local host direct/MCP facades are4222/4223. The local
 stack remains healthy and running; tested lifecycle commands and nonsecret example
 configuration are in the runbook. No cross-machine verification was performed.
+
+
+### Final shared-delivery type contract correction
+
+Exact pushed-SHA9b1346c CI passed full Memory1413/0 (5 excluded), API330/0,
+Compile, Format, Credo and Workflow Contract. MCP protocol passed this time.
+Admin453/1 and Relayixir296/1 repeated the excluded baseline failures. Dialyzer
+also revealed five in-scope Channel warnings: the shared host-auth map conflicted
+with EdgeSync's old UUID-only specification, which additionally made two v2
+branches appear unreachable.
+
+Task64A12 adds a narrow UUID-or-host-auth subject type to `negotiate/2`, `next/2`
+and `ack/2`; no function implementation or authorization behavior changes.
+Focused EdgeSync/shared-delivery21/0, strict dev compile, scoped formatting and
+Credo pass. Root dev Dialyzer confirms all five Channel warnings gone, but exits2:
+one retained MCP idempotency warning plus nine opaque Task warnings in untouched
+Llama router code. Those local warnings are not claimed green or suppressed;
+the final pushed-SHA CI must provide the independent warning comparison.
+Evidence: `.devenv/provenance-correction/task64-a12-types/` and
+`resumed-101/ci130-diagnosis.json`. Task64 cumulativeSol2/Astra12; stages04 remains
+Sol2/Astra20. Latest five-round pool5used/0remaining; prior evidence/counters remain
+immutable. Required red release gates are not waived.

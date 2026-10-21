@@ -18,7 +18,7 @@ separately reviewed, both completed attempt1/errors0; original failed reports an
 error histories remain intact. Eleven historical provenance additions are
 attributed, not described as byte-identical rows. L18 is accepted from the retained
 composite repeat/restart/recovery evidence; no cross-machine validation occurred.
-Latest pool4used/1remaining, stages04Sol2/Astra20 ceiling21; Task127 instrumentation
+Latest pool5used/0remaining, stages04Sol2/Astra20 ceiling21; Task127 instrumentation
 Sol1/2 consumed no product round. See [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
 No release or version change has occurred; required CI gates remain unwaived.
 
@@ -931,3 +931,12 @@ release workflow. The affected app list is
 `backplane_admin,backplane_api,backplane_host_agent,backplane_llama,backplane_memory,backplane_memory_contract,backplane_skills,backplane_system`.
 Commit/review the scoped version change before dispatch so Docker and OTP artifacts
 agree. Require gates on that exact immutable SHA. No release is claimed here.
+
+
+The follow-up shared-delivery correction changes only EdgeSync type declarations;
+actual runtime authorization and the accepted local L18 workflow are unchanged.
+Task64A12 passed21 focused tests and removes all five newly observed Channel
+Dialyzer warnings. Full local Dialyzer remains red on one retained MCP warning
+and nine untouched Llama opaque Task warnings; do not treat it as a green root
+check. Inspect the final pushed-SHA CI before any release. Latest repair pool is
+5used/0remaining, Task64Sol2/Astra12; stages04 remainsSol2/Astra20.

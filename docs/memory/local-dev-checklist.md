@@ -54,7 +54,7 @@ evidence; L18 now has accepted repeat/restart/recovery composite evidence. Exist
 | memory-online-core-parity-31 | implementation recovery | sol_worker / pending_restart_recovery3 | Actual online core passed subset and cleanup;22Python/combined65Elixir passed | 3 of8 | 0 | none |
 | memory-shared-authority-design-32 | architecture | astra_worker / shared_authority_design | Historical proposal superseded by approved independent-capability design58 | 0 | 0 | PROJECT_ARCHITECTURE |
 | memory-shared-canonical-63 | implementation/recovery | sol_worker / host_diagnosis; astra_worker / canonical63_recovery | Accepted source:97/0, owning compile/format/diff; no dev migration/live sharing yet | 2 | 1 of2 | SOL_REPEATED_FAILURE |
-| memory-shared-host-64 | implementation/recovery | sol_worker / shared_admin62; astra_worker / shared64_compat_a9 | L13 composite accepted; A11 Admin133/0 API143/0 Llama3/0; Host553/0; final stage recovery separate | 2 | 11 | SOL_REPEATED_FAILURE |
+| memory-shared-host-64 | implementation/recovery | sol_worker / shared_admin62; astra_worker / shared64_compat_a9 | L13/L18 composite accepted; A12 shared EdgeSync type contract removes5 channel warnings;21 focused tests pass | 2 | 12 | SOL_REPEATED_FAILURE |
 | memory-local-second-host-65 | implementation | coordinator | Host-only harness26 synthetic tests pass; second real host not launched | 0 | 0 | none |
 | memory-shared-channel-feed-66 | implementation/recovery | sol_worker / host_diagnosis; astra_worker / relay70_recovery | Traced-envelope recovery API65/0; actual online matrix passed subset | 2 | 2 of2 | SOL_REPEATED_FAILURE |
 | memory-shared-live-driver-67 | implementation/integration | coordinator / sol_worker shared_admin62 | Astra1 keyed forget replay21/0; actual six-phase online subset passed and cleaned | 2 | 1 | SOL_REPEATED_FAILURE |
@@ -90,7 +90,7 @@ These are source-level findings, not live acceptance results. Regressions were a
 ### Current resume boundary (2026-10-21, authorized continuation)
 
 Current overlay: **local L01–L18 accepted; release blocked by required CI gates**. The latest additional five-round allocation has
-**4 used / 1 remaining**, including completed stages04A20; cumulative
+**5 used / 0 remaining**, including completed stages04A20 and Task64A12 type-contract correction; cumulative
 stages04Sol2/Astra20, ceiling21. Earlier exhausted pools below are historical.
 A19 passed focused48 Memory/7 Admin, exact178-file Memory1408/0 with5 unchanged
 exclusions, exact14-file Admin134/0, scoped format/Credo and root dev strict
