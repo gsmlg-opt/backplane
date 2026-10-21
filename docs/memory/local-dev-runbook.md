@@ -1,6 +1,6 @@
 # Memory local development runbook
 
-Status: **local L01–L18 accepted; release blocked by required CI gates**.
+Status: **local L01–L18 accepted; source CI green; release qualification/publication pending**.
 The evidence levels and retained failures are in [acceptance](local-e2e-acceptance.md).
 
 The local stack remains running: public `http://localhost:4220`, Admin
@@ -28,7 +28,7 @@ composite repeat/restart/recovery evidence; no cross-machine validation occurred
 The preceding pool is exhausted. The newly authorized five-round pool allocates
 round1 to Task72 test registration, with4 unallocated; prior counters are retained.
 Stages04Sol2/Astra20 ceiling21; Task127 instrumentationSol1/2 consumed no product round. See [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
-No release or version change has occurred; required CI gates remain unwaived.
+Version1.10.28 is prepared for the nine-app selective release; publication is pending. Required gates remain unwaived.
 
 Use the status above and the acceptance report for the current outcome. Earlier
 probe observations below retain their original evidence boundaries; a historical

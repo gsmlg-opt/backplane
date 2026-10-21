@@ -1,6 +1,6 @@
 # Memory local end-to-end acceptance
 
-Status: **local L01–L18 accepted; release blocked by required CI gates**.
+Status: **local L01–L18 accepted; source CI green; release qualification/publication pending**.
 L13 and L18 use the explicitly documented composite evidence levels. Verification
 is local development only. The broader task is not released. The current source
 and repair counters are in [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
@@ -2078,3 +2078,20 @@ pool is2used/3remaining, with all historical Memory counters preserved.
 Only MCP runtime code changed, so `backplane_mcp` joins the existing eight-app
 selective release list. Relayixir test/docs changes require no version churn.
 These local checks do not claim that final CI, versioning or publication passed.
+
+
+### Source CI green and scoped version preparation
+
+Main `587af33f55d7f56af924273cf4c4702af8393c8d` passed CI39551221215:
+Compile, Format Check, Credo, Workflow Contract and Dialyzer. Test39551221155
+passed all18 owning-app jobs, including Admin, MCP and Relayixir. No required
+red gate was waived. The local9 Llama Task warnings remain a separate local
+toolchain observation; they are not present in this successful CI qualification.
+
+The unused version1.10.28 is prepared with `scripts/set-version.sh`, updating
+only root and the nine selected runtime app manifests listed in the runbook.
+Relayixir runtime and unrelated package versions remain unchanged. Publication
+still requires green CI on the version commit, Memory qualification, six build
+artifacts, installed-release smoke, checksums and Docker publication. This section
+records preparation, not release success. The integrated machine-readable report
+is `resumed-101/release138-delivery.json`; later external results belong there.

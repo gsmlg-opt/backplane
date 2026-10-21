@@ -109,7 +109,7 @@ full Relayixir296/0, strict app compilation and formatting passed. All worker
 commands terminated; parent owns final CI/versioning/publication. See the final
 acceptance report for exact contract changes and evidence.
 
-Current overlay: **local L01–L18 accepted; release blocked by required CI gates**.
+Current overlay: **local L01–L18 accepted; source CI green; version1.10.28 prepared, release pending**.
 The preceding five-round pool is exhausted, including stages04A20 and Task64A12;
 cumulative stages04Sol2/Astra20, ceiling21. The user authorized five further
 repair rounds in the current continuation. Round1 is allocated to Task72's

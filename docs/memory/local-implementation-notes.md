@@ -1,7 +1,8 @@
 # Local Memory implementation and verification boundaries
 
 Delivery is incomplete. This document explains accepted ownership and the
-verified implementation slices; required CI is red and no release is claimed.
+verified implementation slices. Source CI at587af33f is green; release qualification
+and publication remain pending, and no release is claimed.
 See [the acceptance report](local-e2e-acceptance.md) for L01–L18.
 
 ## Authority and transport
