@@ -1,6 +1,6 @@
 # Memory local end-to-end acceptance
 
-Status: **local L01–L18 accepted; source CI green; browser compatibility verified locally; corrected-source CI/release pending**.
+Status: **local L01–L18 accepted; source CI green; Memory qualification passed; release command verified locally; final CI/publication pending**.
 L13 and L18 use the explicitly documented composite evidence levels. Verification
 is local development only. The broader task is not released. The current source
 and repair counters are in [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
@@ -14,7 +14,22 @@ Replay LiveView6/0, scoped format, JavaScript syntax and diff checks pass; indep
 Sol review reports no findings. These are seeded test-only qualification results,
 not a replacement for the retained dev L01–L18 evidence. Evidence:
 `.devenv/provenance-correction/task72-astra5-browser/{before,after}.json`,
-`{before,after,focused}.log`. Task72Sol2/Astra5; latest pool3used/2remaining.
+`{before,after,focused}.log`. At that checkpoint: Task72Sol2/Astra5, pool3used/2remaining.
+
+Current delivery boundary: selective run39556407249 and full run39557514211
+were cancelled. Latest full run39560571890 at4ec9bd95 passed Memory qualification
+and four host-agent builds, then failed both Backplane builds at the new Admin
+metadata refresh. Its command inadvertently force-compiles the umbrella;
+Task30 corrected app scope in an isolated worktree. Publication has not occurred.
+Release tests25/0 and workflow contracts8/0 pass. The warm production compile
+changes only Admin; compiled version1.10.28/SHA4ec9bd95/prod pass with runtime
+metadata overrides removed, and the root production build remains unchanged.
+Evidence: `.devenv/provenance-correction/task30-release-compile-r1/`.
+Downloaded qualification manifest revision4ec9bd95 and all five hashes match;
+browser122/eval/qualify pass under their seeded/CI profiles. Qualification remains
+non-authoritative for performance; LongMemEval output is retrieval-only and not
+comparable to published results. Evidence: `resumed-101/release141-qualification/`
+and `release141-failed.log`. Task30Sol repair1 passed locally; latest pool4used/1remaining.
 
 Test-count correction: historical1413/0 and1394/0 runs loaded two files with
 one shared ExUnit module name. Those counts are retained observations, not proof
@@ -53,7 +68,7 @@ only its captured attempt counter increasing; all other captured fields stay exa
 Both hosts' direct/MCP health is online/canonical/stalefalse/pending0; temporary
 relay/B and operator processes are stopped, original local services remain running.
 The preceding pool is exhausted. The newly authorized five-round pool allocates
-three rounds to Task72 registration, Relayixir observation repair and Task72 browser compatibility, with2 unallocated. Stages04Sol2/Astra20,
+four rounds to Task72 registration/browser compatibility, Relayixir observation and the release compile scope, with1 unallocated. Stages04Sol2/Astra20,
 ceiling21; Task127 tooling consumed no product round (Sol instrumentation repair1/2).
 
 Final evidence under `.devenv/provenance-correction/resumed-101/`:
@@ -2091,7 +2106,7 @@ selective release list. Relayixir test/docs changes require no version churn.
 These local checks do not claim that final CI, versioning or publication passed.
 
 
-### Source CI green and scoped version preparation
+### Historical source CI and scoped version preparation
 
 Main `587af33f55d7f56af924273cf4c4702af8393c8d` passed CI39551221215:
 Compile, Format Check, Credo, Workflow Contract and Dialyzer. Test39551221155

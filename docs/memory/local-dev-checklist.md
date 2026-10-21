@@ -89,13 +89,24 @@ These are source-level findings, not live acceptance results. Regressions were a
 
 ### Current resume boundary (2026-10-21, authorized continuation)
 
+Latest full release39560571890 at4ec9bd95 passes Memory qualification and four
+host-agent builds, but both Backplane builds fail the new metadata refresh.
+Task30Sol repair1 passed in isolation in `.trees/fix-release-admin-compile`: scope the
+forced warnings-as-errors compilation through recursive `cmd`, preserving
+packaged metadata verification. Release tests25/0, workflow8/0 and actual warm
+production compile/metadata checks pass. Current pool4used/1remaining; Task72Sol2/Astra5
+and other historical counters remain unchanged. No production guard changes.
+ROUTE task=30 agent=l18_final_review reason=Sol bounded inherited release-command repair.
+The earlier selective attempt and first full attempt were cancelled; main3be889c3
+supersedes the selective version plan with a full1.10.28 release. No publication.
+
 Release39553644831 at44f03fca failed before builds/publication while waiting for
 `canonical memory-space identity` in the seeded browser qualification. Version
 1.10.28 remains unpublished. Task72 Astra5 repaired the stale
 `#replay-memory-space` consumer; direct opening and optional provenance filters
 remain authoritative. No timeout extension or skipped assertion is authorized.
 ROUTE task=72 agent=task72_browser_compat_recovery reason=SOL_REPEATED_FAILURE inherited recovery.
-Task72 retains Sol2/Astra5 (ceiling8); current pool3used/2remaining.
+Task72 retains Sol2/Astra5 (ceiling8); current pool4used/1remaining.
 
 The owner has now included the three repository-local release dependencies in
 this task: MCP idempotency Dialyzer, Admin client-token audit compatibility and
@@ -106,7 +117,7 @@ ROUTE task=137 agent=release_relayixir_dependency reason=Sol initial implementat
 Task136MCP/136Admin began Sol0/Astra0 and their initial fixes passed. Task137's
 initial focused check exposed a timer/DOWN observation race at the exact guard
 deadline; Sol repair1 adds a shared250ms observation allowance without extending
-the production deadline. The current five-round pool is3used/2remaining, retaining
+the production deadline. The current five-round pool is4used/1remaining, retaining
 Task72 Sol2/Astra5 and all earlier Memory counters. The earlier
 MCP/Admin/Relayixir and Task72 validation commands are terminal; parent owns integration. Scope expansion
 is not authorization to suppress warnings or weaken cleanup/authentication tests.
@@ -117,13 +128,14 @@ full Relayixir296/0, strict app compilation and formatting passed. All worker
 commands terminated; parent owns final CI/versioning/publication. See the final
 acceptance report for exact contract changes and evidence.
 
-Current overlay: **local L01–L18 accepted; source CI green; version1.10.28 prepared, corrected-source CI/release pending**.
+Current overlay: **local L01–L18 accepted; source CI green; full1.10.28 prepared, final CI/publication pending**.
 The preceding five-round pool is exhausted, including stages04A20 and Task64A12;
 cumulative stages04Sol2/Astra20, ceiling21. The user authorized five further
 repair rounds in the current continuation. Round1 corrected Task72's
 provenance-test module collision (Sol2/Astra3→4); round2 corrected Relayixir's
-timer observation; round3 corrected Task72's browser consumer (Astra4→5).
-Two new rounds remain unallocated; historical counters are retained.
+timer observation; round3 corrected Task72's browser consumer (Astra4→5);
+round4 is Task30's compile-scope repair.
+One new round remains unallocated; historical counters are retained.
 ROUTE task=72 agent=task72_registration_recovery reason=SOL_REPEATED_FAILURE inherited Task72 recovery; bounded test-registration correction.
 Task133 diagnosis and Task134 requirement audit were read-only and consumed no
 repair round. Two test files share `Backplane.Memory.MemoriesTest` with20 and1

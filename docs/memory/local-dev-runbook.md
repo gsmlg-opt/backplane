@@ -1,6 +1,6 @@
 # Memory local development runbook
 
-Status: **local L01–L18 accepted; source CI green; browser compatibility verified locally; corrected-source CI/release pending**.
+Status: **local L01–L18 accepted; source CI green; Memory qualification passed; release command verified locally; final CI/publication pending**.
 The evidence levels and retained failures are in [acceptance](local-e2e-acceptance.md).
 
 The local stack remains running: public `http://localhost:4220`, Admin
@@ -26,9 +26,14 @@ error histories remain intact. Eleven historical provenance additions are
 attributed, not described as byte-identical rows. L18 is accepted from the retained
 composite repeat/restart/recovery evidence; no cross-machine validation occurred.
 The preceding pool is exhausted. The newly authorized five-round pool allocates
-three rounds to Task72 registration, Relayixir observation repair and Task72 browser compatibility, with2 unallocated; prior counters are retained.
+four rounds to Task72 registration/browser compatibility, Relayixir observation and the release compile scope, with1 unallocated; prior counters are retained.
 Stages04Sol2/Astra20 ceiling21; Task127 instrumentationSol1/2 consumed no product round. See [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
-Version1.10.28 is prepared for the nine-app selective release; publication is pending. Required gates remain unwaived.
+The nine-app selective attempt at307b04cd was cancelled. Subsequent main
+3be889c3 prepared full1.10.28 alongside Auth#73; preserve that newer release plan.
+Release39560571890 at4ec9bd95 passed Memory qualification and all four host-agent
+builds, but both Backplane builds failed the new Admin metadata refresh command.
+Task30 repairs only its compile scope, verified by25 release tests,8 workflow
+contracts and an actual production warm compile/metadata check; publication remains pending, with no gate waived.
 
 Use the status above and the acceptance report for the current outcome. Earlier
 probe observations below retain their original evidence boundaries; a historical
@@ -524,11 +529,11 @@ temporary copied-manifest fixtures. No real root/app manifest version changed
 and no release version was selected. The release support is now committed and
 pushed; no publication occurred for Task30.
 
-After all gates and main CI pass, choose an unused strict semantic version and
-replace the placeholders below. These are eventual delivery commands, **not
-executed release evidence**. The current task's nine affected apps, including
-the shared Memory contract, are explicit so
-unchanged umbrella apps and Hex packages retain their versions:
+The following is the historical selective delivery recipe from Task30,
+**not the current1.10.28 plan or executed release evidence**. Main3be889c3 later
+prepared a full release, including Hex, and the current release must preserve
+that authoritative plan. The selective mode remains available for future scoped
+delivery after its own version and CI qualification:
 
 ```sh
 memory_release_version='REPLACE_WITH_UNUSED_SEMVER'

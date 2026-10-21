@@ -1,14 +1,22 @@
 # Local Memory implementation and verification boundaries
 
-Delivery is incomplete. This document explains accepted ownership and the
-verified implementation slices. Source and version CI at44f03fca are green. Release39553644831 failed
-in the browser qualification identity check; publication was skipped. No release
-is claimed. Task72 browser compatibility now passes locally; corrected-source CI and a new
-release run remain required. The browser reads the existing server-resolved
-reconnect key and compares all five partition fields plus session to the seeded
-fixture before playback, after reconnect and after PubSub. Provenance selector
-inputs are not required; production UI/authorization behavior is unchanged.
-See [the acceptance report](local-e2e-acceptance.md) for L01–L18.
+Delivery is incomplete. Local L01–L18 have accepted evidence at the explicit
+levels in [the acceptance report](local-e2e-acceptance.md). Browser qualification
+compatibility307b04cd and its source CI passed. Later main3be889c3 adds Auth#73
+and full1.10.28 preparation; main4ec9bd95 adds packaged build-provenance validation.
+Release39560571890 passes Memory qualification and four host-agent builds, but
+fails the Admin metadata refresh step in both Backplane builds. Task30 repairs
+that command's app scope through recursive `cmd`, preserving forced compilation, warnings-as-errors,
+compiled SHA/version/prod verification and production Edge protection. Publication
+has not occurred. Release tests25/0, workflow contracts8/0 and a warm production
+compile confirm only Admin changes and fresh compiled SHA/version/prod metadata
+survives removal of runtime overrides. The root production build is unchanged.
+The earlier selective plan is retained as historical evidence.
+
+The replay browser uses the existing server-resolved reconnect key and compares
+all five partition fields plus session against the seeded fixture before playback,
+after reconnect and after PubSub. Source host/repository remain optional filters;
+identity does not depend on removed provenance selector inputs.
 
 ## Authority and transport
 
