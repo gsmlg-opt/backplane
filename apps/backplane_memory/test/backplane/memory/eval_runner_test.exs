@@ -33,7 +33,19 @@ defmodule Backplane.Memory.Eval.RunnerTest do
   test "runs every M15 gate through Recall Pipeline inside the rollback sandbox" do
     assert {:ok, fixture} = Eval.load_fixture()
     assert {:error, :insufficient_warmups} = Runner.evaluate(fixture, warmups: 4, samples: 100)
-    assert {:ok, report, export} = Runner.run(warmups: 5, samples: 100, profile: :ci)
+    refute Backplane.Memory.Embedding.Client.configured?()
+
+    pipeline = fn attrs, opts ->
+      if Keyword.get(opts[:reranker_opts], :enabled) do
+        assert opts[:query_embedding_model] == "eval-outage"
+        refute Backplane.Memory.Embedding.Client.configured?()
+      end
+
+      Pipeline.run(attrs, opts)
+    end
+
+    assert {:ok, report, export} =
+             Runner.run(warmups: 5, samples: 100, profile: :ci, pipeline: pipeline)
 
     assert report.profile == :ci
     refute report.performance_authoritative
@@ -47,8 +59,8 @@ defmodule Backplane.Memory.Eval.RunnerTest do
     assert report.outage.availability == 1.0
 
     assert report.provenance == %{coverage: 1.0, denominator: 2, numerator: 2, persisted: 2}
-    assert report.outage.embedding_provider_calls > 0
-    assert report.outage.reranker_provider_calls > 0
+    assert report.outage.embedding_provider_calls == report.outage.samples
+    assert report.outage.reranker_provider_calls == report.outage.samples
     assert report.outage.nonempty_fts_results == report.outage.samples
     assert report.latency.retrieval_fusion.samples == 100
     assert report.latency.e2e.samples == 100

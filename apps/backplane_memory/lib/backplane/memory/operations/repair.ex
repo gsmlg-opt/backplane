@@ -19,6 +19,7 @@ defmodule Backplane.Memory.Operations.Repair do
     EmbedWorker,
     GraphExtractWorker,
     ProfileBuildWorker,
+    RelationClassifierWorker,
     SummaryWorker
   }
 
@@ -33,6 +34,7 @@ defmodule Backplane.Memory.Operations.Repair do
   def run(args, partition, actor)
       when is_map(args) and is_map(partition) and is_binary(actor) do
     with {:ok, kind} <- required_kind(args),
+         {:ok, args} <- normalize_job_ids(args, kind),
          {:ok, key} <- required(args, "idempotency_key"),
          {:ok, partition} <- exact_partition(partition) do
       caller_key = caller_key(partition, key)
@@ -248,27 +250,92 @@ defmodule Backplane.Memory.Operations.Repair do
     end
   end
 
-  defp dispatch("dead_letter", _args, partition) do
-    jobs =
-      repo().all(
-        from(job in Styx.Job,
-          where: job.state in ["discarded", "cancelled"],
-          where: like(job.queue, "memory%"),
-          where:
-            fragment("?->>'host_id' = ?", job.args, ^partition.host_id) and
-              fragment("?->>'client_id' = ?", job.args, ^partition.client_id) and
-              fragment("?->>'scope' = ?", job.args, ^partition.scope) and
-              fragment("?->>'namespace' = ?", job.args, ^partition.namespace),
-          order_by: [asc: job.id],
-          limit: @limit
-        )
+  defp dispatch("dead_letter", args, partition) do
+    identity_keys = ~w(memory_space_id host_id client_id scope namespace)
+
+    identity = Map.take(partition, ~w(memory_space_id host_id client_id scope namespace)a)
+
+    governed_targets =
+      from(memory in Memory,
+        where: not is_nil(memory.deleted_at) or memory.lifecycle_state == "tombstoned",
+        where:
+          (parent_as(:repair_job).worker == ^inspect(EmbedWorker) and
+             fragment("?->>'id' = ?::text", parent_as(:repair_job).args, memory.id)) or
+            (parent_as(:repair_job).worker == ^inspect(RelationClassifierWorker) and
+               fragment("?->>'memory_id' = ?::text", parent_as(:repair_job).args, memory.id)),
+        select: 1
       )
 
-    Enum.each(jobs, &Styx.retry_job/1)
-    {:ok, length(jobs), Enum.map(jobs, &to_string(&1.id)), %{bounded: true}}
+    query =
+      from(job in Styx.Job,
+        as: :repair_job,
+        where: job.state in ["discarded", "cancelled"],
+        where: like(job.queue, "memory%"),
+        where:
+          (fragment("NOT jsonb_exists(?, 'partition')", job.args) and
+             fragment("? @> ?::jsonb", job.args, ^identity)) or
+            (fragment("jsonb_typeof(?->'partition') = 'object'", job.args) and
+               fragment("NOT jsonb_exists_any(?, ?)", job.args, ^identity_keys) and
+               fragment("?->'partition' @> ?::jsonb", job.args, ^identity)),
+        where: not exists(governed_targets),
+        order_by: [asc: job.id],
+        limit: @limit
+      )
+
+    with {:ok, jobs} <- select_dead_letters(query, args["job_ids"]) do
+      Enum.each(jobs, &Styx.retry_job/1)
+      {:ok, length(jobs), Enum.map(jobs, &to_string(&1.id)), %{bounded: true}}
+    end
   end
 
   defp dispatch(_kind, _args, _partition), do: {:error, :invalid_arguments}
+
+  defp select_dead_letters(query, nil), do: {:ok, repo().all(query)}
+
+  defp select_dead_letters(query, ids) do
+    jobs = repo().all(from(job in query, where: job.id in ^ids, lock: "FOR UPDATE"))
+
+    if Enum.map(jobs, & &1.id) == ids and live_retry_targets?(jobs) do
+      {:ok, jobs}
+    else
+      {:error, :target_mismatch}
+    end
+  end
+
+  defp live_retry_targets?(jobs) do
+    ids =
+      jobs
+      |> Enum.map(fn job ->
+        cond do
+          job.worker == inspect(EmbedWorker) -> job.args["id"]
+          job.worker == inspect(RelationClassifierWorker) -> job.args["memory_id"]
+          true -> nil
+        end
+      end)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    Memory
+    |> where([memory], fragment("?::text", memory.id) in ^ids)
+    |> order_by([memory], memory.id)
+    |> lock("FOR UPDATE")
+    |> repo().all()
+    |> Enum.all?(&(is_nil(&1.deleted_at) and &1.lifecycle_state != "tombstoned"))
+  end
+
+  defp normalize_job_ids(%{"job_ids" => ids} = args, "dead_letter") when is_list(ids) do
+    valid? =
+      length(ids) in 1..@limit and length(Enum.uniq(ids)) == length(ids) and
+        Enum.all?(ids, &(is_integer(&1) and &1 > 0 and &1 <= 9_223_372_036_854_775_807)) and
+        not Map.has_key?(args, "target_id")
+
+    if valid?,
+      do: {:ok, Map.put(args, "job_ids", Enum.sort(ids))},
+      else: {:error, :invalid_arguments}
+  end
+
+  defp normalize_job_ids(%{"job_ids" => _ids}, _kind), do: {:error, :invalid_arguments}
+  defp normalize_job_ids(args, _kind), do: {:ok, args}
 
   defp reduce_repairs(rows, fun) do
     Enum.reduce_while(rows, :ok, fn row, :ok ->

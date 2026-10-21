@@ -161,7 +161,11 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
   test "graph distinguishes disabled and provider-unavailable from an empty graph", %{conn: conn} do
     snapshots =
-      for key <- ["memory.pipeline.enabled", "memory.relation_classifier.enabled"],
+      for key <- [
+            "memory.pipeline.enabled",
+            "memory.relation_classifier.enabled",
+            "memory.llm_model"
+          ],
           into: %{},
           do: {key, :ets.lookup(:backplane_settings, key)}
 
@@ -185,11 +189,11 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
     :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
     :ets.insert(:backplane_settings, {"memory.relation_classifier.enabled", true})
-    Application.delete_env(:backplane_memory, :llm_client)
+    :ets.insert(:backplane_settings, {"memory.llm_model", nil})
     {:ok, unavailable, _html} = live(recycle(conn), path)
     assert has_element?(unavailable, "#graph-provider-unavailable")
 
-    Application.put_env(:backplane_memory, :llm_client, __MODULE__.FakeLLM)
+    :ets.insert(:backplane_settings, {"memory.llm_model", "fixture/model"})
     {:ok, empty, _html} = live(recycle(conn), path)
     assert has_element?(empty, "#graph-empty")
   end
@@ -198,7 +202,11 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     previous_llm = Application.get_env(:backplane_memory, :llm_client)
 
     snapshots =
-      for key <- ["memory.pipeline.enabled", "memory.relation_classifier.enabled"],
+      for key <- [
+            "memory.pipeline.enabled",
+            "memory.relation_classifier.enabled",
+            "memory.llm_model"
+          ],
           into: %{},
           do: {key, :ets.lookup(:backplane_settings, key)}
 
@@ -215,7 +223,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
     :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
     :ets.insert(:backplane_settings, {"memory.relation_classifier.enabled", true})
-    Application.put_env(:backplane_memory, :llm_client, __MODULE__.FakeLLM)
+    :ets.insert(:backplane_settings, {"memory.llm_model", "fixture/model"})
 
     {:ok, view, _html} = live(conn, "/memory/graph?" <> URI.encode_query(@partition))
 
@@ -225,6 +233,8 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
   test "memory evidence links to exact event, replay, and session summary destinations" do
     event_id = Ecto.UUID.generate()
+    memory_id = Ecto.UUID.generate()
+    summary_id = Ecto.UUID.generate()
 
     partition = %{
       memory_space_id: @partition["memory_space_id"],
@@ -239,12 +249,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
         partition: partition,
         rows: [],
         selected: %{
-          memory:
-            Map.merge(partition, %{
-              id: Ecto.UUID.generate(),
-              content: "Memory",
-              session_id: "session-a"
-            }),
+          memory: %{id: memory_id, content: "Memory", session_id: "session-a"},
           evidence: [
             %{
               source_type: "event",
@@ -255,7 +260,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
             },
             %{
               source_type: "summary",
-              source_id: Ecto.UUID.generate(),
+              source_id: summary_id,
               session_id: "session-a",
               evidence_kind: "derives",
               excerpt: "summary"
@@ -273,24 +278,36 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
         page_size: 25,
         error: nil,
         detail_error: nil,
+        source_error: nil,
+        source_summary: nil,
         filters: %{},
         total_count: 0,
         current_path: "/memory/memories"
       })
 
-    links = html |> Floki.parse_fragment!() |> Floki.attribute("a", "href")
+    document = Floki.parse_fragment!(html)
 
-    for {path, expected_query} <- [
-          {"/memory/events/#{event_id}", @partition},
-          {"/memory/sessions/session-a", @partition},
-          {"/memory/replay", Map.put(@partition, "session", "session-a")}
-        ] do
-      destination = Enum.find(links, &(URI.parse(&1).path == path))
-      assert destination
+    event_url =
+      document
+      |> Floki.attribute("#memory-evidence a", "href")
+      |> Enum.find(&String.starts_with?(&1, "/memory/events/"))
 
-      assert destination |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query() ==
-               expected_query
-    end
+    assert URI.parse(event_url).path == "/memory/events/#{event_id}"
+    assert URI.decode_query(URI.parse(event_url).query) == @partition
+
+    summary_url =
+      document
+      |> Floki.attribute("#memory-evidence a", "href")
+      |> Enum.find(&String.starts_with?(&1, "/memory/memories/"))
+
+    assert URI.parse(summary_url).path == "/memory/memories/#{memory_id}"
+
+    assert URI.decode_query(URI.parse(summary_url).query) ==
+             Map.put(@partition, "source_summary", summary_id)
+
+    assert html =~ "/memory/sessions/session-a?"
+    assert html =~ "/memory/replay?"
+    assert html =~ "session=session-a"
   end
 
   test "config is finite, filterable, typed, trusted-route editable, and audited", %{conn: conn} do

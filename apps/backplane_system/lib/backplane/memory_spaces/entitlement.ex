@@ -18,6 +18,9 @@ defmodule Backplane.MemorySpaces.Entitlement do
     field(:namespace, :string, default: "private")
     field(:default_capture, :boolean, default: false)
     field(:status, :string, default: "active")
+    field(:capabilities, {:array, :string}, default: [])
+    field(:authority_version, :integer, default: 1)
+    field(:offline_read_lease_seconds, :integer, default: 0)
     timestamps()
   end
 
@@ -30,7 +33,10 @@ defmodule Backplane.MemorySpaces.Entitlement do
       :scope,
       :namespace,
       :default_capture,
-      :status
+      :status,
+      :capabilities,
+      :authority_version,
+      :offline_read_lease_seconds
     ])
     |> update_change(:scope, &String.trim/1)
     |> update_change(:namespace, &String.trim/1)
@@ -43,6 +49,14 @@ defmodule Backplane.MemorySpaces.Entitlement do
       :status
     ])
     |> validate_inclusion(:status, ["active", "revoked"])
+    |> validate_number(:authority_version, greater_than: 0)
+    |> validate_number(:offline_read_lease_seconds,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 300
+    )
+    |> check_constraint(:capabilities, name: :bpm_memory_access_capabilities_check)
+    |> check_constraint(:authority_version, name: :bpm_memory_access_version_check)
+    |> check_constraint(:offline_read_lease_seconds, name: :bpm_memory_access_lease_check)
     |> foreign_key_constraint(:memory_space_id)
     |> unique_constraint([:memory_space_id, :host_id, :scope, :namespace],
       name: :bpm_memory_space_entitlements_partition_index

@@ -22,6 +22,85 @@ defmodule Backplane.Api.HostAgentMemorySync do
   @host_memory_metadata_key "host_memory"
   @host_memory_idempotency_prefix "host-memory.v1:"
 
+  @doc "Settle a bounded batch of immutable shared commands without disclosing Memory content."
+  def settle_commands(auth, %{"protocol" => "memory_commands.v2", "items" => items} = payload)
+      when map_size(payload) == 2 and is_list(items) do
+    cond do
+      length(items) > 50 or byte_size(Jason.encode!(payload)) > @max_compat_bytes ->
+        {:error, :payload_too_large}
+
+      not Enum.all?(items, &valid_shared_envelope?/1) ->
+        {:error, :invalid_request}
+
+      true ->
+        Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acknowledgements} ->
+          case Backplane.Memory.SharedCommands.settle(auth, item) do
+            {:ok, acknowledgement} ->
+              {:cont, {:ok, [acknowledgement | acknowledgements]}}
+
+            {:error, reason} when reason in [:storage_unavailable, :transaction_conflict] ->
+              {:halt, {:error, reason}}
+
+            {:error, reason} ->
+              code =
+                if reason in [
+                     :unauthorized,
+                     :authority_changed,
+                     :invalid_request,
+                     :partition_mismatch,
+                     :idempotency_conflict,
+                     :not_found
+                   ],
+                   do: reason,
+                   else: :invalid_request
+
+              acknowledgement = %{
+                command_id: item["command_id"],
+                status: :rejected,
+                access: item["access"],
+                partition: item["partition"],
+                code: code
+              }
+
+              {:cont, {:ok, [acknowledgement | acknowledgements]}}
+          end
+        end)
+        |> case do
+          {:ok, acknowledgements} ->
+            {:ok, %{protocol: "memory_commands.v2", items: Enum.reverse(acknowledgements)}}
+
+          error ->
+            error
+        end
+    end
+  end
+
+  def settle_commands(_auth, _payload), do: {:error, :invalid_request}
+
+  defp valid_shared_envelope?(
+         %{
+           "command_id" => id,
+           "op" => op,
+           "access" => %{"access_id" => access_id, "authority_version" => version} = access,
+           "partition" => partition,
+           "arguments" => arguments
+         } = item
+       )
+       when map_size(item) == 5 and map_size(access) == 2 and is_map(partition) and
+              map_size(partition) == 3 and is_map(arguments) and is_integer(version) and
+              version > 0 do
+    Ecto.UUID.cast(id) != :error and Ecto.UUID.cast(access_id) != :error and
+      op in ["remember", "forget"] and
+      Enum.sort(Map.keys(partition)) == ~w(memory_space_id namespace scope) and
+      match?({:ok, _}, Backplane.Memory.PartitionIdentity.validate(partition)) and
+      Enum.all?(
+        [partition["scope"], partition["namespace"]],
+        &(is_binary(&1) and byte_size(&1) <= 255)
+      )
+  end
+
+  defp valid_shared_envelope?(_), do: false
+
   def apply_sync_item(host, %{"op" => "remember"} = item) do
     with {:ok, host} <- reload_host(host),
          {:ok, local_id} <- required_binary(item, "id"),
@@ -29,7 +108,9 @@ defmodule Backplane.Api.HostAgentMemorySync do
          :ok <- validate_content_hash(item, content),
          :ok <- validate_host_scope(host, scope_for(item)),
          {:ok, partition} <-
-           MemorySpaces.resolve_host_partition(host.id, scope_for(item), "private") do
+           MemorySpaces.resolve_host_partition(host.id, scope_for(item), "private"),
+         :ok <- validate_partition_claim(item, partition),
+         :ok <- validate_command_fields(item) do
       remember_host_item(host, item, local_id, content, partition)
     else
       {:error, reason} -> {:error, :validation, reason}
@@ -247,7 +328,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
   # replaced by NULL in PostgreSQL, before the driver can materialize them.
   # The complete encoded wire frame is checked again before issuing its receipt.
   defp guarded_fact_query(query) do
-    from r in subquery(query),
+    from(r in subquery(query),
       select: %{
         id: r.id,
         content_hash: r.content_hash,
@@ -274,10 +355,11 @@ defmodule Backplane.Api.HostAgentMemorySync do
             r.metadata
           )
       }
+    )
   end
 
   defp guarded_wipe_query(query) do
-    from r in subquery(query),
+    from(r in subquery(query),
       select: %{
         id: r.id,
         content_hash: r.content_hash,
@@ -289,6 +371,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
             r.scope
           )
       }
+    )
   end
 
   defp fetched_rows_valid(rows, key) do
@@ -309,7 +392,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
     metadata = item |> Map.get("metadata", %{}) |> normalize_metadata()
 
     opts = [
-      type: "episodic",
+      type: Map.get(item, "type", "episodic"),
       memory_space_id: partition.memory_space_id,
       scope: partition.scope,
       agent_id: optional_binary(item, "agent_id") || "",
@@ -319,7 +402,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
       namespace: partition.namespace,
       session_id: optional_binary(item, "session_id"),
       tags: normalize_tags(Map.get(item, "tags", [])),
-      metadata: put_host_metadata(metadata, local_id, host_content_hash),
+      metadata: put_host_metadata(metadata, local_id, host_content_hash, item),
       idempotency_scope: host_request_scope(host.id),
       idempotency_key: local_id
     ]
@@ -334,6 +417,11 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
            case Memories.remember(content, opts) do
              {:ok, %MemorySchema{} = memory} ->
+               case Backplane.Memory.Facets.tag(memory.id, Map.get(item, "facets", [])) do
+                 {:ok, _} -> :ok
+                 {:error, reason} -> Repo.rollback(reason)
+               end
+
                request =
                  Repo.one!(
                    from(r in RememberRequest,
@@ -368,7 +456,14 @@ defmodule Backplane.Api.HostAgentMemorySync do
          end) do
       {:ok, {memory, replay?, revision}} ->
         status = if replay?, do: :duplicate, else: :ok
-        {:ok, %{status: status, canonical_id: memory.id, revision: revision}}
+
+        {:ok,
+         %{
+           status: status,
+           canonical_id: memory.id,
+           revision: revision,
+           partition: ack_partition(memory)
+         }}
 
       {:error, reason} ->
         {:error, :validation, reason}
@@ -458,7 +553,15 @@ defmodule Backplane.Api.HostAgentMemorySync do
                 :ok <- canonical_advisory_lock!(host_id, initial_mapping.memory.id),
                 {:ok, mapping} <- resolve_forget_mapping(current_host, item),
                 {:ok, status} <- reconcile_forget(current_host, mapping) do
-             %{status: status, canonical_id: mapping.memory.id}
+             memory = mapping.memory
+             revision = delete_revision(memory)
+
+             %{
+               status: status,
+               canonical_id: memory.id,
+               revision: revision,
+               partition: ack_partition(memory)
+             }
            else
              {:error, reason} -> Repo.rollback(reason)
            end
@@ -470,6 +573,25 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
   defp forget_host_item(_host, _item, _local_id, _scope),
     do: {:error, :validation, "host is not registered"}
+
+  defp ack_partition(memory) do
+    %{
+      "memory_space_id" => memory.memory_space_id,
+      "scope" => memory.scope,
+      "namespace" => memory.namespace
+    }
+  end
+
+  defp delete_revision(memory) do
+    Change
+    |> where([change], change.memory_space_id == ^memory.memory_space_id)
+    |> where([change], change.scope == ^memory.scope and change.namespace == ^memory.namespace)
+    |> where([change], change.memory_id == ^memory.id and change.op == "delete")
+    |> order_by([change], desc: change.revision)
+    |> select([change], change.revision)
+    |> limit(1)
+    |> Repo.one()
+  end
 
   defp reconcile_forget(
          _host,
@@ -515,6 +637,33 @@ defmodule Backplane.Api.HostAgentMemorySync do
 
     (request_mappings ++ [mapping])
     |> Enum.uniq_by(& &1.local_id)
+  end
+
+  defp resolve_forget_mapping(host, %{"canonical_id" => id} = item) do
+    with {:ok, local_id} <- required_binary(item, "id"),
+         {:ok, id} <- Ecto.UUID.cast(id),
+         {:ok, partition} <-
+           MemorySpaces.resolve_host_partition(host.id, scope_for(item), "private"),
+         true <- Enum.all?(["memory_space_id", "scope", "namespace"], &Map.has_key?(item, &1)),
+         :ok <- validate_partition_claim(item, partition),
+         %MemorySchema{} = memory <-
+           Repo.one(
+             from(m in MemorySchema,
+               where:
+                 m.id == ^id and m.memory_space_id == ^partition.memory_space_id and
+                   m.scope == ^partition.scope and m.namespace == ^partition.namespace
+             )
+           ) do
+      {:ok,
+       %{
+         memory: memory,
+         request: nil,
+         local_id: local_id,
+         revoked?: not is_nil(memory.deleted_at)
+       }}
+    else
+      _ -> {:error, "canonical identity is outside the current authorized partition"}
+    end
   end
 
   defp resolve_forget_mapping(host, item) do
@@ -621,11 +770,55 @@ defmodule Backplane.Api.HostAgentMemorySync do
     |> Base.encode16(case: :lower)
   end
 
-  defp put_host_metadata(metadata, local_id, content_hash) do
-    Map.put(metadata, @host_memory_metadata_key, %{
-      "local_id" => local_id,
-      "content_hash" => content_hash
-    })
+  defp put_host_metadata(metadata, local_id, content_hash, item) do
+    command = Map.take(item, ["idempotency_key", "facets"])
+
+    Map.put(
+      metadata,
+      @host_memory_metadata_key,
+      Map.merge(command, %{
+        "local_id" => local_id,
+        "content_hash" => content_hash
+      })
+    )
+  end
+
+  defp validate_partition_claim(item, partition) do
+    if Enum.all?(
+         [{"memory_space_id", :memory_space_id}, {"scope", :scope}, {"namespace", :namespace}],
+         fn {key, field} ->
+           not Map.has_key?(item, key) or item[key] == partition[field]
+         end
+       ),
+       do: :ok,
+       else: {:error, "partition does not match current host entitlement"}
+  end
+
+  defp validate_command_fields(item) do
+    facets = Map.get(item, "facets", [])
+    key = Map.get(item, "idempotency_key")
+
+    cond do
+      Map.get(item, "type", "episodic") not in ~w(working episodic semantic procedural) ->
+        {:error, "unsupported memory type"}
+
+      not is_list(facets) or
+          not Enum.all?(facets, fn
+            %{"dimension" => dimension, "value" => value}
+            when is_binary(dimension) and dimension != "" and is_binary(value) and value != "" ->
+              true
+
+            _ ->
+              false
+          end) ->
+        {:error, "invalid facets"}
+
+      not is_nil(key) and (not is_binary(key) or String.trim(key) == "") ->
+        {:error, "invalid idempotency key"}
+
+      true ->
+        :ok
+    end
   end
 
   defp host_content_hash(%{"content_hash" => hash}, _content)

@@ -172,6 +172,13 @@ defmodule Backplane.MemoryToolContract do
     }
   }
 
+  @memory_access_id_schema %{
+    "type" => "string",
+    "format" => "uuid",
+    "description" =>
+      "Optional Memory access UUID selector, not a credential. When omitted, uses the designated private default."
+  }
+
   @tools %{
     "memory::facet_query" => %{
       name: "memory::facet_query",
@@ -199,7 +206,10 @@ defmodule Backplane.MemoryToolContract do
       description: "Soft-delete a memory by id.",
       input_schema: %{
         "type" => "object",
-        "properties" => %{"id" => %{"type" => "string"}},
+        "properties" => %{
+          "id" => %{"type" => "string"},
+          "memory_access_id" => @memory_access_id_schema
+        },
         "required" => ["id"]
       }
     },
@@ -209,6 +219,7 @@ defmodule Backplane.MemoryToolContract do
       input_schema: %{
         "type" => "object",
         "properties" => %{
+          "memory_access_id" => @memory_access_id_schema,
           "type" => %{"type" => "string"},
           "scope" => %{"type" => "string"},
           "agent_id" => %{"type" => "string"},
@@ -226,6 +237,7 @@ defmodule Backplane.MemoryToolContract do
       input_schema: %{
         "type" => "object",
         "properties" => %{
+          "memory_access_id" => @memory_access_id_schema,
           "query" => %{"type" => "string", "description" => "Query text"},
           "limit" => %{"type" => "integer", "default" => 10},
           "scope" => %{"type" => "string"},
@@ -258,6 +270,7 @@ defmodule Backplane.MemoryToolContract do
       input_schema: %{
         "type" => "object",
         "properties" => %{
+          "memory_access_id" => @memory_access_id_schema,
           "content" => %{"type" => "string", "description" => "Memory text"},
           "facets" => @facet_tag_schema,
           "type" => %{
@@ -279,7 +292,10 @@ defmodule Backplane.MemoryToolContract do
     "memory::stats" => %{
       name: "memory::stats",
       description: "Return counts grouped by memory_type.",
-      input_schema: %{"type" => "object", "properties" => %{}}
+      input_schema: %{
+        "type" => "object",
+        "properties" => %{"memory_access_id" => @memory_access_id_schema}
+      }
     },
     "memory::slot_list" => %{
       name: "memory::slot_list",

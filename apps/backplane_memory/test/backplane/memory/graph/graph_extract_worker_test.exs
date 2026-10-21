@@ -1,6 +1,21 @@
 defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
+  setup do
+    keys = ~w(memory.pipeline.enabled memory.relation_classifier.enabled)
+    previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
+
+    on_exit(fn ->
+      Enum.each(previous, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
+    end)
+
+    :ok
+  end
+
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Graph.Node
   alias Backplane.Memory.Projections.{ProjectedSession, Source, State}
@@ -26,6 +41,30 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
 
   defmodule MockLLMError do
     def extract_graph(_observations), do: {:error, "llm unavailable"}
+  end
+
+  defmodule GateLLM do
+    def extract_graph(_observations) do
+      send(self(), :graph_provider_called)
+
+      if Process.get(:disable_graph_during_generation),
+        do: :ets.insert(:backplane_settings, {"memory.relation_classifier.enabled", false})
+
+      {:ok, %{nodes: [%{type: "Concept", name: "gate_concept"}], edges: []}}
+    end
+  end
+
+  defmodule MockLLMWithEdges do
+    def extract_graph(_observations) do
+      {:ok,
+       %{
+         nodes: [
+           %{key: "gateway", type: "Module", name: "Backplane"},
+           %{key: "database", type: "Library", name: "PostgreSQL"}
+         ],
+         edges: [%{source: "gateway", target: "database", relation: "uses"}]
+       }}
+    end
   end
 
   defmodule MockLLMSkip do
@@ -99,6 +138,48 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
     end
   end
 
+  test "graph stage gate blocks providers and preserves previously completed artifacts" do
+    session_id = Ecto.UUID.generate()
+    make_memories(session_id, 3)
+    Application.put_env(:backplane_memory, :llm_module, GateLLM)
+    :ets.insert(:backplane_settings, {"memory.relation_classifier.enabled", false})
+    assert {:ok, {:skipped, :disabled}} = GraphExtractWorker.perform(job(session_id))
+    refute_received :graph_provider_called
+    assert repo().aggregate(Node, :count) == 0
+    :ets.insert(:backplane_settings, {"memory.relation_classifier.enabled", true})
+    assert {:ok, %{nodes_extracted: 1}} = GraphExtractWorker.perform(job(session_id))
+    assert_received :graph_provider_called
+    before_nodes = repo().all(Node)
+
+    before_state =
+      repo().get_by!(State,
+        projector: "graph",
+        subject_id: Source.subject_id!("host-test", session_id)
+      )
+
+    :ets.insert(:backplane_settings, {"memory.relation_classifier.enabled", false})
+    assert {:ok, :already_complete} = GraphExtractWorker.perform(job(session_id))
+    refute_received :graph_provider_called
+    assert repo().all(Node) == before_nodes
+    assert repo().get!(State, before_state.id) == before_state
+  end
+
+  test "graph gate disabled during generation prevents fenced output persistence" do
+    session_id = Ecto.UUID.generate()
+    make_memories(session_id, 3)
+    Application.put_env(:backplane_memory, :llm_module, GateLLM)
+    Process.put(:disable_graph_during_generation, true)
+    assert {:ok, {:skipped, :disabled}} = GraphExtractWorker.perform(job(session_id))
+    assert_received :graph_provider_called
+    assert repo().aggregate(Node, :count) == 0
+
+    assert %{status: "skipped_disabled"} =
+             repo().get_by!(State,
+               projector: "graph",
+               subject_id: Source.subject_id!("host-test", session_id)
+             )
+  end
+
   describe "perform/1 — skips when below min_observations" do
     test "returns :skipped_min_observations when session has fewer than min_obs memories" do
       session_id = Ecto.UUID.generate()
@@ -122,6 +203,35 @@ defmodule Backplane.Memory.Workers.GraphExtractWorkerTest do
   end
 
   describe "perform/1 — calls LLM when obs >= min_observations" do
+    test "maps extracted references to persisted node IDs and deduplicates retries" do
+      session_id = Ecto.UUID.generate()
+      Application.put_env(:backplane_memory, :llm_module, MockLLMWithEdges)
+      make_memories(session_id, 3)
+
+      partition = canonical_partition("host-test", scope: "global")
+
+      assert {:ok, existing} =
+               Backplane.Memory.Graph.upsert_node(%{type: "Module", name: "Backplane"}, partition)
+
+      subject_id = Source.subject_id!("host-test", session_id)
+      revision = repo().get!(ProjectedSession, subject_id).input_revision
+
+      for _ <- 1..2 do
+        assert {:ok, %{nodes_extracted: 2, edges_extracted: 1}} =
+                 GraphExtractWorker.perform(job(session_id))
+
+        assert %State{status: "complete", input_revision: ^revision, last_error: nil} =
+                 repo().get_by!(State, projector: "graph", subject_id: subject_id)
+      end
+
+      assert [%{source_id: source_id, target_id: target_id, relation: "uses"}] =
+               repo().all(Backplane.Memory.Graph.Edge)
+
+      assert source_id == existing.id
+      assert repo().get!(Node, target_id).name == "PostgreSQL"
+      assert repo().aggregate(Node, :count) == 2
+    end
+
     test "delegates to LLM module and returns node/edge counts" do
       session_id = Ecto.UUID.generate()
       Application.put_env(:backplane_memory, :llm_module, MockLLMWithData)

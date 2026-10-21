@@ -39,14 +39,16 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
     assert table_columns(store, "tombstones") ==
              ~w(content_hash scope wiped_at directive_id)
 
-    assert List.last(table_columns(store, "memories")) == "remote_revision"
+    assert Enum.take(table_columns(store, "memories"), -4) ==
+             ~w(remote_revision facets memory_space_id namespace)
 
     assert table_sql(store, "tombstones") =~ "PRIMARY KEY (scope, content_hash)"
 
     assert table_columns(store, "memory_outbox") ==
              ~w(
                seq op memory_id state attempts next_attempt_at last_error completed_at
-               dead_lettered_at inserted_at updated_at
+               dead_lettered_at inserted_at updated_at payload ack_partition ack_canonical_id ack_revision
+               command_id access_id authority_version target_partition payload_digest request_key request_agent_id
              )
 
     assert index_columns(store, "memory_outbox_due_seq_idx") == ~w(state next_attempt_at seq)
@@ -57,7 +59,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
     assert index_columns(store, "memory_outbox_memory_id_idx") == ["memory_id"]
 
     assert table_sql(store, "memory_outbox") =~
-             "CHECK (state IN ('pending', 'inflight', 'retry_wait', 'done', 'dead_letter'))"
+             "CHECK(state IN ('pending', 'inflight', 'retry_wait', 'done', 'dead_letter'))"
 
     assert :ok = Migrator.migrate(store)
     assert {:ok, ^latest} = Migrator.current_version(store)
@@ -192,7 +194,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
     end
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 3} = Migrator.current_version(store)
+    assert {:ok, 5} = Migrator.current_version(store)
 
     assert MapSet.subset?(
              MapSet.new(
@@ -235,7 +237,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              )
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 3} = Migrator.current_version(store)
+    assert {:ok, 5} = Migrator.current_version(store)
   end
 
   test "upgrades populated V2 command memories to V3 without changing data", %{tmp_dir: tmp_dir} do
@@ -270,7 +272,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              )
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 3} = Migrator.current_version(store)
+    assert {:ok, 5} = Migrator.current_version(store)
 
     assert {:ok,
             %Result{

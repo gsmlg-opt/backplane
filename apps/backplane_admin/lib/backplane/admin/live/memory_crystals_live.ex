@@ -190,7 +190,8 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
             <.link :for={id <- @detail.source_action_ids} navigate={source_path(@detail.crystal.id, "actions", id, @partition, @query)} class="font-mono text-primary underline">Action {id}</.link>
             <.link :for={id <- @detail.lesson_memory_ids} navigate={~p"/memory/lessons/#{id}?#{partition_query(@partition)}"} class="text-primary underline">Lesson {id}</.link>
             <.link :for={id <- @detail.source_event_ids} navigate={~p"/memory/events/#{id}?#{partition_query(@partition)}"} class="text-primary underline">Event {id}</.link>
-            <.link :for={id <- @detail.source_summary_ids} navigate={source_path(@detail.crystal.id, "summaries", id, @partition, @query)} class="font-mono text-primary underline">Summary {id}</.link>
+            <.link :for={id <- @detail.current_source_summary_ids} navigate={source_path(@detail.crystal.id, "summaries", id, @partition, @query)} class="font-mono text-primary underline">Current summary {id}</.link>
+            <.link :for={id <- @detail.historical_source_summary_ids} navigate={source_path(@detail.crystal.id, "summaries", id, @partition, @query)} class="font-mono text-primary underline">Historical summary {id}</.link>
           </div>
         </section>
 

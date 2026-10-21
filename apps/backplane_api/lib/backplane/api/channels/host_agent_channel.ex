@@ -2,6 +2,7 @@ defmodule Backplane.Api.HostAgentChannel do
   use Phoenix.Channel, log_join: false, log_handle_in: false
 
   require Logger
+  import Ecto.Query
 
   alias Backplane.AgentTraces
   alias Backplane.Clients
@@ -24,8 +25,9 @@ defmodule Backplane.Api.HostAgentChannel do
   @impl true
   def join("host_agent:" <> host_id, payload, socket) do
     with true <- socket.assigns.host.id == host_id,
-         {:ok, partition} <- MemorySpaces.resolve_host_partition(host_id, nil, "private"),
-         {:ok, negotiation} <- negotiate_memory(host_id, payload),
+         true <- active_token?(socket),
+         {:ok, negotiation} <- negotiate_memory(socket, payload),
+         {:ok, partition} <- join_partition(host_id, negotiation),
          metadata = Map.get(socket.assigns, :connection_metadata, %{}),
          :ok <-
            AgentManage.register_connection(
@@ -39,20 +41,25 @@ defmodule Backplane.Api.HostAgentChannel do
       if negotiation.selected == "host_memory.v2",
         do: Backplane.Memory.EdgeSync.Notifier.subscribe()
 
+      # Phoenix.Channel subscribes this process to its host topic after join.
+      # A second subscription would duplicate each memory_access_changed hint.
       send(self(), {:memory_reconcile, payload})
 
       partition =
-        Map.merge(partition, %{
-          host_id: host_id,
-          client_id: host_id,
-          source_client_id: host_id
-        })
+        if partition,
+          do:
+            Map.merge(partition, %{
+              host_id: host_id,
+              client_id: host_id,
+              source_client_id: host_id
+            })
 
       socket =
         socket
         |> assign(:memory_partition, partition)
         |> assign(:memory_protocol, negotiation.selected)
         |> assign(:memory_limits, Map.get(negotiation, :limits, %{}))
+        |> assign(:memory_extensions, Map.get(negotiation, :extensions, []))
 
       reply =
         if negotiation.selected == "host_memory.v2" do
@@ -76,24 +83,45 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  defp negotiate_memory(host_id, payload) when is_map(payload) do
+  defp negotiate_memory(socket, payload) when is_map(payload) do
     cond do
       not Map.has_key?(payload, "memory") and not Map.has_key?(payload, "memory_v2") and
           not Map.has_key?(payload, "selected") ->
         {:ok, %{selected: nil}}
 
-      not authorized?("host_agent.recall", host_agent_scopes()) ->
+      not authorized?("host_agent.recall", host_agent_scopes()) and
+          not access_offered?(payload) ->
         {:error, %{code: :unauthorized, retryable: false}}
 
       not valid_memory_offer?(payload) ->
         {:error, %{code: :invalid_request, retryable: false}}
 
       true ->
-        EdgeSync.negotiate(host_id, payload)
+        EdgeSync.negotiate(shared_auth(socket), payload)
     end
   end
 
   defp negotiate_memory(_, _), do: {:error, %{code: :invalid_request, retryable: false}}
+
+  defp access_offered?(%{"memory_v2" => %{"extensions" => extensions}}) when is_list(extensions),
+    do: "memory_access.v1" in extensions
+
+  defp access_offered?(_), do: false
+
+  defp join_partition(host, negotiation) do
+    case MemorySpaces.resolve_host_partition(host, nil, "private") do
+      {:ok, partition} ->
+        {:ok, partition}
+
+      {:error, reason} when reason in [:unauthorized, :partition_not_ready] ->
+        if "memory_access.v1" in Map.get(negotiation, :extensions, []),
+          do: {:ok, nil},
+          else: {:error, reason}
+
+      error ->
+        error
+    end
+  end
 
   defp valid_memory_offer?(payload) do
     scopes =
@@ -213,8 +241,95 @@ defmodule Backplane.Api.HostAgentChannel do
     invalid_payload(socket)
   end
 
-  def handle_in("memory_call", %{"method" => method, "arguments" => args}, socket)
-      when is_binary(method) and is_map(args) do
+  def handle_in("trace_sync", %{"protocol" => "host_trace.v1", "items" => items}, socket)
+      when is_list(items) do
+    ack_items =
+      socket.assigns.host.id
+      |> AgentTraces.ingest(items)
+      |> Enum.map(&trace_sync_ack_item/1)
+
+    {:reply, {:ok, %{"ok" => true, "result" => %{"items" => ack_items}}}, socket}
+  end
+
+  def handle_in("trace_sync", _payload, socket) do
+    invalid_payload(socket)
+  end
+
+  def handle_in(event, payload, socket)
+      when event in ~w(memory_access_refresh memory_call mcp_tools_list mcp_tool_call memory_sync memory_import_batch memory_events memory_next memory_ack memory_facts_ack memory_wipe_ack) do
+    if active_token?(socket) do
+      handle_memory_in(event, payload, socket)
+    else
+      {:reply, {:error, %{"code" => "unauthorized", "retryable" => false}}, socket}
+    end
+  end
+
+  defp handle_memory_in("memory_access_refresh", payload, socket)
+       when is_map(payload) and map_size(payload) == 0 do
+    result =
+      with :ok <- selected_extension(socket, "memory_access.v1") do
+        offer =
+          socket.assigns.memory_limits
+          |> Map.new(fn {k, v} -> {to_string(k), v} end)
+          |> Map.merge(%{
+            "offers" => ["host_memory.v2"],
+            "partitions" => [],
+            "extensions" => socket.assigns.memory_extensions
+          })
+
+        EdgeSync.negotiate(shared_auth(socket), %{"memory_v2" => offer})
+      end
+
+    memory_reply(result, socket)
+  end
+
+  defp handle_memory_in("memory_access_refresh", _payload, socket), do: invalid_payload(socket)
+
+  defp handle_memory_in(
+         "memory_call",
+         %{"access" => access, "method" => method, "arguments" => args} = payload,
+         socket
+       )
+       when is_binary(method) and is_map(args) do
+    result =
+      with :ok <- selected_extension(socket, "memory_access.v1"),
+           true <- Map.drop(payload, ~w(method arguments access traceparent)) == %{},
+           {:ok, claim} <- access_claim(access) do
+        service = Application.get_env(:backplane_api, :memory_service, Backplane.Memory.Service)
+        service.call_shared("memory::" <> method, args, shared_auth(socket), claim)
+      else
+        false -> {:error, :invalid_request}
+        error -> error
+      end
+
+    case result do
+      {:ok, reply} ->
+        {:reply, {:ok, %{"ok" => true, "result" => json_shape(reply)}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:ok, %{"ok" => false, "error" => format_memory_error(reason)}}, socket}
+    end
+  end
+
+  defp handle_memory_in("memory_sync", %{"protocol" => "memory_commands.v2"} = payload, socket) do
+    result =
+      with :ok <- selected_extension(socket, "memory_access.v1"),
+           :ok <- selected_extension(socket, "memory_commands.v2") do
+        EdgeSync.safe(fn -> HostAgentMemorySync.settle_commands(shared_auth(socket), payload) end)
+      end
+
+    memory_reply(result, socket)
+  end
+
+  defp handle_memory_in("memory_call", _payload, %{assigns: %{memory_partition: nil}} = socket),
+    do: {:reply, {:ok, %{"ok" => false, "error" => "unauthorized"}}, socket}
+
+  defp handle_memory_in(event, _payload, %{assigns: %{memory_partition: nil}} = socket)
+       when event in ~w(mcp_tools_list mcp_tool_call memory_sync memory_import_batch memory_events memory_facts_ack memory_wipe_ack),
+       do: memory_reply({:error, %{code: :unauthorized}}, socket)
+
+  defp handle_memory_in("memory_call", %{"method" => method, "arguments" => args}, socket)
+       when is_binary(method) and is_map(args) do
     case dispatch_memory(
            method,
            args,
@@ -230,11 +345,11 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  def handle_in("memory_call", _payload, socket) do
+  defp handle_memory_in("memory_call", _payload, socket) do
     invalid_payload(socket)
   end
 
-  def handle_in("mcp_tools_list", payload, socket) when is_map(payload) do
+  defp handle_memory_in("mcp_tools_list", payload, socket) when is_map(payload) do
     auth =
       host_memory_auth(
         socket.assigns.host,
@@ -250,12 +365,12 @@ defmodule Backplane.Api.HostAgentChannel do
     {:reply, {:ok, %{"ok" => true, "result" => %{"tools" => tools}}}, socket}
   end
 
-  def handle_in("mcp_tools_list", _payload, socket) do
+  defp handle_memory_in("mcp_tools_list", _payload, socket) do
     invalid_payload(socket)
   end
 
-  def handle_in("mcp_tool_call", %{"name" => name, "arguments" => args}, socket)
-      when is_binary(name) and is_map(args) do
+  defp handle_memory_in("mcp_tool_call", %{"name" => name, "arguments" => args}, socket)
+       when is_binary(name) and is_map(args) do
     auth =
       host_memory_auth(
         socket.assigns.host,
@@ -276,26 +391,16 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  def handle_in("mcp_tool_call", _payload, socket) do
+  defp handle_memory_in("mcp_tool_call", _payload, socket) do
     invalid_payload(socket)
   end
 
-  def handle_in("trace_sync", %{"protocol" => "host_trace.v1", "items" => items}, socket)
-      when is_list(items) do
-    ack_items =
-      socket.assigns.host.id
-      |> AgentTraces.ingest(items)
-      |> Enum.map(&trace_sync_ack_item/1)
-
-    {:reply, {:ok, %{"ok" => true, "result" => %{"items" => ack_items}}}, socket}
-  end
-
-  def handle_in("trace_sync", _payload, socket) do
-    invalid_payload(socket)
-  end
-
-  def handle_in("memory_sync", %{"protocol" => "host_memory.v1", "items" => items}, socket)
-      when is_list(items) do
+  defp handle_memory_in(
+         "memory_sync",
+         %{"protocol" => "host_memory.v1", "items" => items},
+         socket
+       )
+       when is_list(items) do
     payload = %{"protocol" => "host_memory.v1", "items" => items}
 
     case validate_memory_sync_payload(payload) do
@@ -304,11 +409,15 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  def handle_in("memory_sync", _payload, socket) do
+  defp handle_memory_in("memory_sync", _payload, socket) do
     invalid_payload(socket)
   end
 
-  def handle_in("memory_import_batch", %{"protocol" => "host_import.v1"} = payload, socket) do
+  defp handle_memory_in(
+         "memory_import_batch",
+         %{"protocol" => "host_import.v1"} = payload,
+         socket
+       ) do
     if authorized?("host_agent.import", host_agent_scopes()) do
       case safe_memory_import_record(socket.assigns.memory_partition, payload) do
         {:ok, reply} -> {:reply, {:ok, %{"ok" => true, "result" => reply}}, socket}
@@ -319,9 +428,9 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  def handle_in("memory_import_batch", _payload, socket), do: invalid_payload(socket)
+  defp handle_memory_in("memory_import_batch", _payload, socket), do: invalid_payload(socket)
 
-  def handle_in("memory_events", payload, socket) when is_map(payload) do
+  defp handle_memory_in("memory_events", payload, socket) when is_map(payload) do
     case validate_and_authorize_memory_events(payload, socket) do
       :ok ->
         case safe_memory_event_host(socket.assigns.host.id) do
@@ -340,38 +449,93 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  def handle_in("memory_events", _payload, socket) do
+  defp handle_memory_in("memory_events", _payload, socket) do
     invalid_payload(socket)
   end
 
-  def handle_in("memory_next", payload, socket), do: edge_request(:next, payload, socket)
-  def handle_in("memory_ack", payload, socket), do: edge_request(:ack, payload, socket)
-  def handle_in("memory_facts_ack", payload, socket), do: compat_ack("facts", payload, socket)
-  def handle_in("memory_wipe_ack", payload, socket), do: compat_ack("wipe", payload, socket)
+  defp handle_memory_in("memory_next", payload, socket), do: edge_request(:next, payload, socket)
+  defp handle_memory_in("memory_ack", payload, socket), do: edge_request(:ack, payload, socket)
+
+  defp handle_memory_in("memory_facts_ack", payload, socket),
+    do: compat_ack("facts", payload, socket)
+
+  defp handle_memory_in("memory_wipe_ack", payload, socket),
+    do: compat_ack("wipe", payload, socket)
 
   @impl true
+  def handle_info({:memory_access_changed, hint}, socket) do
+    if active_token?(socket) and selected_extension(socket, "memory_access.v1") == :ok,
+      do: push(socket, "memory_access_changed", hint)
+
+    {:noreply, socket}
+  end
+
   def handle_info({:memory_available, hint}, socket) do
-    if valid_memory_hint?(hint, socket), do: push(socket, "memory_available", hint)
+    if active_token?(socket) and valid_memory_hint?(hint, socket),
+      do: push(socket, "memory_available", hint)
+
     {:noreply, socket}
   end
 
   def handle_info({:memory_reconcile, payload}, socket) do
-    safe_push_memory_reconcile(payload, socket)
+    if active_token?(socket), do: safe_push_memory_reconcile(payload, socket)
     {:noreply, socket}
   end
 
   def handle_info({:mcp_notification, notification}, socket) do
-    push(socket, "mcp_notification", notification)
+    if active_token?(socket), do: push(socket, "mcp_notification", notification)
     {:noreply, socket}
   end
 
   def handle_info({:agent_push, event, payload}, socket) do
-    push(socket, event, payload)
+    if active_token?(socket), do: push(socket, event, payload)
     {:noreply, socket}
   end
 
   def handle_info(:disconnect, socket) do
     {:stop, :normal, socket}
+  end
+
+  defp active_token?(socket) do
+    host = socket.assigns.host.id
+    token = socket.assigns.auth_token.id
+
+    Backplane.Repo.exists?(
+      from a in Backplane.Skills.HostAgentToken,
+        join: t in Backplane.Skills.HostAuthToken,
+        on: t.id == a.auth_token_id,
+        where: a.host_id == ^host and t.id == ^token
+    )
+  end
+
+  defp shared_auth(socket) do
+    scopes = host_agent_scopes()
+    scopes = if "*" in scopes, do: @default_host_agent_scopes, else: scopes
+
+    %{
+      kind: :host_agent,
+      host_id: socket.assigns.host.id,
+      auth_token_id: socket.assigns.auth_token.id,
+      scopes: scopes,
+      source_client_id: socket.assigns.host.id
+    }
+  end
+
+  defp access_claim(%{"access_id" => id, "authority_version" => version} = claim)
+       when map_size(claim) == 2 and is_integer(version) and version > 0 do
+    case Ecto.UUID.cast(id) do
+      {:ok, ^id} -> {:ok, %{access_id: id, authority_version: version}}
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  defp access_claim(_), do: {:error, :invalid_request}
+
+  defp selected_extension(socket, extension) do
+    if socket.assigns.memory_protocol == "host_memory.v2" and
+         extension in socket.assigns.memory_extensions,
+       do: :ok,
+       else: {:error, :unsupported_protocol}
   end
 
   defp valid_memory_hint?(hint, socket) when is_map(hint) do
@@ -382,7 +546,7 @@ defmodule Backplane.Api.HostAgentChannel do
          true <- is_integer(hint["current_revision"]) and hint["current_revision"] >= 0,
          :ok <- validate_encoded_payload(hint, 8000),
          {:ok, inventory} <-
-           EdgeSync.safe(fn -> MemorySpaces.host_entitlements(socket.assigns.host.id) end) do
+           memory_hint_inventory(socket) do
       Enum.any?(inventory, fn p ->
         p.memory_space_id == hint["memory_space_id"] and p.scope == hint["scope"] and
           p.namespace == hint["namespace"]
@@ -394,12 +558,35 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp valid_memory_hint?(_, _), do: false
 
+  defp memory_hint_inventory(socket) do
+    if "memory_access.v1" in socket.assigns.memory_extensions do
+      offer = %{
+        "memory_v2" => %{
+          "offers" => ["host_memory.v2"],
+          "partitions" => [],
+          "extensions" => ["memory_access.v1"]
+        }
+      }
+
+      with {:ok, inventory} <- EdgeSync.negotiate(shared_auth(socket), offer) do
+        partitions =
+          for access <- inventory.accesses,
+              :read in access.capabilities and :deliver in access.capabilities,
+              do: access.partition
+
+        {:ok, partitions}
+      end
+    else
+      EdgeSync.safe(fn -> MemorySpaces.host_entitlements(socket.assigns.host.id) end)
+    end
+  end
+
   defp dispatch_memory(method, args, host, partition, scopes) do
     service = Application.get_env(:backplane_api, :memory_service, Backplane.Memory.Service)
     auth = host_memory_auth(host, partition, scopes)
 
     with true <- authorized?(memory_method_permission(method), scopes),
-         :ok <- reject_authority_claim(args) do
+         {:ok, args} <- memory_arguments(method, args, partition) do
       case method do
         "remember" ->
           service.handle_remember(args, auth)
@@ -445,6 +632,25 @@ defmodule Backplane.Api.HostAgentChannel do
         "namespace" => partition.namespace
       }
     }
+  end
+
+  # The public read contract exposes scope as a selector. It can confirm the
+  # authenticated scope, but cannot supply or override canonical authority.
+  defp memory_arguments(method, args, partition) when method in ~w(recall list) do
+    case Map.fetch(args, "scope") do
+      {:ok, scope} when scope == partition.scope ->
+        memory_arguments(nil, Map.delete(args, "scope"), partition)
+
+      {:ok, _other} ->
+        {:error, :authority_claim}
+
+      :error ->
+        memory_arguments(nil, args, partition)
+    end
+  end
+
+  defp memory_arguments(_method, args, _partition) do
+    with :ok <- reject_authority_claim(args), do: {:ok, args}
   end
 
   defp reject_authority_claim(args) do
@@ -533,15 +739,37 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp edge_request(operation, payload, socket) do
     result =
-      with :ok <- selected_memory_protocol(socket, "host_memory.v2") do
+      with :ok <- selected_memory_protocol(socket, "host_memory.v2"),
+           :ok <- edge_access_mode(socket, payload) do
         apply(EdgeSync, operation, [
-          socket.assigns.host.id,
+          shared_auth(socket),
           bound_edge_request(operation, payload, socket.assigns.memory_limits)
         ])
       end
 
+    result =
+      case result do
+        {:error, %{code: :unauthorized}} ->
+          if "memory_access.v1" in socket.assigns.memory_extensions,
+            do: {:error, %{code: :unauthorized}},
+            else: result
+
+        other ->
+          other
+      end
+
     memory_reply(result, socket)
   end
+
+  defp edge_access_mode(socket, payload) when is_map(payload) do
+    cond do
+      Map.has_key?(payload, "access") -> selected_extension(socket, "memory_access.v1")
+      is_nil(socket.assigns.memory_partition) -> {:error, :unauthorized}
+      true -> :ok
+    end
+  end
+
+  defp edge_access_mode(_socket, _payload), do: {:error, :invalid_request}
 
   defp bound_edge_request(:next, payload, limits) when is_map(payload) do
     Enum.reduce(limits, payload, fn {key, maximum}, request ->
@@ -591,6 +819,10 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   defp memory_reply({:ok, result}, socket), do: {:reply, {:ok, json_shape(result)}, socket}
+
+  defp memory_reply({:error, error}, socket) when is_atom(error),
+    do: memory_reply(EdgeSync.safe(fn -> {:error, error} end), socket)
+
   defp memory_reply({:error, error}, socket), do: {:reply, {:error, json_shape(error)}, socket}
 
   defp host_agent_scopes do
@@ -648,11 +880,11 @@ defmodule Backplane.Api.HostAgentChannel do
     }
   end
 
-  defp apply_memory_sync(host, items) do
+  defp apply_memory_sync(socket, items) do
     adapter = memory_sync_adapter()
 
     Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
-      case apply_memory_sync_item(adapter, host, item) do
+      case apply_private_sync_item(adapter, socket, item) do
         {:ok, ack} -> {:cont, {:ok, [ack | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -665,7 +897,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp apply_authorized_memory_sync(socket, items) do
     case authorized?("host_agent.import", host_agent_scopes()) &&
-           apply_memory_sync(socket.assigns.host, items) do
+           apply_memory_sync(socket, items) do
       {:ok, ack_items} ->
         {:reply, {:ok, %{"items" => ack_items}}, socket}
 
@@ -677,6 +909,38 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
+  defp apply_private_sync_item(adapter, socket, item) when is_map(item) do
+    operation =
+      case item["op"] do
+        "remember" -> :remember
+        "forget" -> :forget
+        _ -> nil
+      end
+
+    with {:ok, actor, _access} <-
+           Backplane.Memory.Authorization.authorize_access(
+             shared_auth(socket),
+             :default,
+             operation
+           ) do
+      MemorySpaces.with_host_access(actor, :default, operation, nil, fn _ ->
+        apply_memory_sync_item(adapter, socket.assigns.host, item)
+      end)
+    else
+      {:error, reason} ->
+        {:ok,
+         %{
+           "id" => item["id"],
+           "status" => "error",
+           "canonical_id" => nil,
+           "error" => format_memory_error(reason)
+         }}
+    end
+  end
+
+  defp apply_private_sync_item(adapter, socket, item),
+    do: apply_memory_sync_item(adapter, socket.assigns.host, item)
+
   defp validate_memory_sync_payload(%{"items" => items} = payload) do
     cond do
       length(items) > @max_memory_sync_batch_size -> {:error, "batch_too_large"}
@@ -686,7 +950,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp apply_memory_sync_item(adapter, host, %{"id" => id} = item) when is_binary(id) do
     case adapter.apply_sync_item(host, item) do
-      {:ok, %{status: status, canonical_id: canonical_id, revision: revision}}
+      {:ok, %{status: status, canonical_id: canonical_id, revision: revision} = result}
       when status in [:ok, :duplicate] and is_integer(revision) and revision > 0 ->
         {:ok,
          %{
@@ -695,16 +959,19 @@ defmodule Backplane.Api.HostAgentChannel do
            "canonical_id" => canonical_id,
            "revision" => revision,
            "error" => nil
-         }}
+         }
+         |> maybe_ack_partition(result)}
 
-      {:ok, %{status: status, canonical_id: canonical_id}} when status in [:ok, :duplicate] ->
+      {:ok, %{status: status, canonical_id: canonical_id} = result}
+      when status in [:ok, :duplicate] ->
         {:ok,
          %{
            "id" => id,
            "status" => Atom.to_string(status),
            "canonical_id" => canonical_id,
            "error" => nil
-         }}
+         }
+         |> maybe_ack_partition(result)}
 
       {:error, :validation, reason} ->
         {:ok,
@@ -732,6 +999,16 @@ defmodule Backplane.Api.HostAgentChannel do
   defp apply_memory_sync_item(_adapter, _host, _item) do
     {:error, "memory sync item id is required"}
   end
+
+  defp maybe_ack_partition(ack, %{partition: partition}) when is_map(partition),
+    do:
+      Map.put(
+        ack,
+        "partition",
+        Map.new(partition, fn {key, value} -> {to_string(key), value} end)
+      )
+
+  defp maybe_ack_partition(ack, _result), do: ack
 
   defp memory_sync_adapter do
     Application.get_env(

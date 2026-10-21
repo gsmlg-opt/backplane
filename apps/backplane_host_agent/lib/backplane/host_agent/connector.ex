@@ -23,18 +23,29 @@ defmodule Backplane.HostAgent.Connector do
   @spec connect(map()) :: {:ok, result()} | {:error, term()}
   def connect(config) do
     with {:ok, host_id} <- host_id(config),
-         {:ok, socket} <- Channel.start_socket(config),
-         :ok <- wait_for_socket(socket),
-         {:ok, channel, memory} <- join_channel(socket, host_id) do
-      {:ok,
-       %{
-         host_id: host_id,
-         host_name: Map.get(config, :machine_name),
-         socket: socket,
-         channel: channel,
-         memory: memory
-       }}
+         {:ok, socket} <- Channel.start_socket(config) do
+      case connect_socket(socket, host_id) do
+        {:ok, channel, memory} ->
+          {:ok,
+           %{
+             host_id: host_id,
+             host_name: Map.get(config, :machine_name),
+             socket: socket,
+             channel: channel,
+             memory: memory
+           }}
+
+        {:error, _} = error ->
+          Channel.retire_socket(socket)
+          error
+      end
     end
+  end
+
+  defp connect_socket(socket, host_id) do
+    with :ok <- wait_for_socket(socket), do: join_channel(socket, host_id)
+  catch
+    :exit, _reason -> {:error, :not_connected}
   end
 
   defp join_channel(socket, host_id) do
@@ -56,17 +67,51 @@ defmodule Backplane.HostAgent.Connector do
   end
 
   defp wait_for_socket(socket) do
-    wait_for_socket(socket, 50)
+    client =
+      Application.get_env(:backplane_host_agent, :socket_client_module, Phoenix.SocketClient)
+
+    wait_for_socket(client, socket, System.monotonic_time(:millisecond) + 5_000)
   end
 
-  defp wait_for_socket(_socket, 0), do: {:error, :socket_timeout}
+  defp wait_for_socket(client, socket, deadline) do
+    snapshot = client.connection_info(socket)
 
-  defp wait_for_socket(socket, attempts_left) do
-    if Phoenix.SocketClient.connected?(socket) do
-      :ok
-    else
-      Process.sleep(100)
-      wait_for_socket(socket, attempts_left - 1)
+    case snapshot do
+      %{attempt_ref: ref, status: status, last_error: error}
+      when status == :connected or (status == :disconnected and not is_nil(error)) ->
+        # A settled result is authoritative only while it is still the latest attempt.
+        case client.connection_info(socket) do
+          %{attempt_ref: ^ref, status: ^status, last_error: ^error} ->
+            connection_result(status, error)
+
+          _newer ->
+            poll_socket(client, socket, deadline)
+        end
+
+      {:error, :no_socket_found} ->
+        {:error, :not_connected}
+
+      _pending ->
+        poll_socket(client, socket, deadline)
     end
   end
+
+  defp poll_socket(client, socket, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 do
+      Process.sleep(min(100, remaining))
+      wait_for_socket(client, socket, deadline)
+    else
+      {:error, :socket_timeout}
+    end
+  end
+
+  defp connection_result(:connected, nil), do: :ok
+
+  defp connection_result(_status, {:unexpected_status, status}) when status in [401, 403],
+    do: {:error, :unauthorized}
+
+  defp connection_result(_status, :cancelled), do: {:error, :not_connected}
+  defp connection_result(_status, reason), do: {:error, reason}
 end

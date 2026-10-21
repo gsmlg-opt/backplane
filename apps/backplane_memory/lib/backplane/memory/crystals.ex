@@ -70,14 +70,21 @@ defmodule Backplane.Memory.Crystals do
           )
         )
 
-      summary_ids =
+      summary_sources =
         repo().all(
           from(l in SourceSummary,
+            join: summary in Summary,
+            on: summary.id == l.summary_id,
             where: l.crystal_id == ^id,
             order_by: l.summary_id,
-            select: l.summary_id
+            select: {l.summary_id, summary.input_revision}
           )
         )
+
+      {current_summaries, historical_summaries} =
+        Enum.split_with(summary_sources, fn {_id, revision} ->
+          revision == crystal.input_revision
+        end)
 
       event_ids =
         repo().all(
@@ -93,7 +100,9 @@ defmodule Backplane.Memory.Crystals do
          crystal: crystal,
          source_action_ids: action_ids,
          lesson_memory_ids: lesson_ids,
-         source_summary_ids: summary_ids,
+         source_summary_ids: Enum.map(summary_sources, &elem(&1, 0)),
+         current_source_summary_ids: Enum.map(current_summaries, &elem(&1, 0)),
+         historical_source_summary_ids: Enum.map(historical_summaries, &elem(&1, 0)),
          source_event_ids: event_ids
        }}
     else
@@ -197,20 +206,19 @@ defmodule Backplane.Memory.Crystals do
                ),
              {:ok, partition} <- exact_partition(input),
              :ok <- requested_partition(partition, Keyword.get(opts, :partition)) do
-          case current(host_id, session_id, version, partition) do
-            %Crystal{input_revision: ^expected_revision} = crystal ->
-              case Source.input_revision(host_id, session_id) do
-                {:ok, %{input_revision: ^expected_revision}} -> crystal
-                {:ok, _newer_input} -> repo().rollback(:stale_input_revision)
-              end
+          crystal = current(host_id, session_id, version, partition)
+          memory = locked_backing_memory(crystal)
+          assert_current_source(input)
 
-            %Crystal{} ->
-              repo().rollback(:stale_input_revision)
+          case crystal do
+            %Crystal{input_revision: ^expected_revision} ->
+              crystal
 
-            nil ->
+            _ ->
               with %Summary{} = summary <- current_summary(input),
                    {:ok, structured, model} <- enrich(input, summary, enrich_fn) do
-                persist(input, partition, summary, structured, model, version)
+                assert_current_source(input)
+                persist(input, partition, summary, structured, model, version, crystal, memory)
               else
                 nil -> repo().rollback(:summary_not_ready)
                 {:error, reason} -> repo().rollback(reason)
@@ -248,7 +256,7 @@ defmodule Backplane.Memory.Crystals do
           crystal.memory_space_id == ^partition.memory_space_id and
             crystal.host_id == ^host and crystal.client_id == ^client and crystal.scope == ^scope and
             crystal.namespace == ^namespace and crystal.status == "complete" and
-            is_nil(memory.deleted_at) and
+            is_nil(memory.deleted_at) and memory.lifecycle_state == "active" and
             fragment(
               "search_tsv @@ websearch_to_tsquery('english', ?)",
               ^String.trim(query)
@@ -274,7 +282,7 @@ defmodule Backplane.Memory.Crystals do
 
   def search(_query, _partition, _opts), do: {:error, :invalid_search}
 
-  defp persist(input, partition, summary, structured, model, version) do
+  defp persist(input, partition, summary, structured, model, version, existing, previous_memory) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     content = searchable_content(structured, version)
 
@@ -304,7 +312,7 @@ defmodule Backplane.Memory.Crystals do
         &Backplane.Memory.Provenance.metadata(&1, [%{source_summary_id: summary.id}], partition)
       )
 
-    memory = %Memory{} |> Memory.changeset(memory_attrs) |> repo().insert!()
+    memory = persist_backing_memory(memory_attrs, previous_memory)
 
     output = %{
       "memory_id" => memory.id,
@@ -322,7 +330,7 @@ defmodule Backplane.Memory.Crystals do
     {:ok, output_revision} = Revision.output_revision(output)
 
     crystal =
-      %Crystal{}
+      (existing || %Crystal{})
       |> Crystal.changeset(%{
         memory_space_id: partition.memory_space_id,
         memory_id: memory.id,
@@ -346,34 +354,98 @@ defmodule Backplane.Memory.Crystals do
         input_revision: input.input_revision,
         output_revision: output_revision,
         status: "complete",
+        last_error: nil,
         started_at: now,
         completed_at: now
       })
-      |> repo().insert!()
+      |> repo().insert_or_update!()
 
-    %Evidence{}
-    |> Evidence.changeset(%{
-      memory_id: memory.id,
-      source_summary_id: summary.id,
-      session_id: input.session_id,
-      agent_id: input.agent_id,
-      host_id: partition.host_id,
-      evidence_kind: "derives",
-      support_score: 1.0,
-      excerpt: bounded(summary.content, 1_000)
-    })
-    |> repo().insert!()
+    unless repo().exists?(
+             from(e in Evidence,
+               where: e.memory_id == ^memory.id and e.source_summary_id == ^summary.id
+             )
+           ) do
+      %Evidence{}
+      |> Evidence.changeset(%{
+        memory_id: memory.id,
+        source_summary_id: summary.id,
+        session_id: input.session_id,
+        agent_id: input.agent_id,
+        host_id: partition.host_id,
+        evidence_kind: "derives",
+        support_score: 1.0,
+        excerpt: bounded(summary.content, 1_000)
+      })
+      |> repo().insert!()
+    end
 
     insert_sources(crystal, summary, input, partition)
     crystal
   end
 
+  defp locked_backing_memory(nil), do: nil
+
+  defp locked_backing_memory(crystal) do
+    memory = repo().one!(from(m in Memory, where: m.id == ^crystal.memory_id, lock: "FOR UPDATE"))
+
+    if memory.deleted_at || memory.lifecycle_state == "tombstoned" do
+      repo().rollback(:crystal_memory_governed)
+    end
+
+    memory
+  end
+
+  defp assert_current_source(input) do
+    case Source.input_revision(input.host_id, input.session_id) do
+      {:ok, %{input_revision: revision}} when revision == input.input_revision -> :ok
+      {:ok, _} -> repo().rollback(:stale_input_revision)
+    end
+  end
+
+  defp persist_backing_memory(%{content: content} = attrs, %Memory{content: content} = memory) do
+    metadata =
+      Backplane.MemoryRepository.metadata(
+        memory.metadata,
+        attrs.metadata["repository_sources"] || []
+      )
+
+    if metadata == memory.metadata,
+      do: memory,
+      else: memory |> Memory.changeset(%{metadata: metadata}) |> repo().update!()
+  end
+
+  defp persist_backing_memory(attrs, previous) do
+    lifecycle =
+      if previous && previous.lifecycle_state == "archived", do: "archived", else: "active"
+
+    changeset =
+      %Memory{}
+      |> Memory.changeset(attrs)
+      |> Ecto.Changeset.put_change(:lifecycle_state, lifecycle)
+
+    memory =
+      case repo().insert(changeset) do
+        {:ok, memory} -> memory
+        {:error, _changeset} -> repo().rollback(:backing_memory_persistence_failed)
+      end
+
+    if previous && previous.lifecycle_state == "active" do
+      previous |> Memory.lifecycle_changeset(%{lifecycle_state: "archived"}) |> repo().update!()
+    end
+
+    memory
+  end
+
   defp insert_sources(crystal, summary, input, partition) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
-    repo().insert_all(SourceSummary, [
-      %{crystal_id: crystal.id, summary_id: summary.id, inserted_at: now}
-    ])
+    repo().insert_all(
+      SourceSummary,
+      [
+        %{crystal_id: crystal.id, summary_id: summary.id, inserted_at: now}
+      ],
+      on_conflict: :nothing
+    )
 
     rows =
       Event
@@ -391,7 +463,7 @@ defmodule Backplane.Memory.Crystals do
 
     expected = input.counts["events"] || 0
     if length(rows) != expected, do: repo().rollback(:source_provenance_mismatch)
-    repo().insert_all(SourceEvent, rows)
+    repo().insert_all(SourceEvent, rows, on_conflict: :nothing)
   end
 
   defp enrich(input, summary, enrich_fn) when is_function(enrich_fn, 1) do
@@ -419,8 +491,7 @@ defmodule Backplane.Memory.Crystals do
       key_outcomes: fallback_outcomes(input),
       decisions: [],
       files_affected: Enum.take(files, 500),
-      unresolved_items:
-        Enum.map(input.errors, &bounded(&1.message || &1.content, 1_000)) |> Enum.take(100)
+      unresolved_items: []
     }
   end
 
@@ -455,7 +526,7 @@ defmodule Backplane.Memory.Crystals do
       |> Enum.reject(&(&1 == ""))
       |> Enum.take(max)
 
-    if values == [], do: fallback, else: values
+    if value != [] and values == [], do: fallback, else: values
   end
 
   defp valid_field(_key, _value, fallback), do: fallback

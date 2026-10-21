@@ -598,6 +598,11 @@ defmodule Backplane.Admin.HostAgentsLive do
         </div>
 
         <div :if={@entry.config} class="space-y-4">
+          <p :if={config_stale?(@entry)} id="host-report-stale" class="text-sm text-warning">Last-known report; stale since disconnect or reconnect.</p>
+          <dl class="space-y-2 text-sm">
+            <div id="host-local-settings-report"><dt class="font-medium">Local settings applied</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || "Unavailable"}</dd><dd>Report received: {report_timestamp(Map.get(@entry, :config_reported_at))}</dd></div>
+            <div id="host-memory-negotiation"><dt class="font-medium">Last worker negotiation</dt><dd>{get_in(@entry.config, ["memory_negotiation", "selected"]) || "Unavailable"}</dd><dd>{get_in(@entry.config, ["memory_negotiation", "applied_at"]) || "Unavailable"}</dd><dd>Memory proxy connections may negotiate independently.</dd></div>
+          </dl>
           <pre
             id="reported-config-yaml"
             class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"
@@ -713,6 +718,7 @@ defmodule Backplane.Admin.HostAgentsLive do
 
     ~H"""
     <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
+      <div id="host-memory-health"><.memory_health entry={@entry} /></div>
       <.dm_card variant="bordered">
         <:title>Sync</:title>
         <dl class="space-y-3 text-sm">
@@ -742,6 +748,67 @@ defmodule Backplane.Admin.HostAgentsLive do
       </.dm_card>
     </div>
     """
+  end
+
+  @doc false
+  attr(:entry, :map, required: true)
+
+  def memory_health(assigns) do
+    memory = get_in(assigns.entry, [:runtime, :memory]) || %{}
+
+    assigns = assign(assigns, :memory_partitions, memory["partitions"] || [])
+
+    assigns =
+      assign(assigns, :memory_rows, [
+        {"Pending commands", memory["pending_commands"]},
+        {"Failed commands", memory["failed_commands"]},
+        {"Mirror revision", memory["revision"]},
+        {"Mirror items / bytes",
+         if(is_integer(memory["items"]) and is_integer(memory["bytes"]),
+           do: "#{memory["items"]} / #{memory["bytes"]}"
+         )},
+        {"Retries", memory["retry_count"]},
+        {"Dead letters", memory["dead_letter_count"]},
+        {"Last successful command sync", memory["last_successful_sync"]},
+        {"Mirror age (seconds)", memory["stale_age_seconds"]},
+        {"Last heartbeat", report_timestamp(assigns.entry.last_heartbeat_at)}
+      ])
+
+    ~H"""
+    <.dm_card variant="bordered">
+      <:title>Memory health</:title>
+      <p :if={is_map(get_in(@entry, [:runtime, :memory])) and report_stale?(@entry)} class="mb-3 text-sm text-warning">Last-known Memory report; stale since disconnect or reconnect.</p>
+      <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+        <div :for={{label, value} <- @memory_rows}><dt class="font-medium">{label}</dt><dd class="text-on-surface-variant">{if is_nil(value), do: "Unavailable", else: value}</dd></div>
+      </dl>
+      <div :if={@memory_partitions != []} class="mt-3 space-y-2 text-xs">
+        <p class="font-medium">Reported mirror partitions (up to 50)</p>
+        <p :for={partition <- @memory_partitions} class="break-all">{partition["memory_space_id"]} · {partition["scope"]} / {partition["namespace"]} · Revision {partition["applied_revision"] || "Unavailable"} · Last sync {partition["last_sync_at"] || "Unavailable"}</p>
+      </div>
+      <dl :if={@entry.config} class="mt-3 space-y-2 text-sm">
+        <div :if={config_stale?(@entry)} class="text-warning">Last-known local settings and worker negotiation; stale.</div>
+        <div><dt class="font-medium">Local settings applied</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || "Unavailable"}</dd></div>
+        <div><dt class="font-medium">Last worker negotiation</dt><dd>{get_in(@entry.config, ["memory_negotiation", "selected"]) || "Unavailable"} · {get_in(@entry.config, ["memory_negotiation", "applied_at"]) || "Unavailable"}</dd></div>
+      </dl>
+    </.dm_card>
+    """
+  end
+
+  defp report_timestamp(%DateTime{} = time), do: DateTime.to_iso8601(time)
+  defp report_timestamp(_), do: "Unavailable"
+
+  defp config_stale?(entry) do
+    entry.status != :online or
+      (match?(%DateTime{}, entry.connected_at) and
+         (is_nil(Map.get(entry, :config_reported_at)) or
+            DateTime.compare(entry.config_reported_at, entry.connected_at) == :lt))
+  end
+
+  defp report_stale?(entry) do
+    entry.status != :online or
+      (match?(%DateTime{}, entry.connected_at) and
+         (is_nil(entry.last_heartbeat_at) or
+            DateTime.compare(entry.last_heartbeat_at, entry.connected_at) == :lt))
   end
 
   defp danger_tab(assigns) do

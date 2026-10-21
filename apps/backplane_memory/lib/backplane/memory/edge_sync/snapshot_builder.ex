@@ -56,7 +56,7 @@ defmodule Backplane.Memory.EdgeSync.SnapshotBuilder do
 
     state =
       Ecto.Adapters.SQL.stream(
-        repo(),
+        repo().get_dynamic_repo(),
         sql,
         [Ecto.UUID.dump!(p.memory_space_id), p.scope, p.namespace],
         max_rows: limits.max_changes

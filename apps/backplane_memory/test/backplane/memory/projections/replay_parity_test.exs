@@ -6,12 +6,24 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Ingest
   alias Backplane.Memory.Projections.{Snapshot, Source, State}
+  alias Backplane.Memory.Workers.{ProjectionRepairWorker, SummaryWorker, WindowSummaryWorker}
 
   setup do
     previous_enabled = Application.get_env(:backplane_memory, :projection_repair_enabled)
     Application.put_env(:backplane_memory, :projection_repair_enabled, true)
 
-    on_exit(fn -> restore_env(:projection_repair_enabled, previous_enabled) end)
+    keys = ~w(memory.session_summary_v2.enabled memory.window_summaries.enabled)
+    settings = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, false}))
+
+    on_exit(fn ->
+      restore_env(:projection_repair_enabled, previous_enabled)
+
+      Enum.each(settings, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
+    end)
 
     :ok
   end
@@ -36,8 +48,14 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       ingest_all!(shuffled_prefix)
       shuffled_prefix_raw_before = raw_events(shuffled_host, shuffled_session)
 
-      # One coalesced repair plus the expired-gap summary.
-      assert %{success: 2, failure: 0} = Styx.drain_queue(queue: :memory)
+      # The prior summary/window enumeration and the next coalesced repair.
+      assert_pending_workers([
+        {ProjectionRepairWorker, nil, shuffled_session},
+        {SummaryWorker, nil, ordered_session},
+        {WindowSummaryWorker, "enumerate", ordered_session}
+      ])
+
+      assert %{success: 3, failure: 0} = Styx.drain_queue(queue: :memory)
       assert raw_events(shuffled_host, shuffled_session) == shuffled_prefix_raw_before
 
       shuffled_subject = Source.subject_id!(shuffled_host, shuffled_session)
@@ -53,16 +71,28 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       ingest_all!(events_at(shuffled_events, [2, 5, 3]))
       shuffled_raw_before = raw_events(shuffled_host, shuffled_session)
 
-      # One coalesced repair, the superseding summary, and the prior episodic successor.
-      assert %{success: 3, failure: 0} = Styx.drain_queue(queue: :memory)
+      # The prior materialized window, expired-gap successors and next repair.
+      assert_pending_workers([
+        {ProjectionRepairWorker, nil, shuffled_session},
+        {SummaryWorker, nil, shuffled_session},
+        {WindowSummaryWorker, "enumerate", shuffled_session},
+        {WindowSummaryWorker, "window", ordered_session}
+      ])
+
+      assert %{success: 4, failure: 0} = Styx.drain_queue(queue: :memory)
       assert raw_events(shuffled_host, shuffled_session) == shuffled_raw_before
 
       ordered_subject = Source.subject_id!(ordered_host, ordered_session)
       ordered_snapshots = snapshots(ordered_subject)
       shuffled_snapshots = snapshots(shuffled_subject)
 
-      assert_complete_without_gaps(ordered_subject, ordered_snapshots)
-      assert_complete_without_gaps(shuffled_subject, shuffled_snapshots)
+      assert_complete_without_gaps(
+        ordered_subject,
+        ordered_snapshots,
+        {"skipped_disabled", "disabled"}
+      )
+
+      assert_complete_without_gaps(shuffled_subject, shuffled_snapshots, {"pending", nil})
 
       ordered_timeline = ordered_snapshots["observations"].read_model
       shuffled_timeline = shuffled_snapshots["observations"].read_model
@@ -85,6 +115,20 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
       assert normalize_timeline(ordered_timeline, event_id_map(ordered_events)) ==
                normalize_timeline(shuffled_timeline, event_id_map(shuffled_events))
     end)
+  end
+
+  defp assert_pending_workers(workers) do
+    actual =
+      Styx.Testing.all_enqueued(repo(), queue: :memory)
+      |> Enum.map(&{&1.worker, &1.args["mode"], &1.args["session_id"]})
+      |> Enum.sort()
+
+    assert actual ==
+             Enum.sort(
+               Enum.map(workers, fn {worker, mode, session} ->
+                 {inspect(worker), mode, session}
+               end)
+             )
   end
 
   defp captured_events(host_id, session_id) do
@@ -164,33 +208,22 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
              })
   end
 
-  defp assert_complete_without_gaps(subject_id, snapshots) do
-    states = states(subject_id)
-    projectors = Enum.map(states, & &1.projector)
+  defp assert_complete_without_gaps(subject_id, snapshots, {summary_status, summary_error}) do
+    states = Map.new(states(subject_id), &{&1.projector, &1})
+    assert Enum.sort(Map.keys(states)) == ~w(activity observations replay session summary)
+    revision = snapshots["session"].input_revision
 
-    assert projectors in [
-             ~w(activity observations replay session summary),
-             ~w(activity crystal observations replay session summary),
-             ~w(activity crystal episodic observations replay session summary)
-           ]
+    for projector <- ~w(activity observations replay session) do
+      assert states[projector].status == "complete"
+      assert states[projector].last_error == nil
+      assert states[projector].input_revision == revision
+      assert snapshots[projector].input_revision == revision
+      assert snapshots[projector].output_revision == states[projector].output_revision
+    end
 
-    assert Enum.all?(states, fn
-             %{projector: "crystal", status: "enqueued", last_error: nil} ->
-               true
-
-             %{projector: "summary", status: status, last_error: nil}
-             when status in ["pending", "complete"] ->
-               true
-
-             %{projector: "episodic", status: "skipped_no_model", last_error: "no_model"} ->
-               true
-
-             %{status: "complete", last_error: nil} ->
-               true
-
-             _state ->
-               false
-           end)
+    assert states["summary"].status == summary_status
+    assert states["summary"].last_error == summary_error
+    assert states["summary"].input_revision == revision
 
     assert snapshots["session"].read_model["gaps"] == []
     assert snapshots["session"].read_model["status"] == "completed"

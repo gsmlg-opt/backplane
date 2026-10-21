@@ -23,7 +23,9 @@ defmodule Backplane.Admin.MemorySessionsLive do
          offset: 0,
          next_offset: nil,
          total: 0,
-         error: nil
+         error: nil,
+         consolidation_result: nil,
+         consolidation_error: nil
        )}
 
   @impl true
@@ -41,7 +43,8 @@ defmodule Backplane.Admin.MemorySessionsLive do
          partition: partition,
          detail: detail,
          rows: [],
-         error: nil
+         error: nil,
+         consolidation_result: consolidation_progress(session_id, partition)
        )}
     else
       {:error, reason} ->
@@ -80,6 +83,39 @@ defmodule Backplane.Admin.MemorySessionsLive do
   def handle_event("select_partition", %{"partition" => raw}, socket),
     do: {:noreply, push_patch(socket, to: ~p"/memory/sessions?#{selection_query(raw)}")}
 
+  def handle_event(
+        "consolidate-session",
+        _params,
+        %{assigns: %{detail: detail, partition: partition}} = socket
+      )
+      when not is_nil(detail) and not is_nil(partition) do
+    case Backplane.Memory.Operations.Consolidation.enqueue(detail.session_id, partition) do
+      {:ok, result} ->
+        Backplane.Admin.Audit.record(
+          "memory_session.consolidate",
+          "memory_session",
+          detail.session_id
+        )
+
+        {:noreply, assign(socket, consolidation_result: result, consolidation_error: nil)}
+
+      {:error, _} ->
+        {:noreply,
+         assign(
+           socket,
+           :consolidation_error,
+           "Consolidation could not be queued for this session and partition."
+         )}
+    end
+  end
+
+  defp consolidation_progress(session_id, partition) do
+    case Backplane.Memory.Operations.Consolidation.get(session_id, partition) do
+      {:ok, result} -> result
+      {:error, _} -> nil
+    end
+  end
+
   @impl true
   def render(%{live_action: :show} = assigns) do
     ~H"""
@@ -97,6 +133,15 @@ defmodule Backplane.Admin.MemorySessionsLive do
             <div><dt class="text-xs text-on-surface-variant">Ended</dt><dd>{format_datetime(@detail.ended_at)}</dd></div>
             <div><dt class="text-xs text-on-surface-variant">Duration</dt><dd>{format_duration(@detail.duration_ms)}</dd></div>
           </dl>
+        </.dm_card>
+        <.dm_card id="session-consolidation" variant="bordered" padding="lg">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="font-semibold">Processing progress</h2>
+            <.dm_btn id="session-consolidate" phx-click="consolidate-session" variant="primary">Consolidate / retry</.dm_btn>
+          </div>
+          <p class="mt-2 text-sm text-on-surface-variant">Uses this exact session revision and partition. Disabled or ineligible stages retain their reason.</p>
+          <.dm_alert :if={@consolidation_error} variant="error" title="Consolidation unavailable">{@consolidation_error}</.dm_alert>
+          <pre :if={@consolidation_result} id="session-consolidation-progress" class="mt-3 overflow-auto text-xs">{Jason.encode!(@consolidation_result, pretty: true)}</pre>
         </.dm_card>
         <.dm_card id="session-first-prompt" variant="bordered" padding="lg"><h2 class="font-semibold">First prompt</h2><p class="mt-2 whitespace-pre-wrap">{@detail.first_prompt || "—"}</p></.dm_card>
         <.dm_card variant="bordered" padding="lg"><h2 class="font-semibold">Summary</h2><p class="mt-2 whitespace-pre-wrap">{@detail.summary && @detail.summary.content || "Pending"}</p></.dm_card>

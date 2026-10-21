@@ -181,7 +181,7 @@ defmodule Backplane.Memory.ProvenanceTest do
     assert deleted.deleted_at
   end
 
-  test "reused memories union source associations without churn and preserve tombstones" do
+  test "reused memories union source associations without churn, and denied reused facets roll back the union" do
     partition = partition("union-host")
     base = Map.to_list(partition) ++ [agent_id: "test", idempotency_scope: "provenance-union"]
 
@@ -196,6 +196,8 @@ defmodule Backplane.Memory.ProvenanceTest do
       "checkout_root" => "/two",
       "cwd" => "/two"
     }
+
+    denied_source = %{"repository_id" => "git.example/denied/repo", "cwd" => "/denied"}
 
     metadata = %{
       "project" => "/historical",
@@ -240,6 +242,26 @@ defmodule Backplane.Memory.ProvenanceTest do
              )
 
     assert repeat.updated_at == merged.updated_at
+    before_requests = repo().aggregate(Backplane.Memory.Memories.RememberRequest, :count)
+    before_evidence = repo().aggregate(Backplane.Memory.Memories.Evidence, :count)
+
+    assert {:error, :invalid_request} =
+             Memories.remember(
+               "same durable source fact",
+               base ++
+                 [
+                   metadata: %{metadata | "repository_sources" => [denied_source]},
+                   idempotency_key: "denied",
+                   shared_facets: [%{"dimension" => "topic", "value" => "denied"}]
+                 ]
+             )
+
+    unchanged = repo().get!(Memory, first.id)
+    assert unchanged.metadata == repeat.metadata
+    assert unchanged.updated_at == repeat.updated_at
+    assert repo().aggregate(Backplane.Memory.Memories.RememberRequest, :count) == before_requests
+    assert repo().aggregate(Backplane.Memory.Memories.Evidence, :count) == before_evidence
+
     assert :ok = Memories.forget(first.id, partition)
     tombstone = repo().get!(Memory, first.id)
     assert tombstone.metadata == repeat.metadata

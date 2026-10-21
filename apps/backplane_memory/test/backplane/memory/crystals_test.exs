@@ -18,6 +18,7 @@ defmodule Backplane.Memory.CrystalsTest do
   end
 
   setup do
+    enable_summary_stage()
     previous = Application.get_env(:backplane_memory, :crystal_task_supervisor)
     supervisor = start_supervised!({Task.Supervisor, name: unique_supervisor()})
     Application.put_env(:backplane_memory, :crystal_task_supervisor, supervisor)
@@ -88,6 +89,262 @@ defmodule Backplane.Memory.CrystalsTest do
     end
   end
 
+  @tag :stages11
+  test "a newer canonical revision refreshes one crystal while preserving remembered history" do
+    input = closed_session("host-refresh", unique("session"), "p", "first")
+    first_summary = summarize(input)
+
+    assert {:ok, first} =
+             Crystals.build_session(input.host_id, input.session_id, input.input_revision,
+               enrich_fn: fn _ -> {:skip, :no_llm} end
+             )
+
+    original = repo().get!(Memory, first.memory_id)
+
+    opts = [
+      memory_space_id: input.memory_space_id,
+      host_id: input.host_id,
+      client_id: input.client_id,
+      source_client_id: input.source_client_id,
+      scope: input.scope,
+      namespace: input.namespace,
+      agent_id: original.agent_id,
+      session_id: input.session_id,
+      type: "episodic",
+      metadata: original.metadata,
+      idempotency_scope: "user",
+      idempotency_key: "remember-crystal"
+    ]
+
+    assert {:ok, remembered} = Backplane.Memory.Memories.remember(original.content, opts)
+    assert remembered.id == original.id
+    old_evidence = Backplane.Memory.Memories.list_evidence(original.id)
+    repo().query!("SET CONSTRAINTS ALL IMMEDIATE")
+    repo().query!("SET CONSTRAINTS ALL DEFERRED")
+
+    ingest!(event(input.host_id, input.session_id, "p", 4, "agent.tool.completed", "late"))
+    assert {:ok, current} = Rebuild.session(input.host_id, input.session_id)
+    current_summary = summarize(current)
+
+    assert {:ok, refreshed} =
+             Crystals.build_session(current.host_id, current.session_id, current.input_revision,
+               enrich_fn: fn _ -> {:skip, :no_llm} end
+             )
+
+    assert refreshed.id == first.id
+    assert refreshed.input_revision == current.input_revision
+    refute refreshed.memory_id == first.memory_id
+    assert repo().get!(Memory, first.memory_id).lifecycle_state == "archived"
+    assert repo().get!(Memory, first.memory_id).content == original.content
+    assert repo().get!(Memory, first.memory_id).content_hash == original.content_hash
+    assert Backplane.Memory.Memories.list_evidence(original.id) == old_evidence
+    assert {:ok, retry} = Backplane.Memory.Memories.remember(original.content, opts)
+    assert retry.id == original.id
+    assert retry.content == original.content
+    assert repo().get!(Memory, refreshed.memory_id).lifecycle_state == "active"
+
+    assert {:ok, detail} =
+             Crystals.get(
+               first.id,
+               Map.take(current, [:memory_space_id, :host_id, :client_id, :scope, :namespace])
+             )
+
+    assert detail.current_source_summary_ids == [current_summary.id]
+    assert detail.historical_source_summary_ids == [first_summary.id]
+    assert length(detail.source_event_ids) == 4
+    repo().query!("SET CONSTRAINTS ALL IMMEDIATE")
+
+    snapshot =
+      {repo().all(Memory), repo().all(SourceSummary), repo().all(SourceEvent),
+       Backplane.Memory.Memories.list_evidence(refreshed.memory_id)}
+
+    assert {:ok, ^refreshed} =
+             Crystals.build_session(current.host_id, current.session_id, current.input_revision,
+               enrich_fn: fn _ -> flunk("completed revision called provider") end
+             )
+
+    assert {:error, :stale_input_revision} =
+             Crystals.build_session(input.host_id, input.session_id, input.input_revision,
+               enrich_fn: fn _ -> flunk("stale revision called provider") end
+             )
+
+    assert snapshot ==
+             {repo().all(Memory), repo().all(SourceSummary), repo().all(SourceEvent),
+              Backplane.Memory.Memories.list_evidence(refreshed.memory_id)}
+  end
+
+  @tag :stages11
+  test "equal output reuses unchanged backing memory and concurrent refresh converges" do
+    input = closed_session("host-equal-refresh", unique("session"), "p", "first")
+    summarize(input)
+
+    enrich = fn _ ->
+      {:ok,
+       %{
+         title: "stable",
+         narrative: "unchanged body",
+         key_outcomes: [],
+         decisions: [],
+         files_affected: [],
+         unresolved_items: []
+       }, "test"}
+    end
+
+    assert {:ok, first} =
+             Crystals.build_session(input.host_id, input.session_id, input.input_revision,
+               enrich_fn: enrich
+             )
+
+    memory = repo().get!(Memory, first.memory_id)
+    repo().query!("SET CONSTRAINTS ALL IMMEDIATE")
+    repo().query!("SET CONSTRAINTS ALL DEFERRED")
+    ingest!(event(input.host_id, input.session_id, "p", 4, "agent.tool.completed", "late"))
+    {:ok, current} = Rebuild.session(input.host_id, input.session_id)
+    summarize(current)
+    parent = self()
+
+    results =
+      for _ <- 1..3 do
+        Task.async(fn ->
+          Crystals.build_session(current.host_id, current.session_id, current.input_revision,
+            enrich_fn: fn request ->
+              send(parent, :refreshed_provider)
+              enrich.(request)
+            end
+          )
+        end)
+      end
+      |> Task.await_many(10_000)
+
+    assert_receive :refreshed_provider
+    refute_receive :refreshed_provider
+
+    assert Enum.all?(results, fn {:ok, c} ->
+             c.id == first.id and c.memory_id == memory.id and
+               c.input_revision == current.input_revision
+           end)
+
+    assert repo().get!(Memory, memory.id) == memory
+    assert repo().aggregate(Memory, :count) == 1
+    assert repo().aggregate(SourceSummary, :count) == 2
+    assert repo().aggregate(SourceEvent, :count) == 4
+    repo().query!("SET CONSTRAINTS ALL IMMEDIATE")
+  end
+
+  @tag :stages11
+  test "archived parent stays archived on refresh and tombstoned parent refuses enrichment" do
+    for lifecycle <- ["archived", "tombstoned"] do
+      input = closed_session("host-governed-#{lifecycle}", unique("session"), "p", "first")
+      summarize(input)
+
+      assert {:ok, first} =
+               Crystals.build_session(input.host_id, input.session_id, input.input_revision,
+                 enrich_fn: fn _ -> {:skip, :no_llm} end
+               )
+
+      partition = Map.take(input, [:memory_space_id, :host_id, :client_id, :scope, :namespace])
+
+      if lifecycle == "archived" do
+        repo().get!(Memory, first.memory_id)
+        |> Memory.lifecycle_changeset(%{lifecycle_state: "archived"})
+        |> repo().update!()
+      else
+        assert :ok = Backplane.Memory.Memories.tombstone(first.memory_id, partition)
+      end
+
+      repo().query!("SET CONSTRAINTS ALL IMMEDIATE")
+      repo().query!("SET CONSTRAINTS ALL DEFERRED")
+      before = repo().get!(Memory, first.memory_id)
+      ingest!(event(input.host_id, input.session_id, "p", 4, "agent.tool.completed", "late"))
+      {:ok, current} = Rebuild.session(input.host_id, input.session_id)
+      summarize(current)
+
+      if lifecycle == "archived" do
+        assert {:ok, refreshed} =
+                 Crystals.build_session(
+                   current.host_id,
+                   current.session_id,
+                   current.input_revision,
+                   enrich_fn: fn _ -> {:skip, :no_llm} end
+                 )
+
+        refute refreshed.memory_id == first.memory_id
+        assert repo().get!(Memory, refreshed.memory_id).lifecycle_state == "archived"
+        assert {:ok, []} = Crystals.search("Session", partition)
+      else
+        assert {:error, :crystal_memory_governed} =
+                 Crystals.build_session(
+                   current.host_id,
+                   current.session_id,
+                   current.input_revision,
+                   enrich_fn: fn _ -> flunk("governed parent called provider") end
+                 )
+
+        assert repo().get!(Crystal, first.id) == first
+      end
+
+      assert repo().get!(Memory, first.memory_id) == before
+      repo().query!("SET CONSTRAINTS ALL IMMEDIATE")
+      repo().query!("SET CONSTRAINTS ALL DEFERRED")
+    end
+  end
+
+  @tag :stages11
+  test "a conflicting replacement candidate fails atomically without changing either history" do
+    host = "host-replacement-conflict"
+    input = closed_session(host, unique("session"), "p", "first")
+    summarize(input)
+
+    assert {:ok, first} =
+             Crystals.build_session(host, input.session_id, input.input_revision,
+               enrich_fn: fn _ -> {:skip, :no_llm} end
+             )
+
+    other = closed_session(host, unique("other"), "p", "independent")
+    summarize(other)
+
+    enrichment = fn _ ->
+      {:ok,
+       %{
+         title: "fixed",
+         narrative: "candidate collision",
+         key_outcomes: [],
+         decisions: [],
+         files_affected: [],
+         unresolved_items: []
+       }, "test"}
+    end
+
+    assert {:ok, _} =
+             Crystals.build_session(host, other.session_id, other.input_revision,
+               enrich_fn: enrichment
+             )
+
+    repo().query!("SET CONSTRAINTS ALL IMMEDIATE")
+    repo().query!("SET CONSTRAINTS ALL DEFERRED")
+    ingest!(event(host, input.session_id, "p", 4, "agent.tool.completed", "late"))
+    {:ok, current} = Rebuild.session(host, input.session_id)
+    summarize(current)
+    memories = repo().all(from(m in Memory, order_by: m.id))
+    links = repo().all(from(l in SourceSummary, order_by: l.summary_id))
+    # A savepoint models the worker transaction inside the test sandbox.
+    assert {:error, :backing_memory_persistence_failed} =
+             repo().transaction(
+               fn ->
+                 case Crystals.build_session(host, input.session_id, current.input_revision,
+                        enrich_fn: enrichment
+                      ) do
+                   {:error, reason} -> repo().rollback(reason)
+                 end
+               end,
+               mode: :savepoint
+             )
+
+    assert repo().get!(Crystal, first.id) == first
+    assert repo().all(from(m in Memory, order_by: m.id)) == memories
+    assert repo().all(from(l in SourceSummary, order_by: l.summary_id)) == links
+  end
+
   test "crystal source links reject update delete and truncate" do
     input = closed_session("host-immutable", unique("session"), "p", "outcome")
     summarize(input)
@@ -152,22 +409,10 @@ defmodule Backplane.Memory.CrystalsTest do
       assert error.postgres.constraint == "memory_crystal_parent_check"
     end
 
-    error =
-      assert_raise Postgrex.Error, fn ->
-        repo().transaction(
-          fn ->
-            repo().query!(
-              "UPDATE bpm_memories SET deleted_at = $1, lifecycle_state = 'tombstoned' WHERE id = $2",
-              [~U[2026-08-12 00:00:00.000000Z], Ecto.UUID.dump!(crystal.memory_id)]
-            )
-
-            repo().query!("SET CONSTRAINTS memory_crystal_memory_parent_check IMMEDIATE")
-          end,
-          mode: :savepoint
-        )
-      end
-
-    assert error.postgres.constraint == "memory_crystal_parent_check"
+    partition = Map.take(input, [:memory_space_id, :host_id, :client_id, :scope, :namespace])
+    assert :ok = Backplane.Memory.Memories.tombstone(crystal.memory_id, partition)
+    repo().query!("SET CONSTRAINTS memory_crystal_memory_parent_check IMMEDIATE")
+    assert repo().get!(Memory, crystal.memory_id).lifecycle_state == "tombstoned"
   end
 
   test "same and concurrent identity returns one row while a new processing version creates a new row" do
@@ -791,11 +1036,64 @@ defmodule Backplane.Memory.CrystalsTest do
 
     assert %State{
              input_revision: ^newer_revision,
-             status: "failed",
-             last_error: "stale_input_revision"
+             status: "complete",
+             last_error: nil
            } = projection_state(input.subject_id)
 
-    assert [%Crystal{input_revision: ^old_revision}] = repo().all(Crystal)
+    assert [%Crystal{input_revision: ^newer_revision}] = repo().all(Crystal)
+  end
+
+  @tag :stage_quality
+  test "explicit empty model arrays do not restore fallback assertions" do
+    input = closed_session("host-empty-fields", unique("session"), "p", "recorded observation")
+    summarize(input)
+
+    assert {:ok, crystal} =
+             Crystals.build_session(input.host_id, input.session_id, input.input_revision,
+               enrich_fn: fn _ ->
+                 {:ok,
+                  %{
+                    title: "Verified session",
+                    narrative: "Source reviewed",
+                    key_outcomes: [],
+                    decisions: [],
+                    files_affected: [],
+                    unresolved_items: []
+                  }, "fixture-model"}
+               end
+             )
+
+    assert crystal.key_outcomes == []
+    assert crystal.decisions == []
+    assert crystal.files_affected == []
+    assert crystal.unresolved_items == []
+  end
+
+  @tag :stage_quality
+  test "fallback retains historical errors as evidence without asserting they remain unresolved" do
+    host = "host-error-history"
+    session = unique("session")
+
+    for {sequence, type, content} <- [
+          {1, "agent.session.started", "start"},
+          {2, "agent.tool.failed", "historical_missing_ack"},
+          {3, "agent.tool.completed", "verified acknowledgement recovery"},
+          {4, "agent.session.ended", "done"}
+        ] do
+      ingest!(event(host, session, "p", sequence, type, content))
+    end
+
+    assert {:ok, input} = Rebuild.session(host, session)
+    summarize(input)
+
+    assert {:ok, crystal} =
+             Crystals.build_session(host, session, input.input_revision,
+               enrich_fn: fn _ -> {:skip, :no_llm} end
+             )
+
+    assert crystal.narrative =~ "historical_missing_ack"
+    assert crystal.narrative =~ "verified acknowledgement recovery"
+    assert crystal.unresolved_items == []
   end
 
   test "invalid enrichment degrades field by field and never stores private raw content" do
@@ -829,7 +1127,7 @@ defmodule Backplane.Memory.CrystalsTest do
       assert crystal.narrative =~ "[REDACTED]"
       assert crystal.key_outcomes == ["useful"]
       assert crystal.decisions == []
-      assert crystal.files_affected == ["lib/a.ex"]
+      assert crystal.files_affected == []
       assert crystal.unresolved_items == ["[REDACTED]"]
       refute crystal.narrative =~ "sk-secretvalue"
       refute inspect(crystal) =~ "do not store"
@@ -947,6 +1245,19 @@ defmodule Backplane.Memory.CrystalsTest do
     ingest!(event(host_id, session_id, project, 3, "agent.session.ended", "done"))
     {:ok, result} = Rebuild.session(host_id, session_id)
     result
+  end
+
+  defp enable_summary_stage do
+    keys = ~w(memory.pipeline.enabled memory.session_summary_v2.enabled)
+    previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
+
+    on_exit(fn ->
+      Enum.each(previous, fn {key, rows} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(rows, &:ets.insert(:backplane_settings, &1))
+      end)
+    end)
   end
 
   defp summarize(input) do

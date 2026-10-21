@@ -2,11 +2,14 @@ defmodule Backplane.Memory.Recall.Retriever do
   @moduledoc "Parallel, failure-isolated Recall V2 retrieval and weighted RRF fusion."
 
   alias Backplane.Memory.Config
+  alias Backplane.Memory.Embedding.Client
   alias Backplane.Memory.Recall.{Channels, Fusion, QueryPlan}
 
   @channels [:fts, :vector, :graph]
-  @options [:timeout_ms, :channel_limits, :channel_fns, :embed_fn]
-  @default_timeout_ms 1_000
+  @options [:timeout_ms, :channel_limits, :channel_fns, :embed_fn, :query_embedding_model]
+  # The embedding client allows 10s. Leave time for vector SQL while keeping
+  # retrieval inside the host's 30s tool-call budget (reranking defaults to 1s).
+  @default_timeout_ms 12_000
   @max_timeout_ms 60_000
 
   def retrieve(plan, opts \\ [])
@@ -59,7 +62,9 @@ defmodule Backplane.Memory.Recall.Retriever do
          overrides = Keyword.get(opts, :channel_fns, %{}),
          true <- valid_channel_fns?(overrides),
          embed_fn = Keyword.get(opts, :embed_fn),
-         true <- is_nil(embed_fn) or is_function(embed_fn, 3) do
+         true <- is_nil(embed_fn) or is_function(embed_fn, 3),
+         model = Keyword.get(opts, :query_embedding_model),
+         true <- is_nil(model) or (is_binary(model) and byte_size(String.trim(model)) in 1..512) do
       :ok
     else
       _invalid -> {:error, :invalid_options}
@@ -95,7 +100,8 @@ defmodule Backplane.Memory.Recall.Retriever do
 
   defp default_fun(:vector, opts) do
     embed_fn = Keyword.get(opts, :embed_fn)
-    fn plan, limit -> Channels.vector(plan, limit, embed_fn) end
+    model = Keyword.get_lazy(opts, :query_embedding_model, &Client.model/0)
+    fn plan, limit -> Channels.vector(plan, limit, embed_fn, model) end
   end
 
   defp invoke(fun, plan, limit, started) do

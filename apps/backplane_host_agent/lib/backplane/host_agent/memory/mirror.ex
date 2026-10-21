@@ -56,7 +56,8 @@ defmodule Backplane.HostAgent.Memory.Mirror do
       Store.read(
         store(opts),
         operation,
-        Map.put(args, "limit", min(Map.get(args, "limit", 20), 100))
+        Map.put(args, "limit", min(Map.get(args, "limit", 20), 100)),
+        Keyword.get(opts, :access_target)
       )
     else
       false -> {:error, :invalid_request}
@@ -72,6 +73,9 @@ defmodule Backplane.HostAgent.Memory.Mirror do
   end
 
   defp store(opts), do: Keyword.get(opts, :store, Backplane.HostAgent.Memory.Edge.Store)
+
+  @doc false
+  def validate_delivery(d, opts), do: validate(d, opts)
 
   defp validate(d, opts) do
     config = Keyword.get(opts, :config, %{})

@@ -20,20 +20,14 @@ defmodule Backplane.Memory.CrystalActionChainTest do
     assert Backplane.Memory.IngestFixtures.ensure_memory_space!(@partition.host_id) ==
              @partition.memory_space_id
 
-    previous_client = Application.get_env(:backplane_memory, :llm_client)
-    Application.put_env(:backplane_memory, :llm_client, __MODULE__)
-
     keys =
-      ~w(memory.crystals_enabled memory.crystal_action_enabled memory.crystal_session_enabled)
+      ~w(memory.crystals_enabled memory.crystal_action_enabled memory.crystal_session_enabled memory.llm_model)
 
     snapshot = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
     Enum.each(keys, &:ets.delete(:backplane_settings, &1))
+    :ets.insert(:backplane_settings, {"memory.llm_model", "test-model"})
 
     on_exit(fn ->
-      if previous_client,
-        do: Application.put_env(:backplane_memory, :llm_client, previous_client),
-        else: Application.delete_env(:backplane_memory, :llm_client)
-
       Enum.each(snapshot, fn {key, rows} ->
         :ets.delete(:backplane_settings, key)
         if rows != [], do: :ets.insert(:backplane_settings, rows)

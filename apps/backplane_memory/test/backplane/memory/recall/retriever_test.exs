@@ -52,6 +52,52 @@ defmodule Backplane.Memory.Recall.RetrieverTest do
     assert Enum.all?(channels, fn {_channel, outcome} -> outcome.status == :ok end)
   end
 
+  test "the default budget admits a successful provider slower than one second" do
+    wanted = candidate()
+
+    assert {:ok, result} =
+             Retriever.retrieve(plan(),
+               channel_fns: %{
+                 fts: fn _, _ -> {:ok, []} end,
+                 graph: fn _, _ -> {:unavailable, :no_entities} end,
+                 vector: fn _, _ ->
+                   Process.sleep(1_200)
+                   {:ok, [{wanted, 0.9}]}
+                 end
+               }
+             )
+
+    assert result.channels.vector.status == :ok
+    assert [%{candidate: ^wanted}] = result.fused
+    assert result.trace.channel_availability["vector"]
+  end
+
+  test "an explicit bounded timeout terminates the slow channel without losing lexical results" do
+    owner = self()
+    wanted = candidate()
+    started = System.monotonic_time(:millisecond)
+
+    assert {:ok, result} =
+             Retriever.retrieve(plan(),
+               timeout_ms: 30,
+               channel_fns: %{
+                 fts: fn _, _ -> {:ok, [{wanted, 0.8}]} end,
+                 graph: fn _, _ -> {:unavailable, :no_entities} end,
+                 vector: fn _, _ ->
+                   send(owner, {:vector_pid, self()})
+                   Process.sleep(:infinity)
+                 end
+               }
+             )
+
+    assert_receive {:vector_pid, pid}
+    refute Process.alive?(pid)
+    assert System.monotonic_time(:millisecond) - started < 1_000
+    assert result.channels.vector.status == :timeout
+    assert result.trace.channel_errors["vector"] == "timeout"
+    assert [%{candidate: ^wanted}] = result.fused
+  end
+
   test "errors, exits, and timeouts are isolated while FTS remains usable" do
     fts_candidate = candidate()
 

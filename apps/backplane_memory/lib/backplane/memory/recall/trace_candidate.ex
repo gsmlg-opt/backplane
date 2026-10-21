@@ -58,6 +58,7 @@ defmodule Backplane.Memory.Recall.TraceCandidate do
       name: :memory_recall_candidates_run_candidate_uniq
     )
     |> check_constraint(:source_refs, name: :memory_recall_candidates_source_refs_check)
+    |> check_constraint(:candidate_id, name: :memory_recall_candidates_canonical_partition)
   end
 
   defp validate_source_refs(changeset) do

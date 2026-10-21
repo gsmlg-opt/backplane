@@ -80,6 +80,73 @@ defmodule Backplane.Skills.AgentManageTest do
     end
   end
 
+  test "preserves bounded memory telemetry and last known config on disconnect" do
+    {:ok, host, auth_token, _} = Hosts.create_agent_with_token(%{"name" => "memory-report"})
+    :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+
+    memory = %{
+      "status" => "available",
+      "pending_commands" => 3,
+      "failed_commands" => 1,
+      "revision" => 7,
+      "retry_count" => 2,
+      "dead_letter_count" => 1,
+      "last_successful_sync" => "2026-10-20T01:00:00Z",
+      "partitions" => []
+    }
+
+    assert :ok = AgentManage.update_runtime(host.id, %{"memory" => memory})
+
+    assert :ok =
+             AgentManage.report_config(host.id, %{
+               "memory" => %{"enabled" => true, "api_key" => "hidden-secret"},
+               "agent" => %{"token" => "hidden-token"},
+               "local_settings_applied_at" => "2026-10-20T01:00:00Z"
+             })
+
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+    assert entry.runtime.memory == memory
+    assert %DateTime{} = entry.config_reported_at
+    refute inspect(entry.config) =~ "hidden-"
+    :ok = AgentManage.disconnect(host.id)
+    assert {:ok, offline} = AgentManage.get_agent(host.id)
+    assert offline.status == :offline
+    assert offline.runtime.memory == memory
+    assert offline.config_reported_at == entry.config_reported_at
+    assert :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+    assert :ok = AgentManage.update_runtime(host.id, %{})
+    assert {:ok, refreshed} = AgentManage.get_agent(host.id)
+    refute Map.has_key?(refreshed.runtime, :memory)
+  end
+
+  test "rejects malformed oversized and content-bearing memory telemetry" do
+    {:ok, host, auth_token, _} =
+      Hosts.create_agent_with_token(%{"name" => "invalid-memory-report"})
+
+    :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+
+    for memory <- [
+          [],
+          %{"revision" => -1},
+          %{"pending_commands" => 1.5},
+          %{"last_error" => "raw secret"},
+          %{"last_successful_sync" => "not-a-time"},
+          %{"partitions" => List.duplicate(%{}, 51)},
+          %{"revision" => String.duplicate("9", 40_000)}
+        ] do
+      assert {:error, :invalid_payload} =
+               AgentManage.update_runtime(host.id, %{"memory" => memory})
+    end
+
+    assert :ok =
+             AgentManage.update_runtime(host.id, %{
+               "memory" => %{"status" => "unavailable", "revision" => nil}
+             })
+
+    assert {:error, :invalid_payload} =
+             AgentManage.report_config(host.id, %{"memory" => String.duplicate("x", 40_000)})
+  end
+
   test "records live connection IP, runtime, config, and channel exits" do
     assert {:ok, host, auth_token, _token} = Hosts.create_agent_with_token(%{"name" => "t430"})
 

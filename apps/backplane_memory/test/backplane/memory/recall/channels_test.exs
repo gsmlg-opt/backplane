@@ -23,10 +23,19 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
       host_id: "host-b"
   }
   @dim 2560
+  @embedding_model "current-embedding-model"
 
   setup do
     Backplane.Memory.IngestFixtures.ensure_memory_space!("host-a")
     Backplane.Memory.IngestFixtures.ensure_memory_space!("host-b")
+    setting = :ets.lookup(:backplane_settings, "memory.embed_model")
+    :ets.insert(:backplane_settings, {"memory.embed_model", @embedding_model})
+
+    on_exit(fn ->
+      :ets.delete(:backplane_settings, "memory.embed_model")
+      Enum.each(setting, &:ets.insert(:backplane_settings, &1))
+    end)
+
     :ok
   end
 
@@ -345,6 +354,35 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     assert repo().get!(Memory, wanted.id).access_count == 0
   end
 
+  test "vector filters unknown and incompatible model labels before distance and limit; FTS retains them" do
+    query_vector = vec(%{0 => 1.0})
+    wanted = memory("model provenance current", @partition) |> embed(vec(%{0 => 0.9, 1 => 0.1}))
+
+    old =
+      memory("model provenance historical", @partition)
+      |> then(
+        &repo().update!(Memory.embed_changeset(&1, query_vector, "historical-embedding-model"))
+      )
+
+    unknown =
+      memory("model provenance unknown", @partition)
+      |> Memory.embed_changeset(query_vector)
+      |> Ecto.Changeset.put_change(:embedding_model, nil)
+      |> repo().update!()
+
+    {:ok, plan} = QueryPlan.new(Map.merge(@partition, %{query: "model provenance"}))
+    embed_fn = fn ["model provenance"], :query, [] -> {:ok, [query_vector]} end
+    assert {:ok, [{candidate, _score}]} = Channels.vector(plan, 1, embed_fn)
+    assert candidate.id == wanted.id
+    assert {:ok, lexical} = Channels.fts(plan, 10)
+
+    assert Enum.sort(Enum.map(lexical, fn {row, _} -> row.id end)) ==
+             Enum.sort([wanted.id, old.id, unknown.id])
+
+    assert repo().get!(Memory, old.id).embedding_model == "historical-embedding-model"
+    assert repo().get!(Memory, unknown.id).embedding_model == nil
+  end
+
   test "graph is entity-hint driven, bounded, and resolves only exact-partition observations" do
     wanted_event = Ecto.UUID.generate()
     foreign_event = Ecto.UUID.generate()
@@ -395,6 +433,17 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
   end
 
   test "graph worker writes truthful projected event provenance consumed by recall" do
+    keys = ~w(memory.pipeline.enabled memory.relation_classifier.enabled)
+    previous_settings = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
+
+    on_exit(fn ->
+      Enum.each(previous_settings, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
+    end)
+
     session_id = "writer-session"
     event_id = Ecto.UUID.generate()
     insert_event(event_id, @partition, session_id)
@@ -578,7 +627,9 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     )
   end
 
-  defp embed(memory, vector), do: repo().update!(Memory.embed_changeset(memory, vector))
+  defp embed(memory, vector),
+    do: repo().update!(Memory.embed_changeset(memory, vector, @embedding_model))
+
   defp vec(positions), do: for(index <- 0..(@dim - 1), do: Map.get(positions, index, 0.0))
 
   defp observation(event_id, partition, content, session_id \\ nil) do

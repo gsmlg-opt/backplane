@@ -6,8 +6,10 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
   import Ecto.Query
 
   alias Backplane.Memory.Graph
+  alias Backplane.Memory.Config
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.PartitionIdentity
+  alias Backplane.Memory.Workers.StageResumeWorker
 
   alias Backplane.Memory.Projections.{
     ProcessingState,
@@ -74,15 +76,35 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
       )
 
     with {:ok, state_attrs} <- processing_attrs(session_id, partition) do
-      case transition_current(session_id, partition, state_attrs, "running") do
-        {:ok, _state} ->
-          run_current(session_id, partition, state_attrs, obs_count, min_obs, job)
-
-        {:stale, _state} ->
+      cond do
+        job.args["input_revision"] not in [nil, state_attrs.input_revision] ->
           {:discard, :stale}
 
-        {:error, reason} ->
-          {:error, reason}
+        StageResumeWorker.complete?(state_attrs) and not Config.relation_classifier_enabled?() ->
+          {:ok, :already_complete}
+
+        not Config.relation_classifier_enabled?() ->
+          record_processing_outcome(
+            session_id,
+            partition,
+            state_attrs,
+            {:ok, {:skipped, :disabled}},
+            job
+          )
+
+          {:ok, {:skipped, :disabled}}
+
+        true ->
+          case transition_current(session_id, partition, state_attrs, "running") do
+            {:ok, _state} ->
+              run_current(session_id, partition, state_attrs, obs_count, min_obs, job)
+
+            {:stale, _state} ->
+              {:discard, :stale}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
       end
     end
   end
@@ -90,10 +112,10 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
   defp run_current(session_id, partition, state_attrs, obs_count, min_obs, job) do
     try do
       result =
-        if obs_count < min_obs do
-          {:ok, :skipped_min_observations}
-        else
-          extract_graph(session_id, partition)
+        cond do
+          not Config.relation_classifier_enabled?() -> {:ok, {:skipped, :disabled}}
+          obs_count < min_obs -> {:ok, :skipped_min_observations}
+          true -> extract_graph(session_id, partition)
         end
 
       case result do
@@ -147,7 +169,12 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
 
     llm_module = Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
 
-    case llm_module.extract_graph(memories) do
+    result =
+      if Config.relation_classifier_enabled?(),
+        do: llm_module.extract_graph(memories),
+        else: {:skip, :disabled}
+
+    case result do
       {:ok, %{nodes: nodes, edges: edges}} ->
         {:generated, nodes, edges}
 
@@ -165,12 +192,34 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
     case ProcessingState.persist_current(
            repo(),
            attrs,
-           fn -> current_attrs(session_id, partition) end,
+           fn ->
+             with {:ok, current} <- current_attrs(session_id, partition) do
+               if Config.relation_classifier_enabled?(),
+                 do: {:ok, current},
+                 else: {:error, :disabled}
+             end
+           end,
            fn -> do_persist_graph(session_id, partition, nodes, edges, result) end
          ) do
-      {:ok, ^result, _state} -> {:ok, result}
-      {:stale, _state} -> {:discard, :stale}
-      {:error, reason} -> {:error, reason}
+      {:ok, ^result, _state} ->
+        {:ok, result}
+
+      {:stale, _state} ->
+        {:discard, :stale}
+
+      {:error, :disabled} ->
+        record_processing_outcome(
+          session_id,
+          partition,
+          attrs,
+          {:ok, {:skipped, :disabled}},
+          %Styx.Job{}
+        )
+
+        {:ok, {:skipped, :disabled}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -193,30 +242,76 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
         )
       )
 
-    writes =
+    node_writes =
       Enum.map(nodes, fn node ->
         node
         |> Map.drop([:source_observation_ids, "source_observation_ids"])
         |> Map.put(:source_observation_ids, source_event_ids)
         |> Graph.upsert_node(atom_partition)
-      end) ++ Enum.map(edges, &Graph.insert_edge(&1, atom_partition))
+      end)
 
-    case Enum.find(writes, &match?({:error, _reason}, &1)) do
-      {:error, reason} -> {:error, reason}
-      nil -> {:ok, result}
+    case Enum.find(node_writes, &match?({:error, _reason}, &1)) do
+      {:error, reason} ->
+        {:error, reason}
+
+      nil ->
+        node_ids =
+          nodes
+          |> Enum.zip(node_writes)
+          |> Map.new(fn {attrs, {:ok, node}} ->
+            {Map.get(attrs, :key) || Map.get(attrs, "key") || node.name, node.id}
+          end)
+
+        Enum.reduce_while(edges, {:ok, result}, fn edge, _acc ->
+          case Graph.insert_edge(resolve_edge(edge, node_ids), atom_partition) do
+            {:ok, _edge} -> {:cont, {:ok, result}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
     end
   end
+
+  defp resolve_edge(%{source: source, target: target} = edge, node_ids) do
+    edge
+    |> Map.drop([:source, :target])
+    |> Map.put(:source_id, Map.get(node_ids, source))
+    |> Map.put(:target_id, Map.get(node_ids, target))
+  end
+
+  # Compatibility for adapters returning already-persisted node IDs.
+  defp resolve_edge(edge, _node_ids), do: edge
 
   @doc "Enqueue a graph extraction job for a session."
   def enqueue(_session_id), do: {:error, :unauthorized}
 
-  def enqueue(session_id, partition) do
+  def enqueue(session_id, partition, opts \\ []) do
     case generator_partition(session_id, partition) do
       {:ok, partition} ->
-        %{session_id: session_id}
-        |> Map.merge(atom_partition(partition))
-        |> new()
-        |> Styx.insert()
+        with {:ok, attrs} <- processing_attrs(session_id, partition),
+             true <- StageResumeWorker.eligible?(attrs, opts) do
+          %{session_id: session_id, input_revision: attrs.input_revision}
+          |> Map.merge(atom_partition(partition))
+          |> Map.new(fn {key, value} -> {to_string(key), value} end)
+          |> new(
+            unique: [
+              period: :infinity,
+              states: :incomplete,
+              keys: [
+                :memory_space_id,
+                :host_id,
+                :client_id,
+                :scope,
+                :namespace,
+                :session_id,
+                :input_revision
+              ]
+            ]
+          )
+          |> Styx.insert()
+        else
+          false -> {:ok, :ineligible}
+          {:error, _} = error -> error
+        end
 
       {:error, reason} = error ->
         record_partition_issue(session_id, partition, reason)
@@ -343,8 +438,15 @@ defmodule Backplane.Memory.Workers.GraphExtractWorker do
         reason: reason
       )
 
-  defp record_processing_outcome(session_id, partition, attrs, {:ok, _result}, _job),
-    do: transition_current(session_id, partition, attrs, "complete")
+  defp record_processing_outcome(
+         session_id,
+         partition,
+         attrs,
+         {:ok, :skipped_min_observations},
+         _job
+       ),
+       do:
+         transition_current(session_id, partition, attrs, "pending", reason: :insufficient_input)
 
   defp record_processing_outcome(session_id, partition, attrs, {:error, reason}, job),
     do:

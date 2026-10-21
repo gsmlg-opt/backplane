@@ -672,6 +672,11 @@ defmodule Backplane.LLM.Router do
           access =
             AccessEvent.put_resolution(access, provider, raw_model, nil)
 
+          conn =
+            if base_url_has_path?(provider.base_url),
+              do: strip_repeated_request_prefix(conn, "v1"),
+              else: conn
+
           upstream = build_embedding_upstream(provider, auth_headers)
           do_embedding_proxy(conn, upstream, rewritten_body, access)
         else

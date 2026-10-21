@@ -13,12 +13,71 @@ defmodule Backplane.Memory.Embedding.ClientTest do
   end
 
   describe "embed/3" do
+    test "rejects empty, malformed and oversized input before contacting a provider" do
+      mock = fn _req -> flunk("invalid input reached provider") end
+
+      for texts <- [
+            [],
+            [""],
+            ["  "],
+            [<<255>>],
+            [nil],
+            "text",
+            List.duplicate("text", 51),
+            [String.duplicate("x", 80_001)]
+          ] do
+        assert {:error, :invalid_embedding_input} =
+                 Client.embed(texts, :document, model: @model, req_options: [adapter: mock])
+      end
+
+      assert {:error, :invalid_embedding_input} =
+               Client.embed([String.duplicate("x", 80_000)], :query,
+                 model: @model,
+                 req_options: [adapter: mock]
+               )
+    end
+
+    test "requests the schema dimension and rejects malformed successful vectors" do
+      for data <- [
+            [%{"index" => 0, "embedding" => [0.1, 0.2]}],
+            [%{"index" => 0, "embedding" => List.duplicate("bad", 2560)}],
+            [%{"index" => 1, "embedding" => List.duplicate(0.1, 2560)}],
+            [],
+            "invalid"
+          ] do
+        mock = fn req ->
+          assert Jason.decode!(req.body)["dimensions"] == 2560
+          {req, Req.Response.new(status: 200, body: %{"data" => data})}
+        end
+
+        assert {:error, :invalid_embedding_response} =
+                 Client.embed(["text"], :document, model: @model, req_options: [adapter: mock])
+      end
+    end
+
+    test "rejects duplicate indices and incomplete batches without returning partial success" do
+      vector = List.duplicate(0.1, 2560)
+
+      for data <- [
+            [%{"index" => 0, "embedding" => vector}],
+            [%{"index" => 0, "embedding" => vector}, %{"index" => 0, "embedding" => vector}]
+          ] do
+        mock = fn req -> {req, Req.Response.new(status: 200, body: %{"data" => data})} end
+
+        assert {:error, :invalid_embedding_response} =
+                 Client.embed(["first", "second"], :document,
+                   model: @model,
+                   req_options: [adapter: mock]
+                 )
+      end
+    end
+
     test "returns {:error, _} on non-200 response" do
       mock = fn req ->
         {req, Req.Response.new(status: 500, body: %{"error" => "oops"})}
       end
 
-      assert {:error, {:llm_proxy_error, 500, %{"error" => "oops"}}} =
+      assert {:error, {:llm_proxy_error, 500}} =
                Client.embed(["text"], :document, model: @model, req_options: [adapter: mock])
     end
 

@@ -5,6 +5,8 @@ defmodule Backplane.Memory.Authorization do
   alias Backplane.Memory.Partition
   alias Backplane.Memory.Memories.Memory
   alias Backplane.MemoryPermissions
+  alias Backplane.MemorySpaces
+  alias Backplane.MemorySpaces.Entitlement
 
   import Ecto.Query
 
@@ -20,7 +22,9 @@ defmodule Backplane.Memory.Authorization do
          true <- is_list(scopes),
          {:ok, _permission} <- MemoryPermissions.for_tool(name),
          true <- Clients.scope_matches?(scopes, name),
+         false <- Map.has_key?(args, "memory_access_id"),
          {:ok, partition} <- Partition.resolve(auth),
+         :ok <- authorize_private_access(name, partition),
          :ok <- validate_requested_partition(args, partition),
          :ok <- validate_memory_target(name, args, partition) do
       {:ok, trusted_args(args, partition), partition}
@@ -31,6 +35,86 @@ defmodule Backplane.Memory.Authorization do
   end
 
   def authorize_tool(_name, _args, _auth), do: {:error, :unauthorized}
+
+  @doc "Authorizes an authenticated host's explicit access and builds its locked credential check."
+  def authorize_access(auth, selector, operation) do
+    with {:ok, actor} <- host_actor(auth, operation),
+         {:ok, access} <- MemorySpaces.resolve_host_access(actor.host_id, selector, operation),
+         {:ok, :validated} <-
+           MemorySpaces.with_host_access(
+             actor,
+             selector,
+             operation,
+             access.authority_version,
+             fn _ ->
+               {:ok, :validated}
+             end
+           ) do
+      {:ok, actor, access}
+    end
+  end
+
+  @doc false
+  def host_actor(
+        %{kind: :host_agent, host_id: host_id, auth_token_id: token_id, scopes: scopes} = auth,
+        operation
+      )
+      when is_list(scopes) and operation in [:read, :deliver, :remember, :forget] do
+    permission =
+      if operation in [:read, :deliver], do: "host_agent.recall", else: "host_agent.import"
+
+    with {:ok, host_id} <- Ecto.UUID.cast(host_id),
+         {:ok, token_id} <- Ecto.UUID.cast(token_id),
+         true <- permission in scopes,
+         true <- is_nil(auth[:source_client_id]) or is_binary(auth[:source_client_id]) do
+      {:ok,
+       %{
+         host_id: host_id,
+         credential_id: token_id,
+         source_client_id: auth[:source_client_id],
+         credential_check: &check_host_credential/1
+       }}
+    else
+      _ -> {:error, :unauthorized}
+    end
+  end
+
+  def host_actor(_auth, _operation), do: {:error, :unauthorized}
+
+  defp check_host_credential(%{host_id: host, credential_id: token}) do
+    query =
+      from assignment in Backplane.Skills.HostAgentToken,
+        join: credential in Backplane.Skills.HostAuthToken,
+        on: credential.id == assignment.auth_token_id,
+        where: assignment.host_id == ^host and credential.id == ^token
+
+    if repo().exists?(query), do: :ok, else: {:error, :unauthorized}
+  end
+
+  defp authorize_private_access(name, partition) do
+    operation =
+      case name do
+        name when name in ["memory::forget", "memory::governance_delete"] -> :forget
+        _ -> if MemoryPermissions.for_tool!(name) == "memory.write", do: :remember, else: :read
+      end
+
+    access =
+      repo().one(
+        from e in Entitlement,
+          where:
+            e.host_id == ^partition.host_id and e.memory_space_id == ^partition.memory_space_id and
+              e.scope == ^partition.scope and e.namespace == ^partition.namespace,
+          select: e.id
+      )
+
+    with id when is_binary(id) <- access,
+         {:ok, _} <-
+           MemorySpaces.resolve_host_access(partition.host_id, {:access_id, id}, operation) do
+      :ok
+    else
+      _ -> {:error, :unauthorized}
+    end
+  end
 
   defp trusted_identity?(kind, client_id) when kind in [:oauth, :client_token],
     do: is_binary(client_id) and client_id != ""

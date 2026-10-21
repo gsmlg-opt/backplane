@@ -11,7 +11,8 @@ defmodule Backplane.Admin.MemoryOperatorHook do
     Backplane.Admin.MemoryLessonsLive,
     Backplane.Admin.MemoryCrystalsLive,
     Backplane.Admin.MemoryProfileLive,
-    Backplane.Admin.MemoryGraphLive
+    Backplane.Admin.MemoryGraphLive,
+    Backplane.Admin.MemoryPipelineLive
   ]
 
   def on_mount(:default, _params, _session, socket) do
@@ -52,6 +53,17 @@ defmodule Backplane.Admin.MemoryOperatorHook do
   end
 
   defp refresh(_message, socket), do: {:cont, socket}
+
+  defp refresh_view(%{view: Backplane.Admin.MemoryPipelineLive} = socket) do
+    {:noreply, refreshed} =
+      Backplane.Admin.MemoryPipelineLive.handle_params(
+        socket.assigns.memory_route_params,
+        socket.assigns.memory_route_uri,
+        socket
+      )
+
+    assign(refreshed, :memory_refresh_error, nil)
+  end
 
   defp refresh_view(%{assigns: %{memory_route_uri: nil}} = socket), do: socket
 

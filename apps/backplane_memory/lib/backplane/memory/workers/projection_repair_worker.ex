@@ -11,7 +11,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Config
   alias Backplane.Memory.Projections.{Rebuild, RepairFrontier, Source}
-  alias Backplane.Memory.Workers.{LessonCandidateWorker, SummaryWorker}
+  alias Backplane.Memory.Workers.{LessonCandidateWorker, SummaryWorker, WindowSummaryWorker}
 
   @impl Styx.Worker
   def perform(%Styx.Job{} = job) do
@@ -157,6 +157,11 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
             {:error, reason} -> repo().rollback(reason)
           end
 
+          case enqueue_windows(frontier.host_id, frontier.session_id, result) do
+            :ok -> :ok
+            {:error, reason} -> repo().rollback(reason)
+          end
+
           case enqueue_lesson_candidates_for_session(frontier.host_id, frontier.session_id) do
             :ok -> :ok
             {:error, reason} -> repo().rollback(reason)
@@ -215,8 +220,13 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   defp repair(%Event{} = event, rebuild, enqueue_summary) do
     if canonical_subject?(event) do
       case rebuild_and_audit(event, rebuild) do
-        {:ok, result} -> maybe_enqueue_summary(event, result, enqueue_summary)
-        {:error, reason} -> {:error, reason}
+        {:ok, result} ->
+          with :ok <- enqueue_windows(event.host_id, event.session_id, result),
+               :ok <- maybe_enqueue_summary(event, result, enqueue_summary),
+               do: :ok
+
+        {:error, reason} ->
+          {:error, reason}
       end
     else
       :ok
@@ -265,6 +275,32 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
       :ok
     end
   end
+
+  defp enqueue_windows(host_id, session_id, %{input_revision: revision} = result) do
+    partition =
+      Map.take(result, [
+        :memory_space_id,
+        :host_id,
+        :client_id,
+        :source_client_id,
+        :scope,
+        :namespace
+      ])
+
+    case Backplane.Memory.PartitionIdentity.validate_generator(partition) do
+      {:ok, partition} ->
+        case WindowSummaryWorker.enqueue(host_id, session_id, revision, partition) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp enqueue_windows(_host_id, _session_id, _result),
+    do: {:error, :invalid_rebuild_result}
 
   defp audit_frontier_repair(frontier, result) do
     Audit.log_once(

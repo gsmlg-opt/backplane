@@ -11,6 +11,42 @@ defmodule Backplane.Skills.HostsTest do
     on_exit(fn -> AgentManage.clear() end)
   end
 
+  test "registration cannot select foreign authority and lifecycle revocation audits versions" do
+    assert {:ok, owner} = Hosts.create_agent(%{"name" => "grant-owner"})
+    assert {:ok, target} = MemorySpaces.resolve_host_partition(owner.id, nil, "private")
+
+    assert {:ok, host} =
+             Hosts.create_agent(%{
+               "name" => "grant-recipient",
+               "memory_space_id" => target.memory_space_id,
+               "capabilities" => ["read", "deliver"],
+               "authority_version" => 900,
+               "default_capture" => true
+             })
+
+    assert {:ok, private} = MemorySpaces.resolve_host_partition(host.id, nil, "private")
+    refute private.memory_space_id == target.memory_space_id
+
+    assert {:ok, access} =
+             MemorySpaces.grant_host_access(
+               %{kind: :trusted_operator, ref: nil, request_id: Ecto.UUID.generate()},
+               host.id,
+               target,
+               [:forget],
+               reason: "lifecycle test",
+               expected_version: 0
+             )
+
+    assert {:ok, _} = Hosts.delete_agent(host)
+    assert %{status: "revoked", authority_version: 2} = Repo.get!(Entitlement, access.access_id)
+
+    assert [%{reason: "host_deleted", actor_kind: "system", new_authority_version: 2}] =
+             Repo.all(
+               from a in Backplane.MemorySpaces.AccessAudit,
+                 where: a.access_id == ^access.access_id and a.action == "host_revoke"
+             )
+  end
+
   describe "agent auth tokens" do
     test "creates auth tokens without creating agents" do
       assert {:ok, auth_token, token} = Hosts.create_auth_token(%{"name" => "workstations"})

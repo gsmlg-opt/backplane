@@ -97,6 +97,16 @@ defmodule Backplane.Skills.AgentManage do
     :error
   end
 
+  @doc "Revalidate the host assignment of a previously authenticated token."
+  def authorized_token?(host_id, token_id) when is_binary(host_id) and is_binary(token_id) do
+    case auth_material(host_id) do
+      {:ok, %{tokens: tokens}} -> Enum.any?(tokens, &(&1.id == token_id))
+      _ -> false
+    end
+  end
+
+  def authorized_token?(_, _), do: false
+
   @doc "Register a channel process as the current connection for a host."
   @spec register_connection(Host.t(), HostAuthToken.t() | map(), pid(), map()) ::
           :ok | {:error, term()}
@@ -188,9 +198,11 @@ defmodule Backplane.Skills.AgentManage do
   @doc "Store latest runtime config reported by a connected host agent."
   @spec report_config(Ecto.UUID.t(), map()) :: :ok | {:error, :invalid_payload | :not_connected}
   def report_config(host_id, config) when is_map(config) do
-    with {:ok, pid} <- lookup(host_id) do
-      Manager.report_config(pid, stringify_keys(config))
+    with {:ok, config} <- normalize_config(config),
+         {:ok, pid} <- lookup(host_id) do
+      Manager.report_config(pid, config)
     else
+      {:error, :invalid_payload} = error -> error
       _ -> {:error, :not_connected}
     end
   end
@@ -384,7 +396,8 @@ defmodule Backplane.Skills.AgentManage do
     with :ok <- validate_agent_version(payload),
          :ok <- validate_targets(payload),
          :ok <- validate_metadata(payload),
-         :ok <- validate_capture(payload) do
+         :ok <- validate_capture(payload),
+         :ok <- validate_memory(payload) do
       runtime =
         %{}
         |> maybe_put(:status, payload["status"] || "online")
@@ -392,6 +405,7 @@ defmodule Backplane.Skills.AgentManage do
         |> maybe_put(:targets, payload["targets"])
         |> maybe_put(:metadata, payload["metadata"])
         |> maybe_put(:capture, payload["capture"])
+        |> maybe_put(:memory, payload["memory"])
 
       {:ok, runtime}
     end
@@ -441,6 +455,183 @@ defmodule Backplane.Skills.AgentManage do
 
   defp validate_capture(%{"capture" => _capture}), do: {:error, :invalid_payload}
   defp validate_capture(_payload), do: :ok
+
+  defp validate_memory(%{"memory" => memory}) when is_map(memory) do
+    counters =
+      ~w(items bytes revision lag stale_age_seconds retry_count dead_letter_count pending_commands failed_commands)
+
+    valid =
+      bounded_payload?(memory) and
+        Enum.all?(memory, fn
+          {"status", value} ->
+            value in ~w(available unavailable)
+
+          {"protection_mode", value} ->
+            value in ~w(disabled plaintext_development protection_unavailable encrypted)
+
+          {"lag_status", value} ->
+            value in ~w(known unavailable)
+
+          {"last_successful_sync", value} ->
+            timestamp?(value)
+
+          {"partitions", value} ->
+            partitions?(value)
+
+          {key, value} ->
+            key in counters and counter?(value)
+        end)
+
+    if valid, do: :ok, else: {:error, :invalid_payload}
+  end
+
+  defp validate_memory(%{"memory" => _}), do: {:error, :invalid_payload}
+  defp validate_memory(_), do: :ok
+
+  defp counter?(nil), do: true
+
+  defp counter?(value),
+    do: is_integer(value) and value >= 0 and value <= 9_223_372_036_854_775_807
+
+  defp timestamp?(nil), do: true
+
+  defp timestamp?(value) when is_binary(value) and byte_size(value) <= 64 do
+    match?({:ok, _, _}, DateTime.from_iso8601(value))
+  end
+
+  defp timestamp?(_), do: false
+
+  defp partitions?(partitions) when is_list(partitions) and length(partitions) <= 50 do
+    Enum.all?(partitions, fn partition ->
+      is_map(partition) and
+        Enum.all?(
+          ~w(memory_space_id scope namespace),
+          &(is_binary(partition[&1]) and byte_size(partition[&1]) in 1..256)
+        ) and
+        Enum.all?(partition, fn
+          {key, _} when key in ~w(memory_space_id scope namespace) -> true
+          {key, value} when key in ~w(applied_revision stale_age_seconds) -> counter?(value)
+          {"last_sync_at", value} -> timestamp?(value)
+          _ -> false
+        end)
+    end)
+  end
+
+  defp partitions?(_), do: false
+
+  defp bounded_payload?(payload) do
+    case Jason.encode(payload) do
+      {:ok, encoded} -> byte_size(encoded) <= 32_768
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp normalize_config(config) do
+    config = stringify_keys(config)
+    sections = ~w(agent memory capture telemetry)
+
+    valid =
+      bounded_payload?(config) and
+        Enum.all?(sections, &(not Map.has_key?(config, &1) or is_map(config[&1]))) and
+        timestamp?(config["local_settings_applied_at"]) and
+        valid_negotiation?(config["memory_negotiation"]) and
+        (not Map.has_key?(config, "targets") or
+           (is_list(config["targets"]) and length(config["targets"]) <= 50 and
+              Enum.all?(config["targets"], &is_map/1)))
+
+    if valid do
+      agent =
+        safe_config_section(
+          config["agent"],
+          ~w(host_id machine_name hub_url interval_ms manifest_path work_dir http_bind http_port)
+        )
+
+      agent =
+        if is_binary(agent["hub_url"]),
+          do:
+            Map.update!(agent, "hub_url", fn value ->
+              value
+              |> URI.parse()
+              |> Map.merge(%{userinfo: nil, query: nil, fragment: nil})
+              |> URI.to_string()
+            end),
+          else: agent
+
+      agent =
+        if get_in(config, ["agent", "token"]),
+          do: Map.put(agent, "token", "REDACTED"),
+          else: agent
+
+      {:ok,
+       %{
+         "agent" => agent,
+         "memory" => safe_memory_settings(config["memory"]),
+         "capture" =>
+           safe_config_section(
+             config["capture"],
+             ~w(enabled db_path inject_context context_timeout_ms recall_cache_max_entries recall_cache_max_bytes recall_cache_ttl_ms upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
+           ),
+         "telemetry" =>
+           safe_config_section(
+             config["telemetry"],
+             ~w(enabled dir sync_interval_ms sync_batch_size retention_days)
+           ),
+         "targets" =>
+           Enum.map(
+             config["targets"] || [],
+             &safe_config_section(&1, ~w(name runtime path enabled))
+           ),
+         "local_settings_applied_at" => config["local_settings_applied_at"],
+         "memory_negotiation" => safe_negotiation(config["memory_negotiation"])
+       }}
+    else
+      {:error, :invalid_payload}
+    end
+  end
+
+  defp safe_memory_settings(memory) do
+    memory = memory || %{}
+
+    safe_config_section(
+      memory,
+      ~w(enabled db_path bound_scope local_ttl_days sync_interval_ms sync_batch_size max_attempts tombstone_relearn)
+    )
+    |> Map.put(
+      "host_sync_v1",
+      safe_config_section(map_section(memory["host_sync_v1"]), ~w(enabled))
+    )
+    |> Map.put(
+      "host_sync_v2",
+      safe_config_section(
+        map_section(memory["host_sync_v2"]),
+        ~w(enabled development_plaintext db_path max_frame_bytes max_changes max_items max_bytes max_items_per_partition max_age_days sync_interval_ms)
+      )
+    )
+  end
+
+  defp map_section(value) when is_map(value), do: value
+  defp map_section(_), do: %{}
+
+  defp safe_config_section(section, keys) do
+    (section || %{})
+    |> Map.take(keys)
+    |> Map.filter(fn {_key, value} ->
+      is_boolean(value) or is_integer(value) or (is_binary(value) and byte_size(value) <= 4096)
+    end)
+  end
+
+  defp valid_negotiation?(nil), do: true
+
+  defp valid_negotiation?(report) when is_map(report) do
+    report["selected"] in ~w(host_memory.v1 host_memory.v2) and timestamp?(report["applied_at"]) and
+      partitions?(report["partitions"] || [])
+  end
+
+  defp valid_negotiation?(_), do: false
+  defp safe_negotiation(nil), do: nil
+  defp safe_negotiation(report), do: Map.take(report, ~w(selected applied_at partitions))
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

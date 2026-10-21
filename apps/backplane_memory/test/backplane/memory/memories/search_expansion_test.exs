@@ -40,6 +40,10 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
     def rerank(_query, _candidates), do: {:skip, :no_llm}
   end
 
+  defmodule MockLLMUnavailable do
+    def expand_query(_query), do: {:error, {:llm_status, 503}}
+  end
+
   setup do
     prev_reranker = Backplane.Settings.get("memory.reranker_enabled")
     prev_expansion = Backplane.Settings.get("memory.query_expansion_enabled")
@@ -54,6 +58,25 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
   end
 
   describe "query expansion" do
+    test "provider failure preserves lexical recall with expansion enabled" do
+      Backplane.Settings.set("memory.query_expansion_enabled", "true")
+      base = canonical_memory_opts("expansion-failure", agent_id: "a")
+      assert {:ok, memory} = Memories.remember("gateway routing preference", base)
+
+      assert {:ok, [result]} =
+               Search.hybrid_recall(
+                 "routing",
+                 base ++
+                   [
+                     llm_module: MockLLMUnavailable,
+                     embed_fn: fn _, _, _ -> {:error, :unavailable} end,
+                     writeback_fn: fn _ -> :ok end
+                   ]
+               )
+
+      assert result.id == memory.id
+    end
+
     test "expansion skips when LLM returns {:skip, :no_llm}" do
       # MockLLMNoLLM.expand_query returns {:skip, :no_llm}
       # hybrid_recall should still work with just the original query

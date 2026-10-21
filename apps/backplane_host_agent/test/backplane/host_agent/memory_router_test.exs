@@ -141,11 +141,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
   end
 
   describe "POST /memory/:agent_id/call/:method" do
-    test "routes every canonical overlap direct call through a connected hub" do
+    test "routes canonical facet direct calls through a connected hub" do
       :persistent_term.put({StubHubProxy, :owner}, self())
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
 
-      for name <- MemoryToolContract.canonical_overlap_names() do
+      for name <- ~w(memory::facet_query memory::facet_tag) do
         method = String.replace_prefix(name, "memory::", "")
 
         conn =
@@ -589,11 +589,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                |> Jason.decode!()
     end
 
-    test "routes every canonical overlap MCP call through a connected hub" do
+    test "routes canonical facet MCP calls through a connected hub" do
       :persistent_term.put({StubHubProxy, :owner}, self())
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
 
-      for name <- MemoryToolContract.canonical_overlap_names() do
+      for name <- ~w(memory::facet_query memory::facet_tag) do
         body =
           Jason.encode!(%{
             "jsonrpc" => "2.0",
@@ -752,7 +752,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
           "jsonrpc" => "2.0",
           "id" => 7,
           "method" => "tools/call",
-          "params" => %{"name" => "memory::semantic_search", "arguments" => %{}}
+          "params" => %{"name" => "memory::recall_explain", "arguments" => %{}}
         })
 
       conn =
@@ -765,11 +765,59 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       decoded = Jason.decode!(conn.resp_body)
       assert decoded["result"]["isError"] == false
 
-      assert %{"echo" => "memory::semantic_search", "arguments" => %{}} =
+      assert %{"echo" => "memory::recall_explain", "arguments" => %{}} =
                decoded["result"]["content"] |> hd() |> Map.fetch!("text") |> Jason.decode!()
 
-      assert_received {:call_tool, "memory::semantic_search", %{}}
+      assert_received {:call_tool, "memory::recall_explain", %{}}
       _ = :persistent_term.erase({StubHubProxy, :owner})
+    end
+
+    @tag :unknown_memory_parity
+    test "unknown memory methods match direct errors without a hub call regardless of local registration" do
+      :persistent_term.put({StubHubProxy, :owner}, self())
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      for services <- [[], [Backplane.HostAgent.Services.Memory]] do
+        Application.put_env(:backplane_host_agent, :local_services, services)
+        method = "negative_parity_unknown_operation"
+
+        direct =
+          :post
+          |> conn("/memory/agt_42/call/#{method}", Jason.encode!(%{}))
+          |> put_req_header("content-type", "application/json")
+          |> call_router()
+
+        assert direct.status == 404
+        assert %{"ok" => false, "error" => message} = Jason.decode!(direct.resp_body)
+        assert message == "unknown method: #{method}"
+
+        body =
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => 77,
+            "method" => "tools/call",
+            "params" => %{"name" => "memory::" <> method, "arguments" => %{}}
+          })
+
+        mcp =
+          :post
+          |> conn("/memory/agt_42/mcp", body)
+          |> put_req_header("content-type", "application/json")
+          |> call_router()
+
+        assert mcp.status == 200
+
+        assert %{
+                 "jsonrpc" => "2.0",
+                 "id" => 77,
+                 "result" => %{
+                   "isError" => true,
+                   "content" => [%{"type" => "text", "text" => ^message}]
+                 }
+               } = Jason.decode!(mcp.resp_body)
+
+        refute_received {:call_tool, _, _}
+      end
     end
 
     test "proxies unknown service tools through the hub" do

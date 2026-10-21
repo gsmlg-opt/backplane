@@ -1,6 +1,21 @@
 defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
+  setup do
+    keys = ~w(memory.pipeline.enabled memory.procedure_extraction_v2.enabled)
+    previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
+
+    on_exit(fn ->
+      Enum.each(previous, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
+    end)
+
+    :ok
+  end
+
   alias Backplane.Memory.Memories
   alias Backplane.Memory.Memories.EvidenceInheritance
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
@@ -144,6 +159,91 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
     assert counts ==
              {repo().aggregate(Memory, :count), repo().aggregate(RememberRequest, :count),
               repo().aggregate(Evidence, :count)}
+  end
+
+  test "forgotten procedure stays deleted when input revision changes within inherited subjects" do
+    [{:ok, semantic} | _] =
+      insert_partition("governed",
+        namespace: "team:governed",
+        client_id: "client",
+        project: "project"
+      )
+
+    Process.put(:procedures, ["governed procedure"])
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
+    original = repo().get_by!(Memory, content: "governed procedure")
+
+    partition =
+      canonical_partition("governed-host",
+        scope: "shared-scope",
+        namespace: "team:governed",
+        client_id: "client"
+      )
+
+    assert :ok = Memories.tombstone(original.id, partition)
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
+    evidence_count = repo().aggregate(Evidence, :count)
+    request_count = repo().aggregate(RememberRequest, :count)
+
+    repo().update_all(from(m in Memory, where: m.id == ^semantic.id),
+      set: [
+        content: "revised same-subject semantic",
+        content_hash: :crypto.hash(:sha256, "revised same-subject semantic")
+      ]
+    )
+
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
+    assert repo().get!(Memory, original.id).lifecycle_state == "tombstoned"
+
+    refute repo().exists?(
+             from(m in Memory, where: m.content == "governed procedure" and is_nil(m.deleted_at))
+           )
+
+    assert repo().aggregate(RememberRequest, :count) == request_count + 1
+    assert repo().aggregate(Evidence, :count) == evidence_count
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
+    assert repo().aggregate(RememberRequest, :count) == request_count + 1
+
+    insert_projected_session!("independent-support", "governed-host", "shared-scope",
+      namespace: "team:governed",
+      client_id: "client"
+    )
+
+    assert {:ok, _} =
+             Memories.remember(
+               "independent supporting semantic",
+               canonical_memory_opts("governed-host",
+                 agent_id: "agent",
+                 scope: "shared-scope",
+                 namespace: "team:governed",
+                 client_id: "client",
+                 metadata: %{"project" => "project"},
+                 evidence: [
+                   %{
+                     source_session_id: "independent-support",
+                     host_id: "governed-host",
+                     evidence_kind: "supports",
+                     support_score: 1.0
+                   }
+                 ]
+               )
+             )
+
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: %{}})
+
+    replacement =
+      repo().one!(
+        from(m in Memory, where: m.content == "governed procedure" and is_nil(m.deleted_at))
+      )
+
+    refute replacement.id == original.id
+
+    assert Enum.any?(
+             Memories.list_evidence(replacement.id),
+             &(&1.source_type == "session" and &1.source_id == "governed-host:independent-support")
+           )
+
+    assert repo().get!(Memory, original.id).lifecycle_state == "tombstoned"
   end
 
   test "bounds inherited root evidence instead of silently truncating it" do

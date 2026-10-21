@@ -90,7 +90,11 @@ defmodule Backplane.Admin.MemoryOverviewLive do
       |> Map.drop(~w(memory_space_id host_id client_id scope namespace))
       |> Map.reject(fn {_key, value} -> value == "" end)
 
-    result = Repair.run(args, partition, "admin:memory_operations")
+    result =
+      with {:ok, args} <- parse_repair_job_ids(args) do
+        Repair.run(args, partition, "admin:memory_operations")
+      end
+
     {:noreply, assign(socket, repair_result: result, regions: Operations.overview())}
   end
 
@@ -145,15 +149,15 @@ defmodule Backplane.Admin.MemoryOverviewLive do
             </.dm_card>
           </div>
 
-          <section class="mt-4" aria-label="Later stages">
-            <h2 class="mb-2 font-semibold">Later stages</h2>
+          <section class="mt-4" aria-label="Processing stages">
+            <h2 class="mb-2 font-semibold">Processing stages</h2>
             <div class="flex flex-wrap gap-2">
               <.dm_badge
                 :for={stage <- rollout.later}
-                variant="neutral"
+                variant={if stage.effective, do: "success", else: "neutral"}
                 size="sm"
               >
-                {stage.label}: Unavailable
+                {stage.label}: {stage_status(stage)}
               </.dm_badge>
             </div>
           </section>
@@ -242,6 +246,10 @@ defmodule Backplane.Admin.MemoryOverviewLive do
                 </tr>
               </tbody>
             </table>
+          </div>
+          <div :for={entry <- agents} id={"memory-host-memory-#{entry.host.id}"} class="mt-4">
+            <h3 class="mb-2 font-medium">{entry.host.name}</h3>
+            <Backplane.Admin.HostAgentsLive.memory_health entry={entry} />
           </div>
         </.memory_region>
 
@@ -392,6 +400,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
               <.dm_select id="repair-kind" name="repair[kind]" label="Operation" value="failed_projections" options={Enum.map(Repair.kinds(), &{&1, humanize(&1)})} />
               <.dm_input id="repair-idempotency-key" name="repair[idempotency_key]" label="Idempotency key" value="" required />
               <.dm_input id="repair-target" name="repair[target_id]" label="Target ID" value="" />
+              <.dm_input id="repair-job-ids" name="repair[job_ids]" label="Job IDs (dead letters, comma-separated)" value="" />
               <.dm_input id="repair-session" name="repair[session_id]" label="Session ID" value="" />
               <.dm_input id="repair-project" name="repair[project]" label="Project" value="" />
               <.dm_select id="repair-resolution" name="repair[resolution]" label="Relation resolution" value="" options={[{"", "Not applicable"}, {"confirmed", "Confirmed"}, {"rejected", "Rejected"}]} />
@@ -534,6 +543,11 @@ defmodule Backplane.Admin.MemoryOverviewLive do
     """
   end
 
+  defp stage_status(%{available: false}), do: "Unavailable"
+  defp stage_status(%{effective: true}), do: "Enabled"
+  defp stage_status(%{blocked: true}), do: "Blocked"
+  defp stage_status(_stage), do: "Disabled"
+
   defp volume_height(count, volume) do
     max_count =
       volume
@@ -551,7 +565,8 @@ defmodule Backplane.Admin.MemoryOverviewLive do
       page
       | entries:
           Enum.filter(page.entries, fn entry ->
-            entry.status == :online or is_map(get_in(entry, [:runtime, :capture]))
+            entry.status == :online or is_map(get_in(entry, [:runtime, :capture])) or
+              is_map(get_in(entry, [:runtime, :memory])) or is_map(entry.config)
           end)
     }
   end
@@ -697,6 +712,19 @@ defmodule Backplane.Admin.MemoryOverviewLive do
     |> Enum.sort_by(fn {key, _count} -> key end)
     |> Enum.map_join(", ", fn {key, count} -> "#{key}: #{count}" end)
   end
+
+  defp parse_repair_job_ids(%{"job_ids" => value} = args) when is_binary(value) do
+    parts = value |> String.split(",") |> Enum.map(&String.trim/1)
+
+    if length(parts) in 1..100 and Enum.all?(parts, &Regex.match?(~r/\A[0-9]{1,19}\z/, &1)) do
+      {:ok, Map.put(args, "job_ids", Enum.map(parts, &String.to_integer/1))}
+    else
+      {:error, :invalid_arguments}
+    end
+  end
+
+  defp parse_repair_job_ids(%{"job_ids" => _value}), do: {:error, :invalid_arguments}
+  defp parse_repair_job_ids(args), do: {:ok, args}
 
   defp repair_result_message({:ok, result}) do
     "#{humanize(result.kind)}: #{result.status}; affected #{result.affected}"

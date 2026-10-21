@@ -329,7 +329,7 @@ defmodule Backplane.Skills.Hosts do
   end
 
   defp revoke_memory_space(%Host{} = host) do
-    case MemorySpaces.revoke_host(host.id) do
+    case MemorySpaces.revoke_host(host.id, "host_deleted") do
       :ok -> :ok
       {:error, reason} -> {:error, memory_space_changeset(host, %{}, reason)}
     end

@@ -21,5 +21,7 @@ defmodule Backplane.Memory.EdgeSync.Delivery do
     field(:status, :string)
     field(:issued_at, :utc_datetime_usec)
     field(:acknowledged_at, :utc_datetime_usec)
+    field(:access_id, :binary_id)
+    field(:authority_version, :integer)
   end
 end

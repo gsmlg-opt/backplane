@@ -33,6 +33,8 @@ defmodule Backplane.HostAgent.Memory.RecallCache do
   @spec stats(GenServer.server()) :: %{entries: non_neg_integer(), bytes: non_neg_integer()}
   def stats(server), do: GenServer.call(server, :stats)
 
+  def clear(server \\ __MODULE__), do: GenServer.call(server, :clear)
+
   @impl true
   def init(opts) do
     {:ok,
@@ -92,6 +94,8 @@ defmodule Backplane.HostAgent.Memory.RecallCache do
         {:reply, :miss, state}
     end
   end
+
+  def handle_call(:clear, _from, state), do: {:reply, :ok, %{state | entries: %{}, bytes: 0}}
 
   def handle_call(:stats, _from, state) do
     state = prune_expired(state, now_ms())

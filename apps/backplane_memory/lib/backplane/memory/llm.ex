@@ -15,7 +15,11 @@ defmodule Backplane.Memory.LLM do
   @max_rerank_candidates 500
   @max_rerank_prompt_bytes 40_000
   @max_crystal_prompt_bytes 80_000
+  @graph_types ~w(File Function Module Library Concept Decision Bug Pattern Person)
+  @graph_relations ~w(uses imports calls depends_on tests documents caused_by supersedes relates_to)
   @capture_guard_key {__MODULE__, :capture_suppressed}
+
+  require Logger
 
   alias Backplane.Memory.Privacy.Filter
 
@@ -36,7 +40,12 @@ defmodule Backplane.Memory.LLM do
     prompt =
       "Return only one JSON object with exactly title, narrative, key_outcomes, decisions, " <>
         "files_affected, unresolved_items. title and narrative are strings; all other fields " <>
-        "are arrays of strings. Do not include secrets or raw private content.\nSummary: " <>
+        "are arrays of strings. Report verified outcomes and explicitly accepted decisions only. " <>
+        "Preserve the evidence order when distinguishing historical errors from later verified recovery. " <>
+        "Only actual outstanding follow-ups belong in unresolved_items; a historical error alone " <>
+        "does not establish that it remains unresolved. Use empty arrays when there is no supporting " <>
+        "evidence; do not invent decisions or copy fallback claims without support. " <>
+        "Do not include secrets or raw private content.\nSummary: " <>
         Jason.encode!(safe_summary) <> "\nFallback: " <> Jason.encode!(fallback)
 
     if byte_size(prompt) <= @max_crystal_prompt_bytes do
@@ -97,7 +106,10 @@ defmodule Backplane.Memory.LLM do
       ] ++ Keyword.get(options, :headers, [])
 
     options = Keyword.put(options, :headers, headers)
-    with_capture_suppressed(fn -> Req.post("#{url}/v1/chat/completions", options) end)
+
+    with {:ok, options} <- Backplane.Memory.ProxyAuth.authorize(options) do
+      with_capture_suppressed(fn -> Req.post("#{url}/v1/chat/completions", options) end)
+    end
   end
 
   defp parse_crystal(text) when byte_size(text) <= 100_000 do
@@ -122,14 +134,211 @@ defmodule Backplane.Memory.LLM do
   def extract_graph(observations) when is_list(observations) do
     case model() do
       nil -> {:skip, :no_llm}
-      _model -> do_extract_graph(observations)
+      model -> do_extract_graph(observations, model)
     end
   end
 
-  defp do_extract_graph(_observations) do
-    # Stub: real impl sends observations to LLM proxy and parses response
-    {:ok, %{nodes: [], edges: []}}
+  defp do_extract_graph(observations, model) do
+    if length(observations) in 1..50 and Enum.all?(observations, &is_binary/1) do
+      sources = Enum.map(observations, &bound_string(&1, 2_000))
+
+      prompt =
+        "Extract only entities and relations supported by these source observations. " <>
+          "Return one JSON object with exactly nodes and edges. nodes contains 1-50 objects " <>
+          "with exactly key (unique reference), type, name. Allowed types: " <>
+          Enum.join(@graph_types, ", ") <>
+          ". edges contains at most 100 objects with exactly source, target, relation. " <>
+          "source and target must reference node keys. Allowed relations: " <>
+          Enum.join(@graph_relations, ", ") <>
+          ". Do not invent facts or include private content.\nSources: " <> Jason.encode!(sources)
+
+      with {:ok, text} <- structured_completion("graph", prompt, model) do
+        parse_graph(text)
+      end
+    else
+      {:error, :invalid_graph_input}
+    end
   end
+
+  defp parse_graph(text) when byte_size(text) <= 100_000 do
+    with {:ok, graph} <- Jason.decode(text),
+         :ok <- validate_graph(graph) do
+      {:ok,
+       %{
+         nodes: Enum.map(graph["nodes"], &%{key: &1["key"], type: &1["type"], name: &1["name"]}),
+         edges:
+           graph["edges"]
+           |> Enum.map(&%{source: &1["source"], target: &1["target"], relation: &1["relation"]})
+           |> Enum.uniq()
+       }}
+    else
+      {:error, reason} ->
+        classification = if is_atom(reason), do: reason, else: :invalid_json
+        Logger.warning("Memory graph response rejected: #{classification}")
+        {:error, :invalid_graph_response}
+    end
+  end
+
+  defp parse_graph(_text), do: {:error, :graph_response_too_large}
+
+  defp validate_graph(%{"nodes" => nodes, "edges" => edges} = graph)
+       when map_size(graph) == 2 and is_list(nodes) and is_list(edges) do
+    cond do
+      length(nodes) not in 1..50 -> {:error, :nodes_count}
+      length(edges) > 100 -> {:error, :edges_count}
+      not Enum.all?(nodes, &exact_graph_keys?(&1, ~w(key type name))) -> {:error, :node_fields}
+      not Enum.all?(nodes, &valid_text?(&1["key"], 100)) -> {:error, :node_key}
+      not Enum.all?(nodes, &valid_text?(&1["name"], 200)) -> {:error, :node_name}
+      not Enum.all?(nodes, &(&1["type"] in @graph_types)) -> {:error, :node_type}
+      true -> validate_graph_edges(nodes, edges)
+    end
+  end
+
+  defp validate_graph(_graph), do: {:error, :graph_fields}
+
+  defp validate_graph_edges(nodes, edges) do
+    keys = Enum.map(nodes, & &1["key"])
+
+    cond do
+      length(Enum.uniq(keys)) != length(keys) ->
+        {:error, :node_key_duplicate}
+
+      not Enum.all?(edges, &exact_graph_keys?(&1, ~w(source target relation))) ->
+        {:error, :edge_fields}
+
+      not Enum.all?(edges, &(&1["source"] in keys)) ->
+        {:error, :edge_source_reference}
+
+      not Enum.all?(edges, &(&1["target"] in keys)) ->
+        {:error, :edge_target_reference}
+
+      not Enum.all?(edges, &(&1["relation"] in @graph_relations)) ->
+        {:error, :edge_relation}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp exact_graph_keys?(value, keys) when is_map(value),
+    do: map_size(value) == length(keys) and Enum.all?(keys, &Map.has_key?(value, &1))
+
+  defp exact_graph_keys?(_value, _keys), do: false
+
+  defp valid_text?(value, maximum) when is_binary(value),
+    do: String.valid?(value) and String.trim(value) != "" and String.length(value) <= maximum
+
+  defp valid_text?(_value, _maximum), do: false
+
+  defp structured_completion(origin, prompt, model) when byte_size(prompt) <= 80_000 do
+    options =
+      [
+        json: %{
+          model: model,
+          messages: [%{role: "user", content: prompt}],
+          response_format: structured_response_format(origin)
+        },
+        receive_timeout: 10_000,
+        retry: false
+      ]
+      |> Keyword.merge(Application.get_env(:backplane_memory, :llm_req_options, []))
+
+    case provider_request(origin, options) do
+      {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}} | _]}}}
+      when is_binary(text) ->
+        {:ok, text}
+
+      {:ok, %{status: 200}} when origin == "relation" ->
+        {:error, :invalid_classifier_response}
+
+      {:ok, %{status: 200}} ->
+        {:error, :invalid_llm_response}
+
+      {:ok, %{status: status}} ->
+        {:error, {:llm_status, status}}
+
+      {:error, reason} when origin == "relation" ->
+        {:error, reason}
+
+      {:error, %Req.TransportError{reason: reason}} ->
+        {:error, {:llm_transport, reason}}
+
+      {:error, :proxy_credential_unavailable} = error ->
+        error
+
+      {:error, _reason} ->
+        {:error, :llm_request_failed}
+    end
+  end
+
+  defp structured_completion(_origin, _prompt, _model), do: {:error, :llm_payload_too_large}
+
+  defp structured_response_format("graph") do
+    %{
+      type: "json_schema",
+      json_schema: %{
+        name: "memory_graph",
+        strict: true,
+        schema: %{
+          type: "object",
+          required: ["nodes", "edges"],
+          additionalProperties: false,
+          properties: %{
+            nodes: %{
+              type: "array",
+              items: %{
+                type: "object",
+                required: ["key", "type", "name"],
+                additionalProperties: false,
+                properties: %{
+                  key: %{type: "string"},
+                  type: %{type: "string", enum: @graph_types},
+                  name: %{type: "string"}
+                }
+              }
+            },
+            edges: %{
+              type: "array",
+              items: %{
+                type: "object",
+                required: ["source", "target", "relation"],
+                additionalProperties: false,
+                properties: %{
+                  source: %{type: "string"},
+                  target: %{type: "string"},
+                  relation: %{type: "string", enum: @graph_relations}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  end
+
+  defp structured_response_format("relation") do
+    %{
+      type: "json_schema",
+      json_schema: %{
+        name: "memory_relation",
+        strict: true,
+        schema: %{
+          type: "object",
+          required: ["classification", "confidence"],
+          additionalProperties: false,
+          properties: %{
+            classification: %{
+              type: "string",
+              enum: ~w(duplicate extension temporal_replacement contradiction unrelated)
+            },
+            confidence: %{type: "number", minimum: 0, maximum: 1}
+          }
+        }
+      }
+    }
+  end
+
+  defp structured_response_format(_origin), do: %{type: "json_object"}
 
   @doc """
   Generate 3–5 alternative phrasings of the query for search expansion.
@@ -138,15 +347,39 @@ defmodule Backplane.Memory.LLM do
   def expand_query(query) when is_binary(query) do
     case model() do
       nil -> {:skip, :no_llm}
-      _model -> do_expand_query(query)
+      model -> do_expand_query(query, model)
     end
   end
 
-  defp do_expand_query(query) do
-    # Stub: real impl calls LLM proxy with expansion prompt
-    # Returns 3–5 alternative phrasings including the original
-    {:ok, [query]}
+  defp do_expand_query(query, model) do
+    if valid_text?(query, 2_000) do
+      prompt =
+        "Return only one JSON object with exactly queries, an array of 2-4 distinct " <>
+          "alternative search phrasings. Preserve the query meaning without inventing facts. " <>
+          "Each phrasing must be a nonempty string of at most 2000 characters.\nQuery: " <>
+          Jason.encode!(bound_string(query, 2_000))
+
+      with {:ok, text} <- structured_completion("query-expansion", prompt, model) do
+        parse_query_expansion(text, query)
+      end
+    else
+      {:error, :invalid_query_expansion_input}
+    end
   end
+
+  defp parse_query_expansion(text, query) when byte_size(text) <= 100_000 do
+    with {:ok, %{"queries" => queries} = result} <- Jason.decode(text),
+         true <- map_size(result) == 1 and is_list(queries),
+         true <- length(queries) in 2..5 and Enum.all?(queries, &valid_text?(&1, 2_000)),
+         queries = [query | queries] |> Enum.map(&String.trim/1) |> Enum.uniq() |> Enum.take(5),
+         true <- length(queries) >= 3 do
+      {:ok, queries}
+    else
+      _ -> {:error, :invalid_query_expansion_response}
+    end
+  end
+
+  defp parse_query_expansion(_text, _query), do: {:error, :query_expansion_response_too_large}
 
   @doc """
   Score candidates for relevance to query. Returns reranked list.
@@ -247,29 +480,8 @@ defmodule Backplane.Memory.LLM do
     Target: #{bounded_json(target)}
     """
 
-    request_options =
-      [
-        json: %{
-          model: configured_model,
-          messages: [%{role: "user", content: prompt}]
-        },
-        receive_timeout: 10_000
-      ]
-      |> Keyword.merge(Application.get_env(:backplane_memory, :llm_req_options, []))
-
-    case provider_request("relation", request_options) do
-      {:ok, %{status: 200, body: %{"choices" => [%{"message" => %{"content" => text}} | _]}}}
-      when is_binary(text) ->
-        parse_relation_classification(text)
-
-      {:ok, %{status: 200}} ->
-        {:error, :invalid_classifier_response}
-
-      {:ok, %{status: status}} ->
-        {:error, {:llm_status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, text} <- structured_completion("relation", prompt, configured_model) do
+      parse_relation_classification(text)
     end
   end
 
@@ -421,5 +633,16 @@ defmodule Backplane.Memory.LLM do
     end
   end
 
-  defp model, do: Backplane.Settings.get("memory.llm_model")
+  defp model do
+    case Backplane.Settings.get("memory.llm_model") do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> nil
+          model -> model
+        end
+
+      _ ->
+        nil
+    end
+  end
 end

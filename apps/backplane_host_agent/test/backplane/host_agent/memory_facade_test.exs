@@ -1,5 +1,5 @@
 defmodule Backplane.HostAgent.MemoryFacadeTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.MemoryFacade
 
@@ -269,6 +269,37 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
 
   defmodule RemoteBareReply do
     def call(_method, _args, _opts), do: :ok
+  end
+
+  @tag :tmp_dir
+  test "cold command dispatch does not depend on Memory module atom loading", %{tmp_dir: dir} do
+    script = """
+    {:ok, _} = Application.ensure_all_started(:ex_turso)
+    {:ok, store} = Backplane.HostAgent.Memory.Store.start_link(
+      database: System.fetch_env!("BACKPLANE_COLD_COMMAND_DB"), pool_size: 1)
+    :ok = Backplane.HostAgent.Memory.Migrator.migrate(store)
+    false = :code.is_loaded(Backplane.HostAgent.Memory)
+    context = %{agent_id: "cold-test", store: store, config: %{bound_scope: "proj_local"}}
+    {:ok, result} = Backplane.HostAgent.MemoryFacade.call(
+      "remember", %{"content" => "cold fixture", "type" => "semantic"}, context)
+    "provisional" = result["authority"]
+    {:ok, forgotten} = Backplane.HostAgent.MemoryFacade.call(
+      "forget", %{"id" => result["id"]}, context)
+    "provisional" = forgotten["authority"]
+    GenServer.stop(store)
+    IO.puts("cold command dispatch ok")
+    """
+
+    paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
+
+    {output, status} =
+      System.cmd(System.find_executable("elixir"), paths ++ ["-e", script],
+        env: [{"BACKPLANE_COLD_COMMAND_DB", Path.join(dir, "commands.db")}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+    assert output =~ "cold command dispatch ok"
   end
 
   test "healthy recall preserves canonical metadata and adds the hits alias" do
@@ -608,6 +639,53 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     assert local_opts[:config] == config
   end
 
+  @tag :authoritative_connection
+  test "known authentication denial prohibits provisional commands until a fresh authenticated connection" do
+    alias Backplane.HostAgent.MemoryProxy
+    MemoryProxy.set_channel(nil)
+    on_exit(fn -> MemoryProxy.set_channel(nil) end)
+    MemoryProxy.set_connection_owner(self())
+    MemoryProxy.set_connection_error(:unauthorized, self())
+    context = %{agent_id: "codex", local_adapter: LocalCommands}
+
+    for {method, args} <- [
+          {"remember", %{"content" => "must not persist"}},
+          {"forget", %{"id" => "sentinel"}}
+        ] do
+      assert {:error, :unauthorized} = MemoryFacade.call(method, args, context)
+      refute_received {:local_call, _, _, _}
+    end
+
+    MemoryProxy.set_connection_error(:econnrefused, self())
+    assert {:error, :unauthorized} = MemoryFacade.call("remember", %{}, context)
+    refute_received {:local_call, _, _, _}
+    MemoryProxy.set_connection(%{channel: self()}, %{})
+    assert {:ok, %{"authority" => "provisional"}} = MemoryFacade.call("remember", %{}, context)
+    assert_received {:local_call, "remember", _, _}
+
+    assert {:ok, %{"authority" => "provisional"}} =
+             MemoryFacade.call("forget", %{"id" => "sentinel"}, context)
+  end
+
+  @tag :authoritative_connection
+  test "a transport-only outage continues accepting provisional commands" do
+    alias Backplane.HostAgent.MemoryProxy
+    MemoryProxy.set_channel(nil)
+    on_exit(fn -> MemoryProxy.set_channel(nil) end)
+    MemoryProxy.set_connection_owner(self())
+    MemoryProxy.set_connection_error(:econnrefused, self())
+
+    for method <- ["remember", "forget"] do
+      assert {:ok, %{"authority" => "provisional"}} =
+               MemoryFacade.call(method, %{"id" => "local"}, %{
+                 agent_id: "codex",
+                 local_adapter: LocalCommands
+               })
+
+      assert_received {:local_call, ^method, _, _}
+    end
+  end
+
   test "remember uses the local transaction and marks the result pending canonical acknowledgement" do
     store = make_ref()
     config = %{default_scope: "project"}
@@ -875,6 +953,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
       {:socket, :enetunreach},
       {:socket_error, :nxdomain},
       {:reconnect_failed, :hub_down},
+      {:reconnect_failed, :socket_timeout},
       {:reconnect_failed, {:transport_error, :econnrefused}},
       {:reconnect_lock_failed, {:timeout, :global_lock}},
       {:socket, {:socket_closed, :econnreset}},
@@ -909,6 +988,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     for reason <- [
           :not_connected,
           :timeout,
+          :socket_timeout,
           :econnrefused,
           :econnreset,
           :enetdown,

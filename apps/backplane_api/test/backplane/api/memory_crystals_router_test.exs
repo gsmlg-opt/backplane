@@ -8,14 +8,25 @@ defmodule Backplane.Api.MemoryCrystalsRouterTest do
   alias Backplane.Skills.Host
 
   setup do
-    previous_tools = :ets.lookup(:backplane_settings, "memory.tools")
+    settings = [
+      {"memory.tools", "all"},
+      {"memory.llm_model", "test-model"},
+      {"memory.crystals_enabled", true},
+      {"memory.crystal_action_enabled", true}
+    ]
+
+    previous_settings =
+      Map.new(settings, fn {key, _} -> {key, :ets.lookup(:backplane_settings, key)} end)
+
     previous_llm = Application.get_env(:backplane_memory, :llm_client)
-    :ets.insert(:backplane_settings, {"memory.tools", "all"})
+    :ets.insert(:backplane_settings, settings)
     Application.put_env(:backplane_memory, :llm_client, __MODULE__)
 
     on_exit(fn ->
-      :ets.delete(:backplane_settings, "memory.tools")
-      if previous_tools != [], do: :ets.insert(:backplane_settings, previous_tools)
+      Enum.each(previous_settings, fn {key, rows} ->
+        :ets.delete(:backplane_settings, key)
+        if rows != [], do: :ets.insert(:backplane_settings, rows)
+      end)
 
       if previous_llm,
         do: Application.put_env(:backplane_memory, :llm_client, previous_llm),

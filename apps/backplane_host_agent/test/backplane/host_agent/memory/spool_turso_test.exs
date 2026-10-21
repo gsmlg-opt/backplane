@@ -386,6 +386,23 @@ defmodule Backplane.HostAgent.Memory.SpoolTursoTest do
     assert [%{"event_id" => "e2"}, %{"event_id" => "e3"}] = Spool.next_batch(spool, 10, 100_000)
   end
 
+  test "event status exposes the persisted acknowledgement without envelope content", %{
+    tmp_dir: dir
+  } do
+    spool = start_spool!(Path.join(dir, "diagnostic-ack.db"))
+    {:ok, _} = Spool.append(spool, attrs("diagnostic", "diagnostic", "session"))
+
+    assert {:ok, %{state: :pending, attempts: 0, acknowledged: false}} =
+             Spool.event_status(spool, "diagnostic")
+
+    assert :ok = Spool.acknowledge(spool, ["diagnostic"])
+
+    assert {:ok, %{state: :acknowledged, acknowledged: true} = status} =
+             Spool.event_status(spool, "diagnostic")
+
+    refute Map.has_key?(status, :envelope_json)
+  end
+
   test "tracks retryable and permanent rejection and queue stats", %{tmp_dir: dir} do
     spool = start_spool!(Path.join(dir, "reject.db"))
     {:ok, _} = Spool.append(spool, attrs("e1", "i1", "s"))

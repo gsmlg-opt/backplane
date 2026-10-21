@@ -100,11 +100,9 @@ defmodule Mix.Tasks.Agent.Run do
   end
 
   defp connect_and_run(config) do
-    {:ok, %{connection: %{channel: channel}}} = bootstrap(config)
-
     {:ok, worker} =
       Worker.start_link(
-        channel: channel,
+        connect?: true,
         config: config,
         name: Backplane.HostAgent.Worker
       )

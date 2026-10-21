@@ -1,6 +1,21 @@
 defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
+  setup do
+    keys = ~w(memory.pipeline.enabled memory.session_summary_v2.enabled)
+    previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
+
+    on_exit(fn ->
+      Enum.each(previous, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
+    end)
+
+    :ok
+  end
+
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Ingest
@@ -235,6 +250,34 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
              from(link in SourceEvent, where: link.summary_id == ^summary.id),
              :count
            ) == 4
+  end
+
+  @tag :stage_quality
+  test "failure recovery and outstanding follow-up remain in canonical source order" do
+    host = "host-summary-order"
+    session = unique("ordered")
+
+    for {sequence, type, content, importance} <- [
+          {1, "agent.session.started", "start", 1},
+          {2, "agent.tool.failed", "historical_missing_ack", 9},
+          {3, "agent.tool.completed", "verified_ack_recovery", 2},
+          {4, "agent.prompt.submitted", "pending_rotation_owner", 10},
+          {5, "agent.session.ended", "done", 1}
+        ] do
+      ingest!(
+        event(host, session, "p", sequence, type, content)
+        |> Map.put("importance", importance)
+      )
+    end
+
+    assert {:ok, input} = Rebuild.session(host, session)
+    assert :ok = perform(host, session, input.input_revision)
+    content = current_summary(host, session).content
+    assert {failed, _} = :binary.match(content, "historical_missing_ack")
+    assert {verified, _} = :binary.match(content, "verified_ack_recovery")
+    assert {pending, _} = :binary.match(content, "pending_rotation_owner")
+    assert failed < verified
+    assert verified < pending
   end
 
   test "legacy session-only jobs remain explicitly compatible" do

@@ -15,6 +15,12 @@ defmodule Backplane.Memory.Qualification.Runner do
   @max_batch_size 100
   @default_ingest_concurrency 20
   @sandbox_ingest_concurrency 5
+  @consolidation_policy ~w(memory.pipeline.enabled memory.session_summary_v2.enabled)
+  @ingest_statuses ~w(accepted duplicate rejected failed)
+  @ingest_reasons ~w(database_unavailable transaction_rolled_back timeout disconnected storage_error
+    invalid_partition partition_mismatch unsupported_schema invalid_event identity_conflict
+    stream_closed stream_metadata_conflict invalid_attributes invalid_attributes_type invalid_event_type
+    missing_identity invalid_payload invalid_importance invalid_time invalid_uuid invalid_utf8 conflicting_keys)
 
   def run(opts \\ []) do
     run_id = Keyword.get(opts, :run_id, "m18-#{System.unique_integer([:positive])}")
@@ -95,7 +101,7 @@ defmodule Backplane.Memory.Qualification.Runner do
 
     with :ok <- validate_count(event_count),
          :ok <- validate_batch_size(batch_size),
-         :ok <- maybe_warm_ingest(run_id, event_count, batch_size, opts) do
+         {:ok, warmup} <- maybe_warm_ingest(run_id, event_count, batch_size, opts) do
       host_id = "m18-ingest-#{run_id}"
       auth = auth_context(host_id)
 
@@ -119,6 +125,8 @@ defmodule Backplane.Memory.Qualification.Runner do
         |> Keyword.get(:max_concurrency, @default_ingest_concurrency)
         |> min(length(batches))
 
+      ingest_batch = Keyword.get(opts, :ingest_batch, &Ingest.ingest_batch/2)
+
       results =
         with_projection_repair(fn ->
           Styx.Testing.with_testing_mode(:manual, fn ->
@@ -126,7 +134,7 @@ defmodule Backplane.Memory.Qualification.Runner do
             |> Task.async_stream(
               fn batch ->
                 Styx.Testing.with_testing_mode(:manual, fn ->
-                  Ingest.ingest_batch(auth, %{
+                  ingest_batch.(auth, %{
                     "batch_id" => Ecto.UUID.generate(),
                     "host_id" => host_id,
                     "events" => batch
@@ -171,8 +179,15 @@ defmodule Backplane.Memory.Qualification.Runner do
 
       {:ok,
        %{
+         requested: event_count,
+         result_count: length(results),
+         result_counts: ingest_result_counts(results),
          accepted: accepted,
          persisted: persisted,
+         complete:
+           accepted == event_count and length(results) == event_count and
+             persisted == event_count and persisted == distinct_effects,
+         warmup: warmup,
          duplicate_effects: persisted - distinct_effects,
          events_per_second: accepted / elapsed_seconds,
          elapsed_ms: elapsed_seconds * 1_000,
@@ -201,15 +216,32 @@ defmodule Backplane.Memory.Qualification.Runner do
           event_count: warmup_event_count,
           batch_size: batch_size,
           warmup: false
-        ] ++ Keyword.take(opts, [:max_concurrency])
+        ] ++ Keyword.take(opts, [:max_concurrency, :ingest_batch])
 
       case measure_ingest(warmup_opts) do
-        {:ok, _measurement} -> :ok
+        {:ok, measurement} -> {:ok, Map.delete(measurement, :warmup)}
         {:error, reason} -> {:error, {:ingest_warmup_failed, reason}}
       end
     else
-      :ok
+      {:ok, nil}
     end
+  end
+
+  defp ingest_result_counts(results) do
+    results
+    |> Enum.frequencies_by(fn result ->
+      status = result["status"]
+      reason = result["reason"]
+      retryable = result["retryable"]
+
+      {if(status in @ingest_statuses, do: status, else: "other"),
+       if(is_nil(reason) or reason in @ingest_reasons, do: reason, else: "other"),
+       if(retryable in [nil, false, true], do: retryable, else: nil)}
+    end)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {{status, reason, retryable}, count} ->
+      %{status: status, reason: reason, retryable: retryable, count: count}
+    end)
   end
 
   def measure_projection(opts \\ []) do
@@ -311,24 +343,28 @@ defmodule Backplane.Memory.Qualification.Runner do
         })
 
       if Enum.all?(results, &(&1["status"] == "accepted")) do
-        Enum.each(1..session_count, fn session_number ->
-          session_id = "#{run_id}-closed-#{session_number}"
-          {:ok, projection} = Rebuild.session(host_id, session_id)
+        perform_summary = Keyword.get(opts, :perform_summary, &SummaryWorker.perform/1)
 
-          :ok =
-            SummaryWorker.perform(%Styx.Job{
-              args: %{
-                "memory_space_id" => projection.memory_space_id,
-                "host_id" => host_id,
-                "client_id" => projection.client_id,
-                "source_client_id" => projection.source_client_id,
-                "scope" => projection.scope,
-                "namespace" => projection.namespace,
-                "session_id" => session_id,
-                "processing_version" => "summary-v1",
-                "input_revision" => projection.input_revision
-              }
-            })
+        with_consolidation_policy(fn ->
+          Enum.each(1..session_count, fn session_number ->
+            session_id = "#{run_id}-closed-#{session_number}"
+            {:ok, projection} = Rebuild.session(host_id, session_id)
+
+            :ok =
+              perform_summary.(%Styx.Job{
+                args: %{
+                  "memory_space_id" => projection.memory_space_id,
+                  "host_id" => host_id,
+                  "client_id" => projection.client_id,
+                  "source_client_id" => projection.source_client_id,
+                  "scope" => projection.scope,
+                  "namespace" => projection.namespace,
+                  "session_id" => session_id,
+                  "processing_version" => "summary-v1",
+                  "input_revision" => projection.input_revision
+                }
+              })
+          end)
         end)
 
         summaries = repo().all(from(summary in Summary, where: summary.host_id == ^host_id))
@@ -622,6 +658,20 @@ defmodule Backplane.Memory.Qualification.Runner do
     job_ids = Enum.map(jobs, & &1.id)
     repo().delete_all(from(job in Styx.Job, where: job.id in ^job_ids))
     :ok
+  end
+
+  defp with_consolidation_policy(fun) do
+    previous = Map.new(@consolidation_policy, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(@consolidation_policy, &:ets.insert(:backplane_settings, {&1, true}))
+
+    try do
+      fun.()
+    after
+      Enum.each(previous, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
+    end
   end
 
   defp with_projection_repair(fun) do

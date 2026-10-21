@@ -71,6 +71,58 @@ defmodule Backplane.HostAgent.AgentChannelTest do
     end
   end
 
+  test "a second channel for the same topic cannot start an unregistered joiner" do
+    start_supervised!({Registry, keys: :unique, name: __MODULE__.JoinRegistry})
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+    topic = "host_agent:single-owner"
+    args = {nil, nil, topic, %{}, __MODULE__.JoinRegistry}
+    assert {:ok, first} = DynamicSupervisor.start_child(supervisor, {AgentChannel, args})
+
+    assert {:error, {:already_registered, ^first}} =
+             DynamicSupervisor.start_child(supervisor, {AgentChannel, args})
+
+    assert Registry.lookup(__MODULE__.JoinRegistry, topic) == [{first, first}]
+    assert DynamicSupervisor.count_children(supervisor).active == 1
+  end
+
+  test "duplicate startup keeps private topic and params out of crash logs" do
+    start_supervised!({Registry, keys: :unique, name: __MODULE__.PrivateJoinRegistry})
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+    topic = "host_agent:private-host-sentinel"
+
+    args =
+      {nil, nil, topic, %{"token" => "private-token-sentinel"}, __MODULE__.PrivateJoinRegistry}
+
+    assert {:ok, first} = DynamicSupervisor.start_child(supervisor, {AgentChannel, args})
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:already_registered, ^first}} =
+                 DynamicSupervisor.start_child(supervisor, {AgentChannel, args})
+      end)
+
+    refute log =~ "private-host-sentinel"
+    refute log =~ "private-token-sentinel"
+    assert AgentChannel.child_spec(args).restart == :temporary
+  end
+
+  test "server channel closure terminates the registered client without an unjoined restart" do
+    registry = start_supervised!({Registry, keys: :unique, name: __MODULE__.CloseRegistry})
+    assert is_pid(registry)
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    for event <- ["phx_error", "phx_close"] do
+      topic = "host_agent:closure-#{event}"
+      args = {nil, nil, topic, %{}, __MODULE__.CloseRegistry}
+      assert {:ok, channel} = DynamicSupervisor.start_child(supervisor, {AgentChannel, args})
+      ref = Process.monitor(channel)
+      send(channel, %Phoenix.SocketClient.Message{topic: topic, event: event, payload: %{}})
+      assert_receive {:DOWN, ^ref, :process, ^channel, :normal}
+      assert Registry.lookup(__MODULE__.CloseRegistry, topic) == []
+      assert DynamicSupervisor.which_children(supervisor) == []
+    end
+  end
+
   test "builds a plugin_call_result by executing the local host-agent service" do
     payload = %{
       "call_id" => "call-1",

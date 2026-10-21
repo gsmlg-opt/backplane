@@ -5,7 +5,7 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
 
   use Supervisor
 
-  alias Backplane.HostAgent.Memory.{Migrator, Pruner, Store, Syncer}
+  alias Backplane.HostAgent.Memory.{Access, Migrator, Pruner, Store, Syncer}
 
   @default_pool_size 1
   @default_busy_timeout_ms 5_000
@@ -30,8 +30,15 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
        pool_size: Map.get(opts, :pool_size, @default_pool_size),
        busy_timeout_ms: Map.get(opts, :busy_timeout_ms, @default_busy_timeout_ms)},
       {Migrator, store: store_name},
+      {Access,
+       store: store_name,
+       name: Map.get(opts, :access_name, Access),
+       edge_store:
+         get_in(opts, [:host_sync_v2, :store_name]) || Backplane.HostAgent.Memory.Edge.Store,
+       edge_config: Map.get(opts, :host_sync_v2, %{})},
       {Syncer,
        store: store_name,
+       access_server: Map.get(opts, :access_name, Access),
        config: opts,
        name: Map.fetch!(opts, :syncer_name),
        interval_ms: Map.get(opts, :sync_interval_ms),

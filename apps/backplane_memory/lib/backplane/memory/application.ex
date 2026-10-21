@@ -11,7 +11,8 @@ defmodule Backplane.Memory.Application do
     GeneratedSkills,
     QueryLogFilter,
     ReplayNotifier,
-    Service
+    Service,
+    ServiceRegistration
   }
 
   alias Backplane.Registry.{PromptRegistry, ToolRegistry}
@@ -31,14 +32,14 @@ defmodule Backplane.Memory.Application do
       Backplane.Memory.EdgeSync.Notifier,
       ActivityNotifier,
       ReplayNotifier,
-      GeneratedSkills
+      GeneratedSkills,
+      ServiceRegistration
     ]
 
     opts = [strategy: :rest_for_one, name: Backplane.Memory.Supervisor]
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
-        register_service()
         reconcile_generated_skills()
         {:ok, pid}
 
@@ -52,18 +53,11 @@ defmodule Backplane.Memory.Application do
   def stop(_state) do
     QueryLogFilter.uninstall()
 
-    if Process.whereis(PromptRegistry) do
-      PromptRegistry.deregister_managed(Service.prefix())
+    if Process.whereis(ToolRegistry) do
+      ToolRegistry.deregister_managed(Service.prefix())
     end
 
-    :ok
-  end
-
-  defp register_service do
-    if Service.enabled?() do
-      ToolRegistry.register_managed(Service.prefix(), Service.tools())
-      PromptRegistry.register_managed(Service.prefix(), Service.prompts(), Service)
-    else
+    if Process.whereis(PromptRegistry) do
       PromptRegistry.deregister_managed(Service.prefix())
     end
 

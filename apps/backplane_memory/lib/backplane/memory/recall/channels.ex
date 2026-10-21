@@ -100,18 +100,23 @@ defmodule Backplane.Memory.Recall.Channels do
 
   def top_lessons(%QueryPlan{}, _limit), do: {:error, :invalid_limit}
 
-  def vector(plan, limit, embed_fn \\ nil)
+  def vector(plan, limit, embed_fn \\ nil, model \\ Client.model())
 
-  def vector(%QueryPlan{} = plan, limit, embed_fn) when limit in 1..@max_limit do
-    embed_fn = embed_fn || (&Client.embed/3)
+  def vector(%QueryPlan{} = plan, limit, embed_fn, model) when limit in 1..@max_limit do
+    model = if is_binary(model), do: String.trim(model), else: nil
 
-    with {:ok, [vector]} <- embed_fn.([plan.normalized_query], :query, []) do
+    embed_fn =
+      embed_fn ||
+        fn texts, mode, opts -> Client.embed(texts, mode, Keyword.put(opts, :model, model)) end
+
+    with true <- is_binary(model) and model != "",
+         {:ok, [vector]} <- embed_fn.([plan.normalized_query], :query, []) do
       query_vector = HalfVector.new(vector)
 
       rows =
         Memory
         |> active_memory_query(plan)
-        |> where([memory], not is_nil(memory.embedding))
+        |> where([memory], not is_nil(memory.embedding) and memory.embedding_model == ^model)
         |> order_by([memory],
           asc: fragment("? <=> ?", memory.embedding, ^query_vector),
           asc: memory.id
@@ -126,12 +131,13 @@ defmodule Backplane.Memory.Recall.Channels do
 
       {:ok, rows}
     else
+      false -> {:error, :embedding_model_not_configured}
       {:error, reason} -> {:error, reason}
       _invalid -> {:error, :invalid_embedding_result}
     end
   end
 
-  def vector(%QueryPlan{}, _limit, _embed_fn), do: {:error, :invalid_limit}
+  def vector(%QueryPlan{}, _limit, _embed_fn, _model), do: {:error, :invalid_limit}
 
   def graph(%QueryPlan{entity_hints: []}, limit) when limit in 1..@max_limit,
     do: {:unavailable, :no_entity_hints}

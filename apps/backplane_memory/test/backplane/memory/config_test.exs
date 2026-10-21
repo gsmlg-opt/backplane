@@ -88,6 +88,39 @@ defmodule Backplane.Memory.ConfigTest do
     :ok
   end
 
+  test "model-dependent features use the persisted model selection instead of an adapter" do
+    keys = ~w(memory.llm_model memory.lesson_auto_extract memory.crystals_enabled)
+    snapshot = Map.new(keys, &{&1, :ets.lookup(@settings_table, &1)})
+    adapter = Application.fetch_env(:backplane_memory, :llm_client)
+
+    on_exit(fn ->
+      Enum.each(snapshot, fn {key, rows} ->
+        :ets.delete(@settings_table, key)
+        :ets.insert(@settings_table, rows)
+      end)
+
+      case adapter do
+        {:ok, value} -> Application.put_env(:backplane_memory, :llm_client, value)
+        :error -> Application.delete_env(:backplane_memory, :llm_client)
+      end
+    end)
+
+    Application.delete_env(:backplane_memory, :llm_client)
+    :ets.insert(@settings_table, {"memory.llm_model", " provider/model "})
+    :ets.insert(@settings_table, {"memory.lesson_auto_extract", true})
+    :ets.insert(@settings_table, {"memory.crystals_enabled", true})
+    assert Config.lesson_auto_extract?()
+    assert Config.crystals_enabled?()
+
+    Application.put_env(:backplane_memory, :llm_client, __MODULE__)
+
+    for invalid <- [nil, "", "  ", 123, false] do
+      :ets.insert(@settings_table, {"memory.llm_model", invalid})
+      refute Config.lesson_auto_extract?()
+      refute Config.crystals_enabled?()
+    end
+  end
+
   test "recall booleans have typed defaults and reject truthy non-booleans" do
     for {accessor, key, default} <- @recall_flags do
       assert apply(Config, accessor, []) == default

@@ -37,6 +37,17 @@ defmodule Backplane.HostAgent.ChannelTest do
     end
   end
 
+  defmodule FailedSocketClient do
+    def start_link(_opts) do
+      {:ok, socket} = Agent.start_link(fn -> nil end)
+      send(self(), {:failed_socket, socket})
+      {:ok, socket}
+    end
+
+    def connect(_socket), do: {:error, :no_socket_found}
+    def disconnect(_socket), do: :ok
+  end
+
   defmodule FakeAgentChannel do
     use Phoenix.SocketClient.Channel
 
@@ -112,7 +123,7 @@ defmodule Backplane.HostAgent.ChannelTest do
 
     assert_receive {:start_link, opts}
     assert opts[:auto_connect] == false
-    assert opts[:reconnect?] == true
+    assert opts[:reconnect?] == false
     assert opts[:default_channel_module] == Backplane.HostAgent.AgentChannel
     assert opts[:transport_opts] == [headers: [{"X-Backplane-Host-Token", "host-token"}]]
 
@@ -158,6 +169,27 @@ defmodule Backplane.HostAgent.ChannelTest do
     refute_receive {:connect, ^socket}
   end
 
+  test "a synchronous connect failure retires its newly started socket" do
+    Application.put_env(:backplane_host_agent, :socket_client_module, FailedSocketClient)
+
+    assert {:error, :no_socket_found} =
+             Channel.start_socket(%{socket_url: "ws://localhost/socket", token: "fixture"})
+
+    assert_receive {:failed_socket, socket}
+    refute Process.alive?(socket)
+  end
+
+  test "retirement is bounded even when an owned channel cannot handle system messages" do
+    channel = spawn(fn -> receive do: (:finish -> :ok) end)
+    on_exit(fn -> if Process.alive?(channel), do: Process.exit(channel, :kill) end)
+    started = System.monotonic_time(:millisecond)
+    assert :ok = Channel.retire(channel)
+    elapsed = System.monotonic_time(:millisecond) - started
+    assert elapsed >= 4_900
+    assert elapsed < 7_000
+    refute Process.alive?(channel)
+  end
+
   test "join preserves the v1 offer when v2 persistence is unavailable" do
     Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
     Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
@@ -201,6 +233,17 @@ defmodule Backplane.HostAgent.ChannelTest do
                         "partitions" => []
                       }
                     }}
+  end
+
+  test "shared extensions remain negotiable when protected mirror is disabled" do
+    Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
+    Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
+    Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
+    Application.put_env(:backplane_host_agent, :memory_host_sync_v2, %{enabled: false})
+    assert {:ok, %{}, _} = Channel.join(self(), "host-shared")
+    assert_receive {:join, _, "host_agent:host-shared", %{"memory_v2" => offer}}
+    assert offer["partitions"] == []
+    assert offer["extensions"] == ["memory_access.v1", "memory_commands.v2"]
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane_host_agent, key)

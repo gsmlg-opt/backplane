@@ -5,8 +5,8 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
   use GenServer
 
-  alias Backplane.HostAgent.{Channel, MemoryProxy}
-  alias Backplane.HostAgent.Memory.{Reducer, Store}
+  alias Backplane.HostAgent.{Channel, Memory, MemoryProxy}
+  alias Backplane.HostAgent.Memory.{Access, Reducer, Store}
   alias Turso.Result
 
   @protocol "host_memory.v1"
@@ -59,6 +59,101 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   def drain_once(opts \\ []) do
     opts = normalize_opts(opts)
 
+    case drain_shared(opts) do
+      {:ok, %{drained: count}} when count > 0 ->
+        {:ok, %{"drained" => count, "protocol" => "memory_commands.v2"}}
+
+      {:error, reason}
+      when reason not in [:access_owner_unavailable, :unauthorized, :not_connected] ->
+        {:error, reason}
+
+      _ ->
+        drain_private(opts)
+    end
+  end
+
+  @doc false
+  def drain_shared(opts \\ []) do
+    opts = normalize_opts(opts)
+
+    with {:ok, fallback_channel} <- connected_channel(opts),
+         {:ok, batch} <-
+           Access.run_local(
+             :all,
+             :drain,
+             fn context ->
+               with {:ok, rows} <-
+                      if(context.store == opts.store,
+                        do: Memory.shared_claim(context, now(opts), opts.max_attempts),
+                        else: {:ok, []}
+                      ) do
+                 {:ok,
+                  %{
+                    rows: rows,
+                    generation: context.generation,
+                    channel: context.channel || fallback_channel
+                  }}
+               end
+             end,
+             opts.access_server
+           ) do
+      if batch.rows == [] do
+        {:ok, %{drained: 0}}
+      else
+        payload = %{
+          "protocol" => "memory_commands.v2",
+          "items" => Enum.map(batch.rows, &Jason.decode!(&1["payload"]))
+        }
+
+        reply = push_sync(opts.channel_module, batch.channel, payload)
+
+        if credential_rejection?(reply) do
+          {:error, reason} = reply
+
+          Backplane.HostAgent.MemoryProxy.retain_credential_rejection(
+            reason,
+            batch.channel,
+            batch.generation
+          )
+
+          Access.fence(:all, :connection_rejected, batch.generation, opts.access_server)
+        end
+
+        result =
+          Access.run_local(
+            :all,
+            :settle,
+            &Memory.shared_settle(&1, batch.rows, reply, now(opts), opts.max_attempts),
+            opts.access_server
+          )
+
+        if result == {:error, :invalid_ack} do
+          _ =
+            Access.run_local(
+              :all,
+              :settle,
+              &Memory.shared_settle(
+                &1,
+                batch.rows,
+                {:error, :invalid_protocol},
+                now(opts),
+                opts.max_attempts
+              ),
+              opts.access_server
+            )
+        end
+
+        result
+      end
+    end
+  end
+
+  defp credential_rejection?({:error, %{"code" => "unauthorized", "retryable" => false}}),
+    do: true
+
+  defp credential_rejection?(_), do: false
+
+  defp drain_private(opts) do
     with :ok <- recover_inflight(opts),
          {:ok, channel} <- connected_channel(opts),
          {:ok, outbox_rows} <- claim_pending(opts.store, opts.batch_size, now(opts)) do
@@ -155,9 +250,9 @@ defmodule Backplane.HostAgent.Memory.Syncer do
       case Store.query(
              conn,
              """
-             SELECT seq, op, memory_id, attempts
+             SELECT seq, op, memory_id, attempts, payload
              FROM memory_outbox
-             WHERE state = 'pending' OR (state = 'retry_wait' AND next_attempt_at <= ?)
+             WHERE access_id IS NULL AND (state = 'pending' OR (state = 'retry_wait' AND next_attempt_at <= ?))
              ORDER BY seq
              LIMIT ?
              """,
@@ -189,7 +284,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     with {:ok, %Result{rows: rows}} <-
            Store.query(
              opts.store,
-             "SELECT seq, attempts FROM memory_outbox WHERE state = 'inflight' ORDER BY seq"
+             "SELECT seq, attempts FROM memory_outbox WHERE access_id IS NULL AND state = 'inflight' ORDER BY seq"
            ),
          :ok <-
            retry_rows(
@@ -224,6 +319,13 @@ defmodule Backplane.HostAgent.Memory.Syncer do
       {:ok, {items, failed_rows}} -> {:ok, {Enum.reverse(items), failed_rows}}
       error -> error
     end)
+  end
+
+  defp payload_item(_store, %{"payload" => payload, "seq" => seq}) when is_binary(payload) do
+    case Jason.decode(payload) do
+      {:ok, item} when is_map(item) -> {:ok, Map.put(item, "seq", seq)}
+      _ -> {:error, "invalid durable command payload"}
+    end
   end
 
   defp payload_item(store, %{"op" => "remember", "seq" => seq, "memory_id" => memory_id}) do
@@ -305,7 +407,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
   defp apply_ack(conn, opts, row, %{"status" => status} = ack)
        when status in ["ok", "duplicate"] do
-    mark_done(conn, row, ack["canonical_id"], ack["revision"], now(opts))
+    mark_done(conn, row, ack, now(opts))
   end
 
   defp apply_ack(conn, opts, row, %{"status" => "error"} = ack) do
@@ -317,12 +419,17 @@ defmodule Backplane.HostAgent.Memory.Syncer do
 
   defp apply_ack(conn, opts, row, _ack), do: retry_row(conn, opts, row, "missing acknowledgement")
 
-  defp mark_done(conn, row, canonical_id, revision, now) do
+  defp mark_done(conn, row, ack, now) do
+    canonical_id = ack["canonical_id"]
+    revision = ack["revision"]
+    partition = ack["partition"] || %{}
+    encoded_partition = if map_size(partition) > 0, do: Jason.encode!(partition)
+
     with {:ok, %Result{num_rows: updated}} <-
            Store.execute(
              conn,
-             "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, last_error = NULL, dead_lettered_at = NULL, updated_at = ? WHERE seq = ? AND state = 'inflight'",
-             [now, now, row["seq"]]
+             "UPDATE memory_outbox SET state = 'done', completed_at = ?, next_attempt_at = NULL, last_error = NULL, dead_lettered_at = NULL, updated_at = ?, ack_partition = ?, ack_revision = ?, ack_canonical_id = ? WHERE seq = ? AND state = 'inflight'",
+             [now, now, encoded_partition, revision, canonical_id, row["seq"]]
            ),
          true <- updated > 0,
          {:ok, _} <-
@@ -330,7 +437,12 @@ defmodule Backplane.HostAgent.Memory.Syncer do
              conn,
              """
              UPDATE memories
-             SET sync_state = 'synced',
+             SET sync_state = CASE WHEN EXISTS (
+                   SELECT 1 FROM memory_outbox newer WHERE newer.memory_id = memories.id
+                     AND newer.seq > ? AND newer.state != 'done'
+                 ) THEN sync_state ELSE 'synced' END,
+                 memory_space_id = COALESCE(?, memory_space_id),
+                 namespace = COALESCE(?, namespace),
                  remote_id = CASE WHEN ? = 'remember' THEN COALESCE(?, remote_id) ELSE remote_id END,
                  remote_revision = CASE
                    WHEN ? = 'remember' AND ? IS NOT NULL THEN ?
@@ -339,7 +451,18 @@ defmodule Backplane.HostAgent.Memory.Syncer do
                  synced_at = ?
              WHERE id = ?
              """,
-             [row["op"], canonical_id, row["op"], revision, revision, now, row["memory_id"]]
+             [
+               row["seq"],
+               partition["memory_space_id"],
+               partition["namespace"],
+               row["op"],
+               canonical_id,
+               row["op"],
+               revision,
+               revision,
+               now,
+               row["memory_id"]
+             ]
            ) do
       :ok
     else
@@ -361,7 +484,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
           updated_at = ?
       WHERE seq = ? AND state = 'inflight'
       """,
-      [to_string(error), now, now, seq]
+      [error_text(error), now, now, seq]
     )
   end
 
@@ -501,6 +624,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
           Application.get_env(:backplane_host_agent, :memory_store, Store)
         ),
       config: config,
+      access_server: Keyword.get(opts, :access_server, Access),
       channel: Keyword.get(opts, :channel),
       channel_module: Keyword.get(opts, :channel_module, Channel),
       channel_provider: Keyword.get(opts, :channel_provider, MemoryProxy),
@@ -593,6 +717,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
         {row, %{"id" => id, "status" => status} = ack}
         when status in ["ok", "duplicate", "error"] ->
           id == row["memory_id"] and
+            (status == "error" or valid_ack_binding?(row, ack)) and
             (status == "error" or
                ((row["op"] != "remember" or
                    (is_binary(ack["canonical_id"]) and ack["canonical_id"] != "")) and
@@ -605,6 +730,22 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   end
 
   defp valid_acks?(_rows, _acks), do: false
+
+  defp valid_ack_binding?(row, ack) do
+    payload = Reducer.decode_json(row["payload"], %{})
+    partition = ack["partition"]
+
+    valid_partition? =
+      is_nil(partition) or
+        (is_map(partition) and
+           Enum.all?(~w(memory_space_id scope namespace), fn field ->
+             is_binary(partition[field]) and partition[field] != "" and
+               (not Map.has_key?(payload, field) or payload[field] == partition[field])
+           end))
+
+    valid_partition? and
+      (is_nil(payload["canonical_id"]) or payload["canonical_id"] == ack["canonical_id"])
+  end
 
   defp sha256(content) do
     :crypto.hash(:sha256, content)

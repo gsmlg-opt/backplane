@@ -36,7 +36,15 @@ defmodule Backplane.HostAgent.Memory.Edge.Eviction do
     }
   end
 
-  def stats(store) do
+  def stats(store), do: stats(store, [])
+
+  def stats(store, opts) do
+    limit =
+      case Keyword.get(opts, :partition_limit) do
+        n when is_integer(n) and n > 0 -> " LIMIT #{min(n, 50)}"
+        _ -> ""
+      end
+
     Store.transaction(store, fn conn ->
       [%{"items" => items, "bytes" => bytes}] =
         query_rows!(conn, """
@@ -50,15 +58,25 @@ defmodule Backplane.HostAgent.Memory.Edge.Eviction do
         """)
 
       partitions =
-        query_rows!(conn, """
-        SELECT memory_space_id,scope,namespace,applied_revision,last_sync_at
-        FROM edge_partitions ORDER BY memory_space_id,scope,namespace
-        """)
+        query_rows!(
+          conn,
+          """
+          SELECT memory_space_id,scope,namespace,applied_revision,last_sync_at
+          FROM edge_partitions ORDER BY memory_space_id,scope,namespace
+          """ <> limit
+        )
+
+      [%{"revision" => revision, "oldest_sync_at" => oldest_sync_at}] =
+        query_rows!(
+          conn,
+          "SELECT COALESCE(MAX(applied_revision),0) AS revision, CASE WHEN COUNT(*) = COUNT(last_sync_at) THEN MIN(last_sync_at) END AS oldest_sync_at FROM edge_partitions"
+        )
 
       %{
         items: items,
         bytes: bytes,
-        revision: Enum.max(Enum.map(partitions, & &1["applied_revision"]), fn -> 0 end),
+        revision: revision,
+        oldest_sync_at: oldest_sync_at,
         partitions: partitions
       }
     end)

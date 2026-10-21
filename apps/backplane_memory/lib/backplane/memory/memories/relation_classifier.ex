@@ -239,30 +239,57 @@ defmodule Backplane.Memory.Memories.RelationClassifier do
           Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
         )
 
-      case llm_module.classify_relation(
-             model_input(source, source_claim),
-             model_input(target, target_claim)
-           ) do
-        {:ok, response} -> persist_model_result(source, target, response, opts)
-        {:skip, :no_llm} -> :ok
-        {:error, reason} -> {:error, reason}
-        _other -> {:error, :invalid_classifier_response}
+      inputs = comparison_inputs(source, target, model)
+
+      if inputs.source_evidence_ids == [] or inputs.target_evidence_ids == [] do
+        :ok
+      else
+        case Relations.classifier_result(source.id, target.id, inputs) do
+          {:ok, nil} ->
+            request_model_classification(source, target, llm_module, model, inputs)
+
+          {:ok, _existing} ->
+            :ok
+
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     else
       :ok
     end
   end
 
-  defp persist_model_result(source, target, response, opts) do
+  defp request_model_classification(source, target, llm_module, model, inputs) do
+    case llm_module.classify_relation(
+           model_input(source, normalize_claim(source.metadata)),
+           model_input(target, normalize_claim(target.metadata))
+         ) do
+      {:ok, response} -> persist_model_result(source, target, response, model, inputs)
+      {:skip, :no_llm} -> :ok
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :invalid_classifier_response}
+    end
+  end
+
+  defp persist_model_result(original_source, original_target, response, model, inputs) do
     with {:ok, classification} <- normalize_model_result(response),
          {:ok, source, target, classification} <-
-           permitted_model_relation(source, target, classification) do
-      persist(
-        source,
-        target,
-        classification,
-        configured_model(opts)
-      )
+           permitted_model_relation(original_source, original_target, classification) do
+      inputs =
+        if source.id == original_source.id do
+          inputs
+        else
+          %{
+            inputs
+            | source_evidence_ids: inputs.target_evidence_ids,
+              target_evidence_ids: inputs.source_evidence_ids,
+              source_owner: inputs.target_owner,
+              target_owner: inputs.source_owner
+          }
+        end
+
+      persist(source, target, classification, model, inputs)
     else
       :skip -> :ok
       {:error, reason} -> {:error, reason}
@@ -326,43 +353,66 @@ defmodule Backplane.Memory.Memories.RelationClassifier do
     end
   end
 
-  defp persist(source, target, classification, model) do
-    source_evidence_ids = evidence_ids(source.id)
-    target_evidence_ids = evidence_ids(target.id)
+  defp persist(source, target, classification, model, inputs \\ nil) do
+    inputs = inputs || comparison_inputs(source, target, model)
 
-    if source_evidence_ids == [] or target_evidence_ids == [] do
+    if inputs.source_evidence_ids == [] or inputs.target_evidence_ids == [] do
       :ok
     else
-      source_claim = normalize_claim(source.metadata)
-      target_claim = normalize_claim(target.metadata)
-
       attrs =
-        %{
+        Map.merge(inputs, %{
           classification: classification.classification,
           confidence: classification.confidence,
-          automatic_confirmation: Map.get(classification, :automatic_confirmation, false),
-          classifier_model: model,
-          classifier_version: @classifier_version,
-          input_revision:
-            input_revision(
-              source,
-              target,
-              source_claim,
-              target_claim,
-              source_evidence_ids,
-              target_evidence_ids,
-              model
-            ),
-          source_evidence_ids: source_evidence_ids,
-          target_evidence_ids: target_evidence_ids
-        }
-        |> Map.merge(relation_trace(source, target))
+          automatic_confirmation: Map.get(classification, :automatic_confirmation, false)
+        })
 
-      case Relations.apply_classifier(source.id, target.id, attrs) do
+      case Relations.apply_classifier(source.id, target.id, attrs, inputs) do
         {:ok, _relation} -> :ok
         {:error, reason} -> {:error, reason}
       end
     end
+  end
+
+  @doc false
+  def comparison_inputs(source, target, model) do
+    source_evidence_ids = evidence_ids(source.id)
+    target_evidence_ids = evidence_ids(target.id)
+
+    %{
+      source_owner:
+        Map.take(source, [
+          :memory_space_id,
+          :host_id,
+          :client_id,
+          :scope,
+          :namespace,
+          :memory_type
+        ]),
+      target_owner:
+        Map.take(target, [
+          :memory_space_id,
+          :host_id,
+          :client_id,
+          :scope,
+          :namespace,
+          :memory_type
+        ]),
+      classifier_model: model,
+      classifier_version: @classifier_version,
+      input_revision:
+        input_revision(
+          source,
+          target,
+          normalize_claim(source.metadata),
+          normalize_claim(target.metadata),
+          source_evidence_ids,
+          target_evidence_ids,
+          model
+        ),
+      source_evidence_ids: source_evidence_ids,
+      target_evidence_ids: target_evidence_ids
+    }
+    |> Map.merge(relation_trace(source, target))
   end
 
   defp relation_trace(source, target) do

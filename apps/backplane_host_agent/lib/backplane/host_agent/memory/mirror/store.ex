@@ -1,5 +1,6 @@
 defmodule Backplane.HostAgent.Memory.Mirror.Store do
   @moduledoc "Transactional Turso adapter for canonical mirror generations and cursors."
+  alias Backplane.HostAgent.Memory.Access
   alias Backplane.HostAgent.Memory.Edge.Store, as: Edge
   alias Backplane.HostAgent.Memory.Edge.{Eviction, Telemetry}
   @where "memory_space_id = ? AND scope = ? AND namespace = ?"
@@ -14,11 +15,11 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       partitions =
         rows!(
           conn,
-          "SELECT * FROM edge_partitions ORDER BY memory_space_id, scope, namespace LIMIT 101",
+          "SELECT * FROM edge_partitions ORDER BY memory_space_id, scope, namespace LIMIT 1001",
           []
         )
 
-      if length(partitions) > 100, do: DBConnection.rollback(conn, :too_many_partitions)
+      if length(partitions) > 1000, do: DBConnection.rollback(conn, :too_many_partitions)
 
       %{
         "offers" => ["host_memory.v2"],
@@ -26,6 +27,8 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
         "partitions" =>
           Enum.map(partitions, fn p ->
             Map.merge(Map.take(p, @partition_keys), %{
+              "access_id" => p["access_id"],
+              "authority_version" => p["authority_version"],
               "applied_revision" => p["applied_revision"],
               "status" => p["sync_status"],
               "snapshot" =>
@@ -55,7 +58,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
           params(p)
         )
 
-        state = partition!(conn, p)
+        state = bind_authority!(conn, d, partition!(conn, p))
         digest = hash(d)
 
         if state["last_batch_id"] == d["batch_id"] and state["last_delivery_hash"] != digest,
@@ -85,6 +88,57 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
         error
     end
   end
+
+  # The command-store fence is committed before this independent mirror cleanup.
+  def fence(store, target) do
+    transaction(store, fn conn ->
+      execute!(
+        conn,
+        "UPDATE edge_partitions SET last_sync_at=NULL, snapshot_id=NULL, snapshot_revision=NULL, next_chunk_index=NULL, chunk_count=NULL, integrity_hash=NULL, snapshot_received_items=0, applied_revision=0, active_generation='0', last_batch_id=NULL, last_delivery_hash=NULL, sync_status='snapshot_required' WHERE #{@where}",
+        params(target.partition)
+      )
+    end)
+  end
+
+  def complete?(store, target) do
+    case transaction(store, fn conn ->
+           p = partition!(conn, target.partition)
+
+           p != nil and p["access_id"] == target.access_id and
+             p["authority_version"] == target.authority_version and
+             p["last_sync_at"] != nil and p["snapshot_id"] == nil and p["sync_status"] == "ready"
+         end) do
+      {:ok, complete} -> complete
+      _ -> false
+    end
+  end
+
+  defp bind_authority!(conn, %{"access" => access} = d, state) do
+    target = Process.get({Access, :target})
+
+    unless Access.local_owner?(target) and Access.claim(target) == access and
+             target.partition == d["partition"],
+           do: DBConnection.rollback(conn, :unauthorized)
+
+    if state["access_id"] != access["access_id"] or
+         state["authority_version"] != access["authority_version"] do
+      unless d["kind"] == "snapshot_chunk" and d["chunk_index"] == 0 and d["base_revision"] == 0,
+        do: DBConnection.rollback(conn, :snapshot_required)
+
+      execute!(
+        conn,
+        "UPDATE edge_partitions SET access_id=?, authority_version=?, last_sync_at=NULL, applied_revision=0, active_generation='0', snapshot_id=NULL, last_batch_id=NULL, last_delivery_hash=NULL, sync_status='snapshot_required' WHERE #{@where}",
+        [access["access_id"], access["authority_version"]] ++ params(d["partition"])
+      )
+    end
+
+    partition!(conn, d["partition"])
+  end
+
+  defp bind_authority!(conn, _delivery, %{"access_id" => id}) when not is_nil(id),
+    do: DBConnection.rollback(conn, :unauthorized)
+
+  defp bind_authority!(_conn, _delivery, state), do: state
 
   defp emit(d, eviction, result) do
     if eviction.expired + eviction.evicted > 0, do: Telemetry.eviction(eviction)
@@ -351,9 +405,15 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
     )
   end
 
-  def read(store, operation, args) do
+  def read(store, operation, args, target \\ nil) do
     transaction(store, fn conn ->
       p = partition!(conn, args)
+
+      if p && p["access_id"] &&
+           (not Access.local_owner?(target) or
+              p["access_id"] != target[:access_id] or
+              p["authority_version"] != target[:authority_version]),
+         do: DBConnection.rollback(conn, :unauthorized)
 
       if p == nil or p["last_sync_at"] == nil,
         do: DBConnection.rollback(conn, :mirror_unavailable)
@@ -409,7 +469,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
 
   defp ack(%{"kind" => "delta"} = d),
     do:
-      Map.merge(Map.take(d, ["protocol", "partition", "batch_id"]), %{
+      Map.merge(Map.take(d, ["protocol", "partition", "batch_id", "access"]), %{
         "status" => "applied",
         "applied_revision" => d["to_revision"],
         "snapshot_id" => nil,
@@ -424,6 +484,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
     Map.merge(
       Map.take(d, [
         "protocol",
+        "access",
         "partition",
         "batch_id",
         "snapshot_id",

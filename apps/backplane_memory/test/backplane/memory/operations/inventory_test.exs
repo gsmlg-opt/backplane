@@ -120,6 +120,29 @@ defmodule Backplane.Memory.Operations.InventoryTest do
     assert {:ok, %{entries: [], total: 0}} = Inventory.profiles(%{repository: "git.example/two"})
   end
 
+  test "processing states use global count and SQL pagination without source selection" do
+    alias Backplane.Memory.Projections.State
+    partition = canonical_partition("inventory-stages")
+
+    for index <- 1..51 do
+      %State{}
+      |> State.changeset(
+        Map.merge(partition, %{
+          projector: "test",
+          subject_type: "memory",
+          subject_id: "inventory-state-#{index}",
+          processing_version: "1",
+          status: "pending"
+        })
+      )
+      |> repo().insert!()
+    end
+
+    assert {:ok, %{entries: rows, total: 51, next_offset: 50}} = Inventory.stages(%{})
+    assert length(rows) == 50
+    assert {:ok, %{entries: [_], total: 51, next_offset: nil}} = Inventory.stages(%{}, offset: 50)
+  end
+
   defp memory(partition, content, at, repository \\ nil) do
     metadata =
       if repository, do: %{"repository_sources" => [%{"repository_id" => repository}]}, else: %{}

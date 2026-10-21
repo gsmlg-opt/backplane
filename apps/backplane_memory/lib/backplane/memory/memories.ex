@@ -9,6 +9,7 @@ defmodule Backplane.Memory.Memories do
     Applications,
     Attribution,
     CanonicalRequest,
+    DerivationGovernance,
     Evidence,
     Relation,
     RememberRequest
@@ -170,6 +171,45 @@ defmodule Backplane.Memory.Memories do
     end
   end
 
+  @doc "Read the exact summary linked to a selected memory, including historical revisions."
+  def get_source_summary(memory_id, summary_id, partition) do
+    with {:ok, memory_id} <- Ecto.UUID.cast(memory_id),
+         {:ok, summary_id} <- Ecto.UUID.cast(summary_id),
+         {:ok, partition} <- PartitionIdentity.validate_generator(partition),
+         %Backplane.Memory.Summaries.Summary{} = summary <-
+           repo().one(
+             from(memory in MemorySchema,
+               join: evidence in Evidence,
+               on: evidence.memory_id == memory.id,
+               join: summary in Backplane.Memory.Summaries.Summary,
+               on: summary.id == evidence.source_summary_id,
+               join: session in Backplane.Memory.Projections.ProjectedSession,
+               on: session.subject_id == summary.subject_id,
+               where:
+                 memory.id == ^memory_id and summary.id == ^summary_id and
+                   is_nil(memory.deleted_at) and memory.lifecycle_state != "deleted" and
+                   memory.memory_space_id == ^partition.memory_space_id and
+                   memory.host_id == ^partition.host_id and
+                   memory.client_id == ^partition.client_id and memory.scope == ^partition.scope and
+                   memory.namespace == ^partition.namespace and
+                   summary.memory_space_id == memory.memory_space_id and
+                   summary.host_id == memory.host_id and summary.scope == memory.scope and
+                   summary.namespace == memory.namespace and
+                   summary.session_id == memory.session_id and
+                   session.memory_space_id == memory.memory_space_id and
+                   session.host_id == memory.host_id and session.client_id == memory.client_id and
+                   session.scope == memory.scope and session.namespace == memory.namespace and
+                   session.session_id == memory.session_id,
+               select: summary,
+               limit: 1
+             )
+           ) do
+      {:ok, summary}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
   @doc "Record one successful, explicitly identified application of a procedural memory."
   @spec record_application(String.t(), String.t(), String.t(), map() | keyword()) ::
           {:ok, %{application_count: non_neg_integer(), applied: boolean()}}
@@ -307,6 +347,78 @@ defmodule Backplane.Memory.Memories do
     with {:ok, partition} <- exact_partition(partition) do
       tombstone_partitioned(id, partition)
     end
+  end
+
+  @doc false
+  def tombstone_shared(id, partition, actor) do
+    with {:ok, partition} <- exact_partition(partition) do
+      case lock_active_memory(id, partition) do
+        nil ->
+          {:error, :not_found}
+
+        memory ->
+          :ok = soft_tombstone_locked!(memory)
+          invalidate_private_mappings(memory)
+
+          Backplane.Memory.Audit.log(
+            "forget",
+            "host:" <> actor.host_id,
+            [memory.id],
+            memory_audit_metadata(memory, %{requesting_actor: actor, result: "deleted"})
+          )
+
+          {:ok, memory.id}
+      end
+    end
+  end
+
+  defp invalidate_private_mappings(memory) do
+    repo().query!(
+      """
+      INSERT INTO bpm_host_memory_revocations
+        (id, memory_space_id, host_id, source_client_id, local_id, memory_id,
+         source_request_id, scope, namespace, content_hash, created_at)
+      SELECT gen_random_uuid(), $2, substring(r.idempotency_scope from 16), $3,
+        r.idempotency_key, r.memory_id, r.id, $4, $5, $6, now()
+      FROM bpm_memory_remember_requests r
+      WHERE r.memory_id = $1 AND r.idempotency_scope LIKE 'host-memory.v1:%'
+      ON CONFLICT DO NOTHING
+      """,
+      [
+        Ecto.UUID.dump!(memory.id),
+        Ecto.UUID.dump!(memory.memory_space_id),
+        memory.source_client_id,
+        memory.scope,
+        memory.namespace,
+        memory.content_hash
+      ]
+    )
+
+    case get_in(memory.metadata || %{}, ["host_memory", "local_id"]) do
+      local_id when is_binary(local_id) and local_id != "" ->
+        repo().query!(
+          """
+          INSERT INTO bpm_host_memory_revocations
+            (id,memory_space_id,host_id,source_client_id,local_id,memory_id,scope,namespace,content_hash,created_at)
+          VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,now()) ON CONFLICT DO NOTHING
+          """,
+          [
+            Ecto.UUID.dump!(memory.memory_space_id),
+            memory.host_id,
+            memory.source_client_id,
+            local_id,
+            Ecto.UUID.dump!(memory.id),
+            memory.scope,
+            memory.namespace,
+            memory.content_hash
+          ]
+        )
+
+      _ ->
+        :ok
+    end
+
+    :ok
   end
 
   if Mix.env() == :test do
@@ -657,6 +769,9 @@ defmodule Backplane.Memory.Memories do
   defp apply_list_filter({:agent_id, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], m.agent_id == ^v)
 
+  defp apply_list_filter({:session_id, v}, q) when is_binary(v) and v != "",
+    do: where(q, [m], m.session_id == ^v)
+
   defp apply_list_filter({:tag, v}, q) when is_binary(v) and v != "",
     do: where(q, [m], ^v in m.tags)
 
@@ -716,7 +831,7 @@ defmodule Backplane.Memory.Memories do
     }
   end
 
-  defp find_duplicate(attrs) do
+  defp candidate_query(attrs) do
     project = Attribution.project(attrs.metadata)
 
     MemorySchema
@@ -733,8 +848,17 @@ defmodule Backplane.Memory.Memories do
         m.metadata
       ) == ^project
     )
-    |> where([m], is_nil(m.deleted_at))
     |> select([m], struct(m, ^@non_vector_fields))
+  end
+
+  defp find_duplicate(attrs, scope) do
+    candidate_query(attrs)
+    |> then(fn query ->
+      if String.starts_with?(scope, "memory-shared.v2:"),
+        do: where(query, [m], m.host_id == ^attrs.host_id and m.client_id == ^attrs.client_id),
+        else: query
+    end)
+    |> where([m], is_nil(m.deleted_at))
     |> lock("FOR KEY SHARE")
     |> limit(1)
     |> repo().one()
@@ -762,7 +886,8 @@ defmodule Backplane.Memory.Memories do
             repo().rollback(:idempotency_conflict)
 
           nil ->
-            {memory, inserted?} = find_or_insert_candidate!(attrs)
+            {memory, inserted?} = find_or_insert_candidate!(attrs, scope, typed_evidence)
+            persist_shared_facets!(memory, inserted?, Keyword.get(opts, :shared_facets, []))
 
             request =
               %RememberRequest{}
@@ -774,22 +899,26 @@ defmodule Backplane.Memory.Memories do
               })
               |> repo().insert!()
 
-            %Evidence{}
-            |> Evidence.changeset(%{
-              memory_id: memory.id,
-              source_request_id: request.id,
-              session_id: attrs.session_id,
-              agent_id: attrs.agent_id,
-              host_id: attrs.host_id,
-              evidence_kind: "supports",
-              support_score: 1.0,
-              excerpt: attrs.content
-            })
-            |> repo().insert!()
+            suppressed? = not is_nil(memory.deleted_at)
 
-            insert_typed_evidence!(memory.id, typed_evidence)
+            unless suppressed? do
+              %Evidence{}
+              |> Evidence.changeset(%{
+                memory_id: memory.id,
+                source_request_id: request.id,
+                session_id: attrs.session_id,
+                agent_id: attrs.agent_id,
+                host_id: attrs.host_id,
+                evidence_kind: "supports",
+                support_score: 1.0,
+                excerpt: attrs.content
+              })
+              |> repo().insert!()
 
-            {memory, inserted?, true, request}
+              insert_typed_evidence!(memory.id, typed_evidence)
+            end
+
+            {memory, inserted?, not suppressed?, request}
         end
         |> then(fn {memory, inserted?, evidence_changed?, request} ->
           Backplane.Memory.Audit.log_once(
@@ -799,7 +928,12 @@ defmodule Backplane.Memory.Memories do
             request.id,
             memory_audit_metadata(memory, %{
               request_id: request.id,
-              result: if(inserted?, do: "created", else: "reinforced")
+              result:
+                cond do
+                  not is_nil(memory.deleted_at) -> "suppressed"
+                  inserted? -> "created"
+                  true -> "reinforced"
+                end
             })
           )
 
@@ -828,6 +962,17 @@ defmodule Backplane.Memory.Memories do
         reraise(error, __STACKTRACE__)
       end
   end
+
+  defp persist_shared_facets!(_memory, _inserted?, []), do: :ok
+
+  defp persist_shared_facets!(memory, true, facets) do
+    case Backplane.Memory.Facets.tag(memory.id, facets) do
+      {:ok, _} -> :ok
+      {:error, _} -> repo().rollback(:invalid_request)
+    end
+  end
+
+  defp persist_shared_facets!(_memory, false, _facets), do: repo().rollback(:invalid_request)
 
   defp relation_classifiable?(memory), do: memory.memory_type in ~w(semantic procedural)
 
@@ -1146,7 +1291,7 @@ defmodule Backplane.Memory.Memories do
     end
   end
 
-  defp find_or_insert_candidate!(attrs) do
+  defp find_or_insert_candidate!(attrs, scope, evidence) do
     advisory_lock!("memory-candidate", [
       Base.encode16(:crypto.hash(:sha256, attrs.content)),
       attrs.host_id,
@@ -1157,7 +1302,28 @@ defmodule Backplane.Memory.Memories do
       attrs.client_id || ""
     ])
 
-    case find_duplicate(attrs) do
+    candidate =
+      if scope in ["memory-worker:episodic", "memory-worker:procedural"] do
+        # Lock active rows as well as tombstones: forget must not land between the
+        # governance check and candidate selection, allowing a replacement insert.
+        candidates =
+          candidate_query(attrs)
+          |> order_by([m], asc: m.id)
+          |> lock("FOR UPDATE")
+          |> repo().all()
+
+        governed_candidates =
+          Enum.filter(candidates, fn memory ->
+            memory.host_id == attrs.host_id and memory.client_id == attrs.client_id
+          end)
+
+        DerivationGovernance.find_tombstone(governed_candidates, evidence, attrs) ||
+          Enum.find(candidates, &is_nil(&1.deleted_at))
+      else
+        find_duplicate(attrs, scope)
+      end
+
+    case candidate do
       %MemorySchema{} = memory ->
         {merge_repository_sources!(memory, attrs.metadata), false}
 

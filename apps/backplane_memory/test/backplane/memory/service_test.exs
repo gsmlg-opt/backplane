@@ -1176,44 +1176,97 @@ defmodule Backplane.Memory.ServiceTest do
   end
 
   describe "handle_consolidate/1" do
-    test "propagates missing-source errors and queues session_id as the project after a source exists" do
-      missing_session = "missing-session-#{System.unique_integer([:positive])}"
-      host = create_memory_host!("consolidate")
-      args = Map.put(trusted_args(host), "session_id", missing_session)
+    test "consolidates the selected canonical session with revision progress and idempotent jobs" do
+      keys =
+        ~w(memory.pipeline.enabled memory.session_summary_v2.enabled memory.window_summaries.enabled)
 
-      job_args =
-        TestPartition.trusted_args(args)
-        |> Map.take(~w(memory_space_id host_id client_id source_client_id scope namespace))
-        |> Map.put("project", missing_session)
+      previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+      :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.session_summary_v2.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.window_summaries.enabled", false})
+
+      on_exit(fn ->
+        Enum.each(previous, fn {key, rows} ->
+          :ets.delete(:backplane_settings, key)
+          Enum.each(rows, &:ets.insert(:backplane_settings, &1))
+        end)
+      end)
+
+      session_id = "consolidate-session-#{System.unique_integer([:positive])}"
+      host = create_memory_host!("consolidate")
+      args = Map.put(trusted_args(host), "session_id", session_id)
+      partition = TestPartition.trusted_args(args)
 
       Styx.Testing.with_testing_mode(:manual, fn ->
-        assert {:error, :incomplete_partition} = trusted_call("memory::consolidate", args)
+        assert {:error, :not_found} = trusted_call("memory::consolidate", args)
 
-        Styx.Testing.refute_enqueued(repo(),
-          worker: ProfileBuildWorker,
-          args: %{"project" => missing_session}
-        )
+        events =
+          for {sequence, type} <- [
+                {1, "agent.session.started"},
+                {2, "agent.prompt.submitted"},
+                {3, "agent.session.ended"}
+              ] do
+            Backplane.Memory.IngestFixtures.valid_event(%{
+              "host_id" => host.id,
+              "client_id" => partition["client_id"],
+              "scope" => partition["scope"],
+              "session_id" => session_id,
+              "project" => "actual-project",
+              "sequence" => sequence,
+              "event_type" => type,
+              "idempotency_key" => "#{session_id}:#{sequence}"
+            })
+          end
 
-        assert {:ok, memory} =
-                 Memories.remember("consolidate source",
-                   agent_id: "consolidate-test",
-                   host_id: host.id,
-                   client_id: "host:#{host.id}",
-                   scope: host.memory_scope,
-                   namespace: "private",
-                   metadata: %{"project" => missing_session}
-                 )
+        auth =
+          Backplane.Memory.IngestFixtures.ingest_auth_context(host.id, %{
+            partition: %{
+              memory_space_id: partition["memory_space_id"],
+              scope: partition["scope"],
+              namespace: partition["namespace"]
+            }
+          })
 
-        job_args = Map.put(job_args, "memory_space_id", memory.memory_space_id)
+        assert {:ok, %{"results" => results}} =
+                 Backplane.Memory.Ingest.ingest_batch(auth, %{
+                   "batch_id" => Ecto.UUID.generate(),
+                   "host_id" => host.id,
+                   "events" => events
+                 })
 
-        assert {:ok, %{status: "queued", session_id: ^missing_session}} =
-                 trusted_call("memory::consolidate", args)
+        assert Enum.all?(results, &(&1["status"] == "accepted"))
 
-        assert Styx.Testing.assert_enqueued(
-                 repo(),
-                 worker: ProfileBuildWorker,
-                 args: job_args
+        assert {:ok, projection} =
+                 Backplane.Memory.Projections.Rebuild.session(host.id, session_id)
+
+        assert {:ok, first} = trusted_call("memory::consolidate", args)
+        assert first.status == "queued"
+        assert first.session_id == session_id
+        assert first.input_revision == projection.input_revision
+        assert first.stages["summary"].status == "pending"
+        assert first.artifact_ids.summaries == []
+        assert first.bounded
+        assert [job_id] = first.job_ids
+
+        assert {:ok, second} = trusted_call("memory::consolidate", args)
+        assert second.job_ids == [job_id]
+
+        assert Styx.Testing.assert_enqueued(repo(),
+                 worker: Backplane.Memory.Workers.SummaryWorker,
+                 args:
+                   Map.merge(
+                     Map.take(
+                       partition,
+                       ~w(memory_space_id host_id client_id source_client_id scope namespace)
+                     ),
+                     %{
+                       "session_id" => session_id,
+                       "input_revision" => projection.input_revision
+                     }
+                   )
                )
+
+        Styx.Testing.refute_enqueued(repo(), worker: ProfileBuildWorker)
       end)
     end
 

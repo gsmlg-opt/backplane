@@ -22,7 +22,13 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
     State
   }
 
-  alias Backplane.Memory.Workers.{LessonCandidateWorker, ProjectionRepairWorker}
+  alias Backplane.Memory.Workers.{
+    EpisodicWorker,
+    LessonCandidateWorker,
+    ProjectionRepairWorker,
+    SummaryWorker,
+    WindowSummaryWorker
+  }
 
   test "enqueues a revisioned canonical summary for closed projections after grace" do
     %{"server_event_id" => event_id} =
@@ -35,20 +41,23 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       {:ok, %Styx.Job{state: "available"}}
     end
 
+    assert {:ok, canonical} = Rebuild.session("summary-host", "summary-session")
+    revision = canonical.input_revision
+
     complete = fn _host_id, _session_id ->
       {:ok,
-       %{
-         input_revision: "revision-1",
+       Map.merge(canonical, %{
+         input_revision: revision,
          gaps: [],
          session_status: "completed",
          last_event_at: ~U[2026-08-04 01:00:00.000000Z],
          states: %{"session" => %{status: "complete"}}
-       }}
+       })}
     end
 
     job = %Styx.Job{args: %{"event_id" => event_id}}
     assert :ok = ProjectionRepairWorker.perform(job, complete, enqueue)
-    assert_received {:summary_enqueued, "summary-host", "summary-session", "revision-1"}
+    assert_received {:summary_enqueued, "summary-host", "summary-session", ^revision}
 
     assert %{metadata: metadata} =
              Enum.find(Audit.list(operation: "projection.repair"), fn audit ->
@@ -63,37 +72,53 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
     assert metadata["namespace"] == "private"
     assert metadata["session_id"] == "summary-session"
 
-    expired_gap = %{
-      input_revision: "gap-revision",
-      gaps: [%{"from" => 2, "to" => 2}],
-      session_status: "completed",
-      last_event_at: ~U[2026-08-04 01:00:00.000000Z],
-      states: %{"session" => %{status: "pending"}}
-    }
+    expired_gap =
+      Map.merge(canonical, %{
+        input_revision: revision,
+        gaps: [%{"from" => 2, "to" => 2}],
+        session_status: "completed",
+        last_event_at: ~U[2026-08-04 01:00:00.000000Z],
+        states: %{"session" => %{status: "pending"}}
+      })
 
     assert :ok =
              ProjectionRepairWorker.perform(job, fn _, _ -> {:ok, expired_gap} end, enqueue)
 
-    assert_received {:summary_enqueued, "summary-host", "summary-session", "gap-revision"}
+    assert_received {:summary_enqueued, "summary-host", "summary-session", ^revision}
 
     for result <- [
           %{
-            input_revision: "r",
+            input_revision: revision,
             gaps: [%{"from" => 2, "to" => 2}],
             session_status: "completed",
             last_event_at: DateTime.utc_now(),
             states: %{"session" => %{status: "pending"}}
           },
           %{
-            input_revision: "r",
+            input_revision: revision,
             gaps: [],
             session_status: "active",
             states: %{"session" => %{status: "complete"}}
           }
         ] do
-      assert :ok = ProjectionRepairWorker.perform(job, fn _, _ -> {:ok, result} end, enqueue)
+      assert :ok =
+               ProjectionRepairWorker.perform(
+                 job,
+                 fn _, _ -> {:ok, Map.merge(canonical, result)} end,
+                 enqueue
+               )
+
       refute_received {:summary_enqueued, _, _, _}
     end
+
+    assert {:error, :incomplete_partition} =
+             ProjectionRepairWorker.perform(
+               job,
+               fn _, _ ->
+                 {:ok, Map.delete(canonical, :host_id)}
+               end,
+               enqueue
+             )
 
     assert {:error, :styx_unavailable} =
              ProjectionRepairWorker.perform(job, complete, fn _, _, _ ->
@@ -120,6 +145,15 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   end
 
   test "a late canonical event automatically repairs only its captured session" do
+    gate = "memory.session_summary_v2.enabled"
+    previous = :ets.lookup(:backplane_settings, gate)
+    :ets.insert(:backplane_settings, {gate, false})
+
+    on_exit(fn ->
+      :ets.delete(:backplane_settings, gate)
+      Enum.each(previous, &:ets.insert(:backplane_settings, &1))
+    end)
+
     Styx.Testing.with_testing_mode(:manual, fn ->
       repaired_session = unique("repaired")
       unrelated_session = unique("unrelated")
@@ -149,18 +183,49 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       assert [_first, _third] = observations
 
       assert [_, _, _, _, _] = pending_states = states(repaired_subject)
+      initial_revision = hd(pending_states).input_revision
 
       assert Enum.all?(pending_states, fn state ->
                state.status == "pending"
              end)
 
-      # The expired gap is now a terminal deadline, so its durable summary job
-      # runs separately and records an explicitly incomplete revision.
-      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
+      # Summary and window enumeration are both durable successors of repair.
+      assert_memory_jobs([SummaryWorker, WindowSummaryWorker])
+
+      assert [
+               %{
+                 args: %{
+                   "mode" => "enumerate",
+                   "host_id" => "host-repair",
+                   "session_id" => ^repaired_session
+                 }
+               }
+             ] =
+               Styx.Testing.all_enqueued(repo(), worker: WindowSummaryWorker)
+
+      assert %{success: 2, failure: 0} = Styx.drain_queue(queue: :memory)
 
       assert accepted(captured_event("host-other", unrelated_session, 1, "agent.session.started"))
 
-      # One projection repair plus the episodic successor of the incomplete summary.
+      # Disabled summaries persist their terminal state and cannot enqueue facts.
+      assert %State{status: "skipped_disabled", last_error: "disabled", attempt_count: 0} =
+               Enum.find(states(repaired_subject), &(&1.projector == "summary"))
+
+      assert repo().aggregate(Backplane.Memory.Summaries.Summary, :count) == 0
+      assert [] = Styx.Testing.all_enqueued(repo(), worker: EpisodicWorker)
+      assert_memory_jobs([ProjectionRepairWorker, WindowSummaryWorker])
+
+      assert [
+               %{
+                 args: %{
+                   "mode" => "window",
+                   "host_id" => "host-repair",
+                   "session_id" => ^repaired_session
+                 }
+               }
+             ] =
+               Styx.Testing.all_enqueued(repo(), worker: WindowSummaryWorker)
+
       assert %{success: 2, failure: 0} = Styx.drain_queue(queue: :memory)
 
       unrelated_subject = Source.subject_id!("host-other", unrelated_session)
@@ -173,7 +238,20 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       assert accepted(late)
       assert [_late_job] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
-      assert %{success: 1, failure: 0} = Styx.drain_queue(queue: :memory)
+      assert_memory_jobs([ProjectionRepairWorker, WindowSummaryWorker])
+
+      assert [
+               %{
+                 args: %{
+                   "mode" => "enumerate",
+                   "host_id" => "host-other",
+                   "session_id" => ^unrelated_session
+                 }
+               }
+             ] =
+               Styx.Testing.all_enqueued(repo(), worker: WindowSummaryWorker)
+
+      assert %{success: 2, failure: 0} = Styx.drain_queue(queue: :memory)
 
       assert %{
                "session" => %{read_model: %{"gaps" => [], "counts" => %{"events" => 3}}},
@@ -182,16 +260,16 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
       assert [_first, _second, _third] = repaired_observations
 
-      assert [_, _, _, _, _, _, _] = repaired_states = states(repaired_subject)
+      assert [_, _, _, _, _] = repaired_states = states(repaired_subject)
+
+      assert {:ok, %{input_revision: repaired_revision}} =
+               Source.input_revision("host-repair", repaired_session)
+
+      refute repaired_revision == initial_revision
+      assert Enum.all?(repaired_states, &(&1.input_revision == repaired_revision))
 
       assert Enum.all?(repaired_states, fn
-               %{projector: "crystal", status: "enqueued", attempt_count: 0} ->
-                 true
-
-               %{projector: "summary", status: "pending", attempt_count: 1} ->
-                 true
-
-               %{projector: "episodic", status: "skipped_no_model", last_error: "no_model"} ->
+               %{projector: "summary", status: "pending", attempt_count: 0} ->
                  true
 
                %{projector: projector, status: "complete"}
@@ -299,15 +377,8 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
                   receive do
                     :release_repair ->
-                      {:ok,
-                       %{
-                         input_revision: first_revision,
-                         memory_space_id: memory_space_id(host_id),
-                         client_id: "host:#{host_id}",
-                         source_client_id: "codex-cli",
-                         scope: "project:backplane",
-                         namespace: "private"
-                       }}
+                      {:ok, %{input_revision: ^first_revision}} =
+                        Rebuild.session_locked(host_id, session_id)
                   end
                 end,
                 fn _, _, _ -> {:ok, :not_needed} end
@@ -592,25 +663,18 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       %RepairFrontier{requested_revision: revision} =
         RepairFrontier.get(repo(), host_id, session_id)
 
-      result = %{
-        input_revision: revision,
-        memory_space_id: memory_space_id(host_id),
-        client_id: "host:#{host_id}",
-        source_client_id: "codex-cli",
-        scope: "project:backplane",
-        namespace: "private",
-        gaps: [],
-        session_status: "completed",
-        last_event_at: ~U[2026-08-04 01:00:00Z],
-        states: %{"session" => %{status: "complete"}}
-      }
+      rebuild = fn host, session ->
+        {:ok, result} = Rebuild.session_locked(host, session)
+        assert result.input_revision == revision
+        {:ok, result}
+      end
 
       job = %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}}
 
       assert {:error, :summary_unavailable} =
                ProjectionRepairWorker.perform(
                  job,
-                 fn _, _ -> {:ok, result} end,
+                 rebuild,
                  fn _, _, _ -> {:error, :summary_unavailable} end
                )
 
@@ -620,7 +684,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
       assert :ok =
                ProjectionRepairWorker.perform(
                  job,
-                 fn _, _ -> {:ok, result} end,
+                 rebuild,
                  fn _, _, _ -> {:ok, %Styx.Job{state: "available"}} end
                )
 
@@ -632,11 +696,15 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   test "normal canonical projection automatically extracts a correction candidate" do
     previous_llm = Application.get_env(:backplane_memory, :llm_client)
     Application.put_env(:backplane_memory, :llm_client, Backplane.Memory.TestLLMClient)
+    previous_model = :ets.lookup(:backplane_settings, "memory.llm_model")
+    :ets.insert(:backplane_settings, {"memory.llm_model", "test-model"})
     :ets.insert(:backplane_settings, {"memory.lesson_auto_extract", true})
 
     on_exit(fn ->
       restore_env(:llm_client, previous_llm)
       :ets.delete(:backplane_settings, "memory.lesson_auto_extract")
+      :ets.delete(:backplane_settings, "memory.llm_model")
+      Enum.each(previous_model, &:ets.insert(:backplane_settings, &1))
     end)
 
     Styx.Testing.with_testing_mode(:manual, fn ->
@@ -672,11 +740,15 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   test "normal canonical failure then successful remediation creates one idempotent candidate" do
     previous_llm = Application.get_env(:backplane_memory, :llm_client)
     Application.put_env(:backplane_memory, :llm_client, Backplane.Memory.TestLLMClient)
+    previous_model = :ets.lookup(:backplane_settings, "memory.llm_model")
+    :ets.insert(:backplane_settings, {"memory.llm_model", "test-model"})
     :ets.insert(:backplane_settings, {"memory.lesson_auto_extract", true})
 
     on_exit(fn ->
       restore_env(:llm_client, previous_llm)
       :ets.delete(:backplane_settings, "memory.lesson_auto_extract")
+      :ets.delete(:backplane_settings, "memory.llm_model")
+      Enum.each(previous_model, &:ets.insert(:backplane_settings, &1))
     end)
 
     Styx.Testing.with_testing_mode(:manual, fn ->
@@ -706,12 +778,18 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
                })
 
       assert [
-               %Lesson{status: "candidate", source_kind: "correction", memory_id: memory_id} =
+               %Lesson{
+                 status: "candidate",
+                 source_kind: "correction",
+                 memory_id: memory_id
+               } =
                  lesson
              ] =
                repo().all(Lesson)
 
       assert lesson.context =~ "Verified remediation"
+      memory = repo().get!(Backplane.Memory.Memories.Memory, memory_id)
+      assert memory.metadata["lesson_extraction_kind"] == "repeated_failure_remediation"
 
       assert typed_evidence =
                repo().all(
@@ -731,11 +809,15 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   test "only the first same-tool success after a failure creates a remediation candidate" do
     previous_llm = Application.get_env(:backplane_memory, :llm_client)
     Application.put_env(:backplane_memory, :llm_client, Backplane.Memory.TestLLMClient)
+    previous_model = :ets.lookup(:backplane_settings, "memory.llm_model")
+    :ets.insert(:backplane_settings, {"memory.llm_model", "test-model"})
     :ets.insert(:backplane_settings, {"memory.lesson_auto_extract", true})
 
     on_exit(fn ->
       restore_env(:llm_client, previous_llm)
       :ets.delete(:backplane_settings, "memory.lesson_auto_extract")
+      :ets.delete(:backplane_settings, "memory.llm_model")
+      Enum.each(previous_model, &:ets.insert(:backplane_settings, &1))
     end)
 
     Styx.Testing.with_testing_mode(:manual, fn ->
@@ -851,6 +933,16 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
             }} = ingest(event)
 
     refute repo().get(Event, event["event_id"])
+    refute RepairFrontier.get(repo(), event["host_id"], event["session_id"])
+
+    refute repo().exists?(
+             from(job in Styx.Job,
+               where:
+                 job.worker == "Backplane.Memory.Workers.ProjectionRepairWorker" and
+                   fragment("?->>'host_id'", job.args) == ^event["host_id"] and
+                   fragment("?->>'session_id'", job.args) == ^event["session_id"]
+             )
+           )
   end
 
   defp captured_event(host_id, session_id, sequence, event_type, payload \\ %{}) do
@@ -963,4 +1055,159 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane_memory, key)
   defp restore_env(key, value), do: Application.put_env(:backplane_memory, key, value)
+
+  defp assert_memory_jobs(workers) do
+    actual = Styx.Testing.all_enqueued(repo(), queue: :memory)
+    assert Enum.sort(Enum.map(actual, & &1.worker)) == Enum.sort(Enum.map(workers, &inspect/1))
+  end
+end
+
+defmodule Backplane.Memory.Projections.ProjectionRepairCommitTest do
+  use ExUnit.Case, async: false
+
+  import Ecto.Query
+  import Backplane.Memory.IngestFixtures
+
+  alias Backplane.Memory.Events.{Event, Stream}
+  alias Backplane.Memory.Ingest
+  alias Backplane.Memory.Projections.RepairFrontier
+  alias Ecto.Adapters.SQL.Sandbox
+
+  test "a caller crash after commit but before ACK retains one event and durable repair on retry" do
+    host_id = "committed-capture-#{Ecto.UUID.generate()}"
+    session_id = "session-#{Ecto.UUID.generate()}"
+
+    event =
+      valid_event(%{
+        "host_id" => host_id,
+        "session_id" => session_id,
+        "idempotency_key" => "#{host_id}:#{session_id}:1"
+      })
+
+    batch = %{"batch_id" => Ecto.UUID.generate(), "host_id" => host_id, "events" => [event]}
+    previous_enabled = Application.get_env(:backplane_memory, :projection_repair_enabled)
+    previous_enqueue = Application.get_env(:backplane_memory, :projection_repair_enqueue)
+    Application.put_env(:backplane_memory, :projection_repair_enabled, true)
+    Application.delete_env(:backplane_memory, :projection_repair_enqueue)
+
+    on_exit(fn ->
+      for {key, value} <- [
+            projection_repair_enabled: previous_enabled,
+            projection_repair_enqueue: previous_enqueue
+          ] do
+        if is_nil(value),
+          do: Application.delete_env(:backplane_memory, key),
+          else: Application.put_env(:backplane_memory, key, value)
+      end
+
+      # These connections really commit; remove only this test's generated partition.
+      Sandbox.unboxed_run(repo(), fn ->
+        repo().transaction(fn ->
+          # Captured events are immutable; match the existing committed-event test cleanup.
+          repo().query!("SET LOCAL session_replication_role = replica")
+          repo().delete_all(repair_jobs(host_id, session_id))
+
+          repo().delete_all(
+            from(row in RepairFrontier,
+              where: row.host_id == ^host_id and row.session_id == ^session_id
+            )
+          )
+
+          repo().delete_all(
+            from(row in Event, where: row.id == ^event["event_id"] and row.host_id == ^host_id)
+          )
+
+          repo().delete_all(from(row in Stream, where: row.host_id == ^host_id))
+
+          repo().delete_all(
+            from(row in Backplane.MemorySpaces.MemorySpace,
+              where: row.id == ^memory_space_id(host_id)
+            )
+          )
+        end)
+      end)
+    end)
+
+    owner = self()
+    barrier = make_ref()
+
+    {caller, monitor} =
+      spawn_monitor(fn ->
+        Sandbox.unboxed_run(repo(), fn ->
+          auth = ingest_auth_context(host_id)
+
+          Styx.Testing.with_testing_mode(:manual, fn ->
+            assert {:ok,
+                    %{
+                      "results" => [
+                        %{"status" => "accepted", "server_event_id" => event_id}
+                      ]
+                    }} = Ingest.ingest_batch(auth, batch)
+
+            refute repo().in_transaction?()
+            [[backend]] = repo().query!("SELECT pg_backend_pid()").rows
+            send(owner, {:committed_without_ack, barrier, event_id, backend})
+
+            receive do
+              {:release_ack, ^barrier} -> send(owner, {:ack_delivered, barrier})
+            after
+              10_000 -> exit(:ack_barrier_timeout)
+            end
+          end)
+        end)
+      end)
+
+    on_exit(fn ->
+      shutdown = Process.monitor(caller)
+      if Process.alive?(caller), do: Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^shutdown, :process, ^caller, _}, 5_000
+    end)
+
+    assert_receive {:committed_without_ack, ^barrier, event_id, writer_backend}, 5_000
+    assert event_id == event["event_id"]
+
+    {frontier, job_id} =
+      Sandbox.unboxed_run(repo(), fn ->
+        [[reader_backend]] = repo().query!("SELECT pg_backend_pid()").rows
+        refute reader_backend == writer_backend
+        assert %Event{id: ^event_id} = repo().get(Event, event_id)
+
+        assert %RepairFrontier{requested_generation: 1, completed_generation: 0} =
+                 frontier =
+                 RepairFrontier.get(repo(), host_id, session_id)
+
+        assert [%Styx.Job{id: job_id, state: "available"}] =
+                 repo().all(repair_jobs(host_id, session_id))
+
+        {frontier, job_id}
+      end)
+
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^caller, :killed}, 5_000
+    refute_received {:ack_delivered, ^barrier}
+
+    Sandbox.unboxed_run(repo(), fn ->
+      Styx.Testing.with_testing_mode(:manual, fn ->
+        assert {:ok, %{"results" => [%{"status" => "duplicate", "server_event_id" => ^event_id}]}} =
+                 Ingest.ingest_batch(ingest_auth_context(host_id), batch)
+      end)
+
+      assert repo().aggregate(from(row in Event, where: row.host_id == ^host_id), :count) == 1
+      assert RepairFrontier.get(repo(), host_id, session_id) == frontier
+
+      assert [%Styx.Job{id: ^job_id, state: "available"}] =
+               repo().all(repair_jobs(host_id, session_id))
+    end)
+  end
+
+  defp repair_jobs(host_id, session_id) do
+    from(job in Styx.Job,
+      where:
+        job.worker == "Backplane.Memory.Workers.ProjectionRepairWorker" and
+          fragment("?->>'host_id'", job.args) == ^host_id and
+          fragment("?->>'session_id'", job.args) == ^session_id
+    )
+  end
+
+  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 end

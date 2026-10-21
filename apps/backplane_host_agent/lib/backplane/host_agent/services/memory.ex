@@ -7,10 +7,11 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   alias Backplane.HostAgent.{Memory, MemoryFacade}
   alias Backplane.HostAgent.Memory.{ImportRunner, ImportSupervisor}
+  alias Backplane.HostAgent.Memory.Edge.Syncer, as: EdgeSyncer
   alias Backplane.HostAgent.Memory.Store
   alias Backplane.MemoryToolContract
 
-  @facade_methods ~w(remember recall list forget stats)
+  @facade_methods ~w(remember recall list forget stats facet_tag facet_query)
 
   @impl true
   def prefix, do: "memory"
@@ -36,19 +37,30 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   @impl true
   def call(method, args, ctx) when is_binary(method) and is_map(args) and is_map(ctx) do
-    if method in @facade_methods do
-      call_facade(method, args, ctx)
+    if Enum.any?(
+         ~w(memory_space_id host_id client_id partition_id namespace),
+         &Map.has_key?(args, &1)
+       ) or
+         (Map.has_key?(args, "memory_access_id") and
+            method not in ~w(remember recall list forget stats)) do
+      {:error, :invalid_request}
     else
-      call_legacy(method, args, ctx)
+      if method in @facade_methods do
+        call_facade(method, args, ctx)
+      else
+        call_legacy(method, args, ctx)
+      end
     end
   end
 
   defp call_facade(method, args, ctx) do
-    case facade(ctx).call(method, args, facade_context(ctx)) do
-      {:ok, %{} = result} -> {:ok, result}
-      {:ok, other} -> {:error, {:memory_facade_unavailable, {:unexpected_reply, {:ok, other}}}}
-      {:error, _reason} = error -> error
-      other -> {:error, {:memory_facade_unavailable, {:unexpected_reply, other}}}
+    with {:ok, context} <- facade_context(ctx, args) do
+      case facade(ctx).call(method, args, context) do
+        {:ok, %{} = result} -> {:ok, result}
+        {:ok, other} -> {:error, {:memory_facade_unavailable, {:unexpected_reply, {:ok, other}}}}
+        {:error, _reason} = error -> error
+        other -> {:error, {:memory_facade_unavailable, {:unexpected_reply, other}}}
+      end
     end
   rescue
     error -> {:error, {:memory_facade_unavailable, {:exception, error}}}
@@ -71,44 +83,6 @@ defmodule Backplane.HostAgent.Services.Memory do
   defp do_call("slot_read", args, opts), do: Memory.slot_read(args, opts)
   defp do_call("slot_write", args, opts), do: Memory.slot_write(args, opts)
   defp do_call("slot_list", args, opts), do: Memory.slot_list(args, opts)
-  defp do_call("facet_tag", args, opts), do: Memory.facet_tag(normalize_facet_tag(args), opts)
-
-  defp do_call("facet_query", args, opts),
-    do: Memory.facet_query(normalize_facet_query(args), opts)
-
-  defp normalize_facet_tag(%{"memory_id" => memory_id, "facets" => facets} = args)
-       when is_binary(memory_id) and is_list(facets) do
-    case facets_to_metadata(facets) do
-      {:ok, metadata} -> args |> Map.put("id", memory_id) |> Map.put("metadata", metadata)
-      :error -> args
-    end
-  end
-
-  defp normalize_facet_tag(args), do: args
-
-  defp normalize_facet_query(%{"facets" => facets} = args) when is_list(facets) do
-    case facets_to_metadata(facets) do
-      {:ok, metadata} -> Map.put(args, "metadata", metadata)
-      :error -> args
-    end
-  end
-
-  defp normalize_facet_query(args), do: args
-
-  defp facets_to_metadata(facets) do
-    Enum.reduce_while(facets, {:ok, %{}}, fn
-      %{"dimension" => dimension, "value" => value}, {:ok, metadata}
-      when is_binary(dimension) and is_binary(value) ->
-        {:cont, {:ok, Map.put(metadata, dimension, value)}}
-
-      %{dimension: dimension, value: value}, {:ok, metadata}
-      when is_binary(dimension) and is_binary(value) ->
-        {:cont, {:ok, Map.put(metadata, dimension, value)}}
-
-      _facet, _metadata ->
-        {:halt, :error}
-    end)
-  end
 
   defp replay_import(%{"profile" => profile} = args, ctx) when is_binary(profile) do
     memory_config = Application.get_env(:backplane_host_agent, :memory_config, %{})
@@ -181,11 +155,22 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   defp facade(ctx), do: Map.get(ctx, :memory_facade, MemoryFacade)
 
-  defp facade_context(ctx) do
-    ctx
-    |> Map.put_new(:agent_id, "local")
-    |> Map.put_new(:store, Application.get_env(:backplane_host_agent, :memory_store, Store))
-    |> Map.put_new(:config, Application.get_env(:backplane_host_agent, :memory_config, %{}))
+  defp facade_context(ctx, args) do
+    context =
+      ctx
+      |> Map.put_new(:agent_id, "local")
+      |> Map.put_new(:store, Application.get_env(:backplane_host_agent, :memory_store, Store))
+      |> Map.put_new(:config, Application.get_env(:backplane_host_agent, :memory_config, %{}))
+
+    if Map.has_key?(args, "memory_access_id") do
+      {:ok, context}
+    else
+      case EdgeSyncer.read_context(args) do
+        {:ok, edge} -> {:ok, Map.merge(edge, context)}
+        {:error, :mirror_unavailable} -> {:ok, context}
+        {:error, _reason} = error -> error
+      end
+    end
   end
 
   defp bounded_cap(value, maximum) when is_integer(value) and value > 0, do: min(value, maximum)

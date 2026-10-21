@@ -22,7 +22,8 @@ defmodule Backplane.HostAgent.Channel do
     opts = [
       url: Map.fetch!(config, :socket_url),
       headers: headers,
-      reconnect?: true,
+      # Worker owns reconnect and refreshes all consumers after a fresh join.
+      reconnect?: false,
       reconnect_interval: min(Map.get(config, :interval_ms, 60_000), 60_000),
       default_channel_module: channel_module,
       # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#96
@@ -31,9 +32,15 @@ defmodule Backplane.HostAgent.Channel do
       transport_opts: [headers: headers]
     ]
 
-    with {:ok, socket} <- start_or_reuse_socket(socket_client_module, opts),
-         :ok <- ensure_connected(socket_client_module, socket) do
-      {:ok, socket}
+    with {:ok, socket} <- start_or_reuse_socket(socket_client_module, opts) do
+      case ensure_connected(socket_client_module, socket) do
+        :ok ->
+          {:ok, socket}
+
+        {:error, _} = error ->
+          retire_socket(socket)
+          error
+      end
     end
   end
 
@@ -70,8 +77,20 @@ defmodule Backplane.HostAgent.Channel do
     payload = Syncer.join_payload()
 
     case edge_offer() do
-      {:ok, offer} -> Map.put(payload, "memory_v2", offer)
-      :disabled -> payload
+      {:ok, offer} ->
+        Map.put(
+          payload,
+          "memory_v2",
+          Map.put(offer, "extensions", ["memory_access.v1", "memory_commands.v2"])
+        )
+
+      :disabled ->
+        Map.put(payload, "memory_v2", %{
+          "offers" => ["host_memory.v2"],
+          "partitions" => [],
+          "max_frame_bytes" => 524_288,
+          "extensions" => ["memory_access.v1", "memory_commands.v2"]
+        })
     end
   end
 
@@ -92,5 +111,49 @@ defmodule Backplane.HostAgent.Channel do
   @doc "Pushes an event through the joined host-agent channel."
   def push(channel, event, payload, timeout \\ 5_000) do
     Phoenix.SocketClient.Channel.push(channel, event, payload, timeout)
+  end
+
+  @doc false
+  def retire_socket(socket) when is_pid(socket) do
+    Process.unlink(socket)
+
+    client =
+      Application.get_env(:backplane_host_agent, :socket_client_module, Phoenix.SocketClient)
+
+    try do
+      try do
+        client.disconnect(socket)
+
+        # disconnect/1 is asynchronous. Let cancellation finish while the parent
+        # supervisor can still serve the socket's cleanup calls.
+        if function_exported?(client, :connection_info, 1), do: client.connection_info(socket)
+      catch
+        :exit, _ -> :ok
+      end
+
+      retire(socket)
+    catch
+      :exit, _ -> {:error, :socket_retirement_failed}
+    end
+  end
+
+  @doc false
+  def retire(channel) when is_pid(channel) do
+    ref = Process.monitor(channel)
+
+    try do
+      GenServer.stop(channel, :normal, 5_000)
+    catch
+      :exit, {:noproc, _} -> :ok
+      :exit, {:timeout, _} -> Process.exit(channel, :kill)
+    end
+
+    receive do
+      {:DOWN, ^ref, :process, ^channel, _reason} -> :ok
+    after
+      1_000 ->
+        Process.demonitor(ref, [:flush])
+        exit(:channel_retirement_timeout)
+    end
   end
 end

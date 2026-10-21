@@ -56,6 +56,33 @@ defmodule Backplane.Memory.Config do
   @default_recall_channel_limits %{fts: 50, vector: 50, graph: 50}
 
   @editable_settings [
+    {"services.memory.enabled", "Memory service", :boolean, nil, nil, :service_enabled?},
+    {@pipeline, "Processing pipeline", :boolean, nil, nil, :pipeline_enabled?},
+    {@events, "Canonical event capture", :boolean, nil, nil, :events_enabled?},
+    {@dual_write, "Event observation dual write", :boolean, nil, nil, :dual_write?},
+    {@window_summaries, "Window summaries", :boolean, nil, nil, :window_summaries_enabled?},
+    {@session_summary_v2, "Session summaries", :boolean, nil, nil, :session_summary_v2_enabled?},
+    {@fact_extraction_v2, "Fact extraction", :boolean, nil, nil, :fact_extraction_v2_enabled?},
+    {@procedure_extraction_v2, "Procedure extraction", :boolean, nil, nil,
+     :procedure_extraction_v2_enabled?},
+    {@relation_classifier, "Graph generation", :boolean, nil, nil, :relation_classifier_enabled?},
+    {@recall_v2, "Recall V2", :boolean, nil, nil, :recall_v2_enabled?},
+    {"memory.host_sync_v1.enabled", "Host sync V1", :boolean, nil, nil, :host_sync_v1_enabled?},
+    {"memory.host_sync_v2.enabled", "Host sync V2", :boolean, nil, nil, :host_sync_v2_enabled?},
+    {"memory.llm_model", "Processing model", :model, nil, nil, :llm_model},
+    {"memory.embed_model", "Embedding model (2560 dimensions)", :model, nil, nil, :embed_model},
+    {"memory.proxy_credential", "Gateway resource credential", :credential, nil, nil,
+     :proxy_credential},
+    {@session_stale_after_seconds, "Stale session seconds", :integer, 60, 10_800,
+     :session_stale_after_seconds},
+    {@fallback_sweep_batch_size, "Fallback sweep batch", :integer, 1, 500,
+     :fallback_sweep_batch_size},
+    {@recall_token_budget, "Recall token budget", :integer, 1, 100_000, :recall_token_budget},
+    {@recall_rrf_k, "Recall fusion constant", :integer, 1, 1_000, :recall_rrf_k},
+    {@recall_reranker_enabled, "Recall reranking", :boolean, nil, nil, :recall_reranker_enabled?},
+    {@recall_reranker_top_k, "Recall reranker cap", :integer, 1, 500, :recall_reranker_top_k},
+    {@lesson_decay_archive_days, "Lesson archive age days", :integer, 1, 3_660,
+     :lesson_decay_archive_days},
     {@host_batch_max_events, "Host batch maximum events", :integer, 1, 100,
      :host_batch_max_events},
     {@host_batch_max_bytes, "Host batch maximum bytes", :integer, 1, 524_288,
@@ -104,7 +131,9 @@ defmodule Backplane.Memory.Config do
         minimum: minimum,
         maximum: maximum,
         configured: Settings.get(key),
-        effective: apply(__MODULE__, accessor, [])
+        effective: apply(__MODULE__, accessor, []),
+        apply_mode: apply_mode(key),
+        reason: setting_reason(key)
       }
     end)
   end
@@ -120,7 +149,7 @@ defmodule Backplane.Memory.Config do
     with {:ok, spec} <- fetch_setting_spec(key),
          {:ok, value} <- parse_setting(raw_value, spec),
          previous = Settings.get(key),
-         :ok <- Settings.set(key, value),
+         :ok <- persist_setting(key, value),
          :ok <-
            Audit.log("memory.config.set", actor, %{setting: key}, %{
              request_id: request_id,
@@ -131,11 +160,25 @@ defmodule Backplane.Memory.Config do
              changed: previous !== value,
              content_exposed: false
            }) do
+      if previous !== value, do: resume_processing(key)
       {:ok, value}
     end
   end
 
   def update_setting(_key, _raw_value, _context), do: {:error, :unauthorized}
+
+  # Preserve the guarded rollout transitions and explicit dual-write confirmation
+  # already owned by Pipeline controls.
+  defp persist_setting(@dual_write, true), do: {:error, :requires_pipeline_controls}
+
+  defp persist_setting(@dual_write, false),
+    do: Backplane.Memory.Operations.set_gate(:dual_write, false)
+
+  defp persist_setting(@pipeline, value),
+    do: Backplane.Memory.Operations.set_gate(:pipeline, value)
+
+  defp persist_setting(@events, value), do: Backplane.Memory.Operations.set_gate(:events, value)
+  defp persist_setting(key, value), do: Settings.set(key, value)
 
   defp fetch_setting_spec(key) do
     case Enum.find(@editable_settings, fn {candidate, _, _, _, _, _} -> candidate == key end) do
@@ -162,6 +205,32 @@ defmodule Backplane.Memory.Config do
       {:ok, number / 1}
     else
       _ -> {:error, :invalid_value}
+    end
+  end
+
+  defp parse_setting(value, {:model, nil, nil}) when is_binary(value) do
+    value = String.trim(value)
+
+    cond do
+      value == "" -> {:ok, nil}
+      byte_size(value) <= 256 and not Regex.match?(~r/\s|[\x00-\x1F]/u, value) -> {:ok, value}
+      true -> {:error, :invalid_value}
+    end
+  end
+
+  defp parse_setting("", {:credential, nil, nil}), do: {:ok, nil}
+
+  defp parse_setting(value, {:credential, nil, nil}) when is_binary(value) do
+    case Backplane.Settings.Credentials.Vault.get(value) do
+      %{kind: "service", metadata: metadata} ->
+        auth_type = (metadata || %{})["auth_type"]
+
+        if auth_type in [nil, "api_key"],
+          do: {:ok, value},
+          else: {:error, :invalid_value}
+
+      _ ->
+        {:error, :invalid_value}
     end
   end
 
@@ -193,6 +262,91 @@ defmodule Backplane.Memory.Config do
   defp value_class(value) when is_float(value), do: "float"
   defp value_class(nil), do: "unset"
   defp value_class(_value), do: "other"
+
+  def service_enabled?, do: enabled?("services.memory.enabled")
+  def llm_model, do: normalized_setting("memory.llm_model")
+  def embed_model, do: normalized_setting("memory.embed_model")
+  def proxy_credential, do: normalized_setting("memory.proxy_credential")
+
+  defp normalized_setting(key) do
+    case Settings.get(key) do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: nil, else: String.trim(value)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp apply_mode("memory.host_" <> _),
+    do: "Central live policy; host applies on next negotiation/report"
+
+  defp apply_mode("services.memory.enabled"),
+    do: "Live; updates tool and prompt discovery"
+
+  defp apply_mode(_), do: "Live; persisted across restart"
+
+  defp setting_reason(key) when key in ["memory.llm_model", "memory.embed_model"] do
+    if normalized_setting(key),
+      do: "Selected route; provider resolution and last request status shown below",
+      else: "No model selected"
+  end
+
+  defp setting_reason("memory.proxy_credential") do
+    if proxy_credential(),
+      do: "Named service credential; secret never displayed",
+      else: "No resource bearer; requests require an open development resource"
+  end
+
+  defp setting_reason(key) do
+    cond do
+      key in [
+        @lesson_auto_extract,
+        @crystals_enabled,
+        @crystal_session_enabled,
+        @crystal_action_enabled
+      ] and not llm_configured?() ->
+        "Blocked: no processing model selected"
+
+      key in [
+        @events,
+        @dual_write,
+        @window_summaries,
+        @session_summary_v2,
+        @fact_extraction_v2,
+        @procedure_extraction_v2,
+        @relation_classifier,
+        @recall_v2
+      ] and not pipeline_enabled?() ->
+        "Blocked: processing pipeline disabled"
+
+      true ->
+        "Effective policy shown; queued stages recheck before publication"
+    end
+  end
+
+  defp resume_processing(key) do
+    if key in [
+         @pipeline,
+         @window_summaries,
+         @session_summary_v2,
+         @fact_extraction_v2,
+         @procedure_extraction_v2,
+         @relation_classifier,
+         @lesson_auto_extract,
+         @crystals_enabled,
+         @crystal_session_enabled,
+         "memory.llm_model"
+       ] do
+      Backplane.Memory.Workers.StageResumeWorker.enqueue()
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
 
   def pipeline_enabled?, do: enabled?(@pipeline)
   def events_enabled?, do: pipeline_enabled?() and enabled?(@events)
@@ -359,7 +513,10 @@ defmodule Backplane.Memory.Config do
   end
 
   defp llm_configured? do
-    not is_nil(Application.get_env(:backplane_memory, :llm_client))
+    case Settings.get("memory.llm_model") do
+      model when is_binary(model) -> String.trim(model) != ""
+      _ -> false
+    end
   end
 
   defp bounded_channel_map(value, default, validator) when is_map(value) do

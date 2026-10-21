@@ -10,6 +10,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
   """
 
   alias Backplane.HostAgent.{Channel, Connector, Telemetry, Trace}
+  alias Backplane.HostAgent.Memory.Access
 
   @methods ~w(remember recall list forget stats lifecycle_context)
   @method_set MapSet.new(@methods)
@@ -45,6 +46,108 @@ defmodule Backplane.HostAgent.MemoryProxy do
     :ok
   end
 
+  @doc "Keep a rejected connection fail-closed until a fresh authenticated join succeeds."
+  def set_connection_error(reason, owner) do
+    case state() do
+      %{connection_owner: ^owner} = current -> remember_rejection(current, reason)
+      _ -> :ok
+    end
+  end
+
+  @doc false
+  def retain_credential_rejection(reason, channel, generation)
+
+  def retain_credential_rejection(
+        %{"code" => "unauthorized", "retryable" => false} = reason,
+        channel,
+        generation
+      )
+      when is_pid(channel) do
+    case state() do
+      %{channel: ^channel, memory_generation: %{id: ^generation}} = current ->
+        :persistent_term.put(__MODULE__, Map.put(current, :connection_error, reason))
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  def retain_credential_rejection(_, _, _), do: :ok
+
+  defp remember_rejection(current, reason) do
+    if connection_rejection?(reason) do
+      :persistent_term.put(__MODULE__, Map.put(current, :connection_error, reason))
+
+      if current[:memory_generation],
+        do: Access.fence(:all, :connection_rejected, current.memory_generation)
+    end
+
+    :ok
+  end
+
+  @doc "Check a retained credential rejection before accepting a protected local command."
+  def authorize_command do
+    case state() do
+      %{connection_error: reason} -> {:error, reason}
+      _ -> :ok
+    end
+  end
+
+  defp connection_rejection?(reason) when reason in [:unauthorized, "unauthorized"], do: true
+  defp connection_rejection?(%{"retryable" => false}), do: true
+  defp connection_rejection?(%{retryable: false}), do: true
+  defp connection_rejection?(%{"reason" => "unauthorized"}), do: true
+  defp connection_rejection?(%{reason: "unauthorized"}), do: true
+  defp connection_rejection?({:unexpected_status, status}) when status in 400..499, do: true
+  defp connection_rejection?(_), do: false
+
+  @doc "Assign reconnect ownership to the worker before exposing the local API."
+  def set_connection_owner(owner) when is_pid(owner) do
+    current = state_map()
+    previous = Map.get(current, :connection_owner)
+
+    cond do
+      previous == owner ->
+        :ok
+
+      is_pid(previous) and Process.alive?(previous) ->
+        {:error, :connection_owned}
+
+      true ->
+        if Map.has_key?(current, :connection_owner),
+          do: stop_owned_channel(Map.get(current, :channel))
+
+        :persistent_term.put(
+          __MODULE__,
+          current |> Map.put(:connection_owner, owner) |> Map.put(:channel, nil)
+        )
+
+        :ok
+    end
+  end
+
+  @doc "Release only the calling worker's connection without enabling request reconnects."
+  def clear_connection_owner(owner) do
+    case state() do
+      %{connection_owner: ^owner} = current ->
+        :persistent_term.put(__MODULE__, %{current | connection_owner: nil, channel: nil})
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  defp stop_owned_channel(channel) when is_pid(channel) do
+    if channel != self() and Process.alive?(channel), do: Channel.retire(channel)
+    :ok
+  end
+
+  defp stop_owned_channel(_channel), do: :ok
+
   @doc """
   Set the live connection used for local memory calls.
 
@@ -61,15 +164,35 @@ defmodule Backplane.HostAgent.MemoryProxy do
     unlink_process(socket)
     close_replaced_socket(Map.get(previous, :socket), socket)
 
-    :persistent_term.put(__MODULE__, %{
+    next = %{
       channel: channel,
       config: config,
       host_id: Map.get(connection, :host_id),
       host_name: Map.get(connection, :host_name),
       socket: socket
-    })
+    }
 
-    :ok
+    next =
+      if Map.has_key?(previous, :connection_owner),
+        do: Map.put(next, :connection_owner, previous.connection_owner),
+        else: next
+
+    next = Map.put(next, :memory_generation, connection[:memory_generation])
+
+    inventory_result =
+      case connection do
+        %{memory: %{"extensions" => extensions} = memory, memory_generation: generation}
+        when is_list(extensions) ->
+          if "memory_access.v1" in extensions,
+            do: Access.install_inventory(generation, memory),
+            else: :ok
+
+        _ ->
+          :ok
+      end
+
+    :persistent_term.put(__MODULE__, next)
+    inventory_result
   end
 
   @doc "Get the current channel pid, or nil."
@@ -123,7 +246,33 @@ defmodule Backplane.HostAgent.MemoryProxy do
             Application.get_env(:backplane_host_agent, :connector_module, Connector)
 
         timeout = request_timeout(method, Keyword.get(opts, :timeout, 5_000))
-        push_with_reconnect(push_module, connector_module, payload, timeout)
+
+        case Keyword.get(opts, :access) do
+          %{"access_id" => id, "authority_version" => version} = access
+          when is_binary(id) and is_integer(version) ->
+            case state() do
+              %{channel: channel, memory_generation: %{id: generation}} when is_pid(channel) ->
+                if generation == Keyword.get(opts, :connection_generation),
+                  do:
+                    push_channel(
+                      push_module,
+                      channel,
+                      Map.put(payload, "access", access),
+                      timeout,
+                      generation
+                    ),
+                  else: {:error, :stale_connection}
+
+              _ ->
+                {:error, :not_connected}
+            end
+
+          nil ->
+            push_with_reconnect(push_module, connector_module, payload, timeout)
+
+          _ ->
+            {:error, :invalid_request}
+        end
     end
   end
 
@@ -133,7 +282,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
         {:error, :not_connected} ->
           mark_channel_dead()
 
-          with {:ok, reconnected_channel} <- reconnect(connector_module, push_module) do
+          with {:ok, reconnected_channel} <- reconnect(connector_module, push_module, channel) do
             push_channel(push_module, reconnected_channel, payload, timeout)
           end
 
@@ -145,12 +294,30 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
   defp ensure_channel(connector_module, channel_module) do
     case state() do
+      %{connection_error: reason} ->
+        {:error, reason}
+
+      %{connection_owner: owner} when not is_pid(owner) ->
+        {:error, :not_connected}
+
+      %{connection_owner: owner} ->
+        if Process.alive?(owner),
+          do: ensure_owned_or_unmanaged_channel(connector_module, channel_module),
+          else: {:error, :not_connected}
+
+      _ ->
+        ensure_owned_or_unmanaged_channel(connector_module, channel_module)
+    end
+  end
+
+  defp ensure_owned_or_unmanaged_channel(connector_module, channel_module) do
+    case state() do
       %{channel: channel} when is_pid(channel) ->
         if Process.alive?(channel) do
           {:ok, channel}
         else
           mark_channel_dead()
-          reconnect(connector_module, channel_module)
+          reconnect(connector_module, channel_module, channel)
         end
 
       channel when is_pid(channel) ->
@@ -169,14 +336,27 @@ defmodule Backplane.HostAgent.MemoryProxy do
     end
   end
 
-  defp push_channel(push_module, channel, payload, timeout) do
-    case safe_push(push_module, channel, payload, timeout) do
-      {:ok, %{"ok" => true, "result" => result}} -> {:ok, result}
-      {:ok, %{"error" => error}} -> {:error, error}
-      {:ok, reply} -> {:ok, reply}
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:unexpected_reply, other}}
+  defp push_channel(push_module, channel, payload, timeout, generation \\ nil) do
+    result =
+      case safe_push(push_module, channel, payload, timeout) do
+        {:ok, %{"ok" => true, "result" => result}} -> {:ok, result}
+        {:ok, %{"error" => error}} -> {:error, error}
+        {:ok, reply} -> {:ok, reply}
+        {:error, reason} -> {:error, reason}
+        other -> {:error, {:unexpected_reply, other}}
+      end
+
+    case {result, state()} do
+      {{:error, reason}, %{channel: ^channel} = current} ->
+        if Map.has_key?(payload, "access"),
+          do: retain_credential_rejection(reason, channel, generation),
+          else: remember_rejection(current, reason)
+
+      _ ->
+        :ok
     end
+
+    result
   end
 
   defp safe_push(push_module, channel, payload, timeout) do
@@ -195,7 +375,23 @@ defmodule Backplane.HostAgent.MemoryProxy do
   defp request_timeout(_method, timeout) when is_integer(timeout) and timeout > 0, do: timeout
   defp request_timeout(_method, _timeout), do: 5_000
 
-  defp reconnect(connector_module, channel_module) do
+  defp reconnect(connector_module, channel_module, observed_channel \\ nil) do
+    case state() do
+      %{connection_owner: owner} = current ->
+        # Even if the owner has stopped, requests must not become a second
+        # connection manager. Its replacement claims ownership during boot.
+        if is_pid(owner) and Process.alive?(owner),
+          do:
+            send(owner, {:memory_connection_lost, observed_channel || Map.get(current, :channel)})
+
+        {:error, :not_connected}
+
+      _ ->
+        reconnect_unmanaged(connector_module, channel_module)
+    end
+  end
+
+  defp reconnect_unmanaged(connector_module, channel_module) do
     :global.trans(
       {@reconnect_lock_resource, self()},
       fn -> reconnect_locked(connector_module, channel_module) end,
@@ -265,13 +461,14 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
   defp connect_new_socket(connector_module) do
     case state() do
-      %{config: config} when not is_nil(config) ->
+      %{config: config} = observed when not is_nil(config) ->
         case connector_module.connect(config) do
           {:ok, %{channel: channel} = connection} when is_pid(channel) ->
             set_connection(connection, config)
             {:ok, channel}
 
           {:error, reason} ->
+            if state() == observed, do: remember_rejection(observed, reason)
             {:error, {:reconnect_failed, reason}}
         end
 
@@ -296,6 +493,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
   defp mark_channel_dead do
     case state() do
+      %{connection_owner: _owner} -> :ok
       %{config: _config} = current -> :persistent_term.put(__MODULE__, %{current | channel: nil})
       _ -> set_channel(nil)
     end

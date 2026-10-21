@@ -28,6 +28,10 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
     def call(_method, _args, _opts), do: {:error, "partition_mismatch"}
   end
 
+  defmodule UnsupportedProtocolRemote do
+    def call(_method, _args, _opts), do: {:error, "unsupported_protocol"}
+  end
+
   defmodule RealCommandChannel do
     def push(_connected_pid, event, payload, _timeout \\ 5_000) do
       socket = Process.get({__MODULE__, :socket})
@@ -267,8 +271,11 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
   end
 
   test "Scenario D: a canonical denial cannot fall back to a populated local mirror", c do
-    insert_memory(c, "never reveal after denial")
+    id = insert_memory(c, "never reveal secret after denial")
     transfer(c, 0)
+
+    assert {:ok, %{"items" => [%{"canonical_id" => ^id}]}} =
+             Mirror.offline_read("recall", Map.put(c.partition, "query", "secret"), c.mirror_opts)
 
     command_store =
       start_supervised!(
@@ -295,7 +302,8 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
 
     for {adapter, error} <- [
           {DeniedRemote, "unauthorized"},
-          {PartitionMismatchRemote, "partition_mismatch"}
+          {PartitionMismatchRemote, "partition_mismatch"},
+          {UnsupportedProtocolRemote, "unsupported_protocol"}
         ] do
       assert {:error, ^error} =
                MemoryFacade.call("recall", %{"query" => "secret"}, %{

@@ -78,6 +78,7 @@ defmodule Backplane.Skills.AgentManage.Manager do
        runtime: %{},
        last_heartbeat_at: nil,
        config: nil,
+       config_reported_at: nil,
        last_sync: nil,
        last_error: nil,
        pending_plugin_calls: %{}
@@ -86,13 +87,17 @@ defmodule Backplane.Skills.AgentManage.Manager do
 
   @impl true
   def handle_call({:register_connection, auth_token, channel_pid, metadata}, _from, state) do
-    state =
-      state
-      |> remove_connection(notify?: true, reason: :replaced)
-      |> put_connection(auth_token, channel_pid, metadata)
+    if Enum.any?(state.tokens, &(&1.id == auth_token.id)) do
+      state =
+        state
+        |> remove_connection(notify?: true, reason: :replaced)
+        |> put_connection(auth_token, channel_pid, metadata)
 
-    broadcast_changed()
-    {:reply, :ok, state}
+      broadcast_changed()
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :unauthorized}, state}
+    end
   end
 
   def handle_call({:refresh, host, tokens}, _from, state) do
@@ -125,7 +130,7 @@ defmodule Backplane.Skills.AgentManage.Manager do
   end
 
   def handle_call({:report_config, config}, _from, state) do
-    state = %{state | config: config}
+    state = %{state | config: config, config_reported_at: DateTime.utc_now()}
     broadcast_changed()
     {:reply, :ok, state}
   end
@@ -223,9 +228,9 @@ defmodule Backplane.Skills.AgentManage.Manager do
   end
 
   defp discard_omitted_capture(stored_runtime, incoming_runtime) do
-    if Map.has_key?(incoming_runtime, :capture),
-      do: stored_runtime,
-      else: Map.delete(stored_runtime, :capture)
+    Enum.reduce([:capture, :memory], stored_runtime, fn key, runtime ->
+      if Map.has_key?(incoming_runtime, key), do: runtime, else: Map.delete(runtime, key)
+    end)
   end
 
   defp mark_capture_disconnected(%{capture: capture} = runtime) when is_map(capture) do
@@ -281,6 +286,7 @@ defmodule Backplane.Skills.AgentManage.Manager do
       runtime: state.runtime,
       last_heartbeat_at: state.last_heartbeat_at,
       config: state.config,
+      config_reported_at: state.config_reported_at,
       last_sync: state.last_sync,
       last_error: state.last_error,
       tokens: Enum.map(state.tokens, &Map.take(&1, [:id, :name]))

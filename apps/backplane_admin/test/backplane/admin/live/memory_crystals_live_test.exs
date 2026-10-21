@@ -10,11 +10,16 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
   alias Backplane.Skills.Host
 
   setup do
+    model_rows = :ets.lookup(:backplane_settings, "memory.llm_model")
+    :ets.insert(:backplane_settings, {"memory.llm_model", "ui-fixture/model"})
     previous_llm = Application.get_env(:backplane_memory, :llm_client)
     Application.put_env(:backplane_memory, :llm_client, __MODULE__)
     partition = partition_fixture("crystals-ui")
 
     on_exit(fn ->
+      :ets.delete(:backplane_settings, "memory.llm_model")
+      :ets.insert(:backplane_settings, model_rows)
+
       if previous_llm,
         do: Application.put_env(:backplane_memory, :llm_client, previous_llm),
         else: Application.delete_env(:backplane_memory, :llm_client)
@@ -65,7 +70,13 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
     assert has_element?(view, "#crystal-detail", "crystal-action-v1")
     assert has_element?(view, "#crystal-rerun")
     assert has_element?(view, ~s(a[href*="/sources/actions/#{action_id}"]))
-    assert has_element?(view, ~s(a[href*="/sources/summaries/#{summary_id}"]))
+
+    assert has_element?(
+             view,
+             ~s(a[href*="/sources/summaries/#{summary_id}"]),
+             "Historical summary"
+           )
+
     assert has_element?(view, ~s(a[href*="/sources/sessions/#{session_id}"]))
 
     for {kind, id, expected} <- [
@@ -97,7 +108,7 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
     assert target_id == crystal.id
   end
 
-  test "foreign partition detail returns a readable 404 without private content", %{
+  test "foreign partition detail stays unavailable with a selection-preserving return link", %{
     conn: conn,
     partition: partition
   } do
@@ -116,9 +127,8 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
 
     html = conn |> get(path) |> html_response(404)
     assert html =~ "memory-missing-detail"
-    assert html =~ "Return to Memory inventory"
-    refute html =~ crystal.title
-    refute html =~ crystal.narrative
+    assert html =~ foreign.memory_space_id
+    refute html =~ "Private detail"
   end
 
   test "source detail rejects an unlinked or foreign source", %{
@@ -141,6 +151,25 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
         partition_query(foreign_partition)
 
     assert conn |> recycle() |> get(foreign_partition_path) |> response(404) == "not found"
+  end
+
+  @tag :provenance_navigation
+  test "source event links retain exact partition", %{conn: conn, partition: partition} do
+    crystal = crystal("Event source crystal", partition)
+    event = Backplane.Admin.MemoryFixtures.event_fixture(partition)
+
+    Backplane.Repo.insert!(%Backplane.Memory.Crystals.SourceEvent{
+      crystal_id: crystal.id,
+      event_id: event.id,
+      inserted_at: DateTime.utc_now()
+    })
+
+    {:ok, view, _} = live(conn, crystal_detail_path(crystal.id, partition))
+
+    assert has_element?(
+             view,
+             ~s(#crystal-evidence a[href="/memory/events/#{event.id}?#{partition_query(partition)}"])
+           )
   end
 
   defp crystal(title, partition) do

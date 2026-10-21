@@ -180,6 +180,9 @@ defmodule Backplane.Memory.Memories.RelationsTest do
                Map.put(attrs, :correlation_id, Ecto.UUID.generate())
              )
 
+    assert {:error, :idempotency_conflict} =
+             Relations.create_candidate(first.id, second.id, Map.put(attrs, :confidence, 0.99))
+
     assert {:ok, same_first} = remember("first", "invalid-a-more-evidence")
     assert same_first.id == first.id
 

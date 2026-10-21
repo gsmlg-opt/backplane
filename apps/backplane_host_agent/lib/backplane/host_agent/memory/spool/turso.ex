@@ -259,7 +259,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
     reply =
       case safe_query(
              store,
-             "SELECT state, reason, attempts, occurred_at, next_attempt_at FROM capture_event_spool WHERE event_id = ?",
+             "SELECT state, reason, attempts, occurred_at, next_attempt_at, acknowledged_at IS NOT NULL AS acknowledged FROM capture_event_spool WHERE event_id = ?",
              [event_id]
            ) do
         {:ok, %Result{rows: [row]}} ->
@@ -268,6 +268,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
              state: decode_state(row["state"]),
              reason: row["reason"],
              attempts: number(row["attempts"]),
+             acknowledged: row["acknowledged"] == 1,
              next_attempt_at: row["next_attempt_at"],
              age_warning: age_warning?(row["occurred_at"], state)
            }}

@@ -115,12 +115,83 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
     end
   end
 
+  defmodule AckFailingChannel do
+    def push(channel, "memory_next", payload, timeout),
+      do: Channel.push(channel, "memory_next", payload, timeout)
+
+    def push(_channel, "memory_ack", _payload, _timeout),
+      do: {:error, %{"code" => "private-error-secret", "token" => "private-token-secret"}}
+  end
+
+  test "bounded diagnostics identify failing stages without retaining raw errors or changing retries" do
+    for {mirror, channel, stage, error} <- [
+          {StorageFailingMirror, Channel, "offer", "storage_unavailable"},
+          {Mirror, FailingChannel, "memory_next", "timeout"},
+          {__MODULE__.PartitionCheckingMirror, __MODULE__.WrongPartitionChannel, "apply",
+           "partition_mismatch"},
+          {Mirror, AckFailingChannel, "memory_ack", "unknown"}
+        ] do
+      syncer =
+        start_syncer(
+          channel: self(),
+          selected: "host_memory.v2",
+          channel_module: channel,
+          mirror_module: mirror,
+          mirror_opts: [owner: self(), config: %{token: "config-secret"}],
+          poll_interval_ms: 1_234,
+          retry_backoff_ms: 60_000
+        )
+
+      assert_eventually(fn -> is_reference(Syncer.status(syncer).edge_retry_token) end)
+      diagnostic = Syncer.diagnostics(syncer)
+      assert diagnostic["status"] == "available"
+      assert diagnostic["last_poll_result"] == "error"
+      assert diagnostic["last_stage"] == stage
+      assert diagnostic["last_error"] == error
+      assert diagnostic["partition_index"] == if(stage == "offer", do: 0, else: 1)
+      assert diagnostic["retry_scheduled"]
+      assert diagnostic["poll_interval_ms"] == 1_234
+      refute Jason.encode!(diagnostic) =~ "secret"
+      refute Map.has_key?(diagnostic, "channel")
+      Syncer.stop(syncer)
+    end
+  end
+
+  test "bounded diagnostics report successful polling and unavailable owners honestly" do
+    syncer =
+      start_syncer(
+        channel: self(),
+        selected: "host_memory.v2",
+        channel_module: Channel,
+        mirror_module: Mirror,
+        mirror_opts: [owner: self()],
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive {:memory_ack, _}
+
+    assert %{"last_poll_result" => "ok", "last_error" => nil, "poll_scheduled" => true} =
+             Syncer.diagnostics(syncer)
+
+    :sys.suspend(syncer)
+
+    try do
+      assert %{"status" => "unavailable"} == Syncer.diagnostics(syncer)
+    after
+      :sys.resume(syncer)
+    end
+
+    Syncer.stop(syncer)
+    assert %{"status" => "unavailable"} == Syncer.diagnostics(syncer)
+  end
+
   defmodule InteractiveChannel do
     def push(channel, "memory_next", payload, _timeout) do
       send(channel, {:memory_next, self(), payload})
 
       receive do
         {:memory_next_reply, reply} -> reply
+        {:memory_next_exit, reason} -> exit(reason)
       end
     end
 
@@ -352,6 +423,58 @@ defmodule Backplane.HostAgent.Memory.Edge.SyncerTest do
     assert_receive {:memory_next, _}
     assert %{edge_retry_ref: ref, current_retry_backoff_ms: 20} = Syncer.status(syncer)
     assert is_reference(ref)
+  end
+
+  test "only selected multi-partition failures cap retry delay while backoff keeps growing" do
+    single = [%{"memory_space_id" => "space-1", "scope" => "private", "namespace" => "default"}]
+
+    for {mirror, partitions, selected?, capped?} <- [
+          {StorageFailingMirror, single ++ single, false, false},
+          {Mirror, single, true, false},
+          {Mirror, nil, true, true}
+        ] do
+      syncer =
+        start_syncer(
+          channel: self(),
+          selected: "host_memory.v2",
+          channel_module: FailingChannel,
+          mirror_module: mirror,
+          mirror_opts: [owner: self()],
+          partitions: partitions,
+          poll_interval_ms: 1_000,
+          retry_backoff_ms: 10_000
+        )
+
+      assert_eventually(fn -> is_reference(Syncer.status(syncer).edge_retry_token) end)
+      state = Syncer.status(syncer)
+      assert state.partition_index == if(selected?, do: 1, else: 0)
+      assert state.current_retry_backoff_ms == 20_000
+      remaining = Process.read_timer(state.edge_retry_ref)
+      assert is_integer(remaining)
+
+      if capped?, do: assert(remaining <= 1_000), else: assert(remaining > 5_000)
+      Syncer.stop(syncer)
+    end
+  end
+
+  test "channel call exits preserve the edge process and its automatic retry" do
+    syncer =
+      start_syncer(
+        channel: self(),
+        channel_module: InteractiveChannel,
+        mirror_module: Mirror,
+        mirror_opts: [owner: self()],
+        selected: "host_memory.v2",
+        retry_backoff_ms: 10,
+        poll_interval_ms: 60_000
+      )
+
+    assert_receive {:memory_next, ^syncer, _}
+    send(syncer, {:memory_next_exit, {:noproc, {GenServer, :call, [self(), :push]}}})
+    assert_receive {:memory_next, ^syncer, _}, 1_000
+    send(syncer, {:memory_next_reply, {:ok, %{"status" => "current"}}})
+    assert %{edge_retry_ref: nil, current_retry_backoff_ms: 10} = Syncer.status(syncer)
+    assert Process.alive?(syncer)
   end
 
   test "channel and mirror failures retain their transport and storage classifications" do

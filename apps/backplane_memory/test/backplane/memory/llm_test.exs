@@ -24,6 +24,232 @@ defmodule Backplane.Memory.LLMTest do
     :ok
   end
 
+  @tag :graph_schema
+  test "graph extraction requests bounded filtered source text and validates entity references" do
+    response = %{
+      "nodes" => [
+        %{"key" => "gateway", "type" => "Module", "name" => "Backplane"},
+        %{"key" => "database", "type" => "Library", "name" => "PostgreSQL"}
+      ],
+      "edges" => [%{"source" => "gateway", "target" => "database", "relation" => "uses"}]
+    }
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      assert LLM.capture_suppressed?()
+      assert Plug.Conn.get_req_header(conn, "x-backplane-memory-origin") == ["graph"]
+      assert Plug.Conn.get_req_header(conn, "x-backplane-memory-capture") == ["skip"]
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = Jason.decode!(body)
+      assert request["model"] == "test-model"
+
+      assert request["response_format"] == %{
+               "type" => "json_schema",
+               "json_schema" => %{
+                 "name" => "memory_graph",
+                 "strict" => true,
+                 "schema" => %{
+                   "type" => "object",
+                   "required" => ["nodes", "edges"],
+                   "additionalProperties" => false,
+                   "properties" => %{
+                     "nodes" => %{
+                       "type" => "array",
+                       "items" => %{
+                         "type" => "object",
+                         "required" => ["key", "type", "name"],
+                         "additionalProperties" => false,
+                         "properties" => %{
+                           "key" => %{"type" => "string"},
+                           "type" => %{
+                             "type" => "string",
+                             "enum" =>
+                               ~w(File Function Module Library Concept Decision Bug Pattern Person)
+                           },
+                           "name" => %{"type" => "string"}
+                         }
+                       }
+                     },
+                     "edges" => %{
+                       "type" => "array",
+                       "items" => %{
+                         "type" => "object",
+                         "required" => ["source", "target", "relation"],
+                         "additionalProperties" => false,
+                         "properties" => %{
+                           "source" => %{"type" => "string"},
+                           "target" => %{"type" => "string"},
+                           "relation" => %{
+                             "type" => "string",
+                             "enum" =>
+                               ~w(uses imports calls depends_on tests documents caused_by supersedes relates_to)
+                           }
+                         }
+                       }
+                     }
+                   }
+                 }
+               }
+             }
+
+      assert [%{"content" => prompt}] = request["messages"]
+      assert prompt =~ "Backplane uses PostgreSQL"
+      refute prompt =~ "private-secret"
+      assert byte_size(prompt) <= 80_000
+
+      Req.Test.json(conn, %{
+        "choices" => [%{"message" => %{"content" => Jason.encode!(response)}}]
+      })
+    end)
+
+    assert {:ok, %{nodes: [gateway, database], edges: [edge]}} =
+             LLM.extract_graph(["Backplane uses PostgreSQL <private>private-secret</private>"])
+
+    assert gateway == %{key: "gateway", type: "Module", name: "Backplane"}
+    assert database == %{key: "database", type: "Library", name: "PostgreSQL"}
+    assert edge == %{source: "gateway", target: "database", relation: "uses"}
+    refute LLM.capture_suppressed?()
+  end
+
+  test "graph extraction rejects invalid shapes, unsupported types and unknown references" do
+    node = %{"key" => "a", "type" => "Concept", "name" => "Gateway"}
+
+    for {response, reason} <- [
+          {%{"nodes" => [], "edges" => []}, :nodes_count},
+          {%{"nodes" => [Map.put(node, "type", "private-model-value")], "edges" => []},
+           :node_type},
+          {%{"nodes" => [node, node], "edges" => []}, :node_key_duplicate},
+          {%{
+             "nodes" => [node],
+             "edges" => [
+               %{"source" => "a", "target" => "private-model-value", "relation" => "uses"}
+             ]
+           }, :edge_target_reference},
+          {%{"nodes" => [node], "edges" => [], "unexpected" => "private-model-value"},
+           :graph_fields},
+          {%{"nodes" => [Map.put(node, "key", "")], "edges" => []}, :node_key},
+          {%{"nodes" => [Map.put(node, "name", "")], "edges" => []}, :node_name},
+          {%{"nodes" => [%{"private-model-value" => true}], "edges" => []}, :node_fields},
+          {%{"nodes" => [node], "edges" => [%{"private-model-value" => true}]}, :edge_fields},
+          {%{
+             "nodes" => [node],
+             "edges" => [
+               %{"source" => "private-model-value", "target" => "a", "relation" => "uses"}
+             ]
+           }, :edge_source_reference},
+          {%{
+             "nodes" => [node],
+             "edges" => [%{"source" => "a", "target" => "a", "relation" => "private-model-value"}]
+           }, :edge_relation},
+          {%{"nodes" => [node], "edges" => List.duplicate(%{}, 101)}, :edges_count}
+        ] do
+      Req.Test.stub(__MODULE__, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [%{"message" => %{"content" => Jason.encode!(response)}}]
+        })
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, :invalid_graph_response} = LLM.extract_graph(["Gateway"])
+        end)
+
+      assert log =~ "Memory graph response rejected: #{reason}"
+      refute log =~ "private-model-value"
+    end
+
+    assert {:error, :invalid_graph_input} = LLM.extract_graph([%{content: "invalid"}])
+    assert {:error, :invalid_graph_input} = LLM.extract_graph(List.duplicate("source", 51))
+  end
+
+  test "query expansion makes a real request and retains useful unique alternatives" do
+    :ets.insert(:backplane_settings, {"memory.llm_model", " test-model "})
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      assert LLM.capture_suppressed?()
+      assert Plug.Conn.get_req_header(conn, "x-backplane-memory-origin") == ["query-expansion"]
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = Jason.decode!(body)
+      assert request["model"] == "test-model"
+      assert request["response_format"] == %{"type" => "json_object"}
+
+      Req.Test.json(conn, %{
+        "choices" => [
+          %{
+            "message" => %{
+              "content" =>
+                Jason.encode!(%{
+                  "queries" => [
+                    " gateway routing ",
+                    "proxy routing",
+                    "model dispatch",
+                    "proxy routing"
+                  ]
+                })
+            }
+          }
+        ]
+      })
+    end)
+
+    assert {:ok, ["gateway routing", "proxy routing", "model dispatch"]} =
+             LLM.expand_query("gateway routing")
+  end
+
+  test "graph schema rejection surfaces once without an unconstrained fallback" do
+    Req.Test.stub(__MODULE__, fn conn ->
+      send(self(), :graph_schema_request)
+      conn |> Plug.Conn.put_status(400) |> Req.Test.json(%{"error" => "private provider detail"})
+    end)
+
+    assert {:error, {:llm_status, 400}} = LLM.extract_graph(["gateway uses database"])
+    assert_received :graph_schema_request
+    refute_received :graph_schema_request
+  end
+
+  test "graph and expansion surface provider failures and reject malformed or oversized responses" do
+    Req.Test.stub(__MODULE__, fn conn ->
+      conn |> Plug.Conn.put_status(503) |> Req.Test.json(%{"error" => "private provider detail"})
+    end)
+
+    assert {:error, {:llm_status, 503}} = LLM.extract_graph(["gateway uses database"])
+    assert {:error, {:llm_status, 503}} = LLM.expand_query("routing")
+
+    for response <- ["not json", ~s({"queries":["routing"]}), ~s({"queries":[1,2,3]})] do
+      Req.Test.stub(__MODULE__, fn conn ->
+        Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => response}}]})
+      end)
+
+      assert {:error, :invalid_query_expansion_response} = LLM.expand_query("routing")
+    end
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{
+        "choices" => [%{"message" => %{"content" => String.duplicate("x", 100_001)}}]
+      })
+    end)
+
+    assert {:error, :graph_response_too_large} = LLM.extract_graph(["source"])
+    assert {:error, :query_expansion_response_too_large} = LLM.expand_query("routing")
+
+    assert {:error, :invalid_query_expansion_input} =
+             LLM.expand_query(String.duplicate("q", 2_001))
+  end
+
+  test "blank and invalid model settings skip all enrichment" do
+    for invalid <- [nil, "", " ", 123] do
+      :ets.insert(:backplane_settings, {"memory.llm_model", invalid})
+      assert {:skip, :no_llm} = LLM.extract_graph(["source"])
+      assert {:skip, :no_llm} = LLM.expand_query("routing")
+    end
+  end
+
+  test "graph and expansion classify transport timeouts without returning provider content" do
+    Req.Test.stub(__MODULE__, fn conn -> Req.Test.transport_error(conn, :timeout) end)
+
+    assert {:error, {:llm_transport, :timeout}} = LLM.extract_graph(["source"])
+    assert {:error, {:llm_transport, :timeout}} = LLM.expand_query("routing")
+  end
+
   test "classify_relation uses the proxy chat completion and parses a strict JSON object" do
     secret = "sk-abcdefghijklmnopqrstuvwxyz"
     stable_id = "11111111-2222-3333-4444-555555555555"
@@ -43,6 +269,27 @@ defmodule Backplane.Memory.LLMTest do
       assert Plug.Conn.get_req_header(conn, "x-backplane-memory-capture") == ["skip"]
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = Jason.decode!(body)
+
+      assert request["response_format"] == %{
+               "type" => "json_schema",
+               "json_schema" => %{
+                 "name" => "memory_relation",
+                 "strict" => true,
+                 "schema" => %{
+                   "type" => "object",
+                   "required" => ["classification", "confidence"],
+                   "additionalProperties" => false,
+                   "properties" => %{
+                     "classification" => %{
+                       "type" => "string",
+                       "enum" =>
+                         ~w(duplicate extension temporal_replacement contradiction unrelated)
+                     },
+                     "confidence" => %{"type" => "number", "minimum" => 0, "maximum" => 1}
+                   }
+                 }
+               }
+             }
 
       assert request["model"] == "test-model"
       assert [%{"content" => prompt, "role" => "user"}] = request["messages"]
@@ -107,6 +354,56 @@ defmodule Backplane.Memory.LLMTest do
              )
   end
 
+  test "relation classification retains strict response validation and provider errors" do
+    invalid = [
+      "not json",
+      "```json\n{\"classification\":\"duplicate\",\"confidence\":1}\n```",
+      ~s({"classification":"duplicate","confidence":1,"extra":true}),
+      ~s({"classification":"duplicate"}),
+      ~s({"classification":"unknown","confidence":1}),
+      ~s({"classification":"duplicate","confidence":"1"}),
+      ~s({"classification":"duplicate","confidence":-0.1}),
+      ~s({"classification":"duplicate","confidence":1.1}),
+      ~s([{"classification":"duplicate","confidence":1}])
+    ]
+
+    for content <- invalid do
+      Req.Test.stub(__MODULE__, fn conn ->
+        Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => content}}]})
+      end)
+
+      assert {:error, :invalid_classifier_response} = LLM.classify_relation(%{}, %{})
+    end
+
+    Req.Test.stub(__MODULE__, fn conn -> Req.Test.json(conn, %{"choices" => []}) end)
+    assert {:error, :invalid_classifier_response} = LLM.classify_relation(%{}, %{})
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      Plug.Conn.send_resp(conn, 503, "private provider error")
+    end)
+
+    assert {:error, {:llm_status, 503}} = LLM.classify_relation(%{}, %{})
+
+    Req.Test.stub(__MODULE__, fn conn -> Req.Test.transport_error(conn, :timeout) end)
+    assert {:error, %Req.TransportError{reason: :timeout}} = LLM.classify_relation(%{}, %{})
+    refute LLM.capture_suppressed?()
+  end
+
+  test "relation classification accepts every supported enum and confidence endpoints" do
+    for classification <- ~w(duplicate extension temporal_replacement contradiction unrelated),
+        confidence <- [0, 1] do
+      expected = %{"classification" => classification, "confidence" => confidence}
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [%{"message" => %{"content" => Jason.encode!(expected)}}]
+        })
+      end)
+
+      assert {:ok, ^expected} = LLM.classify_relation(%{}, %{})
+    end
+  end
+
   test "crystallize accepts only the strict bounded structured object" do
     Req.Test.stub(__MODULE__, fn conn ->
       assert LLM.capture_suppressed?()
@@ -116,6 +413,9 @@ defmodule Backplane.Memory.LLMTest do
       request = Jason.decode!(body)
       assert request["response_format"] == %{"type" => "json_object"}
       [%{"content" => prompt}] = request["messages"]
+      assert prompt =~ "verified outcomes and explicitly accepted decisions"
+      assert prompt =~ "historical error alone"
+      assert prompt =~ "Use empty arrays"
       assert byte_size(prompt) <= 80_000
       refute prompt =~ "<private>"
 

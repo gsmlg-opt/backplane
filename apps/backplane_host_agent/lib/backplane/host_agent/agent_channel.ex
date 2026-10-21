@@ -9,12 +9,26 @@ defmodule Backplane.HostAgent.AgentChannel do
   alias Backplane.HostAgent.Memory.{Edge.Syncer, Facts, Store}
   alias Phoenix.SocketClient.Channel.Helpers
 
+  # Rejoining belongs to Worker, which also refreshes capture/command providers
+  # and the edge syncer. An unjoined restarted channel is not a live connection.
+  def child_spec(args) do
+    %{id: __MODULE__, start: {__MODULE__, :start_link, [args]}, restart: :temporary}
+  end
+
   @impl true
+  def handle_message(event, _payload, state) when event in ["phx_error", "phx_close"],
+    do: {:stop, :normal, state}
+
   def handle_message("plugin_call", payload, state) when is_map(payload) do
     Helpers.handle_push_cast(
       {"plugin_call_result", plugin_call_result(payload, %{channel: self()})},
       state
     )
+  end
+
+  def handle_message("memory_access_changed", hint, state) when is_map(hint) do
+    syncer_module().memory_access_changed(%{channel: self(), hint: hint})
+    {:noreply, state}
   end
 
   def handle_message("memory_available", hint, state) when is_map(hint) do

@@ -12,7 +12,11 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
   defmodule MockLLM do
     def classify_relation(source, target) do
       send(self(), {:classified, source, target})
-      Process.get(:classifier_result)
+
+      case Process.get(:classifier_hook) do
+        nil -> Process.get(:classifier_result)
+        hook -> hook.(source, target)
+      end
     end
   end
 
@@ -745,6 +749,154 @@ defmodule Backplane.Memory.Memories.RelationClassifierTest do
 
     assert operations["memory_relation.candidate"] == 1
     assert operations["memory_relation.policy"] == 1
+  end
+
+  test "model replay reuses the exact persisted comparison without calling a varying provider" do
+    first = remember!("Backplane gateway extends discovery", %{})
+    second = remember!("Backplane discovery uses the gateway", %{})
+    opts = [model: "replay-model", llm_module: MockLLM]
+
+    Process.put(
+      :classifier_result,
+      {:ok, %{"classification" => "extension", "confidence" => 0.8}}
+    )
+
+    assert :ok = RelationClassifier.process(second.id, opts)
+    assert_received {:classified, _, _}
+    assert [original] = Relations.list_relations(first.id)
+    assert {:ok, _} = Relations.resolve_candidate(original.id, :rejected)
+    before = classifier_snapshot(first, second)
+
+    Process.put(
+      :classifier_result,
+      {:ok, %{"classification" => "duplicate", "confidence" => 0.95}}
+    )
+
+    assert :ok = RelationClassifier.process(second.id, opts)
+    refute_received {:classified, _, _}
+    assert classifier_snapshot(first, second) == before
+  end
+
+  test "a completed comparison arriving during the provider call wins without policy or audit replay" do
+    first = remember!("Backplane gateway extends discovery", %{})
+    second = remember!("Backplane discovery uses the gateway", %{})
+    opts = [model: "late-model", llm_module: MockLLM]
+
+    Process.put(:classifier_hook, fn _, _ ->
+      Process.delete(:classifier_hook)
+
+      Process.put(
+        :classifier_result,
+        {:ok, %{"classification" => "extension", "confidence" => 0.8}}
+      )
+
+      assert :ok = RelationClassifier.process(second.id, opts)
+      Process.put(:winning_snapshot, classifier_snapshot(first, second))
+      {:ok, %{"classification" => "extension", "confidence" => 0.95}}
+    end)
+
+    assert :ok = RelationClassifier.process(second.id, opts)
+    assert classifier_snapshot(first, second) == Process.get(:winning_snapshot)
+  end
+
+  test "changed model and evidence invoke classification again while directed reverse remains distinct" do
+    first = remember!("Backplane gateway extends discovery", %{})
+    second = remember!("Backplane discovery uses the gateway", %{})
+
+    Process.put(
+      :classifier_result,
+      {:ok, %{"classification" => "extension", "confidence" => 0.8}}
+    )
+
+    opts = [model: "model-a", llm_module: MockLLM]
+    assert :ok = RelationClassifier.process(second.id, opts)
+    assert_received {:classified, _, _}
+    assert :ok = RelationClassifier.process(first.id, opts)
+    assert_received {:classified, _, _}
+    assert length(Relations.list_relations(first.id)) == 2
+    assert :ok = RelationClassifier.process(second.id, Keyword.put(opts, :model, "model-b"))
+    assert_received {:classified, _, _}
+
+    assert {:ok, _} =
+             Memories.remember(
+               first.content,
+               canonical_memory_opts("host",
+                 agent_id: "agent",
+                 scope: "scope",
+                 namespace: "private",
+                 metadata: first.metadata,
+                 idempotency_scope: "replay-evidence",
+                 idempotency_key: "new-evidence"
+               )
+             )
+
+    assert :ok = RelationClassifier.process(second.id, opts)
+    assert_received {:classified, _, _}
+    assert length(Relations.list_relations(first.id)) == 4
+  end
+
+  test "symmetric model comparison replays in reverse without a new model request" do
+    first = remember!("Backplane gateway discovery", %{})
+    second = remember!("Backplane discovery gateway", %{})
+    opts = [model: "symmetric-model", llm_module: MockLLM]
+
+    Process.put(
+      :classifier_result,
+      {:ok, %{"classification" => "duplicate", "confidence" => 0.8}}
+    )
+
+    assert :ok = RelationClassifier.process(second.id, opts)
+    assert_received {:classified, _, _}
+    before = classifier_snapshot(first, second)
+    Process.put(:classifier_result, {:error, :must_not_call})
+    assert :ok = RelationClassifier.process(first.id, opts)
+    refute_received {:classified, _, _}
+    assert classifier_snapshot(first, second) == before
+  end
+
+  test "late provider output cannot persist after endpoint governance or ownership changes" do
+    for change <- [:tombstone, :foreign, :input] do
+      project = Atom.to_string(change)
+      first = remember!("Backplane gateway discovery #{project}", %{"project" => project})
+      second = remember!("Backplane discovery gateway #{project}", %{"project" => project})
+
+      Process.put(:classifier_hook, fn _, _ ->
+        case change do
+          :tombstone ->
+            assert :ok = Memories.tombstone(first.id, canonical_partition("host", scope: "scope"))
+
+          :foreign ->
+            foreign = canonical_partition("other-host", scope: "scope")
+
+            first
+            |> Ecto.Changeset.change(memory_space_id: foreign.memory_space_id)
+            |> repo().update!()
+
+          :input ->
+            first
+            |> Ecto.Changeset.change(
+              metadata: Map.put(first.metadata, "valid_from", "2026-01-01T00:00:00Z")
+            )
+            |> repo().update!()
+        end
+
+        Process.put(:after_endpoint_change, classifier_snapshot(first, second))
+        {:ok, %{"classification" => "extension", "confidence" => 0.95}}
+      end)
+
+      assert {:error, _} =
+               RelationClassifier.process(second.id, model: "guard-model", llm_module: MockLLM)
+
+      assert classifier_snapshot(first, second) == Process.get(:after_endpoint_change)
+    end
+  end
+
+  defp classifier_snapshot(first, second) do
+    %{
+      relations: Relations.list_relations(first.id),
+      audits: Audit.list_for_target(first.id),
+      memories: Enum.map([first, second], &repo().get!(Backplane.Memory.Memories.Memory, &1.id))
+    }
   end
 
   defp remember!(content, metadata, opts \\ []) do

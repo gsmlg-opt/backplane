@@ -7,8 +7,10 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Memories
+  alias Backplane.Memory.Config
   alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.{ProcessingState, ProjectedSession, Source}
+  alias Backplane.Memory.Workers.{GraphExtractWorker, ProceduralWorker, StageResumeWorker}
 
   @processing_version "episodic-v1"
 
@@ -42,14 +44,17 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     case claim_current_revision(summary) do
       {:ok, {partition, state_attrs}} ->
         try do
-          case Backplane.Settings.get("memory.llm_model") do
-            nil ->
+          cond do
+            not Config.fact_extraction_v2_enabled?() ->
+              persist_current_result(summary, partition, state_attrs, {:skip, :disabled}, job)
+
+            not model_configured?() ->
               require Logger
               Logger.debug("[memory] episodic worker: skipping, no llm_model configured")
 
               persist_current_result(summary, partition, state_attrs, {:skip, :no_model}, job)
 
-            _model ->
+            true ->
               llm_module =
                 Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
 
@@ -64,6 +69,9 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
             reraise exception, __STACKTRACE__
         end
 
+      {:complete, :ok} ->
+        :ok
+
       {:error, reason} ->
         {:discard, reason}
     end
@@ -75,19 +83,29 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
            with {:ok, partition} <- projected_partition(summary),
                 state_attrs = processing_attrs(summary, partition),
+                false <- StageResumeWorker.complete?(state_attrs),
                 {:ok, _state} <-
                   ProcessingState.transition(repo(), state_attrs, "running",
                     authoritative_revision: true
                   ) do
              {:claimed, {partition, state_attrs}}
            else
+             true -> {:complete, :ok}
              {:stale, _state} -> {:error, :stale_input_revision}
              {:error, reason} -> {:error, reason}
            end
          end) do
       {:ok, {:claimed, result}} -> {:ok, result}
+      {:ok, {:complete, :ok}} -> {:complete, :ok}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp model_configured? do
+    case Backplane.Settings.get("memory.llm_model") do
+      model when is_binary(model) -> String.trim(model) != ""
+      _ -> false
     end
   end
 
@@ -109,6 +127,8 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
            Source.lock_streams(summary.host_id, summary.session_id)
 
            with {:ok, partition} <- projected_partition(summary),
+                result =
+                  if(Config.fact_extraction_v2_enabled?(), do: result, else: {:skip, :disabled}),
                 outcome <- persist_result(summary, partition, state_attrs, result, job) do
              case outcome do
                {:rollback_failure, reason} -> repo().rollback({:failure, reason})
@@ -139,10 +159,15 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
   defp persist_result(summary, partition, state_attrs, {:ok, facts}, _job) do
     case persist_facts(summary, partition, facts) do
       :ok ->
-        case ProcessingState.transition(repo(), state_attrs, "complete") do
-          {:ok, _state} -> {:commit, :ok}
-          {:stale, _state} -> {:rollback, :stale_input_revision}
-          {:error, reason} -> {:rollback, reason}
+        with {:ok, _} <- ProceduralWorker.enqueue(partition, summary.project || ""),
+             {:ok, _} <- GraphExtractWorker.enqueue(summary.session_id, partition) do
+          case ProcessingState.transition(repo(), state_attrs, "complete") do
+            {:ok, _state} -> {:commit, :ok}
+            {:stale, _state} -> {:rollback, :stale_input_revision}
+            {:error, reason} -> {:rollback, reason}
+          end
+        else
+          {:error, reason} -> {:rollback_failure, reason}
         end
 
       {:error, reason} ->
@@ -203,39 +228,28 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
   end
 
   defp persist_facts(summary, partition, facts) do
-    require Logger
-
-    errors =
-      facts
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {fact, ordinal} ->
-        case Memories.remember(fact,
-               type: "semantic",
-               memory_space_id: partition.memory_space_id,
-               scope: partition.scope,
-               namespace: partition.namespace,
-               client_id: partition.client_id,
-               source_client_id: partition[:source_client_id],
-               agent_id: summary.agent_id || "consolidation",
-               host_id: summary.host_id,
-               session_id: summary.session_id,
-               idempotency_scope: "memory-worker:episodic",
-               idempotency_key: idempotency_key(summary, ordinal),
-               evidence: [summary_evidence(summary)]
-             ) do
-          {:ok, _} -> []
-          {:error, reason} -> [reason]
-        end
-      end)
-
-    case errors do
-      [] ->
-        :ok
-
-      [first | rest] ->
-        Logger.warning("[memory] episodic worker: #{length(rest) + 1} fact(s) failed to insert")
-        {:error, first}
-    end
+    facts
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {fact, ordinal}, :ok ->
+      case Memories.remember(fact,
+             type: "semantic",
+             memory_space_id: partition.memory_space_id,
+             scope: partition.scope,
+             namespace: partition.namespace,
+             client_id: partition.client_id,
+             source_client_id: partition[:source_client_id],
+             agent_id: summary.agent_id || "consolidation",
+             host_id: summary.host_id,
+             session_id: summary.session_id,
+             metadata: %{"project" => summary.project || ""},
+             idempotency_scope: "memory-worker:episodic",
+             idempotency_key: idempotency_key(summary, ordinal),
+             evidence: [summary_evidence(summary)]
+           ) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp normalize_outputs(outputs) do

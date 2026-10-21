@@ -57,7 +57,7 @@ defmodule Backplane.Memory.Operations.RolloutTest do
 
       assert Enum.map(rollout.later, &{&1.key, &1.label}) == expected_later
       assert length(rollout.later) == 5
-      assert Enum.all?(rollout.later, &(&1.available == false))
+      assert Enum.all?(rollout.later, & &1.available)
     end
   end
 

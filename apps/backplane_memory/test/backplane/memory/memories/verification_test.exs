@@ -51,7 +51,10 @@ defmodule Backplane.Memory.Memories.VerificationTest do
 
   setup do
     previous_llm = Application.get_env(:backplane_memory, :llm_module)
-    setting = :ets.lookup(:backplane_settings, "memory.llm_model")
+    keys = ~w(memory.llm_model memory.pipeline.enabled memory.session_summary_v2.enabled
+      memory.fact_extraction_v2.enabled memory.procedure_extraction_v2.enabled)
+    settings = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
     Application.put_env(:backplane_memory, :llm_module, MockLLM)
     :ets.insert(:backplane_settings, {"memory.llm_model", "test-model"})
 
@@ -60,10 +63,10 @@ defmodule Backplane.Memory.Memories.VerificationTest do
         do: Application.put_env(:backplane_memory, :llm_module, previous_llm),
         else: Application.delete_env(:backplane_memory, :llm_module)
 
-      case setting do
-        [] -> :ets.delete(:backplane_settings, "memory.llm_model")
-        [entry] -> :ets.insert(:backplane_settings, entry)
-      end
+      Enum.each(settings, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
     end)
 
     :ok
@@ -182,7 +185,38 @@ defmodule Backplane.Memory.Memories.VerificationTest do
       assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => next_summary.id}})
     end
 
-    assert :ok = ProceduralWorker.perform(%Styx.Job{args: partition})
+    generator_partition = Map.put(partition, :source_client_id, memory.source_client_id)
+    assert generator_partition.source_client_id == projection.source_client_id
+
+    assert {:ok, identity} =
+             ProceduralWorker.processing_identity(
+               generator_partition,
+               memory.metadata["project"] || ""
+             )
+
+    automatic_state =
+      repo().one!(
+        from(s in Backplane.Memory.Projections.State,
+          where: s.projector == "procedural" and s.subject_id == ^identity.subject_id
+        )
+      )
+
+    assert automatic_state.status == "complete"
+    assert automatic_state.input_revision == identity.input_revision
+    assert automatic_state.source_client_id == generator_partition.source_client_id
+    before_evidence_count = repo().aggregate(Evidence, :count)
+
+    procedure_args =
+      generator_partition
+      |> Map.new(fn {key, value} -> {to_string(key), value} end)
+      |> Map.merge(%{
+        "project" => memory.metadata["project"] || "",
+        "input_revision" => identity.input_revision
+      })
+
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: procedure_args})
+    assert :ok = ProceduralWorker.perform(%Styx.Job{args: procedure_args})
+    assert repo().aggregate(Evidence, :count) == before_evidence_count
 
     procedure =
       repo().one!(
@@ -699,6 +733,174 @@ defmodule Backplane.Memory.Memories.VerificationTest do
     assert verification.graph.bounds.nodes.truncated
     assert verification.graph.links == []
     refute inspect(verification.graph) =~ "secret sql"
+  end
+
+  @tag :provenance_navigation
+  test "linked summary reads require the selected memory, exact partition and canonical subject" do
+    partition = %{
+      memory_space_id: ensure_memory_space!("linked-summary-host"),
+      host_id: "linked-summary-host",
+      client_id: "linked-summary-client",
+      scope: "source-scope",
+      namespace: "private"
+    }
+
+    session_id = "linked-summary-session"
+    subject_id = Backplane.Memory.Projections.Source.subject_id!(partition.host_id, session_id)
+
+    memory =
+      repo().insert!(
+        Memory.changeset(
+          %Memory{},
+          Map.merge(partition, %{
+            content: "Linked source fact",
+            memory_type: "semantic",
+            agent_id: "source-agent",
+            session_id: session_id
+          })
+        )
+      )
+
+    repo().insert!(
+      struct(
+        ProjectedSession,
+        Map.merge(partition, %{
+          subject_id: subject_id,
+          session_id: session_id,
+          input_revision: "R2",
+          status: "completed",
+          last_event_at: DateTime.utc_now(),
+          processing_version: "session-v1"
+        })
+      )
+    )
+
+    summary_attrs =
+      Map.merge(Map.drop(partition, [:client_id]), %{
+        session_id: session_id,
+        subject_id: subject_id,
+        content: "Source R1",
+        processing_version: "summary-v1",
+        input_revision: "R1",
+        output_revision: "output-R1",
+        superseded_at: DateTime.utc_now()
+      })
+
+    historical = repo().insert!(struct(Summary, summary_attrs))
+
+    repo().insert!(%Evidence{
+      memory_id: memory.id,
+      source_summary_id: historical.id,
+      host_id: partition.host_id,
+      session_id: session_id,
+      evidence_kind: "derives",
+      support_score: 1.0
+    })
+
+    assert {:ok, source} =
+             Backplane.Memory.Memories.get_source_summary(memory.id, historical.id, partition)
+
+    assert source.id == historical.id
+    assert source.input_revision == "R1"
+    assert source.superseded_at
+
+    for key <- [:memory_space_id, :host_id, :client_id, :scope, :namespace] do
+      other = if key == :memory_space_id, do: Ecto.UUID.generate(), else: "foreign"
+
+      assert {:error, :not_found} =
+               Backplane.Memory.Memories.get_source_summary(
+                 memory.id,
+                 historical.id,
+                 Map.put(partition, key, other)
+               )
+    end
+
+    for {memory_id, summary_id} <- [
+          {Ecto.UUID.generate(), historical.id},
+          {memory.id, Ecto.UUID.generate()},
+          {"invalid", historical.id},
+          {memory.id, "invalid"}
+        ] do
+      assert {:error, :not_found} =
+               Backplane.Memory.Memories.get_source_summary(memory_id, summary_id, partition)
+    end
+
+    # Corrupt durable links must not grant access to a foreign or different-session source.
+    for {key, value} <- [
+          {:subject_id, "foreign-subject"},
+          {:session_id, "other-session"},
+          {:memory_space_id, ensure_memory_space!("foreign-linked-summary")},
+          {:host_id, "foreign-host"},
+          {:scope, "foreign-scope"},
+          {:namespace, "foreign-namespace"}
+        ] do
+      summary =
+        repo().insert!(
+          struct(
+            Summary,
+            summary_attrs
+            |> Map.put(key, value)
+            |> Map.put(:processing_version, Ecto.UUID.generate())
+          )
+        )
+
+      evidence =
+        Evidence.changeset(%Evidence{}, %{
+          memory_id: memory.id,
+          source_summary_id: summary.id,
+          host_id: partition.host_id,
+          session_id: session_id,
+          evidence_kind: "derives",
+          support_score: 1.0
+        })
+        |> Ecto.Changeset.check_constraint(:source_summary_id,
+          name: :bpm_memory_evidence_canonical_partition
+        )
+
+      if key in [:memory_space_id, :scope, :namespace] do
+        # The database forbids even creating these foreign links; the read also refuses the source.
+        assert {:error, changeset} = repo().insert(evidence, mode: :savepoint)
+
+        assert {_,
+                [constraint: :check, constraint_name: "bpm_memory_evidence_canonical_partition"]} =
+                 changeset.errors[:source_summary_id]
+      else
+        assert {:ok, _} = repo().insert(evidence)
+      end
+
+      assert {:error, :not_found} =
+               Backplane.Memory.Memories.get_source_summary(memory.id, summary.id, partition)
+    end
+
+    unlinked =
+      repo().insert!(
+        struct(
+          Summary,
+          Map.merge(summary_attrs, %{
+            input_revision: "R2",
+            processing_version: "summary-v2",
+            superseded_at: nil
+          })
+        )
+      )
+
+    assert {:error, :not_found} =
+             Backplane.Memory.Memories.get_source_summary(memory.id, unlinked.id, partition)
+
+    repo().insert!(%Evidence{
+      memory_id: memory.id,
+      source_summary_id: unlinked.id,
+      host_id: partition.host_id,
+      session_id: session_id,
+      evidence_kind: "derives",
+      support_score: 1.0
+    })
+
+    assert {:ok, current} =
+             Backplane.Memory.Memories.get_source_summary(memory.id, unlinked.id, partition)
+
+    assert current.id == unlinked.id
+    assert is_nil(current.superseded_at)
   end
 
   defp event(host_id, session_id, sequence, type, message) do

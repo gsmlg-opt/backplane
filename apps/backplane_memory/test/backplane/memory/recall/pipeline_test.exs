@@ -361,6 +361,80 @@ defmodule Backplane.Memory.Recall.PipelineTest do
     assert channels.vector.status == :error
   end
 
+  test "a slow semantic query pins the Settings model for selection and persisted trace despite a concurrent change" do
+    alias Backplane.Memory.Memories.Memory
+    setting = :ets.lookup(:backplane_settings, "memory.embed_model")
+    previous = Application.get_env(:backplane_memory, :embed_model)
+    model = "current-query-model"
+    vector = [1.0 | List.duplicate(0.0, 2559)]
+
+    on_exit(fn ->
+      :ets.delete(:backplane_settings, "memory.embed_model")
+      Enum.each(setting, &:ets.insert(:backplane_settings, &1))
+
+      if previous,
+        do: Application.put_env(:backplane_memory, :embed_model, previous),
+        else: Application.delete_env(:backplane_memory, :embed_model)
+    end)
+
+    memories =
+      for {content, label, embedding} <- [
+            {"Prefer bounded OTP workers.", model, [0.9, 0.1 | List.duplicate(0.0, 2558)]},
+            {"Unrelated historical material.", "historical-model", vector}
+          ] do
+        {:ok, memory} =
+          Memories.remember(
+            content,
+            Map.to_list(@partition) ++
+              [
+                agent_id: @partition.client_id,
+                idempotency_scope: "pipeline-model-test",
+                idempotency_key: label
+              ]
+          )
+
+        repo().update!(Memory.embed_changeset(memory, embedding, label))
+      end
+
+    [wanted, historical] = memories
+    :ets.insert(:backplane_settings, {"memory.embed_model", model})
+    Application.put_env(:backplane_memory, :embed_model, "stale-env-model")
+
+    assert {:ok, result} =
+             Pipeline.run(
+               Map.merge(@partition, %{
+                 query: "Which concurrency architecture should we choose?",
+                 token_budget: 128
+               }),
+               trace?: true,
+               retriever_opts: [
+                 embed_fn: fn [_query], :query, [] ->
+                   :ets.insert(
+                     :backplane_settings,
+                     {"memory.embed_model", "changed-during-query"}
+                   )
+
+                   Process.sleep(1_200)
+                   {:ok, [vector]}
+                 end
+               ],
+               post_fusion_opts: [limit: 1],
+               reranker_opts: [enabled: false]
+             )
+
+    assert [%{id: id, source_ids: [_ | _]}] = result.results
+    assert id == wanted.id
+    assert result.channels.vector.status == :ok
+    assert result.channels.fts.count == 0
+    assert result.used_tokens <= result.token_budget
+    assert {:ok, run, [stored]} = Store.get(result.recall_run_id, @partition)
+    assert run.query_embedding_model == model
+    assert run.channel_availability["vector"]
+    assert run.channel_errors == %{"graph" => "unavailable"}
+    assert stored.selected
+    assert repo().get!(Memory, historical.id).embedding_model == "historical-model"
+  end
+
   defp collect_telemetry(acc) do
     receive do
       {:telemetry, _event, measurements, metadata} ->

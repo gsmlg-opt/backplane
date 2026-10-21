@@ -17,6 +17,7 @@ defmodule Backplane.Memory.Operations.Inventory do
   alias Backplane.Memory.Projections.{
     ActivityContribution,
     ProjectedObservation,
+    ProjectedSession,
     Snapshot,
     State
   }
@@ -296,6 +297,118 @@ defmodule Backplane.Memory.Operations.Inventory do
          total: page.total,
          next_cursor: if(page.next_offset, do: "offset:#{page.next_offset}")
        }}
+    end
+  rescue
+    _ -> {:error, :unavailable}
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
+
+  def stages(filters, opts \\ []) do
+    sessions = from(s in ProjectedSession, as: :inventory) |> source_filters(filters)
+    memories = from(m in Memory, as: :inventory) |> source_filters(filters)
+
+    session_partitions =
+      from(s in sessions,
+        select:
+          fragment(
+            "?::text || ':' || ? || ':' || ? || ':' || ? || ':' || ? || ':' || COALESCE(?, '')",
+            s.memory_space_id,
+            s.host_id,
+            s.client_id,
+            s.scope,
+            s.namespace,
+            s.project
+          )
+      )
+
+    memory_partitions =
+      from(m in memories,
+        select:
+          fragment(
+            "?::text || ':' || ? || ':' || ? || ':' || ? || ':' || ? || ':' || COALESCE(?->>'project', '')",
+            m.memory_space_id,
+            m.host_id,
+            m.client_id,
+            m.scope,
+            m.namespace,
+            m.metadata
+          )
+      )
+
+    query =
+      from(s in State,
+        as: :inventory,
+        left_join: session in subquery(sessions),
+        on:
+          session.memory_space_id == s.memory_space_id and session.host_id == s.host_id and
+            session.scope == s.scope and session.namespace == s.namespace and
+            ((s.subject_type == "captured_session" and session.subject_id == s.subject_id) or
+               (s.subject_type == "captured_session_window" and
+                  fragment("starts_with(?, ? || ':window:')", s.subject_id, session.subject_id))),
+        left_join: memory in subquery(memories),
+        on:
+          s.subject_type == "memory" and fragment("?::text", memory.id) == s.subject_id and
+            memory.memory_space_id == s.memory_space_id and memory.host_id == s.host_id and
+            memory.scope == s.scope and memory.namespace == s.namespace,
+        order_by: [desc: s.updated_at, desc: s.id],
+        select: %{
+          id: s.id,
+          projector: s.projector,
+          subject_type: s.subject_type,
+          subject_id: s.subject_id,
+          status: s.status,
+          input_revision: s.input_revision,
+          output_revision: s.output_revision,
+          attempt_count: s.attempt_count,
+          session_id: session.session_id,
+          memory_space_id: s.memory_space_id,
+          host_id: s.host_id,
+          scope: s.scope,
+          namespace: s.namespace,
+          client_id: session.client_id
+        }
+      )
+
+    query = source_filters(query, Map.drop(filters, [:client_id, :project, :repository]))
+
+    query =
+      if Enum.any?([:client_id, :project, :repository], &Map.has_key?(filters, &1)) do
+        profile_subjects =
+          from(p in Profile, as: :inventory)
+          |> source_filters(filters)
+          |> select([p], [
+            p.memory_space_id,
+            p.host_id,
+            p.client_id,
+            p.scope,
+            p.namespace,
+            p.project
+          ])
+          |> repo().all()
+          |> Enum.map(
+            &(&1
+              |> :erlang.term_to_binary([:deterministic])
+              |> Base.url_encode64(padding: false))
+          )
+
+        where(
+          query,
+          [s, session, memory],
+          not is_nil(session.subject_id) or not is_nil(memory.id) or
+            (s.subject_type == "memory_partition" and s.projector == "procedural" and
+               (s.subject_id in subquery(session_partitions) or
+                  s.subject_id in subquery(memory_partitions))) or
+            (s.subject_type == "memory_profile" and s.projector == "profile" and
+               s.subject_id in ^profile_subjects)
+        )
+      else
+        query
+      end
+
+    with {:ok, page} <- paginate(query, Keyword.put_new(opts, :limit, 50)) do
+      {:ok,
+       %{page | entries: Enum.map(page.entries, &Map.put(&1, :reason, stage_reason(&1.status)))}}
     end
   rescue
     _ -> {:error, :unavailable}
@@ -885,6 +998,15 @@ defmodule Backplane.Memory.Operations.Inventory do
     )
   end
 
+  defp stage_reason("failed"), do: "Processing failed. Inspect the source session and retry."
+
+  defp stage_reason("dead_letter"),
+    do: "Retry limit reached. Inspect the source session before retrying."
+
+  defp stage_reason("skipped_no_model"), do: "Select a Memory model in Config before retrying."
+  defp stage_reason("skipped_disabled"), do: "Stage disabled. Enable its policy before retrying."
+  defp stage_reason("complete"), do: "Processing complete."
+  defp stage_reason(_), do: "Awaiting processing."
   defp compact(map), do: Map.reject(map, fn {_, v} -> v in [nil, ""] end)
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 end

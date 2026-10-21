@@ -28,6 +28,24 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     end
   end
 
+  defmodule DeniedChannel do
+    def push(_, _, _, _), do: {:error, %{"code" => "unauthorized", "retryable" => false}}
+  end
+
+  defmodule StaleDeniedChannel do
+    def push(_, _, _, _) do
+      MemoryProxy.set_connection(%{channel: Process.get(:replacement_channel)}, %{})
+      {:error, %{"code" => "unauthorized", "retryable" => false}}
+    end
+  end
+
+  defmodule StaleDeniedConnector do
+    def connect(_config) do
+      MemoryProxy.set_connection(%{channel: self()}, %{})
+      {:error, :unauthorized}
+    end
+  end
+
   defmodule RejoinChannel do
     def join(socket, host_id) do
       owner = :persistent_term.get({__MODULE__, :owner})
@@ -125,6 +143,38 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     assert MemoryProxy.channel() == nil
   end
 
+  test "an explicit channel rejection survives channel loss until a new authenticated join" do
+    channel = start_supervised!({Agent, fn -> nil end})
+    MemoryProxy.set_connection_owner(self())
+    MemoryProxy.set_connection(%{channel: channel}, %{})
+    rejection = %{"code" => "unauthorized", "retryable" => false}
+
+    assert {:error, ^rejection} =
+             MemoryProxy.call("recall", %{}, agent_id: "codex", channel_module: DeniedChannel)
+
+    Agent.stop(channel)
+    assert {:error, ^rejection} = MemoryProxy.call("recall", %{}, agent_id: "codex")
+    MemoryProxy.set_connection(%{channel: self()}, %{})
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("recall", %{}, agent_id: "codex", channel_module: FakeChannel)
+  end
+
+  test "an old channel rejection cannot replace a newer authenticated connection" do
+    channel = start_supervised!({Agent, fn -> nil end})
+    MemoryProxy.set_connection(%{channel: channel}, %{})
+    Process.put(:replacement_channel, self())
+
+    assert {:error, %{"code" => "unauthorized"}} =
+             MemoryProxy.call("recall", %{},
+               agent_id: "codex",
+               channel_module: StaleDeniedChannel
+             )
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("recall", %{}, agent_id: "codex", channel_module: FakeChannel)
+  end
+
   test "exposes and forwards lifecycle_context with the local agent identity" do
     MemoryProxy.set_channel(self())
 
@@ -154,6 +204,20 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
                     }}
 
     assert channel == self()
+  end
+
+  @tag :authoritative_connection
+  test "a delayed connector rejection cannot poison a newer authenticated connection" do
+    MemoryProxy.set_config(%{})
+
+    assert {:error, {:reconnect_failed, :unauthorized}} =
+             MemoryProxy.call("recall", %{},
+               agent_id: "codex",
+               connector_module: StaleDeniedConnector
+             )
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("recall", %{}, agent_id: "codex", channel_module: FakeChannel)
   end
 
   test "caps the channel push timeout at the lifecycle hard limit" do
@@ -301,6 +365,67 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     assert_receive {:push, channel, "memory_call", %{"method" => "list"}}
     assert channel == self()
     refute_received {:unexpected_connect, ^config}
+  end
+
+  test "concurrent managed requests leave joining to the worker before and after reconnect" do
+    config = %{hub_url: "http://localhost:4220", token: "host-token"}
+    MemoryProxy.set_connection_owner(self())
+    MemoryProxy.set_config(config)
+
+    for _ <- 1..2 do
+      tasks =
+        for _ <- 1..8 do
+          Task.async(fn ->
+            MemoryProxy.call("list", %{},
+              agent_id: "fixture",
+              channel_module: RejoinChannel,
+              connector_module: UnexpectedConnector
+            )
+          end)
+        end
+
+      assert Enum.all?(tasks, &(Task.await(&1) == {:error, :not_connected}))
+      assert_receive {:memory_connection_lost, _}
+      refute_received {:join, _, _}
+      refute_received {:unexpected_connect, _}
+
+      MemoryProxy.set_connection(
+        %{channel: dead_pid(), host_id: "host-1", socket: self()},
+        config
+      )
+    end
+  end
+
+  test "a stopped managed owner does not silently enable request-owned reconnection" do
+    MemoryProxy.set_connection_owner(dead_pid())
+    MemoryProxy.set_config(%{hub_url: "http://localhost:4220"})
+    old_channel = start_supervised!({Agent, fn -> nil end})
+    MemoryProxy.set_connection(%{channel: old_channel}, %{})
+
+    assert {:error, :not_connected} =
+             MemoryProxy.call("list", %{},
+               agent_id: "fixture",
+               connector_module: UnexpectedConnector
+             )
+
+    refute_received {:unexpected_connect, _}
+    MemoryProxy.set_connection_owner(self())
+    refute Process.alive?(old_channel)
+
+    assert {:error, :not_connected} =
+             MemoryProxy.call("list", %{}, agent_id: "fixture")
+
+    assert_receive {:memory_connection_lost, nil}
+  end
+
+  test "a live owner cannot be replaced and stale cleanup cannot erase the new owner" do
+    assert :ok = MemoryProxy.set_connection_owner(self())
+    next_owner = start_supervised!({Agent, fn -> nil end})
+    assert {:error, :connection_owned} = MemoryProxy.set_connection_owner(next_owner)
+    assert :ok = MemoryProxy.clear_connection_owner(self())
+    assert :ok = MemoryProxy.set_connection_owner(next_owner)
+    assert :ok = MemoryProxy.clear_connection_owner(self())
+    assert {:error, :connection_owned} = MemoryProxy.set_connection_owner(self())
   end
 
   test "serializes concurrent reconnect attempts" do

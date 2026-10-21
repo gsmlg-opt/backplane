@@ -149,6 +149,42 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
              Backplane.Admin.Audit.list()
   end
 
+  @tag :provenance_navigation
+  test "evidence links retain exact partition and target the session detail", %{
+    conn: conn,
+    partition: partition
+  } do
+    {:ok, lesson} = active_lesson(partition, "Provenance lesson", "backplane")
+
+    event =
+      Backplane.Admin.MemoryFixtures.event_fixture(
+        Map.merge(partition, %{session_id: "session-ui"})
+      )
+
+    Backplane.Repo.insert!(%Backplane.Memory.Memories.Evidence{
+      memory_id: lesson.memory_id,
+      source_event_id: event.id,
+      host_id: partition.host_id,
+      session_id: "session-ui",
+      evidence_kind: "derives",
+      support_score: 1.0
+    })
+
+    {:ok, view, _} = live(conn, lesson_path(lesson.memory_id, partition))
+
+    assert has_element?(
+             view,
+             ~s(#lesson-evidence a[href="/memory/events/#{event.id}?#{partition_query(partition)}"])
+           )
+
+    assert has_element?(
+             view,
+             ~s(#lesson-evidence a[href="/memory/sessions/session-ui?#{partition_query(partition)}"])
+           )
+
+    refute has_element?(view, ~s(#lesson-evidence a[href^="/memory/streams"]))
+  end
+
   defp active_lesson(partition, rule, project) do
     Lessons.save(
       %{

@@ -9,6 +9,7 @@ defmodule Backplane.HostAgent.Config do
 
   @default_http_port 4222
 
+  @derive {Inspect, except: [:token]}
   defstruct [
     :host_id,
     :machine_name,

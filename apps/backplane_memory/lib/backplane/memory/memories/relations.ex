@@ -45,6 +45,105 @@ defmodule Backplane.Memory.Memories.Relations do
     end
   end
 
+  @doc false
+  def classifier_result(source_id, target_id, inputs) do
+    repo().transaction(fn ->
+      {source, target} = classifier_endpoints!(source_id, target_id, inputs)
+      find_classifier_result(source, target, inputs)
+    end)
+  end
+
+  @doc false
+  def apply_classifier(source_id, target_id, attrs, inputs) do
+    repo().transaction(fn ->
+      if Map.take(attrs, Map.keys(inputs)) != inputs,
+        do: repo().rollback(:stale_classifier_input)
+
+      {source, target} = classifier_endpoints!(source_id, target_id, inputs)
+
+      case find_classifier_result(source, target, inputs) do
+        nil -> create_candidate_tx(source_id, target_id, stringify(attrs), :classifier, true)
+        existing -> existing
+      end
+    end)
+  end
+
+  defp classifier_endpoints!(source_id, target_id, inputs) do
+    if source_id == target_id, do: repo().rollback(:same_memory)
+    memories = lock_memories!([source_id, target_id])
+    source = Map.fetch!(memories, source_id)
+    target = Map.fetch!(memories, target_id)
+    validate_live_endpoints!(source, target)
+    validate_candidate_eligibility!(source, target, :classifier)
+    validate_partition!(source, target)
+
+    if source.host_id != target.host_id or source.client_id != target.client_id,
+      do: repo().rollback(:partition_mismatch)
+
+    current =
+      Backplane.Memory.Memories.RelationClassifier.comparison_inputs(
+        source,
+        target,
+        inputs.classifier_model
+      )
+
+    if current != inputs, do: repo().rollback(:stale_classifier_input)
+    endpoint_evidence!(source_id, target_id, stringify(inputs))
+    {source, target}
+  end
+
+  defp find_classifier_result(source, target, inputs) do
+    Relation
+    |> where(
+      [r],
+      r.classifier_model == ^inputs.classifier_model and
+        r.classifier_version == ^inputs.classifier_version and
+        r.input_revision == ^inputs.input_revision
+    )
+    |> where(
+      [r],
+      (r.source_memory_id == ^source.id and r.target_memory_id == ^target.id) or
+        (r.source_memory_id == ^target.id and r.target_memory_id == ^source.id)
+    )
+    |> order_by([r], asc: r.created_at, asc: r.id)
+    |> repo().all()
+    |> Enum.find(&classifier_replay?(&1, source, target, inputs))
+  end
+
+  defp classifier_replay?(relation, source, target, inputs) do
+    forward? = relation.source_memory_id == source.id
+
+    orientation? =
+      forward? or relation.classification in @symmetric or
+        canonical_temporal_replay?(relation, target, source)
+
+    {source_ids, target_ids} =
+      if forward?,
+        do: {inputs.source_evidence_ids, inputs.target_evidence_ids},
+        else: {inputs.target_evidence_ids, inputs.source_evidence_ids}
+
+    evidence = Enum.map(source_ids, &{"source", &1}) ++ Enum.map(target_ids, &{"target", &1})
+
+    orientation? and
+      (is_nil(inputs.correlation_id) or relation.correlation_id == inputs.correlation_id) and
+      MapSet.new(relation_evidence_tuples(relation.id)) == MapSet.new(evidence)
+  end
+
+  defp canonical_temporal_replay?(%Relation{classification: "temporal_replacement"}, older, newer) do
+    with from when is_binary(from) <- older.metadata["valid_from"],
+         until when is_binary(until) <- older.metadata["valid_to"],
+         next when is_binary(next) <- newer.metadata["valid_from"],
+         {:ok, from, _} <- DateTime.from_iso8601(from),
+         {:ok, until, _} <- DateTime.from_iso8601(until),
+         {:ok, next, _} <- DateTime.from_iso8601(next) do
+      DateTime.compare(from, until) == :lt and DateTime.compare(until, next) in [:lt, :eq]
+    else
+      _ -> false
+    end
+  end
+
+  defp canonical_temporal_replay?(_relation, _older, _newer), do: false
+
   def resolve_candidate(relation_id, resolution) when resolution in [:confirmed, :rejected] do
     status = Atom.to_string(resolution)
 

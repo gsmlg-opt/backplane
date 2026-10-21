@@ -44,7 +44,7 @@ defmodule Backplane.HostAgent.Worker do
     started_at = DateTime.utc_now()
 
     with {:ok, _reply} <-
-           push(channel_module, channel, "config_report", Reporter.config_report(config)),
+           push(channel_module, channel, "config_report", Reporter.config_report(config, state)),
          {:ok, _reply} <- push(channel_module, channel, "heartbeat", Reporter.heartbeat(config)),
          {:ok, desired_state} <- desired_state(state),
          {:ok, manifest} <- read_manifest(config) do
@@ -71,7 +71,9 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   @impl true
-  def init(opts) do
+  def init(opts), do: with_safe_diagnostics(fn -> init_worker(opts) end)
+
+  defp init_worker(opts) do
     case initial_state(opts) do
       {:continue, state} ->
         {:ok, state, {:continue, :connect}}
@@ -82,41 +84,140 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   @impl true
-  def handle_continue(:connect, state) do
-    connect_or_retry(state)
-  end
+  def handle_continue(message, state),
+    do: with_safe_diagnostics(fn -> continue_worker(message, state) end)
+
+  defp continue_worker(:connect, state), do: connect_or_retry(state)
 
   @impl true
-  def handle_call(:sync_now, _from, state) do
+  def handle_call(message, from, state),
+    do: with_safe_diagnostics(fn -> call_worker(message, from, state) end)
+
+  defp call_worker(:sync_now, _from, state) do
     case run_once(state) do
       {:ok, updated_state} -> {:reply, :ok, updated_state}
       {:error, reason, updated_state} -> {:reply, {:error, reason}, updated_state}
     end
   end
 
-  def handle_call(:status, _from, state) do
+  defp call_worker(:status, _from, state) do
     {:reply, state, state}
   end
 
   @impl true
-  def handle_info(:sync, state) do
+  def handle_info(message, state),
+    do: with_safe_diagnostics(fn -> info_worker(message, state) end)
+
+  defp info_worker(:sync, state) do
     case run_once(state) do
       {:ok, updated_state} -> {:noreply, schedule_next_sync(updated_state)}
       {:error, _reason, updated_state} -> {:noreply, schedule_next_sync(updated_state)}
     end
   end
 
-  def handle_info(:connect_retry, state) do
+  defp info_worker(:connect_retry, state) do
+    cancel_timer(state.connect_retry_ref)
     connect_or_retry(%{state | connect_retry_ref: nil})
   end
 
-  @impl true
-  def terminate(_reason, %{edge_syncer: pid}) when is_pid(pid) do
-    if Process.alive?(pid), do: EdgeSyncer.stop(pid)
-    :ok
+  defp info_worker({:timeout, ref, :connect_retry}, %{connect_retry_ref: ref} = state),
+    do: connect_or_retry(%{state | connect_retry_ref: nil})
+
+  defp info_worker({:timeout, _ref, :connect_retry}, state), do: {:noreply, state}
+
+  # The channel library forwards replies to asynchronous pushes to its join
+  # caller. They do not own a Worker request and may arrive after replacement.
+  defp info_worker(%Phoenix.SocketClient.Message{event: "phx_reply"}, state),
+    do: {:noreply, state}
+
+  defp info_worker(
+         {:memory_connection_lost, channel},
+         %{channel: channel, owns_connection?: true} = state
+       ) do
+    {:noreply,
+     state |> retire_channel() |> Map.put(:last_error, :not_connected) |> schedule_connect_retry()}
   end
 
-  def terminate(_reason, _state), do: :ok
+  defp info_worker({:memory_connection_lost, _channel}, state), do: {:noreply, state}
+
+  defp info_worker(
+         {:DOWN, ref, :process, channel, _reason},
+         %{channel_monitor_ref: ref, channel: channel, owns_connection?: true} = state
+       ) do
+    {:noreply,
+     state
+     |> Map.put(:channel, nil)
+     |> Map.put(:channel_monitor_ref, nil)
+     |> Map.put(:last_error, :not_connected)
+     |> schedule_connect_retry()}
+  end
+
+  defp info_worker({:DOWN, _ref, :process, _channel, _reason}, state), do: {:noreply, state}
+
+  @impl true
+  def format_status(status) do
+    Map.new(status, fn
+      {:state, state} -> {:state, Map.drop(state, [:config, :connect_opts])}
+      {:reason, reason} -> {:reason, diagnostic_reason(reason)}
+      {:message, _message} -> {:message, :redacted}
+      {:log, _log} -> {:log, []}
+      entry -> entry
+    end)
+  end
+
+  # OTP appends the original callback stack after format_status/1 returns.
+  # Remove arguments at the callback boundary so crash reports cannot restore them.
+  defp with_safe_diagnostics(callback) do
+    callback.()
+  catch
+    kind, reason ->
+      :erlang.raise(kind, diagnostic_reason(reason), diagnostic_stacktrace(__STACKTRACE__))
+  end
+
+  defp diagnostic_stacktrace(stacktrace) do
+    for {module, function, arguments, location} <- stacktrace do
+      arity = if is_list(arguments), do: length(arguments), else: arguments
+      {module, function, arity, Keyword.take(location, [:file, :line])}
+    end
+  end
+
+  defp diagnostic_reason(%{__exception__: true, __struct__: exception}) do
+    # Defaults retain the exception type without retaining runtime payloads such
+    # as KeyError.term, MatchError.term, or a provider's exception message.
+    safe = struct(exception)
+    if Map.has_key?(safe, :message), do: Map.put(safe, :message, "details redacted"), else: safe
+  end
+
+  defp diagnostic_reason(reason) when is_atom(reason), do: reason
+
+  defp diagnostic_reason(reason) when is_tuple(reason) and is_atom(elem(reason, 0)) do
+    reason
+    |> Tuple.to_list()
+    |> then(fn [tag | args] -> [tag | Enum.map(args, fn _ -> :redacted end)] end)
+    |> List.to_tuple()
+  end
+
+  defp diagnostic_reason(_reason), do: :redacted
+
+  @impl true
+  def terminate(reason, state),
+    do: with_safe_diagnostics(fn -> terminate_worker(reason, state) end)
+
+  defp terminate_worker(_reason, state) do
+    _state = retire_channel(state)
+    memory_proxy_module = Map.get(state, :memory_proxy_module, MemoryProxy)
+
+    if Map.get(state, :owns_connection?, false) and
+         function_exported?(memory_proxy_module, :clear_connection_owner, 1),
+       do: memory_proxy_module.clear_connection_owner(self())
+
+    case Map.get(state, :edge_syncer) do
+      pid when is_pid(pid) -> if Process.alive?(pid), do: EdgeSyncer.stop(pid)
+      _ -> :ok
+    end
+
+    :ok
+  end
 
   defp desired_state(%{desired: desired}) when not is_nil(desired), do: {:ok, desired}
 
@@ -152,7 +253,13 @@ defmodule Backplane.HostAgent.Worker do
     http_server_module = Keyword.get(opts, :http_server_module, HttpServer)
     memory_proxy_module = Keyword.get(opts, :memory_proxy_module, MemoryProxy)
 
-    case config_module.load_default() do
+    config_result =
+      case Keyword.get(opts, :config) do
+        nil -> config_module.load_default()
+        config -> {:ok, config}
+      end
+
+    case config_result do
       {:ok, config} ->
         connect_loaded_state(
           state,
@@ -192,8 +299,20 @@ defmodule Backplane.HostAgent.Worker do
                memory_proxy_module
              ) do
           {:ok, local_state} ->
+            memory_generation = %{
+              id: System.unique_integer([:monotonic, :positive]),
+              sent_at_ms: System.monotonic_time(:millisecond)
+            }
+
             case connector_module.connect(config) do
               {:ok, %{channel: channel} = connection} ->
+                connection =
+                  Map.put(
+                    connection,
+                    :memory_generation,
+                    Map.put(memory_generation, :channel, channel)
+                  )
+
                 case set_memory_connection(memory_proxy_module, connection, config) do
                   :ok ->
                     case set_edge_connection(connection, config, local_state) do
@@ -203,14 +322,18 @@ defmodule Backplane.HostAgent.Worker do
                            local_state
                            | channel: channel,
                              edge_syncer: edge_syncer,
-                             owns_connection?: true
-                         }}
+                             owns_connection?: true,
+                             memory_negotiation_report: worker_negotiation(connection)
+                         }
+                         |> monitor_channel(channel)}
 
                       {:error, reason} ->
+                        retire_unpublished_channel(channel)
                         {:error, reason, local_state}
                     end
 
                   {:error, reason} ->
+                    retire_unpublished_channel(channel)
                     {:error, reason, local_state}
                 end
 
@@ -234,6 +357,8 @@ defmodule Backplane.HostAgent.Worker do
          http_server_module,
          memory_proxy_module
        ) do
+    configure_memory_router(Map.get(config, :memory) || %{})
+
     with :ok <- set_memory_config(memory_proxy_module, config),
          {:ok, state} <-
            start_and_store(state, :capture_supervisor, fn existing_pid ->
@@ -251,12 +376,30 @@ defmodule Backplane.HostAgent.Worker do
            start_and_store(state, :http_supervisor, fn existing_pid ->
              maybe_start_http_server(http_server_module, config, existing_pid)
            end) do
-      {:ok, state}
+      {:ok, Map.put(state, :local_settings_applied_at, DateTime.to_iso8601(DateTime.utc_now()))}
     else
       {:error, reason, failed_state} -> {:error, reason, failed_state}
       {:error, reason} -> {:error, reason, state}
     end
   end
+
+  defp worker_negotiation(%{memory: %{"selected" => selected} = memory})
+       when selected in ["host_memory.v1", "host_memory.v2"] do
+    partitions =
+      case memory do
+        %{"partitions" => partitions} when is_list(partitions) -> partitions
+        %{"memory_partition" => partition} when is_map(partition) -> [partition]
+        _ -> []
+      end
+
+    %{
+      "selected" => selected,
+      "partitions" => Enum.take(partitions, 50),
+      "applied_at" => DateTime.to_iso8601(DateTime.utc_now())
+    }
+  end
+
+  defp worker_negotiation(_connection), do: nil
 
   defp start_and_store(state, key, start_fun) do
     case start_fun.(Map.get(state, key)) do
@@ -284,15 +427,27 @@ defmodule Backplane.HostAgent.Worker do
       memory_proxy_module: Keyword.get(opts, :memory_proxy_module, MemoryProxy),
       connect_opts: opts,
       owns_connection?: Keyword.get(opts, :owns_connection?, false),
+      local_settings_applied_at: nil,
+      memory_negotiation_report: nil,
       last_sync: nil,
       last_error: nil,
       sync_on_start?: Keyword.get(opts, :sync_on_start?, true),
       sync_timer_ref: nil,
-      connect_retry_ref: nil
+      connect_retry_ref: nil,
+      channel_monitor_ref: nil
     }
   end
 
+  defp monitor_channel(state, channel) do
+    if is_reference(state.channel_monitor_ref),
+      do: Process.demonitor(state.channel_monitor_ref, [:flush])
+
+    %{state | channel_monitor_ref: Process.monitor(channel)}
+  end
+
   defp connect_or_retry(state) do
+    state = retire_channel(state)
+
     case connect_state(Map.get(state, :connect_opts, []), state) do
       {:ok, connected_state} ->
         connected_state =
@@ -309,6 +464,7 @@ defmodule Backplane.HostAgent.Worker do
         {:stop, reason, state}
 
       {:error, reason, failed_state} ->
+        publish_connection_error(failed_state, reason)
         Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
 
         {:noreply,
@@ -317,17 +473,45 @@ defmodule Backplane.HostAgent.Worker do
          |> schedule_connect_retry()}
 
       {:error, reason} ->
+        publish_connection_error(state, reason)
         Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
         {:noreply, schedule_connect_retry(%{state | last_error: reason})}
     end
+  end
+
+  defp publish_connection_error(state, reason) do
+    proxy = state.memory_proxy_module
+
+    if function_exported?(proxy, :set_connection_error, 2),
+      do: proxy.set_connection_error(reason, self())
   end
 
   defp schedule_connect_retry(%{connect_retry_ref: ref} = state) when is_reference(ref), do: state
 
   defp schedule_connect_retry(state) do
     interval_ms = reconnect_interval_ms(state)
-    %{state | connect_retry_ref: Process.send_after(self(), :connect_retry, interval_ms)}
+    %{state | connect_retry_ref: :erlang.start_timer(interval_ms, self(), :connect_retry)}
   end
+
+  defp retire_channel(%{owns_connection?: true, channel: channel} = state) do
+    monitored? = is_reference(Map.get(state, :channel_monitor_ref))
+
+    if monitored?,
+      do: Process.demonitor(state.channel_monitor_ref, [:flush])
+
+    if monitored? and is_pid(channel) and channel != self() and Process.alive?(channel) do
+      Channel.retire(channel)
+    end
+
+    state |> Map.put(:channel, nil) |> Map.put(:channel_monitor_ref, nil)
+  end
+
+  defp retire_channel(state), do: state
+
+  defp retire_unpublished_channel(channel) when is_pid(channel) and channel != self(),
+    do: Channel.retire(channel)
+
+  defp retire_unpublished_channel(_channel), do: :ok
 
   defp maybe_schedule_initial_sync(
          %{sync_on_start?: true, channel: channel, config: config} = state
@@ -372,10 +556,17 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp set_memory_config(memory_proxy_module, config) do
-    if function_exported?(memory_proxy_module, :set_config, 1) do
-      memory_proxy_module.set_config(config)
-    else
-      :ok
+    owner_result =
+      if function_exported?(memory_proxy_module, :set_connection_owner, 1),
+        do: memory_proxy_module.set_connection_owner(self()),
+        else: :ok
+
+    with :ok <- owner_result do
+      if function_exported?(memory_proxy_module, :set_config, 1) do
+        memory_proxy_module.set_config(config)
+      else
+        :ok
+      end
     end
   end
 
@@ -384,12 +575,15 @@ defmodule Backplane.HostAgent.Worker do
          config,
          state
        ) do
-    edge_config = get_in(config, [:memory, :host_sync_v2]) || %{}
+    edge_config = Map.get(Map.get(config, :memory) || %{}, :host_sync_v2) || %{}
 
     opts = [
       channel: connection.channel,
       selected: "host_memory.v2",
       partitions: Map.get(connection.memory, "partitions", []),
+      generation: connection[:memory_generation],
+      extensions: Map.get(connection.memory, "extensions", []),
+      poll_interval_ms: Map.get(edge_config, :sync_interval_ms, 60_000),
       mirror_opts: [config: edge_config]
     ]
 
@@ -417,6 +611,7 @@ defmodule Backplane.HostAgent.Worker do
   defp start_edge_syncer(opts, connection) do
     case EdgeSyncer.start_link(opts) do
       {:ok, pid} ->
+        EdgeSyncer.set_connection(pid, connection)
         {:ok, pid}
 
       {:error, {:already_started, pid}} ->
@@ -465,14 +660,12 @@ defmodule Backplane.HostAgent.Worker do
   defp maybe_start_memory(%{memory: %{enabled: true} = memory_config}, _existing_pid) do
     case MemorySupervisor.start_link(memory_config) do
       {:ok, pid} ->
-        configure_memory_router(memory_config)
         {:ok, pid}
 
       :ignore ->
         {:ok, nil}
 
       {:error, {:already_started, pid}} ->
-        configure_memory_router(memory_config)
         {:ok, pid}
 
       {:error, reason} ->
@@ -641,7 +834,7 @@ defmodule Backplane.HostAgent.Worker do
        when reason == :not_connected or channel_exit_reason(reason) do
     state =
       state
-      |> Map.put(:channel, nil)
+      |> retire_channel()
       |> Map.put(:last_error, reason)
       |> schedule_connect_retry()
 

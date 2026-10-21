@@ -378,6 +378,7 @@ defmodule Backplane.Memory.Eval.Runner do
 
         opts =
           pipeline_opts()
+          |> Keyword.put(:query_embedding_model, "eval-outage")
           |> Keyword.put(:retriever_opts, embed_fn: embed)
           |> Keyword.put(:reranker_opts, enabled: true, model: "eval-outage", provider: rerank)
 

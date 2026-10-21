@@ -955,6 +955,7 @@ defmodule Backplane.Memory.Lessons do
                  on: m.id == l.memory_id,
                  where:
                    m.memory_space_id == ^partition.memory_space_id and
+                     m.host_id == ^partition.host_id and m.client_id == ^partition.client_id and
                      m.scope == ^partition.scope and m.namespace == ^partition.namespace and
                      l.status in ["active", "candidate", "disputed"] and
                      (is_nil(l.last_decayed_at) or l.last_decayed_at < ^interval_start),

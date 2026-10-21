@@ -162,6 +162,9 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
   end
 
   test "global activity aggregates every durable source and optional URL filters", %{conn: conn} do
+    # LiveCase rolls these fixture deletions back with the sandbox transaction.
+    repo().delete_all(ActivityContribution)
+    repo().delete_all(ActivityDaily)
     today = Date.utc_today()
     insert_activity!(today, "alpha", "agent", "memory.recalled", 1)
     insert_activity!(today, "beta", "agent", "task.completed", 7, host_id: "zz-host")

@@ -97,6 +97,13 @@ defmodule Backplane.Memory.Memories.Memory do
     change(memory, embedding: Pgvector.HalfVector.new(vector))
   end
 
+  def embed_changeset(memory, vector, model) do
+    memory
+    |> embed_changeset(vector)
+    |> put_change(:embedding_model, model)
+    |> validate_required(:embedding_model)
+  end
+
   defp derive_content_hash(changeset) do
     case get_change(changeset, :content) do
       nil -> changeset

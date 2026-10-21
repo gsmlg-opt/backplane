@@ -12,7 +12,9 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
   alias Backplane.Memory.Lessons
   alias Backplane.Memory.Memories
   alias Backplane.Memory.PartitionIdentity
+  alias Backplane.Memory.Config
   alias Backplane.Memory.Projections.ProcessingState
+  alias Backplane.Memory.Workers.StageResumeWorker
 
   @min_semantic_count 10
   @processing_version "procedural-v1"
@@ -28,27 +30,33 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
     end)
   end
 
-  defp do_perform(job) do
-    quarantine_incomplete_inputs()
-    llm_module = Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
-    partitions = qualifying_partitions() |> Enum.sort()
+  defp do_perform(%Styx.Job{args: %{"project" => project} = args} = job)
+       when is_binary(project) do
+    with {:ok, partition} <- PartitionIdentity.validate_generator(args) do
+      partition = partition_tuple(partition, project)
+      inputs = qualifying_inputs(partition)
 
-    case Backplane.Settings.get("memory.llm_model") do
-      nil ->
-        require Logger
-        Logger.debug("[memory] procedural worker: skipping, no llm_model configured")
-
-        Enum.each(partitions, fn partition ->
-          attrs = processing_attrs(partition, qualifying_inputs(partition))
-
-          _ = transition_current(partition, attrs, "skipped_no_model", reason: :no_model)
-        end)
-
+      if args["input_revision"] == input_revision(inputs) and
+           length(inputs) >= @min_semantic_count do
+        run_partitions([partition], job)
+      else
         :ok
-
-      _model ->
-        do_extract_procedural(partitions, llm_module, job)
+      end
+    else
+      {:error, reason} -> {:cancel, reason}
     end
+  end
+
+  defp do_perform(%Styx.Job{args: args} = job) when is_map(args) and map_size(args) == 0 do
+    quarantine_incomplete_inputs()
+    run_partitions(qualifying_partitions() |> Enum.sort(), job)
+  end
+
+  defp do_perform(_job), do: {:cancel, :invalid_arguments}
+
+  defp run_partitions(partitions, job) do
+    llm_module = Application.get_env(:backplane_memory, :llm_module, Backplane.Memory.LLM)
+    do_extract_procedural(partitions, llm_module, job)
   end
 
   defp do_extract_procedural(partitions, llm_module, job) do
@@ -68,16 +76,95 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
     inputs = qualifying_inputs(partition)
     state_attrs = processing_attrs(partition, inputs)
 
-    case transition_current(partition, state_attrs, "running") do
-      {:ok, _state} ->
-        process_current_partition(partition, inputs, state_attrs, llm_module, job)
-
-      {:stale, _state} ->
+    cond do
+      StageResumeWorker.complete?(state_attrs) and
+          (not Config.procedure_extraction_v2_enabled?() or not model_configured?()) ->
         []
 
-      {:error, reason} ->
-        [reason]
+      not Config.procedure_extraction_v2_enabled?() ->
+        skip_partition(partition, state_attrs, :disabled)
+
+      not model_configured?() ->
+        skip_partition(partition, state_attrs, :no_model)
+
+      true ->
+        case transition_current(partition, state_attrs, "running") do
+          {:ok, _state} ->
+            process_current_partition(partition, inputs, state_attrs, llm_module, job)
+
+          {:stale, _state} ->
+            []
+
+          {:error, reason} ->
+            [reason]
+        end
     end
+  end
+
+  defp skip_partition(partition, attrs, reason) do
+    case transition_current(partition, attrs, ProcessingState.skipped_status(reason),
+           reason: reason
+         ) do
+      {:error, error} -> [error]
+      _ -> []
+    end
+  end
+
+  defp model_configured? do
+    case Backplane.Settings.get("memory.llm_model") do
+      model when is_binary(model) -> String.trim(model) != ""
+      _ -> false
+    end
+  end
+
+  @doc false
+  def processing_identity(partition, project) when is_binary(project) do
+    with {:ok, partition} <- PartitionIdentity.validate_generator(partition) do
+      tuple = partition_tuple(partition, project)
+      {:ok, processing_attrs(tuple, qualifying_inputs(tuple))}
+    end
+  end
+
+  def enqueue(partition, project) when is_binary(project) do
+    with {:ok, partition} <- PartitionIdentity.validate_generator(partition) do
+      tuple = partition_tuple(partition, project)
+      inputs = qualifying_inputs(tuple)
+      attrs = processing_attrs(tuple, inputs)
+
+      cond do
+        length(inputs) < @min_semantic_count ->
+          {:ok, :ineligible}
+
+        StageResumeWorker.complete?(attrs) ->
+          {:ok, :complete}
+
+        true ->
+          partition
+          |> Map.merge(%{project: project, input_revision: attrs.input_revision})
+          |> Map.new(fn {key, value} -> {to_string(key), value} end)
+          |> new(
+            unique: [
+              period: :infinity,
+              states: :incomplete,
+              keys: [
+                :memory_space_id,
+                :host_id,
+                :client_id,
+                :scope,
+                :namespace,
+                :project,
+                :input_revision
+              ]
+            ]
+          )
+          |> Styx.insert()
+      end
+    end
+  end
+
+  defp partition_tuple(partition, project) do
+    {partition.memory_space_id, partition.scope, partition.namespace, project,
+     partition.client_id, partition[:source_client_id] || "", partition.host_id}
   end
 
   defp process_current_partition(partition, inputs, state_attrs, llm_module, job) do
@@ -88,8 +175,14 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
              persist_outputs(partition, state_attrs, outputs, evidence) do
         []
       else
+        {:skip, reason} ->
+          skip_partition(partition, state_attrs, reason)
+
         {:stale, _state} ->
           []
+
+        {:error, :disabled} ->
+          skip_partition(partition, state_attrs, :disabled)
 
         {:error, reason} ->
           _ =
@@ -133,8 +226,11 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
 
         {:error, reason}
 
+      {:skip, reason} ->
+        {:skip, reason}
+
       _ ->
-        {:ok, []}
+        {:error, :invalid_response}
     end
   end
 
@@ -144,7 +240,11 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
     ProcessingState.persist_current(
       repo(),
       state_attrs,
-      fn -> current_attrs(partition) end,
+      fn ->
+        if Config.procedure_extraction_v2_enabled?(),
+          do: current_attrs(partition),
+          else: {:error, :disabled}
+      end,
       fn ->
         outputs
         |> Enum.with_index()

@@ -41,7 +41,11 @@ defmodule Backplane.HostAgent.ReporterTest do
     def snapshot(:edge) do
       {:ok,
        %{
+         "outbox" => %{"pending" => 2, "inflight" => 1, "retry_wait" => 3, "dead_letter" => 1},
+         "last_successful_sync" => "2026-10-20T01:00:00Z",
+         "failed_outbox" => [%{"last_error" => "provider token=never-render"}],
          "edge" => %{
+           "status" => "available",
            "protection_mode" => "plaintext_development",
            "items" => 4,
            "bytes" => 512,
@@ -163,7 +167,60 @@ defmodule Backplane.HostAgent.ReporterTest do
              "dead_letter_count" => 1
            } = payload["memory"]
 
+    assert payload["memory"]["pending_commands"] == 6
+    assert payload["memory"]["failed_commands"] == 1
+    assert payload["memory"]["last_successful_sync"] == "2026-10-20T01:00:00Z"
+    refute inspect(payload["memory"]) =~ "never-render"
+    refute inspect(payload["memory"]) =~ "last_error"
     refute inspect(payload["memory"]) =~ "content"
+  end
+
+  test "unavailable memory measurements remain unavailable" do
+    payload =
+      Reporter.heartbeat(%{
+        machine_name: "report-test",
+        memory: %{diagnostics_module: __MODULE__}
+      })
+
+    for key <- ~w(items bytes revision pending_commands failed_commands last_successful_sync) do
+      assert payload["memory"][key] == nil
+    end
+
+    assert payload["memory"]["status"] == "unavailable"
+  end
+
+  test "config reports only allowlisted local settings and worker negotiation" do
+    report =
+      Reporter.config_report(
+        %{
+          machine_name: "test",
+          token: "hidden-token",
+          memory: %{enabled: true, api_key: "hidden-key", diagnostics_module: __MODULE__},
+          capture: %{enabled: true, encryption_key: "hidden-encryption-key"}
+        },
+        %{
+          local_settings_applied_at: "2026-10-20T01:00:00Z",
+          memory_negotiation_report: %{
+            "selected" => "host_memory.v1",
+            "applied_at" => "2026-10-20T01:00:01Z",
+            "partitions" => [
+              %{
+                "memory_space_id" => "30000000-0000-0000-0000-000000000013",
+                "scope" => "private",
+                "namespace" => "private"
+              }
+            ],
+            "token" => "hidden-negotiation-token"
+          }
+        }
+      )
+
+    assert report["local_settings_applied_at"] == "2026-10-20T01:00:00Z"
+    assert report["memory_negotiation"]["selected"] == "host_memory.v1"
+    assert report["agent"]["token"] == "REDACTED"
+    refute inspect(report) =~ "hidden-"
+    refute inspect(report) =~ "diagnostics_module"
+    refute inspect(report) =~ "memory.pipeline"
   end
 
   test "formats loaded config report payload with token redacted" do

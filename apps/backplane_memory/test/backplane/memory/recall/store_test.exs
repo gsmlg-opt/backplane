@@ -199,6 +199,30 @@ defmodule Backplane.Memory.Recall.StoreTest do
     end
   end
 
+  test "a foreign artifact claiming the caller partition returns a candidate error" do
+    assert {:ok, query_plan} = plan("foreign artifact")
+
+    assert {:ok, run} =
+             Store.create(query_plan, request_id: unique("request"), correlation_id: "c")
+
+    foreign_partition = canonical_partition("foreign-recall-host")
+    assert {:ok, foreign} = canonical_recall_candidate(foreign_partition, "foreign content")
+    forged = struct(foreign, @partition)
+
+    assert {:error, {:invalid_candidate, changeset}} =
+             Store.finalize(run.id, @partition, [%{candidate: forged, selected: true}],
+               latency_ms: 1
+             )
+
+    assert {_, metadata} = changeset.errors[:candidate_id]
+    assert metadata[:constraint] == :check
+    assert metadata[:constraint_name] == "memory_recall_candidates_canonical_partition"
+    assert %Run{status: "running"} = repo().get!(Run, run.id)
+
+    assert repo().aggregate(from(c in TraceCandidate, where: c.recall_run_id == ^run.id), :count) ==
+             0
+  end
+
   test "finalize atomically replaces the candidate truth and derives selected totals" do
     assert {:ok, query_plan} = plan("finalize")
 

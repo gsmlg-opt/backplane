@@ -78,7 +78,7 @@ defmodule Backplane.Memory.EdgeSyncTest do
 
     assert repo().aggregate(Delivery, :count) == 2
     assert {:ok, %{applied_revision: 2}} = EdgeSync.ack(c.host, ack(c, batch))
-    assert {:error, %{code: :batch_not_found}} = EdgeSync.ack(Ecto.UUID.generate(), ack(c, batch))
+    assert {:error, %{code: :unauthorized}} = EdgeSync.ack(Ecto.UUID.generate(), ack(c, batch))
     assert {:error, %{code: :invalid_request}} = EdgeSync.ack(c.host, %{})
   end
 
@@ -153,7 +153,7 @@ defmodule Backplane.Memory.EdgeSyncTest do
     assert [%{disposition: "resolved"}] = issues
   end
 
-  test "exact shared entitlement inventory and ambiguous omitted owner fail closed", c do
+  test "legacy inventory excludes foreign grants and omitted owner stays private", c do
     space = Ecto.UUID.generate()
 
     repo().query!(
@@ -168,14 +168,14 @@ defmodule Backplane.Memory.EdgeSyncTest do
 
     assert {:ok, %{partitions: inventory}} = EdgeSync.negotiate(c.host, offer())
 
-    assert Enum.any?(
+    refute Enum.any?(
              inventory,
              &(&1["memory_space_id"] == space and &1["namespace"] == "team:blue")
            )
 
     shared = Map.merge(c.partition, %{"memory_space_id" => space, "namespace" => "team:blue"})
 
-    assert {:ok, %{"partition" => ^shared}} =
+    assert {:error, %{code: :unauthorized}} =
              EdgeSync.next(c.host, Map.put(request(c), "partition", shared))
 
     repo().query!(
@@ -183,8 +183,10 @@ defmodule Backplane.Memory.EdgeSyncTest do
       [Ecto.UUID.dump!(space), Ecto.UUID.dump!(c.host)]
     )
 
-    assert {:error, %{code: :ambiguous_partition}} =
+    assert {:ok, %{"partition" => private}} =
              EdgeSync.next(c.host, put_in(request(c), ["partition", "memory_space_id"], nil))
+
+    assert private == c.partition
   end
 
   test "negotiation and current envelopes respect tiny frame limits", c do

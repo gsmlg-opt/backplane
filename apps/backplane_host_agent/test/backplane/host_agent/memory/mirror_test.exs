@@ -64,6 +64,42 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
              )
   end
 
+  test "a persisted tombstone survives restart and rejects older delta and snapshot content", c do
+    first = delta(1, [upsert(1, "a", "deleted secret")])
+    assert {:ok, _} = Mirror.apply_delivery(first, c.opts)
+    assert {:ok, _} = Mirror.apply_delivery(delta(2, [delete(2, "a")]), c.opts)
+
+    GenServer.stop(c.store)
+    assert {:ok, reopened} = Store.start_link(c.open)
+    Process.unlink(reopened)
+    on_exit(fn -> if Process.alive?(reopened), do: GenServer.stop(reopened) end)
+    opts = Keyword.put(c.opts, :store, reopened)
+
+    assert {:ok, %{"items" => [], "partition_revision" => 2}} =
+             Mirror.offline_read("list", @partition, opts)
+
+    assert {:ok,
+            %{rows: [%{"lifecycle_state" => "deleted", "server_revision" => 2, "content" => nil}]}} =
+             Store.query(
+               reopened,
+               "SELECT lifecycle_state, server_revision, content FROM edge_memories WHERE canonical_id = 'a'"
+             )
+
+    assert {:ok, _} = Mirror.apply_delivery(first, opts)
+    [stale_snapshot] = snapshot([[item("a", "deleted secret")]], 0, 1)
+    assert {:error, :snapshot_restart_required} = Mirror.apply_delivery(stale_snapshot, opts)
+
+    assert {:ok, %{"items" => [], "partition_revision" => 2}} =
+             Mirror.offline_read("recall", Map.put(@partition, "query", "secret"), opts)
+
+    assert {:ok,
+            %{rows: [%{"lifecycle_state" => "deleted", "server_revision" => 2, "content" => nil}]}} =
+             Store.query(
+               reopened,
+               "SELECT lifecycle_state, server_revision, content FROM edge_memories WHERE canonical_id = 'a'"
+             )
+  end
+
   test "a deletion stream remains bounded and stale delta or snapshot cannot resurrect data", c do
     opts = Keyword.put(c.opts, :config, Map.merge(@config, %{max_items: 3, max_bytes: 10_000}))
 
@@ -166,6 +202,9 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     Process.unlink(reopened)
     on_exit(fn -> if Process.alive?(reopened), do: GenServer.stop(reopened) end)
     opts = Keyword.put(c.opts, :store, reopened)
+    assert {:ok, after_restart} = Mirror.offline_read("list", @partition, opts)
+    assert after_restart["items"] == before["items"]
+    assert after_restart["partition_revision"] == 1
     assert {:ok, offer} = Mirror.offer(opts)
 
     assert [%{"snapshot" => %{"snapshot_id" => id, "next_chunk_index" => 1}}] =

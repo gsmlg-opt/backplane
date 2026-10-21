@@ -2,6 +2,7 @@ defmodule Backplane.Memory.Recall.Pipeline do
   @moduledoc "End-to-end Recall V2 orchestration with guarded tracing and telemetry."
 
   alias Backplane.Memory.Privacy.Filter
+  alias Backplane.Memory.Embedding.Client
   alias Backplane.Memory.Recall.{Packer, PostFusion, QueryPlan, Reranker, Retriever, Run, Store}
 
   @options [
@@ -31,6 +32,7 @@ defmodule Backplane.Memory.Recall.Pipeline do
   defp execute(plan, opts) do
     started = System.monotonic_time()
     partition = partition(plan)
+    opts = Keyword.put(opts, :query_embedding_model, configured_embedding_model(opts))
 
     case create_trace(plan, opts) do
       {:ok, nil} ->
@@ -53,8 +55,13 @@ defmodule Backplane.Memory.Recall.Pipeline do
   end
 
   defp run_stages(plan, opts, run, started, partition) do
+    retriever_opts =
+      opts
+      |> Keyword.get(:retriever_opts, [])
+      |> Keyword.put(:query_embedding_model, opts[:query_embedding_model])
+
     with {retrieval_result, retrieval_us} <-
-           timed(fn -> Retriever.retrieve(plan, Keyword.get(opts, :retriever_opts, [])) end),
+           timed(fn -> Retriever.retrieve(plan, retriever_opts) end),
          {:ok, retrieval} <-
            emit_retrieval(retrieval_result, retrieval_us, partition),
          {post_result, post_us} <-
@@ -130,7 +137,7 @@ defmodule Backplane.Memory.Recall.Pipeline do
       case Store.create(plan,
              request_id: request_id,
              correlation_id: correlation_id,
-             query_embedding_model: configured_embedding_model(opts),
+             query_embedding_model: opts[:query_embedding_model],
              reranker_model: reranker_model
            ) do
         {:ok, run} ->
@@ -393,11 +400,7 @@ defmodule Backplane.Memory.Recall.Pipeline do
   end
 
   defp configured_embedding_model(opts) do
-    case Keyword.get(opts, :query_embedding_model) ||
-           Application.get_env(:backplane_memory, :embed_model) do
-      model when is_binary(model) -> nonblank_model(model)
-      _other -> nil
-    end
+    Client.model(model: opts[:query_embedding_model])
   end
 
   defp nonblank_model(model) do

@@ -6,7 +6,7 @@ defmodule Backplane.Memory.EdgeSync do
   def negotiate(host, offer), do: safe(fn -> do_negotiate(host, offer) end)
 
   defp do_negotiate(host, offer) when is_map(offer) do
-    with {:ok, _} <- uuid(host), :ok <- valid_offer(offer) do
+    with {:ok, _} <- subject_host(host), :ok <- valid_offer(offer) do
       v2 = offer["memory_v2"]
       selected = offer["selected"]
 
@@ -39,6 +39,7 @@ defmodule Backplane.Memory.EdgeSync do
   def next(host, request) do
     safe(fn ->
       with :ok <- request_valid(host, request),
+           :ok <- request_fields(request, :next),
            true <- is_integer(request["applied_revision"]) and request["applied_revision"] >= 0,
            {:ok, limits} <- limits(request) do
         store().next(host, request, limits)
@@ -53,6 +54,7 @@ defmodule Backplane.Memory.EdgeSync do
   def ack(host, request) do
     safe(fn ->
       with :ok <- request_valid(host, request),
+           :ok <- request_fields(request, :ack),
            {:ok, _} <- uuid(request["batch_id"]),
            true <-
              request["status"] in ["applied", "progress"] and
@@ -76,7 +78,7 @@ defmodule Backplane.Memory.EdgeSync do
   end
 
   defp request_valid(host, request) when is_map(request) do
-    with {:ok, _} <- uuid(host) do
+    with {:ok, _} <- subject_host(host) do
       cond do
         is_nil(request["protocol"]) -> {:error, :invalid_request}
         request["protocol"] != "host_memory.v2" -> {:error, :unsupported_protocol}
@@ -88,6 +90,19 @@ defmodule Backplane.Memory.EdgeSync do
   end
 
   defp request_valid(_, _), do: {:error, :invalid_request}
+
+  defp request_fields(request, operation) do
+    allowed =
+      case operation do
+        :next ->
+          ~w(protocol partition access applied_revision max_changes max_frame_bytes snapshot_id next_chunk_index)
+
+        :ack ->
+          ~w(protocol partition access batch_id status applied_revision snapshot_id next_chunk_index chunk_hash integrity_hash max_changes max_frame_bytes)
+      end
+
+    if Enum.all?(Map.keys(request), &(&1 in allowed)), do: :ok, else: {:error, :invalid_request}
+  end
 
   defp valid_offer(offer) do
     v1 = offer["memory"]
@@ -109,6 +124,11 @@ defmodule Backplane.Memory.EdgeSync do
       not is_list(v2["partitions"]) or length(v2["partitions"]) > 1000 ->
         {:error, :invalid_request}
 
+      not is_nil(v2["extensions"]) and
+          (not is_list(v2["extensions"]) or length(v2["extensions"]) > 20 or
+             not Enum.all?(v2["extensions"], &is_binary/1)) ->
+        {:error, :invalid_request}
+
       true ->
         case limits(v2) do
           {:ok, _} -> :ok
@@ -123,6 +143,9 @@ defmodule Backplane.Memory.EdgeSync do
       _ -> {:error, :invalid_request}
     end
   end
+
+  defp subject_host(%{kind: :host_agent, host_id: host}), do: uuid(host)
+  defp subject_host(host), do: uuid(host)
 
   @doc false
   def safe(fun) do

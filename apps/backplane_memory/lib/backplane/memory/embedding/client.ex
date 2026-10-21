@@ -7,6 +7,7 @@ defmodule Backplane.Memory.Embedding.Client do
   """
 
   @query_instruction "Instruct: Retrieve semantically similar text: Query: "
+  @dimensions 2560
 
   @doc "Retrieval instruction prefix used in query mode."
   def query_instruction, do: @query_instruction
@@ -26,14 +27,26 @@ defmodule Backplane.Memory.Embedding.Client do
   @spec embed([String.t()], :query | :document, keyword()) ::
           {:ok, [[float()]]} | {:error, term()}
   def embed(texts, mode, opts \\ []) when mode in [:query, :document] do
-    case model(opts) do
-      nil ->
-        {:error, :embedding_model_not_configured}
-
-      model ->
-        do_embed(texts, mode, model, opts)
+    with :ok <- validate_inputs(texts, mode) do
+      case model(opts) do
+        nil -> {:error, :embedding_model_not_configured}
+        model -> do_embed(texts, mode, model, opts)
+      end
     end
   end
+
+  defp validate_inputs(texts, mode) when is_list(texts) and length(texts) in 1..50 do
+    valid? =
+      Enum.all?(texts, fn text ->
+        is_binary(text) and String.valid?(text) and String.trim(text) != ""
+      end)
+
+    if valid? and Enum.reduce(prepare_inputs(texts, mode), 0, &(byte_size(&1) + &2)) <= 80_000,
+      do: :ok,
+      else: {:error, :invalid_embedding_input}
+  end
+
+  defp validate_inputs(_texts, _mode), do: {:error, :invalid_embedding_input}
 
   defp do_embed(texts, mode, model, opts) do
     inputs = prepare_inputs(texts, mode)
@@ -48,25 +61,48 @@ defmodule Backplane.Memory.Embedding.Client do
           {"x-backplane-memory-origin", "embedding"},
           {"x-backplane-memory-capture", "skip"}
         ],
-        json: %{model: model, input: inputs, encoding_format: "float"}
+        json: %{model: model, input: inputs, encoding_format: "float", dimensions: @dimensions},
+        receive_timeout: 10_000,
+        retry: false
       ] ++ req_options
 
+    with {:ok, req_opts} <- Backplane.Memory.ProxyAuth.authorize(req_opts) do
+      request(req_opts, length(texts))
+    end
+  end
+
+  defp request(req_opts, count) do
     case Backplane.Memory.LLM.with_capture_suppressed(fn -> Req.post(req_opts) end) do
       {:ok, %{status: 200, body: %{"data" => data}}} ->
-        vectors =
-          data
-          |> Enum.sort_by(& &1["index"])
-          |> Enum.map(& &1["embedding"])
+        validate_vectors(data, count)
 
-        {:ok, vectors}
+      {:ok, %{status: 200}} ->
+        {:error, :invalid_embedding_response}
 
-      {:ok, %{status: status, body: body}} ->
-        {:error, {:llm_proxy_error, status, body}}
+      {:ok, %{status: status}} ->
+        {:error, {:llm_proxy_error, status}}
 
       {:error, reason} ->
         {:error, {:http_error, reason}}
     end
   end
+
+  defp validate_vectors(data, count) when is_list(data) and length(data) == count do
+    if Enum.all?(data, &valid_vector_row?/1) and
+         Enum.sort(Enum.map(data, & &1["index"])) == Enum.to_list(0..(count - 1)) do
+      {:ok, data |> Enum.sort_by(& &1["index"]) |> Enum.map(& &1["embedding"])}
+    else
+      {:error, :invalid_embedding_response}
+    end
+  end
+
+  defp validate_vectors(_data, _count), do: {:error, :invalid_embedding_response}
+
+  defp valid_vector_row?(%{"index" => index, "embedding" => vector})
+       when is_integer(index) and is_list(vector),
+       do: length(vector) == @dimensions and Enum.all?(vector, &is_number/1)
+
+  defp valid_vector_row?(_row), do: false
 
   defp settings_model do
     if Code.ensure_loaded?(Backplane.Settings) do

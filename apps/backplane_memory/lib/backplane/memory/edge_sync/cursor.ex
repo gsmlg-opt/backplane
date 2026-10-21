@@ -13,5 +13,7 @@ defmodule Backplane.Memory.EdgeSync.Cursor do
     field(:snapshot_next_chunk_index, :integer)
     field(:last_acknowledged_batch_id, :binary_id)
     field(:acknowledged_at, :utc_datetime_usec)
+    field(:access_id, :binary_id)
+    field(:authority_version, :integer)
   end
 end

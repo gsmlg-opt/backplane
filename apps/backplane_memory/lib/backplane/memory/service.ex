@@ -72,6 +72,87 @@ defmodule Backplane.Memory.Service do
     end
   end
 
+  @doc "Reads one explicitly selected canonical partition, rechecking authority before release."
+  def call_shared(name, args, auth, %{access_id: access_id, authority_version: version} = claim)
+      when name in ["memory::recall", "memory::list", "memory::stats"] and is_map(args) and
+             map_size(claim) == 2 and is_integer(version) and version > 0 do
+    raw_authority =
+      ~w(memory_access_id memory_space_id host_id client_id source_client_id namespace auth actor access authority_version __trusted_internal__ requesting_actor)
+
+    with false <- Enum.any?(raw_authority, &Map.has_key?(args, &1)),
+         {:ok, %{input_schema: schema}} <- MemoryToolContract.tool(name),
+         true <-
+           Enum.all?(
+             Map.keys(args),
+             &(&1 in ((Map.keys(schema["properties"]) -- ["memory_access_id"]) ++ ["scope"]))
+           ),
+         :ok <- InputValidator.validate(args, schema),
+         {:ok, actor, access} <-
+           Authorization.authorize_access(auth, {:access_id, access_id}, :read),
+         true <- access.authority_version == version,
+         true <- not Map.has_key?(args, "scope") or args["scope"] == access.partition.scope,
+         trusted =
+           Map.merge(
+             args,
+             Map.new(access.partition, fn {key, value} -> {to_string(key), value} end)
+           ),
+         trusted =
+           Map.merge(trusted, %{
+             "host_id" => actor.host_id,
+             "client_id" => "host:" <> actor.host_id,
+             "source_client_id" => actor.source_client_id,
+             "requesting_actor" => Map.drop(actor, [:credential_check])
+           }),
+         {:ok, result} <- shared_read(name, trusted) do
+      Backplane.MemorySpaces.with_host_access(
+        actor,
+        {:access_id, access_id},
+        :read,
+        version,
+        fn current ->
+          Audit.log("memory.shared.read", "host:" <> actor.host_id, [], %{
+            requesting_actor: Map.drop(actor, [:credential_check]),
+            partition: current.partition,
+            access_id: access_id,
+            authority_version: version,
+            method: name
+          })
+
+          {:ok, %{access: claim, partition: current.partition, result: result}}
+        end
+      )
+    else
+      false -> shared_read_mismatch(args, auth, claim)
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  def call_shared(_name, _args, _auth, _claim), do: {:error, :invalid_request}
+
+  defp shared_read("memory::recall", args), do: do_handle_recall(args)
+  defp shared_read("memory::list", args), do: do_handle_list(args)
+  defp shared_read("memory::stats", args), do: do_handle_stats(args)
+
+  defp shared_read_mismatch(args, auth, claim) do
+    case Authorization.authorize_access(auth, {:access_id, claim.access_id}, :read) do
+      {:ok, _, access} ->
+        cond do
+          access.authority_version != claim.authority_version ->
+            {:error, :authority_changed}
+
+          Map.has_key?(args, "scope") and args["scope"] != access.partition.scope ->
+            {:error, :partition_mismatch}
+
+          true ->
+            {:error, :invalid_request}
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
   if Mix.env() == :test do
     @doc false
     def trusted_call(name, args) when is_binary(name) and is_map(args) do
@@ -1012,6 +1093,17 @@ defmodule Backplane.Memory.Service do
               "enum" => Backplane.Memory.Operations.Repair.kinds()
             },
             "idempotency_key" => %{"type" => "string", "minLength" => 1},
+            "job_ids" => %{
+              "type" => "array",
+              "minItems" => 1,
+              "maxItems" => 100,
+              "uniqueItems" => true,
+              "items" => %{
+                "type" => "integer",
+                "minimum" => 1,
+                "maximum" => 9_223_372_036_854_775_807
+              }
+            },
             "target_id" => %{"type" => "string", "minLength" => 1},
             "session_id" => %{"type" => "string", "minLength" => 1},
             "project" => %{"type" => "string", "minLength" => 1},
@@ -1100,7 +1192,8 @@ defmodule Backplane.Memory.Service do
           },
           %{
             name: "memory::consolidate",
-            description: "Enqueue a consolidation job for a session.",
+            description:
+              "Consolidate the current session revision and return stage progress and artifact IDs.",
             input_schema: %{
               "type" => "object",
               "properties" => %{
@@ -1456,7 +1549,7 @@ defmodule Backplane.Memory.Service do
 
   def handle_remember(%{"content" => content} = args, auth) when is_binary(content) do
     with :ok <- validate_remember_args(args),
-         {:ok, partition} <- Backplane.Memory.Partition.resolve(auth),
+         {:ok, _, partition} <- Authorization.authorize_tool("memory::remember", args, auth),
          :ok <- validate_remember_scope(args["scope"], partition.scope) do
       do_handle_remember(content, args, partition)
     end
@@ -1466,7 +1559,7 @@ defmodule Backplane.Memory.Service do
     do: {:error, "content is required and must be a string"}
 
   def handle_lifecycle_context(args, auth) when is_map(args) do
-    with {:ok, partition} <- Backplane.Memory.Partition.resolve(auth),
+    with {:ok, _, partition} <- Authorization.authorize_tool("memory::recall", %{}, auth),
          :ok <- validate_lifecycle_context_args(args) do
       context = build_lifecycle_context(args, partition)
 
@@ -1901,6 +1994,8 @@ defmodule Backplane.Memory.Service do
       source_action_ids: detail.source_action_ids,
       source_event_ids: detail.source_event_ids,
       source_summary_ids: detail.source_summary_ids,
+      current_source_summary_ids: detail.current_source_summary_ids,
+      historical_source_summary_ids: detail.historical_source_summary_ids,
       lesson_memory_ids: detail.lesson_memory_ids
     })
   end
@@ -1986,7 +2081,7 @@ defmodule Backplane.Memory.Service do
 
   defp do_handle_recall_v2(query, args) do
     allowed =
-      ~w(query limit memory_space_id host_id client_id source_client_id scope namespace project facets token_budget temporal_hints entity_hints include_working channel_weights __trusted_internal__)
+      ~w(query limit memory_space_id host_id client_id source_client_id scope namespace project facets token_budget temporal_hints entity_hints include_working channel_weights __trusted_internal__ requesting_actor)
 
     cond do
       Map.has_key?(args, "agent_id") or Map.has_key?(args, "tag") ->
@@ -2002,6 +2097,7 @@ defmodule Backplane.Memory.Service do
           host_id: args["host_id"],
           client_id: args["client_id"],
           source_client_id: args["source_client_id"],
+          requesting_actor: args["requesting_actor"],
           scope: args["scope"],
           namespace: args["namespace"],
           project: args["project"],
@@ -2131,6 +2227,7 @@ defmodule Backplane.Memory.Service do
     case llm_module.expand_query(query) do
       {:ok, expansions} -> {:ok, %{query: query, expansions: expansions}}
       {:skip, _} -> {:ok, %{query: query, expansions: [query], note: "LLM not configured"}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -2964,6 +3061,8 @@ defmodule Backplane.Memory.Service do
     )
   end
 
+  defp do_handle_heal(%{"job_ids" => _ids}), do: {:error, :invalid_arguments}
+
   defp do_handle_heal(args) do
     alias Backplane.Memory.Embedding.CircuitBreaker
     alias Backplane.Memory.Audit
@@ -3034,14 +3133,7 @@ defmodule Backplane.Memory.Service do
   end
 
   defp do_handle_consolidate(%{"session_id" => session_id} = args) when is_binary(session_id) do
-    # Enqueue a profile build as the consolidation mechanism
-    case Backplane.Memory.Workers.ProfileBuildWorker.enqueue(
-           session_id,
-           partition_from_args(args)
-         ) do
-      {:ok, _job} -> {:ok, %{status: "queued", session_id: session_id}}
-      {:error, _reason} = error -> error
-    end
+    Backplane.Memory.Operations.Consolidation.enqueue(session_id, partition_from_args(args))
   end
 
   defp do_handle_consolidate(_), do: {:error, "session_id is required"}

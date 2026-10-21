@@ -38,6 +38,10 @@ config :backplane, Styx,
      crontab: [
        # Procedural extraction: nightly at 02:00
        {"0 2 * * *", Backplane.Memory.Workers.ProceduralWorker},
+       # Resume eligible pending/skipped revisions after live stage/model changes.
+       {"* * * * *", Backplane.Memory.Workers.StageResumeWorker},
+       # Archive weak memories using the existing bounded retention policy.
+       {"0 3 * * *", Backplane.Memory.Workers.EvictionWorker},
        # Lesson decay: nightly at 03:15, isolated and bounded by exact-partition pages
        {"15 3 * * *", Backplane.Memory.Workers.LessonDecaySweepWorker},
        # Fallback sweep: every 30 minutes, leaving room for gap grace within the four-hour SLA

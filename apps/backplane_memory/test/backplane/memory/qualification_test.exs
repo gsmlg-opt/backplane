@@ -37,6 +37,7 @@ defmodule Backplane.Memory.QualificationTest do
       }
     }
 
+    measurements = with_complete_ingest(measurements)
     report = Qualification.evaluate(measurements, generated_at: ~U[2026-08-12 00:00:00Z])
 
     assert report.schema_version == 1
@@ -175,6 +176,7 @@ defmodule Backplane.Memory.QualificationTest do
       }
     }
 
+    measurements = with_complete_ingest(measurements)
     ci = Qualification.evaluate(measurements, profile: :ci)
     performance = Qualification.evaluate(measurements, profile: :performance)
 
@@ -191,5 +193,45 @@ defmodule Backplane.Memory.QualificationTest do
     refute performance.gates.ingest_throughput
     refute performance.gates.projection_lag
     refute performance.passed
+  end
+
+  test "incomplete measured or warmup input cannot pass with complete durable jobs" do
+    complete =
+      with_complete_ingest(%{
+        ingest: %{
+          accepted: 100,
+          persisted: 100,
+          duplicate_effects: 0,
+          events_per_second: 900.0,
+          batch_count: 1,
+          projection_sessions: 1,
+          projection_frontiers_durable: 1,
+          projection_requested_generations: 1,
+          projection_jobs_durable: 1,
+          projection_job_subjects_unique: 1
+        }
+      }).ingest
+
+    incomplete = %{complete | requested: 101, complete: false}
+
+    for ingest <- [incomplete, Map.put(complete, :warmup, incomplete)] do
+      report = Qualification.evaluate(%{ingest: ingest})
+      refute report.gates.ingest_throughput
+      refute report.gates.accepted_event_integrity
+    end
+  end
+
+  defp with_complete_ingest(measurements) do
+    update_in(measurements, [:ingest], fn ingest ->
+      Map.merge(ingest, %{
+        requested: ingest.accepted,
+        result_count: ingest.accepted,
+        complete: true,
+        warmup: nil,
+        result_counts: [
+          %{status: "accepted", reason: nil, retryable: nil, count: ingest.accepted}
+        ]
+      })
+    end)
   end
 end

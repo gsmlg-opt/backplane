@@ -11,7 +11,8 @@ defmodule Backplane.Memory.Qualification do
 
     gates = %{
       ingest_throughput:
-        positive_count?(measurements, [:ingest, :accepted]) and
+        complete_ingest?(Map.get(measurements, :ingest)) and
+          positive_count?(measurements, [:ingest, :accepted]) and
           number_at_least?(
             measurements,
             [:ingest, :events_per_second],
@@ -38,7 +39,8 @@ defmodule Backplane.Memory.Qualification do
             [:ingest, :projection_requested_generations]
           ),
       accepted_event_integrity:
-        equal_positive_counts?(measurements, [:ingest, :accepted], [:ingest, :persisted]) and
+        complete_ingest?(Map.get(measurements, :ingest)) and
+          equal_positive_counts?(measurements, [:ingest, :accepted], [:ingest, :persisted]) and
           zero?(measurements, [:ingest, :duplicate_effects]),
       projection_lag:
         positive_count?(measurements, [:projection, :samples]) and
@@ -120,6 +122,20 @@ defmodule Backplane.Memory.Qualification do
 
     Map.put(measurements, :consolidation, consolidation)
   end
+
+  defp complete_ingest?(%{requested: requested} = ingest)
+       when is_integer(requested) and requested > 0 do
+    counts = Map.get(ingest, :result_counts, [])
+
+    ingest[:complete] == true and ingest[:accepted] == requested and
+      ingest[:persisted] == requested and ingest[:result_count] == requested and
+      counts != [] and
+      Enum.all?(counts, &match?(%{status: "accepted", reason: nil, retryable: nil}, &1)) and
+      Enum.sum(Enum.map(counts, & &1.count)) == requested and
+      (is_nil(ingest[:warmup]) or complete_ingest?(ingest.warmup))
+  end
+
+  defp complete_ingest?(_ingest), do: false
 
   defp equal_positive_counts?(measurements, left, right) do
     left_value = get_in(measurements, left)

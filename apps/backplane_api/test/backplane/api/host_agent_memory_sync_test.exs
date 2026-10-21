@@ -17,6 +17,71 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     :ok
   end
 
+  test "command uploads preserve explicit type and canonical facets" do
+    host = create_host!("typed-command", "scope:typed-command")
+    facets = [%{"dimension" => "project", "value" => "host-routing"}]
+
+    item = %{
+      "op" => "remember",
+      "id" => "typed-local",
+      "content" => "durable procedure",
+      "type" => "procedural",
+      "facets" => facets,
+      "scope" => host.memory_scope,
+      "agent_id" => "agent-1",
+      "idempotency_key" => "logical-command"
+    }
+
+    assert {:ok, %{canonical_id: id}} = HostAgentMemorySync.apply_sync_item(host, item)
+    assert Repo.get!(MemorySchema, id).memory_type == "procedural"
+    assert id in Backplane.Memory.Facets.query(facets)
+
+    assert {:ok, %{canonical_id: ^id, status: :duplicate}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert {:error, :validation, _} =
+             HostAgentMemorySync.apply_sync_item(
+               host,
+               Map.put(item, "content", "changed command")
+             )
+  end
+
+  test "canonical delete commands revalidate the exact current host partition" do
+    host = create_host!("canonical-delete", "scope:canonical-delete")
+    other = create_host!("foreign-delete", host.memory_scope)
+    memory = insert_memory!(host, host.memory_scope, "created through canonical API", [])
+    foreign = insert_memory!(other, other.memory_scope, "foreign partition", [])
+
+    item = %{
+      "op" => "forget",
+      "id" => "delete-command",
+      "canonical_id" => memory.id,
+      "memory_space_id" => memory.memory_space_id,
+      "namespace" => "private",
+      "scope" => host.memory_scope
+    }
+
+    assert {:error, :validation, _} =
+             HostAgentMemorySync.apply_sync_item(host, %{item | "canonical_id" => foreign.id})
+
+    assert is_nil(Repo.get!(MemorySchema, foreign.id).deleted_at)
+
+    assert {:ok, %{canonical_id: id, status: :ok, revision: revision, partition: partition}} =
+             HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert is_integer(revision) and revision > 0
+    assert partition == Map.take(item, ~w(memory_space_id scope namespace))
+    assert id == memory.id
+    assert Repo.get!(MemorySchema, memory.id).deleted_at
+    assert {:ok, %{status: :duplicate}} = HostAgentMemorySync.apply_sync_item(host, item)
+
+    assert {:error, :validation, _} =
+             HostAgentMemorySync.apply_sync_item(host, %{
+               item
+               | "memory_space_id" => foreign.memory_space_id
+             })
+  end
+
   test "compat receipts bind issued content, host and kind and never advance v2" do
     host = create_host!("receipts", "scope:receipts")
     other = create_host!("foreign-receipts", "scope:receipts")
@@ -503,12 +568,22 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
 
     results = Enum.map(1..10, fn _attempt -> HostAgentMemorySync.apply_sync_item(host, item) end)
 
-    assert [{:ok, %{status: :ok, canonical_id: canonical_id, revision: revision}} | retries] =
+    assert [
+             {:ok,
+              %{status: :ok, canonical_id: canonical_id, revision: revision, partition: partition}}
+             | retries
+           ] =
              results
 
     assert Enum.all?(retries, fn result ->
              result ==
-               {:ok, %{status: :duplicate, canonical_id: canonical_id, revision: revision}}
+               {:ok,
+                %{
+                  status: :duplicate,
+                  canonical_id: canonical_id,
+                  revision: revision,
+                  partition: partition
+                }}
            end)
 
     assert 1 ==
@@ -611,7 +686,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert 1 == Repo.aggregate(RememberRequest, :count)
   end
 
-  test "remember rejects scope injection and ignores payload memory type" do
+  test "remember rejects scope injection and preserves explicit payload memory type" do
     host = create_host!("payload-trust", "proj_local")
 
     assert {:error, :validation, "scope is not registered for host"} =
@@ -627,7 +702,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
                |> Map.put("type", "procedural")
              )
 
-    assert %MemorySchema{memory_type: "episodic"} = Repo.get!(MemorySchema, id)
+    assert %MemorySchema{memory_type: "procedural"} = Repo.get!(MemorySchema, id)
   end
 
   test "fact payload removes private host mapping metadata" do
@@ -684,10 +759,8 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
 
     assert %MemorySchema{deleted_at: nil} = Repo.get!(MemorySchema, canonical_id)
 
-    assert {:full, [%{"id" => fact_id}]} =
-             HostAgentMemorySync.facts_for_scope(first_host, scope, nil)
-
-    assert fact_id == durable_fact.id
+    assert {:full, facts} = HostAgentMemorySync.facts_for_scope(first_host, scope, nil)
+    assert MapSet.new(Enum.map(facts, & &1["id"])) == MapSet.new([durable_fact.id, canonical_id])
     assert {:full, []} = HostAgentMemorySync.facts_for_scope(second_host, scope, nil)
     assert [] = HostAgentMemorySync.active_wipes(first_host, scope)
 

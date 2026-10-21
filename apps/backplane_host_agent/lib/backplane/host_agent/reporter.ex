@@ -22,13 +22,13 @@ defmodule Backplane.HostAgent.Reporter do
   end
 
   @doc "Builds the host-agent config report payload."
-  def config_report(config) do
+  def config_report(config, context \\ %{}) do
     %{
       "agent" =>
         compact(%{
           "host_id" => field(config, :host_id),
           "machine_name" => field(config, :machine_name),
-          "hub_url" => field(config, :hub_url),
+          "hub_url" => safe_hub_url(field(config, :hub_url)),
           "token" => redacted_token(field(config, :token)),
           "interval_ms" => field(config, :interval_ms),
           "manifest_path" => field(config, :manifest_path),
@@ -36,10 +36,25 @@ defmodule Backplane.HostAgent.Reporter do
           "http_bind" => field(config, :http_bind),
           "http_port" => field(config, :http_port)
         }),
-      "memory" => config |> field(:memory) |> stringify_keys(),
-      "capture" => config |> field(:capture) |> stringify_keys(),
-      "telemetry" => config |> field(:telemetry) |> stringify_keys(),
-      "targets" => config |> field(:targets) |> List.wrap() |> Enum.map(&stringify_keys/1)
+      "local_settings_applied_at" => Map.get(context, :local_settings_applied_at),
+      "memory_negotiation" => negotiation_report(Map.get(context, :memory_negotiation_report)),
+      "memory" => memory_settings(field(config, :memory)),
+      "capture" =>
+        safe_settings(
+          field(config, :capture),
+          ~w(enabled db_path inject_context context_timeout_ms recall_cache_max_entries recall_cache_max_bytes recall_cache_ttl_ms upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
+        ),
+      "telemetry" =>
+        safe_settings(
+          field(config, :telemetry),
+          ~w(enabled dir sync_interval_ms sync_batch_size retention_days)
+        ),
+      "targets" =>
+        config
+        |> field(:targets)
+        |> List.wrap()
+        |> Enum.take(50)
+        |> Enum.map(&safe_settings(&1, ~w(name runtime path enabled)))
     }
   end
 
@@ -105,24 +120,106 @@ defmodule Backplane.HostAgent.Reporter do
     opts = field(memory, :diagnostics_opts) || []
 
     case safe_capture_call(fn -> diagnostics.snapshot(opts) end, nil) do
-      {:ok, %{"edge" => edge}} -> edge
-      _ -> memory_defaults()
+      {:ok, %{"edge" => edge, "outbox" => outbox} = snapshot}
+      when is_map(edge) and is_map(outbox) ->
+        measured =
+          if edge["status"] == "available",
+            do:
+              Map.take(
+                edge,
+                ~w(status protection_mode items bytes revision lag lag_status stale_age_seconds)
+              ),
+            else: %{}
+
+        memory_defaults()
+        |> Map.merge(measured)
+        |> Map.put("protection_mode", edge["protection_mode"] || "disabled")
+        |> Map.put(
+          "pending_commands",
+          Enum.sum(Enum.map(~w(pending inflight retry_wait), &Map.get(outbox, &1, 0)))
+        )
+        |> Map.put("failed_commands", Map.get(outbox, "dead_letter", 0))
+        |> Map.put("retry_count", Map.get(outbox, "retry_wait", 0))
+        |> Map.put("dead_letter_count", Map.get(outbox, "dead_letter", 0))
+        |> Map.put("last_successful_sync", snapshot["last_successful_sync"])
+        |> Map.put(
+          "partitions",
+          edge
+          |> Map.get("partitions", [])
+          |> Enum.take(50)
+          |> Enum.map(
+            &Map.take(
+              &1,
+              ~w(memory_space_id scope namespace applied_revision last_sync_at stale_age_seconds)
+            )
+          )
+        )
+
+      _ ->
+        memory_defaults()
     end
   end
 
   defp memory_defaults do
-    %{
+    Map.new(
+      ~w(items bytes revision lag stale_age_seconds retry_count dead_letter_count pending_commands failed_commands last_successful_sync),
+      &{&1, nil}
+    )
+    |> Map.merge(%{
+      "status" => "unavailable",
       "protection_mode" => "disabled",
-      "items" => 0,
-      "bytes" => 0,
-      "revision" => 0,
-      "lag" => nil,
       "lag_status" => "unavailable",
-      "stale_age_seconds" => nil,
-      "retry_count" => 0,
-      "dead_letter_count" => 0,
       "partitions" => []
-    }
+    })
+  end
+
+  defp safe_settings(config, keys) do
+    config
+    |> stringify_keys()
+    |> Map.take(keys)
+    |> Map.filter(fn {_key, value} ->
+      is_boolean(value) or is_integer(value) or (is_binary(value) and byte_size(value) <= 4096)
+    end)
+  end
+
+  defp safe_hub_url(nil), do: nil
+
+  defp safe_hub_url(value) when is_binary(value) do
+    value
+    |> URI.parse()
+    |> Map.merge(%{userinfo: nil, query: nil, fragment: nil})
+    |> URI.to_string()
+  end
+
+  defp memory_settings(memory) do
+    safe_settings(
+      memory,
+      ~w(enabled db_path bound_scope local_ttl_days sync_interval_ms sync_batch_size max_attempts tombstone_relearn)
+    )
+    |> Map.put("host_sync_v1", safe_settings(field(memory, :host_sync_v1), ~w(enabled)))
+    |> Map.put(
+      "host_sync_v2",
+      safe_settings(
+        field(memory, :host_sync_v2),
+        ~w(enabled development_plaintext db_path max_frame_bytes max_changes max_items max_bytes max_items_per_partition max_age_days sync_interval_ms)
+      )
+    )
+  end
+
+  defp negotiation_report(nil), do: nil
+
+  defp negotiation_report(report) when is_map(report) do
+    report = stringify_keys(report)
+
+    report
+    |> Map.take(~w(selected applied_at))
+    |> Map.put(
+      "partitions",
+      report
+      |> Map.get("partitions", [])
+      |> Enum.take(50)
+      |> Enum.map(&Map.take(&1, ~w(memory_space_id scope namespace)))
+    )
   end
 
   defp capture_connection_state(status) when is_map(status),

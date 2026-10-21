@@ -37,6 +37,17 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     end
   end
 
+  defmodule OutageChannel do
+    def push(owner, "memory_sync", payload) do
+      send(owner, {:outage_push, self(), payload})
+
+      receive do
+        {:outage_reply, reply} -> reply
+        {:outage_exit, reason} -> exit(reason)
+      end
+    end
+  end
+
   setup %{tmp_dir: tmp_dir} do
     store = start_memory!(tmp_dir)
     {:ok, store: store, opts: memory_opts(store)}
@@ -292,7 +303,7 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
              ])
   end
 
-  test "builds remember payload from the current memory row at drain time", %{
+  test "keeps the accepted remember payload immutable when local metadata changes", %{
     store: store,
     opts: opts
   } do
@@ -309,8 +320,8 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
 
     assert_receive {:memory_push, "memory_sync", %{"items" => [item]}}
     assert item["id"] == id
-    assert item["tags"] == ["new"]
-    assert item["metadata"] == %{"topic" => "sync"}
+    assert item["tags"] == ["old"]
+    assert item["metadata"] == %{}
   end
 
   test "transient channel errors move rows to retry wait with an attempt", %{
@@ -324,6 +335,84 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
              Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
 
     assert_outbox(store, id, "retry_wait", 1)
+  end
+
+  test "structured outage errors keep the scheduled syncer alive and automatically settle retries",
+       %{store: store, opts: opts} do
+    for failure <- [
+          {:outage_reply, {:error, {:reconnect_failed, :socket_timeout}}},
+          {:outage_exit,
+           {:noproc, {GenServer, :call, [self(), "private-payload-must-not-persist"]}}}
+        ] do
+      assert {:ok, %{"id" => id}} =
+               Memory.remember(%{"content" => "outage #{inspect(elem(failure, 0))}"}, opts)
+
+      syncer =
+        start_supervised!(
+          {Syncer,
+           store: store,
+           channel: self(),
+           channel_module: OutageChannel,
+           interval_ms: 10,
+           jitter_fun: fn -> 0.0 end}
+        )
+
+      assert_receive {:outage_push, ^syncer, _}, 1_000
+      send(syncer, failure)
+      _ = :sys.get_state(syncer)
+      assert Process.alive?(syncer)
+      assert_outbox(store, id, "retry_wait", 1)
+
+      assert {:ok, %Result{rows: [%{"last_error" => error}]}} =
+               Store.query(store, "SELECT last_error FROM memory_outbox WHERE memory_id = ?", [id])
+
+      assert is_binary(error)
+      refute error =~ "private-payload-must-not-persist"
+
+      assert_receive {:outage_push, ^syncer, %{"items" => [%{"id" => ^id}]}}, 2_000
+
+      send(
+        syncer,
+        {:outage_reply,
+         {:ok, %{"items" => [%{"id" => id, "status" => "ok", "canonical_id" => "hub_#{id}"}]}}}
+      )
+
+      _ = :sys.get_state(syncer)
+      assert Process.alive?(syncer)
+      assert_outbox(store, id, "done", 1)
+      stop_supervised(Syncer)
+    end
+  end
+
+  test "structured errors can exhaust retry budgets and permanently reject commands", %{
+    store: store,
+    opts: opts
+  } do
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "exhausted outage"}, opts)
+    Process.put({FakeChannel, :reply}, {:error, {:reconnect_failed, :socket_timeout}})
+
+    assert {:error, {:reconnect_failed, :socket_timeout}} =
+             Syncer.drain_once(
+               store: store,
+               channel: self(),
+               channel_module: FakeChannel,
+               max_attempts: 1
+             )
+
+    assert_outbox(store, id, "dead_letter", 1)
+
+    assert {:ok, %{"id" => rejected}} = Memory.remember(%{"content" => "rejected command"}, opts)
+
+    Process.put(
+      {FakeChannel, :reply},
+      {:ok,
+       %{"items" => [%{"id" => rejected, "status" => "error", "error" => %{"code" => "invalid"}}]}}
+    )
+
+    assert {:ok, %{"drained" => 1}} =
+             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+
+    assert_outbox(store, rejected, "dead_letter", 1)
   end
 
   test "retries only due rows with bounded deterministic backoff and dead-letters at max attempts",

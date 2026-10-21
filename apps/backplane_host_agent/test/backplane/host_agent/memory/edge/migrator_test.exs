@@ -111,7 +111,7 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
     end
   end
 
-  test "fresh edge storage reaches V3 and repeat migration is idempotent", %{tmp_dir: dir} do
+  test "fresh edge storage reaches V4 and repeat migration is idempotent", %{tmp_dir: dir} do
     {:ok, store} =
       Store.start_link(
         database: Path.join(dir, "fresh.db"),
@@ -119,9 +119,32 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
       )
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 3} = Migrator.current_version(store)
+    assert {:ok, 4} = Migrator.current_version(store)
+    assert :ok = Migrator.validate_schema(store)
+
+    assert {:ok, %{rows: columns}} = Store.query(store, "PRAGMA table_info(edge_partitions)")
+
+    assert columns
+           |> Enum.filter(&(&1["name"] in ["access_id", "authority_version"]))
+           |> Enum.map(&Map.take(&1, ~w(name type notnull dflt_value pk))) == [
+             %{
+               "name" => "access_id",
+               "type" => "TEXT",
+               "notnull" => 0,
+               "dflt_value" => nil,
+               "pk" => 0
+             },
+             %{
+               "name" => "authority_version",
+               "type" => "INTEGER",
+               "notnull" => 0,
+               "dflt_value" => nil,
+               "pk" => 0
+             }
+           ]
+
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 3} = Migrator.current_version(store)
+    assert {:ok, 4} = Migrator.current_version(store)
     GenServer.stop(store)
   end
 
@@ -254,7 +277,7 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
     GenServer.stop(store)
   end
 
-  test "upgrades a V1 edge database to V3 without losing canonical state", %{tmp_dir: dir} do
+  test "upgrades a V1 edge database to V4 without losing canonical state", %{tmp_dir: dir} do
     opts = [
       database: Path.join(dir, "edge.db"),
       config: %{enabled: true, development_plaintext: true}
@@ -287,12 +310,14 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
              )
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 3} = Migrator.current_version(store)
+    assert {:ok, 4} = Migrator.current_version(store)
 
     assert {:ok,
             %{
               rows: [
                 %{
+                  "access_id" => nil,
+                  "authority_version" => nil,
                   "sync_status" => nil,
                   "last_delivery_hash" => nil,
                   "snapshot_received_items" => 0,
@@ -303,7 +328,7 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
             }} =
              Store.query(
                store,
-               "SELECT sync_status, last_delivery_hash, snapshot_received_items, applied_revision, active_generation FROM edge_partitions"
+               "SELECT access_id, authority_version, sync_status, last_delivery_hash, snapshot_received_items, applied_revision, active_generation FROM edge_partitions"
              )
 
     assert {:ok, %{rows: [%{"content" => nil, "server_revision" => 7}]}} =
@@ -318,10 +343,39 @@ defmodule Backplane.HostAgent.Memory.Edge.MigratorTest do
     assert Enum.sort(Enum.map(rows, & &1["name"])) ==
              ["edge_memories", "edge_partitions", "edge_snapshot_chunks"]
 
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE edge_partitions SET access_id = ?, authority_version = ?",
+               ["8f0607b3-ff2a-4508-a6f0-22daa87b3550", 7]
+             )
+
+    assert {:ok,
+            %{
+              rows: [
+                %{
+                  "access_id" => "8f0607b3-ff2a-4508-a6f0-22daa87b3550",
+                  "authority_version" => 7
+                }
+              ]
+            }} = Store.query(store, "SELECT access_id, authority_version FROM edge_partitions")
+
+    preserved_rows =
+      Map.new(~w(edge_partitions edge_memories edge_snapshot_chunks), fn table ->
+        assert {:ok, %{rows: rows}} = Store.query(store, "SELECT * FROM #{table}")
+        {table, rows}
+      end)
+
     GenServer.stop(store)
     {:ok, store} = Store.start_link(opts)
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 3} = Migrator.current_version(store)
+    assert {:ok, 4} = Migrator.current_version(store)
+
+    assert :ok = Migrator.validate_schema(store)
+
+    for {table, expected} <- preserved_rows do
+      assert {:ok, %{rows: ^expected}} = Store.query(store, "SELECT * FROM #{table}")
+    end
 
     assert {:ok, %{rows: [%{"server_revision" => 7}]}} =
              Store.query(store, "SELECT server_revision FROM edge_memories")

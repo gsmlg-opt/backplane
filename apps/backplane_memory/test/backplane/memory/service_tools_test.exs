@@ -32,6 +32,13 @@ defmodule Backplane.Memory.ServiceToolsTest do
     end
   end
 
+  @memory_access_id_schema %{
+    "type" => "string",
+    "format" => "uuid",
+    "description" =>
+      "Optional Memory access UUID selector, not a credential. When omitted, uses the designated private default."
+  }
+
   @full_tool_contracts Map.new([
                          {"memory::activity_summary",
                           %{
@@ -361,7 +368,10 @@ defmodule Backplane.Memory.ServiceToolsTest do
                           }},
                          {"memory::forget",
                           %{
-                            "properties" => %{"id" => %{"type" => "string"}},
+                            "properties" => %{
+                              "id" => %{"type" => "string"},
+                              "memory_access_id" => @memory_access_id_schema
+                            },
                             "required" => ["id"],
                             "type" => "object"
                           }},
@@ -407,6 +417,17 @@ defmodule Backplane.Memory.ServiceToolsTest do
                               "date_from" => %{"format" => "date", "type" => "string"},
                               "date_to" => %{"format" => "date", "type" => "string"},
                               "idempotency_key" => %{"minLength" => 1, "type" => "string"},
+                              "job_ids" => %{
+                                "type" => "array",
+                                "minItems" => 1,
+                                "maxItems" => 100,
+                                "uniqueItems" => true,
+                                "items" => %{
+                                  "type" => "integer",
+                                  "minimum" => 1,
+                                  "maximum" => 9_223_372_036_854_775_807
+                                }
+                              },
                               "kind" => %{
                                 "enum" => [
                                   "coordination",
@@ -537,6 +558,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
                          {"memory::list",
                           %{
                             "properties" => %{
+                              "memory_access_id" => @memory_access_id_schema,
                               "agent_id" => %{"type" => "string"},
                               "limit" => %{"default" => 50, "type" => "integer"},
                               "offset" => %{"default" => 0, "type" => "integer"},
@@ -608,6 +630,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
                           %{
                             "additionalProperties" => false,
                             "properties" => %{
+                              "memory_access_id" => @memory_access_id_schema,
                               "agent_id" => %{"type" => "string"},
                               "channel_weights" => %{
                                 "additionalProperties" => false,
@@ -662,6 +685,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
                           %{
                             "additionalProperties" => false,
                             "properties" => %{
+                              "memory_access_id" => @memory_access_id_schema,
                               "agent_id" => %{"type" => "string"},
                               "content" => %{
                                 "description" => "Memory text",
@@ -765,7 +789,11 @@ defmodule Backplane.Memory.ServiceToolsTest do
                             "required" => ["query"],
                             "type" => "object"
                           }},
-                         {"memory::stats", %{"properties" => %{}, "type" => "object"}},
+                         {"memory::stats",
+                          %{
+                            "properties" => %{"memory_access_id" => @memory_access_id_schema},
+                            "type" => "object"
+                          }},
                          {"memory::team_feed",
                           %{
                             "properties" => %{
@@ -936,6 +964,24 @@ defmodule Backplane.Memory.ServiceToolsTest do
   end
 
   describe "tools/0 — extended tools (memory.tools = 'all')" do
+    test "only the five shared operations expose an optional access UUID selector" do
+      set_tool_mode("all")
+      tools = Service.tools()
+
+      shared_tools =
+        Enum.filter(tools, &Map.has_key?(&1.input_schema["properties"], "memory_access_id"))
+
+      assert shared_tools |> Enum.map(& &1.name) |> Enum.sort() ==
+               ~w(memory::forget memory::list memory::recall memory::remember memory::stats)
+
+      for tool <- shared_tools do
+        schema = tool.input_schema
+        assert schema["properties"]["memory_access_id"] == @memory_access_id_schema
+        refute "memory_access_id" in Map.get(schema, "required", [])
+        refute Map.has_key?(schema["properties"], "authority_version")
+      end
+    end
+
     test "does not publish device-local slot tools" do
       set_tool_mode("all")
       published_names = MapSet.new(Service.tools(), & &1.name)
@@ -1295,6 +1341,51 @@ defmodule Backplane.Memory.ServiceToolsTest do
     test "get_prompt/2 fails closed before revealing whether a prompt exists" do
       assert {:error, :unauthorized} = Service.get_prompt("nonexistent", %{})
     end
+  end
+
+  test "heal job IDs require explicit dead-letter kind and retain admin authorization" do
+    {:ok, host} =
+      repo().insert(
+        Host.changeset(%Host{}, %{name: "heal-selector-host", memory_scope: "scope:heal"})
+      )
+
+    {:ok, partition} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
+
+    auth = %{
+      kind: :client_token,
+      client_id: Ecto.UUID.generate(),
+      scopes: ["memory.admin"],
+      principal_metadata: %{"memory_partition_id" => "host:#{host.id}"}
+    }
+
+    assert {:error, :invalid_arguments} = Service.call("memory::heal", %{"job_ids" => [1]}, auth)
+
+    Styx.Testing.with_testing_mode(:manual, fn ->
+      identity =
+        partition
+        |> Map.merge(%{host_id: host.id, client_id: "host:#{host.id}"})
+        |> Map.new(fn {k, v} -> {to_string(k), v} end)
+
+      job =
+        %{"partition" => identity}
+        |> Backplane.Memory.Workers.RelationClassifierWorker.new()
+        |> Ecto.Changeset.change(state: "discarded", attempt: 3, max_attempts: 3)
+        |> repo().insert!()
+        |> repo().reload!()
+
+      args = %{
+        "kind" => "dead_letter",
+        "job_ids" => [job.id],
+        "idempotency_key" => "service-selected-job"
+      }
+
+      assert {:error, :unauthorized} =
+               Service.call("memory::heal", args, Map.put(auth, :scopes, ["memory.read"]))
+
+      assert repo().get!(Styx.Job, job.id) == job
+      assert {:ok, %{affected: 1}} = Service.call("memory::heal", args, auth)
+      assert repo().get!(Styx.Job, job.id).state == "available"
+    end)
   end
 
   defp memory_partition(memory) do

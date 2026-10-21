@@ -3,6 +3,14 @@ defmodule Backplane.HostAgent.ConfigTest do
 
   alias Backplane.HostAgent.Config
 
+  test "inspection excludes the bearer token even in exception arguments" do
+    token = "config-inspection-fixture-token"
+    config = %Config{host_id: "inspect-host", token: token}
+    refute inspect(config) =~ token
+    refute Exception.format(:error, %KeyError{key: :missing, term: config}, []) =~ token
+    assert config.token == token
+  end
+
   @tag :tmp_dir
   test "loads agent config and computes websocket URL", %{tmp_dir: tmp_dir} do
     config_path = Path.join(tmp_dir, "agent.yaml")

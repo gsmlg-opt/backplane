@@ -88,20 +88,35 @@ defmodule Backplane.Memory.Workers.EvictionWorkerTest do
     end
 
     test "evicts at most one deterministic batch per run" do
+      inserted_times = [
+        ~U[2026-01-01 00:00:00.900000Z],
+        ~U[2026-01-01 00:00:01.100000Z],
+        ~U[2026-01-01 00:00:01.100000Z]
+      ]
+
       memories =
-        for suffix <- 1..3 do
+        for {inserted_at, suffix} <- Enum.with_index(inserted_times, 1) do
           {:ok, mem} =
             remember("batched weak memory #{suffix}")
+
+          repo().update_all(from(m in MemorySchema, where: m.id == ^mem.id),
+            set: [inserted_at: inserted_at]
+          )
 
           old_dt = DateTime.add(DateTime.utc_now(), -100 * 86_400, :second)
           set_accessed_at(mem.id, old_dt)
           set_confidence(mem.id, 0.1)
-          mem
+          %{mem | inserted_at: inserted_at}
         end
 
       expected_ids =
         memories
-        |> Enum.sort_by(&{&1.inserted_at, &1.id})
+        |> Enum.sort(fn left, right ->
+          case DateTime.compare(left.inserted_at, right.inserted_at) do
+            :eq -> left.id <= right.id
+            order -> order == :lt
+          end
+        end)
         |> Enum.take(2)
         |> Enum.map(& &1.id)
 

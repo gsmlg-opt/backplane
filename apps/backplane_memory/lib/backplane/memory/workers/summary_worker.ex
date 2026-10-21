@@ -155,12 +155,18 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
                ),
              {:ok, _input_partition} <- PartitionIdentity.validate(input, partition),
              true <- summary_ready?(input) do
-          state = mark_running(subject_id, expected_revision, partition)
-          attrs = summary_attrs(input, partition)
-          summary = store_summary(subject_id, attrs)
-          store_summary_sources(summary, input)
-          complete_state(state, expected_revision, attrs.output_revision)
-          summary
+          if Config.session_summary_v2_enabled?() do
+            state = mark_running(subject_id, expected_revision, partition)
+            attrs = summary_attrs(input, partition)
+            summary = store_summary(subject_id, attrs)
+            store_summary_sources(summary, input)
+            enqueue_downstream(summary, host_id, session_id, expected_revision, partition)
+            complete_state(state, expected_revision, attrs.output_revision)
+            summary
+          else
+            mark_disabled(subject_id, expected_revision, partition)
+            :disabled
+          end
         else
           {:ok, _newer_input} -> repo().rollback(:stale_input_revision)
           false -> repo().rollback(:gap_grace_pending)
@@ -169,14 +175,8 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
       end)
 
     case result do
-      {:ok, %Summary{} = summary} ->
-        with {:ok, _episodic_job} <- EpisodicWorker.enqueue_summary(summary.id),
-             {:ok, _crystal_job} <-
-               CrystalWorker.enqueue(host_id, session_id, expected_revision, partition) do
-          :ok
-        else
-          {:error, reason} -> {:error, reason}
-        end
+      {:ok, _summary_or_disabled} ->
+        :ok
 
       {:error, reason}
       when reason in [
@@ -199,6 +199,33 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
       reraise exception, __STACKTRACE__
   end
 
+  defp enqueue_downstream(summary, host_id, session_id, revision, partition) do
+    with {:ok, _} <- EpisodicWorker.enqueue_summary(summary.id),
+         {:ok, _} <- CrystalWorker.enqueue(host_id, session_id, revision, partition) do
+      :ok
+    else
+      {:error, reason} -> repo().rollback(reason)
+    end
+  end
+
+  defp mark_disabled(subject_id, revision, partition) do
+    case locked_state(subject_id) do
+      %State{status: "complete", input_revision: ^revision} ->
+        :ok
+
+      _ ->
+        mark_pending(subject_id, revision, partition)
+
+        locked_state(subject_id)
+        |> State.changeset(%{
+          status: "skipped_disabled",
+          last_error: "disabled",
+          completed_at: now()
+        })
+        |> repo().update!()
+    end
+  end
+
   defp summary_attrs(input, partition) do
     counts = input.counts
     observations = input.observations
@@ -207,6 +234,8 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     header =
       [
         "Session #{input.session_id}",
+        "generation_mode=deterministic",
+        "generation_reason=canonical_evidence",
         "host=#{input.host_id}",
         "project=#{if input.project == "", do: "unknown", else: input.project}",
         "status=#{input.status}",
@@ -225,28 +254,31 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
       |> Enum.join(" | ")
 
     lines =
-      Enum.map(observations, fn observation ->
-        metadata =
-          [
-            observation.event_type,
-            observation.tool_name,
-            Enum.join(observation.file_paths || [], ","),
-            observation.commit_hash
-          ]
-          |> Enum.filter(&valid_identifier?/1)
-          |> Enum.join(" | ")
+      (Enum.map(observations, &{:observation, &1}) ++ Enum.map(errors, &{:error, &1}))
+      |> Enum.sort_by(fn {_kind, evidence} ->
+        {evidence.source_sequence, evidence.event_type, evidence.event_id}
+      end)
+      |> Enum.map(fn
+        {:observation, observation} ->
+          metadata =
+            [
+              observation.event_type,
+              observation.tool_name,
+              Enum.join(observation.file_paths || [], ","),
+              observation.commit_hash
+            ]
+            |> Enum.filter(&valid_identifier?/1)
+            |> Enum.join(" | ")
 
-        "[observation importance=#{observation.importance || 0} | #{metadata}] #{String.slice(observation.content, 0, 500)}"
+          "[observation importance=#{observation.importance || 0} | #{metadata}] #{String.slice(observation.content, 0, 500)}"
+
+        {:error, error} ->
+          detail = error.message || error.content
+
+          "[error importance=#{error.importance || 0} | #{error.event_type}] #{String.slice(detail, 0, 500)}"
       end)
 
-    error_lines =
-      Enum.map(errors, fn error ->
-        detail = error.message || error.content
-
-        "[error importance=#{error.importance || 0} | #{error.event_type}] #{String.slice(detail, 0, 500)}"
-      end)
-
-    content = Enum.join([header | lines ++ error_lines], "\n---\n")
+    content = Enum.join([header | lines], "\n---\n")
 
     output = %{
       "content" => content,

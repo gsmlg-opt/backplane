@@ -12,6 +12,7 @@ defmodule Backplane.Memory.Recall.QueryPlan do
     :host_id,
     :client_id,
     :source_client_id,
+    :requesting_actor,
     :scope,
     :namespace,
     :project,
@@ -38,7 +39,7 @@ defmodule Backplane.Memory.Recall.QueryPlan do
     :channel_weights,
     :token_budget
   ]
-  defstruct @enforce_keys ++ [:source_client_id, :project, :temporal_hints]
+  defstruct @enforce_keys ++ [:source_client_id, :project, :temporal_hints, :requesting_actor]
 
   @type channel :: :fts | :vector | :graph
   @type t :: %__MODULE__{
@@ -66,6 +67,7 @@ defmodule Backplane.Memory.Recall.QueryPlan do
     with [] <- Enum.sort(unknown),
          {:ok, normalized_query} <- normalized_required(attrs, :query, 16_384),
          {:ok, partition} <- PartitionIdentity.validate(attrs),
+         {:ok, requesting_actor} <- requesting_actor(Map.get(attrs, :requesting_actor)),
          {:ok, host_id} <- normalized_required(attrs, :host_id, 512),
          {:ok, client_id} <- normalized_required(attrs, :client_id, 512),
          {:ok, scope} <- normalized_required(attrs, :scope, 512),
@@ -87,6 +89,7 @@ defmodule Backplane.Memory.Recall.QueryPlan do
          host_id: host_id,
          client_id: client_id,
          source_client_id: partition[:source_client_id],
+         requesting_actor: requesting_actor,
          scope: scope,
          namespace: namespace,
          project: project,
@@ -128,9 +131,30 @@ defmodule Backplane.Memory.Recall.QueryPlan do
       "token_budget" => plan.token_budget
     }
 
+    trace =
+      if plan.requesting_actor,
+        do: Map.put(trace, "requesting_actor", plan.requesting_actor),
+        else: trace
+
     {:ok, filtered} = Filter.apply_payload(trace)
     filtered
   end
+
+  defp requesting_actor(nil), do: {:ok, nil}
+
+  defp requesting_actor(
+         %{host_id: host, credential_id: credential, source_client_id: source} = actor
+       )
+       when map_size(actor) == 3 and (is_nil(source) or is_binary(source)) do
+    with {:ok, host} <- Ecto.UUID.cast(host),
+         {:ok, credential} <- Ecto.UUID.cast(credential) do
+      {:ok, %{"host_id" => host, "credential_id" => credential, "source_client_id" => source}}
+    else
+      _ -> {:error, :invalid_requesting_actor}
+    end
+  end
+
+  defp requesting_actor(_), do: {:error, :invalid_requesting_actor}
 
   defp atomize_known_keys(attrs) do
     Map.new(attrs, fn

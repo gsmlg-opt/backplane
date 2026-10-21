@@ -11,17 +11,15 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
   alias Backplane.Skills.Host
 
   setup do
-    previous = :ets.lookup(:backplane_settings, "memory.tools")
-    previous_llm = Application.get_env(:backplane_memory, :llm_client)
-    Application.put_env(:backplane_memory, :llm_client, __MODULE__)
+    keys = ~w(memory.tools memory.llm_model)
+    previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    :ets.insert(:backplane_settings, {"memory.llm_model", "test-model"})
 
     on_exit(fn ->
-      :ets.delete(:backplane_settings, "memory.tools")
-      if previous != [], do: :ets.insert(:backplane_settings, previous)
-
-      if previous_llm,
-        do: Application.put_env(:backplane_memory, :llm_client, previous_llm),
-        else: Application.delete_env(:backplane_memory, :llm_client)
+      Enum.each(previous, fn {key, rows} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(rows, &:ets.insert(:backplane_settings, &1))
+      end)
     end)
 
     :ok
@@ -99,6 +97,8 @@ defmodule Backplane.Memory.CrystalServiceSurfaceTest do
              Service.call("memory::crystal_get", %{"crystal_id" => first.crystal_id}, auth)
 
     assert detail.source_action_ids == [action.id]
+    assert detail.current_source_summary_ids == []
+    assert detail.historical_source_summary_ids == []
     assert detail.source_kind == "action_chain"
     assert detail.status == "complete"
 

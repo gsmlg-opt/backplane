@@ -190,6 +190,7 @@ defmodule Backplane.Memory.Memories.Search do
       case llm_module.expand_query(query) do
         {:ok, queries} -> Enum.uniq([query | queries])
         {:skip, _} -> [query]
+        {:error, _reason} -> [query]
       end
     else
       [query]

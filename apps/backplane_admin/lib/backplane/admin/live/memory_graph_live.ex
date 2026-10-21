@@ -80,7 +80,7 @@ defmodule Backplane.Admin.MemoryGraphLive do
     state =
       cond do
         not Config.pipeline_enabled?() or not Config.relation_classifier_enabled?() -> :disabled
-        is_nil(Application.get_env(:backplane_memory, :llm_client)) -> :provider_unavailable
+        is_nil(Config.llm_model()) -> :provider_unavailable
         empty?(stats) -> :empty
         true -> :ready
       end

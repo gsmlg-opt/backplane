@@ -27,6 +27,10 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
       nil ->
         :ok
 
+      %Memory{deleted_at: deleted_at, lifecycle_state: state}
+      when not is_nil(deleted_at) or state == "tombstoned" ->
+        :ok
+
       %Memory{} = mem ->
         if CircuitBreaker.allow_request?() do
           state_attrs = processing_attrs(mem)
@@ -36,6 +40,9 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
               embed_current(mem, state_attrs, job, embed_fn)
 
             {:stale, _state} ->
+              :ok
+
+            {:error, :memory_deleted} ->
               :ok
 
             {:error, reason} ->
@@ -56,14 +63,24 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
 
   defp embed_current(mem, state_attrs, job, embed_fn) do
     try do
-      case embed_fn.([mem.content], :document, []) do
+      model = Client.model()
+
+      result =
+        if is_nil(model),
+          do: {:error, :embedding_model_not_configured},
+          else: embed_fn.([mem.content], :document, model: model)
+
+      case result do
         {:ok, [vector]} ->
-          case persist_embedding(mem.id, state_attrs, vector) do
+          case persist_embedding(mem.id, state_attrs, vector, model) do
             {:ok, _memory, _state} ->
               CircuitBreaker.record_success()
               :ok
 
             {:stale, _state} ->
+              :ok
+
+            {:error, :memory_deleted} ->
               :ok
 
             {:error, reason} ->
@@ -107,7 +124,7 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
     end
   end
 
-  defp persist_embedding(memory_id, attrs, vector) do
+  defp persist_embedding(memory_id, attrs, vector, model) do
     ProcessingState.persist_current(
       repo(),
       attrs,
@@ -116,7 +133,7 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
         memory =
           repo().one!(from(memory in Memory, where: memory.id == ^memory_id, lock: "FOR UPDATE"))
 
-        memory |> Memory.embed_changeset(vector) |> repo().update()
+        memory |> Memory.embed_changeset(vector, model) |> repo().update()
       end
     )
   end
@@ -157,8 +174,15 @@ defmodule Backplane.Memory.Workers.EmbedWorker do
 
   defp current_attrs(memory_id) do
     case repo().one(from(memory in Memory, where: memory.id == ^memory_id, lock: "FOR UPDATE")) do
-      %Memory{} = memory -> {:ok, processing_attrs(memory)}
-      nil -> {:error, :not_found}
+      %Memory{deleted_at: deleted_at, lifecycle_state: state}
+      when not is_nil(deleted_at) or state == "tombstoned" ->
+        {:error, :memory_deleted}
+
+      %Memory{} = memory ->
+        {:ok, processing_attrs(memory)}
+
+      nil ->
+        {:error, :not_found}
     end
   end
 end

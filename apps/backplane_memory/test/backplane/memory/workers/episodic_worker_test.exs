@@ -1,6 +1,23 @@
 defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
+  setup do
+    keys =
+      ~w(memory.pipeline.enabled memory.fact_extraction_v2.enabled memory.session_summary_v2.enabled)
+
+    previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+    Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
+
+    on_exit(fn ->
+      Enum.each(previous, fn {key, entries} ->
+        :ets.delete(:backplane_settings, key)
+        Enum.each(entries, &:ets.insert(:backplane_settings, &1))
+      end)
+    end)
+
+    :ok
+  end
+
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.{Audit, Ingest, Memories}
@@ -67,9 +84,14 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
     assert :ok = perform(summary.session_id)
     assert_received {:episodic_input, "summary revision"}
+    completed = repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
+    artifacts = artifact_snapshot()
 
     Process.put(:episodic_facts, ["z fact", "a fact"])
     assert :ok = perform(summary.session_id)
+    refute_received {:episodic_input, _}
+    assert repo().get!(State, completed.id) == completed
+    assert artifact_snapshot() == artifacts
 
     assert ["a fact", "z fact"] ==
              Memory
@@ -87,17 +109,40 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     end
   end
 
-  test "changed output in the same deterministic slot conflicts without new effects" do
-    summary = insert_summary("episodic-conflict", "project-a", "fixed revision")
-    Process.put(:episodic_facts, ["first fact"])
-    assert :ok = perform(summary.session_id)
+  test "an incomplete multi-fact retry preserves its first conflict and rolls back earlier writes" do
+    summary = insert_canonical_summary("episodic-conflict", "session", "fixed revision")
+    key = Enum.join(["episodic-v1", summary.id, digest(summary.content), 1], ":")
 
-    Process.put(:episodic_facts, ["changed fact"])
+    assert {:ok, _existing} =
+             Memories.remember(
+               "original second fact",
+               canonical_memory_opts(summary.host_id,
+                 type: "semantic",
+                 scope: summary.scope,
+                 agent_id: summary.agent_id,
+                 session_id: summary.session_id,
+                 metadata: %{"project" => summary.project},
+                 idempotency_scope: "memory-worker:episodic",
+                 idempotency_key: key,
+                 evidence: [
+                   %{
+                     source_summary_id: summary.id,
+                     host_id: summary.host_id,
+                     session_id: summary.session_id,
+                     evidence_kind: "derives",
+                     support_score: 1.0
+                   }
+                 ]
+               )
+             )
+
+    artifacts = artifact_snapshot()
+    refute repo().get_by(State, projector: "episodic", subject_id: summary.subject_id)
+
+    Process.put(:episodic_facts, ["a new first fact", "b conflicting second fact", "c later fact"])
+
     assert {:error, :idempotency_conflict} = perform(summary.session_id)
-
-    assert repo().aggregate(Memory, :count) == 1
-    assert repo().aggregate(RememberRequest, :count) == 1
-    assert repo().aggregate(Evidence, :count) == 2
+    assert artifact_snapshot() == artifacts
 
     assert %State{status: "failed", last_error: "idempotency_conflict"} =
              repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
@@ -204,6 +249,211 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
       assert metadata["scope"] == "project:correlation"
       assert metadata["namespace"] == "private"
     end)
+  end
+
+  test "a late captured revision recovers a damaged stage without resurrecting forgotten facts" do
+    Styx.Testing.with_testing_mode(:manual, fn ->
+      host_id = "host-forget-replay"
+      session_id = "session-forget-replay"
+      correlation_id = Ecto.UUID.generate()
+      auth = ingest_auth_context(host_id, %{partition: %{scope: "project:correlation"}})
+
+      events = [
+        capture_event(host_id, session_id, correlation_id, 1, "agent.session.started"),
+        capture_event(host_id, session_id, correlation_id, 2, "agent.tool.completed"),
+        capture_event(host_id, session_id, correlation_id, 3, "agent.session.ended")
+      ]
+
+      capture = fn batch ->
+        assert {:ok, %{"results" => results}} =
+                 Ingest.ingest_batch(auth, %{
+                   "batch_id" => Ecto.UUID.generate(),
+                   "host_id" => host_id,
+                   "events" => batch
+                 })
+
+        assert Enum.all?(results, &(&1["status"] in ["accepted", "duplicate"]))
+        assert {:ok, projection} = Rebuild.session(host_id, session_id)
+
+        assert :ok =
+                 SummaryWorker.perform(
+                   summary_job(host_id, session_id, projection.input_revision)
+                 )
+
+        repo().get_by!(Summary,
+          subject_id: projection.subject_id,
+          processing_version: "summary-v1"
+        )
+      end
+
+      first = capture.(events)
+      Process.put(:episodic_facts, ["governed captured fact"])
+
+      run = fn summary ->
+        EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => summary.id}})
+      end
+
+      assert :ok = run.(first)
+      assert_received {:episodic_input, _}
+      memory = repo().get_by!(Memory, content: "governed captured fact")
+      partition = canonical_partition(host_id, scope: "project:correlation")
+      assert :ok = Memories.tombstone(memory.id, partition)
+
+      assert :ok = run.(capture.(events))
+      refute_received {:episodic_input, _}
+      assert repo().get!(Memory, memory.id).lifecycle_state == "tombstoned"
+
+      refute repo().exists?(
+               from(m in Memory,
+                 where: m.content == "governed captured fact" and is_nil(m.deleted_at)
+               )
+             )
+
+      evidence_count = repo().aggregate(Evidence, :count)
+
+      # Reproduce the retained stage state after the old unchanged-repair bug.
+      # Recovery must use the normal newer captured revision, not rewrite R1 artifacts.
+      repo().get_by!(State, projector: "episodic", subject_id: first.subject_id)
+      |> State.changeset(%{
+        status: "dead_letter",
+        attempt_count: 4,
+        last_error: "transaction rolling back"
+      })
+      |> repo().update!()
+
+      tombstone = repo().get!(Memory, memory.id)
+
+      second =
+        capture.([capture_event(host_id, session_id, correlation_id, 4, "agent.tool.completed")])
+
+      refute second.id == first.id
+      refute second.input_revision == first.input_revision
+      assert second.subject_id == first.subject_id
+      assert :ok = run.(second)
+      assert_received {:episodic_input, _}
+
+      assert %State{status: "complete", last_error: nil, input_revision: revision} =
+               completed =
+               repo().get_by!(State, projector: "episodic", subject_id: second.subject_id)
+
+      assert revision == second.input_revision
+      assert repo().get!(Memory, memory.id) == tombstone
+      assert repo().get!(Memory, memory.id).lifecycle_state == "tombstoned"
+
+      refute repo().exists?(
+               from(m in Memory,
+                 where: m.content == "governed captured fact" and is_nil(m.deleted_at)
+               )
+             )
+
+      assert repo().aggregate(RememberRequest, :count) == 2
+      assert repo().aggregate(Evidence, :count) == evidence_count
+      assert :ok = run.(second)
+      refute_received {:episodic_input, _}
+      assert repo().get!(State, completed.id) == completed
+      assert repo().aggregate(RememberRequest, :count) == 2
+      assert repo().aggregate(Evidence, :count) == evidence_count
+    end)
+  end
+
+  test "fresh explicit remember and an independent subject remain possible after forget" do
+    for {suffix, explicit?} <- [{"explicit", true}, {"independent", false}] do
+      host = "host-governance-#{suffix}"
+      first = insert_canonical_summary(host, "governed", "original source")
+      fact = "same fact #{suffix}"
+      Process.put(:episodic_facts, [fact])
+      assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => first.id}})
+      original = repo().get_by!(Memory, content: fact)
+      partition = canonical_partition(host, scope: "project-canonical")
+      assert :ok = Memories.tombstone(original.id, partition)
+
+      if explicit? do
+        assert {:ok, replacement} =
+                 Memories.remember(
+                   fact,
+                   canonical_memory_opts(host,
+                     scope: "project-canonical",
+                     agent_id: "user",
+                     metadata: %{"project" => "project-canonical"},
+                     idempotency_scope: "user",
+                     idempotency_key: "fresh-explicit"
+                   )
+                 )
+
+        refute replacement.id == original.id
+        assert is_nil(replacement.deleted_at)
+      else
+        independent =
+          insert_canonical_summary(host, "independent", "independent supporting source")
+
+        assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => independent.id}})
+
+        replacement =
+          repo().one!(from(m in Memory, where: m.content == ^fact and is_nil(m.deleted_at)))
+
+        refute replacement.id == original.id
+
+        assert Enum.any?(
+                 Memories.list_evidence(replacement.id),
+                 &(&1.source_id == independent.id)
+               )
+      end
+    end
+  end
+
+  test "suppression cannot bypass canonical source partition validation" do
+    first = insert_canonical_summary("host-invalid-source", "session", "source")
+    Process.put(:episodic_facts, ["partition-guarded fact"])
+    assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => first.id}})
+    original = repo().get_by!(Memory, content: "partition-guarded fact")
+    partition = canonical_partition(first.host_id, scope: first.scope)
+    assert :ok = Memories.tombstone(original.id, partition)
+    second = replace_canonical_summary(first, "changed source")
+
+    repo().update_all(from(s in Summary, where: s.id == ^second.id),
+      set: [namespace: "team:other"]
+    )
+
+    counts = {repo().aggregate(RememberRequest, :count), repo().aggregate(Evidence, :count)}
+
+    assert {:error, :partition_mismatch} =
+             Memories.remember(
+               original.content,
+               canonical_memory_opts(first.host_id,
+                 agent_id: "agent",
+                 scope: first.scope,
+                 metadata: %{"project" => first.project},
+                 idempotency_scope: "memory-worker:episodic",
+                 idempotency_key: "invalid-source",
+                 evidence: [
+                   %{
+                     source_summary_id: second.id,
+                     host_id: first.host_id,
+                     evidence_kind: "derives",
+                     support_score: 1.0
+                   }
+                 ]
+               )
+             )
+
+    assert counts ==
+             {repo().aggregate(RememberRequest, :count), repo().aggregate(Evidence, :count)}
+
+    assert repo().get!(Memory, original.id).lifecycle_state == "tombstoned"
+  end
+
+  test "archive does not become source-governed forget suppression" do
+    first = insert_canonical_summary("host-archive", "session", "original source")
+    Process.put(:episodic_facts, ["archived fact"])
+    assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => first.id}})
+    memory = repo().get_by!(Memory, content: "archived fact")
+    memory |> Memory.lifecycle_changeset(%{lifecycle_state: "archived"}) |> repo().update!()
+    second = replace_canonical_summary(first, "revised source")
+    assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => second.id}})
+    stored = repo().get!(Memory, memory.id)
+    assert stored.lifecycle_state == "archived"
+    assert is_nil(stored.deleted_at)
+    assert Enum.any?(Memories.list_evidence(stored.id), &(&1.source_id == second.id))
   end
 
   test "a discarded extraction can be re-enqueued and remains fact-idempotent" do
@@ -547,6 +797,12 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
     insert_projected_session!(summary, partition)
     summary
+  end
+
+  defp artifact_snapshot do
+    for schema <- [Memory, RememberRequest, Evidence], into: %{} do
+      {schema, repo().all(from(row in schema, order_by: row.id))}
+    end
   end
 
   defp insert_canonical_summary(host_id, session_id, content) do

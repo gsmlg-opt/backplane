@@ -1,0 +1,41 @@
+# Synthetic local development only. Copy to a gitignored .devenv path.
+# Replace host_id/token using the supported host registration workflow.
+# Use absolute dedicated paths; command, capture, and mirror stores MUST differ.
+agent:
+  host_id: REPLACE_WITH_AGENT_ID
+  machine_name: memory-local-UNIQUE_RUN_ID
+  hub_url: http://localhost:4220
+  token: REPLACE_WITH_AUTH_TOKEN
+  interval_ms: 5000
+  work_dir: /ABSOLUTE/LOCAL/RUN/host
+  manifest_path: /ABSOLUTE/LOCAL/RUN/host/manifest.json
+  http_bind: 127.0.0.1
+  http_port: 4222
+
+memory:
+  enabled: true
+  db_path: /ABSOLUTE/LOCAL/RUN/host/commands.db
+  bound_scope: memory_local_acceptance
+  sync_interval_ms: 1000
+  sync_batch_size: 50
+  max_attempts: 5
+  tombstone_relearn: block
+  host_sync_v2:
+    enabled: true
+    db_path: /ABSOLUTE/LOCAL/RUN/host/mirror.db
+    # Supported dev/test plaintext opt-in; NEVER use for production.
+    development_plaintext: true
+    sync_interval_ms: 1000
+    max_frame_bytes: 524288
+    max_changes: 100
+
+capture:
+  enabled: true
+  db_path: /ABSOLUTE/LOCAL/RUN/host/capture-spool.db
+  upload_interval_ms: 1000
+  inject_context: false
+
+telemetry:
+  enabled: false
+
+targets: []

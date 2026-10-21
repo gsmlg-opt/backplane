@@ -11,7 +11,8 @@ is a second canonical memory database.
 | `memory::remember` / `memory::forget` | Host provisional write and `host_memory.v1` command upload; Backplane resolves the canonical partition and ID, and applies canonical forget | Queue the command in Turso; report provisional identity and pending canonical ACK |
 | `memory::recall`, `list`, `stats` | Authenticated `memory_call` to Backplane and canonical partition; recall uses Recall V2 | Only allowlisted transport failures may read the active V2 mirror plus provisional overlay; report `bounded_stale` or `provisional_only` |
 | `lifecycle_context` | Bounded `MemoryProxy` call to Backplane | The injection path uses its separate `RecallCache` fallback/fail-open policy; it does not read the V2 mirror |
-| Slots and facets | Explicitly device-local `memory::*` operations | Device-local; no claim of canonical authority |
+| `facet_tag` / `facet_query` | Canonical-only authenticated HubProxy operations; no provisional local facet store | Return connection error; no local fallback |
+| Slots | Explicitly device-local `memory::*` operations | Device-local; no claim of canonical authority |
 | Capture events | Durable capture spool, optionally encrypted when configured, then authenticated batch ingest | Spool until accepted/duplicate ACK; permanent rejects remain evidence |
 
 Authorization, partition, validation, governance, and protocol errors never
@@ -23,6 +24,26 @@ edge-ineligible canonical memories, including oversized items, remain valid and
 receive an ID-only ACK. Duplicate source requests reuse the receipt. Host
 command-store V3 persists `remote_revision` atomically with outbox settlement;
 an invalid revision cannot settle the row.
+
+## Shared-access extension status
+
+The approved [shared-access design](shared-host-access-design.md) extends V2 with
+`memory_access.v1` and `memory_commands.v2`. Integration and local live acceptance
+are pending; the base protocol below does not by itself grant cross-host access.
+An extended host selects a registered entitlement with optional `memory_access_id`
+on recall/list/stats/remember/forget. The server derives its exact canonical
+partition and requires the matching independent capability; `deliver` additionally
+requires `read`. Remember-only and forget-only grants disclose no existing content.
+Omitting the selector retains the host's existing default private target.
+
+Extended requests bind access ID and authority version. Mutations use immutable,
+durable `memory_commands.v2` envelopes; reads, deliveries and ACKs carry the same
+authority claim. Capability changes and revoke/regrant advance the version.
+Revoke fences host mirrors and provisional overlays without deleting canonical
+data. A regrant cannot revive commands, snapshots or ACKs from an older version.
+Shared offline read leases default to zero and are bounded at 300 seconds; only
+fresh authenticated authority can issue a lease. Cold shared startup is closed
+until negotiation. See the design for complete envelopes, persistence and races.
 
 ## Negotiation and wire events
 

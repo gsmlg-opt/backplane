@@ -90,7 +90,8 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
     refute has_element?(view, "#memory-recent-events a.text-primary")
     refute has_element?(view, "#memory-active-streams a.text-primary")
 
-    assert length(Regex.scan(~r/Unavailable/, html)) >= 5
+    refute has_element?(view, "section[aria-label='Processing stages']", "Unavailable")
+    assert has_element?(view, "section[aria-label='Processing stages']", "Disabled")
 
     for region <- [
           "Ingestion health",
@@ -168,6 +169,76 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
                where: fragment("?->>'result' = 'dispatched'", row.metadata)
              )
            )
+  end
+
+  test "repair form strictly parses optional job IDs and never broadens malformed input", %{
+    conn: conn
+  } do
+    partition = %{
+      "memory_space_id" => @repair_memory_space_id,
+      "host_id" => "repair-host",
+      "client_id" => "repair-client",
+      "scope" => "private",
+      "namespace" => "private"
+    }
+
+    jobs =
+      for _ <- 1..2 do
+        partition
+        |> Backplane.Memory.Workers.RelationClassifierWorker.new()
+        |> Ecto.Changeset.change(state: "discarded")
+        |> Repo.insert!()
+        |> Repo.reload!()
+      end
+
+    [selected, unrelated] = jobs
+    {:ok, view, _html} = live(conn, "/memory")
+    assert has_element?(view, "#repair-job-ids")
+
+    params =
+      Map.merge(partition, %{"kind" => "dead_letter", "idempotency_key" => "ui-explicit-jobs"})
+
+    for malformed <- [
+          " ",
+          "bad",
+          "#{selected.id},",
+          ",#{selected.id}",
+          "#{selected.id},,#{unrelated.id}",
+          "1.5",
+          "0",
+          "-1",
+          "#{selected.id},#{selected.id}",
+          "9223372036854775808",
+          Enum.join(1..101, ",")
+        ] do
+      view
+      |> form("#memory-repair-operations form", repair: Map.put(params, "job_ids", malformed))
+      |> render_submit()
+
+      assert has_element?(view, "#memory-repair-error")
+      for job <- jobs, do: assert(Repo.get!(Styx.Job, job.id) == job)
+    end
+
+    refute Repo.exists?(from(row in "memory_audit_log", where: row.operation == "memory.repair"))
+
+    view
+    |> form("#memory-repair-operations form",
+      repair: Map.put(params, "job_ids", " #{selected.id} ")
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#memory-repair-result", "Dead letter: dispatched; affected 1")
+    assert Repo.get!(Styx.Job, unrelated.id) == unrelated
+
+    assert [targets] =
+             Repo.all(
+               from(row in "memory_audit_log",
+                 where: row.operation == "memory.repair",
+                 select: row.target_ids
+               )
+             )
+
+    assert targets == [to_string(selected.id)]
   end
 
   test "renders live content-free host capture health", %{conn: conn} do
@@ -273,6 +344,31 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
 
     assert :ok = AgentManage.disconnect(host.id)
     assert has_element?(view, "#memory-host-capture-#{host.id}", "Disconnected")
+  end
+
+  test "keeps disconnected memory-only reports visible as last-known stale data", %{conn: conn} do
+    {:ok, host, token, _} = Hosts.create_agent_with_token(%{"name" => "memory-only-host"})
+    :ok = AgentManage.register_connection(host, token, self(), %{})
+
+    :ok =
+      AgentManage.update_runtime(host.id, %{
+        "memory" => %{
+          "status" => "available",
+          "revision" => 17,
+          "pending_commands" => 3,
+          "failed_commands" => 1,
+          "retry_count" => 2,
+          "dead_letter_count" => 1,
+          "last_successful_sync" => "2026-10-20T01:00:00Z",
+          "partitions" => []
+        }
+      })
+
+    :ok = AgentManage.disconnect(host.id)
+    {:ok, view, _} = live(conn, "/memory")
+    assert has_element?(view, "#memory-host-memory-#{host.id}", "17")
+    assert has_element?(view, "#memory-host-memory-#{host.id}", "stale")
+    assert has_element?(view, "#memory-host-memory-#{host.id}", "2026-10-20T01:00:00Z")
   end
 
   test "one failed tagged region does not suppress healthy content" do

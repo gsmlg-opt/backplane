@@ -6,7 +6,7 @@ defmodule Backplane.HostAgent.Memory.Migrator do
   alias Backplane.HostAgent.Memory.{Migrations, Store}
   alias Turso.Result
 
-  @migrations [Migrations.V1, Migrations.V2, Migrations.V3]
+  @migrations [Migrations.V1, Migrations.V2, Migrations.V3, Migrations.V4, Migrations.V5]
 
   @doc false
   def child_spec(opts) do

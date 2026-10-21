@@ -2,26 +2,6 @@ defmodule Backplane.HostAgent.Memory.GitContextTest do
   use ExUnit.Case, async: true
   alias Backplane.HostAgent.Memory.GitContext
   alias Backplane.HostAgent.Memory.Hooks.Codex
-  alias Backplane.HostAgent.Memory.Syncer
-
-  defmodule UploadChannel do
-    def push(channel, "memory_sync", payload) do
-      send(channel, {:memory_upload, payload})
-
-      {:ok,
-       %{
-         "items" =>
-           Enum.map(payload["items"], fn item ->
-             %{
-               "id" => item["id"],
-               "status" => "ok",
-               "canonical_id" => "remote_#{item["id"]}",
-               "revision" => 1
-             }
-           end)
-       }}
-    end
-  end
 
   test "subdirectories and worktrees share remote identity while retaining distinct checkout paths" do
     root =
@@ -88,17 +68,14 @@ defmodule Backplane.HostAgent.Memory.GitContextTest do
     assert metadata["repository_sources"] == [first]
     assert metadata["project"] == repo
 
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: UploadChannel)
+    assert {:ok, %{rows: [outbox]}} =
+             Backplane.HostAgent.Memory.Store.query(
+               store,
+               "SELECT payload FROM memory_outbox WHERE memory_id = ?",
+               [memory_id]
+             )
 
-    assert_receive {:memory_upload, %{"protocol" => "host_memory.v1", "items" => [item]}}
-    assert item["op"] == "remember"
-    assert item["id"] == memory_id
-    assert item["metadata"]["repository_sources"] == [first]
-    assert item["metadata"]["project"] == repo
-
-    assert {:ok, %{"drained" => 0}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: UploadChannel)
+    assert Jason.decode!(outbox["payload"])["metadata"]["repository_sources"] == [first]
   end
 
   test "non-Git, missing Git, failed discovery and missing remote retain paths without rejecting writes" do

@@ -12,6 +12,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
     forget: 2,
     get: 1,
     get: 2,
+    get_source_summary: 3,
     list: 0,
     list: 1,
     list: 2,
@@ -30,6 +31,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
     team_share: 2,
     team_share: 3,
     tombstone: 2,
+    tombstone_shared: 3,
     trusted_count: 0,
     trusted_count: 1,
     trusted_forget: 1,
@@ -68,11 +70,11 @@ defmodule Backplane.Memory.NamespaceContractTest do
     {"memory::apply", "a2cc1e206b4a87d2d1758a7b5a5f509851623b96e410b2908d1efa696ca7130f"},
     {"memory::facet_tag", "f02c5459fb417d4a86cb121b650dbcbf42d41f6b1ded88d56b1ea02cf54cc9d5"},
     {"memory::facet_query", "b9873017618d35e7063f7b8143c27d09711f8ff657482022d59356554a74c122"},
-    {"memory::remember", "d9fa08ccb2377be72de08b7b1b3e2c24fe3e6769c39a0a96bdfd5edae00f691a"},
-    {"memory::recall", "3d11f65a1256ce7a81b26b50c5ba38f5e72be08dac35663c78fd5f3ee2aef2ea"},
-    {"memory::list", "945afe0e1110224a03edc03b8ba1c9244bda95835733f893ee6f55c3c6f180d3"},
-    {"memory::forget", "141f64d3f41b18db870a320c78edd80755d43ffed764f4661b64bf7421a9f92e"},
-    {"memory::stats", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"},
+    {"memory::remember", "f17cbd286ac125a4f00a1dedb81b3371f516e4c2158597b9d4273ff276449741"},
+    {"memory::recall", "d77e0e2b4d3fdaecd7588cc5508282b5497e7de8de0bea2edc78f649aed89afb"},
+    {"memory::list", "76dce6ac3001cbf3ba2f988e71c137b387ac91f74337c306aa34e087837c261b"},
+    {"memory::forget", "87a5813fc9e8d78ac4d06146916a8442c8316360f47149ed849321d52c80ab90"},
+    {"memory::stats", "acd98fbf11d837af0293a53e0862a5d6e1643148c03def4b5de5eceadd386b8d"},
     {"memory::profile", "72a1e29bdbf4ee2495ed7658dd202bc29dbb1c5ccf29f6c572febb9cac8bcfdc"},
     {"memory::profile_refresh",
      "18faf46daff0de4c65fae4863343f973908f15bb1f96183e79fd7d29e09a4589"},
@@ -98,7 +100,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
     {"memory::governance_delete",
      "0b52982f95a278025d8b3620dcc7072cf8644b5505a9705984ee91d1ce82d4cc"},
     {"memory::diagnose", "cadd96657217a7d93bedd0056277d9afb9af80fdcf4890d57aa9dfdec778e09c"},
-    {"memory::heal", "7be6fb307419cb44c78b606d887485a7e23aafce8d08d50e3d264e33b0e5502d"}
+    {"memory::heal", "09e3004fc34a1b9c8a25e11fb977d083ca7ff70dc377e66bb9a4ffcc04bc7182"}
   ]
 
   @extended_tool_contracts [

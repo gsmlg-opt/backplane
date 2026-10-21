@@ -1,16 +1,18 @@
 defmodule Backplane.HostAgent.MemoryFacade do
   @moduledoc "Routes core host memory operations across canonical and provisional stores."
 
-  alias Backplane.HostAgent.{Memory, MemoryProxy}
-  alias Backplane.HostAgent.Memory.Reducer
+  alias Backplane.HostAgent.{HubProxy, Memory, MemoryProxy}
+  alias Backplane.HostAgent.Memory.{Access, Reducer, Syncer}
 
   @commands ~w(remember forget)
+  @command_functions %{"remember" => :remember, "forget" => :forget}
   @reads ~w(recall list stats)
   @overlay_cap 100
 
   @transport_errors [
     :not_connected,
     :timeout,
+    :socket_timeout,
     :econnrefused,
     :econnreset,
     :enetdown,
@@ -34,8 +36,40 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   @spec call(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
   def call(method, args, context)
+
+  def call(method, %{"memory_access_id" => selector} = args, context) do
+    with true <- method in (@commands ++ @reads) and is_binary(selector),
+         true <-
+           not Enum.any?(
+             ~w(memory_space_id host_id client_id partition_id namespace),
+             &Map.has_key?(args, &1)
+           ),
+         :ok <- MemoryProxy.authorize_command(),
+         {:ok, target, ticket} <-
+           Access.begin_request(
+             {:access_id, selector},
+             if(method in @commands, do: String.to_existing_atom(method), else: :read),
+             access_server(context)
+           ) do
+      if Map.has_key?(args, "scope") and args["scope"] != target.partition["scope"] do
+        _ = Access.finish_request(ticket, {:error, :invalid_request}, access_server(context))
+        {:error, :invalid_request}
+      else
+        args = Map.delete(args, "memory_access_id")
+
+        if method in @commands,
+          do: shared_command(method, args, context, target, ticket),
+          else: shared_read(method, args, context, target, ticket)
+      end
+    else
+      false -> {:error, :invalid_request}
+      error -> error
+    end
+  end
+
+  def call(method, args, context)
       when method in @commands and is_map(args) and is_map(context) do
-    local_call(method, args, context)
+    with :ok <- MemoryProxy.authorize_command(), do: local_call(method, args, context)
   end
 
   def call(method, args, context)
@@ -43,17 +77,165 @@ defmodule Backplane.HostAgent.MemoryFacade do
     remote_first(method, args, context)
   end
 
+  def call(method, args, context) when method in ~w(facet_tag facet_query) do
+    adapter =
+      Map.get(
+        context,
+        :hub_adapter,
+        Application.get_env(:backplane_host_agent, :hub_proxy_module, HubProxy)
+      )
+
+    adapter.call_tool("memory::" <> method, args)
+  end
+
   def call(method, _args, _context), do: {:error, {:unknown_method, method}}
+
+  defp access_server(context), do: Map.get(context, :access_server, Access)
+
+  defp shared_read(method, args, context, target, ticket) do
+    adapter = Map.get(context, :remote_adapter, MemoryProxy)
+
+    reply =
+      adapter.call(
+        method,
+        Map.delete(args, "scope"),
+        remote_opts(context)
+        |> Keyword.put(:access, Access.claim(target))
+        |> Keyword.put(:connection_generation, target.connection_generation)
+      )
+
+    case Access.finish_request(ticket, reply, access_server(context)) do
+      {:ok, permitted, canonical} ->
+        Access.run_local(
+          permitted,
+          :read,
+          fn current ->
+            with {:ok, overlay} <- Memory.shared_overlay(current, method, args, :online, -1) do
+              {:ok, online_result(method, canonical, overlay, args)}
+            end
+          end,
+          access_server(context)
+        )
+
+      {:error, reason} = error ->
+        if transport_error?(reason) do
+          Access.run_local(
+            target,
+            :read,
+            fn current ->
+              opts = [
+                store: current.edge_store,
+                config: current.edge_config,
+                access_target: current
+              ]
+
+              with {:ok, canonical} <-
+                     Backplane.HostAgent.Memory.Mirror.offline_read(
+                       method,
+                       Map.merge(args, current.partition),
+                       opts
+                     ),
+                   {:ok, overlay} <-
+                     Memory.shared_overlay(
+                       current,
+                       method,
+                       args,
+                       :offline,
+                       canonical["partition_revision"]
+                     ) do
+                {:ok, offline_mirror_result(method, canonical, overlay, args)}
+              end
+            end,
+            access_server(context)
+          )
+        else
+          error
+        end
+    end
+  end
+
+  defp shared_command(method, args, context, target, ticket) do
+    operation = String.to_existing_atom(method)
+
+    with {:ok, receipt} <-
+           Access.run_local(
+             target,
+             operation,
+             &Memory.shared_enqueue(&1, method, args, context.agent_id),
+             access_server(context)
+           ) do
+      opts =
+        [store: target.store, access_server: access_server(context)] ++
+          Map.get(context, :sync_opts, [])
+
+      case Syncer.drain_shared(opts) do
+        {:error, reason} ->
+          _ = Access.finish_request(ticket, {:error, reason}, access_server(context))
+
+          if transport_error?(reason) do
+            Access.run_local(
+              target,
+              operation,
+              &Memory.shared_receipt(&1, receipt["command_id"]),
+              access_server(context)
+            )
+          else
+            {:error, reason}
+          end
+
+        {:ok, _} ->
+          # Settlement is durable before the caller is released; rejected ACKs are errors.
+          result =
+            Access.run_local(
+              target,
+              operation,
+              &Memory.shared_receipt(&1, receipt["command_id"]),
+              access_server(context)
+            )
+
+          case result do
+            {:ok, settled} ->
+              envelope = %{
+                "access" => Access.claim(target),
+                "partition" => target.partition,
+                "result" => settled
+              }
+
+              with {:ok, permitted, bounded} <-
+                     Access.finish_request(ticket, {:ok, envelope}, access_server(context)) do
+                Access.run_local(
+                  permitted,
+                  operation,
+                  fn _ -> {:ok, bounded} end,
+                  access_server(context)
+                )
+              end
+
+            error ->
+              _ =
+                Access.finish_request(ticket, {:error, :invalid_request}, access_server(context))
+
+              error
+          end
+      end
+    else
+      error ->
+        _ = Access.finish_request(ticket, {:error, :invalid_request}, access_server(context))
+        error
+    end
+  end
 
   defp local_call(method, args, context) do
     local_adapter = Map.get(context, :local_adapter, Memory)
 
-    case apply(local_adapter, String.to_existing_atom(method), [args, local_opts(context)]) do
+    case apply(local_adapter, Map.fetch!(@command_functions, method), [args, local_opts(context)]) do
       {:ok, %{} = result} ->
+        settled? = result["sync_state"] == "synced" and is_binary(result["canonical_id"])
+
         {:ok,
          Map.merge(result, %{
-           "authority" => "provisional",
-           "consistency" => "pending_canonical_ack"
+           "authority" => if(settled?, do: "canonical", else: "provisional"),
+           "consistency" => if(settled?, do: "canonical", else: "pending_canonical_ack")
          })}
 
       {:ok, other} ->
@@ -72,7 +254,8 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
     case remote_adapter.call(method, args, remote_opts(context)) do
       {:ok, %{} = canonical} ->
-        with {:ok, %{} = overlay} <- pending_overlay(method, args, context, :online) do
+        with :ok <- record_canonical_result(canonical, context),
+             {:ok, %{} = overlay} <- pending_overlay(method, args, context, :online) do
           {:ok, online_result(method, canonical, overlay, args)}
         end
 
@@ -81,9 +264,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
       {:error, reason} = error ->
         if transport_error?(reason) do
-          with {:ok, %{} = overlay} <- pending_overlay(method, args, context, :offline) do
-            offline_result(method, overlay, args, context)
-          end
+          offline_result(method, args, context)
         else
           error
         end
@@ -93,9 +274,14 @@ defmodule Backplane.HostAgent.MemoryFacade do
     end
   end
 
-  defp pending_overlay(method, args, context, mode) do
+  defp pending_overlay(method, args, context, mode, revision \\ -1) do
     local_adapter = Map.get(context, :local_adapter, Memory)
-    opts = local_opts(context) |> Keyword.put(:method, method) |> Keyword.put(:overlay_mode, mode)
+
+    opts =
+      local_opts(context)
+      |> Keyword.put(:method, method)
+      |> Keyword.put(:overlay_mode, mode)
+      |> Keyword.put(:mirror_revision, revision)
 
     case local_adapter.pending_overlay(args, opts) do
       {:ok, %{} = overlay} -> bound_overlay(overlay)
@@ -104,6 +290,12 @@ defmodule Backplane.HostAgent.MemoryFacade do
       other -> {:error, {:local_protocol_error, {:unexpected_reply, other}}}
     end
   end
+
+  defp record_canonical_result(result, %{edge_partition: partition} = context) do
+    Memory.record_canonical_result(result, partition, local_opts(context))
+  end
+
+  defp record_canonical_result(_result, _context), do: :ok
 
   defp online_result(method, canonical, overlay, args) do
     pending_operations = pending_operations(overlay)
@@ -120,19 +312,38 @@ defmodule Backplane.HostAgent.MemoryFacade do
       "consistency" => if(pending?, do: "read_your_writes", else: "canonical"),
       "stale" => false,
       "pending_operations" => pending_operations,
+      "acknowledged_operations" => Map.get(overlay, "acknowledged_operations", 0),
       "overlay_truncated" => overlay_truncated?(overlay),
       "history_available" => true
     })
     |> Map.put_new("as_of", nil)
   end
 
-  defp offline_result(method, overlay, args, context) do
+  defp offline_result(method, args, %{edge_access: %{} = target} = context) do
+    Access.run_local(
+      target,
+      :read,
+      fn current ->
+        do_offline_result(method, args, Map.put(context, :access_target, current))
+      end,
+      access_server(context)
+    )
+  end
+
+  defp offline_result(method, args, context), do: do_offline_result(method, args, context)
+
+  defp do_offline_result(method, args, context) do
     case edge_read(method, args, context) do
       {:ok, canonical} ->
-        {:ok, offline_mirror_result(method, canonical, overlay, args)}
+        with {:ok, overlay} <-
+               pending_overlay(method, args, context, :offline, canonical["partition_revision"]) do
+          {:ok, offline_mirror_result(method, canonical, overlay, args)}
+        end
 
       {:error, reason} when reason in [:mirror_unavailable, :no_committed_mirror] ->
-        {:ok, provisional_offline_result(method, overlay, args)}
+        with {:ok, overlay} <- pending_overlay(method, args, context, :offline) do
+          {:ok, provisional_offline_result(method, overlay, args)}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -161,12 +372,16 @@ defmodule Backplane.HostAgent.MemoryFacade do
       "consistency" => "bounded_stale",
       "stale" => true,
       "pending_operations" => pending_operations,
+      "acknowledged_operations" => Map.get(overlay, "acknowledged_operations", 0),
       "overlay_truncated" => overlay_truncated?(overlay),
       "history_available" => true
     })
   end
 
   defp provisional_offline_result(method, overlay, args) do
+    acknowledged? = Map.get(overlay, "acknowledged_operations", 0) > 0
+    pending? = pending_operations(overlay) > 0
+
     upserts =
       offline_results(
         Map.get(overlay, "upserts", []),
@@ -180,8 +395,14 @@ defmodule Backplane.HostAgent.MemoryFacade do
     |> normalize_offline_result(method, upserts)
     |> Map.merge(%{
       "mode" => "offline",
-      "authority" => "provisional",
-      "consistency" => "provisional_only",
+      "authority" =>
+        cond do
+          acknowledged? and pending? -> "canonical_with_provisional"
+          acknowledged? -> "canonical"
+          true -> "provisional"
+        end,
+      "source" => if(acknowledged?, do: "acknowledged_commands", else: "provisional_commands"),
+      "consistency" => if(acknowledged?, do: "bounded_stale", else: "provisional_only"),
       "stale" => true,
       "as_of" => nil,
       "partition_revision" => nil,
@@ -202,6 +423,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
       [agent_id: Map.fetch!(context, :agent_id)]
       |> maybe_put(:store, Map.get(context, :edge_store))
       |> maybe_put(:config, Map.get(context, :edge_config))
+      |> maybe_put(:access_target, Map.get(context, :access_target))
 
     case edge_adapter.offline_read(method, edge_args, opts) do
       {:ok, %{} = result} -> {:ok, result}
@@ -288,9 +510,12 @@ defmodule Backplane.HostAgent.MemoryFacade do
         identity in delete_ids or identity in canonical_ids
       end)
 
+    {acknowledged, provisional} =
+      Enum.split_with(provisional_results, &(&1["authority"] == "canonical"))
+
     canonical
-    |> Map.put("results", canonical_results)
-    |> Map.put("provisional_results", provisional_results)
+    |> Map.put("results", canonical_results ++ acknowledged)
+    |> Map.put("provisional_results", provisional)
   end
 
   defp offline_results(results, "recall", args, _offset_applied?),
@@ -369,7 +594,8 @@ defmodule Backplane.HostAgent.MemoryFacade do
     |> Keyword.put(:inject_agent_id, false)
   end
 
-  defp local_opts(context), do: context_opts(context, [:agent_id, :store, :config])
+  defp local_opts(context),
+    do: context_opts(context, [:agent_id, :store, :config, :edge_partition])
 
   defp context_opts(context, optional_keys) do
     agent_id = Map.fetch!(context, :agent_id)
@@ -384,13 +610,13 @@ defmodule Backplane.HostAgent.MemoryFacade do
     end)
   end
 
-  defp transport_error?(reason) when reason in @transport_errors, do: true
-  defp transport_error?({:socket_closed, reason}), do: nested_transport_error?(reason)
+  def transport_error?(reason) when reason in @transport_errors, do: true
+  def transport_error?({:socket_closed, reason}), do: nested_transport_error?(reason)
 
-  defp transport_error?({wrapper, reason}) when wrapper in @transport_wrappers,
+  def transport_error?({wrapper, reason}) when wrapper in @transport_wrappers,
     do: nested_transport_error?(reason)
 
-  defp transport_error?(_reason), do: false
+  def transport_error?(_reason), do: false
 
   defp nested_transport_error?(reason) when reason in @transport_errors, do: true
   defp nested_transport_error?(:noproc), do: true

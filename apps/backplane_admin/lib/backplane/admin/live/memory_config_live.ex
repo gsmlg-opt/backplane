@@ -7,7 +7,11 @@ defmodule Backplane.Admin.MemoryConfigLive do
 
   @impl true
   def mount(params, session, socket) do
-    if connected?(socket), do: Backplane.Settings.subscribe()
+    if connected?(socket) do
+      Backplane.Settings.subscribe()
+      Backplane.PubSubBroadcaster.subscribe(Backplane.PubSubBroadcaster.llm_providers_topic())
+    end
+
     params = if is_map(params), do: params, else: %{}
     query = params |> Map.get("q", "") |> String.trim()
 
@@ -85,6 +89,9 @@ defmodule Backplane.Admin.MemoryConfigLive do
 
   def handle_info({:setting_changed, _key, _value}, socket), do: {:noreply, socket}
 
+  def handle_info({:llm_providers_changed, _payload}, socket),
+    do: {:noreply, assign(socket, entries: entries(socket.assigns.query))}
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -95,7 +102,38 @@ defmodule Backplane.Admin.MemoryConfigLive do
       <.dm_alert :if={@mutation_error} id="config-mutation-error" variant="error" title="Setting not saved" class="mt-4">{@mutation_error}</.dm_alert>
       <.dm_alert :if={@mutation_success} id="config-mutation-success" variant="success" title="Setting saved" class="mt-4">{@mutation_success}</.dm_alert>
       <.dm_card :if={@entries == []} id="config-empty" variant="bordered" padding="lg" class="mt-4"><h2 class="text-lg font-semibold">No configuration matches</h2></.dm_card>
-      <div class="mt-4 overflow-x-auto"><.dm_table :if={@entries != []} id="memory-config-table" data={@entries} compact hover zebra><:col :let={entry} label="Setting"><span class="font-medium">{entry.label}</span><code class="block text-xs text-on-surface-variant">{entry.key}</code></:col><:col :let={entry} label="Configured"><code>{display(entry.configured)}</code></:col><:col :let={entry} label="Effective"><code>{display(entry.effective)}</code></:col><:col :let={entry} label="Update"><.form id={"memory-config-form-#{form_id(entry.key)}"} for={%{}} phx-submit="set-setting" class="flex min-w-72 items-end gap-2"><input type="hidden" name="setting[key]" value={entry.key} /><select :if={entry.type == :boolean} id={"memory-config-value-#{form_id(entry.key)}"} name="setting[value]" disabled={!@authorized?} class="rounded border border-outline bg-surface px-2 py-1"><option value="true" selected={entry.configured == true}>true</option><option value="false" selected={entry.configured == false}>false</option></select><input :if={entry.type != :boolean} id={"memory-config-value-#{form_id(entry.key)}"} name="setting[value]" type="number" step={if entry.type == :float, do: "any", else: "1"} min={entry.minimum} max={entry.maximum} value={entry.configured} disabled={!@authorized?} class="w-36 rounded border border-outline bg-surface px-2 py-1" /><.dm_btn type="submit" size="sm" disabled={!@authorized?}>Save</.dm_btn></.form></:col></.dm_table></div>
+      <.dm_alert id="memory-config-policy" variant="info" title="Persistent central policy" class="mt-4">
+        Changes are stored centrally. Provider resolution below confirms routing, not a successful provider request.
+        Host capture paths and local limits are configured in the standalone YAML. A host applies central sync policy during negotiation;
+        check its last report on the host page and treat disconnected reports as stale.
+      </.dm_alert>
+      <div class="mt-4 overflow-x-auto">
+        <.dm_table :if={@entries != []} id="memory-config-table" data={@entries} compact hover zebra>
+          <:col :let={entry} label="Setting">
+            <span class="font-medium">{entry.label}</span><code class="block text-xs text-on-surface-variant">{entry.key}</code>
+          </:col>
+          <:col :let={entry} label="Configured"><code>{display(entry.configured)}</code></:col>
+          <:col :let={entry} label="Effective">
+            <code>{display(entry.effective)}</code>
+            <p class="mt-1 text-xs text-on-surface-variant">{entry.reason}</p>
+            <p :if={entry.type == :model} class="mt-1 text-sm" id={"route-" <> form_id(entry.key)}>{entry.route_status}</p>
+            <p class="mt-1 text-xs text-on-surface-variant">{entry.apply_mode}</p>
+          </:col>
+          <:col :let={entry} label="Update">
+            <.form id={"memory-config-form-#{form_id(entry.key)}"} for={%{}} phx-submit="set-setting" class="flex min-w-72 items-end gap-2">
+              <input type="hidden" name="setting[key]" value={entry.key} />
+              <.dm_select :if={entry.type in [:boolean, :model, :credential]}
+                id={"memory-config-value-#{form_id(entry.key)}"} name="setting[value]"
+                label={entry.label} options={entry.options} value={form_value(entry.configured)} disabled={!@authorized?} />
+              <.dm_input :if={entry.type in [:integer, :float]}
+                id={"memory-config-value-#{form_id(entry.key)}"} name="setting[value]" label={entry.label}
+                type="number" step={if entry.type == :float, do: "any", else: "1"}
+                min={entry.minimum} max={entry.maximum} value={entry.configured} disabled={!@authorized?} />
+              <.dm_btn type="submit" size="sm" disabled={!@authorized?}>Save</.dm_btn>
+            </.form>
+          </:col>
+        </.dm_table>
+      </div>
       <div class="mt-5 flex gap-3 text-sm"><.link navigate={~p"/memory/pipeline"} class="text-primary underline">Pipeline controls</.link><.link navigate={~p"/memory/audit"} class="text-primary underline">Audit</.link></div>
     </div>
     """
@@ -104,15 +142,115 @@ defmodule Backplane.Admin.MemoryConfigLive do
   defp entries(query) do
     normalized = String.downcase(query || "")
 
-    Enum.filter(Config.editable_settings(), fn entry ->
+    models = model_options()
+    credentials = credential_options()
+
+    Config.editable_settings()
+    |> Enum.map(fn entry ->
+      options =
+        case entry.type do
+          :boolean ->
+            [{"true", "true"}, {"false", "false"}]
+
+          :model ->
+            choices = if entry.key == "memory.embed_model", do: embedding_options(), else: models
+            with_current(choices, entry.configured)
+
+          :credential ->
+            with_current(credentials, entry.configured)
+
+          _ ->
+            []
+        end
+
+      entry |> Map.put(:options, options) |> Map.put(:route_status, route_status(entry))
+    end)
+    |> Enum.filter(fn entry ->
       normalized == "" or String.contains?(String.downcase(entry.label), normalized) or
         String.contains?(entry.key, normalized)
     end)
   end
 
+  defp model_options do
+    routes =
+      Backplane.LLM.ProviderModelSurface.list_enabled(:openai)
+      |> Enum.map(fn surface ->
+        model = surface.provider_model
+        value = model.provider.name <> "/" <> model.model
+        {value, value}
+      end)
+
+    aliases = Enum.map(Backplane.LLM.ModelAlias.list(), &{&1.alias, &1.alias <> " (alias)"})
+    [{"", "No model"} | Enum.sort(Enum.uniq(routes ++ aliases))]
+  end
+
+  defp credential_options do
+    names =
+      Backplane.Settings.Credentials.list()
+      |> Enum.filter(
+        &(&1.kind == "service" and (&1.metadata || %{})["auth_type"] in [nil, "api_key"])
+      )
+      |> Enum.map(&{&1.name, &1.name})
+
+    [{"", "No resource credential"} | names]
+  end
+
+  defp embedding_options do
+    models =
+      Backplane.Embedding.list_enabled_models()
+      |> Enum.map(fn model ->
+        value = Backplane.Embedding.model_id(model)
+        {value, value}
+      end)
+
+    [{"", "No model"} | models]
+  end
+
+  defp with_current(options, current) when is_binary(current) and current != "" do
+    if Enum.any?(options, &(elem(&1, 0) == current)),
+      do: options,
+      else: options ++ [{current, current <> " (unavailable)"}]
+  end
+
+  defp with_current(options, _), do: options
+
+  defp route_status(%{key: "memory.embed_model", effective: model}) when is_binary(model) do
+    case Backplane.Embedding.resolve_model(model) do
+      {:ok, provider, raw_model} ->
+        "Route resolved: " <> provider.name <> " / " <> raw_model <> "; request health unverified"
+
+      _ ->
+        "Blocked: selected model has no enabled embedding provider route"
+    end
+  end
+
+  defp route_status(%{type: :model, effective: model}) when is_binary(model) do
+    case Backplane.LLM.ModelResolver.resolve(:openai, model) do
+      {:ok, provider, raw_model} ->
+        "Route resolved: " <> provider.name <> " / " <> raw_model <> "; request health unverified"
+
+      _ ->
+        "Blocked: selected model has no enabled OpenAI-compatible provider route"
+    end
+  end
+
+  defp route_status(_), do: nil
+  defp form_value(nil), do: ""
+  defp form_value(value), do: to_string(value)
+
   defp display(value) when is_binary(value), do: value
   defp display(value), do: inspect(value)
   defp form_id(key), do: String.replace(key, ".", "-")
+
+  defp setting_error(:requires_pipeline_controls),
+    do: "Enable dual write through Pipeline controls and its confirmation."
+
+  defp setting_error({:blocked_descendant, _}),
+    do: "Disable the dependent gates in Pipeline controls first."
+
+  defp setting_error({:dependency, _, _}),
+    do: "Enable the required parent gate in Pipeline controls first."
+
   defp setting_error(:invalid_value), do: "The value is outside the typed setting bounds."
   defp setting_error(:unknown_setting), do: "The submitted setting is not editable here."
   defp setting_error(_reason), do: "The setting could not be saved."

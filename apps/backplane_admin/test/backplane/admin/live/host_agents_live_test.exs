@@ -80,6 +80,54 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
              Enum.find(Hosts.list_hosts(), &(&1.name == "scoped-host"))
   end
 
+  test "host config and memory sync show last known reports as stale without secrets", %{
+    conn: conn
+  } do
+    {:ok, host, token, _} = Hosts.create_agent_with_token(%{"name" => "reported-memory-host"})
+    :ok = AgentManage.register_connection(host, token, self(), %{})
+
+    :ok =
+      AgentManage.update_runtime(host.id, %{
+        "memory" => %{
+          "status" => "available",
+          "pending_commands" => 3,
+          "failed_commands" => 1,
+          "revision" => 17,
+          "retry_count" => 2,
+          "dead_letter_count" => 1,
+          "partitions" => []
+        }
+      })
+
+    :ok =
+      AgentManage.report_config(host.id, %{
+        "memory" => %{"enabled" => true, "api_key" => "secret-not-rendered"},
+        "local_settings_applied_at" => "2026-10-20T01:00:00Z",
+        "memory_negotiation" => %{
+          "selected" => "host_memory.v1",
+          "applied_at" => "2026-10-20T01:00:01Z",
+          "partitions" => []
+        }
+      })
+
+    {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/config")
+    assert has_element?(view, "#host-local-settings-report", "2026-10-20T01:00:00Z")
+    assert has_element?(view, "#host-memory-negotiation", "host_memory.v1")
+    refute render(view) =~ "secret-not-rendered"
+    :ok = AgentManage.disconnect(host.id)
+    assert has_element?(view, "#host-report-stale", "stale")
+    {:ok, sync, _} = live(conn, "/system/host-agents/#{host.id}/sync")
+    assert has_element?(sync, "#host-memory-health", "17")
+    assert has_element?(sync, "#host-memory-health", "3")
+    assert has_element?(sync, "#host-memory-health", "stale")
+  end
+
+  test "unreported memory health is unavailable", %{conn: conn} do
+    {:ok, host} = Hosts.create_agent(%{"name" => "unreported-memory-host"})
+    {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/sync")
+    assert has_element?(view, "#host-memory-health", "Unavailable")
+  end
+
   test "legacy detail path redirects to overview tab", %{conn: conn} do
     assert {:ok, host} = Hosts.create_agent(%{"name" => "legacy-host"})
     expected_path = "/system/host-agents/#{host.id}/overview"

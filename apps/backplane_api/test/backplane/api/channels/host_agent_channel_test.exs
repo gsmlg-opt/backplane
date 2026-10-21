@@ -41,7 +41,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
                }
              )
 
-    %{host: host, auth_token: auth_token, socket: socket}
+    %{host: host, auth_token: auth_token, token: token, socket: socket}
   end
 
   test "joins only its own host topic", %{host: host, socket: socket} do
@@ -63,6 +63,34 @@ defmodule Backplane.Api.HostAgentChannelTest do
              subscribe_and_join(socket, "host_agent:00000000-0000-0000-0000-000000000000", %{})
   end
 
+  test "revoking an assigned token denies the already joined channel", %{
+    host: host,
+    auth_token: token,
+    socket: socket
+  } do
+    assert {:ok, _, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+    ref = push(socket, "memory_call", %{"method" => "stats", "arguments" => %{}})
+    assert_reply(ref, :ok, %{"ok" => true})
+    assert {:ok, _} = Hosts.revoke_auth_token_for_agent(host, token.id)
+
+    for event <-
+          ~w(memory_call mcp_tool_call memory_sync memory_import_batch memory_events memory_next memory_ack memory_facts_ack memory_wipe_ack) do
+      ref = push(socket, event, %{"method" => "stats", "arguments" => %{}})
+      assert_reply(ref, :error, %{"code" => "unauthorized", "retryable" => false})
+    end
+  end
+
+  test "revocation between socket authentication and join rejects cached credentials", %{
+    host: host,
+    auth_token: token,
+    socket: socket
+  } do
+    assert {:ok, _} = Hosts.revoke_auth_token_for_agent(host, token.id)
+
+    assert {:error, %{reason: "unauthorized"}} =
+             subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+  end
+
   test "memory negotiation rejects malformed offers explicitly", %{host: host, socket: socket} do
     for payload <- [
           %{"memory_v2" => 42},
@@ -72,6 +100,368 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert {:error, %{"code" => "invalid_request", "retryable" => false}} =
                subscribe_and_join(socket, "host_agent:#{host.id}", payload)
     end
+  end
+
+  test "shared extensions return complete effective inventory and refresh rechecks assignment",
+       c do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+
+    on_exit(fn ->
+      :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous})
+      Application.delete_env(:backplane_api, :host_agent_scopes)
+    end)
+
+    {owner, _, _} = create_agent_with_token!("shared-owner")
+    {:ok, target} = MemorySpaces.resolve_host_partition(owner.id, nil, "private")
+
+    {:ok, access} =
+      MemorySpaces.grant_host_access(
+        %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()},
+        c.host.id,
+        target,
+        [:read, :deliver, :remember],
+        expected_version: 0,
+        reason: "channel shared fixture"
+      )
+
+    Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.import"])
+
+    offer = %{
+      "memory_v2" => %{
+        "offers" => ["host_memory.v2"],
+        "partitions" => [],
+        "extensions" => ["memory_access.v1", "memory_commands.v2"]
+      }
+    }
+
+    assert {:ok, reply, socket} = subscribe_and_join(c.socket, "host_agent:#{c.host.id}", offer)
+    assert reply["extensions"] == ["memory_access.v1", "memory_commands.v2"]
+    assert reply["partitions"] == []
+    assert length(reply["accesses"]) == 2
+
+    assert Enum.any?(
+             reply["accesses"],
+             &(&1["access_id"] == access.access_id and &1["capabilities"] == ["remember"])
+           )
+
+    ref = push(socket, "memory_access_refresh", %{})
+    assert_reply(ref, :ok, %{"accesses" => accesses, "partitions" => []})
+    assert length(accesses) == 2
+    claim = %{"access_id" => access.access_id, "authority_version" => 1}
+
+    command = %{
+      "command_id" => Ecto.UUID.generate(),
+      "op" => "remember",
+      "access" => claim,
+      "partition" => Map.new(target, fn {k, v} -> {to_string(k), v} end),
+      "arguments" => %{"content" => "import-only shared wire fixture"}
+    }
+
+    ref = push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => [command]})
+    assert_reply(ref, :ok, %{"items" => [%{"status" => "committed"}]})
+
+    ref =
+      push(socket, "memory_call", %{"method" => "list", "arguments" => %{}, "access" => claim})
+
+    assert_reply(ref, :ok, %{"ok" => false, "error" => "unauthorized"})
+    hint = target |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.put("current_revision", 0)
+    send(socket.channel_pid, {:memory_available, hint})
+    refute_push("memory_available", _)
+    Application.delete_env(:backplane_api, :host_agent_scopes)
+    send(socket.channel_pid, {:memory_available, hint})
+    assert_push("memory_available", ^hint)
+
+    access_hint = %{
+      "access_id" => access.access_id,
+      "authority_version" => 2,
+      "status" => "revoked"
+    }
+
+    send(socket.channel_pid, {:memory_access_changed, access_hint})
+    assert_push("memory_access_changed", ^access_hint)
+    # Remove only the authoritative assignment: the manager's cached entry remains.
+    Repo.delete_all(
+      from a in Backplane.Skills.HostAgentToken, where: a.auth_token_id == ^c.auth_token.id
+    )
+
+    ref = push(socket, "memory_access_refresh", %{})
+    assert_reply(ref, :error, %{"code" => "unauthorized", "retryable" => false})
+  end
+
+  test "joined shared channel forwards one access notification per PubSub broadcast", c do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+
+    offer = %{
+      "memory_v2" => %{
+        "offers" => ["host_memory.v2"],
+        "partitions" => [],
+        "extensions" => ["memory_access.v1", "memory_commands.v2"]
+      }
+    }
+
+    topic = "host_agent:#{c.host.id}"
+    assert {:ok, _, socket} = subscribe_and_join(c.socket, topic, offer)
+    hint = %{"access_id" => Ecto.UUID.generate(), "authority_version" => 2, "status" => "revoked"}
+    assert :ok = Phoenix.PubSub.broadcast(Backplane.PubSub, topic, {:memory_access_changed, hint})
+    assert_push("memory_access_changed", ^hint)
+    # The channel has consumed its broadcast messages before this barrier returns.
+    _ = :sys.get_state(socket.channel_pid)
+    refute_push("memory_access_changed", ^hint)
+  end
+
+  test "negotiated shared reads and commands use explicit authority without private fallback",
+       c do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    {owner, _, _} = create_agent_with_token!("shared-channel-owner")
+    {:ok, target} = MemorySpaces.resolve_host_partition(owner.id, nil, "private")
+
+    {:ok, access} =
+      MemorySpaces.grant_host_access(
+        %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()},
+        c.host.id,
+        target,
+        [:read, :remember],
+        expected_version: 0,
+        reason: "channel shared commands"
+      )
+
+    offer = %{
+      "memory_v2" => %{
+        "offers" => ["host_memory.v2"],
+        "partitions" => [],
+        "extensions" => ["memory_access.v1", "memory_commands.v2"]
+      }
+    }
+
+    assert {:ok, _, socket} = subscribe_and_join(c.socket, "host_agent:#{c.host.id}", offer)
+    claim = %{"access_id" => access.access_id, "authority_version" => access.authority_version}
+    partition = Map.new(target, fn {k, v} -> {to_string(k), v} end)
+
+    command = %{
+      "command_id" => Ecto.UUID.generate(),
+      "op" => "remember",
+      "access" => claim,
+      "partition" => partition,
+      "arguments" => %{"content" => "shared channel synthetic fixture"}
+    }
+
+    ref = push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => [command]})
+
+    assert_reply(ref, :ok, %{
+      "protocol" => "memory_commands.v2",
+      "items" => [%{"status" => "committed", "canonical_id" => id}]
+    })
+
+    assert is_binary(id)
+    ref = push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => [command]})
+    assert_reply(ref, :ok, %{"items" => [%{"status" => "duplicate", "canonical_id" => ^id}]})
+    conflict = put_in(command, ["arguments", "content"], "changed immutable payload")
+
+    ref =
+      push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => [conflict]})
+
+    assert_reply(ref, :ok, %{
+      "items" => [%{"status" => "rejected", "code" => "idempotency_conflict"}]
+    })
+
+    rejected = %{
+      command
+      | "command_id" => Ecto.UUID.generate(),
+        "op" => "forget",
+        "arguments" => %{"id" => id}
+    }
+
+    ref =
+      push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => [rejected]})
+
+    assert_reply(ref, :ok, %{"items" => [%{"status" => "rejected", "code" => "unauthorized"}]})
+
+    payload = %{"method" => "list", "arguments" => %{}, "access" => claim}
+    ref = push(socket, "memory_call", payload)
+    assert_reply(ref, :ok, %{"ok" => true, "result" => direct_result})
+
+    assert %{
+             "access" => ^claim,
+             "partition" => ^partition,
+             "result" => %{"results" => [%{"id" => ^id}]}
+           } = direct_result
+
+    stored = Repo.get!(Backplane.Memory.Memories.Memory, id)
+    assert Map.take(stored, [:memory_space_id, :scope, :namespace]) == target
+    assert stored.host_id == c.host.id
+
+    # Shared MCP installs a trace context before MemoryProxy creates this envelope.
+    traced =
+      Map.put(payload, "traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+
+    ref = push(socket, "memory_call", traced)
+    assert_reply(ref, :ok, %{"ok" => true, "result" => ^direct_result})
+
+    for envelope <- [payload, traced] do
+      for {key, value} <- [
+            {"unknown", true},
+            {"host_id", owner.id},
+            {"partition", partition},
+            {"auth", %{"host_id" => owner.id}},
+            {"authority_version", access.authority_version}
+          ] do
+        ref = push(socket, "memory_call", Map.put(envelope, key, value))
+        assert_reply(ref, :ok, %{"ok" => false, "error" => "invalid_request"})
+      end
+
+      for arguments <- [%{"host_id" => owner.id}, %{"memory_access_id" => access.access_id}] do
+        ref = push(socket, "memory_call", %{envelope | "arguments" => arguments})
+        assert_reply(ref, :ok, %{"ok" => false, "error" => "invalid_request"})
+      end
+
+      ref =
+        push(socket, "memory_call", %{
+          envelope
+          | "access" => Map.put(claim, "host_id", owner.id)
+        })
+
+      assert_reply(ref, :ok, %{"ok" => false, "error" => "invalid_request"})
+    end
+
+    ref =
+      push(socket, "memory_call", %{
+        "method" => "remember",
+        "arguments" => %{"content" => "denied"},
+        "access" => claim
+      })
+
+    assert_reply(ref, :ok, %{"ok" => false})
+
+    ref =
+      push(socket, "memory_call", %{
+        "method" => "list",
+        "arguments" => %{},
+        "access" => %{claim | "access_id" => Ecto.UUID.generate()}
+      })
+
+    assert_reply(ref, :ok, %{"ok" => false, "error" => "unauthorized"})
+
+    ref =
+      push(socket, "memory_next", %{
+        "protocol" => "host_memory.v2",
+        "partition" => partition,
+        "access" => claim,
+        "applied_revision" => 0
+      })
+
+    assert_reply(ref, :error, denial)
+    assert denial == %{"code" => "unauthorized"}
+    ref = push(socket, "memory_call", %{"method" => "stats", "arguments" => %{}})
+    assert_reply(ref, :ok, %{"ok" => true})
+
+    ref =
+      push(socket, "memory_sync", %{
+        "protocol" => "memory_commands.v2",
+        "items" => List.duplicate(command, 51)
+      })
+
+    assert_reply(ref, :error, %{"code" => "payload_too_large"})
+
+    assert {:ok, _} =
+             MemorySpaces.change_host_access(
+               %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()},
+               access.access_id,
+               1,
+               %{capabilities: [:read, :remember, :forget]},
+               "allow future forget"
+             )
+
+    ref =
+      push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => [rejected]})
+
+    assert_reply(ref, :ok, %{"items" => [%{"status" => "rejected", "code" => "unauthorized"}]})
+    assert is_nil(Repo.get!(Backplane.Memory.Memories.Memory, id).deleted_at)
+  end
+
+  test "extended peer with revoked private default retains shared access without retargeting",
+       c do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    {owner, _, _} = create_agent_with_token!("no-default-shared-owner")
+    {:ok, target} = MemorySpaces.resolve_host_partition(owner.id, nil, "private")
+    operator = %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()}
+
+    {:ok, access} =
+      MemorySpaces.grant_host_access(operator, c.host.id, target, [:read],
+        expected_version: 0,
+        reason: "independent shared access"
+      )
+
+    {:ok, private} = MemorySpaces.resolve_host_access(c.host.id, :default, :read)
+
+    {:ok, _} =
+      MemorySpaces.revoke_host_access(operator, private.access_id, 1, "private withdrawn")
+
+    offer = %{
+      "memory_v2" => %{
+        "offers" => ["host_memory.v2"],
+        "partitions" => [],
+        "extensions" => ["memory_access.v1"]
+      }
+    }
+
+    assert {:ok, %{"default_access_id" => nil, "accesses" => [descriptor]}, socket} =
+             subscribe_and_join(c.socket, "host_agent:#{c.host.id}", offer)
+
+    assert descriptor["access_id"] == access.access_id
+    ref = push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => []})
+    assert_reply(ref, :error, %{"code" => "unsupported_protocol"})
+    ref = push(socket, "memory_call", %{"method" => "stats", "arguments" => %{}})
+    assert_reply(ref, :ok, %{"ok" => false, "error" => "unauthorized"})
+
+    ref =
+      push(socket, "memory_call", %{
+        "method" => "stats",
+        "arguments" => %{},
+        "access" => %{"access_id" => access.access_id, "authority_version" => 1}
+      })
+
+    assert_reply(ref, :ok, %{"ok" => true})
+  end
+
+  test "legacy sync cannot bypass default capability withdrawal", c do
+    assert {:ok, _, socket} = subscribe_and_join(c.socket, "host_agent:#{c.host.id}", %{})
+    {:ok, access} = MemorySpaces.resolve_host_access(c.host.id, :default, :remember)
+
+    assert {:ok, _} =
+             MemorySpaces.change_host_access(
+               %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()},
+               access.access_id,
+               1,
+               %{capabilities: [:read, :deliver]},
+               "withdraw private write"
+             )
+
+    ref =
+      push(socket, "memory_sync", %{
+        "protocol" => "host_memory.v1",
+        "items" => [
+          %{
+            "op" => "remember",
+            "id" => "withdrawn-private",
+            "content" => "must not persist",
+            "agent_id" => "capability-test",
+            "scope" => c.host.memory_scope
+          }
+        ]
+      })
+
+    assert_reply(ref, :ok, %{"items" => [%{"status" => "error", "error" => "unauthorized"}]})
+
+    refute Repo.exists?(
+             from m in Backplane.Memory.Memories.Memory, where: m.content == "must not persist"
+           )
   end
 
   test "v2 disabled can select an offered v1 protocol but never downgrades a pinned v2 offer", %{
@@ -104,6 +494,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
   test "real channel capture keeps the host partition across assigned token rotation", %{
     host: host,
     auth_token: token_a_record,
+    token: token_a,
     socket: token_a_socket
   } do
     Application.delete_env(:backplane_api, :host_event_ingest_adapter)
@@ -120,10 +511,17 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
     assert {:ok, _revoked} = Hosts.revoke_auth_token_for_agent(host, token_a_record.id)
 
+    assert :error =
+             connect(HostAgentSocket, %{"host_id" => host.id},
+               connect_info: %{x_headers: [{"x-backplane-host-token", token_a}]}
+             )
+
     assert {:ok, token_b_socket} =
              connect(HostAgentSocket, %{"host_id" => host.id},
                connect_info: %{x_headers: [{"x-backplane-host-token", token_b}]}
              )
+
+    assert token_b_socket.assigns.auth_token.id == token_b_record.id
 
     assert {:ok, _reply, token_b_socket} =
              subscribe_and_join(token_b_socket, "host_agent:#{host.id}", %{})
@@ -387,6 +785,38 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
       assert args["agent_id"] == "agt_1"
       assert args["content"] == "hi"
+    end
+
+    test "advertised scope selects only the authenticated read partition", %{
+      host: host,
+      socket: socket
+    } do
+      for method <- ["recall", "list"] do
+        ref =
+          push(socket, "memory_call", %{
+            "method" => method,
+            "arguments" => %{"scope" => host.memory_scope, "query" => "fixture"}
+          })
+
+        assert_reply(ref, :ok, %{"ok" => true})
+        assert_receive {:memory_service, {_operation, args, auth}}
+        refute Map.has_key?(args, "scope")
+        assert auth.principal_metadata["scope"] == host.memory_scope
+
+        for claim <- [
+              %{"scope" => "foreign"},
+              %{"scope" => nil},
+              %{"scope" => host.memory_scope, "client_id" => host.id},
+              %{
+                "scope" => host.memory_scope,
+                "memory_space_id" => MemorySpaces.private_host_space_id(host.id)
+              }
+            ] do
+          rejected = push(socket, "memory_call", %{"method" => method, "arguments" => claim})
+          assert_reply(rejected, :ok, %{"ok" => false, "error" => "invalid_arguments"})
+          refute_received {:memory_service, _}
+        end
+      end
     end
 
     test "remember rejects caller-supplied canonical ownership", %{socket: socket} do
@@ -889,7 +1319,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
           "events" => []
         })
 
-      assert_reply(ref, :error, %{"reason" => "ingest_unavailable"})
+      assert_reply(ref, :error, %{"code" => "unauthorized", "retryable" => false})
       refute_received {:host_event_ingest, _, _}
     end
 
@@ -1100,11 +1530,26 @@ defmodule Backplane.Api.HostAgentChannelTest do
       send(owner, {:host_memory_sync, {:apply_sync_item, host.id, item}})
 
       case item["id"] do
-        "revisioned" -> {:ok, %{status: :ok, canonical_id: "hub_revisioned", revision: 7}}
-        "dup" -> {:ok, %{status: :duplicate, canonical_id: "hub_dup"}}
-        "bad" -> {:error, :validation, "invalid scope"}
-        "transient" -> {:error, :transient, "temporarily unavailable"}
-        id -> {:ok, %{status: :ok, canonical_id: "hub_#{id}"}}
+        "revisioned" ->
+          {:ok,
+           %{
+             status: :ok,
+             canonical_id: "hub_revisioned",
+             revision: 7,
+             partition: %{memory_space_id: "space-1", scope: "proj_local", namespace: "private"}
+           }}
+
+        "dup" ->
+          {:ok, %{status: :duplicate, canonical_id: "hub_dup"}}
+
+        "bad" ->
+          {:error, :validation, "invalid scope"}
+
+        "transient" ->
+          {:error, :transient, "temporarily unavailable"}
+
+        id ->
+          {:ok, %{status: :ok, canonical_id: "hub_#{id}"}}
       end
     end
   end
@@ -1232,7 +1677,12 @@ defmodule Backplane.Api.HostAgentChannelTest do
             "id" => "revisioned",
             "status" => "ok",
             "canonical_id" => "hub_revisioned",
-            "revision" => 7
+            "revision" => 7,
+            "partition" => %{
+              "memory_space_id" => "space-1",
+              "scope" => "proj_local",
+              "namespace" => "private"
+            }
           },
           %{"id" => "dup", "status" => "duplicate", "canonical_id" => "hub_dup"},
           %{"id" => "bad", "status" => "error", "error" => "invalid scope"}

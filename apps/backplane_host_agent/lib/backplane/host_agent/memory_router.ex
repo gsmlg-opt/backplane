@@ -12,7 +12,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
     `tools/list` (lists memory tools) and `tools/call` (routes to the same
     handler as `/call/:method`).
 
-  Core memory operations use the canonical memory facade. Host-only slot, facet,
+  Core memory operations use the canonical memory facade. Host-only slot
   and replay operations remain local, while Hub-only memory tools are forwarded.
   """
 
@@ -41,6 +41,10 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   plug(:dispatch)
 
+  post "/memory/diagnostics" do
+    handle_memory_diagnostics(conn)
+  end
+
   post "/capture/v1/hooks/:integration/:hook" do
     handle_capture(conn, integration, hook)
   end
@@ -68,6 +72,26 @@ defmodule Backplane.HostAgent.MemoryRouter do
   match _ do
     send_json(conn, 404, %{"ok" => false, "error" => "not found"})
   end
+
+  defp handle_memory_diagnostics(%{remote_ip: peer} = conn)
+       when peer == {127, 0, 0, 1} or peer == {0, 0, 0, 0, 0, 0, 0, 1} do
+    case Backplane.HostAgent.Memory.Diagnostics.targeted(conn.body_params) do
+      {:ok, result} ->
+        send_json(conn, 200, %{"ok" => true, "result" => result})
+
+      {:error, :invalid_diagnostic_request} ->
+        send_json(conn, 400, %{"ok" => false, "error" => "invalid diagnostic request"})
+
+      {:error, :diagnostic_partition_mismatch} ->
+        send_json(conn, 403, %{"ok" => false, "error" => "diagnostic partition mismatch"})
+
+      {:error, _} ->
+        send_json(conn, 503, %{"ok" => false, "error" => "diagnostics unavailable"})
+    end
+  end
+
+  defp handle_memory_diagnostics(conn),
+    do: send_json(conn, 403, %{"ok" => false, "error" => "loopback diagnostics only"})
 
   defp handle_capture(conn, integration, hook) do
     with {:ok, runtime} <- capture_runtime(),
@@ -127,6 +151,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
+  defp capture_body(%{"memory_access_id" => _}), do: {:error, {:malformed, [:memory_access_id]}}
   defp capture_body(body) when is_map(body), do: {:ok, body}
   defp capture_body(_body), do: {:error, {:malformed, [:payload]}}
 
@@ -473,12 +498,19 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_call(conn, id, agent_id, %{"name" => name, "arguments" => args})
        when is_binary(name) and is_map(args) do
-    case MemoryToolContract.route_class(name) do
-      class when class in [:canonical_overlap, :server_only] ->
-        route_remote_memory_tool(conn, id, agent_id, name, args, class)
+    if forbidden_authority?(args) do
+      send_json(conn, 200, jsonrpc_result(id, tool_result("invalid_request", true)))
+    else
+      case MemoryToolContract.route_class(name) do
+        :canonical_overlap ->
+          call_resolved_local_tool(conn, id, agent_id, name, args)
 
-      _other ->
-        call_resolved_local_tool(conn, id, agent_id, name, args)
+        :server_only ->
+          route_remote_memory_tool(conn, id, agent_id, name, args)
+
+        _other ->
+          call_resolved_local_tool(conn, id, agent_id, name, args)
+      end
     end
   end
 
@@ -504,13 +536,14 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
-  defp route_remote_memory_tool(conn, id, agent_id, name, args, class) do
+  defp route_remote_memory_tool(conn, id, _agent_id, _name, %{"memory_access_id" => _}) do
+    send_json(conn, 200, jsonrpc_result(id, tool_result("invalid_request", true)))
+  end
+
+  defp route_remote_memory_tool(conn, id, agent_id, name, args) do
     case hub_proxy().call_tool(name, remote_memory_args(name, args, agent_id)) do
       {:ok, result} ->
         send_json(conn, 200, jsonrpc_result(id, tool_result(result, false)))
-
-      {:error, :not_connected} when class == :canonical_overlap ->
-        call_resolved_local_tool(conn, id, agent_id, name, args)
 
       {:error, reason} ->
         send_json(
@@ -521,21 +554,35 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
+  defp direct_memory_call(_conn, _agent_id, method, %{"memory_access_id" => _})
+       when method not in ~w(remember recall list stats forget),
+       do: {:error, :invalid_request}
+
   defp direct_memory_call(conn, agent_id, method, args) do
+    if forbidden_authority?(args),
+      do: {:error, :invalid_request},
+      else: do_direct_memory_call(conn, agent_id, method, args)
+  end
+
+  defp forbidden_authority?(args),
+    do:
+      Enum.any?(
+        ~w(memory_space_id host_id client_id partition_id namespace),
+        &Map.has_key?(args, &1)
+      )
+
+  defp do_direct_memory_call(conn, agent_id, method, args) do
     name = "memory::" <> method
     context = memory_service_ctx(conn, agent_id, args)
 
     case MemoryToolContract.route_class(name) do
-      :device_local ->
+      class when class in [:device_local, :canonical_overlap] ->
         MemoryService.call(method, args, context)
 
-      class when class in [:canonical_overlap, :server_only] ->
+      :server_only ->
         case hub_proxy().call_tool(name, remote_memory_args(name, args, agent_id)) do
           {:ok, result} ->
             {:ok, result}
-
-          {:error, :not_connected} when class == :canonical_overlap ->
-            MemoryService.call(method, args, context)
 
           {:error, reason} ->
             {:error, {:hub_unavailable, reason}}
@@ -610,6 +657,14 @@ defmodule Backplane.HostAgent.MemoryRouter do
       {:error, reason} ->
         send_json(conn, 200, jsonrpc_error(id, -32_000, format_error(reason)))
     end
+  end
+
+  defp route_unknown_tool(conn, id, "memory::" <> method, _args) do
+    send_json(
+      conn,
+      200,
+      jsonrpc_result(id, tool_result("unknown method: #{method}", true))
+    )
   end
 
   defp route_unknown_tool(conn, id, name, args) do

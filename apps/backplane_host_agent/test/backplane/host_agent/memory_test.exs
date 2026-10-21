@@ -11,6 +11,152 @@ defmodule Backplane.HostAgent.MemoryTest do
     def call(_method, _args, _opts), do: {:error, :not_connected}
   end
 
+  test "request fingerprints survive fresh VMs with reversed atom creation order", %{tmp_dir: dir} do
+    script = """
+    {:ok, _} = Application.ensure_all_started(:ex_turso)
+    {:ok, store} = Backplane.HostAgent.Memory.Store.start_link(
+      database: System.fetch_env!("COMMAND_DB"), pool_size: 1)
+    :ok = Backplane.HostAgent.Memory.Migrator.migrate(store)
+    args = %{"content" => "stable across VM boots", "idempotency_key" => "stable-boot",
+      "metadata" => %{"outer" => %{"z" => 1, "a" => [true, nil]}}}
+    {:ok, result} = Backplane.HostAgent.Memory.remember(args,
+      store: store, agent_id: "agent_1", config: %{bound_scope: "proj_local"})
+    {:ok, %{rows: [row]}} = Backplane.HostAgent.Memory.Store.query(store,
+      "SELECT request_hash FROM memory_request_keys")
+    IO.puts("RESULT=" <> Jason.encode!(Map.put(result, "request_hash", row["request_hash"])))
+    GenServer.stop(store)
+    """
+
+    bootstrap = """
+    Enum.each(String.split(System.fetch_env!("ATOM_ORDER")), &String.to_atom/1)
+    Code.eval_string(Base.decode64!(System.fetch_env!("COMMAND_SCRIPT")))
+    """
+
+    keys = ~w(content scope agent_id session_id tags_json metadata_json confidence command)
+    paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
+
+    [first, second] =
+      for order <- [keys, Enum.reverse(keys)] do
+        {output, status} =
+          System.cmd(System.find_executable("elixir"), paths ++ ["-e", bootstrap],
+            env: [
+              {"COMMAND_DB", Path.join(dir, "fresh-vm.db")},
+              {"COMMAND_SCRIPT", Base.encode64(script)},
+              {"ATOM_ORDER", Enum.join(order, " ")}
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+        [_, result] = Regex.run(~r/RESULT=(.+)/, output)
+        Jason.decode!(result)
+      end
+
+    assert first["id"] == second["id"]
+    assert first["dedup"] == false
+    assert second["dedup"] == true
+    assert "v2:" <> hash = first["request_hash"]
+    assert byte_size(hash) == 64
+    assert second["request_hash"] == first["request_hash"]
+  end
+
+  test "legacy fingerprints upgrade only from the unchanged durable command", %{tmp_dir: dir} do
+    store = start_memory!(dir)
+    opts = memory_opts(store)
+
+    args = %{
+      "content" => "original request",
+      "idempotency_key" => "legacy-key",
+      "type" => "semantic",
+      "facets" => [%{"dimension" => "kind", "value" => "plan"}],
+      "tags" => ["ops"],
+      "metadata" => %{"nested" => %{"a" => 1}},
+      "session_id" => "session",
+      "confidence" => 0.7
+    }
+
+    assert {:ok, %{"id" => id}} = Memory.remember(args, opts)
+    legacy = String.duplicate("a", 64)
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memory_request_keys SET request_hash = ?", [legacy])
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memories SET metadata = '{}' WHERE id = ?", [id])
+
+    for {key, value} <- [
+          {"content", "different"},
+          {"type", "episodic"},
+          {"facets", []},
+          {"tags", []},
+          {"metadata", %{}},
+          {"session_id", "other"},
+          {"confidence", 0.4}
+        ] do
+      assert {:error, :idempotency_conflict} = Memory.remember(Map.put(args, key, value), opts)
+
+      assert {:ok, %Result{rows: [%{"request_hash" => ^legacy}]}} =
+               Store.query(store, "SELECT request_hash FROM memory_request_keys")
+    end
+
+    assert {:ok, %{"id" => ^id, "dedup" => true}} = Memory.remember(args, opts)
+
+    assert {:ok, %Result{rows: [%{"request_hash" => "v2:" <> _}]}} =
+             Store.query(store, "SELECT request_hash FROM memory_request_keys")
+
+    assert_count(store, "memories", 1)
+    assert_count(store, "memory_outbox", 1)
+  end
+
+  test "legacy recovery refuses absent malformed or differently bound original payloads", %{
+    tmp_dir: dir
+  } do
+    store = start_memory!(dir)
+    opts = memory_opts(store)
+    args = %{"content" => "legacy guarded", "idempotency_key" => "legacy-guard"}
+    assert {:ok, %{"id" => id}} = Memory.remember(args, opts)
+
+    assert {:ok, %Result{rows: [%{"payload" => original}]}} =
+             Store.query(store, "SELECT payload FROM memory_outbox")
+
+    payload = Jason.decode!(original)
+    legacy = String.duplicate("b", 64)
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memory_request_keys SET request_hash = ?", [legacy])
+
+    invalid =
+      [nil, "{", "[]"] ++
+        Enum.map(
+          [
+            Map.put(payload, "id", "another-id"),
+            Map.put(payload, "op", "forget"),
+            Map.put(payload, "idempotency_key", "another-key"),
+            Map.put(payload, "agent_id", "another-agent"),
+            Map.put(payload, "scope", "another-scope"),
+            Map.delete(payload, "confidence")
+          ],
+          &Jason.encode!/1
+        )
+
+    for encoded <- invalid do
+      assert {:ok, _} = Store.execute(store, "UPDATE memory_outbox SET payload = ?", [encoded])
+      assert {:error, :idempotency_conflict} = Memory.remember(args, opts)
+    end
+
+    assert {:ok, _} = Store.execute(store, "UPDATE memory_outbox SET payload = ?", [original])
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memory_request_keys SET request_hash = 'v9:unknown'")
+
+    assert {:error, :idempotency_conflict} = Memory.remember(args, opts)
+
+    assert {:ok, _} =
+             Store.execute(store, "UPDATE memory_request_keys SET request_hash = ?", [legacy])
+
+    assert {:ok, %{"id" => ^id, "dedup" => true}} = Memory.remember(args, opts)
+  end
+
   test "remember inserts one local row and one outbox row, then deduplicates", %{
     tmp_dir: tmp_dir
   } do
@@ -208,6 +354,29 @@ defmodule Backplane.HostAgent.MemoryTest do
              Memory.pending_overlay(%{"query" => "retry waiting"}, opts)
   end
 
+  test "forget of a settled canonical id retains local identity and exposes its known mapping", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_memory!(tmp_dir)
+    opts = memory_opts(store)
+    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "settled forget receipt"}, opts)
+    canonical = "22222222-2222-4222-8222-222222222222"
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memories SET remote_id=?, remote_revision=7, sync_state='synced' WHERE id=?",
+               [canonical, id]
+             )
+
+    assert {:ok, receipt} = Memory.forget(%{"id" => canonical}, opts)
+    assert %{"id" => ^id, "canonical_id" => ^canonical, "sync_state" => "pending"} = receipt
+    assert is_nil(receipt["revision"])
+
+    assert {:ok, %Result{rows: [%{"memory_id" => ^id, "state" => "pending"}]}} =
+             Store.query(store, "SELECT memory_id,state FROM memory_outbox WHERE op='forget'")
+  end
+
   test "pending overlay uses only the latest operation and prefers remote forget ids", %{
     tmp_dir: tmp_dir
   } do
@@ -331,13 +500,28 @@ defmodule Backplane.HostAgent.MemoryTest do
     agent_2_opts = Keyword.put(opts, :agent_id, "agent_2")
 
     assert {:ok, %{"id" => expected_id}} =
-             Memory.remember(%{"content" => "alpha target", "tags" => ["ops"]}, opts)
-
-    assert {:ok, _} = Memory.remember(%{"content" => "beta target", "tags" => ["ops"]}, opts)
-    assert {:ok, _} = Memory.remember(%{"content" => "alpha ui", "tags" => ["ui"]}, opts)
+             Memory.remember(
+               %{"type" => "episodic", "content" => "alpha target", "tags" => ["ops"]},
+               opts
+             )
 
     assert {:ok, _} =
-             Memory.remember(%{"content" => "alpha other agent", "tags" => ["ops"]}, agent_2_opts)
+             Memory.remember(
+               %{"type" => "episodic", "content" => "beta target", "tags" => ["ops"]},
+               opts
+             )
+
+    assert {:ok, _} =
+             Memory.remember(
+               %{"type" => "episodic", "content" => "alpha ui", "tags" => ["ui"]},
+               opts
+             )
+
+    assert {:ok, _} =
+             Memory.remember(
+               %{"type" => "episodic", "content" => "alpha other agent", "tags" => ["ops"]},
+               agent_2_opts
+             )
 
     for args <- [
           %{"q" => "alpha", "type" => "episodic", "agent_id" => "agent_1", "tag" => "ops"},
@@ -411,7 +595,7 @@ defmodule Backplane.HostAgent.MemoryTest do
 
     assert {:ok, %{"id" => expected_id}} =
              Memory.remember(
-               %{"content" => "older needle", "tags" => ["ops"]},
+               %{"content" => "older needle", "type" => "episodic", "tags" => ["ops"]},
                opts
              )
 
