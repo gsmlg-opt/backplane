@@ -5,6 +5,11 @@ L13 and L18 use the explicitly documented composite evidence levels. Verificatio
 is local development only. The broader task is not released. The current source
 and repair counters are in [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
 
+Test-count correction: historical1413/0 and1394/0 runs loaded two files with
+one shared ExUnit module name. Those counts are retained observations, not proof
+of unique coverage. Task72 repairs the registration and reruns both suites; see
+the final verification section for the corrected count.
+
 Final A20 source verification passed focused39/0, exact178-file Memory1413/0
 with5 unchanged exclusions, exact14-file Admin134/0, scoped format/diff/Credo
 and dev warnings-as-errors compilation. Actual explicit gateway stop/start loaded
@@ -36,8 +41,9 @@ original hashes. The known insufficient-input Graph stage remains pending, with
 only its captured attempt counter increasing; all other captured fields stay exact.
 Both hosts' direct/MCP health is online/canonical/stalefalse/pending0; temporary
 relay/B and operator processes are stopped, original local services remain running.
-Latest pool5used/0remaining; stages04Sol2/Astra20, ceiling21. No additional product
-round was consumed by Task127 tooling (Sol instrumentation repair1/2).
+The preceding pool is exhausted. The newly authorized five-round pool allocates
+round1 to Task72 test registration, with4 unallocated. Stages04Sol2/Astra20,
+ceiling21; Task127 tooling consumed no product round (Sol instrumentation repair1/2).
 
 Final evidence under `.devenv/provenance-correction/resumed-101/`:
 `task127-{original-observer001,post-observer001,actual-health001}.json`,
@@ -1990,3 +1996,48 @@ Evidence: `.devenv/provenance-correction/task64-a12-types/` and
 `resumed-101/ci130-diagnosis.json`. Task64 cumulativeSol2/Astra12; stages04 remains
 Sol2/Astra20. Latest five-round pool5used/0remaining; prior evidence/counters remain
 immutable. Required red release gates are not waived.
+
+
+### Exact-SHA CI after shared-delivery type correction
+
+On main `0da14a604fbab46e4ed3a0d3fc4572e247728452`, CI39532288326
+passed Compile, Format Check, Credo and Workflow Contract. Dialyzer retained one
+active MCP idempotency warning (`lib/backplane/transport/idempotency.ex:1`);
+all five HostAgentChannel warnings are gone. The nine local Llama Task warnings
+were not reproduced in CI. Test39532288310 passed16 jobs and failed the two
+excluded owning jobs: Admin453/1 (`admin_audit_test.exs:77`, expected
+`regenerate_token`, actual `rotate_token`) and Relayixir296/1
+(`https_proxy_test.exs:226`, expected `:ok`, actual
+`{:error, :cleanup_unconfirmed}`). API330/0 and MCP protocol passed.
+Memory reported1394/0 with5 exclusions, subject to the duplicate-module caveat
+above. No required red gate is waived; no release was dispatched.
+
+Task133 established the test-count root cause: `memory_test.exs` declares20
+tests and `memories_test.exs` declares1, both under the same ExUnit module atom.
+The CI redefinition warning changes location with compile order, explaining the
+19-test delta. Neither historical count establishes unique coverage. The
+current Task72 correction gives the provenance test its own module without
+changing assertions. Its focused pre-edit run reproduced a simultaneous-module
+CompileError. Subsequent results belong below, separate from historical runs.
+
+Task134 independently inspected provider, generated knowledge, browser and
+qualification artifacts and found no additional product gap. Local L01–L18
+remain accepted at the stated composite levels; publication remains incomplete.
+Read-only lifecycle status checks in `resumed-101/continuation135-{primary,isolated}-status.json`
+confirmed all four HTTP endpoints ready without restarting services.
+
+
+### Corrected test registration verification (Task72 Astra4)
+
+The provenance suite now uses `Backplane.Memory.MemoriesProvenanceTest`;
+its entire body and assertions are unchanged. The two formerly colliding files
+run together with `--seed 0 --trace`:21 tests,0 failures, both modules traced.
+The exact178-file full Memory suite then exited0:1394 tests,0 failures,
+5 unchanged exclusions. This is an observed count, not a predicted1414.
+No test-module redefinition appeared; migration reload tests still emit their
+existing migration-module warnings. One-file formatting and diff checks are
+recorded with the worker handoff under
+`.devenv/provenance-correction/task72-astra4-registration/`.
+A parent static scan found211 distinct top-level test modules and no duplicates.
+Task72 cumulative counters are Sol2/Astra4; the new pool has1 used/4 remaining.
+This test-only correction changes no runtime authority, provenance or data.

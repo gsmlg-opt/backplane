@@ -10,6 +10,13 @@ source host and repository are optional filters. The browser shows264 memories
 temporary B and the owned relay are stopped. Both hosts' actual direct/MCP health
 is online/canonical/stalefalse/pending0.
 
+Test-count correction: historical1413/0 and1394/0 runs loaded two files with
+one shared ExUnit module name. Those counts are retained observations, not proof
+of unique coverage. Task72 repairs the registration and reruns both suites; see
+the final verification section for the corrected count. Current corrected
+results are21/0 for both files together and1394/0 (5 excluded) for all178 Memory
+files; see the acceptance report's Task72 Astra4 section.
+
 A20 passed Memory1413/0 (5 unchanged exclusions), Admin134/0, focused39/0,
 scoped quality and strict dev compilation; actual gateway cold restart loaded it.
 Task127's supported audited exact16 retry completed through normal gateway workers.
@@ -18,9 +25,15 @@ separately reviewed, both completed attempt1/errors0; original failed reports an
 error histories remain intact. Eleven historical provenance additions are
 attributed, not described as byte-identical rows. L18 is accepted from the retained
 composite repeat/restart/recovery evidence; no cross-machine validation occurred.
-Latest pool5used/0remaining, stages04Sol2/Astra20 ceiling21; Task127 instrumentation
-Sol1/2 consumed no product round. See [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
+The preceding pool is exhausted. The newly authorized five-round pool allocates
+round1 to Task72 test registration, with4 unallocated; prior counters are retained.
+Stages04Sol2/Astra20 ceiling21; Task127 instrumentationSol1/2 consumed no product round. See [the checklist](local-dev-checklist.md#current-resume-boundary-2026-10-21-authorized-continuation).
 No release or version change has occurred; required CI gates remain unwaived.
+
+Use the status above and the acceptance report for the current outcome. Earlier
+probe observations below retain their original evidence boundaries; a historical
+subset failure or pending gate does not override the accepted composite. Never
+repeat a consumed one-time repair or restore an old topology from a report.
 
 ## Latest verified local recovery commands
 
@@ -100,7 +113,8 @@ devenv shell -- elixir -pa _build/test/lib/ex_turso/ebin -e 'IO.inspect(Code.ens
 ```
 
 The loader returned `{:module, Turso.Native}`. This verifies the test build;
-the development stack subsequently cold-started successfully; complete startup acceptance still requires the pending outage/recovery gates.
+the development stack subsequently cold-started successfully. Later cold-start,
+outage and recovery evidence closes local startup acceptance in the current report.
 
 ## Lifecycle CLI
 
@@ -155,7 +169,9 @@ migration receipts, reset the database or recreate Memory tables. Stop if schema
 validation rejects an unexpected shape. Actual cutover verification is tracked in
 [the acceptance checklist](local-dev-checklist.md).
 
-The CLI supports these commands. Gateway restart and a bounded host stop/start were exercised successfully; complete L18 repeatability remains open:
+The CLI supports these commands. Gateway and host restarts passed; the retained
+repeat/restart/recovery composite now closes local L18. Commands that stop or
+restart services require exclusive ownership of the fixture lifecycle:
 
 ```sh
 python3 scripts/memory_local_dev.py start --config .devenv/memory-local-fixtures/oct20-a/primary/host.yaml --host-first --timeout 180
@@ -194,7 +210,10 @@ restart/stop beside a gateway with unchanged process identity. The second real
 host was started successfully in this mode using a private alternate
 `isolated/host-relay.yaml` config; `fixture-relay.json` points to that config.
 Its online relay4224 forwards to gateway4220 while local API4223 stays independent.
-Shared live qualification is still pending after two failed online attempts.
+That relay topology and its first two failed shared runs are historical. The
+current original isolated host runs directly beside the gateway; the temporary
+relay is stopped. Later independent-capability, lease/revoke and cold-closure
+evidence closes the local L13 composite.
 
 The preparation-only foreground PostgreSQL process must be stopped through its
 own controlling session before transferring lifecycle ownership to this CLI.
@@ -207,8 +226,8 @@ Required URLs after a successful start are:
 - Admin Memory: `http://localhost:4221/memory`
 - Host loopback API: `http://127.0.0.1:4222`
 
-These URLs serve the retained synthetic fixture. L07 recall and L16 policies
-have passed; complete L01–L18 qualification remains blocked. The trusted Admin
+These URLs serve the retained synthetic fixture. Local L01–L18 have accepted
+evidence at the levels in the current acceptance report; release remains blocked. The trusted Admin
 surface, gateway resource bearer and host token are separate authentication boundaries.
 
 ## Repeatable API workload
@@ -282,7 +301,8 @@ write probe opens Memories first, writes through the real host facade, then
 requires the new row within five seconds without reloading. The clock starts
 before durable host acceptance, so a passing observation includes transport and
 canonical settlement time. Actual twelve-page runs and a2328ms open-page write
-observation passed. Full cross-page mutation/edge acceptance remains incomplete.
+observation passed. This command covers one subset; later cross-page and edge
+scenarios are assessed separately in the accepted L08/L17 composite.
 Reports live under the same run's `browser-*/` directory.
 
 Capture a bounded, read-only canonical snapshot with:
@@ -344,7 +364,7 @@ correctly returns unauthorized. The generic `hub unreachable` wrapper does not
 make that permission denial a transport outage. Do not broaden host privileges
 to run an operator repair.
 
-### Current processing profile
+### Retained early processing-profile observation
 
 The four originally enabled gates were temporarily paused to contain repeated
 model calls. After the scoped stage recovery and completed L16 policy run, actual
@@ -381,9 +401,10 @@ paths are recorded in `.devenv/memory-local/state.json`.
 The original four pipeline/events/dual-write/graph policies are now restored to
 true through the supported UI. Forward migration00002 repaired trace persistence.
 The bounded12second retrieval deadline and pinned same-model filtering now pass
-actual direct/MCP exact/paraphrase recall with matching UI traces. Stable outage
-recovery, graph/Crystal quality and the remaining matrix cases are still open.
-Follow the checklist before further fault cases; avoid setup as a repair shortcut.
+actual direct/MCP exact/paraphrase recall with matching UI traces. These are the original restoration/recall observations. Later outage recovery,
+graph/Crystal quality and remaining local cases passed at the evidence levels in
+the current acceptance report. Follow the checklist before further fault cases;
+avoid setup as a repair shortcut.
 
 
 ## Scheduled policy qualification (L16)
@@ -466,17 +487,17 @@ Tool receipts and cleanup boundaries are now retained before semantic assertions
 For both drivers, exact artifacts, successful observations and remaining gates
 are in [the acceptance report](local-e2e-acceptance.md). The separate
 [shared-access design](shared-host-access-design.md) defines the approved independent
-read/deliver/remember/forget capabilities. Source integration and real two-host
-qualification remain in progress; historical product-choice blockers are superseded.
+read/deliver/remember/forget capabilities. Later source integration and local
+two-host evidence close the L13 composite; these earlier driver runs cover only
+their documented subsets. Historical product-choice blockers are superseded.
 
 ## Release boundary
 
-Required local acceptance and quality gates remain red; see
-[the acceptance report](local-e2e-acceptance.md) for their status. Do not dispatch
-a release until every mandatory gate passes. Then commit the scoped task changes,
-push the task branch, complete review/merge through branch protection, and verify
-required CI against the resulting main SHA. Task-branch push alone does not
-release these changes.
+Local L01–L18 acceptance is recorded; required broader CI gates remain red.
+The task source/docs and release support are committed and pushed to main. See
+[the acceptance report](local-e2e-acceptance.md) for evidence and limitations.
+Do not dispatch a release until every required gate passes on the exact main SHA.
+A pushed commit alone does not release these changes.
 
 The [release workflow](../../.github/workflows/release.yml) accepts a strict
 semantic version and refuses dispatch outside `refs/heads/main`. Memory V2
@@ -499,9 +520,9 @@ The underlying version script accepts `VERSION [all | APP ...]`; omitting the
 selection preserves the legacy full behavior. It validates every selected
 manifest and applicable example before writing. MCP install examples change only
 when the MCP package is selected (including full mode). Versioning tests use
-temporary copied-manifest fixtures. No real root/app manifest version changed,
-no release version was selected, and no commit, push, or publication occurred
-for Task30.
+temporary copied-manifest fixtures. No real root/app manifest version changed
+and no release version was selected. The release support is now committed and
+pushed; no publication occurred for Task30.
 
 After all gates and main CI pass, choose an unused strict semantic version and
 replace the placeholders below. These are eventual delivery commands, **not
@@ -682,7 +703,7 @@ refuses an existing case journal or a graph that is no longer dead-lettered; do
 not rerun a successful case or fabricate its preconditions. These private probes
 supplement the reusable repository harness, not a new general API.
 
-Final snapshot `oct20-a/final-ui-1792489077418423000/report.json` verifies all3
+The historical snapshot `oct20-a/final-ui-1792489077418423000/report.json` verifies all3
 endpoints, host online/canonical/pending0 and isolated4223 stopped. The healthy
 owned gateway/host remain running (PIDs92541/83706 at that snapshot). Inspect the
 actual state file before any lifecycle action; PIDs are not durable identities.
@@ -732,13 +753,13 @@ are retained. The observer requires a finite terminal inventory page (maximum200
 records), and recognizes mirror `canonical_id`; do not substitute a truncated
 first-page set or arbitrary success response for those checks.
 
-The earlier evidence above predates shared-host qualification. Current online
-read/deliver/remember/forget subsets and online-revoke-before-outage/cold-denial
-subsets pass; private offline fallback, disconnected revoke, short lease and
-old-intent boundaries remain unqualified. Full L13 and the repeated complete L18
-workflow remain incomplete. No cross-machine validation is required. Current
-commit/delivery and exact-SHA quality gates are in the acceptance report; required
-red gates still block release.
+This checkpoint predates full shared-host qualification. At that time online
+capability and revoke-before-outage subsets passed while offline leases,
+disconnected revoke and old intents remained open. Later online/offline100,
+Task71A5, reconcile100c and final127/129 evidence close the local L13/L18
+composites. No cross-machine validation is required. Current commit/delivery and
+exact-SHA quality gates are in the acceptance report; required red gates still
+block release.
 
 ### Retained canonical inventory for shared-access validation
 
@@ -759,7 +780,9 @@ does not prove command deduplication, host mirror integrity or full L13/L18.
 Its three regression tests and a real read-only203-row/15-tombstone comparison
 passed before shared dev migrations; the original baseline comparison also passed
 after migrations and two failed live matrix attempts. The capability-matrix browser
-driver remains unqualified pending resolution and a passing integrated rerun.
+driver was unqualified at that checkpoint. Later shared100 and Task71A5
+observations provide the accepted live composite; this earlier comparison alone
+does not establish it.
 
 ### Controlled local host disconnect
 
@@ -777,7 +800,8 @@ python3 scripts/memory_local_transport_relay.py online --control /Users/gao/Work
 Serve/status were exercised on the real local topology. Offline closes existing
 forwarded connections and rejects new ones; online permits fresh connections.
 The offline/recovery and ownership checks have10 passing ephemeral-loopback tests
-on Python3.9 and3.15. Actual shared lease/revoke fault qualification remains pending.
+on Python3.9 and3.15. Later actual shared lease/revoke and cold-closure
+qualification is recorded separately in the accepted L13 composite.
 Stop only through the owned foreground process handle; do not kill by port or delete
 an existing control socket. The helper never logs forwarded bytes or credentials.
 

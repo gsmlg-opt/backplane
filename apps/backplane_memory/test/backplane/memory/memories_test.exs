@@ -1,4 +1,4 @@
-defmodule Backplane.Memory.MemoriesTest do
+defmodule Backplane.Memory.MemoriesProvenanceTest do
   use Backplane.Memory.DataCase, async: false
   alias Backplane.Memory.Memories
 

@@ -89,9 +89,20 @@ These are source-level findings, not live acceptance results. Regressions were a
 
 ### Current resume boundary (2026-10-21, authorized continuation)
 
-Current overlay: **local L01–L18 accepted; release blocked by required CI gates**. The latest additional five-round allocation has
-**5 used / 0 remaining**, including completed stages04A20 and Task64A12 type-contract correction; cumulative
-stages04Sol2/Astra20, ceiling21. Earlier exhausted pools below are historical.
+Current overlay: **local L01–L18 accepted; release blocked by required CI gates**.
+The preceding five-round pool is exhausted, including stages04A20 and Task64A12;
+cumulative stages04Sol2/Astra20, ceiling21. The user authorized five further
+repair rounds in the current continuation. Round1 is allocated to Task72's
+provenance-test module collision: Sol2/Astra3 before repair, now Sol2/Astra4.
+The remaining four new rounds are unallocated; historical counters are retained.
+ROUTE task=72 agent=task72_registration_recovery reason=SOL_REPEATED_FAILURE inherited Task72 recovery; bounded test-registration correction.
+Task133 diagnosis and Task134 requirement audit were read-only and consumed no
+repair round. Two test files share `Backplane.Memory.MemoriesTest` with20 and1
+tests respectively; compilation order explains the19-test count difference.
+Earlier1413/0 totals do not prove1413 unique tests. Preserve the original reports;
+use the post-correction pair and full-suite results for current coverage.
+Task72A4 pair21/0 and exact178-file Memory1394/0 with5 unchanged exclusions
+passed; no test-module redefinition. Evidence: `task72-astra4-registration/`.
 A19 passed focused48 Memory/7 Admin, exact178-file Memory1408/0 with5 unchanged
 exclusions, exact14-file Admin134/0, scoped format/Credo and root dev strict
 compilation. Native gateway-only cold restart and actual four-interface host

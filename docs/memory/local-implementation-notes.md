@@ -90,9 +90,10 @@ flowchart LR
   Knowledge --> Admin[Admin inspection]
 ```
 
-This is the required architecture. Normal Styx execution has produced fixture summaries, extracted memories,
-lessons, crystals and graphs. Complete source support, quality and recovery gates
-remain unpassed; the diagram is not evidence that every arrow is qualified.
+Normal Styx execution has produced fixture summaries, extracted memories,
+lessons, crystals and graphs. Local quality and recovery acceptance now uses the
+composite evidence in the acceptance report; the diagram alone establishes no
+runtime result. Required broader CI gates still block release.
 
 ```mermaid
 sequenceDiagram
@@ -201,16 +202,18 @@ canonical mapping. Only the later canonical ACK supplies the deletion revision.
   refresh even when the new record is outside the displayed page. Six focused
   tests pass after the nil-session detail correction. Actual browser observations
   measured a new row in2328ms and forgotten detail disappearance in2307ms, both
-  without document reload. Broader cross-page behavior remains incomplete.
+  without document reload. These early observations cover a subset; later browser
+  and fault evidence closes the local L08/L17 composite in the acceptance report.
 - The lifecycle CLI refuses process adoption and validates kernel process birth
   identity and every live group member before signals.18 synthetic tests cover
   detached groups, unrelated process preservation and stale identity refusal.
   Actual legacy-host stop exposed an exit/signaling race. The22-test Astra recovery
   handles confirmed disappearance while retaining ownership checks. A later actual
   host cycle verified all original processes exited, gateway identity was unchanged,
-  and endpoints recovered. Full retained-run repeatability remains incomplete.
+  and endpoints recovered. Later retained-run and preservation evidence closes
+  the local L18 composite; original failed attempts remain in the acceptance report.
 
-## Implementation awaiting validation
+## Provider authentication and embedding validation
 
 `memory.proxy_credential` names a vault service credential for authenticating
 Memory's own requests to the local LLM resource. This is separate from upstream
@@ -224,7 +227,8 @@ authenticated structured chat200 and2560-dimension embedding200. The embedding
 worker pins the selected model before requesting a vector and atomically persists
 the vector and model under the existing content-revision fence. A newly settled
 isolated record proves the configured model label; historical vectors are not
-relabeled. These results do not establish useful end-to-end recall.
+relabeled. Provider success alone does not establish useful recall; later actual
+exact/paraphrase requests and matching browser traces supply the L07 evidence.
 
 ## Processing and current live limits
 
