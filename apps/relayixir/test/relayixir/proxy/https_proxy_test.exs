@@ -148,7 +148,7 @@ defmodule Relayixir.Proxy.HTTPSProxyTest do
     end
   end
 
-  test "untrusted TLS proxy fails without connecting directly to the origin" do
+  test "untrusted TLS proxy retains unconfirmed cleanup until the guard deadline without direct fallback" do
     {origin, origin_port} = tcp_listener()
     {listener, proxy_port} = tls_listener()
 
@@ -168,15 +168,39 @@ defmodule Relayixir.Proxy.HTTPSProxyTest do
         "HTTP_PROXY" => "https://localhost:#{proxy_port}"
       })
 
-    {:ok, client, _ref} = HttpClient.send_request(client, "GET", "/must-use-proxy", [], nil)
+    guard_timeout = Keyword.fetch!(client.options, :timeout) + 1_000
     started = System.monotonic_time(:millisecond)
+    {:ok, client, _ref} = HttpClient.send_request(client, "GET", "/must-use-proxy", [], nil)
+    # Observe DOWN after the unchanged deadline timer and terminate callback run.
+    observation_deadline = System.monotonic_time(:millisecond) + guard_timeout + 250
+    %{guard: guard, controller: controller} = client
+    guard_monitor = Process.monitor(guard)
+    controller_monitor = Process.monitor(controller)
 
     try do
       assert {:error, :upstream_connect_failed} = HttpClient.recv_response(client, 2_000)
       assert System.monotonic_time(:millisecond) - started < 2_000
-      assert_cleanup(client)
+      completion = Promise.completion(client.promise)
+      # Failed OTP TLS setup exposes no receiver/sender handles to the barrier.
+      assert {:error, :cleanup_unconfirmed} = RequestCompletion.await(completion, 0)
+      assert {:error, :cleanup_unconfirmed} = HttpClient.release(client)
+      assert Process.alive?(guard)
+      assert Process.alive?(controller)
+      assert HTTP.AbortController.aborted?(controller)
       assert {:error, _tls_error} = Task.await(proxy, 2_000)
       assert {:error, :timeout} = :gen_tcp.accept(origin, 100)
+
+      assert_receive {:DOWN, ^guard_monitor, :process, ^guard, :normal},
+                     max(observation_deadline - System.monotonic_time(:millisecond), 0)
+
+      assert System.monotonic_time(:millisecond) - started >= guard_timeout
+
+      assert_receive {:DOWN, ^controller_monitor, :process, ^controller, :normal},
+                     max(observation_deadline - System.monotonic_time(:millisecond), 0)
+
+      refute Process.alive?(guard)
+      refute Process.alive?(controller)
+      assert {:error, :cleanup_unconfirmed} = RequestCompletion.abort_and_await(completion, 0)
     after
       HttpClient.close(client)
     end

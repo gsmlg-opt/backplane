@@ -71,6 +71,8 @@ Requests are sent once. Fetch's structured `HTTP.RequestError` preserves the und
 
 Direct HTTP/1 requests, including pooled requests, and supported explicit HTTP/HTTPS proxy routes use the public completion barrier on release and cancellation. A successful barrier confirms that request resources have settled and the socket has closed or returned safely to the pool. HTTP proxies support forwarding to HTTP origins and CONNECT to HTTPS origins; HTTPS proxies support forwarding to HTTP origins. Nested TLS through an HTTPS proxy remains unsupported. Pending, unsupported, or unconfirmed cleanup retains the guard/controller until its bounded deadline.
 
+With HTTP Fetch 0.21.14, failed proxy TLS setup reports `cleanup_unconfirmed`: OTP does not return a TLS socket exposing the receiver/sender processes whose termination the barrier would need to confirm. Relayixir preserves that result and retains the aborted guard/controller until the configured request deadline plus its one-second cleanup allowance. Their eventual termination does not upgrade the missing TLS cleanup evidence to success. Cancellation of an established, tracked TLS connection can still confirm cleanup.
+
 Environment-selected HTTP proxies are supported, including CONNECT for HTTPS origins. HTTPS proxy endpoints for HTTP origins use TLS with certificate verification, authenticated absolute-form targets, and the existing NO_PROXY policy. Failed proxy connections never switch to a direct origin request.
 
 Fetch owns terminal upload cleanup, including preconnect failures and early responses. RequestGuard retains only caller-lifetime cancellation and caller-owned upload tracking; the Promise-monitor workaround for #70 has been removed.
