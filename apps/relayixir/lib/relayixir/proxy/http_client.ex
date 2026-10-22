@@ -65,7 +65,7 @@ defmodule Relayixir.Proxy.HttpClient do
   end
 
   @spec send_request(t(), String.t(), String.t(), list(), binary() | nil | :stream) ::
-          {:ok, t(), reference()} | {:error, t(), term()}
+          {:ok, t(), Task.ref()}
   def send_request(conn, method, path, headers, body \\ nil) do
     {:ok, guard, controller} = RequestGuard.start(self(), Keyword.fetch!(conn.options, :timeout))
     {body, upload} = request_body(body)
@@ -101,7 +101,7 @@ defmodule Relayixir.Proxy.HttpClient do
     }
   end
 
-  @spec stream_body_chunk(t(), reference(), binary() | :eof) ::
+  @spec stream_body_chunk(t(), Task.ref(), binary() | :eof) ::
           {:ok, t()} | {:halt, t()} | {:error, t(), term()}
   def stream_body_chunk(%{upload: upload} = conn, _ref, :eof) do
     :ok = HTTP.Stream.finish(upload)
