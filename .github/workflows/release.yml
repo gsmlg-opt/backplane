@@ -382,7 +382,7 @@ jobs:
 
       - name: Refresh compiled admin build metadata
         if: matrix.release == 'backplane'
-        run: mix "do" --app backplane_admin cmd mix compile --force --warnings-as-errors
+        run: mix "do" --app backplane_admin loadpaths + compile.all --force --warnings-as-errors
 
       - name: Build OTP release
         env:

@@ -170,7 +170,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert refresh["if"] == "matrix.release == 'backplane'"
 
     assert refresh["run"] ==
-             ~s(mix "do" --app backplane_admin cmd mix compile --force --warnings-as-errors)
+             ~s(mix "do" --app backplane_admin loadpaths + compile.all --force --warnings-as-errors)
 
     assert verify["if"] == "matrix.release == 'backplane'"
     assert verify["run"] =~ "_build/prod/rel/backplane/bin/backplane eval"
@@ -191,7 +191,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   @tag :tmp_dir
-  test "metadata refresh recompiles admin without compiling unrelated umbrella apps", %{
+  test "metadata refresh retains root overrides and recompiles only admin", %{
     tmp_dir: directory
   } do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
@@ -203,44 +203,94 @@ defmodule Backplane.ReleaseConfigTest do
     File.write!(Path.join(directory, "mix.exs"), """
     defmodule ReleaseScopeFixture.MixProject do
       use Mix.Project
-      def project, do: [apps_path: "apps", version: "0.1.0"]
+      def project do
+        [apps_path: "apps", version: "0.1.0",
+         deps: [{:fixture_adapter, path: #{inspect(Path.join(directory, "deps/current_adapter"))}, override: true}]]
+      end
     end
     """)
 
-    for app <- ~w(backplane_admin unrelated_app) do
+    for app <- ~w(backplane_admin fixture_system unrelated_app) do
       app_directory = Path.join([directory, "apps", app])
       File.mkdir_p!(Path.join(app_directory, "lib"))
+
+      dependencies =
+        case app do
+          "backplane_admin" ->
+            [
+              {:fixture_system, in_umbrella: true},
+              {:fixture_asset_builder, path: Path.join(directory, "deps/asset_builder")}
+            ]
+
+          "fixture_system" ->
+            [
+              {:fixture_adapter,
+               path: Path.join(directory, "deps/current_adapter"), override: true}
+            ]
+
+          "unrelated_app" ->
+            []
+        end
 
       File.write!(Path.join(app_directory, "mix.exs"), """
       defmodule #{Macro.camelize(app)}.MixProject do
         use Mix.Project
-        def project, do: [app: :#{app}, version: "0.1.0", build_path: "../../_build"]
+        def project, do: [app: :#{app}, version: "0.1.0", build_path: "../../_build", deps: #{inspect(dependencies)}]
       end
       """)
+    end
+
+    for {name, app, dependencies} <- [
+          {"current_adapter", :fixture_adapter, []},
+          {"legacy_adapter", :fixture_adapter, []},
+          {"asset_builder", :fixture_asset_builder,
+           [{:fixture_adapter, path: Path.join(directory, "deps/legacy_adapter")}]}
+        ] do
+      dependency_directory = Path.join([directory, "deps", name])
+      File.mkdir_p!(Path.join(dependency_directory, "lib"))
+
+      File.write!(Path.join(dependency_directory, "mix.exs"), """
+      defmodule #{Macro.camelize(name)}.MixProject do
+        use Mix.Project
+        def project, do: [app: :#{app}, version: "0.1.0", deps: #{inspect(dependencies)}]
+      end
+      """)
+
+      if app == :fixture_adapter do
+        File.write!(Path.join(dependency_directory, "lib/adapter.ex"), """
+        defmodule FixtureTransportAdapter do
+          def version, do: #{inspect(name)}
+        end
+        """)
+      end
     end
 
     File.write!(Path.join(directory, "apps/backplane_admin/lib/metadata.ex"), """
     defmodule ReleaseMetadataFixture do
       @revision System.fetch_env!("FIXTURE_COMPILED_SHA")
+      @adapter FixtureTransportAdapter.version()
       def revision, do: @revision
+      def adapter, do: @adapter
     end
     """)
-
-    File.write!(
-      Path.join(directory, "apps/unrelated_app/lib/unrelated.ex"),
-      ~s(raise "unrelated umbrella app must not be compiled by admin metadata refresh")
-    )
 
     env = [{"MIX_ENV", "prod"}, {"ERL_FLAGS", "+S 2:2"}, {"MIX_BUILD_PATH", nil}]
 
     {output, status} =
       System.cmd("mix", ["compile"],
-        cd: Path.join(directory, "apps/backplane_admin"),
+        cd: directory,
         stderr_to_stdout: true,
         env: [{"FIXTURE_COMPILED_SHA", "previous-sha"} | env]
       )
 
     assert status == 0, output
+
+    File.rm_rf!(Path.join(directory, "_build/prod/lib/unrelated_app"))
+
+    File.write!(
+      Path.join(directory, "apps/unrelated_app/lib/unrelated.ex"),
+      ~s(raise "unrelated umbrella app must not be compiled by admin metadata refresh")
+    )
 
     {output, status} =
       System.cmd("bash", ["-c", refresh["run"]],
@@ -267,6 +317,37 @@ defmodule Backplane.ReleaseConfigTest do
 
     assert status == 0, output
     assert String.trim(output) == "current-sha"
+
+    {output, status} =
+      System.cmd(
+        "elixir",
+        [
+          "-pa",
+          Path.join(directory, "_build/prod/lib/backplane_admin/ebin"),
+          "-e",
+          "IO.puts(ReleaseMetadataFixture.adapter())"
+        ],
+        stderr_to_stdout: true,
+        env: env
+      )
+
+    assert status == 0, output
+    assert String.trim(output) == "current_adapter"
+
+    File.write!(
+      Path.join(directory, "apps/backplane_admin/lib/metadata.ex"),
+      ~s(raise "admin metadata compile failure")
+    )
+
+    {output, status} =
+      System.cmd("bash", ["-c", refresh["run"]],
+        cd: directory,
+        stderr_to_stdout: true,
+        env: env
+      )
+
+    assert status != 0, "metadata refresh ignored compiler failure: #{output}"
+    assert output =~ "admin metadata compile failure"
   end
 
   test "compiled release metadata verification rejects stale builds despite runtime overrides" do
