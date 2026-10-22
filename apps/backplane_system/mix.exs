@@ -37,6 +37,7 @@ defmodule BackplaneSystem.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:bcrypt_elixir, "~> 3.0"},
       {:req, "~> 0.5", override: true},
+      {:websock_adapter, "~> 0.12.1", hex: :gaoxy_websock_adapter, override: true},
       {:styx, "~> 0.1.1"},
       {:tzdata, "~> 1.1"},
       {:boruta, "~> 2.3"},
