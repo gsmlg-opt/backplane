@@ -33,8 +33,8 @@ defmodule Backplane.Monitor.Providers.ClaudeCodeTest do
   end
 
   test "fetch_oauth/2 uses HTTP_PROXY for usage requests when target is not in NO_PROXY" do
-    {:ok, pid} = Bandit.start_link(plug: __MODULE__.UsageProxyEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    {:ok, pid} = Gaoxy.HTTP.start_link(plug: {__MODULE__.UsageProxyEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
 
     previous_opts = Application.get_env(:backplane, :claude_code_monitor_req_options)
 
@@ -63,7 +63,7 @@ defmodule Backplane.Monitor.Providers.ClaudeCodeTest do
       restore_env(previous_env)
 
       try do
-        ThousandIsland.stop(pid)
+        Gaoxy.stop(pid)
       catch
         :exit, _ -> :ok
       end

@@ -13,6 +13,7 @@ defmodule Backplane.Test.MockSseMcpServer do
 
       conn =
         conn
+        |> Gaoxy.HTTP.put_stream_timeout(:infinity)
         |> put_resp_content_type("text/event-stream")
         |> put_resp_header("cache-control", "no-cache")
         |> send_chunked(200)

@@ -17,18 +17,18 @@ defmodule Backplane.Api.SkillProtocolHttpIntegrationTest do
     Application.put_env(:backplane_skills, :skill_protocol_v1_enabled, true)
 
     {:ok, server} =
-      Bandit.start_link(
-        plug: Backplane.Api.Endpoint,
+      Gaoxy.HTTP.start_link(
+        plug: {Backplane.Api.Endpoint, []},
         ip: {127, 0, 0, 1},
         port: 0
       )
 
     Process.unlink(server)
-    {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(server)
+    %{local: {:ok, {{127, 0, 0, 1}, port}}} = Gaoxy.info(server, :http)
 
     on_exit(fn ->
       monitor = Process.monitor(server)
-      ThousandIsland.stop(server)
+      Gaoxy.stop(server)
       assert_receive {:DOWN, ^monitor, :process, ^server, _reason}, 1_000
       refute Process.alive?(server)
       :ets.delete(:backplane_settings, @blob_setting)

@@ -140,15 +140,11 @@ defmodule Backplane.Admin.McpInspectorLiveTest do
 
     listener =
       start_supervised!(
-        {Bandit,
-         plug: {HTTPPlug, callback},
-         ip: {127, 0, 0, 1},
-         port: 0,
-         startup_log: false,
-         thousand_island_options: [shutdown_timeout: 0]}
+        {Gaoxy.HTTP,
+         plug: {HTTPPlug, callback}, ip: {127, 0, 0, 1}, port: 0, limits: %{drain_timeout: 1}}
       )
 
-    {:ok, {_, port}} = ThousandIsland.listener_info(listener)
+    %{local: {:ok, {_, port}}} = Gaoxy.info(listener, :http)
 
     {:ok, view, _html} = live(conn, "/mcp/inspector")
 

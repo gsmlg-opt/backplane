@@ -1,57 +1,46 @@
 defmodule Backplane.Audio.Downstream do
-  @moduledoc "Bounded disconnect observation and delivery for the pinned Bandit audio transports."
+  @moduledoc "Bounded disconnect observation and delivery through Gaoxy's public Plug API."
   alias Backplane.Audio.Error
-  alias ThousandIsland.Socket
 
-  @pipeline_limit 65_536
-
-  def start(
-        %{
-          adapter:
-            {Bandit.Adapter, %{transport: %Bandit.HTTP1.Socket{read_state: :read} = transport}}
-        },
-        deadline
-      ) do
-    socket = transport.socket
-
-    with true <- IO.iodata_length(transport.buffer) <= @pipeline_limit,
-         {:ok, previous} <- Socket.getopts(socket, [:send_timeout, :send_timeout_close]),
-         :ok <-
-           Socket.setopts(socket,
-             active: :once,
-             send_timeout: max(deadline - System.monotonic_time(:millisecond), 1),
-             send_timeout_close: true
-           ) do
-      {:ok, %{socket: socket, raw: socket.socket, previous: previous}}
-    else
-      _ -> {:error, cancelled()}
-    end
+  def start(%{adapter: {Gaoxy.PlugAdapter, _}}, deadline) do
+    if deadline > System.monotonic_time(:millisecond),
+      do: {:ok, %{kind: :gaoxy, owner: self(), deadline: deadline}},
+      else: {:error, timeout_error()}
   end
-
-  # HTTP/2 streams have their own process ownership; never change connection options.
-  def start(%{adapter: {Bandit.Adapter, %{transport: %Bandit.HTTP2.Stream{}}}}, _deadline),
-    do: {:ok, %{kind: :http2, raw: nil, owner: self()}}
 
   def start(_, _), do: {:ok, nil}
 
-  def append(conn, bytes) do
-    {module, adapter} = conn.adapter
-    buffer = IO.iodata_to_binary(adapter.transport.buffer)
+  def poll(conn, nil), do: {:ok, conn}
 
-    if byte_size(buffer) + byte_size(bytes) <= @pipeline_limit do
-      transport = %{adapter.transport | buffer: buffer <> bytes}
-      {:ok, %{conn | adapter: {module, %{adapter | transport: transport}}}}
+  def poll(conn, %{kind: :gaoxy, deadline: deadline} = downstream) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      {:error, timeout_error(), conn}
     else
-      {:error,
-       Error.new(413, "Audio pipelined input exceeded limit", nil, "audio_pipeline_too_large")}
+      case Gaoxy.HTTP.poll_connection(conn, 0) do
+        {:pending, next_conn} ->
+          {:ok, next_conn}
+
+        {:more, next_conn} ->
+          poll(next_conn, downstream)
+
+        {:error, :buffer_limit, next_conn} ->
+          {:error,
+           Error.new(
+             413,
+             "Audio pipelined input exceeded limit",
+             nil,
+             "audio_pipeline_too_large"
+           ), next_conn}
+
+        {:error, _reason, next_conn} ->
+          {:error, cancelled(), next_conn}
+      end
     end
   end
 
-  def rearm(%{socket: socket}), do: Socket.setopts(socket, active: :once)
-
   def deliver(nil, _deadline, fun), do: fun.()
 
-  def deliver(%{kind: :http2, owner: owner}, deadline, fun) do
+  def deliver(%{kind: :gaoxy, owner: owner}, deadline, fun) do
     guard =
       spawn(fn ->
         ref = Process.monitor(owner)
@@ -71,60 +60,21 @@ defmodule Backplane.Audio.Downstream do
     end
   end
 
-  def deliver(state, deadline, fun) do
-    owner = self()
-    remaining = max(deadline - System.monotonic_time(:millisecond), 1)
-    Socket.setopts(state.socket, send_timeout: remaining, send_timeout_close: true)
-
-    guard =
-      spawn(fn ->
-        ref = Process.monitor(owner)
-
-        receive do
-          :done -> :ok
-          {:DOWN, ^ref, :process, ^owner, _} -> :ok
-        after
-          remaining -> Socket.close(state.socket)
-        end
-      end)
-
-    try do
-      fun.()
-    after
-      send(guard, :done)
+  def restore(conn, downstream) do
+    case poll(conn, downstream) do
+      {:ok, conn} -> {:ok, conn}
+      {:error, %Error{code: "audio_timeout"}, next_conn} -> {:ok, next_conn}
+      {:error, error, _conn} -> {:error, error}
     end
   end
 
-  def restore(conn, nil), do: {:ok, conn}
-  def restore(conn, %{kind: :http2}), do: {:ok, conn}
+  def abort(%{adapter: {Gaoxy.PlugAdapter, _}} = conn), do: Gaoxy.HTTP.abort(conn)
+  def abort(_conn), do: :ok
 
-  def restore(conn, state) do
-    stop(state)
-    drain(conn, state.raw)
-  end
-
-  def stop(nil), do: :ok
-  def stop(%{kind: :http2}), do: :ok
-
-  def stop(state) do
-    Socket.setopts(state.socket, [active: false] ++ state.previous)
-    :ok
-  end
-
-  defp drain(conn, raw) do
-    receive do
-      {tag, ^raw, bytes} when tag in [:tcp, :ssl] ->
-        with {:ok, conn} <- append(conn, bytes), do: drain(conn, raw)
-
-      {tag, ^raw} when tag in [:tcp_closed, :ssl_closed] ->
-        {:error, cancelled()}
-
-      {tag, ^raw, _} when tag in [:tcp_error, :ssl_error] ->
-        {:error, cancelled()}
-    after
-      0 -> {:ok, conn}
-    end
-  end
+  def stop(_downstream), do: :ok
 
   def cancelled, do: Error.new(499, "Client disconnected", nil, "audio_cancelled")
+
+  defp timeout_error,
+    do: Error.new(504, "Audio request timed out", nil, "audio_timeout", "api_error")
 end

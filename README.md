@@ -306,6 +306,14 @@ mix test
 
 The umbrella includes database-backed tests, LiveView tests, MCP transport tests, managed service tests, LLM proxy tests, Relayixir proxy tests, and DayEx utility tests.
 
+Run the Gaoxy listener and socket acceptance checks without starting the gateway application or database:
+
+```bash
+MIX_ENV=dev mix run --no-start test/gaoxy_endpoint_acceptance.exs
+```
+
+These checks cover real API/admin and development reload sockets, the public WebSocket size limits, and host-agent HTTP bind/shutdown/rebind. Authenticated host-agent and media end-to-end tests still require the test database.
+
 GitHub Actions splits package tests out of the main `Test` matrix:
 
 - `ai-protocol.yml` tests `backplane_ai_protocol` and `backplane_ai_protocol_testkit` in a protocol-only umbrella, without starting host apps or PostgreSQL.

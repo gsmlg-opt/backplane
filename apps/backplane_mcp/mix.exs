@@ -39,7 +39,7 @@ defmodule BackplaneMcp.MixProject do
       {:math_ex, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:phoenix, "~> 1.8"},
-      {:bandit, "~> 1.5"},
+      {:gaoxy_http, "~> 0.12.1"},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
       {:req, "~> 0.5", override: true},

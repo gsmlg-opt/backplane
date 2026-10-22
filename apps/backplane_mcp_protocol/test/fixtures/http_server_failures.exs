@@ -1,5 +1,5 @@
 ExUnit.start(autorun: false, seed: 0)
-Application.ensure_all_started(:bandit)
+{:ok, _applications} = Application.ensure_all_started(:gaoxy_http)
 
 defmodule HTTPServerFailureContract do
   use ExUnit.Case, async: false

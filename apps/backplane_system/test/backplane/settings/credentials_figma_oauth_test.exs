@@ -14,8 +14,8 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
 
   setup do
     TokenCache.clear()
-    {:ok, pid} = Bandit.start_link(plug: __MODULE__.RefreshEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    {:ok, pid} = Gaoxy.HTTP.start_link(plug: {__MODULE__.RefreshEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
     previous = Application.get_env(:backplane, OAuthRefresher, [])
 
     Application.put_env(
@@ -33,7 +33,7 @@ defmodule Backplane.Settings.CredentialsFigmaOAuthTest do
       Application.put_env(:backplane, OAuthRefresher, previous)
 
       try do
-        ThousandIsland.stop(pid)
+        Gaoxy.stop(pid)
       catch
         :exit, _ -> :ok
       end

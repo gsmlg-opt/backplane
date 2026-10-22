@@ -78,20 +78,12 @@ defmodule Relayixir.TestWsSubprotocolRouter do
           "none"
       end
 
-    # Build upgrade options with subprotocol response if one was requested
-    opts =
-      if protocol != "none" do
-        [subprotocol: protocol]
-      else
-        []
-      end
-
     conn
     |> maybe_set_subprotocol(protocol)
     |> Relayixir.Proxy.WebSocket.Adapter.upgrade(
       Relayixir.TestWsSubprotocolUpstream,
       %{protocol: protocol},
-      opts
+      []
     )
     |> halt()
   end

@@ -112,7 +112,7 @@ defmodule Relayixir.Proxy.HttpPlug do
     method = String.upcase(conn.method)
 
     with {:ok, upstream_conn} <- prepare_upstream(upstream),
-         {:ok, upstream_conn} <-
+         {:ok, upstream_conn, conn} <-
            send_request_with_body(
              conn,
              upstream_conn,
@@ -127,6 +127,10 @@ defmodule Relayixir.Proxy.HttpPlug do
         {:error, reason, conn} -> {:error, reason, conn}
       end
     else
+      {:error, upstream_conn, reason, conn} ->
+        HttpClient.close(upstream_conn)
+        {:error, map_error(reason, "send", upstream, path), conn}
+
       {:error, upstream_conn, reason} ->
         HttpClient.close(upstream_conn)
         {:error, map_error(reason, "send", upstream, path), conn}
@@ -139,21 +143,21 @@ defmodule Relayixir.Proxy.HttpPlug do
         # body: opt provided — send it directly (non-streaming).
         with {:ok, upstream_conn, _ref} <-
                HttpClient.send_request(upstream_conn, method, path, headers, body) do
-          {:ok, upstream_conn}
+          {:ok, upstream_conn, conn}
         end
 
       _ ->
         # Default: stream request body from Plug.Conn (original behavior).
         with {:ok, upstream_conn, request_ref} <-
                HttpClient.send_request(upstream_conn, method, path, headers, :stream),
-             {:ok, upstream_conn} <-
+             {:ok, upstream_conn, conn} <-
                stream_request_body(
                  conn,
                  upstream_conn,
                  request_ref,
                  upstream.max_request_body_size
                ) do
-          {:ok, upstream_conn}
+          {:ok, upstream_conn, conn}
         end
     end
   end
@@ -164,16 +168,27 @@ defmodule Relayixir.Proxy.HttpPlug do
 
   defp stream_request_body(conn, upstream_conn, request_ref, max_size, bytes_read) do
     case Plug.Conn.read_body(conn, length: 65_536, read_length: 65_536) do
-      {:ok, chunk, _conn} ->
+      {:ok, chunk, conn} ->
         total = bytes_read + byte_size(chunk)
 
         if max_size != nil && total > max_size do
-          {:error, upstream_conn, :request_too_large}
+          {:error, upstream_conn, :request_too_large, conn}
         else
-          case HttpClient.stream_body_chunk(upstream_conn, request_ref, chunk) do
-            {:ok, upstream_conn} -> HttpClient.stream_body_chunk(upstream_conn, request_ref, :eof)
-            {:halt, upstream_conn} -> {:ok, upstream_conn}
-            error -> error
+          result =
+            case HttpClient.stream_body_chunk(upstream_conn, request_ref, chunk) do
+              {:ok, upstream_conn} ->
+                HttpClient.stream_body_chunk(upstream_conn, request_ref, :eof)
+
+              {:halt, upstream_conn} ->
+                {:ok, upstream_conn}
+
+              error ->
+                error
+            end
+
+          case result do
+            {:ok, upstream_conn} -> {:ok, upstream_conn, conn}
+            {:error, upstream_conn, reason} -> {:error, upstream_conn, reason, conn}
           end
         end
 
@@ -181,22 +196,22 @@ defmodule Relayixir.Proxy.HttpPlug do
         total = bytes_read + byte_size(chunk)
 
         if max_size != nil && total > max_size do
-          {:error, upstream_conn, :request_too_large}
+          {:error, upstream_conn, :request_too_large, conn}
         else
           case HttpClient.stream_body_chunk(upstream_conn, request_ref, chunk) do
             {:ok, upstream_conn} ->
               stream_request_body(conn, upstream_conn, request_ref, max_size, total)
 
             {:halt, upstream_conn} ->
-              {:ok, upstream_conn}
+              {:ok, upstream_conn, conn}
 
-            error ->
-              error
+            {:error, upstream_conn, reason} ->
+              {:error, upstream_conn, reason, conn}
           end
         end
 
       {:error, reason} ->
-        {:error, upstream_conn, reason}
+        {:error, upstream_conn, reason, conn}
     end
   end
 

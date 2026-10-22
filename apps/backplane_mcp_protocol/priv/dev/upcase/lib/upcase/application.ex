@@ -10,7 +10,7 @@ defmodule Upcase.Application do
     children = [
       Backplane.McpProtocol.Server.Registry,
       {Upcase.Server, transport: :streamable_http},
-      {Bandit, plug: Upcase.Router}
+      {Gaoxy.HTTP, plug: {Upcase.Router, []}, port: 4000}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

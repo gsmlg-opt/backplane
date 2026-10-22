@@ -7,8 +7,8 @@ defmodule Relayixir.Proxy.HttpPlugTest do
 
   setup do
     # Start a test upstream server on a random port
-    {:ok, server_pid} = Bandit.start_link(plug: Relayixir.TestUpstream, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+    {:ok, server_pid} = Gaoxy.HTTP.start_link(plug: {Relayixir.TestUpstream, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server_pid, :http)
 
     # Configure routes and upstreams to point to our test server
     RouteConfig.put_routes([
@@ -25,7 +25,7 @@ defmodule Relayixir.Proxy.HttpPlugTest do
 
     on_exit(fn ->
       try do
-        ThousandIsland.stop(server_pid)
+        Gaoxy.stop(server_pid)
       catch
         :exit, _ -> :ok
       end

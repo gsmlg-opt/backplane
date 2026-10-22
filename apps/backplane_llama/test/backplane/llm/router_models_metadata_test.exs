@@ -323,8 +323,8 @@ defmodule Backplane.LLM.RouterModelsMetadataTest do
   end
 
   test "provider-specific Codex models and Responses endpoints remain transparent" do
-    server = start_supervised!({Bandit, plug: CodexUpstream, port: 0})
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    server = start_supervised!({Gaoxy.HTTP, plug: {CodexUpstream, []}, port: 0})
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     backend_base_url = "http://127.0.0.1:#{port}"
     previous_backend = Application.get_env(:backplane, :openai_codex_backend_base_url)
     Application.put_env(:backplane, :openai_codex_backend_base_url, backend_base_url)

@@ -50,8 +50,8 @@ defmodule Backplane.Audio.HTTPTest do
 
   @tag :stream_response_classification
   test "response-aware receiver gets status and headers with bounded ordered fragments" do
-    server = start_supervised!({Bandit, plug: MetadataProvider, port: 0})
-    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+    server = start_supervised!({Gaoxy.HTTP, plug: {MetadataProvider, []}, port: 0})
+    {:ok, {_, port}} = Gaoxy.info(server, :http).local
 
     receiver = fn bytes, %{status: status, headers: headers}, chunks ->
       assert status == 201
@@ -78,8 +78,8 @@ defmodule Backplane.Audio.HTTPTest do
 
   @tag :tmp_dir
   test "streams multipart file with an exact length and native ASR fields", %{tmp_dir: dir} do
-    {:ok, server} = Bandit.start_link(plug: MockProvider, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    {:ok, server} = Gaoxy.HTTP.start_link(plug: {MockProvider, []}, port: 0)
+    {:ok, {_ip, port}} = Gaoxy.info(server, :http).local
     path = Path.join(dir, "clip.flac")
     File.write!(path, "FILE_BYTES")
     deadline = System.monotonic_time(:millisecond) + 10_000
@@ -121,7 +121,7 @@ defmodule Backplane.Audio.HTTPTest do
 
       assert IO.iodata_to_binary(Enum.reverse(chunks)) == ~s({"text":"hello"})
     after
-      ThousandIsland.stop(server)
+      Gaoxy.stop(server)
     end
   end
 end

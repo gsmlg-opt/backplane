@@ -4,15 +4,17 @@ defmodule Backplane.Settings.OAuthClientTest do
   alias Backplane.Settings.OAuthClient
 
   setup do
-    {:ok, pid} = Bandit.start_link(plug: __MODULE__.TokenEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    {:ok, pid} = Gaoxy.HTTP.start_link(plug: {__MODULE__.TokenEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
+
     on_exit(fn ->
       try do
-        ThousandIsland.stop(pid)
+        Gaoxy.stop(pid)
       catch
         :exit, _ -> :ok
       end
     end)
+
     %{port: port}
   end
 

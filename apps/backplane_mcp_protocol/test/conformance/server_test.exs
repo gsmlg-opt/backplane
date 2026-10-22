@@ -3,15 +3,15 @@ Code.require_file("conformance_server.ex", __DIR__)
 defmodule Conformance.ServerTest do
   use ExUnit.Case, async: false
 
-  test "Bandit serves modern discovery over the actual loopback listener" do
+  test "Gaoxy.HTTP serves modern discovery over the actual loopback listener" do
     supervisor = start_supervised!({Conformance.Server, port: 0, name: __MODULE__.Supervisor})
 
     {_id, listener, _, _} =
       Enum.find(Supervisor.which_children(supervisor), fn {_id, _pid, _type, modules} ->
-        modules == [Bandit]
+        modules == [Gaoxy.HTTP]
       end)
 
-    assert {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(listener)
+    assert %{local: {:ok, {{127, 0, 0, 1}, port}}} = Gaoxy.info(listener, :http)
     assert port > 0
 
     response =

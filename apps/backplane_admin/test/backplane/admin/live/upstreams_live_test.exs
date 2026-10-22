@@ -334,19 +334,19 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
 
   defp start_mock_server(mode \\ :legacy) do
     {:ok, bandit} =
-      Bandit.start_link(
+      Gaoxy.HTTP.start_link(
         plug: {Backplane.Test.MockMcpPlug, mode: mode},
         port: 0,
         ip: {127, 0, 0, 1}
       )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(bandit, :http)
     {bandit, port}
   end
 
   defp stop_bandit(bandit) do
     if Process.alive?(bandit) do
-      GenServer.stop(bandit)
+      Gaoxy.stop(bandit)
     end
   catch
     :exit, _ -> :ok

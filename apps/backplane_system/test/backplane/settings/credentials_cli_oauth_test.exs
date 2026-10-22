@@ -15,8 +15,8 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
   setup do
     TokenCache.clear()
 
-    {:ok, pid} = Bandit.start_link(plug: __MODULE__.RefreshEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    {:ok, pid} = Gaoxy.HTTP.start_link(plug: {__MODULE__.RefreshEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
 
     prior = Application.get_env(:backplane, OAuthRefresher, [])
     prior_refresh_test_pid = Application.get_env(:backplane, :oauth_refresh_test_pid)
@@ -38,7 +38,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       end
 
       try do
-        ThousandIsland.stop(pid)
+        Gaoxy.stop(pid)
       catch
         :exit, _ -> :ok
       end

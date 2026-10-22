@@ -46,7 +46,7 @@ defmodule BackplaneSystem.MixProject do
       {:toml, "~> 0.7"},
       {:telemetry_poller, "~> 1.1"},
       {:plug, "~> 1.16"},
-      {:bandit, "~> 1.5", only: :test},
+      {:gaoxy_http, "~> 0.12.1", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]

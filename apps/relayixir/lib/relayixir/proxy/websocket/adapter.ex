@@ -1,10 +1,10 @@
 defmodule Relayixir.Proxy.WebSocket.Adapter do
   @moduledoc """
-  Relayixir-owned WebSock upgrade adapter for Bandit.
+  Relayixir-owned WebSock upgrade adapter for Gaoxy.
 
   This keeps Relayixir's WebSocket server handoff local instead of depending on
-  a generic adapter package. Relayixir only supports Bandit as its inbound
-  server, so the adapter intentionally covers the Bandit and Plug test adapter
+  a generic adapter package. Relayixir only supports Gaoxy as its inbound
+  server, so the adapter intentionally covers the Gaoxy and Plug test adapter
   upgrade contracts.
   """
 
@@ -25,19 +25,17 @@ defmodule Relayixir.Proxy.WebSocket.Adapter do
           {:compress, boolean()}
           | {:timeout, timeout()}
           | {:max_frame_size, non_neg_integer()}
-          | {:max_fragmented_message_size, non_neg_integer()}
+          | {:max_message_size, non_neg_integer()}
           | {:fullsweep_after, non_neg_integer()}
           | {:max_heap_size, :erlang.max_heap_size()}
           | {:validate_text_frames, boolean()}
           | {:deflate_options, keyword()}
           | {:early_validate_upgrade, boolean()}
 
-  @bandit_adapters [Bandit.Adapter, Bandit.HTTP1.Adapter, Bandit.HTTP2.Adapter]
-
   @doc """
-  Upgrades a `Plug.Conn` to a Bandit WebSock connection.
+  Upgrades a `Plug.Conn` to a Gaoxy WebSock connection.
 
-  The returned connection is marked `:upgraded`; Bandit performs the actual
+  The returned connection is marked `:upgraded`; Gaoxy performs the actual
   handshake after the Plug lifecycle returns. Set `:early_validate_upgrade` to
   `false` to skip Relayixir's preflight validation.
   """
@@ -78,7 +76,7 @@ defmodule Relayixir.Proxy.WebSocket.Adapter do
     end
   end
 
-  defp tuple_for(adapter, websock, state, opts) when adapter in @bandit_adapters,
+  defp tuple_for(Gaoxy.PlugAdapter, websock, state, opts),
     do: {websock, state, opts}
 
   defp tuple_for(Plug.Adapters.Test.Conn, websock, state, opts), do: {websock, state, opts}

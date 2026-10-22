@@ -576,20 +576,20 @@ defmodule Backplane.Proxy.PoolTest do
   # Starts a mock MCP server on a random available port
   defp start_mock_server(opts \\ []) do
     {:ok, bandit} =
-      Bandit.start_link(
+      Gaoxy.HTTP.start_link(
         plug: {Backplane.Test.MockMcpPlug, opts},
         port: 0,
         ip: {127, 0, 0, 1}
       )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(bandit, :http)
     {bandit, port}
   end
 
   defp stop_bandit(bandit) do
     if Process.alive?(bandit) do
       try do
-        GenServer.stop(bandit)
+        Gaoxy.stop(bandit)
       catch
         :exit, _ -> :ok
       end

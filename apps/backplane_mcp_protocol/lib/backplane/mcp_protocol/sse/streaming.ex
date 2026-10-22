@@ -48,11 +48,23 @@ if Code.ensure_loaded?(Plug) do
     @spec prepare_connection(conn) :: conn
     def prepare_connection(conn) do
       conn
+      |> stream_timeout()
       |> Plug.Conn.put_resp_content_type("text/event-stream")
       |> Plug.Conn.put_resp_header("cache-control", "no-cache")
       |> Plug.Conn.put_resp_header("x-accel-buffering", "no")
       |> Plug.Conn.send_chunked(200)
     end
+
+    defp stream_timeout(%{adapter: {Gaoxy.PlugAdapter, _}} = conn),
+      do: apply(Gaoxy.HTTP, :put_stream_timeout, [conn, :infinity])
+
+    defp stream_timeout(conn), do: conn
+
+    @doc false
+    def poll_connection(%{adapter: {Gaoxy.PlugAdapter, _}} = conn),
+      do: apply(Gaoxy.HTTP, :poll_connection, [conn, 0])
+
+    def poll_connection(conn), do: {:pending, conn}
 
     @doc """
     Sends a single SSE event.
@@ -84,7 +96,11 @@ if Code.ensure_loaded?(Plug) do
               loop(conn, transport, session_id, event_counter + 1)
 
             {:error, reason} ->
-              Logging.transport_event("sse_keepalive_failed", %{session_id: session_id, reason: reason}, level: :warning)
+              Logging.transport_event(
+                "sse_keepalive_failed",
+                %{session_id: session_id, reason: reason},
+                level: :warning
+              )
 
               conn
           end
@@ -140,6 +156,15 @@ if Code.ensure_loaded?(Plug) do
           )
 
           loop(conn, transport, session_id, event_counter)
+      after
+        100 ->
+          case poll_connection(conn) do
+            {kind, conn} when kind in [:pending, :more] ->
+              loop(conn, transport, session_id, event_counter)
+
+            {:error, _reason, conn} ->
+              conn
+          end
       end
     end
 

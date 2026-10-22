@@ -1,6 +1,6 @@
 defmodule Backplane.HostAgent.HttpServer do
   @moduledoc """
-  Bandit HTTP server hosting `Backplane.HostAgent.MemoryRouter`.
+  Gaoxy HTTP server hosting `Backplane.HostAgent.MemoryRouter`.
 
   Returns a child spec when the config supplies a positive `http_port`,
   otherwise returns `nil` so the caller can skip starting an HTTP server.
@@ -9,7 +9,7 @@ defmodule Backplane.HostAgent.HttpServer do
   alias Backplane.HostAgent.MemoryRouter
 
   @doc """
-  Build a Bandit child spec for the supplied config.
+  Build a Gaoxy child spec for the supplied config.
 
   Returns `nil` if `http_port` is set to `0` or not available, so callers can use the result
   directly in `Enum.reject(&is_nil/1)` style child lists.
@@ -21,12 +21,7 @@ defmodule Backplane.HostAgent.HttpServer do
   def child_spec(%{http_port: port, http_bind: bind}) when is_integer(port) do
     {:ok, ip} = parse_bind(bind)
 
-    {Bandit,
-     plug: MemoryRouter,
-     scheme: :http,
-     ip: ip,
-     port: port,
-     thousand_island_options: [transport_options: [reuseaddr: true]]}
+    Gaoxy.HTTP.child_spec(plug: {MemoryRouter, []}, ip: ip, port: port)
   end
 
   def child_spec(_), do: nil

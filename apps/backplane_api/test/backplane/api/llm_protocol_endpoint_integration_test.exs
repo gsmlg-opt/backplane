@@ -282,11 +282,11 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
         name: __MODULE__.Store
       )
 
-    {:ok, upstream} = Bandit.start_link(plug: OpenAIUpstream, port: 0)
-    {:ok, {_ip, upstream_port}} = ThousandIsland.listener_info(upstream)
+    {:ok, upstream} = Gaoxy.HTTP.start_link(plug: {OpenAIUpstream, []}, port: 0)
+    %{local: {:ok, {_ip, upstream_port}}} = Gaoxy.info(upstream, :http)
 
-    {:ok, endpoint} = Bandit.start_link(plug: Backplane.Api.Endpoint, port: 0)
-    {:ok, {_ip, endpoint_port}} = ThousandIsland.listener_info(endpoint)
+    {:ok, endpoint} = Gaoxy.HTTP.start_link(plug: {Backplane.Api.Endpoint, []}, port: 0)
+    %{local: {:ok, {_ip, endpoint_port}}} = Gaoxy.info(endpoint, :http)
 
     {:ok, _} = Credentials.store("endpoint-provider-key", "sk-endpoint-provider", "llm")
 
@@ -861,7 +861,7 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
   end
 
   defp stop_server(pid) do
-    ThousandIsland.stop(pid)
+    Gaoxy.stop(pid)
   catch
     :exit, _ -> :ok
   end

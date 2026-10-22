@@ -142,7 +142,7 @@ if Code.ensure_loaded?(JOSE) do
       test "returns error on non-200 JWKS response", %{public_jwks: jwks} do
         http_server = HTTPServer.open()
         setup_jwks_http_server(http_server, jwks)
-        # Close Bandit HTTP server to simulate 503
+        # Close Gaoxy.HTTP HTTP server to simulate 503
         HTTPServer.down(http_server)
 
         config = build_config(http_server)

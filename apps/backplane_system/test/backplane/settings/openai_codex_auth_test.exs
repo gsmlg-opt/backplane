@@ -6,8 +6,8 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
   setup do
     TokenCache.clear()
 
-    {:ok, pid} = Bandit.start_link(plug: __MODULE__.MockEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    {:ok, pid} = Gaoxy.HTTP.start_link(plug: {__MODULE__.MockEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
 
     prior_codex = Application.get_env(:backplane, OpenAICodexAuth, [])
     prior_refresher = Application.get_env(:backplane, Backplane.Settings.OAuthRefresher, [])
@@ -34,7 +34,7 @@ defmodule Backplane.Settings.OpenAICodexAuthTest do
       restore_env(prior_env)
 
       try do
-        ThousandIsland.stop(pid)
+        Gaoxy.stop(pid)
       catch
         :exit, _ -> :ok
       end

@@ -19,10 +19,11 @@ defmodule Backplane.Integration.ModernProxyRoundTripTest do
 
     bandit =
       start_supervised!(
-        {Bandit, plug: {ModernUpstreamServer.Plug, observer: self()}, port: 0, ip: {127, 0, 0, 1}}
+        {Gaoxy.HTTP,
+         plug: {ModernUpstreamServer.Plug, observer: self()}, port: 0, ip: {127, 0, 0, 1}}
       )
 
-    assert {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(bandit)
+    assert %{local: {:ok, {{127, 0, 0, 1}, port}}} = Gaoxy.info(bandit, :http)
 
     config = %{
       name: prefix,

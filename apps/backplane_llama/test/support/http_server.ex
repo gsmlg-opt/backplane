@@ -25,17 +25,16 @@ defmodule BackplaneLlama.Test.HTTPServer do
     end)
 
     listener =
-      {Bandit,
+      {Gaoxy.HTTP,
        plug: {__MODULE__, {state, method, path, callback}},
        ip: {127, 0, 0, 1},
        port: 0,
-       startup_log: false,
-       thousand_island_options: [shutdown_timeout: 0]}
+       limits: %{drain_timeout: 1}}
 
     {:ok, listener} =
       Supervisor.start_child(supervisor, Supervisor.child_spec(listener, id: :http))
 
-    {:ok, {_, port}} = ThousandIsland.listener_info(listener)
+    %{local: {:ok, {_, port}}} = Gaoxy.info(listener, :http)
     %{port: port}
   end
 

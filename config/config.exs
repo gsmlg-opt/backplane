@@ -68,12 +68,16 @@ config :backplane_monitor, repo: Backplane.Repo
 
 config :backplane_api, Backplane.Api.Endpoint,
   url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
+  adapter: Gaoxy.PhoenixAdapter,
   http: [
-    websocket_options: [
-      max_frame_size: 640 * 1024,
-      max_fragmented_message_size: 640 * 1024
-    ]
+    protocols: [:http2, :http1],
+    h2c: :prior_knowledge,
+    limits: %{max_bytes: 268_435_456},
+    http_limits: %{
+      request_timeout: 600_000,
+      max_body_bytes: 50_000_000,
+      max_buffer_bytes: 65_536
+    }
   ],
   check_origin: false,
   render_errors: [
@@ -85,7 +89,8 @@ config :backplane_api, Backplane.Api.Endpoint,
 
 config :backplane_admin, Backplane.Admin.Endpoint,
   url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
+  adapter: Gaoxy.PhoenixAdapter,
+  http: [protocols: [:http2, :http1], h2c: :prior_knowledge],
   check_origin: false,
   render_errors: [
     formats: [html: Backplane.Admin.ErrorHTML, json: Backplane.Admin.ErrorJSON],

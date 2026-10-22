@@ -7,12 +7,12 @@ defmodule Relayixir.Proxy.WebSocket.IntegrationTest do
 
   setup do
     # Start a WebSocket echo upstream
-    {:ok, upstream_pid} = Bandit.start_link(plug: Relayixir.TestWsRouter, port: 0)
-    {:ok, {_ip, upstream_port}} = ThousandIsland.listener_info(upstream_pid)
+    {:ok, upstream_pid} = Gaoxy.HTTP.start_link(plug: {Relayixir.TestWsRouter, []}, port: 0)
+    %{local: {:ok, {_ip, upstream_port}}} = Gaoxy.info(upstream_pid, :http)
 
     # Start the proxy router on a random port
-    {:ok, proxy_pid} = Bandit.start_link(plug: Relayixir.Router, port: 0)
-    {:ok, {_ip, proxy_port}} = ThousandIsland.listener_info(proxy_pid)
+    {:ok, proxy_pid} = Gaoxy.HTTP.start_link(plug: {Relayixir.Router, []}, port: 0)
+    %{local: {:ok, {_ip, proxy_port}}} = Gaoxy.info(proxy_pid, :http)
 
     # Configure routes to direct WebSocket traffic to upstream
     RouteConfig.put_routes([
@@ -41,8 +41,8 @@ defmodule Relayixir.Proxy.WebSocket.IntegrationTest do
 
     on_exit(fn ->
       try do
-        ThousandIsland.stop(proxy_pid)
-        ThousandIsland.stop(upstream_pid)
+        Gaoxy.stop(proxy_pid)
+        Gaoxy.stop(upstream_pid)
       catch
         :exit, _ -> :ok
       end

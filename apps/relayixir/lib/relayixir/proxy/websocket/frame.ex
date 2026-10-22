@@ -55,7 +55,7 @@ defmodule Relayixir.Proxy.WebSocket.Frame do
     do: {:close, code, reason}
 
   @doc """
-  Converts a Frame struct to a Bandit/WebSock frame tuple.
+  Converts a Frame struct to a Gaoxy/WebSock frame tuple.
   """
   @spec to_websock(t()) :: tuple()
   def to_websock(%__MODULE__{type: :text, payload: payload}), do: {:text, payload}
@@ -67,7 +67,7 @@ defmodule Relayixir.Proxy.WebSocket.Frame do
     do: {:close, code, reason}
 
   @doc """
-  Converts a Bandit/WebSock incoming frame to a Frame struct.
+  Converts a Gaoxy/WebSock incoming frame to a Frame struct.
   """
   @spec from_websock(tuple()) :: t()
   def from_websock({:text, payload}), do: text(payload)

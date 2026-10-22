@@ -41,7 +41,7 @@ Through the `upcase://examples` resource provider, the server exposes sample tex
 
 ## Transport and Deployment
 
-The server uses StreamableHTTP transport through Bandit, exposing the MCP endpoint at `/mcp`. This HTTP-based approach enables straightforward deployment in containerized environments or behind load balancers. The Plug-based routing keeps the HTTP layer thin, focusing complexity in the MCP protocol implementation where it belongs.
+The server uses StreamableHTTP transport through Gaoxy, exposing the MCP endpoint at `/mcp`. This HTTP-based approach enables straightforward deployment in containerized environments or behind load balancers. The Plug-based routing keeps the HTTP layer thin, focusing complexity in the MCP protocol implementation where it belongs.
 
 ### Running the Server
 

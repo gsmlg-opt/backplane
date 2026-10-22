@@ -1,6 +1,6 @@
 # Relayixir
 
-An Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + HTTP Fetch + HTTP WebSocket.
+An Elixir-native HTTP/WebSocket reverse proxy built on Gaoxy + Plug + HTTP Fetch + HTTP WebSocket.
 
 Upstream source: [gsmlg-dev/relayixir](https://github.com/gsmlg-dev/relayixir)
 
@@ -8,7 +8,7 @@ Upstream source: [gsmlg-dev/relayixir](https://github.com/gsmlg-dev/relayixir)
 
 Relayixir is included as an umbrella app in the Backplane project. It forwards HTTP and WebSocket requests to upstream LLM providers.
 
-Bandit standalone server is disabled (`config :relayixir, start_server: false`). Backplane uses Relayixir as a library — calling `Relayixir.Router` as a Plug or using its proxy modules directly, and configuring routes at runtime via `Relayixir.load/1`.
+Gaoxy standalone server is disabled (`config :relayixir, start_server: false`). Backplane uses Relayixir as a library — calling `Relayixir.Router` as a Plug or using its proxy modules directly, and configuring routes at runtime via `Relayixir.load/1`.
 
 ## Features
 

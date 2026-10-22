@@ -180,7 +180,7 @@ Backplane.Supervisor (apps/backplane) — top-level orchestrator
 └── Styx (background jobs: UsageWriter, UsageRetention)
 
 BackplaneWeb.Application (apps/backplane_web)
-└── BackplaneWeb.Endpoint (Bandit HTTP server)
+└── BackplaneWeb.Endpoint (Gaoxy HTTP server)
 ```
 
 After `Backplane.Supervisor` starts: native tool registration (hub, admin), managed service tool registration, configured/DB upstream connections, Observability v2 writers when `system_settings` enables persistence, and client cache seeding.
@@ -271,7 +271,7 @@ The admin UI is organized into five sections under `/admin`:
 
 ### Key Dependencies
 
-Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Styx (jobs), toml (config), file_system (filesystem watching).
+Plug + Gaoxy (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Styx (jobs), toml (config), file_system (filesystem watching).
 
 ## UI Library
 

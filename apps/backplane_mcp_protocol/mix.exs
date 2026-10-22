@@ -61,7 +61,7 @@ defmodule Backplane.McpProtocol.MixProject do
       {:jose, "~> 1.11.7", optional: true},
       {:mox, "~> 1.2", only: :test},
       {:mimic, "~> 2.0", only: :test},
-      {:bandit, "~> 1.5", only: :test},
+      {:gaoxy_http, "~> 0.12.1", only: :test},
       {:styler, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

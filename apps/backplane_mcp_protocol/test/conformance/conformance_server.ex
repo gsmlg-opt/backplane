@@ -19,8 +19,7 @@ defmodule Conformance.Server do
     allowed_origins = ["http://127.0.0.1:#{port}", "http://localhost:#{port}"]
 
     http =
-      Bandit.child_spec(
-        scheme: :http,
+      Gaoxy.HTTP.child_spec(
         plug:
           {StreamableHTTPPlug,
            server: Conformance.Server.Protocol, allowed_origins: allowed_origins},

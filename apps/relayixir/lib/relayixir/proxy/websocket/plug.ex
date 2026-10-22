@@ -1,6 +1,6 @@
 defmodule Relayixir.Proxy.WebSocket.Plug do
   @moduledoc """
-  Entry point for WebSocket proxy path. Implements WebSock behaviour for Bandit.
+  Entry point for WebSocket proxy path. Implements WebSock behaviour for Gaoxy.
   Validates upgrade request, starts bridge process, and relays frames.
   """
 

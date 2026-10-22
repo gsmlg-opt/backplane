@@ -4,8 +4,8 @@ defmodule Backplane.Settings.OAuthRefresherTest do
   alias Backplane.Settings.OAuthRefresher
 
   setup do
-    {:ok, pid} = Bandit.start_link(plug: __MODULE__.MockEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    {:ok, pid} = Gaoxy.HTTP.start_link(plug: {__MODULE__.MockEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
 
     prior = Application.get_env(:backplane, OAuthRefresher, [])
 
@@ -31,7 +31,7 @@ defmodule Backplane.Settings.OAuthRefresherTest do
       restore_env(prior_env)
 
       try do
-        ThousandIsland.stop(pid)
+        Gaoxy.stop(pid)
       catch
         :exit, _ -> :ok
       end

@@ -31,8 +31,8 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
     {:ok, auth_store} =
       Agent.start_link(fn -> %{} end, name: Backplane.Test.TestLLMUpstream.AuthStore)
 
-    {:ok, server_pid} = Bandit.start_link(plug: Backplane.Test.TestLLMUpstream, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+    {:ok, server_pid} = Gaoxy.HTTP.start_link(plug: {Backplane.Test.TestLLMUpstream, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server_pid, :http)
 
     # Create credential and provider
     {:ok, _} = Credentials.store("test-llm-key", "sk-test-integration", "llm")
@@ -72,7 +72,7 @@ defmodule Backplane.LLM.StreamingIntegrationTest do
       Credentials.delete("test-llm-key")
 
       try do
-        ThousandIsland.stop(server_pid)
+        Gaoxy.stop(server_pid)
       catch
         :exit, _ -> :ok
       end

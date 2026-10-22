@@ -72,9 +72,9 @@ defmodule Relayixir.Proxy.DumpHookTest do
       ])
 
       upstream_server =
-        start_supervised!({Bandit, plug: Relayixir.TestUpstream, scheme: :http, port: 0})
+        start_supervised!({Gaoxy.HTTP, plug: {Relayixir.TestUpstream, []}, port: 0})
 
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(upstream_server)
+      %{local: {:ok, {_ip, port}}} = Gaoxy.info(upstream_server, :http)
 
       Relayixir.Config.UpstreamConfig.put_upstreams(%{
         "test" => %{scheme: :http, host: "localhost", port: port}

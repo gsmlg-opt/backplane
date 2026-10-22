@@ -14,7 +14,7 @@ config :ascii,
 # Configures the endpoint
 config :ascii, AsciiWeb.Endpoint,
   url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
+  adapter: Gaoxy.PhoenixAdapter,
   render_errors: [
     formats: [html: AsciiWeb.ErrorHTML, json: AsciiWeb.ErrorJSON],
     layout: false

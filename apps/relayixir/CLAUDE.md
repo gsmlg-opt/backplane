@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Relayixir is an Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + HTTP Fetch + HTTP WebSocket. Application-layer proxy focused on correctness, streaming safety, and protocol-aware behavior.
+Relayixir is an Elixir-native HTTP/WebSocket reverse proxy built on Gaoxy + Plug + HTTP Fetch + HTTP WebSocket. Application-layer proxy focused on correctness, streaming safety, and protocol-aware behavior.
 
 Upstream source: [gsmlg-dev/relayixir](https://github.com/gsmlg-dev/relayixir)
 
 ### Role in Backplane
 
-Relayixir is an umbrella app within the Backplane project. Bandit standalone server is disabled (`config :relayixir, start_server: false`). Backplane uses Relayixir as a library — calling `Relayixir.Router` as a Plug, using its proxy modules directly, and configuring routes at runtime via `Relayixir.load/1`.
+Relayixir is an umbrella app within the Backplane project. Gaoxy standalone server is disabled (`config :relayixir, start_server: false`). Backplane uses Relayixir as a library — calling `Relayixir.Router` as a Plug, using its proxy modules directly, and configuring routes at runtime via `Relayixir.load/1`.
 
 ## Project Status
 
@@ -37,13 +37,13 @@ mix format --check-formatted       # Check formatting
 
 **HTTP path** (request/response, finite):
 ```
-Client → Bandit → Router → HttpPlug → HttpClient (HTTP.fetch) → Upstream
+Client → Gaoxy → Router → HttpPlug → HttpClient (HTTP.fetch) → Upstream
 ```
 HttpClient exposes header-first raw streams and acknowledges chunks after HttpPlug consumes them. Fetch owns optional HTTP/1 reuse, with `ConnPool` mapping `pool_size` to its bounded idle-pool policy. RequestGuard owns cancellation across the calling process lifetime.
 
 **WebSocket path** (stateful, long-lived, bidirectional):
 ```
-Client → Bandit → Router → WebSocket.Plug → Bridge (GenServer) → UpstreamClient (HTTP.WebSocket) → Upstream
+Client → Gaoxy → Router → WebSocket.Plug → Bridge (GenServer) → UpstreamClient (HTTP.WebSocket) → Upstream
 ```
 Bridge is a supervised GenServer under DynamicSupervisor with `:temporary` restart. It manages an explicit state machine: `:connecting → :open → :closing → :closed`.
 
@@ -58,7 +58,7 @@ Relayixir.Application (one_for_one)
 ├── DynamicSupervisor (BridgeSupervisor) — WebSocket Bridge instances
 ├── Registry (BridgeRegistry) — bridge process discovery
 ├── DynamicSupervisor (RequestSupervisor) — temporary HTTP request guards
-└── Bandit (port 4000, plug: Router) — only when start_server: true
+└── Gaoxy (port 4000, plug: Router) — only when start_server: true
 ```
 
 ### Configuration System
@@ -70,7 +70,7 @@ Routes and upstreams are stored in Agent-based config (memory-only), loaded via 
 - `Proxy.Upstream.resolve(conn)`: merges route + upstream config into an Upstream descriptor struct
 
 ### Key Design Decisions
-- Inbound (Bandit/Plug) and outbound (HTTP Fetch/WebSocket) responsibilities are separated
+- Inbound (Gaoxy/Plug) and outbound (HTTP Fetch/WebSocket) responsibilities are separated
 - Fetch owns sockets and optional pooling via `pool_size` per upstream, capped at sixteen idle sockets per route
 - Request bodies stream through an acknowledged upload with configurable `max_request_body_size`; explicit `body:` sends buffered bytes
 - Responses preserve raw entity bytes and manual redirects; SSE uses Fetch streaming rather than EventSource
@@ -89,10 +89,10 @@ Routes and upstreams are stored in Agent-based config (memory-only), loaded via 
 Centralized in ErrorMapper: route_not_found→404, upstream_connect_failed→502, upstream_timeout→504, upstream_invalid_response→502, response_too_large→502, request_too_large→413, internal_error→500. Post-upgrade WebSocket errors use close frames only (1014 bad gateway, 1011 internal error).
 
 ### Test Patterns
-Tests use real Bandit servers started on port 0. Test upstreams in `test/support/`: `TestUpstream` (HTTP), `TestWsUpstream` (WebSocket), `TestWsSubprotocolUpstream`. Setup pattern:
+Tests use real Gaoxy servers started on port 0. Test upstreams in `test/support/`: `TestUpstream` (HTTP), `TestWsUpstream` (WebSocket), `TestWsSubprotocolUpstream`. Setup pattern:
 ```elixir
-{:ok, pid} = Bandit.start_link(plug: TestUpstream, port: 0)
-{:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+{:ok, pid} = Gaoxy.HTTP.start_link(plug: {TestUpstream, []}, port: 0)
+{:ok, {_ip, port}} = Gaoxy.info(pid, :http).local
 ```
 Requests built via `Plug.Test.conn/3` and dispatched through `Router.call/2`.
 

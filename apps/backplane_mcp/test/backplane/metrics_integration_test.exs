@@ -7,9 +7,11 @@ defmodule Backplane.MetricsIntegrationTest do
 
   test "snapshot maps live upstream status" do
     bandit =
-      start_supervised!({Bandit, plug: Backplane.Test.MockMcpPlug, port: 0, ip: {127, 0, 0, 1}})
+      start_supervised!(
+        {Gaoxy.HTTP, plug: {Backplane.Test.MockMcpPlug, []}, port: 0, ip: {127, 0, 0, 1}}
+      )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(bandit, :http)
 
     config = %{
       name: "metrics-upstream-test",

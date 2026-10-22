@@ -518,13 +518,13 @@ defmodule Backplane.LLM.AccessObservabilityTest do
   end
 
   defp start_upstream(module) do
-    {:ok, pid} = Bandit.start_link(plug: module, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    {:ok, pid} = Gaoxy.HTTP.start_link(plug: {module, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
     {:ok, %{pid: pid, port: port}}
   end
 
   defp stop_upstream(%{pid: pid}) do
-    ThousandIsland.stop(pid)
+    Gaoxy.stop(pid)
   catch
     :exit, _ -> :ok
   end

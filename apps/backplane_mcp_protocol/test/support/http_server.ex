@@ -26,18 +26,14 @@ defmodule Backplane.McpProtocol.Test.HTTPServer do
       Supervisor.start_child(
         supervisor,
         Supervisor.child_spec(
-          {Bandit,
-           plug: {__MODULE__, state},
-           ip: {127, 0, 0, 1},
-           port: 0,
-           startup_log: false,
-           thousand_island_options: [shutdown_timeout: 0]},
+          {Gaoxy.HTTP,
+           plug: {__MODULE__, state}, ip: {127, 0, 0, 1}, port: 0, limits: %{drain_timeout: 1}},
           id: :http,
           restart: :temporary
         )
       )
 
-    {:ok, {_, port}} = ThousandIsland.listener_info(listener)
+    %{local: {:ok, {_, port}}} = Gaoxy.info(listener, :http)
     Map.merge(server, %{listener: listener, port: port})
   end
 

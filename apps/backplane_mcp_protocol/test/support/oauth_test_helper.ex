@@ -3,7 +3,7 @@ defmodule OAuthTestHelper do
   Helpers for testing OAuth 2.1 authorization in Backplane.McpProtocol servers.
 
   Provides token building, mock validator construction, and fixtures for
-  Bandit HTTP server-based HTTP endpoint mocking.
+  Gaoxy.HTTP HTTP server-based HTTP endpoint mocking.
   """
 
   alias Backplane.McpProtocol.Test.HTTPServer
@@ -70,7 +70,7 @@ defmodule OAuthTestHelper do
   end
 
   @doc """
-  Configures a Bandit HTTP server instance to serve an introspection endpoint.
+  Configures a Gaoxy.HTTP HTTP server instance to serve an introspection endpoint.
 
   The `respond` option controls what the endpoint returns:
   - `:active` — returns an active token response (default)
@@ -95,7 +95,7 @@ defmodule OAuthTestHelper do
   end
 
   @doc """
-  Returns the introspection endpoint URL for a Bandit HTTP server instance.
+  Returns the introspection endpoint URL for a Gaoxy.HTTP HTTP server instance.
   """
   def introspection_url(http_server) do
     "http://localhost:#{http_server.port}/introspect"

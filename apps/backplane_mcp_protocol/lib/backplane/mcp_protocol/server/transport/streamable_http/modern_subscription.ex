@@ -25,7 +25,8 @@ if Code.ensure_loaded?(Plug) do
         when is_map(request) and is_map(transport_context) and is_map(opts) do
       with :ok <- require_event_stream(conn),
            {:ok, snapshot} <- snapshot_server(opts),
-           routing_context = Map.put(transport_context, :supported_versions, snapshot.supported_versions),
+           routing_context =
+             Map.put(transport_context, :supported_versions, snapshot.supported_versions),
            {:ok, {:modern, %Profile{} = profile}} <- ProfileRouter.route(request, routing_context),
            :ok <- Headers.validate(profile, request, routing_context),
            {:ok, _request_context} <- RequestContext.build(profile, request, routing_context),
@@ -127,11 +128,22 @@ if Code.ensure_loaded?(Plug) do
     end
 
     defp stream_loop(conn, hub_monitor, subscription_ref) do
+      stream_loop(
+        conn,
+        hub_monitor,
+        subscription_ref,
+        System.monotonic_time(:millisecond) + @keepalive_interval
+      )
+    end
+
+    defp stream_loop(conn, hub_monitor, subscription_ref, keepalive_at) do
       receive do
         {:mcp_subscription, ^subscription_ref, envelope} ->
           case chunk_envelope(conn, envelope) do
             {:ok, conn} ->
-              if complete?(envelope), do: conn, else: stream_loop(conn, hub_monitor, subscription_ref)
+              if complete?(envelope),
+                do: conn,
+                else: stream_loop(conn, hub_monitor, subscription_ref, keepalive_at)
 
             {:error, _reason} ->
               conn
@@ -141,15 +153,25 @@ if Code.ensure_loaded?(Plug) do
           conn
 
         {:plug_conn, :sent} ->
-          stream_loop(conn, hub_monitor, subscription_ref)
+          stream_loop(conn, hub_monitor, subscription_ref, keepalive_at)
 
         _other ->
-          stream_loop(conn, hub_monitor, subscription_ref)
+          stream_loop(conn, hub_monitor, subscription_ref, keepalive_at)
       after
-        @keepalive_interval ->
-          case Plug.Conn.chunk(conn, ": keepalive\n\n") do
-            {:ok, conn} -> stream_loop(conn, hub_monitor, subscription_ref)
-            {:error, _reason} -> conn
+        100 ->
+          case Streaming.poll_connection(conn) do
+            {kind, conn} when kind in [:pending, :more] ->
+              if System.monotonic_time(:millisecond) >= keepalive_at do
+                case Plug.Conn.chunk(conn, ": keepalive\n\n") do
+                  {:ok, conn} -> stream_loop(conn, hub_monitor, subscription_ref)
+                  {:error, _reason} -> conn
+                end
+              else
+                stream_loop(conn, hub_monitor, subscription_ref, keepalive_at)
+              end
+
+            {:error, _reason, conn} ->
+              conn
           end
       end
     end
@@ -194,8 +216,9 @@ if Code.ensure_loaded?(Plug) do
 
     defp modern_http_status(%Error{code: -32_601}), do: 404
 
-    defp modern_http_status(%Error{code: code}) when code in [-32_700, -32_600, -32_602, -32_020, -32_021, -32_022],
-      do: 400
+    defp modern_http_status(%Error{code: code})
+         when code in [-32_700, -32_600, -32_602, -32_020, -32_021, -32_022],
+         do: 400
 
     defp modern_http_status(%Error{}), do: 200
   end

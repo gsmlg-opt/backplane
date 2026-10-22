@@ -215,7 +215,7 @@ Key admin routes (see `apps/backplane_admin/lib/backplane/admin/router.ex`):
 
 ### Key Dependencies
 
-Plug + Bandit (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Styx (jobs), toml (config), file_system (filesystem watching).
+Plug + Gaoxy (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Styx (jobs), toml (config), file_system (filesystem watching).
 
 ## UI Library
 

@@ -254,6 +254,7 @@ defmodule Backplane.LLM.Router do
       {:ok, {:error, %Error{} = error, _, _metadata}, conn} ->
         if conn.state in [:chunked, :file] do
           AccessLifecycle.finish_error(conn.private.audio_observer, error, conn.status)
+          Downstream.abort(conn)
 
           raise Plug.Conn.NotSentError,
             message: "Audio stream failed after response commitment: #{error.code}"
@@ -264,6 +265,7 @@ defmodule Backplane.LLM.Router do
       {:error, %Error{} = error, conn} ->
         if conn.state in [:chunked, :file] do
           AccessLifecycle.finish_error(conn.private.audio_observer, error, conn.status)
+          Downstream.abort(conn)
           raise Plug.Conn.NotSentError, message: "Audio stream interrupted: #{error.code}"
         else
           audio_error(conn, error)
@@ -368,51 +370,31 @@ defmodule Backplane.LLM.Router do
     end
   end
 
-  defp await_audio_loop(%Task{ref: task_ref} = task, conn, deadline, consumer, downstream) do
+  defp await_audio_loop(task, conn, deadline, consumer, downstream) do
+    case Downstream.poll(conn, downstream) do
+      {:ok, next_conn} ->
+        await_audio_receive(task, next_conn, deadline, consumer, downstream)
+
+      {:error, %Error{code: "audio_timeout"} = error, next_conn} ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, error, next_conn}
+
+      {:error, error, next_conn} ->
+        Task.shutdown(task, :brutal_kill)
+        AccessLifecycle.finish_error(next_conn.private.audio_observer, error, next_conn.status)
+        Downstream.abort(next_conn)
+        raise Plug.Conn.NotSentError, message: error.message
+    end
+  end
+
+  defp await_audio_receive(%Task{ref: task_ref} = task, conn, deadline, consumer, downstream) do
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
-    raw = if downstream, do: downstream.raw
-    http2? = match?(%{kind: :http2}, downstream)
 
     if timeout == 0 do
       Task.shutdown(task, :brutal_kill)
       {:error, audio_timeout(), conn}
     else
       receive do
-        {:bandit, {:rst_stream, _code}} when http2? ->
-          Task.shutdown(task, :brutal_kill)
-          audio_disconnected(conn)
-          raise Bandit.TransportError, message: "Audio client reset stream", error: :closed
-
-        {tag, socket}
-        when not is_nil(raw) and socket == raw and tag in [:tcp_closed, :ssl_closed] ->
-          Task.shutdown(task, :brutal_kill)
-          audio_disconnected(conn)
-          raise Plug.Conn.NotSentError, message: "Audio client disconnected"
-
-        {tag, socket, _reason}
-        when not is_nil(raw) and socket == raw and tag in [:tcp_error, :ssl_error] ->
-          Task.shutdown(task, :brutal_kill)
-          audio_disconnected(conn)
-          raise Plug.Conn.NotSentError, message: "Audio client disconnected"
-
-        {tag, socket, bytes} when not is_nil(raw) and socket == raw and tag in [:tcp, :ssl] ->
-          with {:ok, next_conn} <- Downstream.append(conn, bytes),
-               :ok <- Downstream.rearm(downstream) do
-            await_audio_loop(task, next_conn, deadline, consumer, downstream)
-          else
-            _ ->
-              Task.shutdown(task, :brutal_kill)
-
-              AccessLifecycle.finish(
-                conn.private.audio_observer,
-                :error,
-                conn.status,
-                "audio_pipeline_too_large"
-              )
-
-              raise Plug.Conn.NotSentError, message: "Audio pipelined input exceeded limit"
-          end
-
         {:audio_event, pid, ref, event} when pid == task.pid ->
           case Downstream.deliver(downstream, deadline, fn -> consumer.(event, conn) end) do
             {:ok, next_conn} ->
@@ -438,9 +420,8 @@ defmodule Backplane.LLM.Router do
         {:DOWN, ^task_ref, :process, _pid, _reason} ->
           {:error, Error.new(503, "Audio worker failed", nil, "audio_unavailable"), conn}
       after
-        timeout ->
-          Task.shutdown(task, :brutal_kill)
-          {:error, audio_timeout(), conn}
+        min(timeout, 50) ->
+          await_audio_loop(task, conn, deadline, consumer, downstream)
       end
     end
   end

@@ -1,7 +1,7 @@
 defmodule Relayixir.Proxy.WebSocket.Bridge do
   @moduledoc """
   Supervised GenServer managing a proxied WebSocket session.
-  Relays frames bidirectionally between downstream (Bandit handler) and upstream (HTTP.WebSocket).
+  Relays frames bidirectionally between downstream (Gaoxy handler) and upstream (HTTP.WebSocket).
   Implements explicit state machine: :connecting -> :open -> :closing -> :closed.
   """
 

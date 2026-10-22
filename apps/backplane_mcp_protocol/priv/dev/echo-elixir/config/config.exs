@@ -6,7 +6,7 @@ config :echo,
 
 config :echo, EchoWeb.Endpoint,
   url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
+  adapter: Gaoxy.PhoenixAdapter,
   render_errors: [
     formats: [json: EchoWeb.ErrorJSON],
     layout: false

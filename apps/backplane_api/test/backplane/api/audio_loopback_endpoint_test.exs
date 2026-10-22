@@ -244,20 +244,20 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
     native =
       start_supervised!(
-        Supervisor.child_spec({Bandit, plug: {NativeProvider, state}, port: 0}, id: :native)
+        Supervisor.child_spec({Gaoxy.HTTP, plug: {NativeProvider, state}, port: 0}, id: :native)
       )
 
-    {:ok, {_, native_port}} = ThousandIsland.listener_info(native)
+    {:ok, {_, native_port}} = Gaoxy.info(native, :http).local
 
     public =
       start_supervised!(
         Supervisor.child_spec(
-          {Bandit, plug: {PublicEndpoint, owner}, port: 0},
+          {Gaoxy.HTTP, plug: {PublicEndpoint, owner}, port: 0},
           id: :public
         )
       )
 
-    {:ok, {_, port}} = ThousandIsland.listener_info(public)
+    {:ok, {_, port}} = Gaoxy.info(public, :http).local
     credential = "audio-loopback-#{System.unique_integer([:positive])}"
     {:ok, _} = Credentials.store(credential, "native-offline-secret", "llm")
     {:ok, provider} = Provider.create(%{name: credential, credential: credential, enabled: true})

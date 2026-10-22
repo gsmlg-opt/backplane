@@ -142,8 +142,8 @@ defmodule Backplane.HostAgent.ConnectorTest do
         sampler_rate: 0.0
       })
 
-      server = start_supervised!({Bandit, plug: {RejectUpgrade, unquote(status)}, port: 0})
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      server = start_supervised!({Gaoxy.HTTP, plug: {RejectUpgrade, unquote(status)}, port: 0})
+      %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
       MemoryProxy.set_config(config(port))
       started = System.monotonic_time(:millisecond)
 
@@ -175,8 +175,8 @@ defmodule Backplane.HostAgent.ConnectorTest do
 
   @tag :authoritative_connection
   test "real opening timeout retains offline access and cancels the failed socket" do
-    server = start_supervised!({Bandit, plug: SlowUpgrade, port: 0})
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+    server = start_supervised!({Gaoxy.HTTP, plug: {SlowUpgrade, []}, port: 0})
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     MemoryProxy.set_config(config(port))
     assert {:ok, %{"mode" => "offline"}} = MemoryFacade.call("recall", %{}, context())
     assert_receive {:socket_started, socket}

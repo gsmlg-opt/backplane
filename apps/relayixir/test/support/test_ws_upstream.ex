@@ -27,7 +27,7 @@ defmodule Relayixir.TestWsUpstream do
 
   @impl WebSock
   def handle_control({_data, [opcode: :ping]}, state) do
-    # Bandit auto-responds to pings with pongs
+    # Gaoxy.HTTP auto-responds to pings with pongs
     {:ok, state}
   end
 

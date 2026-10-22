@@ -267,8 +267,8 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     credential_name = unique_name("openai-codex-refreshed-claim")
     prior_refresher = Application.get_env(:backplane, OAuthRefresher, [])
 
-    {:ok, refresh_pid} = Bandit.start_link(plug: OpenAIRefreshEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(refresh_pid)
+    {:ok, refresh_pid} = Gaoxy.HTTP.start_link(plug: {OpenAIRefreshEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(refresh_pid, :http)
 
     Application.put_env(:backplane, OAuthRefresher,
       openai_token_url: "http://localhost:#{port}/openai/token"
@@ -278,7 +278,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
       Application.put_env(:backplane, OAuthRefresher, prior_refresher)
 
       try do
-        ThousandIsland.stop(refresh_pid)
+        Gaoxy.stop(refresh_pid)
       catch
         :exit, _ -> :ok
       end
@@ -344,8 +344,8 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     credential_name = unique_name("openai-codex-retry")
     prior_refresher = Application.get_env(:backplane, OAuthRefresher, [])
 
-    {:ok, refresh_pid} = Bandit.start_link(plug: OpenAIRefreshEndpoint, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(refresh_pid)
+    {:ok, refresh_pid} = Gaoxy.HTTP.start_link(plug: {OpenAIRefreshEndpoint, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(refresh_pid, :http)
 
     Application.put_env(:backplane, OAuthRefresher,
       openai_token_url: "http://localhost:#{port}/openai/token"
@@ -361,7 +361,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
       end
 
       try do
-        ThousandIsland.stop(refresh_pid)
+        Gaoxy.stop(refresh_pid)
       catch
         :exit, _ -> :ok
       end

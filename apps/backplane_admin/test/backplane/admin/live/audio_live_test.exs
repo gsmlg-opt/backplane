@@ -907,10 +907,11 @@ defmodule Backplane.Admin.AudioLiveTest do
 
     server =
       start_supervised!(
-        {Bandit, plug: {MockProvider, [owner: self(), audio: File.read!(path)] ++ opts}, port: 0}
+        {Gaoxy.HTTP,
+         plug: {MockProvider, [owner: self(), audio: File.read!(path)] ++ opts}, port: 0}
       )
 
-    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+    %{local: {:ok, {_, port}}} = Gaoxy.info(server, :http)
     {provider, model} = model_fixture("offline-key", "speech")
 
     attrs =

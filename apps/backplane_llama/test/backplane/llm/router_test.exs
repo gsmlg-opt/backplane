@@ -586,8 +586,8 @@ defmodule Backplane.LLM.RouterTest do
 
     test "preserves Moonshot OpenAI extensions and the upstream error body" do
       {:ok, store} = Agent.start_link(fn -> %{} end)
-      {:ok, server_pid} = Bandit.start_link(plug: MoonshotUpstream, port: 0)
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+      {:ok, server_pid} = Gaoxy.HTTP.start_link(plug: {MoonshotUpstream, []}, port: 0)
+      %{local: {:ok, {_ip, port}}} = Gaoxy.info(server_pid, :http)
 
       previous_store = Application.get_env(:backplane, :router_test_moonshot_store)
       Application.put_env(:backplane, :router_test_moonshot_store, store)
@@ -596,7 +596,7 @@ defmodule Backplane.LLM.RouterTest do
         restore_env(:router_test_moonshot_store, previous_store)
 
         try do
-          ThousandIsland.stop(server_pid)
+          Gaoxy.stop(server_pid)
         catch
           :exit, _ -> :ok
         end
@@ -653,8 +653,8 @@ defmodule Backplane.LLM.RouterTest do
 
     test "preserves Moonshot Anthropic extensions and the upstream error body" do
       {:ok, store} = Agent.start_link(fn -> %{} end)
-      {:ok, server_pid} = Bandit.start_link(plug: MoonshotUpstream, port: 0)
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+      {:ok, server_pid} = Gaoxy.HTTP.start_link(plug: {MoonshotUpstream, []}, port: 0)
+      %{local: {:ok, {_ip, port}}} = Gaoxy.info(server_pid, :http)
 
       previous_store = Application.get_env(:backplane, :router_test_moonshot_store)
       Application.put_env(:backplane, :router_test_moonshot_store, store)
@@ -663,7 +663,7 @@ defmodule Backplane.LLM.RouterTest do
         restore_env(:router_test_moonshot_store, previous_store)
 
         try do
-          ThousandIsland.stop(server_pid)
+          Gaoxy.stop(server_pid)
         catch
           :exit, _ -> :ok
         end

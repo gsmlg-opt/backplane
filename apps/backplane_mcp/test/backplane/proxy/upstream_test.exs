@@ -693,7 +693,7 @@ defmodule Backplane.Proxy.UpstreamTest do
 
   describe "HTTP transport" do
     test "connects and sends initialize" do
-      # Start a mock HTTP server using Bandit
+      # Start a mock HTTP server using Gaoxy.HTTP
       {:ok, _} = start_mock_http_server(4201)
 
       config = %{
@@ -1645,14 +1645,14 @@ defmodule Backplane.Proxy.UpstreamTest do
 
   defp start_http_fixture(opts) do
     {:ok, bandit} =
-      Bandit.start_link(
+      Gaoxy.HTTP.start_link(
         plug: {Backplane.Test.MockMcpPlug, Keyword.put(opts, :owner, self())},
         port: 0,
         ip: {127, 0, 0, 1}
       )
 
     on_exit(fn -> stop_bandit(bandit) end)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(bandit, :http)
     "http://127.0.0.1:#{port}/custom/mcp"
   end
 
@@ -1788,40 +1788,40 @@ defmodule Backplane.Proxy.UpstreamTest do
   # Mock HTTP MCP Server
 
   defp start_mock_sse_http_server(port) do
-    Bandit.start_link(
-      plug: Backplane.Test.MockSseHttpPlug,
+    Gaoxy.HTTP.start_link(
+      plug: {Backplane.Test.MockSseHttpPlug, []},
       port: port,
       ip: {127, 0, 0, 1}
     )
   end
 
   defp start_mock_http_server(port) do
-    Bandit.start_link(
-      plug: Backplane.Test.MockMcpPlug,
+    Gaoxy.HTTP.start_link(
+      plug: {Backplane.Test.MockMcpPlug, []},
       port: port,
       ip: {127, 0, 0, 1}
     )
   end
 
   defp start_mock_http_error_server(port) do
-    Bandit.start_link(
-      plug: MockMcpErrorPlug,
+    Gaoxy.HTTP.start_link(
+      plug: {MockMcpErrorPlug, []},
       port: port,
       ip: {127, 0, 0, 1}
     )
   end
 
   defp start_mock_non200_server(port) do
-    Bandit.start_link(
-      plug: MockMcpNon200Plug,
+    Gaoxy.HTTP.start_link(
+      plug: {MockMcpNon200Plug, []},
       port: port,
       ip: {127, 0, 0, 1}
     )
   end
 
   defp start_mock_malformed_server(port) do
-    Bandit.start_link(
-      plug: MockMcpMalformedPlug,
+    Gaoxy.HTTP.start_link(
+      plug: {MockMcpMalformedPlug, []},
       port: port,
       ip: {127, 0, 0, 1}
     )
@@ -1829,18 +1829,18 @@ defmodule Backplane.Proxy.UpstreamTest do
 
   defp start_mock_invalid_initialize_server(initialize_result) do
     {:ok, bandit} =
-      Bandit.start_link(
+      Gaoxy.HTTP.start_link(
         plug: {MockMcpInvalidInitializePlug, initialize_result: initialize_result},
         port: 0,
         ip: {127, 0, 0, 1}
       )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(bandit, :http)
     {:ok, bandit, port}
   end
 
   defp stop_bandit(bandit) do
-    if Process.alive?(bandit), do: GenServer.stop(bandit)
+    if Process.alive?(bandit), do: Gaoxy.stop(bandit)
   catch
     :exit, _ -> :ok
   end

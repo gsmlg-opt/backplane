@@ -384,14 +384,14 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
       :ok = StubClient.subscribe()
 
       {:ok, server} =
-        Bandit.start_link(plug: {Endpoint, owner: self()}, ip: {127, 0, 0, 1}, port: 0)
+        Gaoxy.HTTP.start_link(plug: {Endpoint, owner: self()}, ip: {127, 0, 0, 1}, port: 0)
 
       Process.unlink(server)
-      {:ok, {{127, 0, 0, 1}, port}} = ThousandIsland.listener_info(server)
+      %{local: {:ok, {{127, 0, 0, 1}, port}}} = Gaoxy.info(server, :http)
 
       on_exit(fn ->
         Process.flag(:trap_exit, previous_trap_exit)
-        if Process.alive?(server), do: ThousandIsland.stop(server)
+        if Process.alive?(server), do: Gaoxy.stop(server)
       end)
 
       %{client: client, port: port}

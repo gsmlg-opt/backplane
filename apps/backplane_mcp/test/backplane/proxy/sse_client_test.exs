@@ -8,10 +8,11 @@ defmodule Backplane.Proxy.SSEClientTest do
 
     bandit =
       start_supervised!(
-        {Bandit, plug: Backplane.Test.MockSseMcpServer.Router, port: 0, ip: {127, 0, 0, 1}}
+        {Gaoxy.HTTP,
+         plug: {Backplane.Test.MockSseMcpServer.Router, []}, port: 0, ip: {127, 0, 0, 1}}
       )
 
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(bandit, :http)
 
     %{port: port}
   end

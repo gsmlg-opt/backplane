@@ -17,16 +17,16 @@ defmodule Backplane.Api.EndpointTest do
     assert Keyword.fetch!(websocket_options, :max_frame_size) == 640 * 1024
   end
 
-  test "bounds fragmented WebSocket messages at the Bandit adapter" do
+  test "retains finite request, upload and HTTP/2 limits at the Gaoxy adapter" do
     endpoint_config = Application.fetch_env!(:backplane_api, Backplane.Api.Endpoint)
-
-    websocket_options =
-      endpoint_config
-      |> Keyword.fetch!(:http)
-      |> Keyword.fetch!(:websocket_options)
-
-    assert Keyword.fetch!(websocket_options, :max_frame_size) == 640 * 1024
-    assert Keyword.fetch!(websocket_options, :max_fragmented_message_size) == 640 * 1024
+    assert Keyword.fetch!(endpoint_config, :adapter) == Gaoxy.PhoenixAdapter
+    http = Keyword.fetch!(endpoint_config, :http)
+    assert Keyword.fetch!(http, :http_limits).request_timeout == 600_000
+    assert Keyword.fetch!(http, :http_limits).max_buffer_bytes == 65_537
+    assert Keyword.fetch!(http, :http_limits).max_body_bytes >= 25_000_000 + 65_536
+    assert Keyword.fetch!(http, :limits).max_bytes >= 4 * 640 * 1024
+    assert Keyword.fetch!(http, :protocols) == [:http2, :http1]
+    assert Keyword.fetch!(http, :h2c) == :prior_knowledge
   end
 
   test "dev code reloader does not reload the standalone host agent app" do

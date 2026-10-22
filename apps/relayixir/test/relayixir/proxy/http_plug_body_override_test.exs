@@ -79,12 +79,12 @@ defmodule Relayixir.Proxy.HttpPlugBodyOverrideTest do
   end
 
   setup do
-    {:ok, server_pid} = Bandit.start_link(plug: Relayixir.TestUpstream, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+    {:ok, server_pid} = Gaoxy.HTTP.start_link(plug: {Relayixir.TestUpstream, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server_pid, :http)
 
     on_exit(fn ->
       try do
-        ThousandIsland.stop(server_pid)
+        Gaoxy.stop(server_pid)
       catch
         :exit, _ -> :ok
       end

@@ -11,6 +11,7 @@ defmodule Backplane.Transport.McpPlug do
   alias Backplane.MCP.{Info, ModernServer, SSE}
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.ModernRequest
   alias Backplane.MCP.AccessEvent
+
   alias Backplane.Transport.{
     CacheBodyReader,
     McpEraRouter,
@@ -70,6 +71,7 @@ defmodule Backplane.Transport.McpPlug do
       method_not_allowed(conn)
     else
       conn
+      |> unbounded_sse()
       |> put_resp_content_type("text/event-stream")
       |> put_resp_header("cache-control", "no-cache")
       |> put_resp_header("connection", "keep-alive")
@@ -167,20 +169,35 @@ defmodule Backplane.Transport.McpPlug do
     Phoenix.PubSub.unsubscribe(Backplane.PubSub, "mcp:notifications")
   end
 
-  defp sse_loop(conn) do
+  defp unbounded_sse(%{adapter: {Gaoxy.PlugAdapter, _}} = conn),
+    do: Gaoxy.HTTP.put_stream_timeout(conn, :infinity)
+
+  defp unbounded_sse(conn), do: conn
+
+  defp sse_loop(conn, keepalive_at \\ System.monotonic_time(:millisecond) + @sse_keepalive_ms) do
     receive do
       {:mcp_notification, notification} ->
         chunk_data = SSE.encode("message", notification)
 
         case Plug.Conn.chunk(conn, chunk_data) do
-          {:ok, conn} -> sse_loop(conn)
+          {:ok, conn} -> sse_loop(conn, keepalive_at)
           {:error, _} -> conn
         end
     after
-      @sse_keepalive_ms ->
-        case Plug.Conn.chunk(conn, ": keepalive\n\n") do
-          {:ok, conn} -> sse_loop(conn)
-          {:error, _} -> conn
+      100 ->
+        case Backplane.McpProtocol.SSE.Streaming.poll_connection(conn) do
+          {kind, conn} when kind in [:pending, :more] ->
+            if System.monotonic_time(:millisecond) >= keepalive_at do
+              case Plug.Conn.chunk(conn, ": keepalive\n\n") do
+                {:ok, conn} -> sse_loop(conn)
+                {:error, _} -> conn
+              end
+            else
+              sse_loop(conn, keepalive_at)
+            end
+
+          {:error, _reason, conn} ->
+            conn
         end
     end
   end

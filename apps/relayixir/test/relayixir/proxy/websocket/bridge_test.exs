@@ -9,8 +9,8 @@ defmodule Relayixir.Proxy.WebSocket.BridgeTest do
 
   setup do
     # Start a WebSocket echo upstream
-    {:ok, server_pid} = Bandit.start_link(plug: Relayixir.TestWsRouter, port: 0)
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server_pid)
+    {:ok, server_pid} = Gaoxy.HTTP.start_link(plug: {Relayixir.TestWsRouter, []}, port: 0)
+    %{local: {:ok, {_ip, port}}} = Gaoxy.info(server_pid, :http)
 
     upstream = %Upstream{
       scheme: :http,
@@ -26,7 +26,7 @@ defmodule Relayixir.Proxy.WebSocket.BridgeTest do
 
     on_exit(fn ->
       try do
-        ThousandIsland.stop(server_pid)
+        Gaoxy.stop(server_pid)
       catch
         :exit, _ -> :ok
       end

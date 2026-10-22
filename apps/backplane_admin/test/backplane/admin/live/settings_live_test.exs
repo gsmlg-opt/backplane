@@ -280,12 +280,12 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       OAuthStateStore.clear()
 
       {:ok, pid} =
-        Bandit.start_link(
-          plug: Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint,
+        Gaoxy.HTTP.start_link(
+          plug: {Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint, []},
           port: 0
         )
 
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
 
       prior = Application.get_env(:backplane, Backplane.Settings.OpenAICodexAuth, [])
       prior_refresher = Application.get_env(:backplane, Backplane.Settings.OAuthRefresher, [])
@@ -321,7 +321,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
         Application.put_env(:backplane, Backplane.Settings.OAuthRefresher, prior_refresher)
 
         try do
-          ThousandIsland.stop(pid)
+          Gaoxy.stop(pid)
         catch
           :exit, _ -> :ok
         end
@@ -660,6 +660,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
     test "registers a Figma client when explicit credentials are absent", %{conn: conn} do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
+
       prior_env =
         snapshot_env(
           ~w[FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD]
@@ -734,6 +735,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
     test "rejects partially configured Figma credentials", %{conn: conn} do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
+
       prior_env =
         snapshot_env(
           ~w[FIGMA_MCP_CLIENT_ID FIGMA_MCP_CLIENT_SECRET FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD]

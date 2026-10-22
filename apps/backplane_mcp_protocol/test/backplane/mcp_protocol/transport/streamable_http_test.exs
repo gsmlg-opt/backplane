@@ -589,7 +589,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
       state = :sys.get_state(transport)
       assert state.session_id == session_id
 
+      monitor = Process.monitor(transport)
       StreamableHTTP.shutdown(transport)
+      assert_receive {:DOWN, ^monitor, :process, ^transport, :normal}, 5_000
+      assert :ok = HTTPServer.verify!(http_server)
       StubClient.clear_messages()
     end
 

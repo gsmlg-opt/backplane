@@ -1,6 +1,6 @@
 defmodule Relayixir do
   @moduledoc """
-  Elixir-native HTTP/WebSocket reverse proxy built on Bandit + Plug + HTTP Fetch/WebSocket.
+  Elixir-native HTTP/WebSocket reverse proxy built on Gaoxy + Plug + HTTP Fetch/WebSocket.
 
   ## Runtime Configuration
 
