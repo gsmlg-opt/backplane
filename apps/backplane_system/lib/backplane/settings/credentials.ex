@@ -350,25 +350,44 @@ defmodule Backplane.Settings.Credentials do
   end
 
   @doc """
-  Get the last 4 characters of a credential's decrypted value as a hint.
-  Returns `"...xxxx"` format, or `"..."` if the value is too short. For
-  OAuth-blob credentials, returns the last 4 of the live access_token.
+  Get the last 4 characters of a credential's stored value as a hint.
+  Returns `"...xxxx"` format, or `"..."` if no stored value is available or
+  the value is too short. OAuth hints use the stored access token without
+  exchanging, refreshing, or persisting tokens.
   """
   @spec fetch_hint(String.t()) :: String.t()
   def fetch_hint(name) do
-    case fetch(name) do
-      {:ok, plaintext} when byte_size(plaintext) >= 4 ->
+    case stored_hint_value(Vault.get(name)) do
+      {:ok, plaintext} when is_binary(plaintext) and byte_size(plaintext) >= 4 ->
         "..." <> String.slice(plaintext, -4..-1//1)
 
-      {:ok, _} ->
-        "..."
-
-      {:error, _} ->
+      _ ->
         "..."
     end
   end
 
   # --- Private helpers ---
+
+  defp stored_hint_value(%Credential{metadata: %{"auth_type" => "oauth2_client_credentials"}}),
+    do: {:error, :no_stored_access_token}
+
+  defp stored_hint_value(%Credential{metadata: %{"auth_type" => auth_type}} = credential)
+       when is_map_key(@device_oauth_vendors, auth_type) do
+    with {:ok, blob} <- Encryption.decrypt(credential.encrypted_value),
+         {:ok, parsed} <- Jason.decode(blob) do
+      case parsed do
+        %{"claudeAiOauth" => %{"accessToken" => token}} -> {:ok, token}
+        %{"tokens" => %{"access_token" => token}} -> {:ok, token}
+        %{"access_token" => token} -> {:ok, token}
+        _ -> {:error, :missing_access_token}
+      end
+    end
+  end
+
+  defp stored_hint_value(%Credential{encrypted_value: encrypted}),
+    do: Encryption.decrypt(encrypted)
+
+  defp stored_hint_value(nil), do: {:error, :not_found}
 
   defp extra_headers_for("anthropic_oauth", _meta), do: [{"anthropic-beta", "oauth-2025-04-20"}]
 

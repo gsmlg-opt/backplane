@@ -794,7 +794,7 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
       assert "...1234" = Credentials.fetch_hint("ant-hint")
     end
 
-    test "returns last 4 of access_token for openai_oauth (after refresh)" do
+    test "returns last 4 of the stored OpenAI access token without refreshing" do
       json =
         Jason.encode!(%{
           "OPENAI_API_KEY" => nil,
@@ -808,8 +808,9 @@ defmodule Backplane.Settings.CredentialsCliOAuthTest do
 
       {:ok, _} = Credentials.import_cli_auth("oai-hint", json)
 
-      # fetch_hint triggers a refresh; last 4 of "oai-REFRESHED" is "SHED"
-      assert "...SHED" = Credentials.fetch_hint("oai-hint")
+      assert "...-OLD" = Credentials.fetch_hint("oai-hint")
+      assert decrypt_credential_json("oai-hint")["tokens"]["access_token"] == "oai-OLD"
+      assert TokenCache.get("oai-hint") == :miss
     end
   end
 
