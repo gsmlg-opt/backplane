@@ -18,9 +18,9 @@ defmodule Backplane.Test.MockSseMcpServer do
         |> put_resp_header("cache-control", "no-cache")
         |> send_chunked(200)
 
-      {:ok, conn} = chunk(conn, "event: endpoint\ndata: #{endpoint_url}\n\n")
-
       Backplane.Test.MockSseMcpServer.register_session(session_id, self())
+
+      {:ok, conn} = chunk(conn, "event: endpoint\ndata: #{endpoint_url}\n\n")
 
       sse_loop(conn)
     end

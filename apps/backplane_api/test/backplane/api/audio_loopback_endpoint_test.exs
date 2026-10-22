@@ -252,7 +252,11 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     public =
       start_supervised!(
         Supervisor.child_spec(
-          {Gaoxy.HTTP, plug: {PublicEndpoint, owner}, port: 0},
+          {Gaoxy.HTTP,
+           plug: {PublicEndpoint, owner},
+           port: 0,
+           protocols: [:http2, :http1],
+           h2c: :prior_knowledge},
           id: :public
         )
       )
