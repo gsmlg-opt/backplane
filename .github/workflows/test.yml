@@ -122,8 +122,8 @@ jobs:
       - name: Prepare test database
         run: mix ecto.setup
 
-      - name: Compile selected app
-        run: mix "do" --app ${{ matrix.app }} loadpaths + compile.all
+      - name: Compile umbrella applications
+        run: mix compile
 
       - name: Install admin asset dependencies
         if: matrix.app == 'backplane_admin'

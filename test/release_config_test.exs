@@ -191,9 +191,10 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   @tag :tmp_dir
-  test "release and test commands retain root overrides and select only admin", %{
-    tmp_dir: directory
-  } do
+  test "release refresh selects admin while umbrella compilation preserves selected tests and root overrides",
+       %{
+         tmp_dir: directory
+       } do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
 
     refresh =
@@ -337,11 +338,13 @@ defmodule Backplane.ReleaseConfigTest do
     test_workflow = YamlElixir.read_from_file!(".github/workflows/test.yml")
     test_steps = test_workflow["jobs"]["test"]["steps"]
 
-    compile = Enum.find(test_steps, &(&1["name"] == "Compile selected app"))
+    compile = Enum.find(test_steps, &(&1["name"] == "Compile umbrella applications"))
     tests = Enum.find(test_steps, &(&1["name"] == "Run tests"))
     selected_app = "${{ matrix.app }}"
     test_env = List.keyreplace(env, "MIX_ENV", 0, {"MIX_ENV", "test"})
     test_env = [{"FIXTURE_COMPILED_SHA", "current-sha"} | test_env]
+
+    File.rm!(Path.join(directory, "apps/unrelated_app/lib/unrelated.ex"))
 
     {output, status} =
       System.cmd("bash", ["-c", String.replace(compile["run"], selected_app, "backplane_admin")],
@@ -351,9 +354,11 @@ defmodule Backplane.ReleaseConfigTest do
       )
 
     assert status == 0, output
-    refute File.dir?(Path.join(directory, "_build/test/lib/unrelated_app/ebin"))
 
-    File.rm!(Path.join(directory, "apps/unrelated_app/lib/unrelated.ex"))
+    assert File.regular?(
+             Path.join(directory, "_build/test/lib/unrelated_app/ebin/unrelated_app.app")
+           )
+
     unrelated_tests = Path.join(directory, "apps/unrelated_app/test")
     File.mkdir_p!(unrelated_tests)
 
@@ -417,7 +422,7 @@ defmodule Backplane.ReleaseConfigTest do
   test "test workflow cleans stale sibling application metadata without discarding dependency builds" do
     steps = YamlElixir.read_from_file!(".github/workflows/test.yml")["jobs"]["test"]["steps"]
     clean = Enum.find(steps, &(&1["name"] == "Clean cached umbrella applications"))
-    compile = Enum.find(steps, &(&1["name"] == "Compile selected app"))
+    compile = Enum.find(steps, &(&1["name"] == "Compile umbrella applications"))
     tests = Enum.find(steps, &(&1["name"] == "Run tests"))
 
     directory =
@@ -461,6 +466,18 @@ defmodule Backplane.ReleaseConfigTest do
     end
     """)
 
+    write.("apps/sibling/lib/entity.ex", """
+    defmodule Sibling.Entity do
+      defstruct value: 2
+    end
+    """)
+
+    write.("apps/selected/lib/current.ex", """
+    defmodule Selected.Current do
+      def entity, do: %Sibling.Entity{}
+    end
+    """)
+
     write.("apps/selected/test/test_helper.exs", "ExUnit.start()")
 
     write.("apps/selected/test/selected_test.exs", """
@@ -469,12 +486,13 @@ defmodule Backplane.ReleaseConfigTest do
       test "starts with current sibling metadata" do
         assert Application.spec(:sibling, :vsn) == ~c"2.0.0"
         refute :removed_transport in Application.spec(:sibling, :applications)
+        assert Selected.Current.entity().value == 2
       end
     end
     """)
 
     write.("apps/unrelated/test/test_helper.exs", ~s(raise "unrelated tests must not run"))
-    env = [{"MIX_ENV", "test"}, {"ERL_FLAGS", "+S 2:2"}]
+    env = [{"MIX_ENV", "test"}, {"ERL_FLAGS", "+S 2:2"}, {"MIX_BUILD_PATH", nil}]
 
     run = fn command ->
       System.cmd("bash", ["-c", command], cd: directory, stderr_to_stdout: true, env: env)
@@ -502,10 +520,9 @@ defmodule Backplane.ReleaseConfigTest do
     File.rm_rf!(Path.join(directory, "apps/removed_transport"))
     File.rm_rf!(Path.join(directory, "_build/test/lib/removed_transport"))
 
-    write.(
-      "apps/sibling/lib/current.ex",
-      "defmodule Sibling.Current do\n  def value, do: 2\nend\n"
-    )
+    # A restored build can be newer than checkout sources, including changed Mixfiles.
+    File.touch!(sibling_mix, {{2000, 1, 1}, {0, 0, 0}})
+    File.touch!(sibling_app, System.os_time(:second) + 60)
 
     compile_command = String.replace(compile["run"], "${{ matrix.app }}", "selected")
     test_command = String.replace(tests["run"], "${{ matrix.app }}", "selected")
@@ -515,15 +532,18 @@ defmodule Backplane.ReleaseConfigTest do
     assert File.read!(sibling_app) == stale_app
     {output, status} = run.(test_command)
     assert status != 0, output
-    assert output =~ "Generated sibling app"
     assert output =~ "Could not start application removed_transport"
-    refute File.read!(sibling_app) =~ "removed_transport"
+    assert File.read!(sibling_app) == stale_app
 
-    # Restore the obsolete cache and run the workflow's remediation in a fresh VM.
-    File.write!(sibling_app, stale_app)
+    # Clean all umbrella builds, then prove the struct dependency compiles from cold.
     {output, status} = run.(clean["run"])
     assert status == 0, output
     refute File.exists?(sibling_app)
+
+    refute File.exists?(
+             Path.join(directory, "_build/test/lib/selected/ebin/Elixir.Selected.Current.beam")
+           )
+
     assert File.read!(external_app) == external_build
     assert File.regular?(Path.join(directory, "deps/external_fixture/mix.exs"))
     {output, status} = run.(compile_command)

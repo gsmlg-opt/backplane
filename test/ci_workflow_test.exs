@@ -226,7 +226,7 @@ defmodule Backplane.CIWorkflowTest do
       "Install dependencies",
       "Start PostgreSQL 17 with pgvector",
       "Prepare test database",
-      "Compile selected app",
+      "Compile umbrella applications",
       "Install admin asset dependencies",
       "Run tests"
     ])
@@ -259,8 +259,8 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(job, %{"name" => "Prepare test database", "run" => "mix ecto.setup"})
 
     assert_step(job, %{
-      "name" => "Compile selected app",
-      "run" => ~s(mix "do" --app ${{ matrix.app }} loadpaths + compile.all)
+      "name" => "Compile umbrella applications",
+      "run" => "mix compile"
     })
 
     assert_step(job, %{
