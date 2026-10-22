@@ -135,9 +135,9 @@ defmodule Backplane.CIWorkflowTest do
 
   @test_run ~S"""
   if [ "${{ matrix.app }}" = "backplane_memory" ]; then
-    mix "do" --app backplane_memory cmd mix test --exclude memory_qualification_runtime
+    mix "do" --app backplane_memory test --exclude memory_qualification_runtime
   else
-    mix "do" --app ${{ matrix.app }} cmd mix test
+    mix "do" --app ${{ matrix.app }} test
   fi
   """
 
@@ -254,7 +254,7 @@ defmodule Backplane.CIWorkflowTest do
 
     assert_step(job, %{
       "name" => "Compile selected app",
-      "run" => ~s(mix "do" --app ${{ matrix.app }} cmd mix compile)
+      "run" => ~s(mix "do" --app ${{ matrix.app }} loadpaths + compile.all)
     })
 
     assert_step(job, %{

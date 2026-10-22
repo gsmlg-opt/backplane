@@ -191,7 +191,7 @@ defmodule Backplane.ReleaseConfigTest do
   end
 
   @tag :tmp_dir
-  test "metadata refresh retains root overrides and recompiles only admin", %{
+  test "release and test commands retain root overrides and select only admin", %{
     tmp_dir: directory
   } do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
@@ -333,6 +333,70 @@ defmodule Backplane.ReleaseConfigTest do
 
     assert status == 0, output
     assert String.trim(output) == "current_adapter"
+
+    test_workflow = YamlElixir.read_from_file!(".github/workflows/test.yml")
+    test_steps = test_workflow["jobs"]["test"]["steps"]
+
+    compile = Enum.find(test_steps, &(&1["name"] == "Compile selected app"))
+    tests = Enum.find(test_steps, &(&1["name"] == "Run tests"))
+    selected_app = "${{ matrix.app }}"
+    test_env = List.keyreplace(env, "MIX_ENV", 0, {"MIX_ENV", "test"})
+    test_env = [{"FIXTURE_COMPILED_SHA", "current-sha"} | test_env]
+
+    {output, status} =
+      System.cmd("bash", ["-c", String.replace(compile["run"], selected_app, "backplane_admin")],
+        cd: directory,
+        stderr_to_stdout: true,
+        env: test_env
+      )
+
+    assert status == 0, output
+    refute File.dir?(Path.join(directory, "_build/test/lib/unrelated_app/ebin"))
+
+    File.rm!(Path.join(directory, "apps/unrelated_app/lib/unrelated.ex"))
+    unrelated_tests = Path.join(directory, "apps/unrelated_app/test")
+    File.mkdir_p!(unrelated_tests)
+
+    File.write!(
+      Path.join(unrelated_tests, "test_helper.exs"),
+      ~s(raise "unrelated umbrella app tests must not run")
+    )
+
+    test_directory = Path.join(directory, "apps/backplane_admin/test")
+    File.mkdir_p!(test_directory)
+    File.write!(Path.join(test_directory, "test_helper.exs"), "ExUnit.start()")
+    test_file = Path.join(test_directory, "adapter_test.exs")
+
+    File.write!(test_file, """
+    defmodule AdapterTest do
+      use ExUnit.Case
+      test "uses the root adapter", do: assert(ReleaseMetadataFixture.adapter() == "current_adapter")
+    end
+    """)
+
+    test_command = String.replace(tests["run"], selected_app, "backplane_admin")
+
+    {output, status} =
+      System.cmd("bash", ["-c", test_command],
+        cd: directory,
+        stderr_to_stdout: true,
+        env: test_env
+      )
+
+    assert status == 0, output
+    assert output =~ "1 test, 0 failures"
+
+    File.write!(test_file, String.replace(File.read!(test_file), "==", "!="))
+
+    {output, status} =
+      System.cmd("bash", ["-c", test_command],
+        cd: directory,
+        stderr_to_stdout: true,
+        env: test_env
+      )
+
+    assert status != 0, "test command ignored assertion failure: #{output}"
+    assert output =~ "1 test, 1 failure"
 
     File.write!(
       Path.join(directory, "apps/backplane_admin/lib/metadata.ex"),
@@ -686,7 +750,7 @@ defmodule Backplane.ReleaseConfigTest do
     workflow = File.read!(".github/workflows/test.yml")
 
     assert workflow =~
-             ~s(mix "do" --app backplane_memory cmd mix test --exclude memory_qualification_runtime)
+             ~s(mix "do" --app backplane_memory test --exclude memory_qualification_runtime)
   end
 
   test "release qualification pins one main-branch SHA and validates semver before builds" do
