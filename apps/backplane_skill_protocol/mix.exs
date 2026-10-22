@@ -1,7 +1,7 @@
 defmodule BackplaneSkillProtocol.MixProject do
   use Mix.Project
 
-  @version "1.10.28"
+  @version "1.10.29"
 
   def project do
     [

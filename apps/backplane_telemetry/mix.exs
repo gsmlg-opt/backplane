@@ -4,7 +4,7 @@ defmodule BackplaneTelemetry.MixProject do
   def project do
     [
       app: :backplane_telemetry,
-      version: "1.10.28",
+      version: "1.10.29",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
