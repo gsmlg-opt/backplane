@@ -1,3 +1,4 @@
+# credo:disable-for-this-file Credo.Check.Warning.WrongTestFilename
 if Mix.env() != :dev, do: raise("run with MIX_ENV=dev mix run --no-start")
 
 ExUnit.start(autorun: false)
