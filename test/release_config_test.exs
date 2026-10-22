@@ -414,6 +414,129 @@ defmodule Backplane.ReleaseConfigTest do
     assert output =~ "admin metadata compile failure"
   end
 
+  test "test workflow cleans stale sibling application metadata without discarding dependency builds" do
+    steps = YamlElixir.read_from_file!(".github/workflows/test.yml")["jobs"]["test"]["steps"]
+    clean = Enum.find(steps, &(&1["name"] == "Clean cached umbrella applications"))
+    compile = Enum.find(steps, &(&1["name"] == "Compile selected app"))
+    tests = Enum.find(steps, &(&1["name"] == "Run tests"))
+
+    directory =
+      Path.join(System.tmp_dir!(), "backplane-stale-app-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
+
+    write = fn path, contents ->
+      path = Path.join(directory, path)
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, contents)
+    end
+
+    write.("mix.exs", """
+    defmodule StaleAppsFixture.MixProject do
+      use Mix.Project
+      def project, do: [apps_path: "apps"]
+    end
+    """)
+
+    for {app, dependencies} <- [
+          {"removed_transport", "[]"},
+          {"sibling", "[{:removed_transport, in_umbrella: true}]"},
+          {"selected",
+           ~s([{:sibling, in_umbrella: true}, {:external_fixture, path: "../../deps/external_fixture"}])},
+          {"unrelated", "[]"}
+        ] do
+      write.("apps/#{app}/mix.exs", """
+      defmodule #{Macro.camelize(app)}.MixProject do
+        use Mix.Project
+        def project, do: [app: :#{app}, version: "1.0.0", build_path: "../../_build", deps: #{dependencies}]
+      end
+      """)
+    end
+
+    write.("deps/external_fixture/mix.exs", """
+    defmodule ExternalFixture.MixProject do
+      use Mix.Project
+      def project, do: [app: :external_fixture, version: "1.0.0"]
+    end
+    """)
+
+    write.("apps/selected/test/test_helper.exs", "ExUnit.start()")
+
+    write.("apps/selected/test/selected_test.exs", """
+    defmodule SelectedTest do
+      use ExUnit.Case
+      test "starts with current sibling metadata" do
+        assert Application.spec(:sibling, :vsn) == ~c"2.0.0"
+        refute :removed_transport in Application.spec(:sibling, :applications)
+      end
+    end
+    """)
+
+    write.("apps/unrelated/test/test_helper.exs", ~s(raise "unrelated tests must not run"))
+    env = [{"MIX_ENV", "test"}, {"ERL_FLAGS", "+S 2:2"}]
+
+    run = fn command ->
+      System.cmd("bash", ["-c", command], cd: directory, stderr_to_stdout: true, env: env)
+    end
+
+    {output, status} = run.("mix compile")
+    assert status == 0, output
+    sibling_app = Path.join(directory, "_build/test/lib/sibling/ebin/sibling.app")
+    stale_app = File.read!(sibling_app)
+
+    external_app =
+      Path.join(directory, "_build/test/lib/external_fixture/ebin/external_fixture.app")
+
+    external_build = File.read!(external_app)
+    sibling_mix = Path.join(directory, "apps/sibling/mix.exs")
+
+    File.write!(
+      sibling_mix,
+      sibling_mix
+      |> File.read!()
+      |> String.replace("1.0.0", "2.0.0")
+      |> String.replace("[{:removed_transport, in_umbrella: true}]", "[]")
+    )
+
+    File.rm_rf!(Path.join(directory, "apps/removed_transport"))
+    File.rm_rf!(Path.join(directory, "_build/test/lib/removed_transport"))
+
+    write.(
+      "apps/sibling/lib/current.ex",
+      "defmodule Sibling.Current do\n  def value, do: 2\nend\n"
+    )
+
+    compile_command = String.replace(compile["run"], "${{ matrix.app }}", "selected")
+    test_command = String.replace(tests["run"], "${{ matrix.app }}", "selected")
+
+    {output, status} = run.(compile_command)
+    assert status == 0, output
+    assert File.read!(sibling_app) == stale_app
+    {output, status} = run.(test_command)
+    assert status != 0, output
+    assert output =~ "Generated sibling app"
+    assert output =~ "Could not start application removed_transport"
+    refute File.read!(sibling_app) =~ "removed_transport"
+
+    # Restore the obsolete cache and run the workflow's remediation in a fresh VM.
+    File.write!(sibling_app, stale_app)
+    {output, status} = run.(clean["run"])
+    assert status == 0, output
+    refute File.exists?(sibling_app)
+    assert File.read!(external_app) == external_build
+    assert File.regular?(Path.join(directory, "deps/external_fixture/mix.exs"))
+    {output, status} = run.(compile_command)
+    assert status == 0, output
+    {output, status} = run.(test_command)
+    assert status == 0, output
+    assert output =~ "1 test, 0 failures"
+    refute output =~ "unrelated tests must not run"
+    refute File.read!(sibling_app) =~ "removed_transport"
+    assert File.read!(sibling_app) =~ ~s({vsn,"2.0.0"})
+    refute File.exists?(Path.join(directory, "_build/test/lib/removed_transport"))
+  end
+
   test "compiled release metadata verification rejects stale builds despite runtime overrides" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
 

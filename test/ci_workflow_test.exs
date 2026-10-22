@@ -222,6 +222,7 @@ defmodule Backplane.CIWorkflowTest do
       "Install audio media tools",
       "Install pinned OpenAI SDK for audio conformance",
       "Restore dependencies cache",
+      "Clean cached umbrella applications",
       "Install dependencies",
       "Start PostgreSQL 17 with pgvector",
       "Prepare test database",
@@ -231,6 +232,11 @@ defmodule Backplane.CIWorkflowTest do
     ])
 
     assert_common_steps(job, true, @test_cache_key, @test_cache_prefix)
+
+    assert_step(job, %{
+      "name" => "Clean cached umbrella applications",
+      "run" => "mix clean --only test"
+    })
 
     assert_step(job, %{
       "name" => "Install audio media tools",

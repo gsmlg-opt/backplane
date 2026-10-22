@@ -91,6 +91,11 @@ jobs:
           key: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-app-${{ matrix.app }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-otp-${{ env.OTP_VERSION }}-elixir-${{ env.ELIXIR_VERSION }}-rust-${{ env.RUST_VERSION }}-mix-${{ env.MIX_ENV }}-job-${{ github.job }}-app-${{ matrix.app }}-
 
+      # Restored app manifests can retain dependencies removed by a migration.
+      # Rebuild umbrella apps while preserving compiled external/native deps.
+      - name: Clean cached umbrella applications
+        run: mix clean --only test
+
       - name: Install dependencies
         run: mix deps.get
 
