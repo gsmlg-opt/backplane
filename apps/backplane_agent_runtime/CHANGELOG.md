@@ -11,6 +11,11 @@
 
 ## Unreleased
 
+- Bind host-owned collaboration names and schemas to explicit MultiAgent actions
+  without replacing admitted tool identities (#74). Fingerprinted grants prevent
+  descriptor or action changes from reusing authorization; custom calls share
+  the existing supervised child admission, mailbox, wait and cancellation paths.
+
 - Return invocation-bound rejection proof for collaboration refusals before
   effects, including V2 execution capacity. Real parent Conversations receive a
   structured tool error and continue without reserving another child (#72).

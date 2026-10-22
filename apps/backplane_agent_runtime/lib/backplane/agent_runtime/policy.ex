@@ -16,7 +16,8 @@ defmodule Backplane.AgentRuntime.Policy do
       when is_map(authority) and is_map(descriptor) and is_map(invocation) do
     with {:ok, _} <- validate_tool(descriptor),
          {:ok, caller} <- validate_caller(authority, invocation),
-         {:ok, _} <- validate_grant(authority, descriptor, invocation) do
+         {:ok, _} <- validate_grant(authority, descriptor, invocation),
+         :ok <- Backplane.AgentRuntime.Codex.CollaborationBinding.authorize(authority, descriptor) do
       {:ok, %{status: :authorized, caller: caller, descriptor: descriptor}}
     else
       {:error, %Error{} = error} ->

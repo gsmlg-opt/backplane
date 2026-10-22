@@ -33,7 +33,8 @@ defmodule Backplane.AgentRuntime.Approval do
          {:ok, tool_revision} <-
            operation_field(approval, decision, :tool_revision, "tool revision"),
          {:ok, arguments_digest} <-
-           operation_field(approval, decision, :arguments_digest, "arguments digest") do
+           operation_field(approval, decision, :arguments_digest, "arguments digest"),
+         :ok <- binding_matches(approval, decision) do
       if is_integer(tool_revision) and is_binary(arguments_digest) do
         {:ok, tool_name}
       else
@@ -41,6 +42,13 @@ defmodule Backplane.AgentRuntime.Approval do
          Backplane.AgentRuntime.Error.new(:forbidden, "approval operation revision is invalid")}
       end
     end
+  end
+
+  defp binding_matches(approval, decision) do
+    if Map.get(approval, :collaboration_binding) == Map.get(decision, :collaboration_binding),
+      do: :ok,
+      else:
+        {:error, Backplane.AgentRuntime.Error.new(:forbidden, "approval binding does not match")}
   end
 
   defp operation_field(approval, decision, key, label) do

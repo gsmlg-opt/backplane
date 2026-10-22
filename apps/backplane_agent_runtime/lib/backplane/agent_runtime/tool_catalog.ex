@@ -406,6 +406,8 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
       |> Map.put(:grants, names)
       |> narrow_revision_map(:tool_revisions, names)
       |> narrow_revision_map("tool_revisions", names)
+      |> narrow_revision_map(:tool_bindings, names)
+      |> narrow_revision_map("tool_bindings", names)
 
     {:ok, authority}
   end

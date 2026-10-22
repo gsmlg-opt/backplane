@@ -8,7 +8,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   use GenServer
 
-  alias Backplane.AgentRuntime.{Conversation, Error, Goal, ToolEffects}
+  alias Backplane.AgentRuntime.{Conversation, Error, Goal, InputSchema, Policy, ToolEffects}
+  alias Backplane.AgentRuntime.Codex.{CollaborationBinding, Contract, Session}
 
   alias Backplane.AgentRuntime.Execution
 
@@ -37,6 +38,54 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def unsubscribe(runtime, observer \\ self()),
     do: GenServer.call(runtime, {:unsubscribe, observer})
 
+  @doc """
+  Binds a normalized host contract to one collaboration action in this manager.
+
+  The returned contract does not grant authority. Hosts must explicitly grant its
+  name, revision and `collaboration_binding.fingerprint` in `tool_bindings`.
+  Argument/result conversion belongs to its trusted registered backend.
+  """
+  @spec bind_contract(pid(), atom(), map()) :: {:ok, Contract.t()} | {:error, Error.t()}
+  def bind_contract(runtime, action, attrs) when is_pid(runtime) do
+    with true <-
+           action in CollaborationBinding.actions() or validation("invalid collaboration action"),
+         {:ok, contract} <- Contract.new(attrs),
+         true <-
+           not is_nil(contract.backend) or
+             validation("bound collaboration requires a host backend") do
+      GenServer.call(runtime, {:bind_contract, action, contract})
+    end
+  end
+
+  @doc """
+  Executes an admitted host invocation using its immutable collaboration binding.
+
+  The original invocation and arguments remain the effect/refusal identity;
+  `canonical_arguments` are separately converted by the trusted host adapter.
+  """
+  @spec call_bound(map(), map()) :: ToolEffects.result()
+  def call_bound(%{backend_context: %{runtime: runtime}} = operation, canonical_arguments)
+      when is_pid(runtime) do
+    with {:ok, owner} <- bound_owner(operation) do
+      GenServer.call(runtime, {:bound_tool, operation, canonical_arguments, owner}, :infinity)
+    else
+      {:error, %Error{} = error} -> ToolEffects.reject(operation, error)
+    end
+  catch
+    :exit, reason ->
+      {:error,
+       Error.new(:execution_failure, "collaboration runtime is unavailable", cause: reason)}
+  end
+
+  def call_bound(_operation, _arguments),
+    do: {:error, Error.new(:unsupported_capability, "collaboration runtime is unavailable")}
+
+  defp bound_owner(%{backend_context: %{session_binding: binding}} = operation),
+    do: Session.validate(binding, operation)
+
+  defp bound_owner(operation),
+    do: {:ok, get_in(operation, [:backend_context, :resource_owner])}
+
   @spec contracts(:v1 | :v2, pid(), keyword()) :: [map()]
   def contracts(profile, runtime, opts \\ []) when profile in [:v1, :v2] and is_pid(runtime) do
     runtime_wait = GenServer.call(runtime, :wait_options)
@@ -54,6 +103,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   @spec call(map()) :: ToolEffects.result()
+  def call(%{collaboration_binding: _} = operation),
+    do:
+      ToolEffects.reject(
+        operation,
+        Error.new(:forbidden, "bound collaboration requires call_bound/2")
+      )
+
   def call(%{backend_context: %{runtime: runtime, profile: profile}} = operation)
       when is_pid(runtime) and profile in [:v1, :v2] do
     GenServer.call(runtime, {:tool, profile, operation}, :infinity)
@@ -96,6 +152,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          child_options: child_options,
          admission_receipt: admission_receipt,
          admissions: %{},
+         bound_contracts: %{},
+         triggering_invocation: nil,
          child_supervisor: supervisor,
          subscriber: Keyword.get(opts, :subscriber),
          manager_id: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false),
@@ -233,17 +291,60 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
      ]), state}
   end
 
+  def handle_call({:bind_contract, action, contract}, _from, state) do
+    contract =
+      Map.update!(
+        contract,
+        :backend_context,
+        &Map.merge(&1, %{runtime: self(), family: :collaboration})
+      )
+
+    binding = CollaborationBinding.new(state.manager_id, action, Contract.descriptor(contract))
+    contract = Map.put(contract, :collaboration_binding, binding)
+    descriptor = Contract.descriptor(contract)
+
+    {:reply, {:ok, contract},
+     %{
+       state
+       | bound_contracts: Map.put_new(state.bound_contracts, binding.fingerprint, descriptor)
+     }}
+  end
+
+  def handle_call({:bound_tool, operation, arguments, owner}, from, state) do
+    with {:ok, descriptor} <- bound_descriptor(operation, state),
+         {:ok, caller} <- authenticate_bound(operation, owner, descriptor, state),
+         {:ok, _original} <- bound_original_arguments(descriptor, operation),
+         {:ok, arguments} <-
+           InputSchema.validate(
+             bound_schema(descriptor.collaboration_binding.action, state),
+             arguments
+           ) do
+      next =
+        state
+        |> update_parent(caller)
+        |> Map.put(:triggering_invocation, invocation_summary(operation))
+
+      action = bound_action(descriptor.collaboration_binding.action)
+
+      case dispatch(action, arguments, from, caller, next) do
+        {:reply, {:refused, error}, next} ->
+          rejection_reply(operation, error, %{next | triggering_invocation: nil})
+
+        {:reply, result, next} ->
+          {:reply, result, %{next | triggering_invocation: nil}}
+
+        {:noreply, next} ->
+          {:noreply, %{next | triggering_invocation: nil}}
+      end
+    else
+      {:error, %Error{} = error} -> rejection_reply(operation, error, state)
+    end
+  end
+
   def handle_call({:tool, profile, operation}, from, state) do
-    with {:ok, caller} <- authenticate(operation, state),
+    with {:ok, caller} <- authenticate_native(profile, operation, state),
          {:ok, action} <- action(profile, operation.tool_name) do
-      state =
-        if caller.name == state.parent_name,
-          do: %{
-            state
-            | parent_authority: caller.authority,
-              root_goal_context: Map.take(caller, [:goal, :goal_binding])
-          },
-          else: state
+      state = update_parent(state, caller)
 
       case dispatch(action, operation.arguments, from, caller, state) do
         {:reply, {:refused, error}, next} -> rejection_reply(operation, error, next)
@@ -252,6 +353,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     else
       {:error, %Error{} = error} -> rejection_reply(operation, error, state)
     end
+  end
+
+  defp update_parent(state, caller) do
+    if caller.name == state.parent_name,
+      do: %{
+        state
+        | parent_authority: caller.authority,
+          root_goal_context: Map.take(caller, [:goal, :goal_binding])
+      },
+      else: state
   end
 
   # Only explicit refusal branches may assert non-dispatch. Legacy direct callers
@@ -1482,6 +1593,235 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp transfer_snapshot(_),
     do: {:error, Error.new(:unknown_outcome, "child state is unavailable")}
 
+  defp bound_descriptor(operation, state) do
+    with %{manager_id: manager, fingerprint: fingerprint} <- operation[:collaboration_binding],
+         true <- manager == state.manager_id,
+         %{} = descriptor <- state.bound_contracts[fingerprint],
+         true <- operation.collaboration_binding == descriptor.collaboration_binding,
+         true <- operation[:tool_name] == descriptor.tool_name,
+         true <- operation[:tool_revision] == descriptor.tool_revision do
+      {:ok, descriptor}
+    else
+      _ -> {:error, Error.new(:forbidden, "unknown collaboration binding")}
+    end
+  end
+
+  defp authenticate_native(profile, operation, state) do
+    name = state.run_index[operation[:run_id]]
+
+    inherited =
+      if name,
+        do: [state.agents[name].authority | bound_ancestor_authorities(state, name)],
+        else: []
+
+    authorities =
+      [
+        operation[:effective_authority],
+        state.parent_authority,
+        state.session_authority | inherited
+      ]
+
+    bound_policy =
+      Enum.any?(authorities, fn authority ->
+        bindings = if is_map(authority), do: Map.get(authority, :tool_bindings), else: nil
+        is_map(bindings) and map_size(bindings) > 0
+      end)
+
+    cond do
+      Map.has_key?(operation, :collaboration_binding) ->
+        {:error, Error.new(:forbidden, "bound collaboration requires call_bound/2")}
+
+      bound_policy ->
+        wait = %{
+          default: state.default_wait_timeout_ms,
+          min: state.min_wait_timeout_ms,
+          max: state.max_wait_timeout_ms
+        }
+
+        contracts =
+          case profile do
+            :v1 -> v1_contracts(self(), wait)
+            :v2 -> v2_contracts(self(), wait)
+          end
+
+        attrs =
+          Enum.find(
+            contracts,
+            &(Contract.canonical_name(&1.namespace, &1.name) == operation[:tool_name])
+          )
+
+        with {:ok, contract} <- Contract.new(attrs),
+             {:ok, owner} <- bound_owner(operation) do
+          authenticate_bound(operation, owner, Contract.descriptor(contract), state)
+        end
+
+      true ->
+        authenticate(operation, state)
+    end
+  end
+
+  defp authenticate_bound(operation, owner, descriptor, state) do
+    checked = put_in(operation, [:backend_context, :resource_owner], owner)
+
+    with {:ok, caller} <- authenticate(checked, state),
+         true <-
+           operation[:incarnation] == caller.incarnation or
+             {:error, Error.new(:forbidden, "stale collaboration incarnation")},
+         %{} = effective <- operation[:effective_authority],
+         true <-
+           (operation[:caller] == effective[:caller] and
+              effective[:caller] == bound_current_authority(state, caller)[:caller]) or
+             {:error,
+              Error.new(:forbidden, "bound collaboration caller does not match authority")},
+         true <-
+           bound_grants_subset?(effective, bound_current_authority(state, caller)) or
+             {:error,
+              Error.new(:forbidden, "bound collaboration authority exceeds current grants")},
+         :ok <- bound_session_owner(state, caller, owner, operation),
+         {:ok, _} <- Policy.authorize_tool(effective, descriptor, operation),
+         {:ok, _} <- Policy.authorize_tool(caller.authority, descriptor, operation),
+         :ok <- bound_parent_authority(state, descriptor, operation) do
+      {:ok, %{caller | authority: bound_delegation_authority(effective, state, caller)}}
+    else
+      nil -> {:error, Error.new(:forbidden, "bound collaboration requires invocation authority")}
+      {:error, %Error{}} = error -> error
+      _ -> {:error, Error.new(:forbidden, "bound collaboration authority is invalid")}
+    end
+  end
+
+  defp bound_current_authority(state, caller) do
+    if caller.name == state.parent_name,
+      do: state.parent_authority,
+      else: state.agents[caller.name].authority
+  end
+
+  defp bound_grants_subset?(effective, current) do
+    grants = Map.get(effective, :grants, [])
+    allowed = Map.get(current, :grants, [])
+
+    is_list(grants) and is_list(allowed) and
+      MapSet.subset?(MapSet.new(grants), MapSet.new(allowed))
+  end
+
+  defp bound_delegation_authority(effective, state, caller) do
+    authorities =
+      [
+        bound_current_authority(state, caller),
+        state.parent_authority,
+        state.session_authority
+        | bound_ancestor_authorities(state, state.run_index[caller.run_id])
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    names =
+      Enum.filter(effective.grants, fn name ->
+        Enum.all?(authorities, fn authority ->
+          name in Map.get(authority, :grants, []) and
+            tool_revision(authority, name) == tool_revision(effective, name) and
+            Map.get(Map.get(authority, :tool_bindings, %{}), name) ==
+              Map.get(Map.get(effective, :tool_bindings, %{}), name)
+        end)
+      end)
+
+    effective
+    |> Map.put(:grants, names)
+    |> Map.update(:tool_bindings, %{}, &Map.take(&1, names))
+    |> Map.update(:tool_revisions, %{}, &Map.take(&1, names))
+  end
+
+  defp bound_session_owner(%{session_owner: nil}, _caller, _owner, _operation),
+    do: {:error, Error.new(:forbidden, "bound collaboration requires a session owner")}
+
+  defp bound_session_owner(state, caller, owner, operation) do
+    valid =
+      case owner do
+        %{owner_id: id, incarnation: incarnation} ->
+          state.session_owner == {id, incarnation}
+
+        nil when caller.name != state.parent_name ->
+          state.agents[caller.name].pid ==
+            get_in(operation, [:backend_context, :resource_owner_pid])
+
+        _ ->
+          false
+      end
+
+    if valid,
+      do: :ok,
+      else: {:error, Error.new(:forbidden, "bound collaboration session owner does not match")}
+  end
+
+  defp bound_parent_authority(state, descriptor, operation) do
+    authorities =
+      [
+        state.parent_authority,
+        state.session_authority
+        | bound_ancestor_authorities(state, state.run_index[operation.run_id])
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    Enum.reduce_while(authorities, :ok, fn authority, :ok ->
+      case Policy.authorize_tool(
+             Map.put(authority, :run_id, operation.run_id),
+             descriptor,
+             operation
+           ) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp bound_ancestor_authorities(_state, nil), do: []
+
+  defp bound_ancestor_authorities(state, name) do
+    parent = state.agents[name].parent
+
+    if parent == state.parent_name,
+      do: [],
+      else: [state.agents[parent].authority | bound_ancestor_authorities(state, parent)]
+  end
+
+  defp bound_original_arguments(%{codex_input_kind: :custom}, %{arguments: input})
+       when is_binary(input),
+       do: {:ok, input}
+
+  defp bound_original_arguments(descriptor, operation),
+    do: InputSchema.validate(descriptor.schema, Map.get(operation, :arguments))
+
+  defp bound_action(:spawn), do: {:spawn, :v2}
+  defp bound_action(:followup), do: :followup_v2
+  defp bound_action(:wait), do: :wait_v2
+  defp bound_action(action), do: action
+
+  defp bound_schema(:spawn, _state), do: spawn_schema(:v2)
+
+  defp bound_schema(action, _state) when action in [:message, :followup],
+    do: target_message_schema()
+
+  defp bound_schema(:interrupt, _state), do: required_string_schema("target")
+  defp bound_schema(:list, _state), do: optional_string_schema("path_prefix")
+
+  defp bound_schema(:wait, state) do
+    wait_schema(:v2, %{
+      default: state.default_wait_timeout_ms,
+      min: state.min_wait_timeout_ms,
+      max: state.max_wait_timeout_ms
+    })
+  end
+
+  defp invocation_summary(operation) do
+    operation
+    |> Map.take(
+      ~w(run_id incarnation step_id attempt_id invocation_id tool_name tool_revision catalog_revision tool_call_id turn_id collaboration_binding)a
+    )
+    |> Map.put(
+      :arguments_digest,
+      :crypto.hash(:sha256, :erlang.term_to_binary(operation.arguments, [:deterministic]))
+      |> Base.encode16(case: :lower)
+    )
+  end
+
   defp authenticate(%{run_id: run_id} = operation, state) do
     cond do
       state.session_closed ->
@@ -1616,10 +1956,31 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     parent_grants = MapSet.new(Map.get(parent_authority, :grants, []))
     child_grants = MapSet.new(Map.get(child, :grants, []))
 
-    if MapSet.subset?(child_grants, parent_grants),
+    bindings = Map.get(parent_authority, :tool_bindings, %{})
+    child_bindings = Map.get(child, :tool_bindings, %{})
+
+    inherited =
+      Enum.all?(child_grants, fn name ->
+        case {Map.get(bindings, name), Map.get(child_bindings, name)} do
+          {nil, nil} ->
+            true
+
+          {binding, binding} when not is_nil(binding) ->
+            tool_revision(child, name) == tool_revision(parent_authority, name)
+
+          _ ->
+            false
+        end
+      end)
+
+    if MapSet.subset?(child_grants, parent_grants) and inherited,
       do: :ok,
       else: {:error, Error.new(:forbidden, "child authority exceeds parent grants")}
   end
+
+  defp tool_revision(authority, name),
+    do:
+      Map.get(Map.get(authority, :tool_revisions, %{}), name, Map.get(authority, :tool_revision))
 
   defp prepare_activation(state, profile, replacing \\ nil)
 
@@ -2219,6 +2580,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     sequence = state.sequence + 1
     run_id = child_run_id(attrs.name, sequence)
 
+    attrs =
+      if state.triggering_invocation,
+        do: Map.put(attrs, :triggering_invocation, state.triggering_invocation),
+        else: attrs
+
     attempt =
       Map.merge(attrs, %{
         attempt_id: state.manager_id <> ":" <> Integer.to_string(sequence),
@@ -2244,7 +2610,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp admission_child(attempt),
-    do: Map.take(attempt, [:attempt_id, :agent_id, :name, :run_id, :incarnation, :activation])
+    do:
+      Map.take(attempt, [
+        :attempt_id,
+        :agent_id,
+        :name,
+        :run_id,
+        :incarnation,
+        :activation,
+        :triggering_invocation
+      ])
 
   defp record_admission(state, attempt, status, error) do
     latest = Map.fetch!(state.admissions, attempt.attempt_id)

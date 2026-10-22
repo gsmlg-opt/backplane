@@ -241,6 +241,7 @@ defmodule Backplane.AgentRuntime.Execution do
         |> Map.put(:arguments, arguments)
         |> Map.put(:caller, authorization.caller)
         |> Map.put(:effective_authority, authority_summary(authority, opts))
+        |> Map.merge(Map.take(descriptor, [:collaboration_binding]))
 
       intent = %{type: :tool, status: :started, operation: operation, reservation: reservation}
 
@@ -276,7 +277,7 @@ defmodule Backplane.AgentRuntime.Execution do
 
       with {:ok, approval} <- required_map(opts, :approval, "approval"),
            {:ok, decision} <- required_map(opts, :approval_decision, "approval decision"),
-           :ok <- approval_matches(approval, input, digest),
+           :ok <- approval_matches(approval, input, digest, descriptor),
            {:ok, :approved} <- Approval.decide(approval, decision) do
         :ok
       else
@@ -288,15 +289,18 @@ defmodule Backplane.AgentRuntime.Execution do
     end
   end
 
-  defp approval_matches(approval, input, digest) do
-    expected = %{
-      run_id: field(input, :run_id),
-      tool_name: field(input, :tool_name),
-      tool_revision: field(input, :tool_revision),
-      arguments_digest: digest
-    }
+  defp approval_matches(approval, input, digest, descriptor) do
+    expected =
+      %{
+        run_id: field(input, :run_id),
+        tool_name: field(input, :tool_name),
+        tool_revision: field(input, :tool_revision),
+        arguments_digest: digest
+      }
+      |> Map.merge(Map.take(descriptor, [:collaboration_binding]))
 
-    if Map.take(approval, Map.keys(expected)) == expected do
+    if Map.take(approval, Map.keys(expected)) == expected and
+         Map.get(approval, :collaboration_binding) == Map.get(descriptor, :collaboration_binding) do
       :ok
     else
       {:error, Error.new(:forbidden, "approval does not match the exact operation")}
@@ -408,7 +412,8 @@ defmodule Backplane.AgentRuntime.Execution do
             :turn_id,
             :arguments,
             :caller,
-            :effective_authority
+            :effective_authority,
+            :collaboration_binding
           ])
       end
 
@@ -649,7 +654,16 @@ defmodule Backplane.AgentRuntime.Execution do
   end
 
   defp authority_summary(authority, opts) do
-    summary = Map.take(authority, [:caller, :run_id, :grants, :tool_revision, :scope])
+    summary =
+      Map.take(authority, [
+        :caller,
+        :run_id,
+        :grants,
+        :tool_revision,
+        :tool_revisions,
+        :tool_bindings,
+        :scope
+      ])
 
     if Keyword.get(opts, :ephemeral_tool_authority, false),
       do: Map.delete(summary, :grants),

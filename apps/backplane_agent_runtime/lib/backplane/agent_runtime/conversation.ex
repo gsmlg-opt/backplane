@@ -932,19 +932,27 @@ defmodule Backplane.AgentRuntime.Conversation do
          {:effect_result, {:approval, invocation, descriptor, rest, catalog}, {:ok, decision}}
        ) do
     if decision == :approved do
-      approval = %{
-        approval_id: id("approval"),
-        run_id: s.run.run_id,
-        tool_name: invocation.tool_name,
-        tool_revision: invocation.tool_revision,
-        arguments_digest: digest(invocation.arguments),
-        current_time: now(),
-        expires_at: s.run.deadline
-      }
+      approval =
+        %{
+          approval_id: id("approval"),
+          run_id: s.run.run_id,
+          tool_name: invocation.tool_name,
+          tool_revision: invocation.tool_revision,
+          arguments_digest: digest(invocation.arguments),
+          current_time: now(),
+          expires_at: s.run.deadline
+        }
+        |> Map.merge(Map.take(invocation, [:collaboration_binding]))
 
       decision =
         Map.merge(
-          Map.take(approval, [:approval_id, :tool_name, :tool_revision, :arguments_digest]),
+          Map.take(approval, [
+            :approval_id,
+            :tool_name,
+            :tool_revision,
+            :arguments_digest,
+            :collaboration_binding
+          ]),
           %{decision: :approved, resolver_id: "host"}
         )
 
@@ -1176,7 +1184,8 @@ defmodule Backplane.AgentRuntime.Conversation do
                catalog_revision: catalog.revision,
                arguments: arguments
              })
-           ),
+           )
+           |> Map.merge(Map.take(descriptor, [:collaboration_binding])),
          {:ok, _} <-
            Policy.authorize_tool(catalog.authority, descriptor, invocation) do
       if descriptor.safety[:requires_approval] do
@@ -2649,7 +2658,8 @@ defmodule Backplane.AgentRuntime.Conversation do
              tool_revision: descriptor.tool_revision,
              catalog_revision: catalog.revision,
              arguments: arguments
-           }),
+           })
+           |> Map.merge(Map.take(descriptor, [:collaboration_binding])),
          {:ok, _authorization} <- Policy.authorize_tool(catalog.authority, descriptor, invocation) do
       {:ok, invocation, catalog}
     end

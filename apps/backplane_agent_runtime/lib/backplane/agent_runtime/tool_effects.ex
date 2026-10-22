@@ -23,7 +23,7 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @default_output_limit 1_048_576
 
-  @identity_fields ~w(run_id incarnation step_id attempt_id invocation_id tool_name tool_revision catalog_revision tool_call_id turn_id arguments)a
+  @identity_fields ~w(run_id incarnation step_id attempt_id invocation_id tool_name tool_revision catalog_revision tool_call_id turn_id arguments collaboration_binding)a
 
   @doc """
   Rejects an invocation before dispatching any tool or external effect.

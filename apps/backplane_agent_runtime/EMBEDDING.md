@@ -435,6 +435,83 @@ state until the next run admits and checkpoints it. Manager replacement does
 not restore those queues. Durable hosts must reconcile their own accepted
 messages and activation intents; observers do not provide mailbox persistence.
 
+### Host-named collaboration contracts
+
+`Codex.MultiAgent.bind_contract(manager, action, attrs)` binds a host's tool
+contract to an explicit V2 action before catalog admission. It returns
+`{:ok, contract}` in the usual `Codex.Contract` shape. The existing Codex V1/V2
+profiles retain their names and schemas. A host can instead publish names such
+as `sessions_spawn` or `agents_wait` with its own argument and result formats.
+
+| Action | Canonical arguments supplied by the host adapter |
+|---|---|
+| `:spawn` | `task_name`, `message`, and supported V2 child options |
+| `:message` | `target`, `message` for queue-only mail |
+| `:followup` | `target`, `message` for explicit activation |
+| `:list` | Optional V2 list filters |
+| `:wait` | `timeout_ms` within the manager's configured bounds |
+| `:interrupt` | `target` for the current task |
+
+The trusted host supplies `attrs.name`, `tool_revision`, JSON `schema`,
+`backend`, and `safety`, as for other contracts. Binding adds
+`contract.collaboration_binding`, containing the manager identity, action and
+SHA-256 fingerprint. The fingerprint covers the canonical name, revision,
+schema, input/output format, backend module, safety and action. Change the
+declared revision when the host adapter changes its conversion semantics.
+
+Grant the returned contracts explicitly:
+
+```elixir
+authority = %{
+  caller: "my-host",
+  run_id: run_id,
+  grants: Enum.map(contracts, & &1.tool_name),
+  tool_revisions: Map.new(contracts, &{&1.tool_name, &1.tool_revision}),
+  tool_bindings: Map.new(contracts, &{&1.tool_name, &1.collaboration_binding.fingerprint})
+}
+
+{:ok, binding} = Codex.Session.bind(session, authority)
+contracts = Enum.map(contracts, &put_in(&1, [:backend_context, :session_binding], binding))
+{:ok, bundle} = Codex.Catalog.admit(contracts, authority)
+```
+
+Pass `bundle.registry`, `bundle.tools`, `bundle.authority` and that
+`session_binding` together to `Conversation.start_link/1`. Attaching the
+Conversation binds the manager to the current session/run authority. Bindings
+alone grant nothing: policy recomputes the actual descriptor fingerprint and
+requires the exact per-tool grant. A changed name, revision, schema, backend or
+action cannot use the old authorization. Quarantine narrows `tool_bindings`
+alongside grants and tool revisions. Session capabilities remain ephemeral and
+are excluded from the descriptor fingerprint.
+
+Native and host-named contracts can share a manager. Once bound policy is in use,
+native calls also require their own current name and revision grants; removing a
+binding or renaming an invocation cannot switch to an ungranted native action.
+
+The host backend translates arguments separately, then calls
+`Codex.MultiAgent.call_bound(original_operation, canonical_arguments)`. For
+example, a `sessions_spawn` adapter can map its `task` field to canonical
+`message`. It must preserve the original operation's name, revision, arguments
+and invocation identity. The registered binding selects the action; model
+arguments do not. The host may translate a successful result, while returning
+refusals and uncertain errors unchanged.
+
+The original binding is journaled before dispatch and participates in approval
+and refusal matching. Manager checks also require the current parent or child
+authority, session owner and run incarnation. Capacity checks, child reservation,
+host preparation/receipt acknowledgements, inherited policy, mailbox delivery,
+waits and interruption use the same existing MultiAgent implementation.
+Admission evidence retains the triggering invocation identity and original
+argument digest. A failure after reservation remains subject to the existing
+uncertain-outcome rules; it does not become proof that nothing happened.
+
+Bindings belong to one manager lifetime. Replacing that manager requires new
+bindings and explicit grants; no binding restores children or replays effects.
+See the packaged `examples/host_collaboration.exs` for a complete, deterministic
+Session/Conversation integration with custom schemas and successful-result
+conversion. It uses ephemeral stores; durable hosts still own the persistence
+and reconciliation contracts above.
+
 ## Codex run resources and cleanup
 
 Codex command sessions and Code Mode cells belong to the executing Conversation,
