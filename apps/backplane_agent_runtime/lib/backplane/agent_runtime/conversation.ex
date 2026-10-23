@@ -193,6 +193,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       commit: nil,
       commit_queue: :queue.new(),
       effect: nil,
+      preparation: nil,
+      tool_admission_deadline: nil,
+      paused_admission_remaining: nil,
       nested: nil,
       nested_admission: nil,
       jobs: :queue.new(),
@@ -204,6 +207,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       effect_live_deadline: nil,
       paused_run_remaining: nil,
       paused_effect_remaining: nil,
+      paused_preparation_remaining: nil,
       paused_nested_remaining: nil,
       callers: [],
       admission: nil,
@@ -325,7 +329,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   def handle_call({:provider_chunk, token, event}, from, s) do
-    if current_effect?(s, token) and match?({:provider, _, _}, s.effect.role) and
+    if current_effect?(s, token) and not is_nil(s.effect) and
+         match?({:provider, _, _}, s.effect.role) and
          is_nil(s.provider_progress_from) and valid_provider_event?(event) do
       if cumulative_provider_progress?(s, event) do
         output = ProviderOutput.event(s.provider_output, event)
@@ -373,72 +378,77 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   def handle_call({:nested_tool, token, request}, from, s) do
     case prepare_nested_tool(s, token, request) do
-      {:ok, invocation, catalog} ->
-        resource_owner_pid = self()
-        nested_token = make_ref()
-
-        opts = [
-          registry: catalog.registry,
-          authority: catalog.authority,
-          ephemeral_tool_authority: true
-        ]
-
-        next = fn next_state, prepared ->
-          task =
-            Task.Supervisor.async_nolink(next_state.supervisor, fn ->
-              prepared = %{
-                prepared
-                | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
-                  host_context:
-                    Map.merge(
-                      prepared.host_context,
-                      trusted_effect_context(
-                        next_state,
-                        nested_token,
-                        catalog,
-                        resource_owner_pid,
-                        invocation,
-                        outer_invocation(invocation, next_state)
-                      )
-                    )
-                    |> Map.merge(goal_tool_context(next_state))
-              }
-
-              Execution.dispatch(
-                prepared,
-                Keyword.merge(next_state.opts,
-                  registry: catalog.registry,
-                  authority: catalog.authority
-                )
-              )
-            end)
-
-          generation = make_ref()
-          timeout = effect_timeout(next_state, next_state.limits.effect)
-          timer = Process.send_after(self(), {:nested_timeout, task.ref, generation}, timeout)
-
-          %{
-            next_state
-            | nested_admission: nil,
-              nested: %{
-                task: task,
-                timer: timer,
-                timer_generation: generation,
-                live_deadline: System.monotonic_time(:millisecond) + timeout,
-                from: from,
-                token: nested_token,
-                invocation: invocation,
-                catalog: catalog
-              }
-          }
-        end
-
-        s = %{s | nested_admission: invocation}
-        {:noreply, commit(s, {:tool_invoked, now(), invocation}, %{}, opts, next)}
+      {:ok, invocation, descriptor, catalog} ->
+        {:noreply, prepare_tool(s, invocation, descriptor, catalog, {:nested, from})}
 
       {:error, %Error{} = error} ->
         {:reply, {:error, error}, s}
     end
+  end
+
+  defp invoke_nested_tool(s, invocation, catalog, from) do
+    s = %{s | tool_admission_deadline: nil}
+    resource_owner_pid = self()
+    nested_token = make_ref()
+
+    opts = [
+      registry: catalog.registry,
+      authority: catalog.authority,
+      ephemeral_tool_authority: true
+    ]
+
+    next = fn next_state, prepared ->
+      task =
+        Task.Supervisor.async_nolink(next_state.supervisor, fn ->
+          prepared = %{
+            prepared
+            | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
+              host_context:
+                Map.merge(
+                  prepared.host_context,
+                  trusted_effect_context(
+                    next_state,
+                    nested_token,
+                    catalog,
+                    resource_owner_pid,
+                    invocation,
+                    outer_invocation(invocation, next_state)
+                  )
+                )
+                |> Map.merge(goal_tool_context(next_state))
+          }
+
+          Execution.dispatch(
+            prepared,
+            Keyword.merge(next_state.opts,
+              registry: catalog.registry,
+              authority: catalog.authority
+            )
+          )
+        end)
+
+      generation = make_ref()
+      timeout = effect_timeout(next_state, next_state.limits.effect)
+      timer = Process.send_after(self(), {:nested_timeout, task.ref, generation}, timeout)
+
+      %{
+        next_state
+        | nested_admission: nil,
+          nested: %{
+            task: task,
+            timer: timer,
+            timer_generation: generation,
+            live_deadline: System.monotonic_time(:millisecond) + timeout,
+            from: from,
+            token: nested_token,
+            invocation: invocation,
+            catalog: catalog
+          }
+      }
+    end
+
+    s = %{s | nested_admission: invocation}
+    commit(s, {:tool_invoked, now(), invocation}, %{}, opts, next)
   end
 
   @impl true
@@ -519,6 +529,16 @@ defmodule Backplane.AgentRuntime.Conversation do
      storage_failed(%{s | goal_delivery: nil}, Error.new(:timeout, "goal delivery timed out"))}
   end
 
+  def handle_info({ref, result}, %{preparation: %{task: %{ref: ref}} = entry} = s) do
+    clear_task(entry)
+
+    {:noreply,
+     enqueue(
+       %{s | preparation: %{entry | task: nil, timer: nil, timer_generation: nil}},
+       {:prepared_tool, entry, result}
+     )}
+  end
+
   def handle_info({ref, result}, %{nested: %{task: %{ref: ref}} = nested} = s) do
     clear_task(nested)
     {:noreply, complete_nested(s, normalize_nested_result(result))}
@@ -561,7 +581,13 @@ defmodule Backplane.AgentRuntime.Conversation do
   def handle_info({ref, result}, %{effect: %{task: %{ref: ref}} = entry} = s) do
     clear_task(entry)
     s = %{s | effect: nil}
-    {:noreply, enqueue(s, {:effect_result, entry.role, result})}
+
+    if s.preparation && s.preparation.outer_token == entry.token do
+      # An escaped nested caller cannot outlive the enclosing invocation.
+      {:noreply, stop(s, :uncertain)}
+    else
+      {:noreply, enqueue(s, {:effect_result, entry.role, result})}
+    end
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, s) do
@@ -588,6 +614,20 @@ defmodule Backplane.AgentRuntime.Conversation do
           {:noreply, complete_nested(s, {:error, error})}
         end
 
+      s.preparation && s.preparation.task && s.preparation.task.ref == ref ->
+        clear_task(s.preparation)
+        entry = s.preparation
+
+        if s.interaction do
+          {:noreply, stop(s, :cancelled)}
+        else
+          {:noreply,
+           enqueue(
+             %{s | preparation: %{entry | task: nil, timer: nil, timer_generation: nil}},
+             {:prepared_tool, entry, {:error, error}}
+           )}
+        end
+
       s.effect && s.effect.task.ref == ref ->
         if s.effect.timer, do: Process.cancel_timer(s.effect.timer)
         {:noreply, stop(%{s | effect: nil, last_error: error}, :uncertain)}
@@ -607,6 +647,10 @@ defmodule Backplane.AgentRuntime.Conversation do
            %{s | commit: nil},
            Error.new(:timeout, "commit acknowledgement timed out")
          )}
+
+      s.preparation && s.preparation.task && s.preparation.task.ref == ref &&
+          s.preparation.timer_generation == generation ->
+        {:noreply, stop(s, :deadline_exceeded)}
 
       s.effect && s.effect.task.ref == ref && s.effect.timer_generation == generation ->
         {:noreply, stop(s, :deadline_exceeded)}
@@ -641,6 +685,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   def terminate(_, s) do
     if s.timer, do: Process.cancel_timer(s.timer)
     if s.effect, do: kill_task(s.effect)
+    if s.preparation, do: kill_task(s.preparation)
     if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.commit, do: kill_task(s.commit)
     if s.nested && s.nested.task, do: kill_task(s.nested)
@@ -928,6 +973,27 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp process(
+         %{preparation: %{token: token}} = s,
+         {:prepared_tool, %{token: token} = entry, result}
+       ) do
+    if s.interaction && s.interaction.token == entry.token do
+      stop(s, :cancelled)
+    else
+      accept_preparation(s, entry, result)
+    end
+  end
+
+  defp process(s, {:prepared_tool, _entry, _result}), do: s
+
+  defp process(
+         s,
+         {:effect_result, {:approval, invocation, descriptor, rest, catalog},
+          {:ok, {:update_input, input}}}
+       ) do
+    admit_prepared_tool(s, %{invocation | arguments: input}, descriptor, catalog, {:direct, rest})
+  end
+
+  defp process(
          s,
          {:effect_result, {:approval, invocation, descriptor, rest, catalog}, {:ok, decision}}
        ) do
@@ -962,7 +1028,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       )
     else
       append_tool_result(
-        s,
+        %{s | tool_admission_deadline: nil},
         invocation,
         %{is_error: true, error: "approval denied"},
         rest,
@@ -1171,7 +1237,6 @@ defmodule Backplane.AgentRuntime.Conversation do
     registry = catalog.registry
 
     with {:ok, descriptor} <- ToolRegistry.lookup(registry, call.name),
-         {:ok, arguments} <- validate_tool_arguments(descriptor, call.arguments),
          invocation =
            Map.merge(
              identity(s),
@@ -1182,19 +1247,11 @@ defmodule Backplane.AgentRuntime.Conversation do
                tool_name: call.name,
                tool_revision: descriptor.tool_revision,
                catalog_revision: catalog.revision,
-               arguments: arguments
+               arguments: call.arguments
              })
            )
-           |> Map.merge(Map.take(descriptor, [:collaboration_binding])),
-         {:ok, _} <-
-           Policy.authorize_tool(catalog.authority, descriptor, invocation) do
-      if descriptor.safety[:requires_approval] do
-        start_effect(s, {:approval, invocation, descriptor, rest, catalog}, fn context ->
-          context.interact.(%{kind: :permission, operation: invocation})
-        end)
-      else
-        invoke_tool(s, invocation, descriptor, rest, catalog, [])
-      end
+           |> Map.merge(Map.take(descriptor, [:collaboration_binding])) do
+      prepare_tool(s, invocation, descriptor, catalog, {:direct, rest})
     else
       {:error, error} ->
         append_tool_result(
@@ -1207,7 +1264,169 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp invoke_tool(s, invocation, _descriptor, rest, catalog, approval) do
+  defp accept_preparation(s, entry, result) do
+    if entry.outer_token && not current_effect?(s, entry.outer_token) do
+      s = %{s | preparation: nil}
+
+      reject_prepared_tool(
+        s,
+        entry.invocation,
+        entry.catalog,
+        entry.continuation,
+        Error.new(:cancelled, "enclosing invocation ended")
+      )
+    else
+      complete_preparation(s, entry, result)
+    end
+  end
+
+  defp complete_preparation(s, entry, result) do
+    s = %{s | preparation: nil}
+
+    case preparation_input(result, entry.invocation.arguments) do
+      {:ok, input} ->
+        admit_prepared_tool(
+          s,
+          %{entry.invocation | arguments: input},
+          entry.descriptor,
+          entry.catalog,
+          entry.continuation
+        )
+
+      {:error, error} ->
+        reject_prepared_tool(s, entry.invocation, entry.catalog, entry.continuation, error)
+    end
+  end
+
+  defp prepare_tool(s, invocation, descriptor, catalog, continuation) do
+    s = %{
+      s
+      | tool_admission_deadline:
+          System.monotonic_time(:millisecond) + effect_timeout(s, s.limits.effect)
+    }
+
+    adapter = Keyword.get(s.opts, :hooks)
+
+    if adapter && Code.ensure_loaded?(adapter) && function_exported?(adapter, :prepare_tool, 2) do
+      token = make_ref()
+
+      context =
+        Map.put(
+          Map.drop(base_effect_context(s, self(), token), [
+            :provider_emit,
+            :emit,
+            :request_new_context
+          ]),
+          :input_kind,
+          if(descriptor[:codex_input_kind] == :custom, do: :custom, else: :function)
+        )
+
+      task =
+        Task.Supervisor.async_nolink(s.supervisor, fn ->
+          hook(s, :prepare_tool, [invocation, context], :allow)
+        end)
+
+      timeout = effect_timeout(s, s.limits.effect)
+      generation = make_ref()
+      timer = Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
+
+      %{
+        s
+        | preparation: %{
+            task: task,
+            token: token,
+            timer: timer,
+            timer_generation: generation,
+            live_deadline: System.monotonic_time(:millisecond) + timeout,
+            invocation: invocation,
+            descriptor: descriptor,
+            catalog: catalog,
+            continuation: continuation,
+            outer_token: if(match?({:nested, _}, continuation), do: s.effect.token, else: nil)
+          }
+      }
+    else
+      admit_prepared_tool(s, invocation, descriptor, catalog, continuation)
+    end
+  end
+
+  defp preparation_input(:allow, input), do: {:ok, input}
+  defp preparation_input({:allow, input}, _original), do: {:ok, input}
+
+  defp preparation_input({:deny, reason}, _),
+    do: {:error, Error.new(:forbidden, "tool preparation denied", details: %{reason: reason})}
+
+  defp preparation_input({:error, %Error{} = error}, _), do: {:error, error}
+
+  defp preparation_input(_, _),
+    do: {:error, Error.new(:malformed_result, "invalid tool preparation result")}
+
+  defp admit_prepared_tool(s, invocation, descriptor, catalog, continuation) do
+    if admission_expired?(s) do
+      stop(s, :deadline_exceeded)
+    else
+      validate_prepared_tool(s, invocation, descriptor, catalog, continuation)
+    end
+  end
+
+  defp admission_expired?(s),
+    do:
+      is_integer(s.tool_admission_deadline) &&
+        s.tool_admission_deadline <= System.monotonic_time(:millisecond)
+
+  defp validate_prepared_tool(s, invocation, descriptor, catalog, continuation) do
+    with {:ok, arguments} <- validate_tool_arguments(descriptor, invocation.arguments),
+         invocation = %{invocation | arguments: arguments},
+         {:ok, _} <- Policy.authorize_tool(catalog.authority, descriptor, invocation) do
+      case continuation do
+        {:nested, from} ->
+          invoke_nested_tool(s, invocation, catalog, from)
+
+        {:direct, rest} ->
+          if descriptor.safety[:requires_approval] do
+            start_effect(s, {:approval, invocation, descriptor, rest, catalog}, fn context ->
+              context.interact.(%{kind: :permission, operation: invocation})
+            end)
+          else
+            invoke_tool(s, invocation, descriptor, rest, catalog, [])
+          end
+      end
+    else
+      {:error, error} -> reject_prepared_tool(s, invocation, catalog, continuation, error)
+    end
+  end
+
+  defp reject_prepared_tool(s, invocation, catalog, {:direct, rest}, error),
+    do:
+      append_tool_result(
+        %{s | tool_admission_deadline: nil},
+        invocation,
+        tool_result({:error, error}),
+        rest,
+        catalog
+      )
+
+  defp reject_prepared_tool(s, _invocation, _catalog, {:nested, from}, error) do
+    GenServer.reply(from, {:error, error})
+    %{s | tool_admission_deadline: nil}
+  end
+
+  defp invoke_tool(s, invocation, descriptor, rest, catalog, approval) do
+    if admission_expired?(s) do
+      stop(s, :deadline_exceeded)
+    else
+      commit_tool(
+        %{s | tool_admission_deadline: nil},
+        invocation,
+        descriptor,
+        rest,
+        catalog,
+        approval
+      )
+    end
+  end
+
+  defp commit_tool(s, invocation, _descriptor, rest, catalog, approval) do
     resource_owner_pid = self()
 
     opts =
@@ -1720,6 +1939,12 @@ defmodule Backplane.AgentRuntime.Conversation do
         else: s.limits.effect
 
     timeout = effect_timeout(s, configured)
+
+    timeout =
+      if match?({:approval, _, _, _, _}, role) && is_integer(s.tool_admission_deadline),
+        do: max(1, min(timeout, s.tool_admission_deadline - System.monotonic_time(:millisecond))),
+        else: timeout
+
     generation = make_ref()
     timer = Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
 
@@ -1779,6 +2004,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp stop(s, reason) do
     s = invalidate_run_timer(s)
     task_stop = if s.effect, do: kill_task(s.effect), else: :ok
+    if s.preparation, do: kill_task(s.preparation)
+    reject_nested_preparation(s, Error.new(:cancelled, "run cancelled"))
     if s.goal_delivery, do: kill_task(s.goal_delivery)
 
     if s.nested do
@@ -1797,6 +2024,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     s = %{
       s
       | effect: nil,
+        preparation: nil,
         goal_delivery: nil,
         nested: nil,
         nested_admission: nil,
@@ -1884,6 +2112,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp storage_failed(s, error) do
     s = invalidate_run_timer(s)
     if s.effect, do: kill_task(s.effect)
+    if s.preparation, do: kill_task(s.preparation)
+    reject_nested_preparation(s, error)
     if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.nested && s.nested.task, do: kill_task(s.nested)
     if s.nested, do: GenServer.reply(s.nested.from, {:error, error})
@@ -1898,6 +2128,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       | phase: :storage_failed,
         goal_delivery: nil,
         effect: nil,
+        preparation: nil,
         nested: nil,
         nested_admission: nil,
         commit_queue: :queue.new(),
@@ -1912,6 +2143,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     Enum.each(:queue.to_list(jobs), fn job ->
       case job do
         {:interact, _, _, from} ->
+          GenServer.reply(from, {:error, Error.new(:cancelled, "run stopped")})
+
+        {:prepared_tool, %{continuation: {:nested, from}}, _} ->
           GenServer.reply(from, {:error, Error.new(:cancelled, "run stopped")})
 
         _ ->
@@ -1935,6 +2169,15 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp tool_result({:ok, result}) when is_map(result), do: Map.put_new(result, :is_error, false)
   defp tool_result({:error, error}), do: %{is_error: true, error: error}
   defp tool_result(_), do: %{is_error: true, error: "malformed tool result"}
+
+  defp reject_nested_preparation(%{preparation: %{continuation: {:nested, from}}}, error),
+    do: GenServer.reply(from, {:error, error})
+
+  defp reject_nested_preparation(_, _), do: :ok
+
+  defp current_effect?(%{preparation: %{token: token, task: %{ref: _}}, stopping: nil}, token),
+    do: true
+
   defp current_effect?(%{effect: %{token: token}, stopping: nil}, token), do: true
 
   defp current_effect?(%{nested: %{token: token, task: %{ref: _}}, stopping: nil}, token),
@@ -2126,6 +2369,15 @@ defmodule Backplane.AgentRuntime.Conversation do
           nil
       end
 
+    admission_remaining =
+      if is_integer(s.tool_admission_deadline),
+        do: max(0, s.tool_admission_deadline - System.monotonic_time(:millisecond))
+
+    preparation_remaining =
+      if s.preparation,
+        do: max(0, s.preparation.live_deadline - System.monotonic_time(:millisecond))
+
+    if s.preparation && s.preparation.timer, do: Process.cancel_timer(s.preparation.timer)
     if s.timer, do: Process.cancel_timer(s.timer)
     if s.effect && s.effect.timer, do: Process.cancel_timer(s.effect.timer)
     if s.nested && s.nested.timer, do: Process.cancel_timer(s.nested.timer)
@@ -2137,6 +2389,10 @@ defmodule Backplane.AgentRuntime.Conversation do
         effect: if(s.effect, do: %{s.effect | timer: nil, timer_generation: nil}, else: nil),
         nested: if(s.nested, do: %{s.nested | timer: nil, timer_generation: nil}, else: nil),
         effect_live_deadline: nil,
+        preparation:
+          if(s.preparation, do: %{s.preparation | timer: nil, timer_generation: nil}, else: nil),
+        paused_preparation_remaining: preparation_remaining,
+        paused_admission_remaining: admission_remaining,
         paused_run_remaining: run_remaining,
         paused_effect_remaining: effect_remaining,
         paused_nested_remaining: nested_remaining
@@ -2150,7 +2406,18 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp resume_deadlines(s) do
     {timer, generation} = run_timer(s.run)
-    s = %{s | timer: timer, timer_generation: generation}
+
+    s = %{
+      s
+      | timer: timer,
+        timer_generation: generation,
+        tool_admission_deadline:
+          if(is_integer(s.paused_admission_remaining),
+            do: System.monotonic_time(:millisecond) + s.paused_admission_remaining,
+            else: s.tool_admission_deadline
+          ),
+        paused_admission_remaining: nil
+    }
 
     s =
       case {s.effect, s.paused_effect_remaining} do
@@ -2168,6 +2435,28 @@ defmodule Backplane.AgentRuntime.Conversation do
 
         _ ->
           %{s | paused_run_remaining: nil, paused_effect_remaining: nil}
+      end
+
+    s =
+      case {s.preparation, s.paused_preparation_remaining} do
+        {%{task: %{ref: _} = task} = preparation, remaining}
+        when is_integer(remaining) and remaining >= 0 ->
+          generation = make_ref()
+          timer = Process.send_after(self(), {:timeout, task.ref, generation}, remaining)
+
+          %{
+            s
+            | preparation: %{
+                preparation
+                | timer: timer,
+                  timer_generation: generation,
+                  live_deadline: System.monotonic_time(:millisecond) + remaining
+              },
+              paused_preparation_remaining: nil
+          }
+
+        _ ->
+          %{s | paused_preparation_remaining: nil}
       end
 
     case {s.nested, s.paused_nested_remaining} do
@@ -2527,6 +2816,8 @@ defmodule Backplane.AgentRuntime.Conversation do
     if entry.timer, do: Process.cancel_timer(entry.timer)
   end
 
+  defp kill_task(%{task: nil}), do: :ok
+
   defp kill_task(entry) do
     clear_task(entry)
     ref = Process.monitor(entry.task.pid)
@@ -2632,7 +2923,12 @@ defmodule Backplane.AgentRuntime.Conversation do
     do: prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
 
   defp prepare_nested_tool(
-         %{effect: %{token: token, role: {:tool, outer, _rest, catalog}}, nested: nil},
+         %{
+           effect: %{token: token, role: {:tool, outer, _rest, catalog}},
+           nested: nil,
+           nested_admission: nil,
+           preparation: nil
+         },
          token,
          request
        )
@@ -2646,7 +2942,6 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     with :ok <- nested_name(name, outer.tool_name),
          {:ok, descriptor} <- ToolRegistry.lookup(catalog.registry, name),
-         {:ok, arguments} <- validate_tool_arguments(descriptor, arguments),
          :ok <- nested_approval(descriptor),
          invocation =
            outer
@@ -2659,9 +2954,8 @@ defmodule Backplane.AgentRuntime.Conversation do
              catalog_revision: catalog.revision,
              arguments: arguments
            })
-           |> Map.merge(Map.take(descriptor, [:collaboration_binding])),
-         {:ok, _authorization} <- Policy.authorize_tool(catalog.authority, descriptor, invocation) do
-      {:ok, invocation, catalog}
+           |> Map.merge(Map.take(descriptor, [:collaboration_binding])) do
+      {:ok, invocation, descriptor, catalog}
     end
   end
 

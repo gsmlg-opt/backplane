@@ -10,6 +10,11 @@ proved rejection before dispatch, preserving provider continuation without
 weakening uncertain-effect handling. Existing adapters returning plain errors
 must adopt this explicit contract; see [EMBEDDING.md](EMBEDDING.md).
 
+Optional `hooks.prepare_tool/2` allows, denies or transforms function/custom input
+before final validation, authorization, exact-input approval and invocation commit.
+Approval input edits require fresh approval, and nested preparation preserves the
+outer execution fence; see [EMBEDDING.md](EMBEDDING.md).
+
 Hosts can bind their own collaboration tool names and schemas to the existing
 supervised MultiAgent lifecycle with `Codex.MultiAgent.bind_contract/3` and
 `call_bound/2`. Binding grants cover the original descriptor and explicit action;
