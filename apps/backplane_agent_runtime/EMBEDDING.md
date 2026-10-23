@@ -11,7 +11,7 @@ Start `Backplane.AgentRuntime.Conversation` under a host supervisor with:
   revision and safety metadata. An empty registry is valid.
 - `authority`: existing runtime grants/caller/run/revision. Model arguments never
   select backends or widen authority.
-- Optional `hooks` implementing `prompt/2` and `stop/2`.
+- Optional `hooks` implementing `prompt/2`, `stop/2`, and/or `prepare_tool/2`.
 - Optional `subscriber` PID receiving `{:agent_runtime, run_id, event}`.
 - Finite `work` quota (default 100), `run_timeout` (300,000 ms or explicit `:infinity`), `effect_timeout`
   (30,000 ms), `commit_timeout` (5,000 ms), and `cleanup_timeout` (5,000 ms).
@@ -183,14 +183,46 @@ that currently return plain pre-dispatch errors, including the Synapsis adapter
 reported in [#60](https://github.com/gsmlg-opt/backplane/issues/60), must explicitly
 adopt this contract; upgrading the package alone does not reclassify those errors.
 
-For descriptors with `requires_approval: true`, the runtime asks for an exact
-operation approval before invocation; only `:approved` allows dispatch. It binds
-the decision to run, tool revision and argument digest and still uses the existing
-Execution approval gate. All other values deny. This generic approval is not a
-replacement for Sigma's `PermissionInterceptor`: its tool backend may delegate to
-`Sigma.Coding.Dispatcher.dispatch/3` to retain permission → pre-tool hook → tool →
-post-tool hook ordering and patched arguments. The original schema remains intact;
-a host that patches arguments must validate the final arguments at its own boundary.
+Hosts can implement `hooks.prepare_tool(invocation, context)` to prepare a tool
+before final schema validation, authorization, approval and the `:tool_invoked`
+commit. The invocation pins its run, attempt, call, tool revision and catalog;
+`invocation.arguments` contains the original function arguments or raw custom
+input. `context.input_kind` is `:function` or `:custom`. The context supports the
+existing correlated interaction API, but provides no nested-dispatch or catalog
+publication callbacks.
+
+The optional callback returns `:allow`, `{:allow, final_input}`, `{:deny, reason}`,
+or `{:error, %Backplane.AgentRuntime.Error{}}`. Omission allows unchanged input.
+Only the input can change: return a map for a function tool or a binary for a
+custom tool, never an altered invocation/descriptor. The runtime validates the
+final input against the pinned descriptor and authority. Approval, the committed
+intent and backend dispatch all use that exact final input. The hook must not
+perform the tool effect. A backend must not rewrite already approved or committed
+arguments; move such transformations into preparation.
+
+For descriptors with `requires_approval: true`, only `:approved` permits the exact
+requested operation. The runtime binds approval to run, tool revision and argument
+digest and retains the Execution approval gate. A host can resolve the interaction
+with `{:update_input, final_input}` to edit input; this revalidates/reauthorizes and
+requests a fresh approval with a fresh interaction ID. Approval for earlier input
+cannot approve the replacement. Other answers deny. Preparation runs once and is
+not repeated for approval edits. Preparation and approval edits share one finite
+active admission budget; human interaction pauses it rather than replenishing it.
+
+Preparation workers have per-invocation callback tokens and timer generations.
+Denial, malformed results, exceptions, cancellation, timeouts and stale results
+produce no invocation commit or dispatch. Preparation rejection permits provider
+continuation; interruption of an already dispatched enclosing tool retains the
+existing uncertain-outcome rules. Supported nested calls prepare and validate
+through the same boundary while preserving the outer worker. Nested tools that
+require runtime interactive approval remain unsupported (`:approval_required`).
+A `nested_dispatch` caller must remain attached to its enclosing invocation. If
+the enclosing worker ends while nested preparation is pending, the runtime cancels
+that preparation and its waiter through conservative existing uncertainty
+settlement; the nested tool cannot dispatch after its owner ends.
+Host permission/pre-tool transformations should use preparation; post-tool hooks
+remain in the backend. These hooks apply to `Conversation`; direct explicit-command
+Execution users must prepare their own exact input before committing it.
 
 Tools run sequentially. Sigma's batching/parallel performance is not reproduced;
 calling its dispatcher for one tool retains its local execution policies without
@@ -434,6 +466,83 @@ Conversations and idle/unloaded identity queues retain mail in process-local
 state until the next run admits and checkpoints it. Manager replacement does
 not restore those queues. Durable hosts must reconcile their own accepted
 messages and activation intents; observers do not provide mailbox persistence.
+
+### Host-named collaboration contracts
+
+`Codex.MultiAgent.bind_contract(manager, action, attrs)` binds a host's tool
+contract to an explicit V2 action before catalog admission. It returns
+`{:ok, contract}` in the usual `Codex.Contract` shape. The existing Codex V1/V2
+profiles retain their names and schemas. A host can instead publish names such
+as `sessions_spawn` or `agents_wait` with its own argument and result formats.
+
+| Action | Canonical arguments supplied by the host adapter |
+|---|---|
+| `:spawn` | `task_name`, `message`, and supported V2 child options |
+| `:message` | `target`, `message` for queue-only mail |
+| `:followup` | `target`, `message` for explicit activation |
+| `:list` | Optional V2 list filters |
+| `:wait` | `timeout_ms` within the manager's configured bounds |
+| `:interrupt` | `target` for the current task |
+
+The trusted host supplies `attrs.name`, `tool_revision`, JSON `schema`,
+`backend`, and `safety`, as for other contracts. Binding adds
+`contract.collaboration_binding`, containing the manager identity, action and
+SHA-256 fingerprint. The fingerprint covers the canonical name, revision,
+schema, input/output format, backend module, safety and action. Change the
+declared revision when the host adapter changes its conversion semantics.
+
+Grant the returned contracts explicitly:
+
+```elixir
+authority = %{
+  caller: "my-host",
+  run_id: run_id,
+  grants: Enum.map(contracts, & &1.tool_name),
+  tool_revisions: Map.new(contracts, &{&1.tool_name, &1.tool_revision}),
+  tool_bindings: Map.new(contracts, &{&1.tool_name, &1.collaboration_binding.fingerprint})
+}
+
+{:ok, binding} = Codex.Session.bind(session, authority)
+contracts = Enum.map(contracts, &put_in(&1, [:backend_context, :session_binding], binding))
+{:ok, bundle} = Codex.Catalog.admit(contracts, authority)
+```
+
+Pass `bundle.registry`, `bundle.tools`, `bundle.authority` and that
+`session_binding` together to `Conversation.start_link/1`. Attaching the
+Conversation binds the manager to the current session/run authority. Bindings
+alone grant nothing: policy recomputes the actual descriptor fingerprint and
+requires the exact per-tool grant. A changed name, revision, schema, backend or
+action cannot use the old authorization. Quarantine narrows `tool_bindings`
+alongside grants and tool revisions. Session capabilities remain ephemeral and
+are excluded from the descriptor fingerprint.
+
+Native and host-named contracts can share a manager. Once bound policy is in use,
+native calls also require their own current name and revision grants; removing a
+binding or renaming an invocation cannot switch to an ungranted native action.
+
+The host backend translates arguments separately, then calls
+`Codex.MultiAgent.call_bound(original_operation, canonical_arguments)`. For
+example, a `sessions_spawn` adapter can map its `task` field to canonical
+`message`. It must preserve the original operation's name, revision, arguments
+and invocation identity. The registered binding selects the action; model
+arguments do not. The host may translate a successful result, while returning
+refusals and uncertain errors unchanged.
+
+The original binding is journaled before dispatch and participates in approval
+and refusal matching. Manager checks also require the current parent or child
+authority, session owner and run incarnation. Capacity checks, child reservation,
+host preparation/receipt acknowledgements, inherited policy, mailbox delivery,
+waits and interruption use the same existing MultiAgent implementation.
+Admission evidence retains the triggering invocation identity and original
+argument digest. A failure after reservation remains subject to the existing
+uncertain-outcome rules; it does not become proof that nothing happened.
+
+Bindings belong to one manager lifetime. Replacing that manager requires new
+bindings and explicit grants; no binding restores children or replays effects.
+See the packaged `examples/host_collaboration.exs` for a complete, deterministic
+Session/Conversation integration with custom schemas and successful-result
+conversion. It uses ephemeral stores; durable hosts still own the persistence
+and reconciliation contracts above.
 
 ## Codex run resources and cleanup
 

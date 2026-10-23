@@ -135,9 +135,9 @@ defmodule Backplane.CIWorkflowTest do
 
   @test_run ~S"""
   if [ "${{ matrix.app }}" = "backplane_memory" ]; then
-    mix "do" --app backplane_memory cmd mix test --exclude memory_qualification_runtime
+    mix "do" --app backplane_memory test --exclude memory_qualification_runtime
   else
-    mix "do" --app ${{ matrix.app }} cmd mix test
+    mix "do" --app ${{ matrix.app }} test
   fi
   """
 
@@ -222,15 +222,21 @@ defmodule Backplane.CIWorkflowTest do
       "Install audio media tools",
       "Install pinned OpenAI SDK for audio conformance",
       "Restore dependencies cache",
+      "Clean cached umbrella applications",
       "Install dependencies",
       "Start PostgreSQL 17 with pgvector",
       "Prepare test database",
-      "Compile selected app",
+      "Compile umbrella applications",
       "Install admin asset dependencies",
       "Run tests"
     ])
 
     assert_common_steps(job, true, @test_cache_key, @test_cache_prefix)
+
+    assert_step(job, %{
+      "name" => "Clean cached umbrella applications",
+      "run" => "mix clean --only test"
+    })
 
     assert_step(job, %{
       "name" => "Install audio media tools",
@@ -253,8 +259,8 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(job, %{"name" => "Prepare test database", "run" => "mix ecto.setup"})
 
     assert_step(job, %{
-      "name" => "Compile selected app",
-      "run" => ~s(mix "do" --app ${{ matrix.app }} cmd mix compile)
+      "name" => "Compile umbrella applications",
+      "run" => "mix compile"
     })
 
     assert_step(job, %{

@@ -2,8 +2,8 @@
 
 实现评审，最后检查于 2026-10-23。对应已批准设计 Agent Note
 `22fadaea-6cfe-461f-8721-3c6b446bccb2`。
-代码位于 `codex/agent-plugins`，基于 `e8317e799b8c7bceb8831b6300a95bddd368d919`，
-当前为未提交、未合并的 worktree 实现；尚未发布 Hex 包或部署服务。
+代码最初开发于 `codex/agent-plugins`，基于 `e8317e799b8c7bceb8831b6300a95bddd368d919`，
+集成时纳入 `main@512066a9` 的 `1.10.32` 基线。本文描述仓库实现；尚未发布 Hex 包或部署服务。
 
 ## 目标和边界
 
@@ -45,9 +45,10 @@ flowchart LR
 `plugin_installations` 表。完整压缩制品保存在 release 的数据库字段中，使用现有备份边界；
 此版没有单独引入对象存储或 gateway 子系统。迁移通过现有 `mix ecto.migrate` 执行。
 
-本地 umbrella 使用同 worktree 的协议实现；Runtime 独立包当前声明协议依赖下限
-`1.10.29`。发布时须核对最终包版本与依赖下限，先发布包含本次 origin/脱敏修复的 MCP 协议包
-和新 Plugin 协议包，再发布 Runtime。此 worktree 的本地通过不代表 Hex 已提供这些源码。
+本地 umbrella 使用仓库中的协议实现；Runtime 独立包声明协议依赖下限 `1.10.32`。
+发布时须核对最终包版本与依赖下限，并将新 Plugin 协议包纳入 Hex 发布流程；现有发布矩阵
+尚未包含该包。先发布包含 origin/脱敏修复的 MCP 协议包和新 Plugin 协议包，再发布 Runtime。
+本地验证通过不代表 Hex 已提供这些源码。
 
 ## 包格式与局部失败
 

@@ -472,7 +472,7 @@ defmodule Backplane.AgentRuntime.CodexCommandLifecycleTest do
   defp running?(pid) do
     case File.read("/proc/#{pid}/stat") do
       {:ok, stat} -> not Regex.match?(~r/\) [ZX] /, stat)
-      {:error, :enoent} -> false
+      {:error, reason} when reason in [:enoent, :esrch] -> false
     end
   end
 

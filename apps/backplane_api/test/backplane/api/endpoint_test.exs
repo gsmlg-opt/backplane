@@ -22,7 +22,7 @@ defmodule Backplane.Api.EndpointTest do
     assert Keyword.fetch!(endpoint_config, :adapter) == Gaoxy.PhoenixAdapter
     http = Keyword.fetch!(endpoint_config, :http)
     assert Keyword.fetch!(http, :http_limits).request_timeout == 600_000
-    assert Keyword.fetch!(http, :http_limits).max_buffer_bytes == 65_537
+    assert Keyword.fetch!(http, :http_limits).max_buffer_bytes == 65_536
     assert Keyword.fetch!(http, :http_limits).max_body_bytes >= 25_000_000 + 65_536
     assert Keyword.fetch!(http, :limits).max_bytes >= 4 * 640 * 1024
     assert Keyword.fetch!(http, :protocols) == [:http2, :http1]

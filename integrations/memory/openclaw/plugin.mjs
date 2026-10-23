@@ -102,18 +102,35 @@ function formatRecallResults(rows) {
       const content = (row?.content ?? "").trim();
       const scope = (row?.scope ?? "").trim();
       const title = `Memory ${index + 1}${scope ? ` (${scope})` : ""}`;
-      return content ? `- ${title}: ${content.slice(0, 280)}` : null;
+      const pending = row?.provisional === true || row?.authority === "provisional";
+      return content ? `- ${title}: ${pending ? "[pending local memory] " : ""}${content.slice(0, 280)}` : null;
     })
     .filter(Boolean)
     .join("\n");
 }
 
+const ERROR_CODES = new Set([
+  "invalid_scope", "unknown_scope", "memory_scope_mismatch", "invalid_arguments", "invalid_request",
+  "unauthorized", "forbidden", "access_denied", "not_found",
+]);
+
+class MemoryRequestError extends Error {}
+
+function responseError(body, status) {
+  const code = ERROR_CODES.has(body?.error) ? body.error : "request_failed";
+  return new MemoryRequestError(`${code}${status ? ` (HTTP ${status})` : ""}`);
+}
+
 function unwrap(body) {
-  if (!body || body.ok === false) return null;
-  return body.result ?? null;
+  if (body?.ok === false) throw responseError(body);
+  if (body?.ok !== true || !body.result || typeof body.result !== "object" || Array.isArray(body.result)) {
+    throw new MemoryRequestError("invalid_response");
+  }
+  return body.result;
 }
 
 function errorClass(error) {
+  if (error instanceof MemoryRequestError) return error.message;
   return error && typeof error === "object" && typeof error.name === "string"
     ? error.name
     : "request failed";
@@ -145,9 +162,8 @@ function createClient(cfg, api) {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) {
-        if (fallbackOnError) return null;
-        const text = await res.text().catch(() => "");
-        throw new Error(`backplane-memory ${method} failed: ${res.status} ${text}`);
+        const body = await res.json().catch(() => null);
+        throw responseError(body, res.status);
       }
       const body = await res.json();
       return unwrap(body);

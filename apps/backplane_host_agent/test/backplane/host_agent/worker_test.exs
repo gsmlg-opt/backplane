@@ -941,7 +941,12 @@ defmodule Backplane.HostAgent.WorkerTest do
   test "reconnect replaces the existing sync timer instead of leaving it pending", %{
     tmp_dir: tmp_dir
   } do
-    config = Map.put(config(tmp_dir), :interval_ms, 60_000)
+    config =
+      config(tmp_dir)
+      |> Map.put(:interval_ms, 60_000)
+      |> put_in([:memory, :enabled], false)
+      |> put_in([:telemetry, :enabled], false)
+
     :persistent_term.put({FakeChannel, :owner}, self())
     :persistent_term.put({FakeConnector, :owner}, self())
     :persistent_term.put({FakeMemoryProxy, :owner}, self())

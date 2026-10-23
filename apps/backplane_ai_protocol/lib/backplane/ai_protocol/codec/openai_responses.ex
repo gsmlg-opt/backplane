@@ -170,6 +170,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
          :ok <- Validation.term(document, Keyword.get(opts, :limits, %{})),
          true <- document["status"] in ["completed", "incomplete"],
          {:ok, output} <- decode_output(document["output"], opts),
+         :ok <- validate_output_status(document["status"], output),
          :ok <- unique_ids(for %{tool_call: call} <- output, call != nil, do: call),
          {:ok, usage} <- usage(document["usage"]),
          {:ok, response} <-
@@ -222,8 +223,17 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
 
   defp decode_output(_, _opts), do: invalid("Responses output must be a list")
 
+  defp validate_output_status("completed", _output), do: :ok
+
+  defp validate_output_status("incomplete", output) do
+    if Enum.any?(output, &(&1.tool_call != nil)),
+      do: invalid("Incomplete Responses document cannot complete tool calls"),
+      else: :ok
+  end
+
   defp decode_call(item, opts) do
-    with {:ok, name} <- canonical_identity(item),
+    with :ok <- completed_item_status(item),
+         {:ok, name} <- canonical_identity(item),
          {:ok, raw} <- decode_arguments(item),
          :ok <- bound_input(elem(raw, 1), opts),
          {:ok, call} <-
@@ -232,6 +242,14 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
              opts
            ),
          do: {:ok, call}
+  end
+
+  defp completed_item_status(item) do
+    case Map.fetch(item, "status") do
+      :error -> :ok
+      {:ok, "completed"} -> :ok
+      _ -> invalid("Responses tool completion has a non-completed status")
+    end
   end
 
   defp decode_arguments(%{"type" => "custom_tool_call", "input" => input}) when is_binary(input),
@@ -326,7 +344,15 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     with {:ok, tool} <- fetch_tool(state, event["item_id"]),
          true <- not tool.done? and matches_kind?(tool, type) do
       key = if tool.item["type"] == "custom_tool_call", do: "input", else: "arguments"
-      complete_tool(state, event["item_id"], Map.put(tool.item, key, event[key]))
+
+      item =
+        tool.item
+        # The added item's in-progress status does not describe this completion.
+        |> Map.delete("status")
+        |> Map.merge(Map.take(event, ["status"]))
+        |> Map.put(key, event[key])
+
+      complete_tool(state, event["item_id"], item)
     else
       {:error, error} -> {:error, error, state}
       _ -> {:error, Error.invalid!("Responses duplicate or mismatched tool completion"), state}
@@ -345,8 +371,9 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
        do: {:ok, state, [%StreamEvent{type: :text_delta, text: text}]}
 
   defp decode_event(state, %{"type" => type, "response" => response})
-       when type in ["response.completed", "response.incomplete"] do
-    with {:ok, decoded} <- decode_response(200, [], response, state.opts),
+       when type in ["response.completed", "response.incomplete"] and is_map(response) do
+    with true <- response["status"] == String.replace_prefix(type, "response.", ""),
+         {:ok, decoded} <- decode_response(200, [], response, state.opts),
          :ok <- validate_terminal_tools(state, decoded.output) do
       events = if decoded.usage, do: [%StreamEvent{type: :usage, usage: decoded.usage}], else: []
 
@@ -360,7 +387,11 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
            }
          ]}
     else
-      {:error, error} -> {:error, error, state}
+      false ->
+        {:error, Error.invalid!("Responses terminal event has a conflicting status"), state}
+
+      {:error, error} ->
+        {:error, error, state}
     end
   end
 

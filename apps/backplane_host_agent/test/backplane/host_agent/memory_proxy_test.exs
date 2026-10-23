@@ -102,6 +102,18 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     end
   end
 
+  defmodule ScopeConnector do
+    def connect(config) do
+      send(self(), {:scope_connect, config})
+      {:ok, %{channel: self(), memory: Process.get(:scope_negotiation)}}
+    end
+  end
+
+  defmodule ScopeRejoinChannel do
+    def join(_socket, _host_id), do: {:ok, Process.get(:scope_negotiation), self()}
+    defdelegate push(channel, event, payload, timeout), to: FakeChannel
+  end
+
   setup do
     previous_socket_client = Application.get_env(:backplane_host_agent, :socket_client_module)
 
@@ -133,6 +145,185 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     end)
 
     :ok
+  end
+
+  test "a negotiated v1 scope mismatch blocks private memory without retiring the channel" do
+    connection = %{
+      channel: self(),
+      memory: %{
+        "selected" => "host_memory.v1",
+        "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+      }
+    }
+
+    assert :ok = MemoryProxy.set_connection(connection, %{memory: %{bound_scope: "local"}})
+    assert MemoryProxy.channel() == self()
+    assert :ok = MemoryProxy.authorize_command()
+    assert {:error, :memory_scope_mismatch} = MemoryProxy.authorize_private()
+
+    assert {:error, :memory_scope_mismatch} =
+             MemoryProxy.call("list", %{}, agent_id: "hermes", channel_module: FakeChannel)
+
+    refute_received {:push, _, _, _}
+  end
+
+  test "v2 binding considers only nonempty private partition scopes" do
+    connection = %{
+      channel: self(),
+      memory: %{
+        "selected" => "host_memory.v2",
+        "partitions" => [
+          %{"scope" => "local", "namespace" => "public"},
+          %{"scope" => "registered", "namespace" => "private"}
+        ]
+      }
+    }
+
+    :ok = MemoryProxy.set_connection(connection, %{memory: %{bound_scope: "local"}})
+    assert {:error, :memory_scope_mismatch} = MemoryProxy.authorize_private()
+
+    :ok = MemoryProxy.set_connection(connection, %{memory: %{bound_scope: "registered"}})
+    assert :ok = MemoryProxy.authorize_private()
+  end
+
+  test "missing comparable private negotiation does not invent a binding error" do
+    for memory <- [
+          %{},
+          %{"selected" => "host_memory.v2", "partitions" => []},
+          %{
+            "selected" => "host_memory.v2",
+            "partitions" => [%{"scope" => "other", "namespace" => "public"}]
+          },
+          %{
+            "selected" => "host_memory.v2",
+            "partitions" => [%{"scope" => "", "namespace" => "private"}]
+          }
+        ] do
+      :ok =
+        MemoryProxy.set_connection(%{channel: self(), memory: memory}, %{
+          memory: %{bound_scope: "local"}
+        })
+
+      assert :ok = MemoryProxy.authorize_private()
+    end
+  end
+
+  test "binding errors survive channel loss and matching authenticated joins restore private memory" do
+    channel = start_supervised!({Agent, fn -> nil end})
+    MemoryProxy.set_connection_owner(self())
+
+    memory = %{
+      "selected" => "host_memory.v1",
+      "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+    }
+
+    :ok =
+      MemoryProxy.set_connection(%{channel: channel, memory: memory}, %{
+        memory: %{bound_scope: "local"}
+      })
+
+    Agent.stop(channel)
+    assert {:error, :memory_scope_mismatch} = MemoryProxy.authorize_private()
+    :ok = MemoryProxy.set_connection(%{channel: self()}, %{memory: %{bound_scope: "local"}})
+    assert {:error, :memory_scope_mismatch} = MemoryProxy.authorize_private()
+
+    :ok =
+      MemoryProxy.set_connection(%{channel: self(), memory: memory}, %{
+        memory: %{bound_scope: "registered"}
+      })
+
+    assert :ok = MemoryProxy.authorize_private()
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("list", %{}, agent_id: "hermes", channel_module: FakeChannel)
+  end
+
+  test "credential rejection takes precedence over a private binding error" do
+    MemoryProxy.set_connection_owner(self())
+
+    :ok =
+      MemoryProxy.set_connection(
+        %{
+          channel: self(),
+          memory: %{
+            "selected" => "host_memory.v1",
+            "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+          }
+        },
+        %{memory: %{bound_scope: "local"}}
+      )
+
+    :ok = MemoryProxy.set_connection_error(:unauthorized, self())
+    assert {:error, :unauthorized} = MemoryProxy.authorize_private()
+  end
+
+  test "a private mismatch does not block explicitly selected shared access" do
+    :ok =
+      MemoryProxy.set_connection(
+        %{
+          channel: self(),
+          memory_generation: %{id: 42},
+          memory: %{
+            "selected" => "host_memory.v1",
+            "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+          }
+        },
+        %{memory: %{bound_scope: "local"}}
+      )
+
+    assert {:ok, %{"status" => "ok"}} =
+             MemoryProxy.call("list", %{},
+               agent_id: "hermes",
+               channel_module: FakeChannel,
+               access: %{"access_id" => "shared-access", "authority_version" => 1},
+               connection_generation: 42
+             )
+
+    assert_received {:push, _, "memory_call", %{"access" => %{"access_id" => "shared-access"}}}
+  end
+
+  test "a reconnect that discovers a mismatch rejects the first private push" do
+    MemoryProxy.set_config(%{memory: %{bound_scope: "local"}})
+
+    Process.put(:scope_negotiation, %{
+      "selected" => "host_memory.v1",
+      "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+    })
+
+    assert {:error, :memory_scope_mismatch} =
+             MemoryProxy.call("list", %{},
+               agent_id: "hermes",
+               channel_module: FakeChannel,
+               connector_module: ScopeConnector
+             )
+
+    assert_received {:scope_connect, _}
+    refute_received {:push, _, _, _}
+  end
+
+  test "a rejoined socket checks the new authenticated partition before pushing" do
+    socket = start_supervised!({Agent, fn -> nil end})
+
+    :ok =
+      MemoryProxy.set_connection(
+        %{channel: dead_pid(), socket: socket, host_id: "host-1"},
+        %{memory: %{bound_scope: "local"}}
+      )
+
+    Process.put(:scope_negotiation, %{
+      "selected" => "host_memory.v1",
+      "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+    })
+
+    assert {:error, :memory_scope_mismatch} =
+             MemoryProxy.call("list", %{},
+               agent_id: "hermes",
+               channel_module: ScopeRejoinChannel,
+               connector_module: UnexpectedConnector
+             )
+
+    refute_received {:push, _, _, _}
+    refute_received {:unexpected_connect, _}
   end
 
   test "returns not_connected instead of exiting when the cached channel pid is dead" do

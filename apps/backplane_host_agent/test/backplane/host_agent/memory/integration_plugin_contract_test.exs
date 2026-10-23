@@ -8,7 +8,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     source = Path.join([@integrations_root, "hermes", "__init__.py"])
 
     script = ~S'''
-    import importlib.util, json, sys, time
+    import contextlib, importlib.util, io, json, sys, time
     from urllib.error import URLError
 
     spec = importlib.util.spec_from_file_location("backplane_memory_hermes", sys.argv[1])
@@ -31,23 +31,26 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
 
     plugin.urlopen = urlopen
     provider = plugin.BackplaneMemoryProvider()
+    provider.initialize("session-1", cwd="/Users/gao/.dotfiles")
     provider._base = "http://127.0.0.1:4222"
     provider._agent_id = "hermes-test"
-    provider._session_id = "session-1"
-    provider._scope = "/workspace/backplane"
     recall = provider.prefetch("memory query")
     saved = json.loads(provider.handle_tool_call("memory_save", {"content": "remember me", "tags": ["m18"]}))
 
+    original_post = plugin._post
     def slow_post(*_args): time.sleep(0.4)
     plugin._post = slow_post
     started = time.monotonic()
     provider.sync_turn("user", "assistant", session_id="session-2")
     elapsed_ms = (time.monotonic() - started) * 1000
 
+    plugin._post = original_post
     plugin.urlopen = lambda *_args, **_kwargs: (_ for _ in ()).throw(URLError("private-secret"))
-    failure = plugin._post("http://127.0.0.1:4222", "hermes-test", "recall", {"query": "private-secret"})
+    warnings = io.StringIO()
+    with contextlib.redirect_stderr(warnings):
+        failure = plugin._post("http://127.0.0.1:4222", "hermes-test", "recall", {"query": "private-secret"})
 
-    print(json.dumps({"calls": calls, "recall": recall, "saved": saved, "elapsed_ms": elapsed_ms, "failure": failure}))
+    print(json.dumps({"calls": calls, "recall": recall, "saved": saved, "elapsed_ms": elapsed_ms, "failure": failure, "warnings": warnings.getvalue()}))
     '''
 
     {output, 0} = System.cmd(python, ["-c", script, source], stderr_to_stdout: true)
@@ -57,6 +60,8 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     assert result["recall"] == "- prior fact"
     assert result["saved"] == %{"success" => true}
     assert result["elapsed_ms"] < 100
+    assert result["failure"] == %{"ok" => false, "error" => "request_failed"}
+    assert result["warnings"] =~ "request_failed"
 
     assert [recall, remember] = result["calls"]
     assert recall["url"] == "http://127.0.0.1:4222/memory/hermes-test/call/recall"
@@ -64,8 +69,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
 
     assert recall["body"] == %{
              "query" => "memory query",
-             "limit" => 5,
-             "scope" => "/workspace/backplane"
+             "limit" => 5
            }
 
     assert remember["url"] == "http://127.0.0.1:4222/memory/hermes-test/call/remember"
@@ -73,10 +77,22 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     assert remember["body"] == %{
              "content" => "remember me",
              "type" => "semantic",
-             "scope" => "/workspace/backplane",
              "tags" => ["m18"],
              "session_id" => "session-1"
            }
+  end
+
+  test "packaged clients preserve bound scope and expose redacted request failures" do
+    python = System.find_executable("python3") || flunk("python3 is required")
+    node = System.find_executable("node") || flunk("node is required")
+
+    for {runtime, args} <- [
+          {python, [Path.join([@integrations_root, "tests", "test_hermes.py"])]},
+          {node, ["--test", Path.join([@integrations_root, "tests", "test_openclaw.mjs"])]}
+        ] do
+      {output, status} = System.cmd(runtime, args, stderr_to_stdout: true)
+      assert status == 0, output
+    end
   end
 
   test "OpenClaw packaged plugin uses exact protocol, fail-open privacy, and async capture" do

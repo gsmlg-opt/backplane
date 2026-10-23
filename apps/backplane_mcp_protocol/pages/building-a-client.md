@@ -163,6 +163,32 @@ Which transport should you choose?
 The modern `2026-07-28` profile is supported over stdio and Streamable HTTP.
 Pin an appropriate legacy version when using WebSocket or SSE.
 
+### Keeping remote credentials on a selected origin
+
+For a connection whose headers must stay on the configured server's origin, set
+`http_options: [allowed_origin: endpoint_url]` on Streamable HTTP or legacy SSE:
+
+```elixir
+transport: {:streamable_http,
+  url: "https://mcp.example.com/mcp",
+  headers: %{"authorization" => "Bearer ..."},
+  http_options: [allowed_origin: "https://mcp.example.com"]}
+```
+
+The boundary compares scheme, hostname and effective port. Same-origin relative
+HTTP 307 redirects preserve the request method, body and headers. A foreign
+redirect returns `{:error, :cross_origin_redirect}` before sending the next
+request; a missing or malformed Location returns `{:error, :invalid_redirect}`.
+Legacy SSE also checks its advertised message endpoint before initialization and
+stops with `:cross_origin_endpoint` if it changes origin. Initial connections and
+modern subscription requests use the same boundary. Omitting `allowed_origin`
+preserves the transport's existing unrestricted behavior.
+
+Transport diagnostic status and termination reports redact stdio environments,
+remote headers, header-provider functions and connection options. Modern
+subscription controllers redact their captured request. Runtime state stays
+intact so subprocesses and requests still receive configured credentials.
+
 ## Advanced Patterns
 
 ### Multiple Client Instances

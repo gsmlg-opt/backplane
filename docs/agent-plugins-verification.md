@@ -2,8 +2,9 @@
 
 日期：2026-10-23。对应 [实现评审](agent-plugins.md) 与批准设计 Agent Note
 `22fadaea-6cfe-461f-8721-3c6b446bccb2`。
-验证对象为 `codex/agent-plugins` 的未提交 worktree，基于
-`e8317e799b8c7bceb8831b6300a95bddd368d919`。
+最初验证对象为 `codex/agent-plugins` 的未提交 worktree，基于
+`e8317e799b8c7bceb8831b6300a95bddd368d919`。下列原生 Codex 和浏览器证据来自该阶段；
+与 `main@512066a9` 整合后的自动检查另列，保留两阶段的验证边界。
 
 ## 本地测试环境
 
@@ -176,6 +177,22 @@ HTTP 提供 Git 服务，再由原生 `marketplace add http://127.0.0.1:<port>/e
 - [发布页窄屏截图](agent-plugins-evidence/releases-mobile.png)
 - [分发页截图](agent-plugins-evidence/distribution-desktop.png)
 - [浏览器检查数据](agent-plugins-evidence/browser.json)
+
+## 与 main 基线整合后的自动检查
+
+整合 `main@512066a9`（`1.10.32`）后重新执行自动验证。保留主线较新的 MCP origin、
+SSE authority 和状态脱敏实现，同时保留插件分支新增的 transport 断言。
+两个新应用和 Runtime 独立协议依赖下限统一为 `1.10.32`，未提升仓库版本。
+Runtime 的 ExDoc 测试环境限制与直接依赖的 MCP 应用保持一致，相应发布配置契约已更新。
+
+- 协议、Registry、Runtime、Host、API 和 Admin：81 项通过。
+- MCP：上述命令额外加入 `test/backplane/mcp_protocol/transport/security_test.exs`，76 项通过。
+- 功能范围共 157 项通过；工作流契约 8 项、`test/release_config_test.exs` 26 项另行通过。
+- `MIX_ENV=test mix compile --warnings-as-errors` 通过。
+- 62 个改动 Elixir 文件按所属 formatter 检查通过；33 个改动源文件 strict Credo 通过。
+- `git diff --check` 通过。
+
+这些检查针对整合后的提交内容；原生 Codex 与浏览器验收没有在此阶段重复运行。
 
 ## 未覆盖的交付阶段
 

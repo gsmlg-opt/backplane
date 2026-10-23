@@ -3,15 +3,13 @@ defmodule Backplane.HostAgent.Reporter do
   Formats host-agent status payloads for the Backplane host channel.
   """
 
-  @agent_version "0.1.0"
-
   alias Backplane.HostAgent.Memory.{CaptureUploader, Diagnostics, Spool}
   alias Backplane.HostAgent.Telemetry
 
   @doc "Builds the host-agent heartbeat payload."
   def heartbeat(config) do
     %{
-      "agent_version" => @agent_version,
+      "agent_version" => Backplane.HostAgent.version(),
       "hostname" => hostname(),
       "machine_name" => Map.fetch!(config, :machine_name),
       "metadata" => %{"otp_release" => System.otp_release()},

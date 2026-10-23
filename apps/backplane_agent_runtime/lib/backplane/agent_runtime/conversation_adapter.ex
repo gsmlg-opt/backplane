@@ -42,8 +42,13 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   Optional hooks run in bounded workers: prompt/2 before appending each user
   message, stop/2 after a response with no tools and no consumed steering.
   Stop may add a user message to continue (the host owns stop-hook recursion
-  policy). Tool permission/pre/post hooks belong in the registered backend's
-  execute/1; the runtime's grant/schema checks still precede it. A backend gets
+  policy). `prepare_tool/2` runs before final schema/grant checks, approval and
+  the invocation commit. It receives the pinned invocation and trusted context
+  with informational `input_kind: :function | :custom`; it can allow unchanged
+  input, return replacement arguments/raw custom input, or reject. Only input
+  changes are accepted; descriptor, backend, catalog and authority remain pinned.
+  The hook runs once per invocation, including supported nested calls. It must
+  not dispatch effects. Post-tool hooks belong in the registered backend. A backend gets
   `backend_context.interact.(request)` for correlated waits, resolving to
   `{:ok, value}`. Only the trusted host should expose resolve/3 to its UI after
   authenticating the responder. Interaction answers never grant tool authority.
@@ -51,5 +56,10 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   @callback stream(map(), map()) :: Enumerable.t()
   @callback prompt(map(), map()) :: {:ok, map()} | {:error, term()}
   @callback stop([map()], map()) :: :stop | {:continue, map()} | {:error, term()}
-  @optional_callbacks prompt: 2, stop: 2
+  @callback prepare_tool(map(), map()) ::
+              :allow
+              | {:allow, map() | binary()}
+              | {:deny, term()}
+              | {:error, Backplane.AgentRuntime.Error.t()}
+  @optional_callbacks prompt: 2, stop: 2, prepare_tool: 2
 end

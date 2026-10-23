@@ -126,7 +126,7 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   - `:headers` - The headers to send with the HTTP requests.
   - `:transport_opts` - The underlying HTTP transport options to pass to the HTTP client. You can check on the [Mint docs](https://hexdocs.pm/mint/Mint.HTTP.html#connect/4-transport-options)
   - `:http_options` - The underlying HTTP client options to pass to the HTTP client. You can check on the [Finch docs](https://hexdocs.pm/finch/Finch.html#t:request_opt/0)
-    `allowed_origin: url` restricts endpoint events and redirects to that origin.
+    Set `allowed_origin: url` to confine the connection, redirects and advertised message endpoints to that origin.
   """
   @type option ::
           {:name, GenServer.name()}
@@ -179,12 +179,14 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     ["2024-11-05"]
   end
 
-  # credo:disable-for-next-line Credo.Check.Design.TagTODO
-  # TODO(upstream): gsmlg-opt/backplane#78
   @impl GenServer
   def format_status(status) do
     Map.update!(status, :state, fn state ->
-      Enum.reduce([:headers, :transport_opts, :http_options], state, &Map.replace(&2, &1, :redacted))
+      Enum.reduce(
+        [:headers, :transport_opts, :http_options],
+        state,
+        &Map.replace(&2, &1, :redacted)
+      )
     end)
   end
 
@@ -193,26 +195,30 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     server_url = URI.append_path(opts.server[:base_url], opts.server[:base_path])
     sse_url = URI.append_path(server_url, opts.server[:sse_path])
 
-    state =
-      opts
-      |> Map.merge(%{message_url: nil, stream_task: nil})
-      |> Map.put(:server_url, server_url)
-      |> Map.put(:sse_url, sse_url)
+    with :ok <- HTTP.check_origin(sse_url, Keyword.get(opts.http_options, :allowed_origin)) do
+      state =
+        opts
+        |> Map.merge(%{message_url: nil, stream_task: nil})
+        |> Map.put(:server_url, server_url)
+        |> Map.put(:sse_url, sse_url)
 
-    metadata = %{
-      server_url: URI.to_string(server_url),
-      sse_url: URI.to_string(sse_url),
-      transport: :sse,
-      client: opts.client
-    }
+      metadata = %{
+        server_url: URI.to_string(server_url),
+        sse_url: URI.to_string(sse_url),
+        transport: :sse,
+        client: opts.client
+      }
 
-    Telemetry.execute(
-      Telemetry.event_transport_init(),
-      %{system_time: System.system_time()},
-      metadata
-    )
+      Telemetry.execute(
+        Telemetry.event_transport_init(),
+        %{system_time: System.system_time()},
+        metadata
+      )
 
-    {:ok, state, {:continue, :connect}}
+      {:ok, state, {:continue, :connect}}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
   end
 
   @impl GenServer
@@ -333,7 +339,7 @@ defmodule Backplane.McpProtocol.Transport.SSE do
             GenServer.cast(client, :initialize)
             {:noreply, %{state | message_url: message_url}}
 
-          {:error, _} ->
+          {:error, _reason} ->
             {:stop, :cross_origin_endpoint, state}
         end
 
@@ -414,7 +420,7 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   end
 
   # Handles multiple possible formats for message_url URI.
-  defp parse_message_url(%{path: base_path} = base, %{scheme: nil, path: path} = uri)
+  defp parse_message_url(%{path: base_path} = base, %{scheme: nil, host: nil, path: path} = uri)
        when is_binary(base_path) and is_binary(path) do
     if path =~ base_path do
       base

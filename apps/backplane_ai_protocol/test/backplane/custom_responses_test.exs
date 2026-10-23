@@ -339,6 +339,173 @@ defmodule Backplane.AiProtocol.CustomResponsesTest do
              )
   end
 
+  test "explicitly non-completed tool status rejects item and response completion" do
+    for item <- [native_call(), function_call()],
+        status <- ["in_progress", "incomplete", "failed", "cancelled", nil] do
+      key = if item["type"] == "custom_tool_call", do: "input", else: "arguments"
+      start = Map.put(item, key, "")
+
+      assert {:ok, state, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 Codec.stream_new(:openai_responses),
+                 event(%{"type" => "response.output_item.added", "item" => start})
+               )
+
+      incomplete = Map.put(item, "status", status)
+
+      assert {:error, %Error{}, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 state,
+                 event(%{"type" => "response.output_item.done", "item" => incomplete})
+               )
+
+      done_type =
+        if key == "input",
+          do: "response.custom_tool_call_input.done",
+          else: "response.function_call_arguments.done"
+
+      assert {:error, %Error{}, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 state,
+                 event(%{
+                   "type" => done_type,
+                   "item_id" => item["id"],
+                   "status" => status,
+                   key => item[key]
+                 })
+               )
+
+      assert {:error, %Error{}} =
+               Codec.decode_response(:openai_responses, 200, [], %{
+                 "status" => "completed",
+                 "output" => [incomplete]
+               })
+
+      assert {:ok, done_state, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 state,
+                 event(%{"type" => "response.output_item.done", "item" => item})
+               )
+
+      assert {:error, %Error{}, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 done_state,
+                 event(%{"type" => "response.output_item.done", "item" => incomplete})
+               )
+
+      assert {:error, %Error{}, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 done_state,
+                 event(%{
+                   "type" => "response.completed",
+                   "response" => %{"status" => "completed", "output" => [incomplete]}
+                 })
+               )
+    end
+  end
+
+  test "input done ignores added in-progress status and accepts absent or completed final status" do
+    for item <- [native_call(), function_call()], final_status <- [:absent, "completed"] do
+      {key, type} =
+        if item["type"] == "custom_tool_call",
+          do: {"input", "response.custom_tool_call_input.done"},
+          else: {"arguments", "response.function_call_arguments.done"}
+
+      initial = item |> Map.put(key, "") |> Map.put("status", "in_progress")
+      final = if final_status == :absent, do: item, else: Map.put(item, "status", final_status)
+
+      bytes =
+        event(%{"type" => "response.output_item.added", "item" => initial}) <>
+          event(%{"type" => type, "item_id" => item["id"], key => item[key]}) <>
+          event(%{"type" => "response.output_item.done", "item" => final}) <>
+          event(%{
+            "type" => "response.completed",
+            "response" => %{"status" => "completed", "output" => [final]}
+          })
+
+      assert {:ok, _state, events} =
+               Codec.stream_feed(:openai_responses, Codec.stream_new(:openai_responses), bytes)
+
+      assert Enum.count(events, &(&1.type == :tool_call_done)) == 1
+      assert Enum.count(events, &(&1.type == :terminal and &1.completeness == :complete)) == 1
+    end
+  end
+
+  test "incomplete or failed responses cannot complete partial custom input" do
+    item = Map.put(native_call(), "input", "*** Begin Patch\n")
+
+    for status <- ["incomplete", "failed"] do
+      response = %{"status" => status, "output" => [item]}
+
+      assert {:error, %Error{}} =
+               Codec.decode_response(:openai_responses, 200, [], response)
+
+      assert {:ok, state, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 Codec.stream_new(:openai_responses),
+                 event(%{"type" => "response.output_item.added", "item" => item})
+               )
+
+      assert {:error, %Error{}, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 state,
+                 event(%{"type" => "response." <> status, "response" => response})
+               )
+    end
+
+    assert {:ok, %{completeness: :partial}} =
+             Codec.decode_response(:openai_responses, 200, [], %{
+               "status" => "incomplete",
+               "output" => [
+                 %{
+                   "type" => "message",
+                   "content" => [%{"type" => "output_text", "text" => "partial"}]
+                 }
+               ]
+             })
+  end
+
+  test "terminal event type must match the embedded response status" do
+    for {type, status} <- [
+          {"response.completed", "incomplete"},
+          {"response.incomplete", "completed"}
+        ] do
+      assert {:error, %Error{}, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 Codec.stream_new(:openai_responses),
+                 event(%{"type" => type, "response" => %{"status" => status, "output" => []}})
+               )
+    end
+
+    for malformed <- [nil, 1, "completed", []] do
+      assert {:error, %Error{}, _} =
+               Codec.stream_feed(
+                 :openai_responses,
+                 Codec.stream_new(:openai_responses),
+                 event(%{"type" => "response.completed", "response" => malformed})
+               )
+    end
+  end
+
+  defp function_call do
+    %{
+      "type" => "function_call",
+      "id" => "fc_1",
+      "call_id" => "call_f",
+      "name" => "curr_time",
+      "arguments" => "{}"
+    }
+  end
+
   defp request do
     {:ok, request} =
       Request.new(%{

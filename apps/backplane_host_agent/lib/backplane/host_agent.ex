@@ -5,6 +5,12 @@ defmodule Backplane.HostAgent do
 
   alias Backplane.HostAgent.Worker
 
+  @doc "Returns the running host-agent application's version."
+  @spec version() :: String.t()
+  def version do
+    Application.spec(:backplane_host_agent, :vsn) |> to_string()
+  end
+
   def sync_now do
     if Process.whereis(Worker) do
       Worker.sync_now()

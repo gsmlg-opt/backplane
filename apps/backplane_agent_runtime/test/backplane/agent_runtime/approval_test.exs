@@ -39,6 +39,39 @@ defmodule Backplane.AgentRuntime.ApprovalTest do
   end
 
   describe "approval" do
+    test "requires a resolver identity for approved and denied decisions" do
+      for outcome <- [:approved, :denied] do
+        assert {:error, %Backplane.AgentRuntime.Error{class: :validation}} =
+                 Approval.decide(approval(), Map.delete(decision(outcome), :resolver_id))
+      end
+    end
+
+    test "rejects blank and nonbinary resolver identities for approved and denied decisions" do
+      for outcome <- [:approved, :denied],
+          resolver_id <- [nil, "", " \t\r\n", "\u00A0\u2003", :untrusted, 42, false, %{}, []] do
+        assert {:error, %Backplane.AgentRuntime.Error{class: :validation}} =
+                 Approval.decide(approval(), %{decision(outcome) | resolver_id: resolver_id})
+      end
+    end
+
+    test "accepts nonblank binary resolver identities for approved and denied decisions" do
+      for outcome <- [:approved, :denied],
+          resolver_id <- ["authenticated-host", " host ", <<255>>] do
+        assert {:ok, ^outcome} =
+                 Approval.decide(approval(), %{decision(outcome) | resolver_id: resolver_id})
+      end
+    end
+
+    test "rejects the model resolver identity for approved and denied decisions" do
+      for outcome <- [:approved, :denied] do
+        assert {:error,
+                %Backplane.AgentRuntime.Error{
+                  class: :forbidden,
+                  message: "model cannot self-approve"
+                }} = Approval.decide(approval(), %{decision(outcome) | resolver_id: "run_1"})
+      end
+    end
+
     test "approves a valid decision before expiry" do
       assert {:ok, :approved} = Approval.decide(approval(), decision(:approved))
     end

@@ -60,7 +60,8 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
          safety: safety,
          source: Map.get(attrs, :source, %{}),
          metadata: Map.get(attrs, :metadata, %{})
-       }}
+       }
+       |> copy_binding(attrs)}
     end
   end
 
@@ -97,6 +98,14 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
       codex_output_schema: contract.output_schema,
       codex_source: contract.source
     }
+    |> copy_binding(contract)
+  end
+
+  defp copy_binding(target, source) do
+    case Map.fetch(source, :collaboration_binding) do
+      {:ok, binding} -> Map.put(target, :collaboration_binding, binding)
+      :error -> target
+    end
   end
 
   @spec provider_definition(t()) :: map()

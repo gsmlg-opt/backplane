@@ -11,6 +11,20 @@
 
 ## Unreleased
 
+- Require a nonblank binary resolver identity for approved and denied decisions
+  (#80), preserving model self-approval rejection. Resolver authentication and
+  authorization remain the caller's responsibility.
+
+- Stop the Session-owned resource registry when the Session terminates normally,
+  allowing OTP to reclaim its worker and cleanup supervisors (#79). Closed
+  Sessions remain inspectable until termination; uncertain cleanup receipts and
+  borrowed command/collaboration runtimes retain their existing semantics.
+
+- Bind host-owned collaboration names and schemas to explicit MultiAgent actions
+  without replacing admitted tool identities (#74). Fingerprinted grants prevent
+  descriptor or action changes from reusing authorization; custom calls share
+  the existing supervised child admission, mailbox, wait and cancellation paths.
+
 - Return invocation-bound rejection proof for collaboration refusals before
   effects, including V2 execution capacity. Real parent Conversations receive a
   structured tool error and continue without reserving another child (#72).

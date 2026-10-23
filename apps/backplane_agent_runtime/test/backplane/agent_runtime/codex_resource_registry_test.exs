@@ -3,6 +3,25 @@ defmodule Backplane.AgentRuntime.CodexResourceRegistryTest do
 
   alias Backplane.AgentRuntime.{Error, Codex.ResourceRegistry}
 
+  test "normal stop removes both owned supervisors" do
+    {:ok, registry} = ResourceRegistry.start_link([])
+    {:links, children} = Process.info(registry, :links)
+    children = children -- [self()]
+    assert length(children) == 2
+    monitors = Enum.map(children, &{&1, Process.monitor(&1)})
+
+    on_exit(fn ->
+      for pid <- children, Process.alive?(pid), do: Process.exit(pid, :kill)
+    end)
+
+    assert :ok = GenServer.stop(registry, :normal)
+
+    for {pid, ref} <- monitors do
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+      refute Process.alive?(pid)
+    end
+  end
+
   test "fences cross-owner and stale-incarnation handles and cleans on release" do
     {:ok, registry} = ResourceRegistry.start_link([])
     parent = self()

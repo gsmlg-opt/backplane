@@ -471,7 +471,10 @@ defmodule Backplane.HostAgent.MemoryRouter do
           200,
           jsonrpc_result(id, %{
             "protocolVersion" => negotiated,
-            "serverInfo" => %{"name" => "backplane-host-agent-memory", "version" => "0.1.0"},
+            "serverInfo" => %{
+              "name" => "backplane-host-agent-memory",
+              "version" => Backplane.HostAgent.version()
+            },
             "capabilities" => %{"tools" => %{}}
           })
         )
