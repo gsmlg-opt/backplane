@@ -80,6 +80,22 @@ does not emit `interaction_resolved`. Conversation must reject resolution in
 terminal, cancelling, storage-failed and recovery-required phases, and recheck
 the live interaction after a held resolution checkpoint before waking its worker.
 
+Cancellation settlement uses temporary workers under the manager's existing child
+supervisor. Interrupt, interrupting input, child close and session close fence
+actionable interactions immediately; waiting for cancellation and terminal Store
+snapshots happens outside the manager. Workers return cancellation and snapshot
+evidence pinned to the manager, child, run, incarnation and PID. The manager alone
+validates evidence, applies existing lifecycle reducers and publishes revisions.
+Transient evidence is removed in the same callback, including after replacement.
+
+Overlapping lifecycle requests queue by affected child identity; unrelated children
+remain available. A queued close fences replacement immediately. Child-close
+workers preserve the existing stop-on-first-failure traversal; session close still
+attempts every child. Lost workers, timeouts, stale identities and missing evidence
+retain uncertainty and capacity reservations. Physical termination remains in the
+manager after accepted terminal evidence; this does not promise arbitrary process
+shutdown is instantaneous.
+
 Interaction requests exposed publicly must be JSON encodable. Preserve existing
 atom-key/atom-enum requests by normalizing their public representation to JSON
 strings; reject opaque handles, functions, references, tuples, invalid text and

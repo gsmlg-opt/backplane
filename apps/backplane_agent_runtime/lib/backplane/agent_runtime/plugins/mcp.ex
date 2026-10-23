@@ -26,10 +26,12 @@ defmodule Backplane.AgentRuntime.Plugins.MCP do
     deadline = System.monotonic_time(:millisecond) + timeout
 
     with :ok <- Client.await_ready(connection.client, timeout: timeout) do
-      list_tools(connection.client, deadline, nil, MapSet.new(), [])
+      list_tools(connection.client, deadline, nil, %{}, [])
     end
   end
 
+  @spec list_tools(GenServer.server(), number(), String.t() | nil, map(), [list()]) ::
+          {:ok, list()} | {:error, :invalid_tool_cursor | :invalid_tool_catalog}
   defp list_tools(client, deadline, cursor, seen, pages) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
@@ -42,10 +44,10 @@ defmodule Backplane.AgentRuntime.Plugins.MCP do
           {:ok, pages |> Enum.reverse() |> Enum.concat() |> Kernel.++(tools)}
 
         next when is_binary(next) and next != "" ->
-          if MapSet.member?(seen, next) do
+          if Map.has_key?(seen, next) do
             {:error, :invalid_tool_cursor}
           else
-            list_tools(client, deadline, next, MapSet.put(seen, next), [tools | pages])
+            list_tools(client, deadline, next, Map.put(seen, next, true), [tools | pages])
           end
 
         _ ->

@@ -14,7 +14,7 @@ defmodule Backplane.AgentRuntime.Outbox do
   end
 
   @spec submit(t(), String.t(), map()) ::
-          {:ok, t(), %{status: :submitted | :duplicate}}
+          {:ok, t(), %{status: :submitted, submission_id: String.t(), digest: String.t()}}
           | {:error, Backplane.AgentRuntime.Error.t()}
   def submit(outbox, submission_id, payload)
       when is_binary(submission_id) and is_map(payload) do

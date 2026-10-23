@@ -79,8 +79,7 @@ defmodule Backplane.AgentRuntime.Goal do
                 do: State.update(record, :host, mutation),
                 else: State.create(record, mutation)
             end
-          end,
-          true
+          end
         )
       else
         {:error, error} -> {:reply, {:error, error}, state}
@@ -99,8 +98,7 @@ defmodule Backplane.AgentRuntime.Goal do
           state,
           fn record ->
             with :ok <- fence_goal(record, expected_goal_id), do: State.clear(record)
-          end,
-          true
+          end
         )
       else
         {:error, error} -> {:reply, {:error, error}, state}
@@ -445,12 +443,12 @@ defmodule Backplane.AgentRuntime.Goal do
   def handle_info({:DOWN, ref, :process, _, _}, %{owner_ref: ref} = state),
     do: {:stop, :normal, state}
 
-  defp mutate(state, fun, revoke) do
+  defp mutate(state, fun) do
     case transact(state, fn record ->
            with {:ok, next} <- fun.(record), do: {:ok, next, State.response(next)}
          end) do
       {:ok, next, response} ->
-        {:reply, {:ok, response}, if(revoke, do: %{next | reserved: nil}, else: next)}
+        {:reply, {:ok, response}, %{next | reserved: nil}}
 
       {:error, error, next} ->
         {:reply, {:error, error}, next}

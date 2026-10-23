@@ -12,6 +12,7 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
   @type input_kind :: :function | :custom
 
   @type t :: %{
+          optional(:collaboration_binding) => map(),
           namespace: String.t() | nil,
           name: String.t(),
           tool_name: String.t(),

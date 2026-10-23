@@ -75,7 +75,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
     with {:ok, root} <- confined_path(resource.scope, Map.get(reference, :path)),
          {:ok, full_pattern} <- confined_pattern(resource.scope, root, pattern) do
       matches =
-        Path.wildcard(full_pattern, unescape: true)
+        Path.wildcard(full_pattern)
         |> Enum.sort()
         |> Enum.take(limit(opts))
         |> Enum.filter(&inside_scope?(resource.scope, &1))
@@ -95,7 +95,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalResource do
            confined_pattern(resource.scope, root, Map.get(opts, :pattern, "*")) do
       matches =
         full_pattern
-        |> Path.wildcard(unescape: true)
+        |> Path.wildcard()
         |> Enum.sort()
         |> Enum.take(limit(opts))
         |> Enum.flat_map(fn candidate ->

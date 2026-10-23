@@ -52,6 +52,35 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   `backend_context.interact.(request)` for correlated waits, resolving to
   `{:ok, value}`. Only the trusted host should expose resolve/3 to its UI after
   authenticating the responder. Interaction answers never grant tool authority.
+
+  Direct and nested preparation/backend contexts expose
+  `append_feedback.(%{id: stable_id, text: text, source: source, stage: stage})`.
+  All four values are nonempty UTF-8 strings: id/source/stage are at most 256
+  bytes, text at most 64 KiB. Atom or string field names are accepted; extra
+  fields and ambiguous aliases are rejected. The callback returns
+  `{:ok, %{id: id, correlation: runtime_identity, revision: committed_revision,
+  store_mode: :durable | :ephemeral}}` only after the canonical Store checkpoint
+  and a producer-liveness recheck. Ephemeral acceptance is not durable.
+
+  Feedback belongs to the immutable invocation attempt assigned before
+  preparation; input rewrites and approval edits preserve that identity. A
+  receipt does not attest to argument bytes, dispatch or tool success. Denied
+  attempts retain accepted feedback. Exact retries from the same live invocation
+  return the original receipt; changing payload/provenance/invocation under the
+  same ID conflicts. Completed/cancelled producers cannot retry.
+
+  At the next natural provider boundary, accepted feedback is checkpointed once
+  as user-role messages, after the complete assistant-tool/result batch. Content
+  starts with `[Host feedback]`; `host_feedback` metadata has string keys for ID,
+  source, stage, correlation, accepted revision and Store mode. It grants no
+  system authority and never starts an extra turn. Adapters should preserve this
+  canonical content and may carry metadata as their transport supports.
+
+  Interaction requests must be JSON-safe maps. Atom keys/enums are accepted;
+  their public representation uses strings. Opaque values, invalid UTF-8,
+  ambiguous normalized keys, nesting beyond 32 and encoded values over 256 KiB
+  are rejected before admission. Root interaction/resolve semantics retain the
+  original atom-shaped request and answer for existing adapters.
   """
   @callback stream(map(), map()) :: Enumerable.t()
   @callback prompt(map(), map()) :: {:ok, map()} | {:error, term()}

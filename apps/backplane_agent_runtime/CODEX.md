@@ -32,6 +32,7 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   `wait_agent` distinguishes mailbox activity, new steer and timeout.
   See `EMBEDDING.md` for the
   preparation, observer revision, admission and restart boundaries.
+
 - `:extensions` exposes 27 concrete goal, memory, skill, history, note, and
   message-board tools. The bundled scoped reference state is ephemeral. A host
   adapter is required before claiming durability or restart recovery. Supplying
@@ -56,6 +57,44 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   `:collaboration_v1` or `:collaboration_v2`, `:extensions`, `:dynamic`,
   `:code_mode`, and `:services` families. Missing families and duplicate
   canonical names fail before admission.
+
+### Observing and resolving child interactions
+
+`Codex.MultiAgent.subscribe(manager)` atomically returns the complete child roster
+and its process-local `manager_id`/revision watermark. Later
+`{:codex_collaboration, event}` messages carry complete child records. Reconcile
+with another snapshot after an observation gap; a restarted manager is a new
+stream rather than durable replay.
+
+Each record includes `pending_interaction: nil | %{id: id, request: request,
+correlation: correlation}`. Waiting children retain `status: :running`. Requests
+are normalized to JSON-safe strings and values without exposing child PIDs or
+worker handles. `:interaction_requested` and `:interaction_resolved` events both
+include `interaction_id`, even after the resolved record's pending field clears.
+
+Pass the exact observed correlation to
+`Codex.MultiAgent.resolve_interaction(manager, correlation, value)`. It identifies
+`manager_id`, stable `agent_id`, current `run_id`, `incarnation`, and
+`interaction_id`. Malformed correlation or non-JSON-safe answers fail validation;
+unknown children return `:not_found`; stale, closed or duplicate answers return
+`:resource_conflict`. Resolution runs asynchronously so child persistence cannot
+block manager observation or other children. `:ok` acknowledges the child's
+resolution checkpoint, not tool completion. An exact `:interaction_resolved`
+event also proves that checkpoint; later task settlement cannot turn an already
+observed commit into a rejected answer. Delivery workers are temporary children
+of the manager's supervisor and stop when their manager exits.
+
+The manager waits at most five seconds for resolution acknowledgement,
+independently of the child's configured `commit_timeout` (also five seconds by
+default). A longer child commit can therefore outlast the manager's wait.
+Lost acknowledgement returns
+`:unknown_outcome`; never retry automatically. A submitted interaction stays
+reserved until later observation or cancellation reconciles it.
+
+Interrupt, close, session shutdown, replacement, child exit and storage failure
+invalidate pending answers. Cancellation never emits `:interaction_resolved`.
+Replacement retains the stable child identity and carries canonical messages,
+mailbox and the `host_feedback` history seed with their original record identities.
 
 Provider-hosted capabilities are separate from local tools. A configured
 provider adapter negotiates them and `:configured` returns them in

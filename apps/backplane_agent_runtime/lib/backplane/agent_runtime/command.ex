@@ -240,7 +240,7 @@ defmodule Backplane.AgentRuntime.Command do
   end
 
   defp validate_job_owner(job, owner_run_id) do
-    if is_map(job) and job.owner_run_id == owner_run_id do
+    if job.owner_run_id == owner_run_id do
       {:ok, job}
     else
       {:error, Error.new(:forbidden, "command job owner does not match invocation owner")}

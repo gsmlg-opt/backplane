@@ -16,7 +16,8 @@ defmodule Backplane.AgentRuntime.Inbox do
   end
 
   @spec deliver(t(), map()) ::
-          {:ok, t(), %{status: :accepted | :duplicate}} | {:error, Error.t()}
+          {:ok, t(), %{status: :accepted, correlation_id: String.t(), digest: String.t()}}
+          | {:error, Error.t()}
   def deliver(inbox, message) when is_map(inbox) and is_map(message) do
     with {:ok, message} <- validate_message(message),
          {:ok, digest} <- payload_digest(message) do

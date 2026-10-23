@@ -218,10 +218,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         {:reply, {:error, Error.new(:not_found, "job not found")}, state}
 
       _current ->
-        if Port.command(job.port, chars) do
+        try do
+          Port.command(job.port, chars)
           {:reply, :ok, state}
-        else
-          {:reply, {:error, Error.new(:execution_failure, "command stdin write failed")}, state}
+        rescue
+          ArgumentError ->
+            {:reply, {:error, Error.new(:execution_failure, "command stdin write failed")}, state}
         end
     end
   end

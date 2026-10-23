@@ -40,7 +40,13 @@ defmodule Backplane.AgentRuntime.Store do
   @optional_callbacks fence: 5
 
   @spec stage(module(), term(), map(), map()) ::
-          {:ok, %{revision: non_neg_integer(), outbox: list(), stage: term()}}
+          {:ok,
+           %{
+             revision: non_neg_integer(),
+             outbox: list(),
+             stage: term(),
+             mode: :ephemeral | :durable
+           }}
           | {:error, Error.t()}
   def stage(impl, _context, record, meta)
       when is_atom(impl) and is_map(record) and is_map(meta) do
@@ -64,7 +70,8 @@ defmodule Backplane.AgentRuntime.Store do
   end
 
   @spec acknowledge_commit(module(), term(), term(), map()) ::
-          {:ok, %{revision: non_neg_integer(), outbox: list()}} | {:error, Error.t()}
+          {:ok, %{revision: non_neg_integer(), outbox: list(), mode: :ephemeral | :durable}}
+          | {:error, Error.t()}
   def acknowledge_commit(impl, context, stage, meta)
       when is_atom(impl) and is_map(stage) and is_map(meta) do
     with {:ok, mode} <- validate_mode(impl),
@@ -126,7 +133,8 @@ defmodule Backplane.AgentRuntime.Store do
   end
 
   @spec store(module(), term(), map(), map()) ::
-          {:ok, %{revision: non_neg_integer(), outbox: list()}} | {:error, Error.t()}
+          {:ok, %{revision: non_neg_integer(), outbox: list(), mode: :ephemeral | :durable}}
+          | {:error, Error.t()}
   def store(impl, context, record, meta)
       when is_atom(impl) and is_map(record) and is_map(meta) do
     with {:ok, mode} <- validate_mode(impl),

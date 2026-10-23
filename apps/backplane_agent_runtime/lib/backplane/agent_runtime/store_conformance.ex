@@ -268,7 +268,6 @@ defmodule Backplane.AgentRuntime.StoreConformance do
     else
       false -> error(:resource_conflict, "loaded revision did not match acknowledgement")
       {:error, %Error{} = error} -> {:error, error}
-      other -> invalid_result("commit", other)
     end
   end
 

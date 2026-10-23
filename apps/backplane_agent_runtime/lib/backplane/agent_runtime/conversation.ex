@@ -7,6 +7,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     Execution,
     Goal,
     GoalBridge,
+    HostFeedback,
     Usage,
     InputSchema,
     Policy,
@@ -41,7 +42,9 @@ defmodule Backplane.AgentRuntime.Conversation do
   """
 
   def start_link(opts) do
-    with :ok <- ProviderOutput.validate_options(opts),
+    with {:ok, feedback} <- HostFeedback.history(opts),
+         opts = Keyword.put(opts, :host_feedback, feedback),
+         :ok <- ProviderOutput.validate_options(opts),
          :ok <- validate_session_options(opts),
          :ok <- GoalBridge.validate_options(opts),
          :ok <- validate_inherited_deadline(opts),
@@ -126,6 +129,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   def queue_only(pid, content, communication, expected),
     do: GenServer.call(pid, {:queue_only, content, communication, expected}, :infinity)
 
+  def public_interaction(value), do: HostFeedback.public(value)
+
   def resolve(pid, id, value), do: GenServer.call(pid, {:resolve, id, value}, :infinity)
 
   def stage_catalog(pid, update),
@@ -147,6 +152,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     conversation = %{
       messages: Keyword.get(opts, :messages, []),
+      host_feedback: Keyword.get(opts, :host_feedback, []),
       steering: [],
       follow_up: [],
       mailbox: Keyword.get(opts, :mailbox, []),
@@ -186,7 +192,8 @@ defmodule Backplane.AgentRuntime.Conversation do
     state = %{
       opts: opts,
       run: run,
-      conversation: get_in(run, [:context, :conversation]) || conversation,
+      conversation:
+        Map.put_new(get_in(run, [:context, :conversation]) || conversation, :host_feedback, []),
       phase: phase,
       supervisor: sup,
       limits: limits,
@@ -317,14 +324,34 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  def handle_call({:resolve, _, _}, _from, %{phase: phase} = s)
+      when phase in [:terminal, :cancelling, :storage_failed, :recovery_required],
+      do: {:reply, {:error, Error.new(:resource_conflict, "run is not accepting resolutions")}, s}
+
   def handle_call({:resolve, id, value}, from, s),
     do: {:noreply, enqueue(%{s | callers: [from | s.callers]}, {:resolve, id, value, from})}
 
   def handle_call({:interact, token, request}, from, s) do
-    if current_effect?(s, token) and is_nil(s.interaction) and is_map(request) do
+    with true <- current_effect?(s, token) and is_nil(s.interaction),
+         true <- is_map(request),
+         {:ok, _} <- public_interaction(request) do
       {:noreply, enqueue(s, {:interact, token, request, from})}
     else
-      {:reply, {:error, Error.new(:resource_conflict, "stale or overlapping interaction")}, s}
+      {:error, error} ->
+        {:reply, {:error, error}, s}
+
+      _ ->
+        {:reply, {:error, Error.new(:resource_conflict, "stale or overlapping interaction")}, s}
+    end
+  end
+
+  def handle_call({:append_feedback, token, payload}, from, s) do
+    with {:ok, _invocation, _enclosing} <- feedback_producer(s, token),
+         {:ok, payload} <- HostFeedback.payload(payload) do
+      {:noreply,
+       enqueue(%{s | callers: [from | s.callers]}, {:append_feedback, token, payload, from})}
+    else
+      {:error, error} -> {:reply, {:error, error}, s}
     end
   end
 
@@ -786,6 +813,46 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  defp process(s, {:append_feedback, token, payload, from}) do
+    with {:ok, invocation, enclosing} <- feedback_producer(s, token) do
+      correlation = HostFeedback.correlation(invocation, enclosing)
+      records = Map.get(s.conversation, :host_feedback, [])
+
+      case Enum.find(records, &(&1["id"] == payload["id"])) do
+        nil ->
+          store = Keyword.fetch!(s.opts, :store)
+
+          record =
+            HostFeedback.record(payload, correlation, s.run.expected_revision + 1, store.mode())
+
+          conversation = Map.put(s.conversation, :host_feedback, records ++ [record])
+
+          checkpoint(s, conversation, fn next ->
+            case feedback_producer(next, token) do
+              {:ok, _, _} -> reply(next, from, {:ok, HostFeedback.receipt(record)})
+              {:error, error} -> reply(next, from, {:error, error})
+            end
+          end)
+
+        record ->
+          if HostFeedback.same?(record, payload, correlation),
+            do: reply(s, from, {:ok, HostFeedback.receipt(record)}),
+            else:
+              reply(
+                s,
+                from,
+                {:error,
+                 Error.new(
+                   :resource_conflict,
+                   "feedback ID already belongs to another payload or invocation"
+                 )}
+              )
+      end
+    else
+      {:error, error} -> reply(s, from, {:error, error})
+    end
+  end
+
   defp process(s, {:interact, token, request, from}) do
     if current_effect?(s, token) and is_nil(s.interaction) do
       interaction = %{id: id("interaction"), request: request}
@@ -811,20 +878,36 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  defp process(%{phase: phase} = s, {:resolve, _, _, from})
+       when phase in [:terminal, :cancelling, :storage_failed, :recovery_required],
+       do:
+         reply(
+           s,
+           from,
+           {:error, Error.new(:resource_conflict, "run is not accepting resolutions")}
+         )
+
   defp process(s, {:resolve, id, value, from}) do
     case s.interaction do
-      %{id: ^id, from: waiter} ->
+      %{id: ^id, from: waiter, token: token} ->
         deadline = resume_deadline(s)
 
         checkpoint(
           s,
           %{s.conversation | pending_interaction: nil},
           fn s ->
-            GenServer.reply(waiter, {:ok, value})
-            s = reply(s, from, :ok)
-            emit(s, %{type: :interaction_resolved, interaction_id: id})
-            s = %{s | interaction: nil, phase: :running}
-            resume_deadlines(s)
+            if current_effect?(s, token) and match?(%{id: ^id, token: ^token}, s.interaction) do
+              GenServer.reply(waiter, {:ok, value})
+              s = reply(s, from, :ok)
+              emit(s, %{type: :interaction_resolved, interaction_id: id})
+              resume_deadlines(%{s | interaction: nil, phase: :running})
+            else
+              reply(
+                s,
+                from,
+                {:error, Error.new(:resource_conflict, "interaction is no longer live")}
+              )
+            end
           end,
           execution_deadline: deadline
         )
@@ -1092,6 +1175,16 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp start_provider(s) do
+    conversation = HostFeedback.project(s.conversation)
+
+    if conversation != s.conversation do
+      checkpoint(s, conversation, &start_provider/1)
+    else
+      start_provider_with_mailbox(s)
+    end
+  end
+
+  defp start_provider_with_mailbox(s) do
     case Map.get(s.conversation, :mailbox, []) do
       [] ->
         do_start_provider(s)
@@ -1321,6 +1414,8 @@ defmodule Backplane.AgentRuntime.Conversation do
           if(descriptor[:codex_input_kind] == :custom, do: :custom, else: :function)
         )
 
+      context = feedback_context(context, self(), token)
+
       task =
         Task.Supervisor.async_nolink(s.supervisor, fn ->
           hook(s, :prepare_tool, [invocation, context], :allow)
@@ -1445,6 +1540,7 @@ defmodule Backplane.AgentRuntime.Conversation do
                 prepared.host_context,
                 Map.take(context, [
                   :interact,
+                  :append_feedback,
                   :emit,
                   :catalog_snapshot,
                   :stage_catalog,
@@ -1790,7 +1886,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       end
 
     commit(s, {:conversation_updated, now(), input}, %{}, [], fn s, _ ->
-      next.(%{s | conversation: conversation})
+      next.(s)
     end)
   end
 
@@ -1868,18 +1964,30 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp rebase_queued_command(_s, command), do: command
 
   defp merge_conversation(base, current, desired) do
-    Enum.reduce([:messages, :steering, :follow_up, :mailbox], desired, fn key, acc ->
-      base_items = Map.get(base, key, [])
-      current_items = Map.get(current, key, [])
-      desired_items = Map.get(desired, key, [])
+    merged =
+      Enum.reduce([:messages, :steering, :follow_up, :mailbox], desired, fn key, acc ->
+        base_items = Map.get(base, key, [])
+        current_items = Map.get(current, key, [])
+        desired_items = Map.get(desired, key, [])
 
-      suffix =
-        if Enum.take(desired_items, length(base_items)) == base_items,
-          do: Enum.drop(desired_items, length(base_items)),
-          else: desired_items
+        suffix =
+          if Enum.take(desired_items, length(base_items)) == base_items,
+            do: Enum.drop(desired_items, length(base_items)),
+            else: desired_items
 
-      Map.put(acc, key, current_items ++ suffix)
-    end)
+        Map.put(acc, key, current_items ++ suffix)
+      end)
+
+    merged = Map.update!(merged, :messages, &HostFeedback.merge_messages/1)
+
+    Map.put(
+      merged,
+      :host_feedback,
+      HostFeedback.merge(
+        Map.get(current, :host_feedback, []),
+        Map.get(desired, :host_feedback, [])
+      )
+    )
   end
 
   defp do_commit(s, command, meta, extra, next) do
@@ -1989,6 +2097,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp trusted_effect_context(s, token, catalog, owner, producer, boundary) do
     base_effect_context(s, owner, token)
+    |> feedback_context(owner, token)
     |> Map.put(:catalog_snapshot, catalog)
     |> Map.put(:stage_catalog, fn update ->
       GenServer.call(owner, {:stage_catalog, token, update}, :infinity)
@@ -2000,6 +2109,38 @@ defmodule Backplane.AgentRuntime.Conversation do
     |> Map.put(:producer_invocation, producer)
     |> Map.put(:publication_boundary, boundary)
   end
+
+  defp feedback_context(context, owner, token) do
+    Map.put(context, :append_feedback, fn payload ->
+      GenServer.call(owner, {:append_feedback, token, payload}, :infinity)
+    end)
+  end
+
+  defp feedback_producer(%{stopping: nil, phase: phase} = s, token)
+       when phase not in [:terminal, :cancelling, :storage_failed, :recovery_required] do
+    cond do
+      s.preparation && s.preparation.token == token && s.preparation.task &&
+          (is_nil(s.preparation.outer_token) ||
+             (s.effect && s.effect.token == s.preparation.outer_token && s.effect.task)) ->
+        {:ok, s.preparation.invocation, outer_invocation(s.preparation.invocation, s)}
+
+      s.nested && s.nested.token == token && s.nested.task && s.effect && s.effect.task ->
+        {:ok, s.nested.invocation, outer_invocation(s.nested.invocation, s)}
+
+      s.effect && s.effect.token == token && s.effect.task &&
+          match?({:tool, _, _, _}, s.effect.role) ->
+        {:tool, invocation, _, _} = s.effect.role
+        {:ok, invocation, invocation}
+
+      true ->
+        stale_feedback()
+    end
+  end
+
+  defp feedback_producer(_, _), do: stale_feedback()
+
+  defp stale_feedback,
+    do: {:error, Error.new(:resource_conflict, "feedback producer is no longer live")}
 
   defp stop(s, reason) do
     s = invalidate_run_timer(s)
@@ -2117,6 +2258,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.nested && s.nested.task, do: kill_task(s.nested)
     if s.nested, do: GenServer.reply(s.nested.from, {:error, error})
+    if s.interaction, do: GenServer.reply(s.interaction.from, {:error, error})
     Enum.each(s.callers, &GenServer.reply(&1, {:error, error}))
     reject_jobs(s.jobs)
     emit(s, %{type: :storage_failed, error: error, recovery_required: true})
@@ -2126,6 +2268,8 @@ defmodule Backplane.AgentRuntime.Conversation do
     %{
       s
       | phase: :storage_failed,
+        interaction: nil,
+        conversation: Map.put(s.conversation, :pending_interaction, nil),
         goal_delivery: nil,
         effect: nil,
         preparation: nil,

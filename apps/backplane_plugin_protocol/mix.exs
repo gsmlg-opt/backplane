@@ -1,14 +1,20 @@
 defmodule BackplanePluginProtocol.MixProject do
   use Mix.Project
 
+  @version "1.10.32"
+
   def project do
     [
       app: :backplane_plugin_protocol,
-      version: "1.10.32",
+      version: @version,
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
-      deps: [{:yaml_elixir, "~> 2.9"}],
+      deps: [
+        {:yaml_elixir, "~> 2.9"},
+        {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
+      ],
       description: "Agent Plugins 1.0 package loading and Backplane distribution client",
+      docs: [main: "readme", extras: ["README.md"]],
       package: [
         licenses: ["Apache-2.0"],
         links: %{"GitHub" => "https://github.com/gsmlg-opt/backplane"},

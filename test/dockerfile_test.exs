@@ -6,8 +6,8 @@ defmodule Backplane.DockerfileTest do
   test "copies every umbrella app manifest before production deps are fetched" do
     dockerfile = File.read!(Path.expand("../Dockerfile", __DIR__))
 
-    dependency_stage =
-      dockerfile |> String.split("RUN mix deps.get --only prod", parts: 2) |> hd()
+    assert [dependency_stage, _rest] =
+             String.split(dockerfile, ~r/^RUN mix deps\.get\b/m, parts: 2)
 
     required_manifests =
       Path.wildcard(Path.expand("../apps/*/mix.exs", __DIR__))
@@ -18,7 +18,7 @@ defmodule Backplane.DockerfileTest do
 
     for manifest <- required_manifests do
       assert dependency_stage =~ manifest,
-             "expected #{manifest} to be copied before mix deps.get --only prod"
+             "expected #{manifest} to be copied before mix deps.get"
     end
   end
 

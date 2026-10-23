@@ -153,7 +153,7 @@ defmodule Backplane.Settings.Credentials do
   @spec fetch_with_meta(String.t()) ::
           {:ok, String.t(),
            %{
-             auth_type: String.t(),
+             auth_type: String.t() | nil,
              extra_headers: [{String.t(), String.t()}],
              metadata: map()
            }}

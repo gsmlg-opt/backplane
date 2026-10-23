@@ -31,7 +31,7 @@ defmodule Backplane.AgentRuntime.Context do
     end
   end
 
-  @spec fork(t(), map(), map()) :: {:ok, t()} | {:error, Error.t()}
+  @spec fork(t(), map(), list()) :: {:ok, t()} | {:error, Error.t()}
   def fork(context, child, selection)
       when is_map(context) and is_map(child) and is_list(selection) do
     if :instructions in selection do

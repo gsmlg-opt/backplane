@@ -65,9 +65,90 @@ jobs:
           --version "$RELEASE_VERSION"
           --source-run-id "$SOURCE_RUN_ID"
 
+  hex-plugin-protocol:
+    name: Publish backplane_plugin_protocol to Hex
+    needs: qualify
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: read
+
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      MIX_ENV: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.qualify.outputs.gated_sha }}
+
+      # Older qualified releases may predate the plugin package entirely.
+      - name: Check plugin package availability
+        id: package
+        shell: bash
+        run: |
+          present=false
+          if [[ -f apps/backplane_plugin_protocol/mix.exs ]]; then
+            present=true
+          fi
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+
+      - name: Set up BEAM
+        if: steps.package.outputs.present == 'true'
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Validate package version
+        if: steps.package.outputs.present == 'true'
+        working-directory: apps/backplane_plugin_protocol
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.qualify.outputs.version }}
+        run: |
+          package_version="$(awk -F '"' '/^[[:space:]]*@version/ { print $2; exit }' mix.exs)"
+
+          if [[ -z "$package_version" ]]; then
+            echo "Could not read backplane_plugin_protocol version from mix.exs" >&2
+            exit 1
+          fi
+
+          if [[ "$package_version" != "$RELEASE_VERSION" ]]; then
+            echo "Release version $RELEASE_VERSION does not match backplane_plugin_protocol version $package_version" >&2
+            exit 1
+          fi
+
+      - name: Require Hex API key
+        if: steps.package.outputs.present == 'true'
+        shell: bash
+        run: |
+          if [[ -z "${HEX_API_KEY:-}" ]]; then
+            echo "HEX_API_KEY secret is required to publish backplane_plugin_protocol to Hex" >&2
+            exit 1
+          fi
+
+      - name: Install package publishing dependencies
+        if: steps.package.outputs.present == 'true'
+        working-directory: apps/backplane_plugin_protocol
+        run: mix deps.get
+
+      - name: Verify package documentation
+        if: steps.package.outputs.present == 'true'
+        working-directory: apps/backplane_plugin_protocol
+        run: mix docs
+
+      - name: Publish package
+        if: steps.package.outputs.present == 'true'
+        working-directory: apps/backplane_plugin_protocol
+        run: mix hex.publish --yes
+
   hex-packages:
     name: Publish ${{ matrix.package.name }} to Hex
-    needs: qualify
+    needs:
+      - qualify
+      - hex-plugin-protocol
     runs-on: ubuntu-24.04
 
     strategy:

@@ -15,6 +15,36 @@ before final validation, authorization, exact-input approval and invocation comm
 Approval input edits require fresh approval, and nested preparation preserves the
 outer execution fence; see [EMBEDDING.md](EMBEDDING.md).
 
+Preparation and backend contexts support token-bound host feedback:
+
+```elixir
+{:ok, receipt} = context.append_feedback.(%{
+  id: "stable-host-id", text: "Additional context", source: "sigma-hooks", stage: "PreToolUse"
+})
+```
+
+The four required values are nonempty UTF-8 strings. ID/source/stage allow 256
+bytes each; text allows 64 KiB. String field names also work; unsupported fields
+and duplicate atom/string aliases fail validation. Runtime supplies the complete
+invocation correlation; callers cannot supply identity or authority. A receipt
+means the Store acknowledged the canonical record and its producer remained live.
+Check `receipt.store_mode`: `:ephemeral` explicitly does not establish durability.
+Input rewrites retain invocation identity; feedback acceptance does not imply
+approval, dispatch or success. Cancellation and completed producers fence callbacks.
+
+`Conversation.status(pid).conversation.host_feedback` is an ordered collection of
+JSON-safe string-keyed records containing `id`, `text`, `source`, `stage`,
+`correlation`, `revision`, `store_mode` and `projected`. At the next natural
+provider boundary, each record projects once as a user message after the full
+tool-result batch: content starts with `[Host feedback]`, and `host_feedback`
+metadata carries provenance/correlation. This never starts an extra turn or grants
+system authority. Context resets retain the ID ledger. For a replacement run,
+pass `host_feedback: previous.conversation.host_feedback` alongside
+`messages: previous.messages`; preserve original record identity, even across
+runs. Marked canonical messages also reconstruct missing ledger records with
+original identities when only messages are supplied. Missing old ledgers default to
+empty; restoring `run:` remains inspection-only and does not replay callbacks.
+
 Hosts can bind their own collaboration tool names and schemas to the existing
 supervised MultiAgent lifecycle with `Codex.MultiAgent.bind_contract/3` and
 `call_bound/2`. Binding grants cover the original descriptor and explicit action;

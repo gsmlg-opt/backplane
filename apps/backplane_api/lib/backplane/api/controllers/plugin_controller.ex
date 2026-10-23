@@ -249,7 +249,6 @@ defmodule Backplane.Api.PluginController do
 
   defp respond(conn, {:ok, value}), do: json(conn, value)
   defp respond(conn, {:error, :not_found}), do: error(conn, 404, "not_found")
-  defp respond(conn, {:error, _}), do: error(conn, 422, "invalid_request")
   defp error(conn, status, code), do: conn |> put_status(status) |> json(%{error: %{code: code}})
 
   defp release_json(release),

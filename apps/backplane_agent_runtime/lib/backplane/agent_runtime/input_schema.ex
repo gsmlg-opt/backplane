@@ -156,16 +156,14 @@ defmodule Backplane.AgentRuntime.InputSchema do
       :ok
     else
       {:error, %Error{} = error} -> {:error, error}
-      {:error, errors} when is_list(errors) -> {:error, validation_errors(errors)}
-      other -> {:error, execution_error("Draft 2020-12 meta-schema validation failed", other)}
+      {:error, error} -> {:error, compile_error(error)}
     end
   end
 
   defp validate_meta_value(compiled, schema) do
     case JSONSchex.validate(compiled, schema) do
       :ok -> :ok
-      {:error, errors} when is_list(errors) -> {:error, validation_errors(errors)}
-      other -> {:error, execution_error("Draft 2020-12 meta-schema validation failed", other)}
+      {:error, errors} -> {:error, validation_errors(errors)}
     end
   end
 
@@ -175,11 +173,8 @@ defmodule Backplane.AgentRuntime.InputSchema do
         :ok ->
           {:ok, input}
 
-        {:error, errors} when is_list(errors) ->
+        {:error, errors} ->
           {:error, validation_errors(errors)}
-
-        other ->
-          {:error, execution_error("JSON Schema validator returned an invalid result", other)}
       end
     rescue
       exception ->
@@ -586,9 +581,6 @@ defmodule Backplane.AgentRuntime.InputSchema do
     do: contrast in ["load_remote", "compile_remote", "invalid_loader_response"]
 
   defp ref_execution_error?(_error), do: false
-
-  defp execution_error(message, result),
-    do: Error.new(:execution_failure, message, details: %{result: inspect(result)})
 
   defp limit_error(limit, maximum),
     do:

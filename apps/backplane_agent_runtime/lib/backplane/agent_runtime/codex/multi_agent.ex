@@ -32,6 +32,15 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def close_session(runtime, owner_id, incarnation),
     do: GenServer.call(runtime, {:close_session, {owner_id, incarnation}}, :infinity)
 
+  @doc """
+  Resolves an observed child interaction after its checkpoint is acknowledged.
+
+  Correlation must come from the current manager snapshot or observation stream.
+  An unknown outcome must be reconciled through observation, never retried.
+  """
+  def resolve_interaction(runtime, correlation, value),
+    do: GenServer.call(runtime, {:resolve_interaction, correlation, value}, :infinity)
+
   def snapshot(runtime), do: GenServer.call(runtime, :snapshot)
   def subscribe(runtime, observer \\ self()), do: GenServer.call(runtime, {:subscribe, observer})
 
@@ -147,6 +156,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          mailboxes: %{},
          input_activity: %{},
          deliveries: %{},
+         interaction_deliveries: %{},
+         settlements: %{},
+         settlement_queue: [],
          session_owner: nil,
          session_closed: false,
          child_options: child_options,
@@ -180,6 +192,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   @impl true
+  def handle_call({:resolve_interaction, correlation, value}, from, state) do
+    with :ok <- validate_interaction_correlation(correlation),
+         {:ok, _public_value} <- Conversation.public_interaction(value),
+         {:ok, agent} <- interaction_destination(state, correlation) do
+      {:noreply, deliver_interaction(state, agent, correlation, value, from)}
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
   def handle_call(:snapshot, _from, state), do: {:reply, {:ok, public_snapshot(state)}, state}
 
   def handle_call({:subscribe, pid}, _from, state) when is_pid(pid) do
@@ -252,16 +274,17 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   def handle_call(:transfer_ready, _from, state) do
     ready =
-      Enum.all?(state.agents, fn {_name, agent} ->
-        case transfer_snapshot(agent) do
-          {:ok, snapshot} ->
-            snapshot.run.state != :unknown_outcome and
-              not match?({:uncertain, _}, snapshot.resource_cleanup)
+      map_size(state.settlements) == 0 and state.settlement_queue == [] and
+        Enum.all?(state.agents, fn {_name, agent} ->
+          case transfer_snapshot(agent) do
+            {:ok, snapshot} ->
+              snapshot.run.state != :unknown_outcome and
+                not match?({:uncertain, _}, snapshot.resource_cleanup)
 
-          {:error, _} ->
-            false
-        end
-      end)
+            {:error, _} ->
+              false
+          end
+        end)
 
     result =
       if ready,
@@ -272,13 +295,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     {:reply, result, state}
   end
 
-  def handle_call(:close_session, _from, state) do
-    close_session_state(state)
+  def handle_call(:close_session, from, state) do
+    defer_settlement(state, Map.keys(state.agents), :close_session, from)
   end
 
-  def handle_call({:close_session, owner}, _from, state) do
+  def handle_call({:close_session, owner}, from, state) do
     if state.session_owner == owner,
-      do: close_session_state(state),
+      do: defer_settlement(state, Map.keys(state.agents), :close_session, from),
       else: {:reply, :ok, state}
   end
 
@@ -326,7 +349,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
       action = bound_action(descriptor.collaboration_binding.action)
 
-      case dispatch(action, arguments, from, caller, next) do
+      case dispatch_request(action, arguments, from, caller, next) do
         {:reply, {:refused, error}, next} ->
           rejection_reply(operation, error, %{next | triggering_invocation: nil})
 
@@ -346,7 +369,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, action} <- action(profile, operation.tool_name) do
       state = update_parent(state, caller)
 
-      case dispatch(action, operation.arguments, from, caller, state) do
+      case dispatch_request(action, operation.arguments, from, caller, state) do
         {:reply, {:refused, error}, next} -> rejection_reply(operation, error, next)
         result -> result
       end
@@ -398,6 +421,271 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
            )}
 
     {:reply, result, state}
+  end
+
+  # Settlement waits run outside the manager. Only identity-checked evidence is
+  # installed; existing reducers still own lifecycle state, revisions and replies.
+  defp dispatch_request(action, arguments, from, caller, state) do
+    case settlement_targets(state, action, arguments, caller) do
+      {:ok, names} ->
+        defer_settlement(state, names, {:dispatch, action, arguments, caller}, from)
+
+      :none ->
+        target = arguments["target"] || arguments["id"]
+
+        if busy_target?(state, target),
+          do: {:reply, {:refused, settlement_conflict()}, state},
+          else: dispatch(action, arguments, from, caller, state)
+    end
+  end
+
+  defp settlement_targets(state, action, arguments, caller)
+       when action in [:interrupt, :close, :send_input] do
+    with true <- settlement_input?(action, arguments),
+         {:ok, name, agent} <- resolve_target(state, arguments["target"]),
+         true <- action != :interrupt or agent.execution_reserved,
+         :ok <- settlement_caller(state, action, caller, arguments["target"], name) do
+      {:ok, if(action == :close, do: [name | descendant_names(state, name)], else: [name])}
+    else
+      _ -> :none
+    end
+  end
+
+  defp settlement_targets(_state, _action, _arguments, _caller), do: :none
+
+  defp settlement_input?(:send_input, arguments) do
+    message = arguments["message"] || input_items_text(arguments["items"])
+    arguments["interrupt"] == true and is_binary(message) and String.trim(message) != ""
+  end
+
+  defp settlement_input?(_, _), do: true
+
+  defp settlement_caller(state, :interrupt, caller, target, name) do
+    with :ok <- reject_interrupt_target(state, caller, target),
+         do: reject_interrupt_target(state, caller, name)
+  end
+
+  defp settlement_caller(_, _, _, _, _), do: :ok
+
+  defp busy_target?(state, target) do
+    case resolve_target(state, target) do
+      {:ok, name, _} -> settling?(state, name)
+      _ -> false
+    end
+  end
+
+  defp settling?(state, name) do
+    Enum.any?(state.settlements, fn {_, entry} -> Map.has_key?(entry.pins, name) end) or
+      Enum.any?(state.settlement_queue, &Map.has_key?(&1.pins, name))
+  end
+
+  defp settlement_conflict,
+    do: Error.new(:resource_conflict, "agent lifecycle settlement is pending")
+
+  defp settlement_pin(state, agent),
+    do:
+      Map.put(Map.take(agent, [:id, :run_id, :incarnation, :pid]), :manager_id, state.manager_id)
+
+  defp defer_settlement(state, names, command, from) do
+    pins = Map.new(names, &{&1, settlement_pin(state, state.agents[&1])})
+    previous = Map.new(names, &{&1, public_status(state.agents[&1])})
+    request = %{pins: pins, names: names, command: command, from: from, previous: previous}
+    overlap = Enum.any?(names, &settling?(state, &1))
+    state = fence_settlement(state, request)
+
+    if overlap,
+      do: {:noreply, %{state | settlement_queue: state.settlement_queue ++ [request]}},
+      else: {:noreply, start_settlement(state, request)}
+  end
+
+  defp fence_settlement(state, request) do
+    closing =
+      request.command == :close_session or match?({:dispatch, :close, _, _}, request.command)
+
+    state =
+      if request.command == :close_session,
+        do: %{state | session_closed: true, parent_run_id: nil, parent_binding: nil},
+        else: state
+
+    Enum.reduce(request.names, state, fn name, acc ->
+      acc = invalidate_interaction(acc, name, settlement_conflict())
+      agent = acc.agents[name]
+      closure = if closing and agent.closure != :confirmed, do: :in_progress, else: agent.closure
+      reserved = agent.execution_reserved or agent.closure != :confirmed
+      put_in(acc, [:agents, name], %{agent | execution_reserved: reserved, closure: closure})
+    end)
+  end
+
+  defp start_settlement(state, request) do
+    token = make_ref()
+    manager = self()
+    agents = Enum.map(request.names, &{&1, state.agents[&1]})
+    all = request.command == :close_session
+
+    spec = %{
+      id: token,
+      start:
+        {Task, :start_link,
+         [fn -> send(manager, {:settlement, token, collect_settlement(agents, all)}) end]},
+      restart: :temporary
+    }
+
+    case DynamicSupervisor.start_child(state.child_supervisor, spec) do
+      {:ok, worker} ->
+        timer =
+          Process.send_after(
+            self(),
+            {:settlement_timeout, token},
+            10_000 * max(1, length(agents))
+          )
+
+        entry =
+          Map.merge(request, %{worker: worker, monitor: Process.monitor(worker), timer: timer})
+
+        put_in(state, [:settlements, token], entry)
+
+      {:error, _} ->
+        entry = Map.merge(request, %{worker: nil, monitor: nil, timer: nil})
+        state = put_in(state, [:settlements, token], entry)
+        send(self(), {:settlement, token, %{}})
+        state
+    end
+  end
+
+  defp collect_settlement(agents, all) do
+    Enum.reduce_while(agents, %{}, fn {name, agent}, evidence ->
+      cancel = cancel_agent(agent)
+      snapshot = if cancel in [:ok, :already_closed], do: settled_snapshot(agent), else: cancel
+      next = Map.put(evidence, name, %{cancel_result: cancel, settlement_result: snapshot})
+
+      if all or match?({:ok, _}, snapshot),
+        do: {:cont, next},
+        else: {:halt, next}
+    end)
+  end
+
+  defp complete_settlement(state, token, evidence) do
+    case Map.pop(state.settlements, token) do
+      {nil, _} ->
+        state
+
+      {entry, settlements} ->
+        stop_settlement(entry)
+        state = %{state | settlements: settlements}
+
+        if Enum.all?(entry.pins, fn {name, pin} ->
+             # A child DOWN changes its PID, but the same activation still needs
+             # the failure reducer. Per-child evidence retains the full PID check.
+             Map.delete(settlement_pin(state, state.agents[name]), :pid) == Map.delete(pin, :pid)
+           end) do
+          finish_settlement(state, entry, evidence)
+        else
+          GenServer.reply(
+            entry.from,
+            {:error, Error.new(:unknown_outcome, "agent settlement identity changed")}
+          )
+
+          drain_settlement_queue(state)
+        end
+    end
+  end
+
+  defp finish_settlement(state, entry, evidence) do
+    state = install_settlement(state, entry, evidence)
+    {result, state} = continue_settlement(state, entry)
+    GenServer.reply(entry.from, settlement_reply(result, entry))
+    state = finish_settlement_events(state, entry.names)
+
+    state =
+      Enum.reduce(entry.names, state, fn name, acc ->
+        update_in(acc, [:agents, name], &Map.delete(&1, :settlement_evidence))
+      end)
+
+    drain_settlement_queue(wake_waiters(state))
+  end
+
+  defp settlement_reply({:ok, %{previous_status: _} = result}, entry),
+    do: {:ok, %{result | previous_status: entry.previous[hd(entry.names)]}}
+
+  defp settlement_reply(result, _entry), do: result
+
+  defp stop_settlement(entry) do
+    if entry.timer, do: Process.cancel_timer(entry.timer)
+    if entry.monitor, do: Process.demonitor(entry.monitor, [:flush])
+
+    if is_pid(entry.worker) and Process.alive?(entry.worker),
+      do: Process.exit(entry.worker, :kill)
+  end
+
+  defp install_settlement(state, entry, evidence) do
+    Enum.reduce(entry.pins, state, fn {name, pin}, acc ->
+      agent = acc.agents[name]
+      supplied = evidence[name]
+      error = Error.new(:unknown_outcome, "agent settlement was not acknowledged")
+      unavailable = %{cancel_result: {:error, error}, settlement_result: {:error, error}}
+
+      accepted =
+        if settlement_pin(acc, agent) == pin and valid_settlement?(supplied, pin),
+          do: supplied,
+          else: unavailable
+
+      put_in(acc, [:agents, name], Map.put(agent, :settlement_evidence, accepted))
+    end)
+  end
+
+  defp valid_settlement?(%{settlement_result: {:ok, %{run: run}}}, pin),
+    do: run.run_id == pin.run_id and run.incarnation == pin.incarnation
+
+  defp valid_settlement?(%{settlement_result: {:error, %Error{}}}, _pin), do: true
+  defp valid_settlement?(_, _), do: false
+
+  defp continue_settlement(state, %{command: :close_session}) do
+    {:reply, result, next} = close_session_state(state)
+    {result, next}
+  end
+
+  defp continue_settlement(state, %{command: {:dispatch, action, arguments, caller}, from: from}) do
+    case dispatch(action, arguments, from, caller, state) do
+      {:reply, result, next} -> {result, next}
+    end
+  end
+
+  defp finish_settlement_events(state, names) do
+    Enum.reduce(names, state, fn name, acc ->
+      {event, agent} = Map.pop(acc.agents[name], :settlement_event)
+      acc = put_in(acc, [:agents, name], agent)
+      if event, do: update_from_event(acc, event.run_id, event.event), else: acc
+    end)
+  end
+
+  defp drain_settlement_queue(state) do
+    {ready, waiting} =
+      Enum.split_with(state.settlement_queue, fn request ->
+        not Enum.any?(state.settlements, fn {_, active} ->
+          Enum.any?(request.names, &Map.has_key?(active.pins, &1))
+        end)
+      end)
+
+    Enum.reduce(ready, %{state | settlement_queue: waiting}, fn request, acc ->
+      cond do
+        Enum.any?(request.names, &settling?(acc, &1)) ->
+          %{acc | settlement_queue: acc.settlement_queue ++ [request]}
+
+        Enum.all?(request.pins, fn {name, pin} ->
+          agent = acc.agents[name]
+
+          agent.id == pin.id and agent.run_id == pin.run_id and
+            agent.incarnation == pin.incarnation and
+              (agent.pid == pin.pid or agent.closure == :confirmed)
+        end) ->
+          pins = Map.new(request.names, &{&1, settlement_pin(acc, acc.agents[&1])})
+          start_settlement(acc, %{request | pins: pins})
+
+        true ->
+          GenServer.reply(request.from, {:error, settlement_conflict()})
+          acc
+      end
+    end)
   end
 
   @impl true
@@ -467,6 +755,24 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
+  def handle_info({:interaction_delivery, token, result}, state),
+    do: {:noreply, complete_interaction_delivery(state, token, result)}
+
+  def handle_info({:settlement, token, evidence}, state),
+    do: {:noreply, complete_settlement(state, token, evidence)}
+
+  def handle_info({:settlement_timeout, token}, state),
+    do: {:noreply, complete_settlement(state, token, %{})}
+
+  def handle_info({:interaction_delivery_timeout, token}, state) do
+    {:noreply,
+     complete_interaction_delivery(
+       state,
+       token,
+       {:error, Error.new(:unknown_outcome, "interaction resolution was not acknowledged")}
+     )}
+  end
+
   def handle_info({:mail_delivery, token, result}, state),
     do: {:noreply, complete_delivery(state, token, result)}
 
@@ -486,59 +792,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     {:noreply, wake_waiters(state)}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    observer = Enum.find(state.observers, fn {_pid, monitor} -> monitor == ref end)
-
-    case {observer, Map.pop(state.monitors, ref)} do
-      _ when ref == state.parent_monitor ->
-        {:noreply, %{state | parent_pid: nil, parent_monitor: nil, parent_recovery: true}}
-
-      {{pid, _}, _} ->
-        {:noreply,
-         %{
-           state
-           | observers: Map.delete(state.observers, pid),
-             subscriber: if(state.subscriber == pid, do: nil, else: state.subscriber)
-         }}
-
-      {nil, {nil, _}} ->
-        {:noreply, state}
-
-      {nil, {{name, run_id}, monitors}} ->
-        state = %{state | monitors: monitors}
-
-        if get_in(state, [:agents, name, :run_id]) == run_id do
-          agent = state.agents[name]
-
-          next_agent =
-            if is_map(agent.snapshot) and
-                 not match?({:uncertain, _}, agent.closure) do
-              %{agent | pid: nil, monitor: nil}
-            else
-              %{
-                agent
-                | pid: nil,
-                  monitor: nil,
-                  status:
-                    if(agent.status in [:interrupted, :shutdown],
-                      do: agent.status,
-                      else: {:errored, inspect(reason)}
-                    ),
-                  execution_reserved: true,
-                  snapshot: nil,
-                  snapshot_identity: nil,
-                  closure:
-                    {:uncertain, Error.new(:unknown_outcome, "agent exited before settlement")}
-              }
-            end
-
-          state = put_in(state, [:agents, name], next_agent)
-          state = %{state | updates: MapSet.put(state.updates, name)}
-          state = publish(state, :process_exited, name)
-          {:noreply, wake_waiters(state)}
-        else
-          {:noreply, state}
-        end
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    case Enum.find(state.settlements, fn {_, entry} -> entry.monitor == ref end) do
+      {token, _} -> {:noreply, complete_settlement(state, token, %{})}
+      nil -> interaction_or_child_down(state, ref, pid, reason)
     end
   end
 
@@ -563,8 +820,50 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   def handle_info(_, state), do: {:noreply, state}
 
+  defp interaction_or_child_down(state, ref, pid, reason) do
+    case Enum.find(state.interaction_deliveries, fn {_token, entry} ->
+           entry.monitor == ref and entry.worker == pid
+         end) do
+      {token, _entry} ->
+        {:noreply,
+         complete_interaction_delivery(
+           state,
+           token,
+           {:error, Error.new(:unknown_outcome, "interaction delivery acknowledgement was lost")}
+         )}
+
+      nil ->
+        child_or_observer_down(state, ref, reason)
+    end
+  end
+
   @impl true
   def terminate(_reason, state) do
+    Enum.each(state.settlements, fn {_, entry} ->
+      stop_settlement(entry)
+
+      GenServer.reply(
+        entry.from,
+        {:error, Error.new(:unknown_outcome, "collaboration manager stopped")}
+      )
+    end)
+
+    Enum.each(state.settlement_queue, fn entry ->
+      GenServer.reply(
+        entry.from,
+        {:error, Error.new(:unknown_outcome, "collaboration manager stopped")}
+      )
+    end)
+
+    Enum.each(state.interaction_deliveries, fn {_token, entry} ->
+      stop_interaction_delivery(entry)
+
+      reply_interaction_delivery(
+        entry,
+        Error.new(:unknown_outcome, "collaboration manager stopped")
+      )
+    end)
+
     Enum.each(state.deliveries, fn {_token, entry} ->
       Process.cancel_timer(entry.timer)
       Process.exit(entry.worker, :kill)
@@ -574,8 +873,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       if waiter.timer, do: Process.cancel_timer(waiter.timer)
     end)
 
+    # A :shutdown exit from this linked supervisor would replace the manager's
+    # own exit reason while terminate/2 is still running.
     if Process.alive?(state.child_supervisor),
-      do: Supervisor.stop(state.child_supervisor, :shutdown)
+      do: Supervisor.stop(state.child_supervisor, :normal)
 
     :ok
   end
@@ -801,6 +1102,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
             monitor: nil,
             status: :created,
             final: nil,
+            pending_interaction: nil,
+            interaction_closed: false,
+            interaction_resolution_id: nil,
+            interaction_ids: MapSet.new(),
             result_delivery: nil,
             opts: opts,
             request: request,
@@ -881,6 +1186,292 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     consume_updates(state, MapSet.to_list(consumed))
   end
 
+  defp validate_interaction_correlation(correlation) when is_map(correlation) do
+    keys = [:manager_id, :agent_id, :run_id, :incarnation, :interaction_id]
+
+    if Enum.sort(Map.keys(correlation)) == Enum.sort(keys) and
+         Enum.all?([:manager_id, :agent_id, :run_id, :interaction_id], fn key ->
+           valid_interaction_text?(correlation[key])
+         end) and is_integer(correlation.incarnation) and correlation.incarnation > 0 do
+      :ok
+    else
+      validation("invalid interaction correlation")
+    end
+  end
+
+  defp validate_interaction_correlation(_), do: validation("invalid interaction correlation")
+
+  defp valid_interaction_text?(value),
+    do: is_binary(value) and value != "" and String.valid?(value)
+
+  defp interaction_correlation(state, agent, interaction_id) do
+    %{
+      manager_id: state.manager_id,
+      agent_id: agent.id,
+      run_id: agent.run_id,
+      incarnation: agent.incarnation,
+      interaction_id: interaction_id
+    }
+  end
+
+  defp interaction_destination(state, correlation) do
+    case Enum.find(state.agents, fn {_name, agent} -> agent.id == correlation.agent_id end) do
+      nil ->
+        {:error, Error.new(:not_found, "interaction child was not found")}
+
+      {_name, agent} ->
+        if accepting_interactions?(state, agent) and
+             interaction_correlation(state, agent, correlation.interaction_id) == correlation and
+             match?(%{id: id} when id == correlation.interaction_id, agent.pending_interaction) and
+             agent.interaction_resolution_id != correlation.interaction_id do
+          {:ok, agent}
+        else
+          {:error, Error.new(:resource_conflict, "interaction is stale or unavailable")}
+        end
+    end
+  end
+
+  defp accepting_interactions?(state, agent) do
+    not state.session_closed and not agent.interaction_closed and
+      agent.status == :running and agent.closure == :open and is_pid(agent.pid)
+  end
+
+  defp pinned_interaction_child?(state, %{pid: pid} = agent, entry) do
+    pid == entry.pid and
+      interaction_correlation(state, agent, entry.correlation.interaction_id) == entry.correlation
+  end
+
+  defp pinned_interaction_child?(_state, _agent, _entry), do: false
+
+  defp deliver_interaction(state, agent, correlation, value, from) do
+    owner = self()
+    token = make_ref()
+
+    # Temporary children share the manager's supervisor lifetime, including when
+    # the manager is killed before terminate/2 can clean up delivery waiters.
+    task = fn ->
+      result =
+        try do
+          Conversation.resolve(agent.pid, correlation.interaction_id, value)
+        rescue
+          _ -> {:error, Error.new(:unknown_outcome, "interaction delivery failed")}
+        catch
+          :exit, _ ->
+            {:error, Error.new(:unknown_outcome, "interaction child acknowledgement was lost")}
+        end
+
+      send(owner, {:interaction_delivery, token, result})
+    end
+
+    case DynamicSupervisor.start_child(state.child_supervisor, {Task, task}) do
+      {:ok, worker} ->
+        entry = %{
+          worker: worker,
+          monitor: Process.monitor(worker),
+          timer:
+            Process.send_after(
+              self(),
+              {:interaction_delivery_timeout, token},
+              @settlement_wait_ms
+            ),
+          from: from,
+          name: agent.name,
+          pid: agent.pid,
+          correlation: correlation,
+          checkpoint_acknowledged: false
+        }
+
+        state
+        |> put_in([:agents, agent.name, :interaction_resolution_id], correlation.interaction_id)
+        |> put_in([:interaction_deliveries, token], entry)
+
+      {:error, _reason} ->
+        GenServer.reply(
+          from,
+          {:error, Error.new(:unknown_outcome, "interaction delivery could not start")}
+        )
+
+        put_in(
+          state,
+          [:agents, agent.name, :interaction_resolution_id],
+          correlation.interaction_id
+        )
+    end
+  end
+
+  defp complete_interaction_delivery(state, token, result) do
+    case Map.pop(state.interaction_deliveries, token) do
+      {nil, _} ->
+        state
+
+      {entry, deliveries} ->
+        stop_interaction_delivery(entry)
+        result = interaction_delivery_result(state, entry, result)
+
+        # Keep the submitted interaction reserved even after an uncertain outcome.
+        # A later event can reconcile it, but no automatic or duplicate retry is safe.
+        GenServer.reply(entry.from, result)
+        %{state | interaction_deliveries: deliveries}
+    end
+  end
+
+  defp interaction_delivery_result(state, entry, result) do
+    agent = state.agents[entry.name]
+
+    cond do
+      not pinned_interaction_child?(state, agent, entry) ->
+        {:error, Error.new(:resource_conflict, "interaction child identity changed")}
+
+      entry.checkpoint_acknowledged ->
+        :ok
+
+      not accepting_interactions?(state, agent) ->
+        {:error, Error.new(:resource_conflict, "interaction child is unavailable")}
+
+      true ->
+        normalize_interaction_acknowledgement(result)
+    end
+  end
+
+  defp normalize_interaction_acknowledgement(:ok), do: :ok
+  defp normalize_interaction_acknowledgement({:error, %Error{} = error}), do: {:error, error}
+
+  defp normalize_interaction_acknowledgement(_),
+    do: {:error, Error.new(:unknown_outcome, "invalid interaction acknowledgement")}
+
+  defp acknowledge_interaction_checkpoint(state, name, id) do
+    agent = state.agents[name]
+
+    deliveries =
+      Map.new(state.interaction_deliveries, fn {token, entry} ->
+        if entry.name == name and entry.correlation.interaction_id == id and
+             pinned_interaction_child?(state, agent, entry),
+           do: {token, %{entry | checkpoint_acknowledged: true}},
+           else: {token, entry}
+      end)
+
+    %{state | interaction_deliveries: deliveries}
+  end
+
+  defp reply_interaction_delivery(%{checkpoint_acknowledged: true} = entry, _error),
+    do: GenServer.reply(entry.from, :ok)
+
+  defp reply_interaction_delivery(entry, error), do: GenServer.reply(entry.from, {:error, error})
+
+  defp stop_interaction_delivery(entry) do
+    Process.cancel_timer(entry.timer)
+    Process.demonitor(entry.monitor, [:flush])
+    if Process.alive?(entry.worker), do: Process.exit(entry.worker, :kill)
+    :ok
+  end
+
+  defp invalidate_interaction(state, name, error) do
+    deliveries =
+      Enum.reduce(state.interaction_deliveries, state.interaction_deliveries, fn {token, entry},
+                                                                                 acc ->
+        if entry.name == name do
+          stop_interaction_delivery(entry)
+          reply_interaction_delivery(entry, error)
+          Map.delete(acc, token)
+        else
+          acc
+        end
+      end)
+
+    state
+    |> Map.put(:interaction_deliveries, deliveries)
+    |> put_in([:agents, name, :pending_interaction], nil)
+    |> put_in([:agents, name, :interaction_closed], true)
+    |> put_in([:agents, name, :interaction_resolution_id], nil)
+  end
+
+  defp child_or_observer_down(state, ref, reason) do
+    observer = Enum.find(state.observers, fn {_pid, monitor} -> monitor == ref end)
+
+    case {observer, Map.pop(state.monitors, ref)} do
+      _ when ref == state.parent_monitor ->
+        {:noreply, %{state | parent_pid: nil, parent_monitor: nil, parent_recovery: true}}
+
+      {{pid, _}, _} ->
+        {:noreply,
+         %{
+           state
+           | observers: Map.delete(state.observers, pid),
+             subscriber: if(state.subscriber == pid, do: nil, else: state.subscriber)
+         }}
+
+      {nil, {nil, _}} ->
+        {:noreply, state}
+
+      {nil, {{name, run_id}, monitors}} ->
+        state = %{state | monitors: monitors}
+
+        if get_in(state, [:agents, name, :run_id]) == run_id do
+          agent = state.agents[name]
+
+          next_agent =
+            if is_map(agent.snapshot) and
+                 not match?({:uncertain, _}, agent.closure) do
+              %{agent | pid: nil, monitor: nil}
+            else
+              %{
+                agent
+                | pid: nil,
+                  monitor: nil,
+                  status:
+                    if(agent.status in [:interrupted, :shutdown],
+                      do: agent.status,
+                      else: {:errored, inspect(reason)}
+                    ),
+                  execution_reserved: true,
+                  snapshot: nil,
+                  snapshot_identity: nil,
+                  closure:
+                    {:uncertain, Error.new(:unknown_outcome, "agent exited before settlement")}
+              }
+            end
+
+          state =
+            state
+            |> invalidate_interaction(
+              name,
+              Error.new(:unknown_outcome, "agent exited before resolution acknowledgement")
+            )
+            |> put_in([:agents, name], %{
+              next_agent
+              | pending_interaction: nil,
+                interaction_resolution_id: nil,
+                interaction_closed: true
+            })
+
+          state = %{state | updates: MapSet.put(state.updates, name)}
+          state = publish(state, :process_exited, name)
+          {:noreply, wake_waiters(state)}
+        else
+          {:noreply, state}
+        end
+    end
+  end
+
+  defp update_from_event(state, run_id, %{type: type} = event)
+       when type in [:interaction_requested, :interaction_resolved, :storage_failed] do
+    case Map.fetch(state.run_index, run_id) do
+      {:ok, name} ->
+        agent = state.agents[name]
+
+        if agent.run_id == run_id and agent.incarnation == event[:incarnation] and
+             agent.status == :running and agent.closure == :open and
+             not agent.interaction_closed and not state.session_closed do
+          update_interaction_event(state, name, event)
+        else
+          state
+        end
+
+      :error ->
+        state
+    end
+  end
+
   defp update_from_event(state, run_id, %{type: type} = event)
        when type in [:run_completed, :run_failed, :run_cancelled] do
     case Map.fetch(state.run_index, run_id) do
@@ -890,38 +1481,104 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       {:ok, name} ->
         agent = Map.fetch!(state.agents, name)
 
-        if agent.run_id != run_id or agent.status != :running or
-             event[:incarnation] != agent.incarnation do
-          state
-        else
-          status =
-            case {type, agent.status} do
-              {:run_completed, _status} -> :completed
-              {:run_cancelled, _status} -> :interrupted
-              {_type, _status} -> {:errored, event_error(event)}
-            end
-
-          final = terminal_message(agent.pid, event)
-
-          state =
+        cond do
+          agent.run_id != run_id or agent.status != :running or
+              event[:incarnation] != agent.incarnation ->
             state
-            |> put_in([:agents, name, :status], status)
-            |> put_in([:agents, name, :final], final)
-            |> Map.update!(:updates, &MapSet.put(&1, name))
 
-          next = settle_v2_agent(state, name)
+          settling?(state, name) ->
+            put_in(
+              state,
+              [:agents, name],
+              Map.put(agent, :settlement_event, %{run_id: run_id, event: event})
+            )
 
-          if match?({:uncertain, _}, next.agents[name].closure),
-            do: next,
-            else: next |> publish(:settled, name) |> deliver_terminal_result(name)
+          true ->
+            status =
+              case {type, agent.status} do
+                {:run_completed, _status} -> :completed
+                {:run_cancelled, _status} -> :interrupted
+                {_type, _status} -> {:errored, event_error(event)}
+              end
+
+            final = terminal_message(settlement_snapshot(agent) || agent.pid, event)
+
+            state =
+              state
+              |> invalidate_interaction(
+                name,
+                Error.new(:resource_conflict, "agent run has settled")
+              )
+              |> put_in([:agents, name, :status], status)
+              |> put_in([:agents, name, :final], final)
+              |> Map.update!(:updates, &MapSet.put(&1, name))
+
+            next = settle_v2_agent(state, name)
+
+            if match?({:uncertain, _}, next.agents[name].closure),
+              do: next,
+              else: next |> publish(:settled, name) |> deliver_terminal_result(name)
         end
     end
   end
 
   defp update_from_event(state, _run_id, _event), do: state
 
+  defp update_interaction_event(state, name, %{type: :interaction_requested} = event) do
+    agent = state.agents[name]
+    interaction_id = event[:interaction_id]
+
+    with true <- valid_interaction_text?(interaction_id),
+         false <- MapSet.member?(agent.interaction_ids, interaction_id),
+         {:ok, request} <- Conversation.public_interaction(event[:request]) do
+      pending = %{
+        id: interaction_id,
+        request: request,
+        correlation: interaction_correlation(state, agent, interaction_id)
+      }
+
+      state
+      |> put_in([:agents, name, :pending_interaction], pending)
+      |> put_in([:agents, name, :interaction_resolution_id], nil)
+      |> put_in(
+        [:agents, name, :interaction_ids],
+        MapSet.put(agent.interaction_ids, interaction_id)
+      )
+      |> publish(:interaction_requested, name, %{interaction_id: interaction_id})
+    else
+      _ -> state
+    end
+  end
+
+  defp update_interaction_event(state, name, %{type: :interaction_resolved} = event) do
+    interaction_id = event[:interaction_id]
+
+    case state.agents[name].pending_interaction do
+      %{id: id} when id == interaction_id ->
+        state
+        |> acknowledge_interaction_checkpoint(name, id)
+        |> put_in([:agents, name, :pending_interaction], nil)
+        |> publish(:interaction_resolved, name, %{interaction_id: id})
+
+      _ ->
+        state
+    end
+  end
+
+  defp update_interaction_event(state, name, %{type: :storage_failed} = event) do
+    error =
+      case event[:error] do
+        %Error{} = error -> error
+        _ -> Error.new(:unknown_outcome, "agent storage failed")
+      end
+
+    state
+    |> invalidate_interaction(name, error)
+    |> publish(:storage_failed, name)
+  end
+
   defp terminal_message(pid, event) do
-    case Conversation.status(pid) do
+    case if(is_map(pid), do: pid, else: Conversation.status(pid)) do
       %{messages: messages} ->
         messages
         |> Enum.reverse()
@@ -938,7 +1595,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     :exit, _ -> inspect(Map.get(event, :outcome))
   end
 
-  defp deliver(state, name, agent, :interrupt_message, message) do
+  defp deliver(state, name, agent, action, message) do
+    if state.session_closed or settling?(state, name) or agent.closure == :in_progress,
+      do: {:error, settlement_conflict()},
+      else: deliver_now(state, name, agent, action, message)
+  end
+
+  defp deliver_now(state, name, agent, :interrupt_message, message) do
     with :ok <- cancel_agent(agent),
          {:ok, state} <- replace_agent(state, name, agent, message) do
       {:ok, state}
@@ -949,30 +1612,36 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  defp deliver(_state, _name, %{closure: {:uncertain, _}}, _action, _message),
+  defp deliver_now(_state, _name, %{closure: {:uncertain, _}}, _action, _message),
     do: {:error, Error.new(:unknown_outcome, "agent cleanup is not settled")}
 
-  defp deliver(state, _name, %{status: :running, pid: pid}, :followup, message),
+  defp deliver_now(state, _name, %{status: :running, pid: pid}, :followup, message),
     do: normalize_delivery(state, Conversation.follow_up(pid, message))
 
-  defp deliver(state, _name, %{status: :running, pid: pid}, :followup_v2, message),
+  defp deliver_now(state, _name, %{status: :running, pid: pid}, :followup_v2, message),
     do: normalize_delivery(state, Conversation.follow_up(pid, message))
 
-  defp deliver(state, name, %{status: status} = agent, :followup, message)
+  defp deliver_now(state, name, %{status: status} = agent, :followup, message)
        when status in [:completed, :interrupted],
        do: replace_agent(state, name, agent, message)
 
-  defp deliver(state, name, %{status: {:errored, _}, profile: :v2} = agent, :followup, message),
-    do: replace_agent(state, name, agent, message)
+  defp deliver_now(
+         state,
+         name,
+         %{status: {:errored, _}, profile: :v2} = agent,
+         :followup,
+         message
+       ),
+       do: replace_agent(state, name, agent, message)
 
-  defp deliver(state, name, %{status: status} = agent, :followup_v2, message)
+  defp deliver_now(state, name, %{status: status} = agent, :followup_v2, message)
        when status in [:completed, :interrupted],
        do: replace_agent(state, name, agent, message, :v2)
 
-  defp deliver(state, name, %{status: {:errored, _}} = agent, :followup_v2, message),
+  defp deliver_now(state, name, %{status: {:errored, _}} = agent, :followup_v2, message),
     do: replace_agent(state, name, agent, message, :v2)
 
-  defp deliver(_state, _name, _agent, _action, _message),
+  defp deliver_now(_state, _name, _agent, _action, _message),
     do: {:error, Error.new(:resource_conflict, "agent is not accepting input")}
 
   defp normalize_delivery(state, {:ok, _}), do: {:ok, state}
@@ -1010,6 +1679,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         opts =
           opts
           |> Keyword.put(:messages, snapshot.messages)
+          |> Keyword.put(:host_feedback, Map.get(snapshot.conversation, :host_feedback, []))
           |> Keyword.put(:subscriber, self())
           |> Keyword.put(
             :mailbox,
@@ -1030,12 +1700,23 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
                 authority: Keyword.get(opts, :authority, %{}),
                 status: :created,
                 final: nil,
+                pending_interaction: nil,
+                interaction_closed: false,
+                interaction_resolution_id: nil,
+                interaction_ids: MapSet.new(),
                 result_delivery: nil,
                 snapshot: nil,
                 snapshot_identity: nil,
                 closure: :open,
                 execution_reserved: true
             }
+
+            state =
+              invalidate_interaction(
+                state,
+                name,
+                Error.new(:resource_conflict, "agent was replaced")
+              )
 
             state =
               %{
@@ -1328,6 +2009,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
+  defp settlement_snapshot(%{settlement_evidence: %{settlement_result: {:ok, snapshot}}}),
+    do: snapshot
+
+  defp settlement_snapshot(_), do: nil
+
+  defp settled_snapshot(%{settlement_evidence: %{settlement_result: result}}), do: result
+
   defp settled_snapshot(%{snapshot: snapshot, snapshot_identity: identity, run_id: run_id})
        when is_map(snapshot) and is_map(identity) do
     if identity == snapshot_identity(snapshot) and Map.get(identity, :run_id) == run_id,
@@ -1403,6 +2091,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
+  defp cancel_agent(%{settlement_evidence: %{cancel_result: result}}), do: result
+
   defp cancel_agent(%{pid: pid}) when is_pid(pid) do
     case Conversation.cancel(pid) do
       :ok -> :ok
@@ -1428,17 +2118,25 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp cancel_agent(_agent),
     do: {:error, Error.new(:unknown_outcome, "agent process identity is unavailable")}
 
-  defp cancel_owned_tree(state, name, action) do
+  defp cancel_owned_tree(state, name, :close) do
     names = [name | descendant_names(state, name)]
-    next_status = if action == :close, do: :shutdown, else: :interrupted
 
     Enum.reduce_while(names, {:ok, state}, fn child_name, {:ok, acc} ->
       case Map.fetch(acc.agents, child_name) do
         :error ->
           {:cont, {:ok, acc}}
 
-        {:ok, agent} ->
-          if action == :close and agent.closure == :confirmed do
+        {:ok, _agent} ->
+          acc =
+            invalidate_interaction(
+              acc,
+              child_name,
+              Error.new(:resource_conflict, "agent is closing")
+            )
+
+          agent = acc.agents[child_name]
+
+          if agent.closure == :confirmed do
             acc =
               if agent.status != :shutdown and agent.pid == nil and not agent.execution_reserved do
                 closed = %{agent | status: :shutdown}
@@ -1453,18 +2151,15 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
             {:cont, {:ok, acc}}
           else
-            agent = %{
-              agent
-              | closure: if(action == :close, do: :in_progress, else: agent.closure)
-            }
+            agent = %{agent | closure: :in_progress}
 
             acc = put_in(acc, [:agents, child_name], agent)
 
             case cancel_agent(agent) do
               :ok ->
-                case maybe_close_child(acc, agent, action) do
+                case maybe_close_child(acc, agent, :close) do
                   {:ok, closed_agent} ->
-                    closed_agent = %{closed_agent | status: next_status}
+                    closed_agent = %{closed_agent | status: :shutdown}
                     acc = put_in(acc, [:agents, child_name], closed_agent)
                     acc = publish(acc, :closed, child_name)
 
@@ -1490,15 +2185,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
               {:error, %Error{} = error} ->
                 acc =
-                  if action == :close do
-                    put_in(acc, [:agents, child_name], %{
-                      agent
-                      | status: :interrupted,
-                        closure: {:uncertain, error}
-                    })
-                  else
-                    acc
-                  end
+                  put_in(acc, [:agents, child_name], %{
+                    agent
+                    | status: :interrupted,
+                      closure: {:uncertain, error}
+                  })
 
                 acc = publish(acc, :cleanup_uncertain, child_name)
 
@@ -1508,8 +2199,6 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       end
     end)
   end
-
-  defp maybe_close_child(_state, agent, :interrupt), do: {:ok, agent}
 
   defp maybe_close_child(state, %{pid: pid} = agent, :close) when is_pid(pid) do
     with {:ok, snapshot} <- settled_snapshot(agent),
@@ -1550,9 +2239,6 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
         {:error, :not_found} ->
           :ok
-
-        {:error, reason} ->
-          {:error, Error.new(:unknown_outcome, "agent termination is uncertain", cause: reason)}
       end
     else
       {:error, Error.new(:unknown_outcome, "agent supervisor is unavailable")}
@@ -1846,7 +2532,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       name = state.run_index[run_id] ->
         agent = state.agents[name]
 
-        if agent.run_id == run_id and agent.status == :running,
+        if agent.run_id == run_id and agent.status == :running and not settling?(state, name),
           do:
             {:ok,
              %{
@@ -2051,6 +2737,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp settle_v2_agent(state, name) do
+    if settling?(state, name), do: state, else: settle_available_agent(state, name)
+  end
+
+  defp settle_available_agent(state, name) do
     agent = state.agents[name]
 
     with {:ok, snapshot} <- settled_snapshot(agent),
@@ -2087,7 +2777,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       else: :ok
   end
 
-  defp interrupt_target(state, name, agent) do
+  defp interrupt_target(state, name, _agent) do
+    state =
+      invalidate_interaction(state, name, Error.new(:resource_conflict, "agent is interrupted"))
+
+    agent = state.agents[name]
+
     if agent.execution_reserved do
       with :ok <- cancel_agent(agent),
            {:ok, snapshot} <- settled_snapshot(agent),
@@ -2190,22 +2885,23 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       end)
       |> Map.update(caller, MapSet.new(names), &MapSet.union(&1, MapSet.new(names)))
 
-    if Enum.any?(names, &(&1 == caller or reachable?(graph, &1, caller, MapSet.new()))),
+    if Enum.any?(names, &(&1 == caller or reachable?(graph, &1, caller, %{}))),
       do:
         {:error,
          Error.new(:resource_conflict, "collaboration wait would create a dependency cycle")},
       else: :ok
   end
 
+  @spec reachable?(map(), term(), term(), map()) :: boolean()
   defp reachable?(_graph, node, target, _visited) when node == target, do: true
 
   defp reachable?(graph, node, target, visited) do
-    if MapSet.member?(visited, node) do
+    if Map.has_key?(visited, node) do
       false
     else
       graph
       |> Map.get(node, MapSet.new())
-      |> Enum.any?(&reachable?(graph, &1, target, MapSet.put(visited, node)))
+      |> Enum.any?(&reachable?(graph, &1, target, Map.put(visited, node, true)))
     end
   end
 
@@ -2288,6 +2984,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     else
       with {:ok, name, agent} <- resolve_target(state, target) do
         cond do
+          settling?(state, name) ->
+            {:error, settlement_conflict()}
+
           agent.status == :shutdown ->
             {:error, Error.new(:forbidden, "mailbox destination is closed")}
 
@@ -2675,12 +3374,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         {:error, _callback_error, next} -> next
       end
 
-    details = if is_map(error.details), do: error.details, else: %{}
-
     error = %{
       error
       | details:
-          Map.merge(details, %{attempt_id: attempt.attempt_id, manager_id: attempt.manager_id})
+          Map.merge(error.details, %{
+            attempt_id: attempt.attempt_id,
+            manager_id: attempt.manager_id
+          })
     }
 
     {error, next}
@@ -2791,19 +3491,22 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       cleanup: cleanup,
       resident: is_pid(agent.pid),
       host_metadata: agent.host_metadata,
-      result_delivery: Map.get(agent, :result_delivery)
+      result_delivery: Map.get(agent, :result_delivery),
+      pending_interaction: agent.pending_interaction
     }
   end
 
-  defp publish(state, type, name) do
+  defp publish(state, type, name, metadata \\ %{}) do
     next = %{state | revision: state.revision + 1}
 
-    event = %{
-      manager_id: next.manager_id,
-      revision: next.revision,
-      type: type,
-      agent: public_agent(next, next.agents[name])
-    }
+    event =
+      %{
+        manager_id: next.manager_id,
+        revision: next.revision,
+        type: type,
+        agent: public_agent(next, next.agents[name])
+      }
+      |> Map.merge(metadata)
 
     recipients = Map.keys(next.observers)
     recipients = if is_pid(next.subscriber), do: [next.subscriber | recipients], else: recipients

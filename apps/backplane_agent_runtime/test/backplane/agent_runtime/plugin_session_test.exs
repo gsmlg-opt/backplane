@@ -1,6 +1,6 @@
 defmodule Backplane.AgentRuntime.PluginSessionTest do
   use ExUnit.Case, async: false
-  alias Backplane.AgentRuntime.Plugins.{Backend, Session}
+  alias Backplane.AgentRuntime.Plugins.{Backend, MCP, Session}
   alias Backplane.PluginProtocol.Archive
 
   defmodule Adapter do
@@ -267,5 +267,53 @@ defmodule Backplane.AgentRuntime.PluginSessionTest do
              Session.call_tool(session, "pages", tool, %{"text" => "pages"})
 
     Session.stop(session)
+  end
+
+  test "native MCP discovery rejects a repeated cursor after two requests", %{
+    installed: installed
+  } do
+    script = Path.join(installed.root, "scripts/server.py")
+    cursor_log = Path.join(installed.root, "cursor-requests.jsonl")
+
+    File.write!(
+      script,
+      String.replace(
+        File.read!(script),
+        ~s(    elif method == "tools/list":),
+        """
+            elif method == "tools/list":
+                with Path(os.environ["CURSOR_LOG"]).open("a") as cursor_log:
+                    print(json.dumps(request.get("params", {}).get("cursor")), file=cursor_log)
+                response["result"] = {"tools": [], "nextCursor": "repeated"}
+                print(json.dumps(response), flush=True)
+                continue
+        """
+        |> String.trim_trailing()
+      )
+    )
+
+    config = %{
+      "type" => "stdio",
+      "command" => "python3",
+      "args" => [script],
+      "env" => %{"CURSOR_LOG" => cursor_log}
+    }
+
+    {:ok, connection} =
+      MCP.start(config,
+        session: self(),
+        server: "repeated-cursor",
+        root: installed.root,
+        data_dir: installed.data_dir,
+        env: %{},
+        timeout: 1_000
+      )
+
+    try do
+      assert {:error, :invalid_tool_cursor} = MCP.tools(connection, 1_000)
+      assert String.split(File.read!(cursor_log), "\n", trim: true) == ["null", ~s("repeated")]
+    after
+      MCP.stop(connection)
+    end
   end
 end

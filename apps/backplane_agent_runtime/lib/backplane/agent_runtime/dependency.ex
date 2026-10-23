@@ -62,20 +62,21 @@ defmodule Backplane.AgentRuntime.Dependency do
   end
 
   defp reject_cycle(deps, waiter, target) do
-    if reachable?(deps.waits, target, waiter, MapSet.new()) do
+    if reachable?(deps.waits, target, waiter, %{}) do
       {:error, Error.new(:validation, "dependency cycle rejected")}
     else
       {:ok, deps}
     end
   end
 
+  @spec reachable?([map()], term(), term(), map()) :: boolean()
   defp reachable?(_waits, run_id, run_id, _visited), do: true
 
   defp reachable?(waits, current, target, visited) do
-    if MapSet.member?(visited, current) do
+    if Map.has_key?(visited, current) do
       false
     else
-      visited = MapSet.put(visited, current)
+      visited = Map.put(visited, current, true)
 
       waits
       |> Enum.filter(&(&1.waiter == current))

@@ -99,6 +99,41 @@ defmodule Backplane.Plugins.GitTest do
     assert {:error, :unsupported_git_credential} = Git.publish_env(url, credential_name: name)
   end
 
+  @tag :tmp_dir
+  test "credential queries exclude the enclosing checkout's local header", %{tmp_dir: tmp_dir} do
+    checkout = Path.join(tmp_dir, "checkout")
+    url = "https://github.com/team/plugins.git"
+    sentinel = "Authorization: fixture-checkout-only"
+    assert {_, 0} = System.cmd("git", ["init", "--quiet", checkout])
+
+    assert {_, 0} =
+             System.cmd("git", [
+               "-C",
+               checkout,
+               "config",
+               "http.https://github.com/.extraheader",
+               sentinel
+             ])
+
+    assert {:ok, public_env} = Git.publish_env(url)
+
+    assert {sentinel <> "\n", 0} ==
+             System.cmd("git", ["config", "--get-urlmatch", "http.extraheader", url],
+               cd: checkout,
+               env: [{"GIT_CONFIG_GLOBAL", "/dev/null"} | public_env]
+             )
+
+    assert {"", 1} = git_config(public_env, ["--get-urlmatch", "http.extraheader", url], checkout)
+
+    name = "plugin-isolated-" <> Ecto.UUID.generate()
+    put_credential(name, "fixture-token")
+    assert {:ok, authenticated_env} = Git.publish_env(url, credential_name: name)
+    expected = "Authorization: Basic " <> Base.encode64("x-access-token:fixture-token")
+
+    assert {expected <> "\n", 0} ==
+             git_config(authenticated_env, ["--get-urlmatch", "http.extraheader", url], checkout)
+  end
+
   defp put_credential(name, token, metadata \\ %{}) do
     Vault.put(%Credential{
       name: name,
@@ -110,10 +145,20 @@ defmodule Backplane.Plugins.GitTest do
     on_exit(fn -> Vault.remove(name) end)
   end
 
-  defp git_config(env, args) do
-    System.cmd("git", ["config" | args],
-      env: [{"GIT_CONFIG_GLOBAL", "/dev/null"} | env],
-      stderr_to_stdout: true
-    )
+  defp git_config(env, args, directory \\ File.cwd!()) do
+    isolated =
+      Path.join(System.tmp_dir!(), "plugin-git-config-#{System.unique_integer([:positive])}")
+
+    try do
+      assert {_, 0} = System.cmd("git", ["init", "--quiet", isolated])
+
+      System.cmd("git", ["-C", isolated, "config" | args],
+        cd: directory,
+        env: [{"GIT_CONFIG_GLOBAL", "/dev/null"} | env],
+        stderr_to_stdout: true
+      )
+    after
+      File.rm_rf!(isolated)
+    end
   end
 end

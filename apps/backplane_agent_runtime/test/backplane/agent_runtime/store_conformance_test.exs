@@ -7,7 +7,15 @@ defmodule Backplane.AgentRuntime.StoreConformanceTest do
   alias Backplane.AgentRuntime.Kernel
   alias Backplane.AgentRuntime.Store
   alias Backplane.AgentRuntime.StoreConformance
-  alias __MODULE__.{FailingIfCalledProvider, FileStore, SettledProvider}
+
+  alias __MODULE__.{
+    FailingIfCalledProvider,
+    FileStore,
+    SettledProvider,
+    FeedbackBackend,
+    FeedbackProvider,
+    FeedbackHooks
+  }
 
   defmodule DurableStore do
     @behaviour Store
@@ -263,6 +271,134 @@ defmodule Backplane.AgentRuntime.StoreConformanceTest do
     assert {:error, _} = Conversation.prompt(restored, "do not replay")
     refute_receive :provider_called, 20
     GenServer.stop(restored)
+  end
+
+  @tag :tmp_dir
+  test "host feedback durable receipt survives actual file restart and inspection-only restore",
+       %{tmp_dir: dir} do
+    {:ok, context} = FileStore.open(dir)
+
+    {:ok, registry} =
+      Backplane.AgentRuntime.ToolRegistry.register(
+        %Backplane.AgentRuntime.ToolRegistry{},
+        %{
+          tool_name: "feedback_tool",
+          tool_revision: 1,
+          schema: %{"type" => "object"},
+          safety: %{
+            read_only: true,
+            retry_safe: true,
+            parallel_safe: false,
+            requires_approval: false
+          },
+          backend: FeedbackBackend
+        }
+      )
+
+    options = [
+      run_id: "file_feedback",
+      store: FileStore,
+      context: context,
+      provider: FeedbackProvider,
+      hooks: FeedbackHooks,
+      provider_context: %{test: self()},
+      registry: registry,
+      subscriber: self(),
+      run_timeout: :infinity,
+      authority: %{
+        caller: "host",
+        run_id: "file_feedback",
+        grants: ["feedback_tool"],
+        tool_revision: 1
+      }
+    ]
+
+    pid = start_supervised!({Conversation, options})
+    assert {:ok, _} = Conversation.prompt(pid, "persist feedback")
+    assert_receive {:file_feedback, {:ok, receipt}, hook}, 1_000
+    assert receipt.store_mode == :durable
+    {:ok, reopened} = FileStore.restart(context)
+    assert {:ok, before_projection} = FileStore.load(reopened, "file_feedback")
+    assert [record] = before_projection.run.context.conversation.host_feedback
+    assert record["id"] == "durable-feedback"
+    assert record["revision"] == receipt.revision
+    assert record["store_mode"] == "durable"
+    assert record["projected"] == false
+    assert {:ok, _} = Jason.encode(record)
+
+    send(hook, :deny)
+    assert_receive {:file_feedback_provider, messages}, 1_000
+    assert Enum.count(messages, &Map.has_key?(&1, :host_feedback)) == 1
+    assert_receive {:agent_runtime, "file_feedback", %{type: :run_completed}}, 1_000
+    assert {:ok, projected} = FileStore.load(reopened, "file_feedback")
+
+    assert [%{"id" => "durable-feedback", "projected" => true}] =
+             projected.run.context.conversation.host_feedback
+
+    assert Enum.count(
+             projected.run.context.conversation.messages,
+             &Map.has_key?(&1, :host_feedback)
+           ) == 1
+
+    # Restoring either historical nonterminal evidence or the settled record is
+    # inspection only. Neither recreates the callback nor replays preparation.
+    for snapshot <- [before_projection, projected] do
+      restored =
+        start_supervised!(
+          {Conversation,
+           [
+             run_id: snapshot.run.run_id,
+             run: snapshot.run,
+             store: FileStore,
+             context: reopened,
+             provider: FailingIfCalledProvider,
+             provider_context: %{test: self()}
+           ]},
+          id: make_ref()
+        )
+
+      status = Conversation.status(restored)
+      assert status.phase in [:terminal, :recovery_required]
+      assert status.conversation.host_feedback == snapshot.run.context.conversation.host_feedback
+      assert {:error, _} = Conversation.prompt(restored, "do not replay")
+      refute_receive :provider_called, 20
+    end
+  end
+
+  defmodule FeedbackProvider do
+    def stream(request, context) do
+      if Enum.any?(request.messages, &Map.has_key?(&1, :host_feedback)) do
+        send(context.test, {:file_feedback_provider, request.messages})
+        [%{type: :response_completed, message: %{role: :assistant, content: "done"}}]
+      else
+        [
+          %{
+            type: :tool_call_completed,
+            tool_call: %{id: "file-call", name: "feedback_tool", arguments: %{}}
+          },
+          %{type: :response_completed, message: %{role: :assistant, content: "tool"}}
+        ]
+      end
+    end
+  end
+
+  defmodule FeedbackHooks do
+    def prepare_tool(_invocation, context) do
+      receipt =
+        context.append_feedback.(%{
+          id: "durable-feedback",
+          text: "persisted context",
+          source: "file-store-test",
+          stage: "PreToolUse"
+        })
+
+      send(context.test, {:file_feedback, receipt, self()})
+      receive do: (:deny -> {:deny, "test policy"})
+    end
+  end
+
+  defmodule FeedbackBackend do
+    def execute(_operation), do: raise("denied feedback attempt must never dispatch")
   end
 
   defp base_run(run_id) do
