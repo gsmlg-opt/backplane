@@ -81,7 +81,11 @@ history must contain the associated typed call so the codec can choose function
 or custom output. Stream deltas identify input kind in
 `extensions["openai_responses::input_kind"]`; completed content retains the tagged
 arguments. Duplicate call IDs, unknown/mismatched item IDs, changed completion
-input, incomplete terminals and cumulative input overflow are rejected. Use
+input, incomplete terminals and cumulative input overflow are rejected.
+Only an absent tool-item status or explicit `completed` status can complete a call;
+an explicit non-completed status is rejected, including in terminal output. An
+incomplete response may return partial text but cannot complete tool calls. Hosts
+must wait for a successful response terminal before dispatching any tool. Use
 `max_tool_input_bytes` on Responses stream/response decoding to tighten the input
 bound. Retained streams default to 128 calls and 1,048,576 total tool-input bytes;
 `max_tool_calls` and `max_total_tool_input_bytes` can tighten these limits. SSE
