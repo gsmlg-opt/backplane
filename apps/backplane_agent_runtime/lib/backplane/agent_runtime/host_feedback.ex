@@ -33,7 +33,7 @@ defmodule Backplane.AgentRuntime.HostFeedback do
   # recursion and bytes before accepting them into canonical state or events.
   def public(value) do
     with {:ok, value} <- normalize(value, 0),
-         {:ok, bytes} <- Jason.encode(value),
+         bytes = JSON.encode!(value),
          true <- byte_size(bytes) <= 262_144 do
       {:ok, value}
     else

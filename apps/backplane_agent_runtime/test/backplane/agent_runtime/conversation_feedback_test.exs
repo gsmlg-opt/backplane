@@ -118,7 +118,7 @@ defmodule Backplane.AgentRuntime.ConversationFeedbackTest do
     assert record["revision"] == receipt.revision
     assert record["store_mode"] == "ephemeral"
     assert record["projected"] == false
-    assert {:ok, _} = Jason.encode(record)
+    assert JSON.decode!(JSON.encode!(record)) == record
     refute_receive {:backend, _, _}, 20
   end
 

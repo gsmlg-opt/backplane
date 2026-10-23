@@ -324,7 +324,7 @@ defmodule Backplane.AgentRuntime.StoreConformanceTest do
     assert record["revision"] == receipt.revision
     assert record["store_mode"] == "durable"
     assert record["projected"] == false
-    assert {:ok, _} = Jason.encode(record)
+    assert JSON.decode!(JSON.encode!(record)) == record
 
     send(hook, :deny)
     assert_receive {:file_feedback_provider, messages}, 1_000
