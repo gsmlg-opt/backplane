@@ -68,9 +68,10 @@ defmodule Backplane.HostAgent.ReporterTest do
     }
 
     payload = Reporter.heartbeat(config)
+    expected_version = Application.spec(:backplane_host_agent, :vsn) |> to_string()
 
     assert %{
-             "agent_version" => "0.1.0",
+             "agent_version" => ^expected_version,
              "hostname" => hostname,
              "machine_name" => "t430",
              "metadata" => %{"otp_release" => otp_release},

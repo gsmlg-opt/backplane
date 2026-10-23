@@ -465,6 +465,23 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
   end
 
   describe "POST /memory/:agent_id/mcp" do
+    test "initialize reports the running host-agent application version" do
+      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "initialize"})
+
+      conn =
+        :post
+        |> conn("/memory/agt_42/mcp", body)
+        |> put_req_header("content-type", "application/json")
+        |> call_router()
+
+      assert conn.status == 200
+
+      assert Jason.decode!(conn.resp_body)["result"]["serverInfo"] == %{
+               "name" => "backplane-host-agent-memory",
+               "version" => Application.spec(:backplane_host_agent, :vsn) |> to_string()
+             }
+    end
+
     test "advertises shared contract definitions while disconnected" do
       Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
 
