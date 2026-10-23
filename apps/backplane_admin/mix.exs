@@ -51,6 +51,7 @@ defmodule BackplaneAdmin.MixProject do
       {:gaoxy_http, "~> 0.12.1"},
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 10.0.1"},
+      # TODO(upstream): duskmoon-dev/duskmoon-bundler#5 - native NIF downloads block release.
       {:duskmoon_bundler, "~> 10.0.1", runtime: Mix.env() != :prod},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0"},
