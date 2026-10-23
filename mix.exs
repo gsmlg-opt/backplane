@@ -1,7 +1,7 @@
 defmodule Backplane.Umbrella.MixProject do
   use Mix.Project
 
-  @version "1.10.31"
+  @version "1.10.32"
 
   def project do
     [
