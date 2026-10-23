@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "backplane-example",
+  "version": "1.0.0",
+  "description": "Portable skill, script resources, and a local MCP echo server."
+}

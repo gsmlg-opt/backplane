@@ -13,7 +13,7 @@ defmodule Backplane.AgentRuntime.MixProject do
       description: "Embedded Elixir/OTP runtime and opt-in tools for bounded independent agents.",
       docs: docs(),
       package: package()
-    ]
+    ] ++ umbrella_paths()
   end
 
   def application do
@@ -25,10 +25,33 @@ defmodule Backplane.AgentRuntime.MixProject do
 
   defp deps do
     [
+      protocol_dependency(:backplane_plugin_protocol),
+      protocol_dependency(:backplane_mcp_protocol),
       {:jsonschex, "~> 0.10.0"},
       {:decimal, "~> 3.0"},
-      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
+      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  defp protocol_dependency(app) do
+    if File.dir?(Path.expand("../../apps", __DIR__)) do
+      {app, in_umbrella: true}
+    else
+      {app, "~> 1.10.32"}
+    end
+  end
+
+  defp umbrella_paths do
+    if File.dir?(Path.expand("../../apps", __DIR__)) do
+      [
+        build_path: "../../_build",
+        config_path: "../../config/config.exs",
+        deps_path: "../../deps",
+        lockfile: "../../mix.lock"
+      ]
+    else
+      []
+    end
   end
 
   defp docs do

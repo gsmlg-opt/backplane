@@ -577,7 +577,7 @@ defmodule Backplane.ReleaseConfigTest do
     package_mix = File.read!("apps/backplane_agent_runtime/mix.exs")
 
     assert package_mix =~ "{:jsonschex, \"~> 0.10.0\"}"
-    assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: :dev, runtime: false}"
+    assert package_mix =~ "{:ex_doc, \">= 0.0.0\", only: [:dev, :test], runtime: false}"
     assert package_mix =~ "main: \"readme\""
 
     for guide <- ~w(README.md EMBEDDING.md PERSISTENCE.md SCHEMAS.md CHANGELOG.md) do

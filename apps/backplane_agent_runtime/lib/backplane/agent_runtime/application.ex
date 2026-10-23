@@ -3,6 +3,7 @@ defmodule Backplane.AgentRuntime.Application do
 
   @impl true
   def start(_type, _args) do
-    Supervisor.start_link([], strategy: :one_for_one, name: __MODULE__)
+    children = [{Registry, keys: :unique, name: Backplane.AgentRuntime.PluginRegistry}]
+    Supervisor.start_link(children, strategy: :one_for_one, name: __MODULE__)
   end
 end
