@@ -49,6 +49,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   def close(pid, _timeout) when is_pid(pid), do: {:error, :invalid_timeout}
 
   @impl GenServer
+  def format_status(status) do
+    Map.update!(status, :state, fn state ->
+      Enum.reduce([:request], state, &Map.replace(&2, &1, :redacted))
+    end)
+  end
+
+  @impl GenServer
   def init(opts) do
     owner = Map.fetch!(opts, :owner)
     transport = Map.fetch!(opts, :transport)
@@ -146,7 +153,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   end
 
   defp run_stream(opts) do
-    with {:ok, request_headers} <-
+    with :ok <- HTTP.check_origin(opts.mcp_url, Keyword.get(opts.http_options, :allowed_origin)),
+         {:ok, request_headers} <-
            RequestHeaders.resolve(opts.headers, opts.headers_provider),
          {:ok, headers} <-
            Headers.build(request_headers, opts.encoded_request, opts.request_context),
@@ -164,6 +172,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
 
       stream_options =
         opts.http_options
+        |> Keyword.delete(:allowed_origin)
         |> Keyword.put(:receive_timeout, :infinity)
         |> Keyword.put(:request_timeout, :infinity)
 

@@ -149,7 +149,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   - `:headers` - The headers to send with the HTTP requests.
   - `:headers_provider` - A zero-arity function that resolves additional headers for every request.
   - `:transport_opts` - The underlying HTTP transport options.
-  - `:http_options` - The underlying HTTP client options.
+  - `:http_options` - The underlying HTTP client options. Set `allowed_origin: url` to confine all requests and redirects to that origin.
   - `:enable_sse` - Whether to establish a GET connection for server-initiated messages (default false).
   """
   @type option ::
@@ -221,24 +221,39 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   def supported_protocol_versions, do: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]
 
   @impl GenServer
-  def init(opts) do
-    state = %{
-      client: opts.client,
-      mcp_url: opts.mcp_url,
-      headers: opts.headers,
-      headers_provider: opts.headers_provider,
-      transport_opts: opts.transport_opts,
-      http_options: opts.http_options,
-      session_id: nil,
-      enable_sse: Map.get(opts, :enable_sse, false),
-      sse_task: nil,
-      last_event_id: nil,
-      legacy_protocol_version: nil,
-      active_request: nil
-    }
+  def format_status(status) do
+    Map.update!(status, :state, fn state ->
+      Enum.reduce(
+        [:headers, :headers_provider, :transport_opts, :http_options],
+        state,
+        &Map.replace(&2, &1, :redacted)
+      )
+    end)
+  end
 
-    emit_telemetry(:init, state)
-    {:ok, state, {:continue, :connect}}
+  @impl GenServer
+  def init(opts) do
+    with :ok <- HTTP.check_origin(opts.mcp_url, Keyword.get(opts.http_options, :allowed_origin)) do
+      state = %{
+        client: opts.client,
+        mcp_url: opts.mcp_url,
+        headers: opts.headers,
+        headers_provider: opts.headers_provider,
+        transport_opts: opts.transport_opts,
+        http_options: opts.http_options,
+        session_id: nil,
+        enable_sse: Map.get(opts, :enable_sse, false),
+        sse_task: nil,
+        last_event_id: nil,
+        legacy_protocol_version: nil,
+        active_request: nil
+      }
+
+      emit_telemetry(:init, state)
+      {:ok, state, {:continue, :connect}}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
   end
 
   defp resolve_mcp_url(opts) do
@@ -340,7 +355,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     if state.session_id, do: delete_session(state)
     if state.sse_task, do: Process.exit(state.sse_task, :kill)
 
-    {:stop, :normal, %{state | session_id: nil, sse_task: nil, last_event_id: nil, legacy_protocol_version: nil}}
+    {:stop, :normal,
+     %{state | session_id: nil, sse_task: nil, last_event_id: nil, legacy_protocol_version: nil}}
   end
 
   @impl GenServer
@@ -479,7 +495,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
         {:noreply, new_state}
 
       {_, content_type} ->
-        {:reply, {:error, {:unsupported_content_type, content_type}}, %{new_state | active_request: nil}}
+        {:reply, {:error, {:unsupported_content_type, content_type}},
+         %{new_state | active_request: nil}}
     end
   end
 
@@ -546,7 +563,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     end
   end
 
-  defp update_legacy_protocol_version(state, body, %RequestContext{era: :legacy, method: "initialize"}) do
+  defp update_legacy_protocol_version(state, body, %RequestContext{
+         era: :legacy,
+         method: "initialize"
+       }) do
     case negotiated_protocol_version(body) do
       version when version in @legacy_protocol_versions ->
         %{state | legacy_protocol_version: version}
@@ -637,7 +657,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   defp maybe_start_sse_connection(%{enable_sse: true, session_id: nil} = state), do: state
 
-  defp maybe_start_sse_connection(%{enable_sse: true, sse_task: task} = state) when not is_nil(task), do: state
+  defp maybe_start_sse_connection(%{enable_sse: true, sse_task: task} = state)
+       when not is_nil(task),
+       do: state
 
   defp maybe_start_sse_connection(%{enable_sse: true} = state) do
     pid = start_sse_task(state)
@@ -652,7 +674,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     end
   end
 
-  defp maybe_start_legacy_sse_on_session_acquired(%{session_id: nil} = new_state, _old_state), do: new_state
+  defp maybe_start_legacy_sse_on_session_acquired(%{session_id: nil} = new_state, _old_state),
+    do: new_state
 
   defp maybe_start_legacy_sse_on_session_acquired(new_state, %{session_id: nil}) do
     maybe_start_sse_connection(new_state)
@@ -744,12 +767,18 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   defp put_last_event_id_header(headers, nil), do: headers
 
-  defp put_last_event_id_header(headers, event_id), do: Map.put(headers, "last-event-id", event_id)
+  defp put_last_event_id_header(headers, event_id),
+    do: Map.put(headers, "last-event-id", event_id)
 
   defp sanitize_headers_error(reason) when is_atom(reason), do: reason
 
   defp sanitize_headers_error({reason, _detail})
-       when reason in [:duplicate_header, :invalid_header, :invalid_header_name, :invalid_header_value],
+       when reason in [
+              :duplicate_header,
+              :invalid_header,
+              :invalid_header_name,
+              :invalid_header_value
+            ],
        do: reason
 
   defp sanitize_headers_error(_reason), do: :request_headers_unavailable
@@ -758,7 +787,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   defp legacy_request?(%RequestContext{era: :legacy}), do: true
   defp legacy_request?(_request_context), do: false
 
-  defp persist_legacy_protocol_version(state, %RequestContext{era: :legacy, method: method, protocol_version: version})
+  defp persist_legacy_protocol_version(state, %RequestContext{
+         era: :legacy,
+         method: method,
+         protocol_version: version
+       })
        when method != "initialize" and version in @legacy_protocol_versions do
     %{state | legacy_protocol_version: version}
   end

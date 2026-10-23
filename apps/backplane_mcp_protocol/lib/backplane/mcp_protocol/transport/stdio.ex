@@ -195,6 +195,13 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   def supported_protocol_versions, do: :all
 
   @impl GenServer
+  def format_status(status) do
+    Map.update!(status, :state, fn state ->
+      Enum.reduce([:env], state, &Map.replace(&2, &1, :redacted))
+    end)
+  end
+
+  @impl GenServer
   def init(%{} = opts) do
     state = Map.merge(opts, %{port: nil, ref: nil})
 
