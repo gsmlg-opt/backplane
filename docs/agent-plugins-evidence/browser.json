@@ -1,0 +1,41 @@
+{
+  "checked_on": "2026-10-23",
+  "surface": "127.0.0.1:4421 test fixture",
+  "desktop": {
+    "connected": true,
+    "width": 1440,
+    "overflow": false,
+    "assets": [
+      "http://127.0.0.1:4421/assets/css/app-51508baf.css",
+      "http://127.0.0.1:4421/assets/js/app-cedd3e63.js"
+    ]
+  },
+  "mobile": {
+    "connected": true,
+    "width": 390,
+    "scrollWidth": 375,
+    "overflow": false,
+    "rootClass": "space-y-6 max-w-7xl mx-auto w-full min-w-0",
+    "tables": [
+      {
+        "label": "Client support table",
+        "width": 295,
+        "scrollWidth": 768
+      },
+      {
+        "label": "Consumer component reports",
+        "width": 295,
+        "scrollWidth": 768
+      },
+      {
+        "label": "Consumer component reports",
+        "width": 295,
+        "scrollWidth": 768
+      }
+    ]
+  },
+  "sources": "Verified live page and form",
+  "composition": "Canonical manifest and MCP schema defaults verified",
+  "channel_rollback": "Selected earlier release through the real LiveView form",
+  "console_errors_and_warnings": 0
+}

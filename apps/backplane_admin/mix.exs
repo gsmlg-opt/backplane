@@ -35,6 +35,7 @@ defmodule BackplaneAdmin.MixProject do
       {:backplane_mcp, in_umbrella: true},
       {:backplane_llama, in_umbrella: true},
       {:backplane_skills, in_umbrella: true},
+      {:backplane_plugins, in_umbrella: true},
       {:backplane_memory, in_umbrella: true},
       {:backplane_monitor, in_umbrella: true},
       {:backplane_telemetry, in_umbrella: true},

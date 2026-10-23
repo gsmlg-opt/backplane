@@ -39,6 +39,8 @@ defmodule Backplane.Admin.LayoutsTest do
           {"/mcp/upstreams/new", "mcp-upstreams"},
           {"/memory/sessions/example", "memory-sessions"},
           {"/skills/browse/example", "skills-browse"},
+          {"/plugins/sources", "plugins-sources"},
+          {"/plugins/distribution", "plugins-distribution"},
           {"/auth/oauth/clients/example/edit", "auth-oauth-clients"},
           {"/system/credentials/new", "system-credentials"}
         ] do

@@ -1,0 +1,82 @@
+{
+  "checked_on": "2026-10-23",
+  "client": "codex-cli 0.163.0",
+  "scope": "Isolated local fixtures; no production database records or real GitHub push.",
+  "declared_plugin_version": "1.0.0",
+  "releases": {
+    "one": {
+      "id": "aa17ff19-b897-4c42-8cda-606f35e94e43",
+      "plugin_id": "0a89971a-ede3-441f-8ef1-bdf1ca3e1c34",
+      "artifact_digest": "8789c4dcf36aaefad5c39257401342a376d7f4641844379bbb2ad4121ea8075c"
+    },
+    "two": {
+      "id": "7f7db0bd-0bb3-440e-8f45-d1733384d8e7",
+      "plugin_id": "0a89971a-ede3-441f-8ef1-bdf1ca3e1c34",
+      "artifact_digest": "23db6c0ac29a7473d17b0592e765c69852293c11db8252248b9c1803550e48b9"
+    }
+  },
+  "sessions": [
+    {
+      "source": "export-v1",
+      "skills": [
+        {
+          "name": "backplane-example:plugin-hello",
+          "pluginId": "backplane-example@backplane-test",
+          "scope": "user",
+          "enabled": true
+        }
+      ],
+      "mcp_tool_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "BACKPLANE_PLUGIN_V1: native-codex-proof"
+          }
+        ]
+      }
+    },
+    {
+      "source": "export-v2",
+      "skills": [
+        {
+          "name": "backplane-example:plugin-hello",
+          "pluginId": "backplane-example@backplane-test",
+          "scope": "user",
+          "enabled": true
+        }
+      ],
+      "mcp_tool_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "BACKPLANE_PLUGIN_V2: native-codex-proof"
+          }
+        ]
+      }
+    },
+    {
+      "source": "git-v2",
+      "skills": [
+        {
+          "name": "backplane-example:plugin-hello",
+          "pluginId": "backplane-example@backplane-git-test",
+          "scope": "user",
+          "enabled": true
+        }
+      ],
+      "mcp_tool_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "BACKPLANE_PLUGIN_V2: native-codex-proof"
+          }
+        ]
+      }
+    }
+  ],
+  "update_observation": {
+    "source_update_only": "Installed copy remained V1",
+    "repeated_plugin_add": "Installed copy became V2 with the same declared version",
+    "existing_session_hot_update": "Not evaluated"
+  }
+}

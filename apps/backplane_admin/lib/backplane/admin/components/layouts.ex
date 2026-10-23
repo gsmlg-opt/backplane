@@ -14,6 +14,7 @@ defmodule Backplane.Admin.Layouts do
       %{label: "MCP", path: "/mcp/managed", section: :mcp},
       %{label: "Memory", path: "/memory", section: :memory},
       %{label: "Skills", path: "/skills", section: :skill},
+      %{label: "Plugins", path: "/plugins", section: :plugins},
       %{label: "Auth", path: "/auth/overview", section: :auth},
       %{label: "System", path: "/system/clients", section: :system}
     ]
@@ -103,6 +104,14 @@ defmodule Backplane.Admin.Layouts do
               %{label: "Config", path: "/memory/config", icon: "tune-variant"}
             ]
           }
+        ]
+
+      :plugins ->
+        [
+          %{label: "Catalog", path: "/plugins", match: :exact, icon: "puzzle-outline"},
+          %{label: "Sources", path: "/plugins/sources", icon: "source-repository"},
+          %{label: "Releases", path: "/plugins/releases", icon: "package-variant"},
+          %{label: "Distribution", path: "/plugins/distribution", icon: "share-variant"}
         ]
 
       :skill ->
@@ -266,6 +275,7 @@ defmodule Backplane.Admin.Layouts do
       :mcp -> "MCP Hub"
       :memory -> "Memory"
       :skill -> "Skills"
+      :plugins -> "Plugins"
       :auth -> "Auth"
       :system -> "System"
     end
@@ -293,6 +303,7 @@ defmodule Backplane.Admin.Layouts do
       String.starts_with?(current_path, "/llama") -> :llama
       String.starts_with?(current_path, "/mcp") -> :mcp
       String.starts_with?(current_path, "/memory") -> :memory
+      String.starts_with?(current_path, "/plugins") -> :plugins
       skill_path?(current_path) -> :skill
       String.starts_with?(current_path, "/auth") -> :auth
       String.starts_with?(current_path, "/system") -> :system
