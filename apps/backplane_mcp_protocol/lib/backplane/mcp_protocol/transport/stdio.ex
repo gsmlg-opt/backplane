@@ -169,8 +169,7 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   @impl Transport
   def close_stream(pid \\ __MODULE__, stream, opts)
 
-  def close_stream(pid, %{transport: :stdio, subscription_id: subscription_id}, opts)
-      when is_list(opts) do
+  def close_stream(pid, %{transport: :stdio, subscription_id: subscription_id}, opts) when is_list(opts) do
     reason = Keyword.get(opts, :reason, "subscription closed")
 
     notification = %{
@@ -193,6 +192,15 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   @impl Transport
   def supported_protocol_versions, do: :all
+
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): gsmlg-opt/backplane#78
+  @impl GenServer
+  def format_status(status) do
+    Map.update!(status, :state, fn state ->
+      Enum.reduce([:env], state, &Map.replace(&2, &1, :redacted))
+    end)
+  end
 
   @impl GenServer
   def init(%{} = opts) do

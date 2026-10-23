@@ -1,13 +1,12 @@
 defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.McpProtocol.Test.HTTPServer
-
   alias Backplane.McpProtocol.Client
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.Message
   alias Backplane.McpProtocol.MCP.Response
   alias Backplane.McpProtocol.Protocol
+  alias Backplane.McpProtocol.Test.HTTPServer
   alias Backplane.McpProtocol.Transport.StreamableHTTP
 
   @moduletag capture_log: true
@@ -678,6 +677,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTPTest do
 
       {:ok, ping_message} =
         Message.encode_request(%{"method" => "ping", "params" => %{}}, "1")
+
+      assert :sys.get_state(transport).headers["authorization"] == "auth-token"
+      refute inspect(:sys.get_status(transport), limit: :infinity) =~ "auth-token"
 
       assert :ok = StreamableHTTP.send_message(transport, ping_message, timeout: 5000)
 

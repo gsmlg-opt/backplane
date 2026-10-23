@@ -150,6 +150,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   - `:headers_provider` - A zero-arity function that resolves additional headers for every request.
   - `:transport_opts` - The underlying HTTP transport options.
   - `:http_options` - The underlying HTTP client options.
+    `allowed_origin: url` restricts redirects to that origin.
   - `:enable_sse` - Whether to establish a GET connection for server-initiated messages (default false).
   """
   @type option ::
@@ -219,6 +220,15 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   @impl Transport
   def supported_protocol_versions, do: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]
+
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): gsmlg-opt/backplane#78
+  @impl GenServer
+  def format_status(status) do
+    Map.update!(status, :state, fn state ->
+      Enum.reduce([:headers, :headers_provider, :transport_opts, :http_options], state, &Map.replace(&2, &1, :redacted))
+    end)
+  end
 
   @impl GenServer
   def init(opts) do

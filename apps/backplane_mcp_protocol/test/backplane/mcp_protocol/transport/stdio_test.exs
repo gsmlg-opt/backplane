@@ -1,6 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.STDIOTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Backplane.McpProtocol.Transport.STDIO
 
   @moduletag capture_log: true
@@ -29,6 +31,37 @@ defmodule Backplane.McpProtocol.Transport.STDIOTest do
       refute :initialize in StubClient.get_signals()
 
       safe_stop(pid)
+    end
+
+    test "missing-command crash reports redact configured environment secrets" do
+      previous = Process.flag(:trap_exit, true)
+      previous_level = Logger.level()
+      Logger.configure(level: :debug)
+
+      on_exit(fn ->
+        Process.flag(:trap_exit, previous)
+        Logger.configure(level: previous_level)
+      end)
+
+      secret = "stdio-env-secret-57bf"
+      command = "backplane-missing-command-57bf"
+
+      log =
+        capture_log(fn ->
+          assert {:ok, pid} =
+                   STDIO.start_link(
+                     client: StubClient,
+                     command: command,
+                     env: %{"PLUGIN_API_KEY" => secret},
+                     name: nil
+                   )
+
+          assert_receive {:EXIT, ^pid, {:error, _}}, 1_000
+        end)
+
+      assert log =~ "Command not found: #{command}"
+      refute log =~ secret
+      assert log =~ "redacted"
     end
 
     test "fails when command not found" do
@@ -146,6 +179,26 @@ defmodule Backplane.McpProtocol.Transport.STDIOTest do
   end
 
   describe "environment variables" do
+    test "status redaction preserves the live subprocess environment" do
+      secret = "stdio-live-env-secret-57bf"
+      :ok = StubClient.clear_messages()
+
+      {:ok, pid} =
+        STDIO.start_link(
+          client: StubClient,
+          command: "sh",
+          args: ["-c", ~s(printf '%s\\n' "$PLUGIN_API_KEY"; cat)],
+          env: %{"PLUGIN_API_KEY" => secret},
+          name: nil
+        )
+
+      on_exit(fn -> safe_stop(pid) end)
+      assert :sys.get_state(pid).env == %{"PLUGIN_API_KEY" => secret}
+      refute inspect(:sys.get_status(pid), limit: :infinity) =~ secret
+
+      assert eventually_received_secret(secret)
+    end
+
     test "uses environment variables" do
       :ok = StubClient.clear_messages()
 
@@ -164,6 +217,18 @@ defmodule Backplane.McpProtocol.Transport.STDIOTest do
       refute Enum.empty?(messages)
 
       safe_stop(pid)
+    end
+  end
+
+  defp eventually_received_secret(secret, attempts \\ 50)
+  defp eventually_received_secret(_secret, 0), do: false
+
+  defp eventually_received_secret(secret, attempts) do
+    if inspect(StubClient.get_messages()) =~ secret do
+      true
+    else
+      Process.sleep(10)
+      eventually_received_secret(secret, attempts - 1)
     end
   end
 

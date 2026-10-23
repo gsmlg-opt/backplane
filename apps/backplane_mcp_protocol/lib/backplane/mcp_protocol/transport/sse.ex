@@ -126,6 +126,7 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   - `:headers` - The headers to send with the HTTP requests.
   - `:transport_opts` - The underlying HTTP transport options to pass to the HTTP client. You can check on the [Mint docs](https://hexdocs.pm/mint/Mint.HTTP.html#connect/4-transport-options)
   - `:http_options` - The underlying HTTP client options to pass to the HTTP client. You can check on the [Finch docs](https://hexdocs.pm/finch/Finch.html#t:request_opt/0)
+    `allowed_origin: url` restricts endpoint events and redirects to that origin.
   """
   @type option ::
           {:name, GenServer.name()}
@@ -176,6 +177,15 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   @impl Transport
   def supported_protocol_versions do
     ["2024-11-05"]
+  end
+
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): gsmlg-opt/backplane#78
+  @impl GenServer
+  def format_status(status) do
+    Map.update!(status, :state, fn state ->
+      Enum.reduce([:headers, :transport_opts, :http_options], state, &Map.replace(&2, &1, :redacted))
+    end)
   end
 
   @impl GenServer
@@ -316,9 +326,16 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   def handle_info({:endpoint, endpoint}, %{client: client, server_url: server_url} = state) do
     case URI.new(endpoint) do
       {:ok, endpoint} ->
-        GenServer.cast(client, :initialize)
+        message_url = parse_message_url(URI.parse(server_url), endpoint)
 
-        {:noreply, %{state | message_url: parse_message_url(URI.parse(server_url), endpoint)}}
+        case HTTP.check_origin(message_url, Keyword.get(state.http_options, :allowed_origin)) do
+          :ok ->
+            GenServer.cast(client, :initialize)
+            {:noreply, %{state | message_url: message_url}}
+
+          {:error, _} ->
+            {:stop, :cross_origin_endpoint, state}
+        end
 
       {:error, _} = err ->
         {:stop, err, state}

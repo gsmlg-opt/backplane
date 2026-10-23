@@ -1,9 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.SSETest do
   use ExUnit.Case, async: false
 
-  alias Backplane.McpProtocol.Test.HTTPServer
-
   alias Backplane.McpProtocol.MCP.Message
+  alias Backplane.McpProtocol.Test.HTTPServer
   alias Backplane.McpProtocol.Test.SyncHelpers
   alias Backplane.McpProtocol.Transport.SSE
 
@@ -339,6 +338,9 @@ defmodule Backplane.McpProtocol.Transport.SSETest do
         )
 
       _ = SyncHelpers.await_state(transport, & &1.message_url)
+      assert :sys.get_state(transport).headers["authorization"] == "auth-token"
+      refute inspect(:sys.get_status(transport), limit: :infinity) =~ "auth-token"
+
       assert :ok = SSE.send_message(transport, "test message", timeout: 5000)
 
       SSE.shutdown(transport)

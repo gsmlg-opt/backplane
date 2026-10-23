@@ -48,6 +48,15 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
 
   def close(pid, _timeout) when is_pid(pid), do: {:error, :invalid_timeout}
 
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): gsmlg-opt/backplane#78
+  @impl GenServer
+  def format_status(status) do
+    Map.update!(status, :state, fn state ->
+      Enum.reduce([:request], state, &Map.replace(&2, &1, :redacted))
+    end)
+  end
+
   @impl GenServer
   def init(opts) do
     owner = Map.fetch!(opts, :owner)
@@ -111,17 +120,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
     {:stop, :normal, state}
   end
 
-  def handle_info(
-        {:DOWN, ref, :process, pid, _reason},
-        %{transport: pid, transport_monitor: ref} = state
-      ) do
+  def handle_info({:DOWN, ref, :process, pid, _reason}, %{transport: pid, transport_monitor: ref} = state) do
     {:stop, :normal, state}
   end
 
-  def handle_info(
-        {:DOWN, ref, :process, pid, reason},
-        %{worker: pid, worker_monitor: ref} = state
-      ) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{worker: pid, worker_monitor: ref} = state) do
     send(state.owner, {:mcp_stream_error, self(), {:stream_worker_down, reason}})
     {:stop, :normal, state}
   end
@@ -164,6 +167,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
 
       stream_options =
         opts.http_options
+        |> Keyword.delete(:allowed_origin)
         |> Keyword.put(:receive_timeout, :infinity)
         |> Keyword.put(:request_timeout, :infinity)
 
@@ -226,8 +230,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
     end
   end
 
-  defp stream_entry({:data, _data}, acc),
-    do: {:halt, %{acc | error: acc.error || :unvalidated_stream_data}}
+  defp stream_entry({:data, _data}, acc), do: {:halt, %{acc | error: acc.error || :unvalidated_stream_data}}
 
   defp stream_entry({:trailers, _trailers}, acc), do: {:cont, acc}
 
@@ -285,30 +288,19 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   end
 
   defp subscription_message?(
-         %{
-           "jsonrpc" => "2.0",
-           "id" => id,
-           "result" => %{"_meta" => %{@subscription_id_key => id}}
-         } = message,
+         %{"jsonrpc" => "2.0", "id" => id, "result" => %{"_meta" => %{@subscription_id_key => id}}} = message,
          id
        ) do
     not Map.has_key?(message, "method") and not Map.has_key?(message, "error")
   end
 
-  defp subscription_message?(
-         %{"jsonrpc" => "2.0", "id" => id, "error" => %{} = error} = message,
-         id
-       ) do
+  defp subscription_message?(%{"jsonrpc" => "2.0", "id" => id, "error" => %{} = error} = message, id) do
     is_integer(error["code"]) and is_binary(error["message"]) and
       not Map.has_key?(message, "method") and not Map.has_key?(message, "result")
   end
 
   defp subscription_message?(
-         %{
-           "jsonrpc" => "2.0",
-           "method" => method,
-           "params" => %{"_meta" => %{@subscription_id_key => id}}
-         } = message,
+         %{"jsonrpc" => "2.0", "method" => method, "params" => %{"_meta" => %{@subscription_id_key => id}}} = message,
          id
        )
        when is_binary(method) do
