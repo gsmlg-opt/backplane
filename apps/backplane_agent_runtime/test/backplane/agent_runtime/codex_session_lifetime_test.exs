@@ -41,8 +41,122 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
   end
 
   setup do
-    session = start_supervised!({Session, owner_pid: self(), cleanup_timeout: 3_000})
+    session =
+      start_supervised!(
+        Supervisor.child_spec({Session, owner_pid: self(), cleanup_timeout: 3_000},
+          restart: :temporary
+        )
+      )
+
     %{session: session}
+  end
+
+  test "normal stop removes the complete owned tree after confirmed close", ctx do
+    assert {:ok, binding} = Session.bind(ctx.session, authority("normal-stop", []))
+    assert {:ok, %{status: :confirmed} = receipt} = Session.close(ctx.session)
+    assert Session.status(ctx.session).phase == :closed
+    assert {:ok, ^receipt} = Session.close(ctx.session)
+    assert Process.alive?(binding.resource_registry)
+
+    assert_owned_tree_stops(ctx.session, binding.resource_registry)
+  end
+
+  test "normal stop bounds teardown when the closed registry cannot answer" do
+    session =
+      start_supervised!(
+        Supervisor.child_spec({Session, owner_pid: self(), cleanup_timeout: 50},
+          id: :stalled_session,
+          restart: :temporary
+        )
+      )
+
+    assert {:ok, binding} = Session.bind(session, authority("stalled-registry", []))
+    assert {:ok, %{status: :confirmed}} = Session.close(session)
+
+    # Unlike :sys.suspend/1, this also blocks the system stop request.
+    assert :erlang.suspend_process(binding.resource_registry)
+    assert_owned_tree_stops(session, binding.resource_registry)
+  end
+
+  test "normal stop reconciles resources once and preserves borrowed infrastructure", ctx do
+    borrowed_registry = start_supervised!(ResourceRegistry)
+    borrowed_supervisor = start_supervised!(Task.Supervisor)
+    test = self()
+
+    {:ok, borrowed_worker} =
+      Task.Supervisor.start_child(borrowed_supervisor, fn ->
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    assert {:ok, borrowed_handle} =
+             ResourceRegistry.register(borrowed_registry, "foreign-owner", :logical, :borrowed)
+
+    assert {:ok, binding} = Session.bind(ctx.session, authority("direct-stop", []))
+
+    assert {:ok, _} =
+             ResourceRegistry.register(
+               binding.resource_registry,
+               binding.owner_id,
+               :logical,
+               %{
+                 registry: borrowed_registry,
+                 supervisor: borrowed_supervisor,
+                 worker: borrowed_worker
+               },
+               owner_pid: ctx.session,
+               cleanup: fn ->
+                 send(test, :direct_stop_cleaned)
+                 :ok
+               end
+             )
+
+    assert_owned_tree_stops(ctx.session, binding.resource_registry)
+    assert_receive :direct_stop_cleaned
+    refute_receive :direct_stop_cleaned
+    assert Process.alive?(borrowed_registry)
+    assert Process.alive?(borrowed_supervisor)
+    assert Process.alive?(borrowed_worker)
+
+    assert {:ok, :borrowed} =
+             ResourceRegistry.fetch(borrowed_registry, borrowed_handle, "foreign-owner")
+  end
+
+  test "a completed turn retains a real Code Mode cell until close and normal stop", ctx do
+    a = start_turn(ctx.session, "retained-cell", %{workspace: ctx.tmp_dir}, ["exec"])
+    {:ok, _} = Conversation.prompt(a.pid, "retain a cell")
+    assert_receive {:provider, :root, %{run_id: "retained-cell"}, provider}, 3_000
+
+    {provider, %{status: :yielded}} =
+      call_tool(provider, "retained-cell", "exec", """
+      // @exec: {"yield_time_ms":10}
+      await new Promise(resolve => setTimeout(resolve, 60000));
+      return "finished";
+      """)
+
+    registry = a.binding.resource_registry
+    assert {:ok, workers} = ResourceRegistry.worker_supervisor(registry)
+    [{_, worker, _, _}] = DynamicSupervisor.which_children(workers)
+    {:os_pid, os_pid} = :sys.get_state(worker).port |> Port.info(:os_pid)
+    worker_monitor = Process.monitor(worker)
+
+    send(provider, {:events, [done()]})
+    eventually(fn -> Conversation.status(a.pid).phase == :terminal end)
+    assert Conversation.status(a.pid).run.state == :completed
+    assert Session.status(ctx.session).phase == :idle
+    assert Process.alive?(worker)
+
+    assert {:ok, %{status: :confirmed}} = Session.close(ctx.session)
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, _}, 1_000
+    assert {:ok, []} = ResourceRegistry.owner_status(registry, a.binding.owner_id)
+    assert DynamicSupervisor.which_children(workers) == []
+
+    assert {_, exit_status} =
+             System.cmd("kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true)
+
+    assert exit_status != 0
+    assert_owned_tree_stops(ctx.session, registry)
   end
 
   test "A naturally completes; B uses its command, yielded cell and child with fresh authority and budget",
@@ -205,6 +319,9 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
     assert Conversation.status(b.pid).run.state == :completed
     assert {:ok, %{status: :confirmed}} = Session.close(ctx.session)
     assert :sys.get_state(runtime).agents[child].closure == :confirmed
+    assert_owned_tree_stops(ctx.session, a.binding.resource_registry)
+    assert Process.alive?(server)
+    assert Process.alive?(runtime)
   end
 
   test "bindings reject foreign sessions, stale incarnations, reused run ids and journal restoration",
@@ -415,6 +532,7 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
     assert {:ok, [%{status: :failed}]} = ResourceRegistry.owner_status(registry, owner)
     assert {:error, %Error{class: :unknown_outcome}} = Session.close(ctx.session)
     assert {:error, %Error{}} = Session.bind(ctx.session, authority("B", []))
+    assert_owned_tree_stops(ctx.session, registry)
   end
 
   test "explicit session close fences the active run and confirms native process cleanup", ctx do
@@ -457,6 +575,7 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
     assert Session.status(ctx.session).phase == :closed
     assert {:ok, %{status: :confirmed}} = Session.close(ctx.session)
     assert {:error, %Error{}} = Session.bind(ctx.session, authority("B", []))
+    assert_owned_tree_stops(ctx.session, a.binding.resource_registry)
   end
 
   test "host owner death closes a supervised session and kills its native process group", ctx do
@@ -470,7 +589,8 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
     session =
       start_supervised!(
         Supervisor.child_spec({Session, owner_pid: host, cleanup_timeout: 3_000},
-          id: :host_session
+          id: :host_session,
+          restart: :temporary
         )
       )
 
@@ -498,6 +618,8 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
     assert {:ok, %{status: :confirmed}} = Session.close(session)
     assert {_, status} = System.cmd("kill", ["-0", "--", "-#{group}"], stderr_to_stdout: true)
     assert status != 0
+    assert_owned_tree_stops(session, a.binding.resource_registry)
+    assert Process.alive?(server)
   end
 
   defp start_turn(session, run, context, tools, opts \\ []) do
@@ -551,6 +673,28 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
   end
 
   defp authority(run, tools), do: %{caller: "host", run_id: run, grants: tools, tool_revision: 1}
+
+  defp assert_owned_tree_stops(session, registry) do
+    supervisor = :sys.get_state(session).supervisor
+    {:links, children} = Process.info(registry, :links)
+    owned = Enum.uniq([session, registry, supervisor | children -- [session]])
+    monitors = Enum.map(owned, &{&1, Process.monitor(&1)})
+
+    # Ensure an assertion failure on the unfixed version does not leak its children.
+    on_exit(fn ->
+      for pid <- owned, Process.alive?(pid) do
+        Process.unlink(pid)
+        Process.exit(pid, :kill)
+      end
+    end)
+
+    assert :ok = GenServer.stop(session, :normal)
+
+    for {pid, ref} <- monitors do
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+      refute Process.alive?(pid)
+    end
+  end
 
   defp done,
     do: %{

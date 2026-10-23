@@ -11,6 +11,11 @@
 
 ## Unreleased
 
+- Stop the Session-owned resource registry when the Session terminates normally,
+  allowing OTP to reclaim its worker and cleanup supervisors (#79). Closed
+  Sessions remain inspectable until termination; uncertain cleanup receipts and
+  borrowed command/collaboration runtimes retain their existing semantics.
+
 - Bind host-owned collaboration names and schemas to explicit MultiAgent actions
   without replacing admitted tool identities (#74). Fingerprinted grants prevent
   descriptor or action changes from reusing authorization; custom calls share

@@ -287,6 +287,14 @@ defmodule Backplane.AgentRuntime.Codex.Session do
     :ok
   catch
     :exit, _reason -> :ok
+  after
+    # A normal exit does not stop a linked GenServer. The registry owns the
+    # worker/cleanup supervisors; stop it only when this Session terminates.
+    try do
+      GenServer.stop(state.registry, :normal, state.cleanup_timeout)
+    catch
+      :exit, _reason -> Process.exit(state.registry, :kill)
+    end
   end
 
   defp begin_close(state, waiters, fenced) do
