@@ -1,0 +1,154 @@
+name: Publish Qualified Hex Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Full 40-character qualified release SHA"
+        required: true
+        type: string
+      version:
+        description: "Qualified semantic version, without leading v"
+        required: true
+        type: string
+      source_run_id:
+        description: "Original Release workflow run ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: publish-hex-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  ELIXIR_VERSION: "1.18"
+  OTP_VERSION: "28"
+  MIX_ENV: prod
+  SECRET_KEY_BASE: release_build_secret_key_base_for_ci_only_1234567890_release_build_secret
+
+jobs:
+  qualify:
+    name: Verify original release qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      gated_sha: ${{ steps.gate.outputs.sha }}
+      version: ${{ steps.gate.outputs.version }}
+    steps:
+      - name: Require dispatch from main
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.ref }}
+        run: test "$WORKFLOW_REF" = refs/heads/main
+
+      # The verifier belongs to this workflow revision, not the older release SHA.
+      - name: Checkout publication verifier
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify qualified revision, jobs, release assets, and report hashes
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REVISION: ${{ inputs.revision }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: >-
+          python3 scripts/verify_qualified_hex_publication.py
+          --revision "$RELEASE_REVISION"
+          --version "$RELEASE_VERSION"
+          --source-run-id "$SOURCE_RUN_ID"
+
+  hex-packages:
+    name: Publish ${{ matrix.package.name }} to Hex
+    needs: qualify
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: true
+      matrix:
+        package:
+          - name: backplane_agent_runtime
+            path: apps/backplane_agent_runtime
+          - name: backplane_ai_protocol
+            path: apps/backplane_ai_protocol
+          - name: backplane_skill_protocol
+            path: apps/backplane_skill_protocol
+          - name: backplane_mcp_protocol
+            path: apps/backplane_mcp_protocol
+
+    permissions:
+      contents: read
+
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      MIX_ENV: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.qualify.outputs.gated_sha }}
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore Mix cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/dev
+          key: hex-${{ matrix.package.name }}-${{ hashFiles('mix.lock', format('{0}/mix.exs', matrix.package.path)) }}
+          restore-keys: |
+            hex-${{ matrix.package.name }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Validate package version
+        working-directory: ${{ matrix.package.path }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.qualify.outputs.version }}
+        run: |
+          package_version="$(awk -F '"' '/^[[:space:]]*@version/ { print $2; exit }' mix.exs)"
+
+          if [[ -z "$package_version" ]]; then
+            echo "Could not read ${{ matrix.package.name }} version from mix.exs" >&2
+            exit 1
+          fi
+
+          if [[ "$package_version" != "$RELEASE_VERSION" ]]; then
+            echo "Release version $RELEASE_VERSION does not match ${{ matrix.package.name }} version $package_version" >&2
+            exit 1
+          fi
+
+      - name: Require Hex API key
+        shell: bash
+        run: |
+          if [[ -z "${HEX_API_KEY:-}" ]]; then
+            echo "HEX_API_KEY secret is required to publish ${{ matrix.package.name }} to Hex" >&2
+            exit 1
+          fi
+
+      - name: Install package publishing dependencies
+        working-directory: ${{ matrix.package.path }}
+        run: mix deps.get
+
+      - name: Verify package documentation
+        working-directory: ${{ matrix.package.path }}
+        run: mix docs
+
+      - name: Publish package
+        working-directory: ${{ matrix.package.path }}
+        run: mix hex.publish --yes
