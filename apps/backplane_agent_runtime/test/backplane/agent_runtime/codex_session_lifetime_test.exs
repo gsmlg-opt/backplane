@@ -152,10 +152,8 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
     assert {:ok, []} = ResourceRegistry.owner_status(registry, a.binding.owner_id)
     assert DynamicSupervisor.which_children(workers) == []
 
-    assert {_, exit_status} =
-             System.cmd("kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true)
-
-    assert exit_status != 0
+    # Worker termination can precede the port driver's final OS-process reap.
+    assert_os_process_reaped(os_pid, System.monotonic_time(:millisecond) + 1_000)
     assert_owned_tree_stops(ctx.session, registry)
   end
 
@@ -673,6 +671,24 @@ defmodule Backplane.AgentRuntime.CodexSessionLifetimeTest do
   end
 
   defp authority(run, tools), do: %{caller: "host", run_id: run, grants: tools, tool_revision: 1}
+
+  defp assert_os_process_reaped(pid, deadline) do
+    case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
+      {_, status} when status != 0 ->
+        :ok
+
+      _ ->
+        assert System.monotonic_time(:millisecond) < deadline,
+               "Deno OS process survived worker termination: #{inspect(File.read("/proc/#{pid}/stat"))}"
+
+        receive do
+        after
+          5 -> :ok
+        end
+
+        assert_os_process_reaped(pid, deadline)
+    end
+  end
 
   defp assert_owned_tree_stops(session, registry) do
     supervisor = :sys.get_state(session).supervisor
