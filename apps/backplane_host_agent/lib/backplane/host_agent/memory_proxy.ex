@@ -95,6 +95,16 @@ defmodule Backplane.HostAgent.MemoryProxy do
     end
   end
 
+  @doc "Check credentials and the negotiated scope before using default private memory."
+  def authorize_private do
+    with :ok <- authorize_command() do
+      case state() do
+        %{private_binding_error: reason} when not is_nil(reason) -> {:error, reason}
+        _ -> :ok
+      end
+    end
+  end
+
   defp connection_rejection?(reason) when reason in [:unauthorized, "unauthorized"], do: true
   defp connection_rejection?(%{"retryable" => false}), do: true
   defp connection_rejection?(%{retryable: false}), do: true
@@ -169,7 +179,8 @@ defmodule Backplane.HostAgent.MemoryProxy do
       config: config,
       host_id: Map.get(connection, :host_id),
       host_name: Map.get(connection, :host_name),
-      socket: socket
+      socket: socket,
+      private_binding_error: private_binding_error(connection, config, previous)
     }
 
     next =
@@ -277,12 +288,15 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   defp push_with_reconnect(push_module, connector_module, payload, timeout) do
-    with {:ok, channel} <- ensure_channel(connector_module, push_module) do
+    with :ok <- authorize_private(),
+         {:ok, channel} <- ensure_channel(connector_module, push_module),
+         :ok <- authorize_private() do
       case push_channel(push_module, channel, payload, timeout) do
         {:error, :not_connected} ->
           mark_channel_dead()
 
-          with {:ok, reconnected_channel} <- reconnect(connector_module, push_module, channel) do
+          with {:ok, reconnected_channel} <- reconnect(connector_module, push_module, channel),
+               :ok <- authorize_private() do
             push_channel(push_module, reconnected_channel, payload, timeout)
           end
 
@@ -432,8 +446,8 @@ defmodule Backplane.HostAgent.MemoryProxy do
       %{socket: socket, host_id: host_id} when is_pid(socket) and is_binary(host_id) ->
         if Process.alive?(socket) and function_exported?(channel_module, :join, 2) do
           case channel_module.join(socket, host_id) do
-            {:ok, _reply, channel} when is_pid(channel) ->
-              store_rejoined_channel(channel)
+            {:ok, reply, channel} when is_pid(channel) ->
+              store_rejoined_channel(channel, reply)
 
             {:ok, channel} when is_pid(channel) ->
               store_rejoined_channel(channel)
@@ -490,6 +504,61 @@ defmodule Backplane.HostAgent.MemoryProxy do
         {:ok, channel}
     end
   end
+
+  defp store_rejoined_channel(channel, reply) when is_map(reply) do
+    case state() do
+      %{config: config} = current ->
+        unlink_process(channel)
+
+        next =
+          current
+          |> Map.put(:channel, channel)
+          |> Map.put(
+            :private_binding_error,
+            private_binding_error(%{memory: reply}, config, current)
+          )
+
+        :persistent_term.put(__MODULE__, next)
+        {:ok, channel}
+
+      _ ->
+        store_rejoined_channel(channel)
+    end
+  end
+
+  defp store_rejoined_channel(channel, _reply), do: store_rejoined_channel(channel)
+
+  defp private_binding_error(connection, config, previous) do
+    memory_config = Map.get(config, :memory) || Map.get(config, "memory") || %{}
+    bound_scope = Map.get(memory_config, :bound_scope) || Map.get(memory_config, "bound_scope")
+    scopes = private_scopes(Map.get(connection, :memory))
+
+    if is_binary(bound_scope) and bound_scope != "" and scopes != [] do
+      if bound_scope in scopes, do: nil, else: :memory_scope_mismatch
+    else
+      Map.get(previous, :private_binding_error)
+    end
+  end
+
+  defp private_scopes(%{
+         "selected" => "host_memory.v1",
+         "memory_partition" => %{"scope" => scope}
+       })
+       when is_binary(scope) and scope != "",
+       do: [scope]
+
+  defp private_scopes(%{"selected" => "host_memory.v2", "partitions" => partitions})
+       when is_list(partitions) do
+    Enum.flat_map(partitions, fn
+      %{"namespace" => "private", "scope" => scope} when is_binary(scope) and scope != "" ->
+        [scope]
+
+      _ ->
+        []
+    end)
+  end
+
+  defp private_scopes(_memory), do: []
 
   defp mark_channel_dead do
     case state() do

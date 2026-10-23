@@ -84,6 +84,12 @@ Restart OpenClaw.
 
 ## Troubleshooting
 
+Memory requests use the host's bound partition; the plugin does not derive scope from the working directory. With `fallback_on_error` enabled, failed hooks continue without memory context and log a redacted error code and HTTP status when available. Raw response text and prompt content are excluded. With fallback disabled, requests reject with the same safe diagnostics; detached captures handle the rejection.
+
+Recalled entries marked provisional by the host carry a `[pending local memory]` label in injected context. They remain local pending writes until canonical acknowledgment.
+
+The host agent's YAML `memory.bound_scope` must exactly match the host's `memory_scope` registered in Backplane Admin. After correcting a mismatch, restart the complete host-agent process; restarting OpenClaw alone does not reload that configuration. This does not automatically rebind stored records or replay rejected commands. A successful read request confirms API readability, not synchronization health or canonical acknowledgment of writes.
+
 **Plugin validates but does not load** — ensure `package.json`, `openclaw.plugin.json`, and `plugin.mjs` are all present in the extension directory and that `plugins.slots.memory` is set to `backplane-memory`.
 
 **Connection refused on port 4222** — the host agent is not running, or `http_port` is not set in `host_agent.yaml`. Add `http_port: 4222` and rerun `mix agent.run`.

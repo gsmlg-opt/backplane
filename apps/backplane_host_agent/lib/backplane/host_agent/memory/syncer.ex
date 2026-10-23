@@ -154,7 +154,8 @@ defmodule Backplane.HostAgent.Memory.Syncer do
   defp credential_rejection?(_), do: false
 
   defp drain_private(opts) do
-    with :ok <- recover_inflight(opts),
+    with :ok <- MemoryProxy.authorize_private(),
+         :ok <- recover_inflight(opts),
          {:ok, channel} <- connected_channel(opts),
          {:ok, outbox_rows} <- claim_pending(opts.store, opts.batch_size, now(opts)) do
       if outbox_rows == [] do

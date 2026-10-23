@@ -640,6 +640,37 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
   end
 
   @tag :authoritative_connection
+  test "a known private binding mismatch blocks reads and commands before either adapter" do
+    alias Backplane.HostAgent.MemoryProxy
+    MemoryProxy.set_channel(nil)
+    on_exit(fn -> MemoryProxy.set_channel(nil) end)
+
+    MemoryProxy.set_connection(
+      %{
+        channel: self(),
+        memory: %{
+          "selected" => "host_memory.v1",
+          "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+        }
+      },
+      %{memory: %{bound_scope: "local"}}
+    )
+
+    for method <- ~w(remember forget recall list stats) do
+      context = %{
+        agent_id: "hermes",
+        remote_adapter: RemoteOK,
+        local_adapter: if(method in ~w(remember forget), do: LocalCommands, else: EmptyOverlay)
+      }
+
+      assert {:error, :memory_scope_mismatch} = MemoryFacade.call(method, %{}, context)
+      refute_received {:local_call, _, _, _}
+      refute_received {:remote_call, _, _, _}
+      refute_received {:pending_overlay, _, _}
+    end
+  end
+
+  @tag :authoritative_connection
   test "known authentication denial prohibits provisional commands until a fresh authenticated connection" do
     alias Backplane.HostAgent.MemoryProxy
     MemoryProxy.set_channel(nil)

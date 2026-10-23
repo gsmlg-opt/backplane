@@ -9,7 +9,7 @@ Hermes ──HTTP──▶ Backplane host agent ──WebSocket──▶ Backpla
         :4222                                       (memory::* tools)
 ```
 
-The host agent runs locally, authenticates to the Backplane hub once with a host token, then exposes `/memory/:agent_id/...` on `127.0.0.1` for any process on the machine. This plugin is a thin HTTP client that follows Hermes' `MemoryProvider` contract.
+The host agent runs locally, authenticates to the Backplane hub with a host token, then exposes `/memory/:agent_id/...` on `127.0.0.1` for processes on the machine. This plugin follows Hermes' `MemoryProvider` contract. The host controls the memory partition and bound scope; the plugin leaves scope unset by default. A Hermes working directory such as `/Users/gao/.dotfiles` is not a scope key and never overrides that binding. Local writes may remain provisional until the hub acknowledges them.
 
 ## Prerequisites
 
@@ -59,7 +59,8 @@ The plugin also reads `~/.config/backplane/host_agent_client.env` (or `$XDG_CONF
 
 | Hook | Backplane call |
 |---|---|
-| `system_prompt_block()` | `list` (most-recent N memories for the cwd scope) |
+| `is_available()` | Read-only `list` probe (`limit=1`) |
+| `system_prompt_block()` | `list` (most-recent N memories in the host-bound partition) |
 | `prefetch(query)` | `recall` with the user query |
 | `queue_prefetch(query)` | fire-and-forget `recall` |
 | `sync_turn(user, assistant)` | `remember` (`type=episodic`) |
@@ -70,9 +71,27 @@ The plugin also reads `~/.config/backplane/host_agent_client.env` (or `$XDG_CONF
 | Tool: `memory_list` | `list` |
 | Tool: `memory_forget` | `forget` |
 
+Memory tools return the full host result, including authority, consistency and the separate `provisional_results` list sideband. Pending entries do not change canonical list pagination. Prompt context displays pending local memories separately, and recalled pending entries carry a `[pending local memory]` label until canonical acknowledgment.
+
 ## Troubleshooting
 
-**`hermes memory status` reports unavailable** — the plugin's `is_available()` only validates the URL syntax; check that the host agent is actually running and listening with `curl http://127.0.0.1:4222/memory/hermes/mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: application/json'`.
+**`hermes memory status` reports unavailable** — `is_available()` makes a read-only `list` request. Check that the host Memory API is running and its partition is configured. A successful probe confirms a read at that moment; it does not prove write permission or canonical synchronization.
+
+**`invalid_scope` / `invalid_arguments` with a working directory** — update the installed plugin. Older versions sent cwd as scope. The current plugin uses the host binding by default; an explicit `memory_list.scope` is still checked by the host and can be rejected.
+
+**`memory_scope_mismatch`** — the host agent's YAML `memory.bound_scope` must exactly match the host's `memory_scope` registered in Backplane Admin. Correct the configuration and restart the complete host-agent process; restarting Hermes alone does not reload it. Scope correction does not automatically rebind stored records or replay rejected commands.
+
+**Empty context or a failed tool call** — prompt hooks continue without injected memories on errors and print a redacted error code/status to stderr. Explicit memory tools return `success: false`, an error code, and the HTTP status when available. Request content and raw server errors are not included in diagnostics.
+
+To exercise the actual packaged provider against a running host agent:
+
+```bash
+python3 integrations/memory/hermes/smoke_test.py \
+  --base-url http://127.0.0.1:4222 --agent-id hermes \
+  --cwd /Users/gao/.dotfiles
+```
+
+The script writes one uniquely tagged test record, checks list readback, recall and prompt injection, verifies that cwd cannot override scope, deletes the record, and checks that it is gone. Readback and deletion checks inspect both canonical results and the pending sideband. It exits nonzero on failure and attempts cleanup after a successful write. This verifies the selected host API, including provisional writes; canonical hub synchronization needs separate verification.
 
 **503 "host agent is not connected"** — the host agent is up but its WebSocket channel to the Backplane hub isn't joined yet. Check the agent's logs.
 

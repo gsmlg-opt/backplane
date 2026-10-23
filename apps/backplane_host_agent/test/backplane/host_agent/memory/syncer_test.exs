@@ -81,6 +81,38 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert remote_id == "remote_#{first_id}"
   end
 
+  test "scope mismatch preserves queued private commands without attempting upload", %{
+    store: store,
+    opts: opts
+  } do
+    alias Backplane.HostAgent.MemoryProxy
+    MemoryProxy.set_channel(nil)
+    on_exit(fn -> MemoryProxy.set_channel(nil) end)
+
+    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "offline before join"}, opts)
+
+    assert :ok =
+             MemoryProxy.set_connection(
+               %{
+                 channel: self(),
+                 memory: %{
+                   "selected" => "host_memory.v1",
+                   "memory_partition" => %{"scope" => "mac-mini", "namespace" => "private"}
+                 }
+               },
+               %{memory: %{enabled: true, bound_scope: "proj_local"}}
+             )
+
+    assert {:error, :memory_scope_mismatch} =
+             Syncer.drain_once(store: store, channel_module: FakeChannel)
+
+    refute_received {:memory_push, _, _}
+    assert_outbox(store, id, "pending", 0)
+
+    assert {:ok, %Result{rows: [%{"scope" => "proj_local", "sync_state" => "pending"}]}} =
+             Store.query(store, "SELECT scope, sync_state FROM memories WHERE id = ?", [id])
+  end
+
   test "persists canonical ID and positive revision with remember settlement", %{
     store: store,
     opts: opts

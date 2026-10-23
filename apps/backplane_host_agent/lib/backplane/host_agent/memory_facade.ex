@@ -69,12 +69,12 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   def call(method, args, context)
       when method in @commands and is_map(args) and is_map(context) do
-    with :ok <- MemoryProxy.authorize_command(), do: local_call(method, args, context)
+    with :ok <- MemoryProxy.authorize_private(), do: local_call(method, args, context)
   end
 
   def call(method, args, context)
       when method in @reads and is_map(args) and is_map(context) do
-    remote_first(method, args, context)
+    with :ok <- MemoryProxy.authorize_private(), do: remote_first(method, args, context)
   end
 
   def call(method, args, context) when method in ~w(facet_tag facet_query) do

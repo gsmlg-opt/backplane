@@ -26,9 +26,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 try:
     from agent.memory_provider import MemoryProvider
@@ -64,6 +64,10 @@ DEFAULT_AGENT_ID = "hermes"
 TIMEOUT = 5
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _plaintext_warned = False
+ERROR_CODES = {
+    "invalid_scope", "unknown_scope", "memory_scope_mismatch", "invalid_arguments", "invalid_request",
+    "unauthorized", "forbidden", "access_denied", "not_found",
+}
 
 
 def _preload_dotenv() -> None:
@@ -135,19 +139,47 @@ def _post(
     agent_id: str,
     method: str,
     args: dict | None = None,
-) -> dict | None:
+) -> dict:
     if not _validate_url(base):
-        return None
+        return _failure("invalid_url")
     _warn_plaintext_remote(base)
-    url = f"{base}/memory/{agent_id}/call/{method}"
+    url = f"{base.rstrip('/')}/memory/{quote(agent_id, safe='')}/call/{quote(method, safe='')}"
     headers = {"Content-Type": "application/json"}
     data = json.dumps(args or {}).encode()
     req = Request(url, data=data, headers=headers, method="POST")
     try:
         with urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode())
-    except (URLError, TimeoutError, json.JSONDecodeError):
-        return None
+            response = json.loads(resp.read().decode())
+            if not isinstance(response, dict):
+                return _failure("invalid_response")
+            if response.get("ok") is False:
+                return _failure(_error_code(response))
+            if response.get("ok") is not True or not isinstance(response.get("result"), dict):
+                return _failure("invalid_response")
+            return response
+    except HTTPError as error:
+        try:
+            body = json.loads(error.read().decode())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            body = None
+        return _failure(_error_code(body, "http_error"), error.code)
+    except (URLError, TimeoutError, OSError):
+        return _failure("request_failed")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _failure("invalid_response")
+
+
+def _error_code(body: Any, default: str = "request_failed") -> str:
+    code = body.get("error") if isinstance(body, dict) else None
+    return code if isinstance(code, str) and code in ERROR_CODES else default
+
+
+def _failure(code: str, http_status: int | None = None) -> dict:
+    response = {"ok": False, "error": code}
+    if http_status is not None:
+        response["http_status"] = http_status
+    print(f"backplane-memory: {code}" + (f" (HTTP {http_status})" if http_status else ""), file=sys.stderr)
+    return response
 
 
 def _post_bg(base: str, agent_id: str, method: str, args: dict | None = None) -> None:
@@ -159,14 +191,30 @@ def _post_bg(base: str, agent_id: str, method: str, args: dict | None = None) ->
 
 def _unwrap(response: dict | None) -> dict | None:
     """Extract `result` from a successful backplane reply."""
-    if not response or response.get("ok") is False:
+    if not isinstance(response, dict) or response.get("ok") is not True:
         return None
-    return response.get("result") if isinstance(response, dict) else None
+    result = response.get("result")
+    return result if isinstance(result, dict) else None
+
+
+def _tool_result(response: dict | None) -> dict:
+    result = _unwrap(response)
+    if result is not None:
+        return result
+    failure = {"success": False, "error": (response or {}).get("error", "request_failed")}
+    if response and "http_status" in response:
+        failure["http_status"] = response["http_status"]
+    return failure
+
+
+def _is_provisional(entry: dict) -> bool:
+    return entry.get("provisional") is True or entry.get("authority") == "provisional"
 
 
 def _format_memory_entry(entry: dict) -> str:
     content = entry.get("content") or ""
-    return content.strip()
+    content = content.strip()
+    return f"[pending local memory] {content}" if content and _is_provisional(entry) else content
 
 
 class BackplaneMemoryProvider(MemoryProvider):
@@ -176,14 +224,15 @@ class BackplaneMemoryProvider(MemoryProvider):
         return "backplane-memory"
 
     def is_available(self) -> bool:
-        base = os.environ.get("BACKPLANE_MEMORY_URL", DEFAULT_BASE_URL)
-        return _validate_url(base)
+        base = getattr(self, "_base", os.environ.get("BACKPLANE_MEMORY_URL", DEFAULT_BASE_URL))
+        agent_id = getattr(self, "_agent_id", os.environ.get("BACKPLANE_MEMORY_AGENT_ID", DEFAULT_AGENT_ID))
+        return _unwrap(_post(base, agent_id, "list", {"limit": 1})) is not None
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         self._base = os.environ.get("BACKPLANE_MEMORY_URL", DEFAULT_BASE_URL)
         self._agent_id = os.environ.get("BACKPLANE_MEMORY_AGENT_ID", DEFAULT_AGENT_ID)
         self._session_id = session_id
-        self._scope = kwargs.get("cwd") or os.getcwd()
+        # Scope is bound by the authenticated host configuration, never by cwd.
 
     def get_config_schema(self) -> list[dict]:
         return [
@@ -207,18 +256,25 @@ class BackplaneMemoryProvider(MemoryProvider):
 
     def system_prompt_block(self) -> str:
         result = _unwrap(
-            _post(self._base, self._agent_id, "list", {"scope": self._scope, "limit": 10})
+            _post(self._base, self._agent_id, "list", {"limit": 10})
         )
         if not result:
             return ""
+        # Render the pending sideband separately; preserve canonical list pagination.
         rows = result.get("results", [])
-        if not rows:
-            return ""
-        lines = ["Recent memories from backplane:"]
-        for row in rows:
-            entry = _format_memory_entry(row)
-            if entry:
-                lines.append(f"- {entry}")
+        canonical = [row for row in rows if not _is_provisional(row)]
+        pending = [row for row in rows if _is_provisional(row)]
+        pending += result.get("provisional_results", [])
+        lines = []
+        for title, entries in [
+            ("Recent memories from backplane:", canonical),
+            ("Pending local memories (awaiting canonical acknowledgment):", pending),
+        ]:
+            formatted = [_format_memory_entry(row) for row in entries]
+            formatted = [entry for entry in formatted if entry]
+            if formatted:
+                lines.append(title)
+                lines.extend(f"- {entry}" for entry in formatted)
         return "\n".join(lines)
 
     def prefetch(self, query: str, **kwargs: Any) -> str:
@@ -227,7 +283,7 @@ class BackplaneMemoryProvider(MemoryProvider):
                 self._base,
                 self._agent_id,
                 "recall",
-                {"query": query, "limit": 5, "scope": self._scope},
+                {"query": query, "limit": 5},
             )
         )
         if not result or not result.get("results"):
@@ -244,7 +300,7 @@ class BackplaneMemoryProvider(MemoryProvider):
             self._base,
             self._agent_id,
             "recall",
-            {"query": query, "limit": 3, "scope": self._scope},
+            {"query": query, "limit": 3},
         )
 
     def get_tool_schemas(self) -> list[dict]:
@@ -285,7 +341,7 @@ class BackplaneMemoryProvider(MemoryProvider):
                     "type": "object",
                     "properties": {
                         "tag": {"type": "string"},
-                        "scope": {"type": "string"},
+                        "scope": {"type": "string", "description": "Host-authorized scope key, not a working directory"},
                         "limit": {"type": "integer", "default": 20},
                     },
                 },
@@ -304,35 +360,29 @@ class BackplaneMemoryProvider(MemoryProvider):
     def handle_tool_call(self, name: str, args: dict) -> str:
         if name == "memory_recall":
             payload = {"query": args["query"], "limit": args.get("limit", 10)}
-            if self._scope:
-                payload["scope"] = self._scope
-            result = _unwrap(_post(self._base, self._agent_id, "recall", payload))
-            return json.dumps({"results": (result or {}).get("results", [])})
+            return json.dumps(_tool_result(_post(self._base, self._agent_id, "recall", payload)))
 
         if name == "memory_save":
             payload = {
                 "content": args["content"],
                 "type": args.get("type", "semantic"),
-                "scope": self._scope,
                 "tags": args.get("tags") or [],
                 "session_id": self._session_id,
             }
-            result = _unwrap(_post(self._base, self._agent_id, "remember", payload))
-            return json.dumps(result or {"success": False})
+            return json.dumps(_tool_result(_post(self._base, self._agent_id, "remember", payload)))
 
         if name == "memory_list":
             payload = {
                 "limit": args.get("limit", 20),
-                "scope": args.get("scope") or self._scope,
             }
+            if args.get("scope"):
+                payload["scope"] = args["scope"]
             if args.get("tag"):
                 payload["tag"] = args["tag"]
-            result = _unwrap(_post(self._base, self._agent_id, "list", payload))
-            return json.dumps({"results": (result or {}).get("results", [])})
+            return json.dumps(_tool_result(_post(self._base, self._agent_id, "list", payload)))
 
         if name == "memory_forget":
-            result = _unwrap(_post(self._base, self._agent_id, "forget", {"id": args["id"]}))
-            return json.dumps(result or {"success": False})
+            return json.dumps(_tool_result(_post(self._base, self._agent_id, "forget", {"id": args["id"]})))
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -350,7 +400,6 @@ class BackplaneMemoryProvider(MemoryProvider):
             {
                 "content": content,
                 "type": "episodic",
-                "scope": self._scope,
                 "session_id": kwargs.get("session_id", self._session_id),
                 "metadata": {
                     "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -384,7 +433,7 @@ class BackplaneMemoryProvider(MemoryProvider):
                 self._base,
                 self._agent_id,
                 "recall",
-                {"query": last_user[:500], "limit": 5, "scope": self._scope},
+                {"query": last_user[:500], "limit": 5},
             )
         )
         rows = (result or {}).get("results", [])
@@ -407,7 +456,6 @@ class BackplaneMemoryProvider(MemoryProvider):
             {
                 "content": content,
                 "type": "semantic",
-                "scope": self._scope,
                 "tags": [target] if target else [],
                 "metadata": {"source": f"hermes.memory_write.{action}"},
             },

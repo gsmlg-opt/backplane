@@ -47,6 +47,7 @@ agent:
 
 memory:
   enabled: true
+  bound_scope: proj_local # Must match the host's memory_scope in Backplane Admin.
 
 targets:
   - name: agents
@@ -54,6 +55,17 @@ targets:
     path: ~/.local/share/backplane/host_agent/skills
     enabled: true
 ```
+
+Set `memory.bound_scope` to exactly the host's registered `memory_scope` in
+Backplane Admin. A mismatch is rejected as `memory_scope_mismatch`. After
+correcting the configuration, restart the complete host-agent process. A plugin
+restart does not reload host configuration. Correcting the scope does not
+automatically rebind existing records or replay rejected commands.
+
+Memory writes reported as pending have been accepted locally and still await
+canonical acknowledgment from Backplane. A successful plugin read probe confirms
+API readability, not synchronization health or successful synchronization of
+earlier writes.
 
 ## 4. Run
 
