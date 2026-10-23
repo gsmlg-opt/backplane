@@ -4,6 +4,8 @@ defmodule Backplane.AgentRuntime.Approval do
 
   A decision must bind the approval identity, resolver identity, exact tool,
   arguments digest, and tool revision. The model cannot self-approve.
+  Resolver identities must be nonblank binaries. Callers remain responsible for
+  authenticating and authorizing the resolver.
   """
 
   @spec decide(map(), map()) ::
@@ -66,10 +68,19 @@ defmodule Backplane.AgentRuntime.Approval do
     run_id = Map.get(approval, :run_id)
     resolver_id = Map.get(decision, :resolver_id)
 
-    if is_binary(run_id) and is_binary(resolver_id) and resolver_id == run_id do
-      {:error, Backplane.AgentRuntime.Error.new(:forbidden, "model cannot self-approve")}
-    else
-      {:ok, resolver_id}
+    cond do
+      not is_binary(resolver_id) or String.trim(resolver_id) == "" ->
+        {:error,
+         Backplane.AgentRuntime.Error.new(
+           :validation,
+           "resolver identity must be a nonblank binary"
+         )}
+
+      is_binary(run_id) and resolver_id == run_id ->
+        {:error, Backplane.AgentRuntime.Error.new(:forbidden, "model cannot self-approve")}
+
+      true ->
+        {:ok, resolver_id}
     end
   end
 

@@ -11,6 +11,10 @@
 
 ## Unreleased
 
+- Require a nonblank binary resolver identity for approved and denied decisions
+  (#80), preserving model self-approval rejection. Resolver authentication and
+  authorization remain the caller's responsibility.
+
 - Stop the Session-owned resource registry when the Session terminates normally,
   allowing OTP to reclaim its worker and cleanup supervisors (#79). Closed
   Sessions remain inspectable until termination; uncertain cleanup receipts and
