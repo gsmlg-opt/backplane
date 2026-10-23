@@ -31,6 +31,37 @@ defmodule Backplane.Api.Router do
     plug(:accepts, ["json"])
   end
 
+  pipeline :plugin_api do
+    plug(:accepts, ["json", "gz"])
+
+    plug(Backplane.Auth.ResourceAuthPlug,
+      resource: :mcp,
+      required_scope: {Backplane.Api.PluginAuthorization, :required_scope, []}
+    )
+
+    plug(Backplane.Api.PluginAuthorization)
+  end
+
+  scope "/plugin-protocol/v1", Backplane.Api do
+    pipe_through(:plugin_api)
+    get("/catalog", PluginController, :catalog)
+    get("/resolve", PluginController, :resolve)
+    get("/artifacts/:digest", PluginController, :artifact)
+    get("/plugins", PluginController, :plugins)
+    get("/plugins/:id/releases", PluginController, :releases)
+    post("/releases", PluginController, :import)
+    post("/compose", PluginController, :compose)
+    post("/releases/:id/publish", PluginController, :publish)
+    get("/sources", PluginController, :sources)
+    post("/sources", PluginController, :create_source)
+    patch("/sources/:id", PluginController, :update_source)
+    delete("/sources/:id", PluginController, :delete_source)
+    post("/sources/:id/sync", PluginController, :sync_source)
+    get("/installations", PluginController, :installations)
+    post("/installations", PluginController, :set_desired)
+    post("/installations/:id/report", PluginController, :report)
+  end
+
   pipeline :memory_api do
     plug(:accepts, ["json"])
     plug(Backplane.Auth.ResourceAuthPlug, resource: :mcp)

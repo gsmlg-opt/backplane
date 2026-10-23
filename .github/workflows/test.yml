@@ -41,6 +41,8 @@ jobs:
           - backplane_memory
           - backplane_memory_contract
           - backplane_monitor
+          - backplane_plugin_protocol
+          - backplane_plugins
           - backplane_skills
           - backplane_system
           - backplane_telemetry

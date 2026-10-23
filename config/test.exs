@@ -22,6 +22,7 @@ config :backplane_system, Backplane.Repo,
 
 config :backplane, env: :test
 config :backplane_system, start_audit_writer: false
+config :backplane_plugins, sync_enabled: false
 config :backplane_auth, allow_insecure_resource_origins: true
 config :backplane, llm_route_loader_enabled: false
 config :backplane, Styx, testing: :inline
