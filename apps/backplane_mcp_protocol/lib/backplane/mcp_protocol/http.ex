@@ -47,10 +47,7 @@ defmodule Backplane.McpProtocol.HTTP do
   def check_origin(_url, nil), do: :ok
 
   def check_origin(%Finch.Request{} = request, allowed) do
-    check_origin(
-      %URI{scheme: to_string(request.scheme), host: request.host, port: request.port},
-      allowed
-    )
+    check_origin(request_uri(request), allowed)
   end
 
   def check_origin(url, allowed) do
@@ -111,13 +108,7 @@ defmodule Backplane.McpProtocol.HTTP do
   defp do_follow_redirect(_req, %Finch.Response{} = resp, _opts, _attempts), do: {:ok, resp}
 
   defp redirect_uri(req, location) when is_binary(location) and location != "" do
-    base = %URI{
-      scheme: to_string(req.scheme),
-      host: req.host,
-      port: req.port,
-      path: req.path,
-      query: req.query
-    }
+    base = request_uri(req)
 
     with {:ok, uri} <- URI.new(location),
          uri = URI.merge(base, uri),
@@ -129,4 +120,14 @@ defmodule Backplane.McpProtocol.HTTP do
   end
 
   defp redirect_uri(_req, _location), do: {:error, :invalid_redirect}
+
+  defp request_uri(request) do
+    host =
+      if String.contains?(request.host, ":"),
+        do: "[#{request.host}]",
+        else: request.host
+
+    uri = URI.parse("#{request.scheme}://#{host}:#{request.port}")
+    %{uri | path: request.path, query: request.query}
+  end
 end

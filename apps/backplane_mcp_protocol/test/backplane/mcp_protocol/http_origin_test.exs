@@ -104,6 +104,17 @@ defmodule Backplane.McpProtocol.HTTPOriginTest do
              HTTP.follow_redirect(HTTP.build(:get, "http://localhost:#{server.port}/loop"), [], 0)
   end
 
+  test "request origins preserve IPv6 hosts and default ports" do
+    for url <- ["https://example.com/mcp", "http://[::1]/mcp", "https://[2001:db8::1]:8443/mcp"] do
+      request = HTTP.build(:get, url)
+      assert :ok = HTTP.check_origin(request, url)
+    end
+
+    request = HTTP.build(:get, "https://[::1]/mcp")
+    assert :ok = HTTP.check_origin(request, "https://[::1]:443")
+    assert {:error, :cross_origin_redirect} = HTTP.check_origin(request, "https://[::1]:444")
+  end
+
   test "origin comparison normalizes default ports and rejects scheme, host, userinfo or port changes" do
     assert :ok = HTTP.check_origin("https://EXAMPLE.com/mcp", "https://example.com:443/base")
 
