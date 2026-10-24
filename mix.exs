@@ -84,11 +84,14 @@ defmodule Backplane.Umbrella.MixProject do
   end
 
   defp copy_host_agent_integrations(release) do
+    host_agent_version =
+      release.applications |> Map.fetch!(:backplane_host_agent) |> Keyword.fetch!(:vsn)
+
     destination =
       Path.join([
         release.path,
         "lib",
-        "backplane_host_agent-#{release.version}",
+        "backplane_host_agent-#{host_agent_version}",
         "priv",
         "integrations",
         "memory"
@@ -97,6 +100,27 @@ defmodule Backplane.Umbrella.MixProject do
     File.rm_rf!(destination)
     File.mkdir_p!(Path.dirname(destination))
     File.cp_r!("integrations/memory", destination)
+
+    for manifest <-
+          ~w(hermes/plugin.yaml openclaw/plugin.yaml openclaw/package.json openclaw/openclaw.plugin.json) do
+      path = Path.join(destination, manifest)
+      contents = File.read!(path)
+
+      pattern =
+        case Path.extname(path) do
+          ".yaml" -> ~r/^(version:[ \t]*)[^\r\n]+/m
+          ".json" -> ~r/^([ \t]*"version":[ \t]*")[^"]+/m
+        end
+
+      unless Regex.match?(pattern, contents) do
+        Mix.raise("No version field in memory plugin manifest #{path}")
+      end
+
+      File.write!(
+        path,
+        Regex.replace(pattern, contents, fn _, prefix -> prefix <> release.version end)
+      )
+    end
 
     release
   end

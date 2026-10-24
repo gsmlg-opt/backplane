@@ -1,5 +1,5 @@
 name: backplane-memory
-version: 0.1.0
+version: 1.10.34
 description: "Persistent cross-session memory for Hermes Agent via the Backplane host agent."
 author: "Backplane"
 homepage: "https://github.com/gsmlg-opt/backplane"

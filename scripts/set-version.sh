@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sets the root version and selected app versions. With no app selection (or
+# Sets the root, memory plugin, and selected app versions. With no app selection (or
 # "all"), updates every app and the backplane_mcp_protocol install examples.
 #
 # Usage: scripts/set-version.sh <version> [all | app ...] (leading "v" is stripped)
@@ -15,6 +15,8 @@ if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.+-]+)?$ ]]; then
 fi
 
 files=(mix.exs)
+plugin_yaml=(integrations/memory/{hermes,openclaw}/plugin.yaml)
+plugin_json=(integrations/memory/openclaw/{package,openclaw.plugin}.json)
 update_mcp_examples=false
 
 if [[ $# -eq 0 || ( $# -eq 1 && "${1:-}" == "all" ) ]]; then
@@ -48,6 +50,20 @@ for file in "${files[@]}"; do
   fi
 done
 
+for file in "${plugin_yaml[@]}"; do
+  if [[ ! -f "$file" ]] || ! grep -Eq '^version: [^[:space:]]+' "$file"; then
+    echo "No version field in $file" >&2
+    exit 1
+  fi
+done
+
+for file in "${plugin_json[@]}"; do
+  if [[ ! -f "$file" ]] || ! grep -Eq '^[[:space:]]*"version": "[^"]+"' "$file"; then
+    echo "No version field in $file" >&2
+    exit 1
+  fi
+done
+
 if [[ "$update_mcp_examples" == "true" ]]; then
   for file in "${examples[@]}"; do
     if [[ ! -f "$file" ]] || ! grep -Eq 'backplane_mcp_protocol, "~> [^"]+"' "$file"; then
@@ -74,6 +90,16 @@ for file in "${files[@]}"; do
   fi
 done
 
+for file in "${plugin_yaml[@]}"; do
+  sed -i.bak -E "s/^(version: )[^[:space:]]+/\1$version/" "$file"
+  rm -f "$file.bak"
+done
+
+for file in "${plugin_json[@]}"; do
+  sed -i.bak -E "s/^( *\"version\": )\"[^\"]+\"/\1\"$version\"/" "$file"
+  rm -f "$file.bak"
+done
+
 if [[ "$update_mcp_examples" == "true" ]]; then
   for file in "${examples[@]}"; do
     sed -i.bak -E \
@@ -88,4 +114,4 @@ if [[ "$update_mcp_examples" == "true" ]]; then
   done
 fi
 
-echo "Set version $version in $updated mix.exs files"
+echo "Set version $version in $updated mix.exs files and memory plugins"

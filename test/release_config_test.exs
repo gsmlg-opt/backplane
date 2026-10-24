@@ -5,6 +5,15 @@ defmodule Backplane.ReleaseConfigTest do
 
   @runtime_release_apps ~w(backplane_admin backplane_api backplane_host_agent backplane_llama backplane_memory backplane_skills backplane_system)
   @mcp_examples ~w(apps/backplane_mcp_protocol/README.md apps/backplane_mcp_protocol/pages/introduction.md apps/backplane_mcp_protocol/pages/building-a-server.md)
+  @memory_plugins ~w(integrations/memory/hermes/plugin.yaml integrations/memory/openclaw/plugin.yaml integrations/memory/openclaw/package.json integrations/memory/openclaw/openclaw.plugin.json)
+
+  test "memory plugin versions match the project version" do
+    [_, version] = Regex.run(~r/@version "([^"]+)"/, File.read!("mix.exs"))
+
+    for path <- @memory_plugins do
+      assert plugin_version(path, File.read!(path)) == version, path
+    end
+  end
 
   test "version script preserves unified versioning by default and with explicit all" do
     for selection <- [[], ["all"]] do
@@ -13,10 +22,15 @@ defmodule Backplane.ReleaseConfigTest do
       snapshot = version_snapshot(directory)
 
       for {path, contents} <- snapshot do
-        if String.ends_with?(path, "mix.exs") do
-          assert contents =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
-        else
-          assert contents =~ ~s({:backplane_mcp_protocol, "~> 9.8.7"})
+        cond do
+          path in @memory_plugins ->
+            assert plugin_version(path, contents) == "9.8.7"
+
+          String.ends_with?(path, "mix.exs") ->
+            assert contents =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+
+          true ->
+            assert contents =~ ~s({:backplane_mcp_protocol, "~> 9.8.7"})
         end
       end
 
@@ -34,24 +48,35 @@ defmodule Backplane.ReleaseConfigTest do
     assert Map.keys(before) |> Enum.sort() == Map.keys(after_snapshot) |> Enum.sort()
 
     for {path, contents} <- before do
-      if path in selected do
-        assert after_snapshot[path] != contents
-        assert after_snapshot[path] =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
-      else
-        assert after_snapshot[path] == contents, "unexpected change to #{path}"
+      cond do
+        path in @memory_plugins ->
+          assert plugin_version(path, after_snapshot[path]) == "9.8.7"
+
+        path in selected ->
+          assert after_snapshot[path] != contents
+          assert after_snapshot[path] =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+
+        true ->
+          assert after_snapshot[path] == contents, "unexpected change to #{path}"
       end
     end
   end
 
-  test "selecting the MCP package updates only its manifest, examples and root" do
+  test "selecting the MCP package updates its manifest, examples, root and memory plugins" do
     directory = version_fixture()
     before = version_snapshot(directory)
     {_output, 0} = set_version(directory, ["9.8.7", "backplane_mcp_protocol"])
     after_snapshot = version_snapshot(directory)
-    selected = ["mix.exs", "apps/backplane_mcp_protocol/mix.exs" | @mcp_examples]
+
+    selected =
+      ["mix.exs", "apps/backplane_mcp_protocol/mix.exs" | @mcp_examples] ++ @memory_plugins
 
     for {path, contents} <- before do
       assert after_snapshot[path] != contents == path in selected, path
+    end
+
+    for path <- @memory_plugins do
+      assert plugin_version(path, after_snapshot[path]) == "9.8.7"
     end
   end
 
@@ -73,8 +98,9 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
-  test "version script validates all manifests and selected examples before writing" do
-    for broken_path <- ["apps/backplane_system/mix.exs", List.last(@mcp_examples)] do
+  test "version script validates all manifests, plugins and selected examples before writing" do
+    for broken_path <-
+          ["apps/backplane_system/mix.exs", List.last(@mcp_examples)] ++ @memory_plugins do
       directory = version_fixture()
       File.write!(Path.join(directory, broken_path), "no version field\n")
       before = version_snapshot(directory)
@@ -751,7 +777,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert release_workflow =~ "http://127.0.0.1:14101/dashboard/overview"
   end
 
-  test "host agent copies integrations with a post-assembly release step" do
+  test "host agent release step copies integrations with the release version and preserves sources" do
     host_agent =
       Mix.Project.config()
       |> Keyword.fetch!(:releases)
@@ -760,6 +786,46 @@ defmodule Backplane.ReleaseConfigTest do
     refute Keyword.has_key?(host_agent, :overlays)
     assert [:assemble, copy_integrations] = host_agent[:steps]
     assert is_function(copy_integrations, 1)
+
+    directory =
+      Path.join(System.tmp_dir!(), "backplane-host-agent-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf!(directory) end)
+
+    release = %Mix.Release{
+      path: directory,
+      version: "9.8.7-rc.1+build.2",
+      applications: %{backplane_host_agent: [vsn: ~c"1.2.3"]}
+    }
+
+    sources = version_snapshot("integrations/memory")
+
+    assert copy_integrations.(release) == release
+
+    destination =
+      Path.join([
+        directory,
+        "lib",
+        "backplane_host_agent-1.2.3",
+        "priv/integrations/memory"
+      ])
+
+    packaged = version_snapshot(destination)
+    assert Map.keys(packaged) |> Enum.sort() == Map.keys(sources) |> Enum.sort()
+
+    for {path, contents} <- sources do
+      if "integrations/memory/#{path}" in @memory_plugins do
+        assert plugin_version(path, packaged[path]) == release.version, path
+
+        assert Map.delete(plugin_manifest(path, packaged[path]), "version") ==
+                 Map.delete(plugin_manifest(path, contents), "version"),
+               path
+      else
+        assert packaged[path] == contents, path
+      end
+    end
+
+    assert version_snapshot("integrations/memory") == sources
   end
 
   test "published backplane_mcp_protocol install examples use the package version" do
@@ -966,7 +1032,8 @@ defmodule Backplane.ReleaseConfigTest do
     File.mkdir_p!(directory)
     on_exit(fn -> File.rm_rf!(directory) end)
 
-    for path <- ["mix.exs" | Path.wildcard("apps/*/mix.exs")] ++ @mcp_examples do
+    for path <-
+          ["mix.exs" | Path.wildcard("apps/*/mix.exs")] ++ @mcp_examples ++ @memory_plugins do
       destination = Path.join(directory, path)
       File.mkdir_p!(Path.dirname(destination))
       File.cp!(path, destination)
@@ -981,6 +1048,18 @@ defmodule Backplane.ReleaseConfigTest do
     |> Path.wildcard()
     |> Enum.filter(&File.regular?/1)
     |> Map.new(fn path -> {Path.relative_to(path, directory), File.read!(path)} end)
+  end
+
+  defp plugin_version(path, contents) do
+    plugin_manifest(path, contents)["version"]
+  end
+
+  defp plugin_manifest(path, contents) do
+    if String.ends_with?(path, ".json") do
+      Jason.decode!(contents)
+    else
+      YamlElixir.read_from_string!(contents)
+    end
   end
 
   defp set_version(directory, arguments) do
