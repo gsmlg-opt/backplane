@@ -16,6 +16,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   @default_wait_timeout_ms 30_000
   @maximum_wait_timeout_ms 3_600_000
   @settlement_wait_ms 5_000
+  @settlement_stages_per_target 4
   @v1_namespace "multi_agent_v1"
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -589,7 +590,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           Process.send_after(
             self(),
             {:settlement_timeout, token},
-            10_000 * max(1, length(agents))
+            # Fence, cancellation, snapshot and close each have a bounded wait.
+            # One final interval covers completion delivery and scheduling.
+            @settlement_wait_ms * (@settlement_stages_per_target * max(1, length(agents)) + 1)
           )
 
         entry =
@@ -2531,23 +2534,25 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     do: %{run_id: Map.get(run, :run_id), incarnation: Map.get(run, :incarnation)}
 
   defp await_settlement(pid, deadline) do
-    case Conversation.status(pid) do
-      %{phase: :terminal} = snapshot ->
-        {:ok, snapshot}
+    remaining = deadline - System.monotonic_time(:millisecond)
 
-      %{phase: :storage_failed} ->
-        {:error, Error.new(:unknown_outcome, "agent store settlement is uncertain")}
+    if remaining <= 0 do
+      {:error, Error.new(:unknown_outcome, "agent termination is not settled")}
+    else
+      case GenServer.call(pid, :status, remaining) do
+        %{phase: :terminal} = snapshot ->
+          {:ok, snapshot}
 
-      %{phase: :recovery_required} ->
-        {:error, Error.new(:unknown_outcome, "agent requires host recovery")}
+        %{phase: :storage_failed} ->
+          {:error, Error.new(:unknown_outcome, "agent store settlement is uncertain")}
 
-      _ ->
-        if System.monotonic_time(:millisecond) < deadline do
-          Process.sleep(5)
+        %{phase: :recovery_required} ->
+          {:error, Error.new(:unknown_outcome, "agent requires host recovery")}
+
+        _ ->
+          Process.sleep(min(5, max(0, deadline - System.monotonic_time(:millisecond))))
           await_settlement(pid, deadline)
-        else
-          {:error, Error.new(:unknown_outcome, "agent termination is not settled")}
-        end
+      end
     end
   catch
     :exit, _ -> {:error, Error.new(:unknown_outcome, "agent snapshot is unavailable")}
