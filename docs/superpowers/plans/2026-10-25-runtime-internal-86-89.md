@@ -249,3 +249,15 @@ These results establish source qualification. The remaining release checkboxes
 above are pending at this source commit. Publication, archive provenance, GHCR,
 HexDocs and fresh Hex consumer evidence must come from the terminal canonical
 release workflow and the release evidence attached to the original requests.
+
+
+### Latest-compiler follow-up
+
+The first remote Elixir 1.20.1 / OTP 29 strict compile detected an unreachable
+legacy `deliver_now/5` uncertainty clause: the new `deliver/5` admission guard
+already rejects that state. Commit `295ec51c` removes only this orphan; the early
+unknown-outcome refusal remains unchanged. Independent review approved the
+three-line removal; local warnings-as-errors compilation, formatting and the
+148-test affected suite passed. The initial release run was cancelled before
+publication. Requalify the merged main SHA and verify the latest-compiler job
+before accepting the replacement canonical release.
