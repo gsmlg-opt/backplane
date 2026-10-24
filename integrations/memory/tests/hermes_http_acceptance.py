@@ -224,6 +224,10 @@ class Scenario:
             "transport_failure", "delivery_exhausted", "authority_changed", "partition_mismatch",
             "invalid_protocol", "capture_binding_mismatch", "unsupported_capability", "not_negotiated",
             "storage_unavailable", "invalid_ack", "revision_conflict", "snapshot_conflict",
+            # Fixed public stage codes from Memory.Recall.Pipeline.stage_error/1.
+            "query_plan_failed", "retrieval_failed", "post_fusion_failed", "reranker_failed",
+            "packing_failed", "provenance_failed", "trace_create_failed", "trace_finalize_failed",
+            "pipeline_failed", "recall_already_failed",
         }
         return value if value is None or isinstance(value, str) and value in allowed else "unclassified_error"
 
@@ -332,6 +336,50 @@ class Scenario:
 
     def diagnostic_delivery(self):
         return self.delivery_diagnostics()
+
+    def wait_current_context(self, query, failure_code):
+        provider = self.providers["a"]
+        session = self.session("a")
+        with provider._journal.lock, provider._state_lock:
+            initial_generation = provider._generation
+            initial_cache = provider._cache.get((session, query, initial_generation))
+            binding = provider._journal.get("binding_fingerprint")
+        queued_generation = None
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            # Follow the provider's actual invalidation generation. Hold both
+            # owning locks while observing freshness and identity so a source
+            # settlement cannot invalidate the selected cache mid-observation.
+            with provider._journal.lock, provider._state_lock:
+                generation = provider._generation
+                current_binding = provider._journal.get("binding_fingerprint")
+                session_changed = provider._session_id != session
+                binding_changed = binding is not None and current_binding != binding
+                if binding is None and current_binding:
+                    binding = current_binding
+                key = (session, query, generation)
+                cached = provider._cache.get(key)
+                ready = (provider._peer or {}).get("state") == "ready"
+                complete = (cached is not None and cached is not initial_cache
+                            and cached[0] > time.monotonic() and key not in provider._prefetch_jobs
+                            and ready and bool(current_binding)
+                            and not provider._journal.get("binding_blocked"))
+                if complete and not session_changed and not binding_changed:
+                    text = provider.prefetch(query, session_id=session)
+                    if (text == cached[1] and cached[0] > time.monotonic()
+                            and key not in provider._prefetch_jobs):
+                        return text, generation
+            if session_changed or binding_changed:
+                code = "context_session_changed" if session_changed else "context_binding_changed"
+                raise CheckFailure(code, self.context_diagnostics(query, initial_generation))
+            if queued_generation != generation:
+                # An invalidation clears queued work too. Requeue through the
+                # public API without treating its immediate empty return as a
+                # completed fetch or retaining a stale generation's result.
+                provider.queue_prefetch(query, session_id=session)
+                queued_generation = generation
+            time.sleep(0.1)
+        raise CheckFailure(failure_code, self.context_diagnostics(query, initial_generation))
 
     def immutable_replay(self):
         replay = self.state["replay"]
@@ -486,18 +534,10 @@ class Scenario:
                 "full_compression_verified": False, "runtime_source_sha256": source_hashes}
 
     def context(self):
-        provider = self.providers["a"]
         query = "deployment status color " + self.marker
-        # Queue/fetch through the public asynchronous API; wait for a newly populated cache.
-        provider.queue_prefetch(query, session_id=self.session("a"))
-        deadline = time.monotonic() + self.timeout
-        text = ""
-        while time.monotonic() < deadline:
-            text = provider.prefetch(query, session_id=self.session("a"))
-            if text:
-                break
-            time.sleep(0.1)
-        require("amber" in text.lower(), "corrected_context_missing")
+        text, generation = self.wait_current_context(query, "corrected_context_missing")
+        if "amber" not in text.lower():
+            raise CheckFailure("corrected_context_missing", self.context_diagnostics(query, generation))
         require("cobalt" not in text.lower(), "old_or_assistant_mistake_in_context")
         require("cloudy" not in text.lower(), "unrelated_chat_in_context")
         require(len(text.encode()) <= self.budget, "final_context_budget_exceeded")
@@ -514,20 +554,8 @@ class Scenario:
             require("] " in line and line.split("] ", 1)[1] in whole_contents,
                     "context_entry_was_sliced_or_unverifiable")
         unrelated = "xylophonic quasar zeppelins"
-        provider.queue_prefetch(unrelated, session_id=self.session("a"))
-        # Wait for the actual fetch, including the valid empty-result cache entry.
-        key = (self.session("a"), unrelated, provider._generation)
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            with provider._state_lock:
-                cached = provider._cache.get(key)
-            if cached is not None:
-                require(cached[1] == "", "unrelated_query_received_context")
-                break
-            time.sleep(0.1)
-        else:
-            raise CheckFailure("unrelated_context_fetch_unverified",
-                               self.context_diagnostics(unrelated, key[2]))
+        unrelated_text, _generation = self.wait_current_context(unrelated, "unrelated_context_fetch_unverified")
+        require(unrelated_text == "", "unrelated_query_received_context")
         return {"rendered_bytes": len(text.encode()), "budget": self.budget,
                 "old_value_suppressed": True, "unrelated_empty": True,
                 "trust_labels": True, "whole_entries": True}
@@ -570,18 +598,8 @@ class Scenario:
         self.settle()
         require(not self.present(self.current), "reconciliation_undid_global_forget")
         query = "deployment status color " + self.marker
-        provider.queue_prefetch(query, session_id=self.session("a"))
-        deadline = time.monotonic() + self.timeout
-        key = (self.session("a"), query, provider._generation)
-        while time.monotonic() < deadline:
-            with provider._state_lock:
-                cached = provider._cache.get(key)
-            if cached is not None:
-                require(self.state["current_id"] not in cached[1], "forgotten_record_in_context")
-                break
-            time.sleep(0.1)
-        else:
-            raise CheckFailure("forget_context_fetch_unverified")
+        text, _generation = self.wait_current_context(query, "forget_context_fetch_unverified")
+        require(self.state["current_id"] not in text, "forgotten_record_in_context")
         return {"canonical_id": self.state["current_id"], "reconciliation_suppressed": True}
 
     def shutdown(self):

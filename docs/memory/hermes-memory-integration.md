@@ -352,6 +352,18 @@ deadline. This closes the backend race but does not prove plugin acceptance: the
 unchanged plugin still uses a two-second deadline. Its deadline repair awaits
 completion before full provider acceptance can pass. All owned resources were
 cleaned and independently checked again.
+
+The context observer now follows the provider's current cache generation and
+requires a fresh, completed result under the same session and binding, including
+valid empty results. It also retains fixed public recall-stage error codes in
+safe diagnostics. A controlled test using the actual Hermes provider and plugin
+over owned loopback HTTP reproduced the old-generation and diagnostic failures
+before the correction. Five checks then passed: generation recovery, fixed-code
+diagnostics, initial correction-failure diagnostics, rejection of expired/failed
+cache results, and rejection of session changes. This verifies the observer;
+neither the full scenario nor the native-context boundary was rerun, and the
+production provider deadline is unchanged.
+
 Full live acceptance remains open; passing backend tests do not replace it. The published
 `v1.10.35` release targets upstream `ab8f2f5d`, which excludes this local Hermes
 implementation; it is not release evidence for these changes.
