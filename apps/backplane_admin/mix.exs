@@ -4,7 +4,7 @@ defmodule BackplaneAdmin.MixProject do
   def project do
     [
       app: :backplane_admin,
-      version: "1.10.33",
+      version: "1.10.34",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -50,9 +50,8 @@ defmodule BackplaneAdmin.MixProject do
       {:phoenix_session_process, "~> 1.0.1"},
       {:gaoxy_http, "~> 0.12.1"},
       {:jason, "~> 1.4"},
-      {:duskmoon_bundler_runtime, "~> 10.0.1"},
-      # TODO(upstream): duskmoon-dev/duskmoon-bundler#5 - native NIF downloads block release.
-      {:duskmoon_bundler, "~> 10.0.1", runtime: Mix.env() != :prod},
+      {:duskmoon_bundler_runtime, "~> 10.0.4"},
+      {:duskmoon_bundler, "~> 10.0.4", runtime: Mix.env() != :prod},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0"},
       {:lazy_html, ">= 0.1.0"}

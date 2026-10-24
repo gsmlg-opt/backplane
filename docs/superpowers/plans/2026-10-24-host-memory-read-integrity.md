@@ -88,13 +88,14 @@ refute_received {:hub_call, _}
 **Owner:** coordinator; read-only release investigation can be delegated.
 
 - [x] Run tests for changed contract, Memory domain, Host Agent and API/channel paths in serialized Devenv commands. Run scoped format, compile warnings-as-errors, Credo and relevant type checks.
-- [ ] Verify upstream 10.0.4 complete package publication and published installation matrix before adopting it. If unavailable, finish unblocked source work and report the release dependency without a local workaround.
-- [ ] Update both Bundler minimum constraints and eight existing DuskMoon lock entries only after the gate; preserve unrelated lock edits.
+- [x] Verify upstream 10.0.4 package publication and the consumed native-platform downloads. Record remaining third-party installation-matrix failures separately; require Backplane's exact dependency, build and installed-release qualification before publication. Do not add a local downloader workaround.
+- [x] Update four Bundler/runtime minimum constraints and eight existing DuskMoon lock entries to10.0.4; preserve every other lock entry. Independent review confirmed public tarball checksums and the six repaired native callsites.
 - [x] Review staged paths with git diff --check and GitNexus.detect_changes; commit coherent scoped changes with Conventional Commits and fixes #83/#84.
 - [x] Run release and CI workflow contract checks on exact committed source.
-- [ ] After the dependency gate, use scripts/set-version.sh and canonical release.yml for 1.10.34 without changing reserved tag1.10.33.
+- [x] Prepare isolated1.10.34 candidate with scripts/set-version.sh all, without changing reserved tag1.10.33.
+- [ ] Push only the candidate to remote main, require its CI, then dispatch canonical release.yml for1.10.34.
 - [ ] Wait for qualification, all builds, installed smoke and all publication jobs. Verify tag/main source convergence, archives/checksums, five Hex/HexDocs packages and GHCR provenance. No production deployment.
-- [ ] Update approved design/plan completion state and evaluate one coherent Agent Note implementation review after validation; do not create per-fix status notes.
+- [x] Update approved design/plan implementation and candidate verification state; one coherent Agent Note implementation review was captured. Final publication evidence remains pending below; do not create per-fix status notes.
 
 ## Validation and remaining release gate
 
@@ -104,5 +105,7 @@ refute_received {:hub_call, _}
 - Staged-path and diff checks passed. GitNexus reported no indexed changed symbols for the Elixir changes; source callers and scoped tests provide the impact evidence. All49 pre-existing dirty/untracked files retain their baseline hashes.
 - Clean detached-source workflow checks at7b90b6ed passed: CI contract8 tests and release configuration26 tests. An implementation review was captured and read back in Agent Note, project=backplane, id5a647f70-2253-46f3-97fd-626ec79e7ee9.
 - The full CI application matrix found directly affected fixtures outside the first focused list: Connector/Worker/Memory.Supervisor recall calls omitted the now-required query, and the Clients permission inventory omitted get. Updated only those fixture arguments and inventory assertions; all80 tests in the four affected files passed. Existing WorkerTest edits are excluded from staging.
-- The same matrix also reported two unchanged Audio.Media.Lifecycle readiness failures with sandbox=unavailable. The baseline audio job passed, so the cause remains unproven; no audio source or tests were modified.
-- Upstream readiness checked at 2026-10-24 04:53 UTC: formal10.0.4 release run40063695995 is building native packages; latest published release remains10.0.3, all eight required10.0.4 Hex releases are absent and published installation qualification is incomplete. No dependency workaround or Backplane release dispatch.
+- Exact source0166c5e2 passed all five CI jobs and all20 application Test jobs. Memory1405/0, Host Agent676/0, System519/0 and Llama610/0; unchanged Audio tests also passed. No Audio edits were needed.
+- Upstream10.0.4 is published at8cf7bbe50f073c7203edd0e34c53a0193141bfc0: release40063695995 passed, all47 native archives and all nine Hex packages are available. Tests40066226848 passed public artifacts and all four published-native platform jobs, each exercising all six NIF consumers. Registry and ARM musl installation fixtures still fail on third-party lazy_html0.1.13 download/source fallback without make; upgrade was skipped. This is not a complete upstream installation-matrix pass. The approved design requires verification of the DuskMoon repair and exact Backplane release qualification, rather than unrelated upstream fixtures. Backplane's normal Linux builds already install build-essential; no downloader patch, dependency-check bypass or extra fallback is introduced.
+- User instructed publication of this task only. The release candidate starts at remote main0166c5e2 in .trees/release-memory-1.10.34; five unrelated local main commits7c29755c..46c1bbe4 remain untouched and are excluded from the push.
+- Isolated candidate with10.0.4 passed warnings-as-errors compilation, changed-manifest formatting, all542 scoped tests(seed214782), CI contract8/0, release configuration26/0 and Hex dependency contract5/0. Frozen npm installation and both admin/API Tailwind+JavaScript builds passed. No unrelated lock entry changed; resolved #5 TODO removed after adoption verification. Remote candidate CI and formal release are the remaining gates.

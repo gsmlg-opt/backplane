@@ -166,12 +166,13 @@ MCP 保持既有 error envelope，携带相同稳定分类；成功 record 内�
 
 测试限定到 contract、Memory domain、Host Agent facade/proxy/router、Access 和相关 API/channel 测试。
 仅在实际有变更时运行适当的编译、format、Credo、Dialyzer 和 CI contract 检查。
-实施及提交在 main 上进行，只暂存本范围路径，保留当前无关工作树改动。
+实现已提交至远端 main。按用户指示，发布候选从远端 main@0166c5e2 的隔离 worktree 准备，
+只推送本轮依赖及版本更新；本地 main 的五个无关提交保持原样。
 
 ## 发布前提
 
-DuskMoon native 下载阻塞 `duskmoon-dev/duskmoon-bundler#5` 已于
-2026-10-24 04:01:28 UTC 关闭；对应修复和 Backplane 依赖更新尚待核验。
+DuskMoon native 下载阻塞 `duskmoon-dev/duskmoon-bundler#5` 已修复，10.0.4 的正式发布、
+公开 artifacts 和四组 published-native 消费测试已通过；Backplane 已更新八个既有依赖包。
 按仓库 Blocker Policy，确认上游修复并更新依赖后才恢复发布；不增加本地绕过。
 新的发布必须对新源码重新验证，完成正式 qualification、所有构建和 installed smoke，
 并确认 GitHub assets/checksums、五个 Hex/HexDocs 包、GHCR 以及 main/tag 来源。
@@ -193,9 +194,17 @@ Dialyzer 检查通过（沿用仓库既有 ignore 规则）。权限切换和删
 设计一致性与代码质量复审均通过。首次最终测试中两个既有 API 测试超过 100ms 消息等待；
 未修改代码的单独复跑及相同 seed 的完整复跑均通过。
 
-截至 2026-10-24 04:53 UTC，上游 10.0.4 正式发布 run40063695995 正在构建 native 包；
-最新已发布版本仍为 10.0.3，当前依赖的八个 10.0.4 Hex 包均返回 404，安装验证尚未完成。
-因此依赖升级、1.10.34 qualification、构建与发布仍受上述 blocker policy 约束。
+远端 main@0166c5e2 已通过全部五个 CI job 和20个 application Test job。
+上游10.0.4 正式发布 run40063695995 已成功，47个 native archive 和九个 Hex 包均可用。
+安装矩阵 run40066226848 的公开 artifacts 及四组 published-native job 通过；另有
+registry、ARM musl fixture 因第三方 lazy_html 下载及缺少 make 的源码回退失败，upgrade 未执行。
+因此不宣称整个上游安装矩阵通过。本轮使用实际消费的 DuskMoon native 验证及 Backplane
+自身的完整 qualification、构建和 installed smoke 作为发布证据，不新增下载绕过或跳过检查。
+
+隔离1.10.34 候选在10.0.4 依赖下通过 warnings-as-errors 编译、修改 manifest 格式、
+542项范围回归，以及 CI contract8/0、release config26/0、Hex dependency5/0。
+frozen npm 安装和公开端、管理端的 Tailwind/JavaScript 构建均通过；
+四个最低版本约束和八个 lock entry 之外的依赖保持不变。远端候选 CI 和正式发布尚待执行。
 
 ## 可复查源码
 

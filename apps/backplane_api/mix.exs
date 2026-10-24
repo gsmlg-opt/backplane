@@ -4,7 +4,7 @@ defmodule BackplaneApi.MixProject do
   def project do
     [
       app: :backplane_api,
-      version: "1.10.33",
+      version: "1.10.34",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -48,8 +48,8 @@ defmodule BackplaneApi.MixProject do
       {:phoenix_duskmoon, "~> 10.0.4"},
       {:gaoxy_http, "~> 0.12.1"},
       {:jason, "~> 1.4"},
-      {:duskmoon_bundler_runtime, "~> 10.0.1"},
-      {:duskmoon_bundler, "~> 10.0.1", runtime: Mix.env() != :prod},
+      {:duskmoon_bundler_runtime, "~> 10.0.4"},
+      {:duskmoon_bundler, "~> 10.0.4", runtime: Mix.env() != :prod},
       # TODO(upstream): gsmlg-dev/phoenix_socket_client#107
       # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#107 - align the test host-agent transport.
       {:http_web_socket, "~> 0.21.2", only: :test, override: true},
