@@ -78,6 +78,12 @@ skills into the configured targets, and serves the local MCP endpoint at
 `http://127.0.0.1:4222/memory/:agent_id/mcp`.
 Tools not handled locally are forwarded to the hub with the host token.
 
+The host-agent release defaults to `RELEASE_DISTRIBUTION=none` and disables
+automatic EPMD startup. Manage its lifecycle with your process manager (for
+example, launchd or systemd); `rpc`, `remote`, and the RPC-based `stop` command
+are unavailable with the default distribution mode. Existing runtime VM options
+are preserved, and the gateway release keeps its existing distribution defaults.
+
 ## 5. Install memory plugins
 
 The host-agent release packages the OpenClaw and Hermes memory plugins. Install

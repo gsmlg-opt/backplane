@@ -692,6 +692,31 @@ defmodule Backplane.ReleaseConfigTest do
     refute runtime_config =~ "BackplaneWeb.Endpoint"
   end
 
+  @tag :host_agent_distribution
+  test "host agent release defaults to no distribution and disables automatic epmd" do
+    assert {"none\n-start_epmd false\n", 0} = release_environment("host_agent")
+  end
+
+  @tag :host_agent_distribution
+  test "host agent epmd options preserve runtime flags and repeated sourcing is idempotent" do
+    for options <- ["+S 2:2", "+S 2:2 -start_epmd false"] do
+      assert {"none\n+S 2:2 -start_epmd false\n", 0} =
+               release_environment("host_agent", nil, options)
+    end
+  end
+
+  @tag :host_agent_distribution
+  test "host agent preserves an explicitly configured distribution mode" do
+    assert {"name\n+S 2:2 -start_epmd false\n", 0} =
+             release_environment("host_agent", "name", "+S 2:2")
+  end
+
+  @tag :host_agent_distribution
+  test "gateway release environment retains its existing distribution and runtime options" do
+    assert {"\n\n", 0} = release_environment("backplane")
+    assert {"name\n+S 2:2\n", 0} = release_environment("backplane", "name", "+S 2:2")
+  end
+
   test "root mix release is an alias for building both configured releases" do
     aliases = Mix.Project.config() |> Keyword.fetch!(:aliases)
 
@@ -961,6 +986,25 @@ defmodule Backplane.ReleaseConfigTest do
   defp set_version(directory, arguments) do
     System.cmd("bash", [Path.expand("scripts/set-version.sh") | arguments],
       cd: directory,
+      stderr_to_stdout: true
+    )
+  end
+
+  defp release_environment(name, distribution \\ nil, options \\ nil) do
+    System.cmd(
+      "sh",
+      [
+        "-c",
+        ~S(. "$1"; . "$1"; printf '%s\n%s\n' "${RELEASE_DISTRIBUTION-}" "${ELIXIR_ERL_OPTIONS-}"),
+        "release-environment-test",
+        Path.expand("rel/env.sh.eex")
+      ],
+      env: [
+        {"RELEASE_NAME", name},
+        {"RELEASE_COMMAND", "start"},
+        {"RELEASE_DISTRIBUTION", distribution},
+        {"ELIXIR_ERL_OPTIONS", options}
+      ],
       stderr_to_stdout: true
     )
   end
