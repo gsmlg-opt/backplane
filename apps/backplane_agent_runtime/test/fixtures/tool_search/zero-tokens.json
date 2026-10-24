@@ -1,0 +1,71 @@
+{
+  "input": {
+    "texts": [
+      "the and is",
+      "",
+      "a"
+    ],
+    "queries": [
+      "rare",
+      "the"
+    ]
+  },
+  "expected": {
+    "documents": [
+      {
+        "hashes": [],
+        "normalized": "the and is",
+        "text": "the and is",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "",
+        "text": "",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "a",
+        "text": "a",
+        "tokens": []
+      }
+    ],
+    "queries": [
+      {
+        "query": "rare",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "the",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          }
+        ]
+      }
+    ]
+  }
+}

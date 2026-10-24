@@ -1,0 +1,764 @@
+{
+  "input": {
+    "texts": [
+      "a'b",
+      "a:b",
+      "a.b",
+      "a,b",
+      "a;b",
+      "a_b",
+      "a--b",
+      "a''b",
+      "a'2",
+      "a:2",
+      "a.2",
+      "a,2",
+      "a;2",
+      "a_2",
+      "a--2",
+      "a''2",
+      "a'_",
+      "a:_",
+      "a._",
+      "a,_",
+      "a;_",
+      "a__",
+      "a--_",
+      "a''_",
+      "1'b",
+      "1:b",
+      "1.b",
+      "1,b",
+      "1;b",
+      "1_b",
+      "1--b",
+      "1''b",
+      "1'2",
+      "1:2",
+      "1.2",
+      "1,2",
+      "1;2",
+      "1_2",
+      "1--2",
+      "1''2",
+      "1'_",
+      "1:_",
+      "1._",
+      "1,_",
+      "1;_",
+      "1__",
+      "1--_",
+      "1''_",
+      "_'b",
+      "_:b",
+      "_.b",
+      "_,b",
+      "_;b",
+      "__b",
+      "_--b",
+      "_''b",
+      "_'2",
+      "_:2",
+      "_.2",
+      "_,2",
+      "_;2",
+      "__2",
+      "_--2",
+      "_''2",
+      "_'_",
+      "_:_",
+      "_._",
+      "_,_",
+      "_;_",
+      "___",
+      "_--_",
+      "_''_"
+    ],
+    "queries": []
+  },
+  "expected": {
+    "documents": [
+      {
+        "hashes": [
+          3700415313
+        ],
+        "normalized": "a'b",
+        "text": "a'b",
+        "tokens": [
+          "a'b"
+        ]
+      },
+      {
+        "hashes": [
+          2596714251
+        ],
+        "normalized": "a:b",
+        "text": "a:b",
+        "tokens": [
+          "a:b"
+        ]
+      },
+      {
+        "hashes": [
+          1812096339
+        ],
+        "normalized": "a.b",
+        "text": "a.b",
+        "tokens": [
+          "a.b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "a,b",
+        "text": "a,b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "a;b",
+        "text": "a;b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          749359357
+        ],
+        "normalized": "a_b",
+        "text": "a_b",
+        "tokens": [
+          "a_b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "a--b",
+        "text": "a--b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "a''b",
+        "text": "a''b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "a'2",
+        "text": "a'2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "a:2",
+        "text": "a:2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "a.2",
+        "text": "a.2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "a,2",
+        "text": "a,2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "a;2",
+        "text": "a;2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          2619237583
+        ],
+        "normalized": "a_2",
+        "text": "a_2",
+        "tokens": [
+          "a_2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "a--2",
+        "text": "a--2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "a''2",
+        "text": "a''2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [],
+        "normalized": "a'_",
+        "text": "a'_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "a:_",
+        "text": "a:_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "a._",
+        "text": "a._",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "a,_",
+        "text": "a,_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "a;_",
+        "text": "a;_",
+        "tokens": []
+      },
+      {
+        "hashes": [
+          1430172481
+        ],
+        "normalized": "a__",
+        "text": "a__",
+        "tokens": [
+          "a__"
+        ]
+      },
+      {
+        "hashes": [],
+        "normalized": "a--_",
+        "text": "a--_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "a''_",
+        "text": "a''_",
+        "tokens": []
+      },
+      {
+        "hashes": [
+          2646367888,
+          1568887328
+        ],
+        "normalized": "1'b",
+        "text": "1'b",
+        "tokens": [
+          "1",
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          1568887328
+        ],
+        "normalized": "1:b",
+        "text": "1:b",
+        "tokens": [
+          "1",
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          1568887328
+        ],
+        "normalized": "1.b",
+        "text": "1.b",
+        "tokens": [
+          "1",
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          1568887328
+        ],
+        "normalized": "1,b",
+        "text": "1,b",
+        "tokens": [
+          "1",
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          1568887328
+        ],
+        "normalized": "1;b",
+        "text": "1;b",
+        "tokens": [
+          "1",
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1846002050
+        ],
+        "normalized": "1_b",
+        "text": "1_b",
+        "tokens": [
+          "1_b"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          1568887328
+        ],
+        "normalized": "1--b",
+        "text": "1--b",
+        "tokens": [
+          "1",
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          1568887328
+        ],
+        "normalized": "1''b",
+        "text": "1''b",
+        "tokens": [
+          "1",
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          2791246269
+        ],
+        "normalized": "1'2",
+        "text": "1'2",
+        "tokens": [
+          "1'2"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          4095307911
+        ],
+        "normalized": "1:2",
+        "text": "1:2",
+        "tokens": [
+          "1",
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          1057945064
+        ],
+        "normalized": "1.2",
+        "text": "1.2",
+        "tokens": [
+          "1.2"
+        ]
+      },
+      {
+        "hashes": [
+          1992220815
+        ],
+        "normalized": "1,2",
+        "text": "1,2",
+        "tokens": [
+          "1,2"
+        ]
+      },
+      {
+        "hashes": [
+          449124021
+        ],
+        "normalized": "1;2",
+        "text": "1;2",
+        "tokens": [
+          "1;2"
+        ]
+      },
+      {
+        "hashes": [
+          542936393
+        ],
+        "normalized": "1_2",
+        "text": "1_2",
+        "tokens": [
+          "1_2"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          4095307911
+        ],
+        "normalized": "1--2",
+        "text": "1--2",
+        "tokens": [
+          "1",
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888,
+          4095307911
+        ],
+        "normalized": "1''2",
+        "text": "1''2",
+        "tokens": [
+          "1",
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888
+        ],
+        "normalized": "1'_",
+        "text": "1'_",
+        "tokens": [
+          "1"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888
+        ],
+        "normalized": "1:_",
+        "text": "1:_",
+        "tokens": [
+          "1"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888
+        ],
+        "normalized": "1._",
+        "text": "1._",
+        "tokens": [
+          "1"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888
+        ],
+        "normalized": "1,_",
+        "text": "1,_",
+        "tokens": [
+          "1"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888
+        ],
+        "normalized": "1;_",
+        "text": "1;_",
+        "tokens": [
+          "1"
+        ]
+      },
+      {
+        "hashes": [
+          3401868029
+        ],
+        "normalized": "1__",
+        "text": "1__",
+        "tokens": [
+          "1__"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888
+        ],
+        "normalized": "1--_",
+        "text": "1--_",
+        "tokens": [
+          "1"
+        ]
+      },
+      {
+        "hashes": [
+          2646367888
+        ],
+        "normalized": "1''_",
+        "text": "1''_",
+        "tokens": [
+          "1"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "_'b",
+        "text": "_'b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "_:b",
+        "text": "_:b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "_.b",
+        "text": "_.b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "_,b",
+        "text": "_,b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "_;b",
+        "text": "_;b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          200378435
+        ],
+        "normalized": "__b",
+        "text": "__b",
+        "tokens": [
+          "__b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "_--b",
+        "text": "_--b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          1568887328
+        ],
+        "normalized": "_''b",
+        "text": "_''b",
+        "tokens": [
+          "b"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "_'2",
+        "text": "_'2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "_:2",
+        "text": "_:2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "_.2",
+        "text": "_.2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "_,2",
+        "text": "_,2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "_;2",
+        "text": "_;2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          1968925148
+        ],
+        "normalized": "__2",
+        "text": "__2",
+        "tokens": [
+          "__2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "_--2",
+        "text": "_--2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [
+          4095307911
+        ],
+        "normalized": "_''2",
+        "text": "_''2",
+        "tokens": [
+          "2"
+        ]
+      },
+      {
+        "hashes": [],
+        "normalized": "_'_",
+        "text": "_'_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "_:_",
+        "text": "_:_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "_._",
+        "text": "_._",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "_,_",
+        "text": "_,_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "_;_",
+        "text": "_;_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "___",
+        "text": "___",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "_--_",
+        "text": "_--_",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "_''_",
+        "text": "_''_",
+        "tokens": []
+      }
+    ],
+    "queries": []
+  }
+}

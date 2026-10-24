@@ -1,0 +1,101 @@
+{
+  "input": {
+    "texts": [
+      "q3599cqc3f470bz",
+      "q7b8686db2bd08z",
+      "unrelated"
+    ],
+    "queries": [
+      "q3599cqc3f470bz",
+      "q7b8686db2bd08z",
+      "q3599cqc3f470bz q3599cqc3f470bz"
+    ]
+  },
+  "expected": {
+    "documents": [
+      {
+        "hashes": [
+          533657109
+        ],
+        "normalized": "q3599cqc3f470bz",
+        "text": "q3599cqc3f470bz",
+        "tokens": [
+          "q3599cqc3f470bz"
+        ]
+      },
+      {
+        "hashes": [
+          533657109
+        ],
+        "normalized": "q7b8686db2bd08z",
+        "text": "q7b8686db2bd08z",
+        "tokens": [
+          "q7b8686db2bd08z"
+        ]
+      },
+      {
+        "hashes": [
+          2938904521
+        ],
+        "normalized": "unrelated",
+        "text": "unrelated",
+        "tokens": [
+          "unrel"
+        ]
+      }
+    ],
+    "queries": [
+      {
+        "query": "q3599cqc3f470bz",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.4700036346912384
+          },
+          {
+            "id": 1,
+            "score": 0.4700036346912384
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "q7b8686db2bd08z",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.4700036346912384
+          },
+          {
+            "id": 1,
+            "score": 0.4700036346912384
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "q3599cqc3f470bz q3599cqc3f470bz",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.9400072693824768
+          },
+          {
+            "id": 1,
+            "score": 0.9400072693824768
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          }
+        ]
+      }
+    ]
+  }
+}

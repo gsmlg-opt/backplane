@@ -1,0 +1,17 @@
+{
+  "input": {
+    "texts": [],
+    "queries": [
+      "rare"
+    ]
+  },
+  "expected": {
+    "documents": [],
+    "queries": [
+      {
+        "query": "rare",
+        "scores": []
+      }
+    ]
+  }
+}

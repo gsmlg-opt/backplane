@@ -1,0 +1,529 @@
+{
+  "input": {
+    "contracts": [
+      {
+        "name": "read_credentials",
+        "description": " Inspect vault credentials. ",
+        "schema": {
+          "type": "object",
+          "description": "Root credential inspection",
+          "properties": {
+            "zebra": {
+              "type": "array",
+              "description": "Batch details",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "secret": {
+                    "type": "string",
+                    "description": "Password rotation"
+                  }
+                }
+              }
+            },
+            "alpha": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Token lookup"
+                },
+                {
+                  "type": "number",
+                  "description": "Numeric identifier"
+                }
+              ]
+            }
+          },
+          "enum": [
+            "excluded_enum"
+          ],
+          "$defs": {
+            "excluded_defs": {
+              "description": "excluded_definition"
+            }
+          }
+        }
+      },
+      {
+        "namespace": "vault",
+        "name": "lookup_account",
+        "description": "Retrieve credentials",
+        "metadata": {
+          "namespace_description": "Secure account directory"
+        },
+        "schema": {
+          "type": "object"
+        }
+      },
+      {
+        "namespace": "vault",
+        "name": "store_secret",
+        "description": "Persist tokens",
+        "schema": {
+          "type": "object"
+        }
+      },
+      {
+        "namespace": "functions",
+        "name": "list_items",
+        "description": "List",
+        "schema": {
+          "type": "object"
+        }
+      },
+      {
+        "namespace": "grammar",
+        "name": "parse_input",
+        "description": "Parse expressions",
+        "input_kind": "custom",
+        "format": {
+          "syntax": "lark",
+          "definition": "excluded_grammar"
+        }
+      },
+      {
+        "name": "custom_input",
+        "description": "Text input",
+        "input_kind": "custom",
+        "format": {
+          "type": "text"
+        }
+      },
+      {
+        "namespace": "blank",
+        "name": "lookup",
+        "description": "Account",
+        "metadata": {
+          "namespace_description": "  "
+        },
+        "schema": {
+          "type": "object"
+        }
+      }
+    ],
+    "queries": [
+      "credential",
+      "secure account",
+      "password rotation",
+      "lark",
+      "excluded_enum excluded_defs excluded_definition excluded_grammar",
+      "read credentials",
+      "functions"
+    ]
+  },
+  "expected": {
+    "documents": [
+      {
+        "hashes": [
+          1284452287,
+          2496894721,
+          3503795567,
+          457859821,
+          1839076570,
+          3503795567,
+          1074564334,
+          3503795567,
+          457859821,
+          3155001261,
+          4045004361,
+          1030405326,
+          2199087102,
+          1352326179,
+          1175797641,
+          4173504694,
+          2863973907,
+          538625000,
+          3127175610,
+          2518193180
+        ],
+        "normalized": "read_credentials read credentials Inspect vault credentials. Root credential inspection alpha Token lookup Numeric identifier zebra Batch details secret Password rotation",
+        "text": "read_credentials read credentials Inspect vault credentials. Root credential inspection alpha Token lookup Numeric identifier zebra Batch details secret Password rotation",
+        "tokens": [
+          "read_credenti",
+          "read",
+          "credenti",
+          "inspect",
+          "vault",
+          "credenti",
+          "root",
+          "credenti",
+          "inspect",
+          "alpha",
+          "token",
+          "lookup",
+          "numer",
+          "identifi",
+          "zebra",
+          "batch",
+          "detail",
+          "secret",
+          "password",
+          "rotat"
+        ]
+      },
+      {
+        "hashes": [
+          1839076570,
+          3735317082,
+          1739453596,
+          2892547464,
+          839369309,
+          1030405326,
+          1739453596,
+          1205764794,
+          3503795567
+        ],
+        "normalized": "vault Secure account directory lookup_account lookup account Retrieve credentials",
+        "text": "vault Secure account directory lookup_account lookup account Retrieve credentials",
+        "tokens": [
+          "vault",
+          "secur",
+          "account",
+          "directori",
+          "lookup_account",
+          "lookup",
+          "account",
+          "retriev",
+          "credenti"
+        ]
+      },
+      {
+        "hashes": [
+          1839076570,
+          4198175349,
+          1839076570,
+          4197566135,
+          3783061807,
+          1932890727,
+          538625000,
+          1815566274,
+          4045004361
+        ],
+        "normalized": "vault Tools in the vault namespace. store_secret store secret Persist tokens",
+        "text": "vault Tools in the vault namespace. store_secret store secret Persist tokens",
+        "tokens": [
+          "vault",
+          "tool",
+          "vault",
+          "namespac",
+          "store_secret",
+          "store",
+          "secret",
+          "persist",
+          "token"
+        ]
+      },
+      {
+        "hashes": [
+          2618482886,
+          3944099886,
+          1755571080,
+          1768716065,
+          1755571080
+        ],
+        "normalized": "functions list_items list items List",
+        "text": "functions list_items list items List",
+        "tokens": [
+          "function",
+          "list_item",
+          "list",
+          "item",
+          "list"
+        ]
+      },
+      {
+        "hashes": [
+          1141539722,
+          4198175349,
+          1141539722,
+          4197566135,
+          4269322074,
+          1763109426,
+          2258762854,
+          2772522991
+        ],
+        "normalized": "grammar Tools in the grammar namespace. parse_input Parse expressions lark",
+        "text": "grammar Tools in the grammar namespace. parse_input Parse expressions lark",
+        "tokens": [
+          "grammar",
+          "tool",
+          "grammar",
+          "namespac",
+          "parse_input",
+          "pars",
+          "express",
+          "lark"
+        ]
+      },
+      {
+        "hashes": [
+          3015712902,
+          2554870855,
+          68429152
+        ],
+        "normalized": "custom_input Text input",
+        "text": "custom_input Text input",
+        "tokens": [
+          "custom_input",
+          "text",
+          "input"
+        ]
+      },
+      {
+        "hashes": [
+          1601974062,
+          4198175349,
+          1601974062,
+          4197566135,
+          1030405326,
+          1030405326,
+          1739453596
+        ],
+        "normalized": "blank Tools in the blank namespace. lookup lookup Account",
+        "text": "blank Tools in the blank namespace. lookup lookup Account",
+        "tokens": [
+          "blank",
+          "tool",
+          "blank",
+          "namespac",
+          "lookup",
+          "lookup",
+          "account"
+        ]
+      }
+    ],
+    "queries": [
+      {
+        "query": "credential",
+        "scores": [
+          {
+            "id": 0,
+            "score": 1.4307501316070557
+          },
+          {
+            "id": 1,
+            "score": 1.1477562189102173
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "secure account",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 3.2365403175354004
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 1.2649500370025635
+          }
+        ]
+      },
+      {
+        "query": "password rotation",
+        "scores": [
+          {
+            "id": 0,
+            "score": 2.1884818077087402
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "lark",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 1.732055902481079
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "excluded_enum excluded_defs excluded_definition excluded_grammar",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "read credentials",
+        "scores": [
+          {
+            "id": 0,
+            "score": 2.524991035461426
+          },
+          {
+            "id": 1,
+            "score": 1.1477562189102173
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "functions",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 2.027505874633789
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          }
+        ]
+      }
+    ]
+  }
+}
