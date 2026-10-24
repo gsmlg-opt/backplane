@@ -787,6 +787,30 @@ jobs:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
         run: bash scripts/set-version.sh "$RELEASE_VERSION" all
 
+      - name: Select package working directory
+        shell: bash
+        env:
+          GATED_SHA: ${{ needs.publish.outputs.gated_sha }}
+          PACKAGE_NAME: ${{ matrix.package.name }}
+          PACKAGE_PATH: ${{ matrix.package.path }}
+        run: |
+          package_directory="$GITHUB_WORKSPACE/$PACKAGE_PATH"
+          if [[ "$PACKAGE_NAME" == backplane_agent_runtime ]]; then
+            standalone_root="$(mktemp -d "$RUNNER_TEMP/backplane-hex.XXXXXX")"
+            package_directory="$standalone_root/standalone/backplane_agent_runtime"
+            mkdir -p "$package_directory"
+            source_revision="$(git rev-parse --verify "${GATED_SHA}^{commit}")"
+            test "$source_revision" = "$GATED_SHA"
+            git archive "$source_revision:$PACKAGE_PATH" | tar -x -C "$package_directory"
+            # Preserve the release version set by the preceding version script.
+            cp "$GITHUB_WORKSPACE/$PACKAGE_PATH/mix.exs" "$package_directory/mix.exs"
+            test ! -d "$standalone_root/apps"
+            echo "QUALIFIED_HEX_SOURCE_REVISION=$source_revision"
+            echo "QUALIFIED_HEX_PACKAGE=$PACKAGE_NAME"
+            echo "QUALIFIED_HEX_STANDALONE=true"
+          fi
+          echo "PACKAGE_DIRECTORY=$package_directory" >> "$GITHUB_ENV"
+
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
         with:
@@ -794,6 +818,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
 
       - name: Restore Mix cache
+        if: matrix.package.name != 'backplane_agent_runtime'
         uses: actions/cache@v6
         with:
           path: |
@@ -804,10 +829,11 @@ jobs:
             hex-${{ matrix.package.name }}-
 
       - name: Install dependencies
+        if: matrix.package.name != 'backplane_agent_runtime'
         run: mix deps.get
 
       - name: Validate package version
-        working-directory: ${{ matrix.package.path }}
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
@@ -833,15 +859,15 @@ jobs:
           fi
 
       - name: Install package publishing dependencies
-        working-directory: ${{ matrix.package.path }}
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: mix deps.get
 
       - name: Verify package documentation
-        working-directory: ${{ matrix.package.path }}
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: mix docs
 
       - name: Publish package
-        working-directory: ${{ matrix.package.path }}
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: mix hex.publish --yes
 
   docker-image:

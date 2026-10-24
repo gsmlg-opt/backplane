@@ -214,6 +214,15 @@ frozen npm 安装和公开端、管理端的 Tailwind/JavaScript 构建均通过
 下载、warnings-as-errors 编译及 Markdown native 调用成功。版本、目标和完整性校验不变，
 不新增 downloader 或源码回退。该配置候选仍须新源码 CI 和完整正式发布验证。
 
+源码9504a2bf 的新源码 CI、20项应用矩阵及双平台 Audio 均通过。正式发布40070601038
+通过 qualification、六个平台构建、打包后迁移幂等及 HTTP 资源检查，发布25个 GitHub 资产。
+运行随后因 runtime 在 umbrella 内打包时排除两个内部协议依赖而失败，Docker 未执行。
+同一源码导出到独立目录后 Hex build 和文档生成通过，101个包内文件逐字节一致，两个协议
+依赖在 Hex metadata 中正确声明。其余四个 Hex 包及版本化文档已存在；MCP 的 job 虽被取消，
+包和文档实际上已发布。因此仅修复发布编排，通过既有 qualified recovery 补发 runtime，
+再构建相同9504a2bf 的镜像。tag 和产品源码保持不变；新 main 的编排修复不替换已验证源码。
+验证记录必须保留原流程失败，并分别确认限定恢复流程、镜像及发布页，不能把恢复写成原流程成功。
+
 ## 可复查源码
 
 - `apps/backplane_memory_contract/lib/backplane/memory_tool_contract.ex`
