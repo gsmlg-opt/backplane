@@ -17,7 +17,7 @@ defmodule Backplane.AgentRuntime.Codex.ToolSearch do
              |> Path.join("english-stopwords.txt")
              |> File.read!()
              |> String.split("\n", trim: true)
-             |> MapSet.new()
+             |> Map.new(&{&1, true})
 
   def query(value) when is_binary(value) do
     if String.valid?(value) and String.trim(value) != "",
@@ -125,7 +125,7 @@ defmodule Backplane.AgentRuntime.Codex.ToolSearch do
     |> transliterate()
     |> String.downcase()
     |> ascii_words()
-    |> Enum.reject(&MapSet.member?(@stopwords, &1))
+    |> Enum.reject(&Map.has_key?(@stopwords, &1))
     |> Enum.map(&ToolSearchStemmer.stem/1)
   end
 
