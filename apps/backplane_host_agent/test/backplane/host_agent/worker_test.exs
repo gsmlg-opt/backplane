@@ -423,7 +423,9 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert MemoryProxy.channel() == channel
     Agent.stop(channel)
     # After a successful new authentication, a later outage may use the populated cache again.
-    assert {:ok, %{"mode" => "offline"}} = MemoryFacade.call("recall", %{}, context)
+    assert {:ok, %{"mode" => "offline"}} =
+             MemoryFacade.call("recall", %{"query" => "memory"}, context)
+
     assert_received :protected_overlay_read
     assert_received :protected_mirror_read
   end

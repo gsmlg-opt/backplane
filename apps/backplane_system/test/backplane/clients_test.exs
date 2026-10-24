@@ -521,7 +521,8 @@ defmodule Backplane.ClientsTest do
     test "every canonical memory tool has exactly one permission class" do
       permissions = Backplane.MemoryPermissions.tool_permissions()
 
-      assert map_size(permissions) == 55
+      assert map_size(permissions) == 56
+      assert permissions["memory::get"] == "memory.read"
       assert permissions["memory::apply"] == "memory.write"
       assert permissions["memory::lesson_save"] == "memory.write"
       assert permissions["memory::lesson_recall"] == "memory.read"

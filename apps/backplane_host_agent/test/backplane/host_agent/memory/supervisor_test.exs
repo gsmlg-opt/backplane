@@ -81,7 +81,7 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
              Backplane.HostAgent.Memory.Spool.Turso.stats(:edge_failure_capture_spool)
 
     assert {:ok, %{"results" => [%{"id" => "canonical"}]}} =
-             Backplane.HostAgent.MemoryFacade.call("recall", %{}, %{
+             Backplane.HostAgent.MemoryFacade.call("recall", %{"query" => "memory"}, %{
                agent_id: "agent",
                store: :failure_command_store,
                remote_adapter: CanonicalRemote,

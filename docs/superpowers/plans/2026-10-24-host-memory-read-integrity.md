@@ -91,7 +91,7 @@ refute_received {:hub_call, _}
 - [ ] Verify upstream 10.0.4 complete package publication and published installation matrix before adopting it. If unavailable, finish unblocked source work and report the release dependency without a local workaround.
 - [ ] Update both Bundler minimum constraints and eight existing DuskMoon lock entries only after the gate; preserve unrelated lock edits.
 - [x] Review staged paths with git diff --check and GitNexus.detect_changes; commit coherent scoped changes with Conventional Commits and fixes #83/#84.
-- [ ] Run release and CI workflow contract checks on exact committed source.
+- [x] Run release and CI workflow contract checks on exact committed source.
 - [ ] After the dependency gate, use scripts/set-version.sh and canonical release.yml for 1.10.34 without changing reserved tag1.10.33.
 - [ ] Wait for qualification, all builds, installed smoke and all publication jobs. Verify tag/main source convergence, archives/checksums, five Hex/HexDocs packages and GHCR provenance. No production deployment.
 - [ ] Update approved design/plan completion state and evaluate one coherent Agent Note implementation review after validation; do not create per-fix status notes.
@@ -102,4 +102,7 @@ refute_received {:hub_call, _}
 - Formatting, warnings-as-errors compilation, scoped strict Credo and Dialyzer for 14 changed modules passed with existing repository ignore rules.
 - Independent spec review passed after repairing default-partition authorization drift and deletion suppression at full upsert caps. Code-quality re-review passed after fencing selected channel/generation before get pushes and making uncapped forget accumulation linear.
 - Staged-path and diff checks passed. GitNexus reported no indexed changed symbols for the Elixir changes; source callers and scoped tests provide the impact evidence. All49 pre-existing dirty/untracked files retain their baseline hashes.
+- Clean detached-source workflow checks at7b90b6ed passed: CI contract8 tests and release configuration26 tests. An implementation review was captured and read back in Agent Note, project=backplane, id5a647f70-2253-46f3-97fd-626ec79e7ee9.
+- The full CI application matrix found directly affected fixtures outside the first focused list: Connector/Worker/Memory.Supervisor recall calls omitted the now-required query, and the Clients permission inventory omitted get. Updated only those fixture arguments and inventory assertions; all80 tests in the four affected files passed. Existing WorkerTest edits are excluded from staging.
+- The same matrix also reported two unchanged Audio.Media.Lifecycle readiness failures with sandbox=unavailable. The baseline audio job passed, so the cause remains unproven; no audio source or tests were modified.
 - Upstream readiness checked at 2026-10-24 04:53 UTC: formal10.0.4 release run40063695995 is building native packages; latest published release remains10.0.3, all eight required10.0.4 Hex releases are absent and published installation qualification is incomplete. No dependency workaround or Backplane release dispatch.

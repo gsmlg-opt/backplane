@@ -148,7 +148,7 @@ defmodule Backplane.HostAgent.ConnectorTest do
       started = System.monotonic_time(:millisecond)
 
       assert {:error, {:reconnect_failed, :unauthorized}} =
-               MemoryFacade.call("recall", %{}, context())
+               MemoryFacade.call("recall", %{"query" => "memory"}, context())
 
       assert System.monotonic_time(:millisecond) - started < 2_000
       assert_receive {:socket_started, socket}
@@ -166,7 +166,10 @@ defmodule Backplane.HostAgent.ConnectorTest do
     {:ok, {_address, port}} = :inet.sockname(listener)
     :ok = :gen_tcp.close(listener)
     MemoryProxy.set_config(config(port))
-    assert {:ok, %{"mode" => "offline"}} = MemoryFacade.call("recall", %{}, context())
+
+    assert {:ok, %{"mode" => "offline"}} =
+             MemoryFacade.call("recall", %{"query" => "memory"}, context())
+
     assert_receive {:socket_started, socket}
     refute Process.alive?(socket)
     assert_received :overlay_read
@@ -178,7 +181,10 @@ defmodule Backplane.HostAgent.ConnectorTest do
     server = start_supervised!({Gaoxy.HTTP, plug: {SlowUpgrade, []}, port: 0})
     %{local: {:ok, {_ip, port}}} = Gaoxy.info(server, :http)
     MemoryProxy.set_config(config(port))
-    assert {:ok, %{"mode" => "offline"}} = MemoryFacade.call("recall", %{}, context())
+
+    assert {:ok, %{"mode" => "offline"}} =
+             MemoryFacade.call("recall", %{"query" => "memory"}, context())
+
     assert_receive {:socket_started, socket}
     refute Process.alive?(socket)
     assert_received :overlay_read
