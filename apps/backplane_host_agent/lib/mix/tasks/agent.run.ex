@@ -7,8 +7,11 @@ defmodule Mix.Tasks.Agent.Run do
   ## Configuration
 
   The agent reads YAML from `$BACKPLANE_HOST_AGENT_CONFIG` if set, otherwise from
-  `$XDG_CONFIG_HOME/backplane/host_agent.yaml` (defaults to
-  `~/.config/backplane/host_agent.yaml`).
+  the `:backplane_host_agent` application's `:config_path`. Development config
+  sets this to `_build/backplane/host_agent.yaml` at the repository root.
+
+  Without either override, the agent uses `$XDG_CONFIG_HOME/backplane/host_agent.yaml`
+  (defaults to `~/.config/backplane/host_agent.yaml`).
 
   If the file does not exist, a sample is written there and the task exits.
   Edit it to set `agent.hub_url`, `agent.token`, and any targets, then re-run.

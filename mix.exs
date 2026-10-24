@@ -38,12 +38,20 @@ defmodule Backplane.Umbrella.MixProject do
       "ecto.reset": ["do --app backplane_system cmd mix ecto.reset"],
       "ecto.migrate": ["do --app backplane_system cmd mix ecto.migrate"],
       "backplane.run": ["phx.server"],
-      "agent.run": [
-        "do --app backplane_host_agent cmd mix agent.run"
-      ],
+      "agent.run": &agent_run/1,
       "assets.deploy": &assets_deploy/1,
       test: ["test"]
     ]
+  end
+
+  defp agent_run(args) do
+    Mix.Dep.load_and_cache()
+
+    Mix.Project.in_project(
+      :backplane_host_agent,
+      Path.join(__DIR__, "apps/backplane_host_agent"),
+      fn _project -> Mix.Task.run("agent.run", args) end
+    )
   end
 
   defp assets_deploy([]) do

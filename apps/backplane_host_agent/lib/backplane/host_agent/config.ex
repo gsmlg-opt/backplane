@@ -3,8 +3,9 @@ defmodule Backplane.HostAgent.Config do
   Loads host agent configuration from YAML.
 
   Default location: `~/.config/backplane/host_agent.yaml`.
-  Override with the `BACKPLANE_HOST_AGENT_CONFIG` env var or by passing
-  an explicit path to `load/1`.
+  Override with the `BACKPLANE_HOST_AGENT_CONFIG` env var, the
+  `:backplane_host_agent` application's `:config_path`, or an explicit path
+  passed to `load/1`.
   """
 
   @default_http_port 4222
@@ -139,8 +140,8 @@ defmodule Backplane.HostAgent.Config do
   end
 
   @doc """
-  Loads from the resolved path (`BACKPLANE_HOST_AGENT_CONFIG` env var
-  falls back to `default_path/0`).
+  Loads from the resolved path: `BACKPLANE_HOST_AGENT_CONFIG`, then the
+  `:backplane_host_agent` application's `:config_path`, then `default_path/0`.
 
   Returns:
     * `{:ok, %Config{}}` — config loaded
@@ -156,13 +157,15 @@ defmodule Backplane.HostAgent.Config do
     end
   end
 
-  @doc "Resolves the config path: env var if set, otherwise `default_path/0`."
+  @doc "Resolves an absolute config path from the env var, application config, or global default."
   def resolved_path do
-    case System.get_env("BACKPLANE_HOST_AGENT_CONFIG") do
-      nil -> default_path()
-      "" -> default_path()
-      path -> Path.expand(path)
-    end
+    [
+      System.get_env("BACKPLANE_HOST_AGENT_CONFIG"),
+      Application.get_env(:backplane_host_agent, :config_path),
+      default_path()
+    ]
+    |> Enum.find(&(&1 not in [nil, ""]))
+    |> Path.expand()
   end
 
   @doc """

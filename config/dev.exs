@@ -87,6 +87,7 @@ config :phoenix, :stacktrace_depth, 20
 config :phoenix, :plug_init_mode, :runtime
 
 config :backplane_host_agent,
+  config_path: Path.expand("../_build/backplane/host_agent.yaml", __DIR__),
   start_on_application: false,
   telemetry_logger: true
 

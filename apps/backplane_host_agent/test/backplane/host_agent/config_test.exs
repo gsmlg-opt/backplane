@@ -1,7 +1,25 @@
 defmodule Backplane.HostAgent.ConfigTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Config
+
+  setup do
+    environment = System.get_env() |> Map.take(["BACKPLANE_HOST_AGENT_CONFIG", "XDG_CONFIG_HOME"])
+    config_path = Application.fetch_env(:backplane_host_agent, :config_path)
+    System.delete_env("BACKPLANE_HOST_AGENT_CONFIG")
+    Application.delete_env(:backplane_host_agent, :config_path)
+
+    on_exit(fn ->
+      System.delete_env("BACKPLANE_HOST_AGENT_CONFIG")
+      System.delete_env("XDG_CONFIG_HOME")
+      System.put_env(environment)
+
+      case config_path do
+        {:ok, path} -> Application.put_env(:backplane_host_agent, :config_path, path)
+        :error -> Application.delete_env(:backplane_host_agent, :config_path)
+      end
+    end)
+  end
 
   test "inspection excludes the bearer token even in exception arguments" do
     token = "config-inspection-fixture-token"
@@ -515,24 +533,55 @@ defmodule Backplane.HostAgent.ConfigTest do
   test "default_path uses XDG_CONFIG_HOME when set" do
     System.put_env("XDG_CONFIG_HOME", "/tmp/xdg-test")
 
-    on_exit(fn -> System.delete_env("XDG_CONFIG_HOME") end)
-
     assert Config.default_path() == "/tmp/xdg-test/backplane/host_agent.yaml"
   end
 
   test "resolved_path honors BACKPLANE_HOST_AGENT_CONFIG override" do
+    Application.put_env(:backplane_host_agent, :config_path, "/tmp/development.yaml")
     System.put_env("BACKPLANE_HOST_AGENT_CONFIG", "/tmp/custom.yaml")
 
-    on_exit(fn -> System.delete_env("BACKPLANE_HOST_AGENT_CONFIG") end)
-
     assert Config.resolved_path() == "/tmp/custom.yaml"
+  end
+
+  test "resolved_path uses the configured application path when the environment override is absent or empty" do
+    Application.put_env(:backplane_host_agent, :config_path, "/tmp/development.yaml")
+    assert Config.resolved_path() == "/tmp/development.yaml"
+
+    System.put_env("BACKPLANE_HOST_AGENT_CONFIG", "")
+    assert Config.resolved_path() == "/tmp/development.yaml"
+  end
+
+  test "resolved_path expands relative application paths" do
+    Application.put_env(:backplane_host_agent, :config_path, "_build/backplane/host_agent.yaml")
+
+    assert Config.resolved_path() == Path.expand("_build/backplane/host_agent.yaml")
+  end
+
+  test "resolved_path falls back to the global default without a configured application path" do
+    System.put_env("XDG_CONFIG_HOME", "/tmp/xdg-fallback")
+    assert Config.resolved_path() == "/tmp/xdg-fallback/backplane/host_agent.yaml"
+
+    for config_path <- [nil, ""] do
+      Application.put_env(:backplane_host_agent, :config_path, config_path)
+      assert Config.resolved_path() == "/tmp/xdg-fallback/backplane/host_agent.yaml"
+    end
+  end
+
+  @tag :tmp_dir
+  test "load_default reads the configured application file", %{tmp_dir: tmp_dir} do
+    path = Path.join(tmp_dir, "development.yaml")
+    System.put_env("XDG_CONFIG_HOME", tmp_dir)
+    Application.put_env(:backplane_host_agent, :config_path, path)
+    File.write!(path, Config.sample_yaml(host_id: "development-host"))
+
+    assert {:ok, %Config{host_id: "development-host", hub_url: "http://localhost:4220"}} =
+             Config.load_default()
   end
 
   @tag :tmp_dir
   test "load_default returns :missing when file does not exist", %{tmp_dir: tmp_dir} do
     path = Path.join(tmp_dir, "absent.yaml")
     System.put_env("BACKPLANE_HOST_AGENT_CONFIG", path)
-    on_exit(fn -> System.delete_env("BACKPLANE_HOST_AGENT_CONFIG") end)
 
     assert {:error, {:missing, ^path}} = Config.load_default()
   end

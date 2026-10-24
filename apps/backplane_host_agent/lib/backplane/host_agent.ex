@@ -5,10 +5,12 @@ defmodule Backplane.HostAgent do
 
   alias Backplane.HostAgent.Worker
 
-  @doc "Returns the running host-agent application's version."
+  @version_suffix if Mix.env() == :dev, do: "-dev", else: ""
+
+  @doc "Returns the host-agent version with a development suffix for development builds."
   @spec version() :: String.t()
   def version do
-    Application.spec(:backplane_host_agent, :vsn) |> to_string()
+    to_string(Application.spec(:backplane_host_agent, :vsn)) <> @version_suffix
   end
 
   def sync_now do

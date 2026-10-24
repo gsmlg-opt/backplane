@@ -68,7 +68,9 @@ defmodule Backplane.HostAgent.ReporterTest do
     }
 
     payload = Reporter.heartbeat(config)
-    expected_version = Application.spec(:backplane_host_agent, :vsn) |> to_string()
+    application_version = Application.spec(:backplane_host_agent, :vsn) |> to_string()
+    suffix = if Mix.env() == :dev, do: "-dev", else: ""
+    expected_version = application_version <> suffix
 
     assert %{
              "agent_version" => ^expected_version,
