@@ -1,5 +1,5 @@
 name: backplane-memory
-version: 1.10.35
+version: 1.10.36
 description: "Persistent cross-session memory for OpenClaw via the Backplane host agent."
 author: "Backplane"
 homepage: "https://github.com/gsmlg-opt/backplane"
