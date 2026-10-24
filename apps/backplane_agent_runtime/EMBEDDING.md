@@ -118,6 +118,17 @@ ownership. MCP form rendering and answer validation remain in the Sigma
 tool/interaction adapter. Nested interaction is supported through the same
 trusted context; a nested invocation has its own token and settlement identity.
 
+The native async tools use a separate notification path. Their
+`:async_user_input_requested` and `:async_user_message` events include trusted
+`invocation_id` and `tool_call_id` fields for the executing direct or nested
+call, preserving the usual run/step/turn metadata. Only live tool producers can
+emit these event types; stale, provider and preparation callbacks cannot assign
+native call identity. Event projection preserves the IDs, which match canonical
+invocation checkpoints. `accepted: true` does not wait for subscriber processing
+or promise durable receipt. Persist async cards in the host and submit later
+replies through new-user-message admission; these events do not create a
+`Conversation.resolve/3` interaction or a durable notification replay service.
+
 Root, effect and nested execution timers carry a fresh generation each time
 they are armed. Suspension invalidates the previous generation; resumption
 uses only the remaining budget. Store admission acknowledgement alone cannot
