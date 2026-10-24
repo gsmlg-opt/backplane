@@ -2,7 +2,7 @@ defmodule Backplane.Memory.EdgeSyncTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.EdgeSync
-  alias Backplane.Memory.EdgeSync.{Cursor, Delivery}
+  alias Backplane.Memory.EdgeSync.{Change, Cursor, Delivery}
   alias Backplane.MemorySpaces
 
   setup do
@@ -245,14 +245,61 @@ defmodule Backplane.Memory.EdgeSyncTest do
     {:ok, initial} = EdgeSync.next(c.host, request(c))
     {:ok, _} = EdgeSync.ack(c.host, ack(c, initial))
     for n <- 1..3, do: insert_memory(c, "byte bound #{n}")
-    req = Map.put(request(c), "max_frame_bytes", 750)
-    {:ok, batch} = EdgeSync.next(c.host, req)
-    assert length(batch["changes"]) == 1
-    assert byte_size(Jason.encode!(batch)) <= 750
+    space = c.partition["memory_space_id"]
+
+    [first, second, third] =
+      repo().all(
+        from(change in Change,
+          where:
+            change.memory_space_id == ^space and change.scope == "edge" and
+              change.namespace == "private",
+          order_by: change.revision,
+          select: %{
+            "revision" => change.revision,
+            "op" => change.op,
+            "memory_id" => change.memory_id,
+            "payload" => change.payload
+          }
+        )
+      )
+
+    assert Enum.map([first, second, third], & &1["revision"]) == [1, 2, 3]
+
+    # Size the complete wire contract, including current-context metadata,
+    # rather than assuming a fixed payload size. UUIDs have equal encoded width.
+    one_change = %{
+      "protocol" => "host_memory.v2",
+      "status" => "batch",
+      "batch_id" => Ecto.UUID.generate(),
+      "partition" => c.partition,
+      "kind" => "delta",
+      "from_revision" => 1,
+      "to_revision" => 1,
+      "changes" => [first]
+    }
+
+    two_changes = Map.merge(one_change, %{"changes" => [first, second], "to_revision" => 2})
+    budget = byte_size(Jason.encode!(one_change))
+    two_change_bytes = byte_size(Jason.encode!(two_changes))
+    assert two_change_bytes > budget
+    IO.puts("edge delta frame bytes: one=#{budget}, two=#{two_change_bytes}")
+    req = Map.merge(request(c), %{"max_changes" => 3, "max_frame_bytes" => budget})
 
     assert {:error, %{code: :payload_too_large}} =
-             EdgeSync.next(c.host, Map.put(req, "max_frame_bytes", 10))
+             EdgeSync.next(c.host, Map.put(req, "max_frame_bytes", budget - 1))
 
+    assert {:ok, batch} = EdgeSync.next(c.host, req)
+    assert batch == Map.put(one_change, "batch_id", batch["batch_id"])
+    assert batch["changes"] == [first]
+    assert byte_size(Jason.encode!(batch)) == budget
+    delivery = repo().get!(Delivery, batch["batch_id"])
+    assert delivery.payload == batch
+    assert delivery.encoded_bytes == budget
+
+    assert {:error, %{code: :payload_too_large}} =
+             EdgeSync.next(c.host, Map.put(req, "max_frame_bytes", budget - 1))
+
+    assert repo().get!(Delivery, batch["batch_id"]) == delivery
     assert {:ok, ^batch} = EdgeSync.next(c.host, req)
   end
 

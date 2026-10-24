@@ -160,6 +160,9 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover
           -s integrations/memory/tests -p 'test_hermes*.py' -v
 
+      - name: Verify Hermes live semantic oracle
+        run: MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs
+
       - name: Prepare qualification database
         run: |
           mix ecto.create

@@ -898,6 +898,25 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
+  test "release qualification gates the Hermes semantic oracle before database setup" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    steps = workflow["jobs"]["qualify-memory-v2"]["steps"]
+    name = "Verify Hermes live semantic oracle"
+
+    assert [step] = Enum.filter(steps, &(&1["name"] == name))
+
+    assert step == %{
+             "name" => name,
+             "run" => "MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs"
+           }
+
+    assert Enum.find_index(steps, &(&1["name"] == "Install dependencies")) <
+             Enum.find_index(steps, &(&1["name"] == name))
+
+    assert Enum.find_index(steps, &(&1["name"] == name)) <
+             Enum.find_index(steps, &(&1["name"] == "Prepare qualification database"))
+  end
+
   test "release gates publication on Memory V2 qualification and installed migration smoke" do
     workflow = File.read!(".github/workflows/release.yml")
 

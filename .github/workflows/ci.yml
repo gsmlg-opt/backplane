@@ -125,6 +125,9 @@ jobs:
       - name: Verify CI workflow contract
         run: mix run --no-start test/ci_workflow_test.exs
 
+      - name: Verify Hermes live semantic oracle
+        run: MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs
+
   credo:
     name: Credo
     runs-on: ubuntu-24.04

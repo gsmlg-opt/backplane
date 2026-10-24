@@ -190,6 +190,22 @@ class Scenario:
         require(len(self.present(self.old)) == 1, "replacement_withdrew_independent_source")
         return {"replacement_id": self.present(self.current)[0]["id"]}
 
+    def replacement_context(self):
+        return self.transition_context([self.old, self.current], [])
+
+    def withdrawn_context(self):
+        return self.transition_context([self.old], [self.current])
+
+    def transition_context(self, expected, excluded):
+        query = "deployment status color " + self.marker
+        text, _generation = self.wait_current_context(query, "native_transition_context_fetch_failed")
+        self.verify_rendered_context(text, query)
+        contents = {line.split("] ", 1)[1] for line in text.splitlines()}
+        require(contents == set(expected), "native_transition_context_membership_wrong")
+        require(all(content not in text for content in excluded), "withdrawn_native_content_in_context")
+        return {"current_entries": len(contents), "whole_entries": True,
+                "independent_support_preserved": self.old in contents}
+
     def native_withdraw(self):
         self.native("a", "", "remove", self.current)
         self.settle()
@@ -540,6 +556,15 @@ class Scenario:
             raise CheckFailure("corrected_context_missing", self.context_diagnostics(query, generation))
         require("cobalt" not in text.lower(), "old_or_assistant_mistake_in_context")
         require("cloudy" not in text.lower(), "unrelated_chat_in_context")
+        self.verify_rendered_context(text, query)
+        unrelated = "xylophonic quasar zeppelins"
+        unrelated_text, _generation = self.wait_current_context(unrelated, "unrelated_context_fetch_unverified")
+        require(unrelated_text == "", "unrelated_query_received_context")
+        return {"rendered_bytes": len(text.encode()), "budget": self.budget,
+                "old_value_suppressed": True, "unrelated_empty": True,
+                "trust_labels": True, "whole_entries": True}
+
+    def verify_rendered_context(self, text, query):
         require(len(text.encode()) <= self.budget, "final_context_budget_exceeded")
         status, recalled = self.request("/memory/hermes/call/recall", {
             "query": query, "limit": 5, "token_budget": self.budget,
@@ -553,12 +578,6 @@ class Scenario:
                     "context_trust_label_missing")
             require("] " in line and line.split("] ", 1)[1] in whole_contents,
                     "context_entry_was_sliced_or_unverifiable")
-        unrelated = "xylophonic quasar zeppelins"
-        unrelated_text, _generation = self.wait_current_context(unrelated, "unrelated_context_fetch_unverified")
-        require(unrelated_text == "", "unrelated_query_received_context")
-        return {"rendered_bytes": len(text.encode()), "budget": self.budget,
-                "old_value_suppressed": True, "unrelated_empty": True,
-                "trust_labels": True, "whole_entries": True}
 
     def outage_pending(self):
         self.native("a", self.outage, "add")
@@ -600,7 +619,36 @@ class Scenario:
         query = "deployment status color " + self.marker
         text, _generation = self.wait_current_context(query, "forget_context_fetch_unverified")
         require(self.state["current_id"] not in text, "forgotten_record_in_context")
+        require(self.old not in text and "cloudy" not in text.lower(), "obsolete_or_unrelated_context_after_forget")
+        self.verify_rendered_context(text, query)
+        unrelated, _generation = self.wait_current_context("xylophonic quasar zeppelins", "forget_unrelated_fetch_unverified")
+        require(unrelated == "", "unrelated_query_received_context_after_forget")
         return {"canonical_id": self.state["current_id"], "reconciliation_suppressed": True}
+
+    def final_state(self):
+        delivery = self.settle()["delivery"]
+        heads = []
+        for label, provider in self.providers.items():
+            status = delivery[label]
+            require(all(status[key] == 0 for key in (
+                "local_pending", "host_accepted", "rejected", "capture_deferred", "pending_reconciliation")),
+                "final_provider_delivery_unsettled")
+            with provider._journal.lock:
+                rows = list(provider._journal.db.execute("SELECT * FROM source_entries ORDER BY target,entry_id"))
+                require(provider._journal.db.execute(
+                    "SELECT count(*) FROM delivery WHERE state!='canonical_committed'").fetchone()[0] == 0,
+                    "final_delivery_journal_not_canonical")
+            for row in rows:
+                heads.append({"profile": label, "source": provider._source(row["target"]),
+                              "entry_id": row["entry_id"], "revision": row["revision"],
+                              "active": bool(row["active"]),
+                              "content_sha256": hashlib.sha256(row["content"].encode()).hexdigest()})
+        outage = self.present(self.outage)
+        require(len(outage) == 1, "final_outage_source_missing")
+        return {"original_id": self.state["original_id"], "forgotten_id": self.state["current_id"],
+                "outage_id": outage[0]["id"], "heads": heads, "delivery": delivery,
+                "content_sha256": {key: hashlib.sha256(value.encode()).hexdigest()
+                                   for key, value in (("old", self.old), ("current", self.current), ("outage", self.outage))}}
 
     def shutdown(self):
         for provider in self.providers.values():
@@ -621,7 +669,7 @@ def main():
     operations = {name: getattr(scenario, name) for name in (
         "boot", "settle", "native_add", "native_replace", "native_withdraw", "native_correct",
         "immutable_replay", "capture", "required_checkpoint_failure", "diagnostic_delivery", "context", "outage_pending", "snapshot", "verify_restart",
-        "forget", "shutdown")}
+        "forget", "final_state", "replacement_context", "withdrawn_context", "shutdown")}
     try:
         for line in sys.stdin:
             operation = "invalid"

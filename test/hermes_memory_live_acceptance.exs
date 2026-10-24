@@ -15,8 +15,11 @@
 defmodule Backplane.HermesLiveAcceptance do
   import Ecto.Query
 
+  Code.require_file("support/hermes_semantic_oracle.exs", __DIR__)
+
   alias Backplane.{Repo, Settings}
-  alias Backplane.HostAgent.{Channel, Config, MemoryRouter, Worker}
+  alias Backplane.HostAgent.{Channel, Config, MemoryProxy, MemoryRouter, Worker}
+  alias Backplane.HostAgent.Memory.Access
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
   alias Backplane.Memory.Projections.{ProjectedSession, RepairFrontier, State}
@@ -27,8 +30,9 @@ defmodule Backplane.HermesLiveAcceptance do
   @timeout 90_000
   @resource_key {__MODULE__, :resources}
   @result_key {__MODULE__, :results}
+  @semantic_diagnostics_key {__MODULE__, :synthetic_semantic_diagnostics}
 
-  defmodule Failure do
+  defmodule Error do
     defexception [:code, diagnostics: %{}, message: "Hermes acceptance gate failed"]
   end
 
@@ -36,6 +40,7 @@ defmodule Backplane.HermesLiveAcceptance do
     Process.flag(:trap_exit, true)
     Process.put(@resource_key, %{pids: [], apps: [], python: nil, suspended: nil})
     Process.put(@result_key, [])
+    Process.put(@semantic_diagnostics_key, [])
     Logger.configure(level: :emergency)
 
     try do
@@ -69,8 +74,10 @@ defmodule Backplane.HermesLiveAcceptance do
           assert_sources!(fixture.host.id, boot["identities"], original_id, 2)
           python!("native_replace")
           assert_sources!(fixture.host.id, boot["identities"], original_id, 1)
+          gate("native_replacement_context", fn -> python!("replacement_context") end)
           python!("native_withdraw")
           assert_sources!(fixture.host.id, boot["identities"], original_id, 1)
+          gate("native_withdrawal_context", fn -> python!("withdrawn_context") end)
           corrected = python!("native_correct")
           assert_sources!(fixture.host.id, boot["identities"], corrected["canonical_id"], 1)
           replay = python!("immutable_replay")
@@ -101,19 +108,20 @@ defmodule Backplane.HermesLiveAcceptance do
       else
         gate("socket_outage_and_provider_process_restart", fn ->
           worker = resource(:worker)
-          socket = GenServer.call(worker, :status).socket
+          previous = live_connection(nil)
+          assert!(not is_nil(previous), "outage_initial_connection_not_live")
           :ok = :sys.suspend(worker)
           put_resource(:suspended, worker)
 
           try do
-            :ok = Channel.retire_socket(socket)
+            :ok = Channel.retire_socket(previous.socket)
             pending = python!("outage_pending")
             stop_python!()
             start_python!(fixture)
             python!("boot")
             :ok = :sys.resume(worker)
             put_resource(:suspended, nil)
-            ready!(fixture.base_url)
+            ready!(fixture.base_url, previous)
             restart = python!("verify_restart")
             Map.merge(pending, Map.take(restart, ["immutable_deliveries_preserved"]))
           after
@@ -123,10 +131,12 @@ defmodule Backplane.HermesLiveAcceptance do
 
         gate("full_owned_host_restart", fn ->
           before = python!("snapshot")
+          previous = live_connection(nil)
+          assert!(not is_nil(previous), "restart_initial_connection_not_live")
           stop_python!()
           stop_worker!()
           start_worker!(fixture.config)
-          ready!(fixture.base_url)
+          ready!(fixture.base_url, previous)
           start_python!(fixture)
           python!("boot")
           python!("verify_restart")
@@ -179,12 +189,17 @@ defmodule Backplane.HermesLiveAcceptance do
 
             forgotten
           end)
+
+          gate("complete_final_fixture_state", fn ->
+            verify_final_state!(fixture, boot["identities"], python!("final_state"))
+          end)
         else
           blocked("intentional_global_forget", "native_sources")
+          blocked("complete_final_fixture_state", "native_sources")
         end
       end
     rescue
-      error in Failure ->
+      error in Error ->
         record("startup", "failed", %{code: error.code, diagnostics: error.diagnostics})
 
       error ->
@@ -198,6 +213,7 @@ defmodule Backplane.HermesLiveAcceptance do
     results = Process.get(@result_key) |> Enum.reverse()
     passed = Enum.all?(results, &(&1.status == "passed"))
     boundary_only = System.get_env("HERMES_LIVE_BOUNDARY_ONLY") == "1"
+    semantic_diagnostic_only = System.get_env("HERMES_LIVE_SYNTHETIC_SEMANTIC_DIAGNOSTICS") == "1"
 
     IO.puts(
       Jason.encode!(%{
@@ -205,16 +221,19 @@ defmodule Backplane.HermesLiveAcceptance do
         status:
           cond do
             not passed -> "failed"
-            boundary_only -> "diagnostic_complete"
+            boundary_only or semantic_diagnostic_only -> "diagnostic_complete"
             true -> "passed"
           end,
         evidence:
-          if(boundary_only,
-            do: "owned_fixture_actual_http_websocket_boundary_diagnosis",
-            else: "owned_fixture_actual_http_websocket_committed_repo_async_styx"
-          ),
+          cond do
+            semantic_diagnostic_only -> "synthetic_hermes_semantic_diagnostic_only"
+            boundary_only -> "owned_fixture_actual_http_websocket_boundary_diagnosis"
+            true -> "owned_fixture_actual_http_websocket_committed_repo_async_styx"
+          end,
         production_installation_verified: false,
         boundary_diagnosis_only: boundary_only,
+        synthetic_semantic_diagnostic_only: semantic_diagnostic_only,
+        synthetic_semantic_diagnostics: Enum.reverse(Process.get(@semantic_diagnostics_key)),
         results: results,
         database: resource(:database),
         cleanup: resource(:cleanup)
@@ -576,28 +595,59 @@ defmodule Backplane.HermesLiveAcceptance do
     put_resource(:worker, nil)
   end
 
-  defp ready!(base_url) do
+  defp ready!(base_url, previous \\ nil) do
     wait!(
       fn ->
-        case Req.post(base_url <> "/memory/hermes/call/source_capabilities",
-               json: %{},
-               retry: false,
-               receive_timeout: 2_000
-             ) do
-          {:ok,
-           %{
-             status: 200,
-             body: %{"ok" => true, "result" => %{"ready" => true, "capture_ready" => true}}
-           }} ->
-            true
-
-          _ ->
+        case live_connection(previous) do
+          nil ->
             false
+
+          snapshot ->
+            case Req.post(base_url <> "/memory/hermes/call/source_capabilities",
+                   json: %{},
+                   retry: false,
+                   receive_timeout: 2_000
+                 ) do
+              {:ok,
+               %{
+                 status: 200,
+                 body: %{"ok" => true, "result" => %{"ready" => true, "capture_ready" => true}}
+               }} ->
+                live_connection(previous) == snapshot
+
+              _ ->
+                false
+            end
         end
       end,
       "host_source_capture_negotiation_unready",
       20_000
     )
+  end
+
+  defp live_connection(previous) do
+    state = GenServer.call(resource(:worker), :status)
+
+    case Access.status() do
+      %{generation: generation} when is_integer(generation) ->
+        snapshot = %{channel: state.channel, socket: state.socket, generation: generation}
+
+        fresh =
+          is_nil(previous) or
+            (snapshot.channel != previous.channel and snapshot.socket != previous.socket and
+               snapshot.generation != previous.generation)
+
+        if fresh and is_pid(snapshot.channel) and Process.alive?(snapshot.channel) and
+             is_pid(snapshot.socket) and Process.alive?(snapshot.socket) and
+             Phoenix.SocketClient.connected?(snapshot.socket) and
+             MemoryProxy.channel() == snapshot.channel,
+           do: snapshot
+
+      _ ->
+        nil
+    end
+  catch
+    :exit, _ -> nil
   end
 
   defp start_python!(fixture) do
@@ -946,58 +996,22 @@ defmodule Backplane.HermesLiveAcceptance do
         )
       )
 
+    Enum.each(
+      memories,
+      &capture_synthetic_semantic_diagnostic(&1, summary.host_id, summary.session_id)
+    )
+
     corrections =
       Enum.filter(memories, fn memory ->
         Regex.match?(~r/\bamber\b/i, memory.content) and
-          Regex.match?(~r/\b(deployment|status|colou?r|preference)\b/i, memory.content)
+          Regex.match?(~r/\b(deployment|status|colou?r|preference)\b/i, memory.content) and
+          Backplane.HermesSemanticOracle.corrected_preference?(memory.content)
       end)
 
     assert!(corrections != [], "derived_current_user_correction_missing")
 
     for memory <- memories do
-      policy = Backplane.Memory.CurrentContext.metadata(memory)
-
-      assert!(
-        policy["effective_support"] == true and policy["support_complete"] == true and
-          policy["trust"] in ["candidate_inference", "established_fact"],
-        "derived_current_support_or_trust_untruthful"
-      )
-
-      if Regex.match?(~r/\bcobalt\b/i, memory.content) do
-        # A qualified historical mistake may be retained as an inference, but
-        # must never become a current preference or a user-confirmed fact.
-        qualified =
-          Regex.match?(~r/\bnot\s+(?:the\s+)?cobalt\b/i, memory.content) or
-            Regex.match?(
-              ~r/\bcobalt\s+(?:was|is)\s+(?:an?\s+)?(?:assistant\s+)?(?:mistake|incorrect|wrong|rejected|superseded)\b/i,
-              memory.content
-            ) or
-            Regex.match?(~r/\bassistant\s+(?:incorrectly\s+)?guessed\s+cobalt\b/i, memory.content)
-
-        assert!(qualified, "derived_current_assistant_guess_not_rejected")
-
-        assert!(
-          policy["trust"] == "candidate_inference",
-          "assistant_guess_promoted_to_established_fact"
-        )
-      end
-
-      if policy["trust"] == "established_fact" do
-        confirmed =
-          Repo.exists?(
-            from(e in Evidence,
-              join: event in Event,
-              on: e.source_event_id == event.id,
-              where:
-                e.memory_id == ^memory.id and e.evidence_kind == "confirms" and
-                  e.support_score > 0 and event.host_id == ^summary.host_id and
-                  event.session_id == ^summary.session_id and
-                  event.event_type in ["conversation.user_message", "agent.prompt.submitted"]
-            )
-          )
-
-        assert!(confirmed, "derived_fact_established_without_actual_user_confirmation")
-      end
+      verify_current_policy!(memory, summary.host_id, summary.session_id)
     end
 
     %{
@@ -1008,16 +1022,457 @@ defmodule Backplane.HermesLiveAcceptance do
     }
   end
 
+  defp verify_current_policy!(memory, host_id, session_id) do
+    capture_synthetic_semantic_diagnostic(memory, host_id, session_id)
+    policy = Backplane.Memory.CurrentContext.metadata(memory)
+
+    assert!(
+      policy["effective_support"] == true and policy["support_complete"] == true and
+        policy["trust"] in ["candidate_inference", "established_fact"],
+      "derived_current_support_or_trust_untruthful"
+    )
+
+    case Backplane.HermesSemanticOracle.check(memory.content, policy["trust"]) do
+      :ok ->
+        :ok
+
+      {:error, code} ->
+        fail!(code, %{
+          memory_id: memory.id,
+          synthetic_content: synthetic_text(memory.content, 4_096),
+          trust: policy["trust"]
+        })
+    end
+
+    if policy["trust"] == "established_fact" do
+      confirmed =
+        Repo.exists?(
+          from(e in Evidence,
+            join: event in Event,
+            on: e.source_event_id == event.id,
+            where:
+              e.memory_id == ^memory.id and e.evidence_kind == "confirms" and
+                e.support_score > 0.0 and event.host_id == ^host_id and
+                event.session_id == ^session_id and
+                event.event_type in ["conversation.user_message", "agent.prompt.submitted"]
+          )
+        )
+
+      assert!(confirmed, "derived_fact_established_without_actual_user_confirmation")
+    end
+  end
+
+  # Retain bounded lineage before semantic assertions, including in normal runs,
+  # so cleanup cannot erase a failure's evidence. The ownership guard limits this
+  # observer to the newly created synthetic fixture; it records no provider
+  # bodies, credentials, arbitrary metadata, or operator memory records.
+  defp capture_synthetic_semantic_diagnostic(memory, host_id, session_id) do
+    captured = Process.get(@semantic_diagnostics_key, [])
+
+    if semantic_diagnostic_allowed?(memory, host_id, session_id) and length(captured) < 32 and
+         not Enum.any?(captured, &(&1[:memory_id] == memory.id)) do
+      diagnostic = synthetic_semantic_diagnostic(memory, host_id, session_id)
+
+      if diagnostic do
+        Process.put(@semantic_diagnostics_key, [diagnostic | captured])
+      end
+    end
+  end
+
+  defp semantic_diagnostic_allowed?(memory, host_id, session_id) do
+    marker = resource(:marker)
+
+    resource(:database_created) == true and is_binary(marker) and
+      resource(:database) == "backplane_test_hermeslive_" <> marker and
+      host_id == resource(:host_id) and memory.host_id == host_id and
+      session_id == "hermes-live-#{marker}-a" and memory.scope == "hermes_live_" <> marker and
+      memory.namespace == "private"
+  end
+
+  defp synthetic_semantic_diagnostic(memory, host_id, session_id) do
+    owned_partition =
+      Repo.exists?(
+        from(s in NativeSource,
+          where:
+            s.host_id == ^host_id and s.memory_space_id == ^memory.memory_space_id and
+              s.scope == ^memory.scope and s.namespace == ^memory.namespace
+        )
+      )
+
+    if owned_partition do
+      summaries =
+        Repo.all(
+          from(s in Summary,
+            join: e in Evidence,
+            on: e.source_summary_id == s.id,
+            where:
+              e.memory_id == ^memory.id and s.host_id == ^host_id and
+                s.session_id == ^session_id and s.memory_space_id == ^memory.memory_space_id and
+                s.scope == ^memory.scope and s.namespace == ^memory.namespace,
+            distinct: true,
+            order_by: [s.id],
+            limit: 8
+          )
+        )
+
+      if summaries != [] do
+        synthetic_semantic_provenance(memory, summaries, host_id, session_id)
+      end
+    end
+  rescue
+    error ->
+      %{
+        kind: "synthetic_hermes_semantic_diagnostic",
+        diagnostic_only: true,
+        diagnostic_status: "unavailable",
+        memory_id: memory.id,
+        exception_type: inspect(error.__struct__)
+      }
+  catch
+    kind, _ ->
+      %{
+        kind: "synthetic_hermes_semantic_diagnostic",
+        diagnostic_only: true,
+        diagnostic_status: "unavailable",
+        memory_id: memory.id,
+        caught: kind
+      }
+  end
+
+  defp synthetic_semantic_provenance(memory, summaries, host_id, session_id) do
+    summary_ids = Enum.map(summaries, & &1.id)
+    requests = Repo.all(from(r in RememberRequest, where: r.memory_id == ^memory.id, limit: 32))
+    request_ids = Enum.map(requests, & &1.id)
+    evidence_query = from(e in Evidence, where: e.memory_id == ^memory.id)
+    evidence = Repo.all(from(e in evidence_query, order_by: e.id, limit: 32))
+    links_query = from(l in RequestEvidence, where: l.request_id in ^request_ids)
+    links = Repo.all(from(l in links_query, order_by: [l.request_id, l.evidence_id], limit: 64))
+    sources_query = from(s in SourceEvent, where: s.summary_id in ^summary_ids)
+    sources = Repo.all(from(s in sources_query, order_by: [s.summary_id, s.event_id], limit: 64))
+
+    events_query =
+      from(e in Event,
+        join: s in SourceEvent,
+        on: s.event_id == e.id,
+        where:
+          s.summary_id in ^summary_ids and s.host_id == ^host_id and s.session_id == ^session_id and
+            e.host_id == ^host_id and e.session_id == ^session_id and
+            e.memory_space_id == ^memory.memory_space_id and e.scope == ^memory.scope and
+            e.namespace == ^memory.namespace,
+        distinct: true
+      )
+
+    events = Repo.all(from(e in events_query, order_by: [e.source_sequence, e.id], limit: 32))
+
+    %{
+      kind: "synthetic_hermes_semantic_diagnostic",
+      diagnostic_only: true,
+      diagnostic_status: "captured",
+      memory_id: memory.id,
+      host_id: host_id,
+      session_id: session_id,
+      partition: Map.take(memory, [:memory_space_id, :scope, :namespace]),
+      memory: %{
+        content: synthetic_text(memory.content, 4_096),
+        lifecycle_state: memory.lifecycle_state,
+        policy:
+          memory
+          |> Backplane.Memory.CurrentContext.metadata()
+          |> Map.update!("source_refs", &Enum.take(&1, 16))
+      },
+      summaries:
+        Enum.map(summaries, fn summary ->
+          summary
+          |> Map.take([
+            :id,
+            :host_id,
+            :session_id,
+            :input_revision,
+            :output_revision,
+            :source_complete
+          ])
+          |> Map.put(:content, synthetic_text(summary.content, 16_384))
+          |> Map.put(:superseded, not is_nil(summary.superseded_at))
+        end),
+      requests:
+        Enum.map(requests, &Map.take(&1, [:id, :memory_id, :origin, :independent_support])),
+      evidence:
+        Enum.map(evidence, fn row ->
+          Map.take(row, [
+            :id,
+            :memory_id,
+            :source_event_id,
+            :source_summary_id,
+            :source_request_id,
+            :source_observation_id,
+            :source_crystal_id,
+            :source_mutation_id,
+            :source_session_id,
+            :session_id,
+            :host_id,
+            :evidence_kind,
+            :support_score
+          ])
+        end),
+      request_evidence: Enum.map(links, &Map.take(&1, [:request_id, :evidence_id])),
+      summary_event_links:
+        Enum.map(sources, &Map.take(&1, [:summary_id, :event_id, :host_id, :session_id])),
+      ordered_events:
+        Enum.map(events, fn event ->
+          event
+          |> Map.take([:id, :host_id, :session_id, :event_type, :role, :source_sequence])
+          |> Map.put(:content, synthetic_text(event.content, 4_096))
+          |> Map.put(:message_uid, get_in(event.payload, ["source", "message_uid"]))
+          |> Map.put(:source_revision, get_in(event.payload, ["source", "source_revision"]))
+        end),
+      row_counts: %{
+        requests:
+          Repo.aggregate(from(r in RememberRequest, where: r.memory_id == ^memory.id), :count),
+        evidence: Repo.aggregate(evidence_query, :count),
+        request_evidence: Repo.aggregate(links_query, :count),
+        summary_event_links: Repo.aggregate(sources_query, :count),
+        events: Repo.aggregate(events_query, :count)
+      },
+      limits: %{
+        records: 32,
+        summaries: 8,
+        requests: 32,
+        evidence: 32,
+        links: 64,
+        events: 32,
+        source_refs: 16
+      }
+    }
+  end
+
+  defp synthetic_text(nil, _limit), do: nil
+
+  defp synthetic_text(text, limit) when is_binary(text) do
+    excerpt = String.slice(text, 0, limit)
+
+    %{
+      text: excerpt,
+      original_bytes: byte_size(text),
+      original_characters: String.length(text),
+      truncated: excerpt != text,
+      sha256: Base.encode16(:crypto.hash(:sha256, text), case: :lower)
+    }
+  end
+
+  defp verify_final_state!(fixture, identities, final) do
+    host_id = fixture.host.id
+    session_id = "hermes-live-#{fixture.marker}-a"
+    sources = Repo.all(from(s in NativeSource, where: s.host_id == ^host_id))
+
+    identity = fn source ->
+      {source.installation_id, source.profile_id, source.target}
+    end
+
+    expected_sources =
+      for label <- ["a", "b"], target <- ["memory", "user"], into: MapSet.new() do
+        {identities[label]["installation_id"], identities[label]["profile_id"], target}
+      end
+
+    assert!(
+      length(sources) == 4 and MapSet.new(sources, identity) == expected_sources and
+        Enum.all?(sources, &(&1.integration == "hermes")),
+      "final_source_namespace_set_wrong"
+    )
+
+    [partition] =
+      sources |> Enum.map(&Map.take(&1, [:memory_space_id, :scope, :namespace])) |> Enum.uniq()
+
+    source_ids = Enum.map(sources, & &1.id)
+    by_source = Map.new(sources, &{&1.id, &1})
+    entries = Repo.all(from(e in Entry, where: e.source_id in ^source_ids))
+    heads = final["heads"]
+    hashes = final["content_sha256"]
+    original_id = final["original_id"]
+    forgotten_id = final["forgotten_id"]
+    outage_id = final["outage_id"]
+
+    # A's amber entry was withdrawn, A's outage entry stays active, and B's
+    # locally present amber entry is canonically suppressed by global forget.
+    expected_heads =
+      MapSet.new([
+        {"a", hashes["current"], false},
+        {"a", hashes["outage"], true},
+        {"b", hashes["current"], true}
+      ])
+
+    assert!(
+      length(heads) == 3 and
+        MapSet.new(heads, &{&1["profile"], &1["content_sha256"], &1["active"]}) == expected_heads,
+      "final_local_source_heads_wrong"
+    )
+
+    expected_keys =
+      MapSet.new(heads, fn head ->
+        source = head["source"]
+        {{source["installation_id"], source["profile_id"], source["target"]}, head["entry_id"]}
+      end)
+
+    assert!(
+      length(entries) == length(heads) and
+        MapSet.new(entries, &{identity.(by_source[&1.source_id]), &1.entry_id}) == expected_keys,
+      "final_canonical_source_head_set_wrong"
+    )
+
+    for entry <- entries do
+      source = by_source[entry.source_id]
+      head = Enum.find(heads, &(&1["entry_id"] == entry.entry_id))
+      mutation = Repo.get!(Mutation, entry.mutation_id)
+      forgotten = head["content_sha256"] == hashes["current"]
+      expected_id = if forgotten, do: forgotten_id, else: outage_id
+
+      assert!(
+        source.target == "memory" and entry.memory_id == expected_id and
+          entry.active == not forgotten and entry.suppressed == forgotten and
+          entry.revision >= head["revision"] and mutation.revision == entry.revision and
+          mutation.source_id == source.id and mutation.entry_id == entry.entry_id and
+          mutation.memory_id == expected_id and
+          mutation.outcome in if(forgotten, do: ["applied", "suppressed"], else: ["applied"]),
+        "final_source_membership_or_suppression_wrong"
+      )
+    end
+
+    assert!(not is_nil(Repo.get!(Memory, forgotten_id).deleted_at), "final_forget_not_durable")
+
+    assert!(
+      Repo.get!(Memory, original_id).effective_support == false,
+      "final_old_native_supported"
+    )
+
+    current = Backplane.Memory.CurrentContext.query(Memory)
+
+    memories =
+      Repo.all(
+        from(m in current,
+          where:
+            m.memory_space_id == ^partition.memory_space_id and m.scope == ^partition.scope and
+              m.namespace == ^partition.namespace
+        )
+      )
+
+    current_ids = MapSet.new(memories, & &1.id)
+
+    assert!(
+      MapSet.member?(current_ids, outage_id) and
+        not MapSet.member?(current_ids, original_id) and
+        not MapSet.member?(current_ids, forgotten_id),
+      "final_current_native_set_wrong"
+    )
+
+    # Enumerate the whole owned partition. Independent conversation-derived
+    # amber (or unrelated chat) may remain, but every non-native row needs an
+    # actual current summary, real event lineage and its governing request edge.
+    for memory <- memories do
+      assert!(memory.host_id == host_id, "final_current_host_wrong")
+      verify_current_policy!(memory, host_id, session_id)
+      policy = Backplane.Memory.CurrentContext.metadata(memory)
+
+      expected_refs =
+        entries
+        |> Enum.filter(&(&1.memory_id == memory.id and &1.active and not &1.suppressed))
+        |> MapSet.new(fn entry ->
+          {identity.(by_source[entry.source_id]), entry.entry_id, entry.revision,
+           entry.mutation_id}
+        end)
+
+      actual_refs =
+        MapSet.new(policy["source_refs"], fn ref ->
+          source = ref["source"]
+
+          {{source["installation_id"], source["profile_id"], source["target"]}, ref["entry_id"],
+           ref["source_revision"], ref["event_id"]}
+        end)
+
+      assert!(
+        actual_refs == expected_refs and Enum.all?(policy["source_refs"], &(&1["active"] == true)),
+        "final_context_source_memberships_wrong"
+      )
+
+      if memory.id != outage_id do
+        governed =
+          Repo.exists?(
+            from(r in RememberRequest,
+              join: edge in RequestEvidence,
+              on: edge.request_id == r.id,
+              join: evidence in Evidence,
+              on: edge.evidence_id == evidence.id and evidence.memory_id == r.memory_id,
+              join: summary in Summary,
+              on: evidence.source_summary_id == summary.id,
+              join: session in ProjectedSession,
+              on: session.host_id == summary.host_id and session.session_id == summary.session_id,
+              join: source in SourceEvent,
+              on: source.summary_id == summary.id,
+              join: event in Event,
+              on: source.event_id == event.id,
+              where:
+                r.memory_id == ^memory.id and r.origin == "derived" and
+                  r.independent_support == false and
+                  r.idempotency_scope == "memory-worker:episodic" and
+                  evidence.evidence_kind == "derives" and evidence.support_score > 0.0 and
+                  summary.host_id == ^host_id and summary.session_id == ^session_id and
+                  summary.memory_space_id == ^partition.memory_space_id and
+                  summary.scope == ^partition.scope and summary.namespace == ^partition.namespace and
+                  is_nil(summary.superseded_at) and
+                  summary.input_revision == session.input_revision and
+                  source.host_id == ^host_id and source.session_id == ^session_id and
+                  event.host_id == ^host_id and event.session_id == ^session_id and
+                  event.event_type in ["conversation.user_message", "conversation.agent_message"]
+            )
+          )
+
+        assert!(
+          governed and policy["independent_support"] == true,
+          "unexplained_final_current_record"
+        )
+      end
+    end
+
+    for label <- ["a", "b"] do
+      delivery = final["delivery"][label]
+
+      assert!(
+        delivery["canonical_committed"] > 0 and
+          Enum.all?(
+            ~w(local_pending host_accepted rejected capture_deferred pending_reconciliation),
+            &(delivery[&1] == 0)
+          ),
+        "final_provider_delivery_unsettled"
+      )
+    end
+
+    %{
+      source_heads: length(entries),
+      active_native_memberships: Enum.count(entries, & &1.active),
+      suppressed_native_memberships: Enum.count(entries, & &1.suppressed),
+      current_records: length(memories),
+      governed_conversation_records: Enum.count(memories, &(&1.id != outage_id)),
+      current_ids: Enum.sort(MapSet.to_list(current_ids)),
+      provider_delivery: final["delivery"]
+    }
+  end
+
   defp gate(name, fun) do
     try do
       record(name, "passed", fun.())
       true
     rescue
-      error in Failure ->
+      error in Error ->
         record(name, "failed", %{
           code: error.code,
           diagnostics: error.diagnostics,
           host: host_diagnostics()
+        })
+
+        false
+
+      error in Ecto.QueryError ->
+        record(name, "failed", %{
+          code: "exception:Ecto.QueryError",
+          message: Exception.message(error)
         })
 
         false
@@ -1284,7 +1739,7 @@ defmodule Backplane.HermesLiveAcceptance do
     do: put_resource(:apps, Enum.uniq(Enum.reverse(apps) ++ resource(:apps)))
 
   defp assert!(condition, code), do: if(condition, do: :ok, else: fail!(code))
-  defp fail!(code, diagnostics \\ %{}), do: raise(Failure, code: code, diagnostics: diagnostics)
+  defp fail!(code, diagnostics \\ %{}), do: raise(Error, code: code, diagnostics: diagnostics)
 end
 
 Backplane.HermesLiveAcceptance.main()

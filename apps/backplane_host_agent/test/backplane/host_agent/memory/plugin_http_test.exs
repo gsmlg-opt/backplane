@@ -41,23 +41,25 @@ defmodule Backplane.HostAgent.Memory.PluginHTTPTest do
       start_supervised!({Gaoxy.HTTP, plug: {MemoryRouter, []}, ip: {127, 0, 0, 1}, port: 0})
 
     %{local: {:ok, {{127, 0, 0, 1}, port}}} = Gaoxy.info(server, :http)
-    {:ok, store: name, base_url: "http://127.0.0.1:#{port}"}
+    {:ok, store: name, base_url: "http://127.0.0.1:#{port}", tmp_dir: tmp_dir}
   end
 
-  test "Hermes writes, reads, recalls, injects and deletes through the actual host HTTP API", %{
+  test "tools-only Hermes keeps offline writes provisional and excludes unsupported context", %{
     store: store,
-    base_url: base_url
+    base_url: base_url,
+    tmp_dir: tmp_dir
   } do
-    assert_roundtrip!(base_url, store)
+    assert_roundtrip!(base_url, store, tmp_dir, "offline")
   end
 
   test "Hermes exposes pending commands while the online canonical list is still empty", %{
     store: store,
-    base_url: base_url
+    base_url: base_url,
+    tmp_dir: tmp_dir
   } do
     MemoryProxy.set_channel(self())
     Application.put_env(:backplane_host_agent, :channel_module, EmptyCanonicalChannel)
-    assert_roundtrip!(base_url, store)
+    assert_roundtrip!(base_url, store, tmp_dir, "online")
   end
 
   test "negotiated scope mismatch rejects reads and writes before local persistence", %{
@@ -89,37 +91,71 @@ defmodule Backplane.HostAgent.Memory.PluginHTTPTest do
              Store.query(store, "SELECT COUNT(*) AS count FROM memory_outbox")
   end
 
-  defp assert_roundtrip!(base_url, store) do
+  defp assert_roundtrip!(base_url, store, tmp_dir, mode) do
     python = System.find_executable("python3") || flunk("python3 is required")
-    script = Path.join([@integrations_root, "hermes", "smoke_test.py"])
+    script = Path.expand("../../../support/hermes_provisional_http.py", __DIR__)
 
     {output, status} =
       System.cmd(
         python,
-        [script, "--base-url", base_url, "--agent-id", "hermes", "--cwd", "/Users/gao/.dotfiles"],
+        [
+          script,
+          "--provider",
+          Path.join([@integrations_root, "hermes", "__init__.py"]),
+          "--base-url",
+          base_url,
+          "--home",
+          Path.join(tmp_dir, "hermes-profile"),
+          "--mode",
+          mode
+        ],
         stderr_to_stdout: true,
-        env: [{"PYTHONDONTWRITEBYTECODE", "1"}]
+        env: [
+          {"PYTHONDONTWRITEBYTECODE", "1"},
+          {"BACKPLANE_MEMORY_URL", nil},
+          {"BACKPLANE_MEMORY_AGENT_ID", nil},
+          {"BACKPLANE_MEMORY_ACCESS_ID", nil}
+        ]
       )
 
     assert status == 0, output
     result = output |> String.split("\n", trim: true) |> List.last() |> Jason.decode!()
 
-    assert result == %{
-             "write" => true,
-             "readback" => true,
-             "recall" => true,
-             "prompt" => true,
-             "scope_rejected" => true,
-             "delete" => true
-           }
+    assert %{
+             "id" => id,
+             "session_id" => session_id,
+             "mode" => ^mode,
+             "worker_stopped" => true
+           } = result
 
-    assert {:ok, %Result{rows: [%{"scope" => "host-bound", "agent_id" => "hermes"}]}} =
+    assert {:ok,
+            %Result{
+              rows: [
+                %{
+                  "id" => ^id,
+                  "scope" => "host-bound",
+                  "agent_id" => "hermes",
+                  "session_id" => ^session_id,
+                  "sync_state" => "pending",
+                  "remote_id" => nil
+                }
+              ]
+            }} =
              Store.query(
                store,
-               "SELECT scope, agent_id FROM memories WHERE deleted_at IS NOT NULL"
+               "SELECT id, scope, agent_id, session_id, sync_state, remote_id FROM memories WHERE deleted_at IS NOT NULL"
              )
 
     assert {:ok, %Result{rows: [%{"count" => 0}]}} =
              Store.query(store, "SELECT COUNT(*) AS count FROM memories WHERE deleted_at IS NULL")
+
+    assert {:ok,
+            %Result{
+              rows: [
+                %{"op" => "remember", "memory_id" => ^id, "state" => "pending"},
+                %{"op" => "forget", "memory_id" => ^id, "state" => "pending"}
+              ]
+            }} =
+             Store.query(store, "SELECT op, memory_id, state FROM memory_outbox ORDER BY seq")
   end
 end

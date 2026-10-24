@@ -237,7 +237,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
 
     for call <- calls do
       assert call["method"] == "POST"
-      assert call["timeout"] == 2
+      assert call["timeout"] == 20
       refute Map.has_key?(call["body"], "scope")
       refute Map.has_key?(call["body"], "host_id")
 

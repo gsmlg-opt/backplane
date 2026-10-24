@@ -570,7 +570,8 @@ defmodule Backplane.CIWorkflowTest do
       "Install native build dependencies",
       "Restore dependencies cache",
       "Install dependencies",
-      "Verify CI workflow contract"
+      "Verify CI workflow contract",
+      "Verify Hermes live semantic oracle"
     ])
 
     assert_common_steps(job, true, @ci_cache_key, @ci_cache_prefix)
@@ -578,6 +579,11 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(job, %{
       "name" => "Verify CI workflow contract",
       "run" => "mix run --no-start test/ci_workflow_test.exs"
+    })
+
+    assert_step(job, %{
+      "name" => "Verify Hermes live semantic oracle",
+      "run" => "MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs"
     })
   end
 
