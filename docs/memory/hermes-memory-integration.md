@@ -287,6 +287,33 @@ spool run also failed when `delivery_fingerprint/1` converted a field with
 `String.to_existing_atom/1`; the combined run did not reproduce it, and the
 load-order dependency remains unresolved.
 
+After merging upstream `ab8f2f5d` into `c94c4227`, test-environment compilation
+with warnings as errors and the 60-test source Python suite passed again. The
+generic Memory/recall compatibility selection ran 94 tests with two additional
+file-compression provenance failures caused by the same missing request evidence;
+Codex/Claude capture hooks passed eight tests and OpenClaw passed five Node tests.
+
+A synthetic live probe exercised the actual Memory LLM and embedding clients
+directly against OpenRouter. `openai/gpt-4.1-mini` returned four supported facts,
+including the user's Elixir correction, and `openai/text-embedding-3-large`
+returned three vectors with 2,560 dimensions. Related and unrelated example
+queries scored cosine similarities of 0.4314 and 0.0427 respectively. This is
+client/provider evidence only: it does not establish gateway/host transport,
+canonical persistence, background processing, or a calibrated relevance cutoff.
+The Agent Note read required before a guarded update returned `UNAVAILABLE`
+(`Connection failed`); no note mutation was attempted.
+
+The provider follow-up adds durable insertion ordering and backoff fencing,
+tracked 30-second source rescans, and complete command/snapshot validation before
+enqueue. Its source and isolated copied-package suites passed 70 tests each with
+`ResourceWarning` treated as an error; 14 Python files compiled successfully.
+The updated packaged-client compatibility suite passed four tests, using owned
+temporary Hermes homes, blocked real networking and bounded worker shutdown.
+These fixture results preserve the distinction between local durability and real
+canonical settlement. The four reproduced BEAM evidence assertions described
+above, the prior spool load-order failure, and remaining integrated acceptance
+still block a completed Hermes release.
+
 Integrated implementation verification remains pending. Required evidence includes
 source add/replace/remove and independent support; immutable replay/conflict;
 snapshot fencing; crash/lost-ACK/restart recovery; real provider-to-host HTTP and
