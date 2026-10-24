@@ -69,6 +69,14 @@ earlier writes.
 
 ## 4. Run
 
+For local development, `devenv up` starts PostgreSQL, Backplane, and a `host-agent`
+process together. It registers and validates a development host/token and writes
+`.devenv/state/host-agent/host_agent.yaml` before starting the gateway. The agent
+uses that generated configuration, reuses its identity and token on subsequent
+starts, and disables EPMD. See [Local Development](../../README.md#local-development).
+
+For an installed release:
+
 ```sh
 ~/.local/opt/host_agent/bin/host_agent start
 ```

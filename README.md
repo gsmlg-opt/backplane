@@ -64,11 +64,22 @@ mix deps.get
 mix ecto.setup
 ```
 
-Start the Phoenix server:
+Start PostgreSQL, Backplane, and the local host agent together:
 
 ```bash
-mix phx.server
+devenv up
 ```
+
+Startup runs database migrations, registers a development host with an assigned
+auth token and private memory scope, and writes its configuration to
+`.devenv/state/host-agent/host_agent.yaml`. The token and memory scope are verified
+against Backplane before the gateway starts. Repeated starts reuse the registered
+identity and token. The generated directory is private and ignored by Git.
+
+The `host-agent` process starts after Backplane is ready, with EPMD disabled, and
+serves MCP and memory at `http://127.0.0.1:4222`. Its readiness check performs a
+memory read. Ctrl+C stops the stack. To restart just the agent, run
+`devenv processes stop host-agent`, then `devenv processes start host-agent`.
 
 In development the API endpoint listens on:
 
