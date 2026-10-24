@@ -58,6 +58,23 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   `:code_mode`, and `:services` families. Missing families and duplicate
   canonical names fail before admission.
 
+### Native async event identity
+
+`request_user_input_async` emits `:async_user_input_requested` and
+`send_message_to_user_async` emits `:async_user_message`. Both include the
+actual tool's `invocation_id` and `tool_call_id`, together with existing run,
+incarnation, step, attempt and turn metadata. Identical calls have distinct
+invocation IDs. Code Mode events identify the nested call rather than the outer
+`exec` call. Conversation derives these fields from its live tool producer;
+payload-supplied IDs cannot override them.
+
+The IDs match the canonical tool invocation records and remain JSON-safe when
+projected through `Conversation.public_interaction/1`. Notifications do not add
+a durable replay journal. The host persists its own cards and admits replies as
+new user messages. `accepted: true` remains immediate Runtime acceptance, even
+without a subscriber or before subscriber processing; it does not acknowledge
+durable user receipt.
+
 ### Observing, resolving and cancelling child interactions
 
 `Codex.MultiAgent.subscribe(manager)` atomically returns the complete child roster

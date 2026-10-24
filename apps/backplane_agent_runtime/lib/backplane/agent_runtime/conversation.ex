@@ -405,13 +405,12 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   def handle_call({:chunk, token, event}, _from, s) do
     if current_effect?(s, token) and is_map(event) do
-      output = ProviderOutput.event(s.provider_output, event)
-
-      case ProviderOutput.check(output, ProviderOutput.limit(s.opts)) do
-        {:ok, output} ->
-          if Map.get(event, :type) != :response_completed, do: emit(s, event)
-          {:reply, :ok, %{s | provider_output: output}}
-
+      with {:ok, event} <- correlate_async_event(s, token, event),
+           output = ProviderOutput.event(s.provider_output, event),
+           {:ok, output} <- ProviderOutput.check(output, ProviderOutput.limit(s.opts)) do
+        if Map.get(event, :type) != :response_completed, do: emit(s, event)
+        {:reply, :ok, %{s | provider_output: output}}
+      else
         {:error, error} ->
           {:reply, {:error, error}, s}
       end
@@ -2119,6 +2118,40 @@ defmodule Backplane.AgentRuntime.Conversation do
       GenServer.call(owner, {:request_new_context, token}, :infinity)
     end)
   end
+
+  defp correlate_async_event(s, token, %{type: type} = event)
+       when type in [:async_user_input_requested, :async_user_message] do
+    with {:ok, invocation} <- async_event_invocation(s, token) do
+      event =
+        event
+        |> Map.drop(["invocation_id", "tool_call_id"])
+        |> Map.merge(Map.take(invocation, [:invocation_id, :tool_call_id]))
+
+      {:ok, event}
+    end
+  end
+
+  defp correlate_async_event(_s, _token, event), do: {:ok, event}
+
+  defp async_event_invocation(
+         %{
+           nested: %{token: token, task: %{ref: _}, invocation: invocation},
+           effect: %{task: %{ref: _}}
+         },
+         token
+       ),
+       do: {:ok, invocation}
+
+  defp async_event_invocation(
+         %{effect: %{token: token, task: %{ref: _}, role: {:tool, invocation, _, _}}},
+         token
+       ),
+       do: {:ok, invocation}
+
+  defp async_event_invocation(_s, _token),
+    do:
+      {:error,
+       Error.new(:resource_conflict, "native async event requires a live tool invocation")}
 
   defp trusted_effect_context(s, token, catalog, owner, producer, boundary) do
     base_effect_context(s, owner, token)

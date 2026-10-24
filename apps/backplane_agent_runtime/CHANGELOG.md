@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.36
+
+- Include trusted invocation and tool-call IDs on native async question/message
+  events (#89), including actual nested Code Mode call IDs. Preserve existing
+  event metadata and immediate acceptance without promising durable receipt.
+
 ## 1.10.35
 
 - Add host-only `Codex.MultiAgent.cancel_interaction/3` for exact five-field
