@@ -137,48 +137,94 @@ defmodule Backplane.Memory.Memories.RelationsConcurrencyTest do
 
     {first, second, attrs} =
       unboxed(fn ->
-        {:ok, first} = Memories.remember("#{prefix}-first", direct_opts("#{prefix}-first"))
-        {:ok, second} = Memories.remember("#{prefix}-second", direct_opts("#{prefix}-second"))
+        opts = direct_opts(prefix) |> Keyword.put(:namespace, prefix)
+
+        {:ok, left} =
+          Memories.remember(
+            "#{prefix}-first",
+            Keyword.put(opts, :idempotency_key, "#{prefix}-first")
+          )
+
+        {:ok, right} =
+          Memories.remember(
+            "#{prefix}-second",
+            Keyword.put(opts, :idempotency_key, "#{prefix}-second")
+          )
+
+        [first, second] = Enum.sort_by([left, right], & &1.id)
         {first, second, relation_attrs("extension", prefix, first, second)}
       end)
 
     on_exit(fn -> cleanup([first.id, second.id]) end)
     parent = self()
 
+    # Hold the first endpoint exactly as the ordered candidate query does. Forget
+    # must wait here before locking the second endpoint, otherwise its subsequent
+    # partition refresh forms a cycle with candidate creation.
     create =
       Task.async(fn ->
-        send(parent, {:race_ready, self()})
+        capture_database_error(fn ->
+          unboxed(fn ->
+            repo().transaction(fn ->
+              repo().query!("SELECT id FROM bpm_memories WHERE id=$1 FOR UPDATE", [
+                Ecto.UUID.dump!(first.id)
+              ])
 
-        receive do: (:race ->
-                       unboxed(fn -> Relations.create_candidate(first.id, second.id, attrs) end))
+              send(parent, :first_endpoint_locked)
+              receive do: (:create -> :ok)
+              Relations.create_candidate(first.id, second.id, attrs)
+            end)
+          end)
+        end)
       end)
+
+    assert_receive :first_endpoint_locked, @timeout
 
     forget =
       Task.async(fn ->
-        send(parent, {:race_ready, self()})
-        receive do: (:race -> unboxed(fn -> Memories.trusted_forget(second.id) end))
+        capture_database_error(fn ->
+          unboxed(fn ->
+            %{rows: [[backend_pid]]} = repo().query!("SELECT pg_backend_pid()")
+            send(parent, {:forget_backend, backend_pid})
+            Memories.trusted_forget(second.id)
+          end)
+        end)
       end)
 
-    pids =
-      Enum.map([create, forget], fn _ ->
-        assert_receive {:race_ready, pid}, @timeout
-        pid
-      end)
+    assert_receive {:forget_backend, backend_pid}, @timeout
 
-    Enum.each(pids, &send(&1, :race))
+    try do
+      assert waiting_on_lock?(backend_pid)
+    after
+      send(create.pid, :create)
+    end
 
     create_result = Task.await(create, @timeout)
-    assert :ok = Task.await(forget, @timeout)
-    assert match?({:ok, %Relation{}}, create_result) or create_result == {:error, :not_found}
+    forget_result = Task.await(forget, @timeout)
+    assert {:ok, {:ok, %Relation{} = relation}} = create_result
+    assert :ok = forget_result
 
-    case create_result do
-      {:ok, relation} ->
-        assert {:error, :not_found} =
-                 unboxed(fn -> Relations.resolve_candidate(relation.id, :confirmed) end)
+    assert {:error, :not_found} =
+             unboxed(fn -> Relations.resolve_candidate(relation.id, :confirmed) end)
+  end
 
-      {:error, :not_found} ->
-        :ok
-    end
+  defp capture_database_error(fun) do
+    fun.()
+  rescue
+    error in Postgrex.Error -> {:database_error, error.postgres.code}
+  end
+
+  defp waiting_on_lock?(backend_pid) do
+    unboxed(fn ->
+      Enum.reduce_while(1..1_000, false, fn _, _ ->
+        case repo().query!("SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1", [
+               backend_pid
+             ]).rows do
+          [["Lock"]] -> {:halt, true}
+          _ -> {:cont, false}
+        end
+      end)
+    end)
   end
 
   defp concurrently(fun) do

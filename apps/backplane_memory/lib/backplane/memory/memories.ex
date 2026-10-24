@@ -588,7 +588,23 @@ defmodule Backplane.Memory.Memories do
     end
   end
 
+  if Mix.env() == :test do
+    defp lock_active_memory(id, nil) do
+      case repo().one(
+             from(m in MemorySchema,
+               where: m.id == ^id,
+               select: map(m, [:memory_space_id, :scope, :namespace])
+             )
+           ) do
+        nil -> nil
+        partition -> lock_active_memory(id, partition)
+      end
+    end
+  end
+
   defp lock_active_memory(id, partition) do
+    Backplane.Memory.SourceSupport.lock_partition!(partition)
+
     MemorySchema
     |> where([m], m.id == ^id and is_nil(m.deleted_at))
     |> select([m], struct(m, ^@non_vector_fields))
@@ -938,6 +954,8 @@ defmodule Backplane.Memory.Memories do
 
     result =
       repo().transaction(fn ->
+        Backplane.Memory.SourceSupport.lock_partition!(attrs)
+
         if retryable? do
           advisory_lock!("remember-request", [scope, key])
         end

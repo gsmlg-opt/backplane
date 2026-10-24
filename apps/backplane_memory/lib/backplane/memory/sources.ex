@@ -13,7 +13,7 @@ defmodule Backplane.Memory.Sources do
         partition =
           Map.put(partition, :agent_id, authority[:agent_id] || "host:" <> partition.host_id)
 
-        lock_partition(partition)
+        Backplane.Memory.SourceSupport.lock_partition!(partition)
         source = locked_source(args["source"], partition)
         apply_mutation(source, args, partition)
       end)
@@ -27,7 +27,7 @@ defmodule Backplane.Memory.Sources do
         partition =
           Map.put(partition, :agent_id, authority[:agent_id] || "host:" <> partition.host_id)
 
-        lock_partition(partition)
+        Backplane.Memory.SourceSupport.lock_partition!(partition)
         source = locked_source(args["source"], partition)
         reconcile_phase(source, args, partition)
       end)
@@ -398,19 +398,6 @@ defmodule Backplane.Memory.Sources do
       "profile_id" => source.profile_id,
       "target" => source.target
     }
-
-  defp lock_partition(partition) do
-    <<key::signed-64, _::binary>> =
-      :crypto.hash(
-        :sha256,
-        Enum.join(
-          ["memory-sources", partition.memory_space_id, partition.scope, partition.namespace],
-          ":"
-        )
-      )
-
-    repo().query!("SELECT pg_advisory_xact_lock($1::bigint)", [key])
-  end
 
   defp edge_revision(partition, id),
     do:

@@ -2,6 +2,34 @@ defmodule Backplane.Memory.SourceSupport do
   @moduledoc "Projects effective source support without deleting immutable evidence or operator history."
 
   @doc false
+  def lock_partition!(partition) do
+    # Refresh touches every memory in this partition. Acquire its row locks before
+    # any target/source mutation, in the same order as relation endpoint locks.
+    # The shared source lock also serializes inserts and source-entry suppression;
+    # nested source -> remember calls retain these locks until the outer commit.
+    <<key::signed-64, _::binary>> =
+      :crypto.hash(
+        :sha256,
+        Enum.join(
+          ["memory-sources", partition.memory_space_id, partition.scope, partition.namespace],
+          ":"
+        )
+      )
+
+    repo().query!("SELECT pg_advisory_xact_lock($1::bigint)", [key])
+
+    repo().query!(
+      """
+      SELECT id FROM bpm_memories WHERE memory_space_id=$1 AND scope=$2 AND namespace=$3
+      ORDER BY id FOR UPDATE
+      """,
+      [Ecto.UUID.dump!(partition.memory_space_id), partition.scope, partition.namespace]
+    )
+
+    :ok
+  end
+
+  @doc false
   def refresh!(partition) do
     repo().query!(
       """

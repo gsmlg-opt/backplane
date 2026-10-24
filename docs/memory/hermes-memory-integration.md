@@ -80,6 +80,15 @@ identity mappings remain local. Distinct entries that redact to the same text
 retain distinct source identities, and a redacted previous value is usable only
 when its mapping is unambiguous.
 
+Remember, forget, source mutation and reconciliation acquire the shared source
+partition advisory lock and existing memory-row locks in ascending UUID order
+before changing a target. Relation endpoint locking uses the same row order.
+This prevents a forget operation holding the higher endpoint while its support
+refresh waits for the lower endpoint held by candidate creation. Nested source
+and remember transactions retain their locks until the outer commit. Partition
+writers serialize earlier and hold refresh locks longer; throughput has not
+been benchmarked.
+
 ## Versioned source API
 
 Source operations are local transport methods, not model-facing housekeeping
@@ -349,6 +358,13 @@ HTTP/packaged-client compatibility tests, repository formatting and strict Credo
 for the ten changed Elixir files. The owning processing regression selection
 passed 61 tests and edge-sync regressions passed 42 tests. These local results
 are separate from CI, publication and installation evidence.
+
+The Admin embedding-calibration registry regression passed four focused tests
+and the subsequent full Admin CI suite (486 tests). A deterministic ordered
+candidate/forget race reproduced `40P01` before the lock-order correction. After
+the correction, the related relations/source/remember/edge selection passed 83
+tests and the final concurrency file passed three tests. These results preserve
+the unresolved real-model extraction boundary.
 
 CI at `4053ada7` passed compilation, formatting, Dialyzer and workflow-contract
 checks. Its Memory job completed 1,448 tests with two activity-retention failures
