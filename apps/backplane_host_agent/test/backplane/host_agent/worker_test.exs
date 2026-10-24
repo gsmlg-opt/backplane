@@ -531,7 +531,7 @@ defmodule Backplane.HostAgent.WorkerTest do
          channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
          host_id: config.host_id,
          host_name: config.machine_name,
-         socket: self(),
+         socket: socket_supervisor(:offline_reconnect_socket),
          memory: %{"selected" => "host_memory.v2", "partitions" => []}
        }}
     )
@@ -560,10 +560,11 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert {:noreply, ^state} = Worker.handle_info(message, state)
   end
 
-  test "a joined channel is retired if connection installation fails" do
+  test "the complete joined connection is retired if connection installation fails" do
     channel = start_supervised!({Agent, fn -> nil end})
+    socket = socket_supervisor(:unpublished_socket)
     :persistent_term.put({FakeConnector, :owner}, self())
-    :persistent_term.put({FakeConnector, :connection}, {:ok, %{channel: channel}})
+    :persistent_term.put({FakeConnector, :connection}, {:ok, %{channel: channel, socket: socket}})
 
     on_exit(fn ->
       :persistent_term.erase({FakeConnector, :owner})
@@ -585,6 +586,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert_receive {:connect, _}
     assert %{channel: nil, last_error: :fixture_install_failed} = GenServer.call(worker, :status)
     refute Process.alive?(channel)
+    refute Process.alive?(socket)
   end
 
   test "obsolete retry timers cannot replace a newer connection" do
@@ -594,8 +596,9 @@ defmodule Backplane.HostAgent.WorkerTest do
              Worker.handle_info({:timeout, make_ref(), :connect_retry}, state)
   end
 
-  test "a failed owned channel is retired once and obsolete loss notifications are ignored" do
+  test "a failed owned connection is retired once and obsolete loss notifications are ignored" do
     channel = start_supervised!({Agent, fn -> nil end})
+    socket = socket_supervisor(:lost_socket)
     ref = Process.monitor(channel)
 
     {:ok, state} =
@@ -603,17 +606,68 @@ defmodule Backplane.HostAgent.WorkerTest do
         connect?: false,
         sync_on_start?: false,
         owns_connection?: true,
-        channel: channel
+        channel: channel,
+        socket: socket
       )
 
     state = %{state | channel_monitor_ref: ref}
     assert {:noreply, next} = Worker.handle_info({:memory_connection_lost, channel}, state)
     refute Process.alive?(channel)
+    refute Process.alive?(socket)
     assert next.channel == nil
+    assert next.socket == nil
     assert next.channel_monitor_ref == nil
     assert is_reference(next.connect_retry_ref)
     assert {:noreply, ^next} = Worker.handle_info({:memory_connection_lost, channel}, next)
     Process.cancel_timer(next.connect_retry_ref)
+  end
+
+  test "a channel DOWN retires its socket before scheduling a fresh connection" do
+    channel = start_supervised!({Agent, fn -> nil end})
+    socket = socket_supervisor(:down_socket)
+    ref = Process.monitor(channel)
+
+    {:ok, state} =
+      Worker.init(
+        connect?: false,
+        sync_on_start?: false,
+        owns_connection?: true,
+        channel: channel,
+        socket: socket
+      )
+
+    state = %{state | channel_monitor_ref: ref}
+    Agent.stop(channel)
+    assert_receive {:DOWN, ^ref, :process, ^channel, :normal} = down
+    assert {:noreply, next} = Worker.handle_info(down, state)
+    refute Process.alive?(socket)
+    assert next.channel == nil
+    assert next.socket == nil
+    assert is_reference(next.connect_retry_ref)
+    Process.cancel_timer(next.connect_retry_ref)
+  end
+
+  test "worker termination preserves borrowed connections and self fixtures" do
+    channel = start_supervised!({Agent, fn -> nil end})
+    socket = socket_supervisor(:borrowed_socket)
+
+    {:ok, borrowed} =
+      Worker.init(connect?: false, sync_on_start?: false, channel: channel, socket: socket)
+
+    assert :ok = Worker.terminate(:normal, borrowed)
+    assert Process.alive?(channel)
+    assert Process.alive?(socket)
+
+    {:ok, owned} =
+      Worker.init(
+        connect?: false,
+        sync_on_start?: false,
+        owns_connection?: true,
+        channel: self(),
+        socket: self()
+      )
+
+    assert :ok = Worker.terminate(:normal, owned)
   end
 
   test "server channel failure automatically reconnects shared providers and the edge syncer" do
@@ -623,13 +677,15 @@ defmodule Backplane.HostAgent.WorkerTest do
     supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
     args = {nil, nil, "host_agent:reconnect-fixture", %{}, __MODULE__.ReconnectRegistry}
     {:ok, first} = DynamicSupervisor.start_child(supervisor, {AgentChannel, args})
+    first_socket = socket_supervisor(:first_socket)
+    second_socket = socket_supervisor(:second_socket)
     {:ok, config} = StructRuntimeConfig.load_default()
     config = %{config | interval_ms: 20}
 
     connection = %{
       channel: first,
       host_id: "host-1",
-      socket: nil,
+      socket: first_socket,
       memory: %{"selected" => "host_memory.v2", "partitions" => []}
     }
 
@@ -654,7 +710,10 @@ defmodule Backplane.HostAgent.WorkerTest do
       )
 
     assert_receive {:connect, _}
-    assert %{edge_syncer: edge, channel_monitor_ref: old_ref} = GenServer.call(worker, :status)
+
+    assert %{socket: ^first_socket, edge_syncer: edge, channel_monitor_ref: old_ref} =
+             GenServer.call(worker, :status)
+
     assert MemoryProxy.channel() == first
     assert Syncer.status(edge).channel == first
 
@@ -662,12 +721,19 @@ defmodule Backplane.HostAgent.WorkerTest do
     # server-side closure; no direct connect_retry message drives this recovery.
     next_args = {nil, nil, "host_agent:reconnect-next", %{}, __MODULE__.ReconnectRegistry}
     {:ok, second} = DynamicSupervisor.start_child(supervisor, {AgentChannel, next_args})
-    :persistent_term.put({FakeConnector, :connection}, {:ok, %{connection | channel: second}})
+
+    :persistent_term.put(
+      {FakeConnector, :connection},
+      {:ok, %{connection | channel: second, socket: second_socket}}
+    )
+
     send(first, %Phoenix.SocketClient.Message{event: "phx_error", payload: %{}})
     assert_receive {:connect, _}, 1_000
     assert %{channel: ^second, edge_syncer: ^edge} = GenServer.call(worker, :status)
     assert MemoryProxy.channel() == second
     assert Syncer.status(edge).channel == second
+    refute Process.alive?(first_socket)
+    assert Process.alive?(second_socket)
     assert DynamicSupervisor.count_children(supervisor).active == 1
     send(worker, {:DOWN, old_ref, :process, first, :normal})
     assert %{channel: ^second} = GenServer.call(worker, :status)
@@ -675,6 +741,7 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     GenServer.stop(worker)
     refute Process.alive?(second)
+    refute Process.alive?(second_socket)
     assert MemoryProxy.channel() == nil
   end
 
@@ -690,7 +757,7 @@ defmodule Backplane.HostAgent.WorkerTest do
          channel: first_channel,
          host_id: "host-1",
          host_name: "t430",
-         socket: self(),
+         socket: socket_supervisor(:v2_socket),
          memory: %{"selected" => "host_memory.v2", "partitions" => []}
        }}
     )
@@ -729,7 +796,7 @@ defmodule Backplane.HostAgent.WorkerTest do
          channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
          host_id: "host-1",
          host_name: "t430",
-         socket: self(),
+         socket: socket_supervisor(:v1_socket),
          memory: %{"selected" => "host_memory.v1"}
        }}
     )
@@ -752,7 +819,7 @@ defmodule Backplane.HostAgent.WorkerTest do
          channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
          host_id: "host-1",
          host_name: "t430",
-         socket: self(),
+         socket: socket_supervisor(:shutdown_socket),
          memory: %{"selected" => "host_memory.v2", "partitions" => []}
        }}
     )
@@ -1336,6 +1403,15 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert %{"skill_slug" => "repo-review", "status" => "failed", "error" => "download_missing"} =
              result
+  end
+
+  defp socket_supervisor(id) do
+    start_supervised!(%{
+      id: id,
+      start: {Supervisor, :start_link, [[], [strategy: :one_for_one]]},
+      type: :supervisor,
+      restart: :temporary
+    })
   end
 
   defp state(config, opts \\ []) do

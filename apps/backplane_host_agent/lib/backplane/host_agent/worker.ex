@@ -135,7 +135,10 @@ defmodule Backplane.HostAgent.Worker do
          %{channel: channel, owns_connection?: true} = state
        ) do
     {:noreply,
-     state |> retire_channel() |> Map.put(:last_error, :not_connected) |> schedule_connect_retry()}
+     state
+     |> retire_connection()
+     |> Map.put(:last_error, :not_connected)
+     |> schedule_connect_retry()}
   end
 
   defp info_worker({:memory_connection_lost, _channel}, state), do: {:noreply, state}
@@ -146,8 +149,7 @@ defmodule Backplane.HostAgent.Worker do
        ) do
     {:noreply,
      state
-     |> Map.put(:channel, nil)
-     |> Map.put(:channel_monitor_ref, nil)
+     |> retire_connection()
      |> Map.put(:last_error, :not_connected)
      |> schedule_connect_retry()}
   end
@@ -204,7 +206,7 @@ defmodule Backplane.HostAgent.Worker do
     do: with_safe_diagnostics(fn -> terminate_worker(reason, state) end)
 
   defp terminate_worker(_reason, state) do
-    _state = retire_channel(state)
+    _state = retire_connection(state)
     memory_proxy_module = Map.get(state, :memory_proxy_module, MemoryProxy)
 
     if Map.get(state, :owns_connection?, false) and
@@ -321,6 +323,7 @@ defmodule Backplane.HostAgent.Worker do
                          %{
                            local_state
                            | channel: channel,
+                             socket: Map.get(connection, :socket),
                              edge_syncer: edge_syncer,
                              owns_connection?: true,
                              memory_negotiation_report: worker_negotiation(connection)
@@ -328,12 +331,12 @@ defmodule Backplane.HostAgent.Worker do
                          |> monitor_channel(channel)}
 
                       {:error, reason} ->
-                        retire_unpublished_channel(channel)
+                        retire_unpublished_connection(connection)
                         {:error, reason, local_state}
                     end
 
                   {:error, reason} ->
-                    retire_unpublished_channel(channel)
+                    retire_unpublished_connection(connection)
                     {:error, reason, local_state}
                 end
 
@@ -411,6 +414,7 @@ defmodule Backplane.HostAgent.Worker do
   defp state_from_opts(opts) do
     %{
       channel: Keyword.get(opts, :channel),
+      socket: Keyword.get(opts, :socket),
       channel_module: Keyword.get(opts, :channel_module, Channel),
       config: Keyword.get(opts, :config),
       desired: Keyword.get(opts, :desired),
@@ -446,7 +450,7 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp connect_or_retry(state) do
-    state = retire_channel(state)
+    state = retire_connection(state)
 
     case connect_state(Map.get(state, :connect_opts, []), state) do
       {:ok, connected_state} ->
@@ -493,7 +497,7 @@ defmodule Backplane.HostAgent.Worker do
     %{state | connect_retry_ref: :erlang.start_timer(interval_ms, self(), :connect_retry)}
   end
 
-  defp retire_channel(%{owns_connection?: true, channel: channel} = state) do
+  defp retire_connection(%{owns_connection?: true, channel: channel} = state) do
     monitored? = is_reference(Map.get(state, :channel_monitor_ref))
 
     if monitored?,
@@ -503,15 +507,22 @@ defmodule Backplane.HostAgent.Worker do
       Channel.retire(channel)
     end
 
-    state |> Map.put(:channel, nil) |> Map.put(:channel_monitor_ref, nil)
+    retire_socket(Map.get(state, :socket))
+
+    state |> Map.put(:channel, nil) |> Map.put(:socket, nil) |> Map.put(:channel_monitor_ref, nil)
   end
 
-  defp retire_channel(state), do: state
+  defp retire_connection(state), do: state
 
-  defp retire_unpublished_channel(channel) when is_pid(channel) and channel != self(),
-    do: Channel.retire(channel)
+  defp retire_unpublished_connection(%{channel: channel} = connection) do
+    if is_pid(channel) and channel != self(), do: Channel.retire(channel)
+    retire_socket(Map.get(connection, :socket))
+  end
 
-  defp retire_unpublished_channel(_channel), do: :ok
+  defp retire_socket(socket) when is_pid(socket) and socket != self(),
+    do: Channel.retire_socket(socket)
+
+  defp retire_socket(_socket), do: :ok
 
   defp maybe_schedule_initial_sync(
          %{sync_on_start?: true, channel: channel, config: config} = state
@@ -834,7 +845,7 @@ defmodule Backplane.HostAgent.Worker do
        when reason == :not_connected or channel_exit_reason(reason) do
     state =
       state
-      |> retire_channel()
+      |> retire_connection()
       |> Map.put(:last_error, reason)
       |> schedule_connect_retry()
 

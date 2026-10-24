@@ -30,7 +30,7 @@ defmodule Backplane.HostAgent.MixProject do
     [
       {:backplane_plugin_protocol, in_umbrella: true},
       # TODO(upstream): gsmlg-dev/phoenix_socket_client#98
-      {:phoenix_socket_client, "~> 0.8.8"},
+      {:phoenix_socket_client, "~> 0.8.9"},
       {:req, "~> 0.5", override: true},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},
