@@ -278,7 +278,7 @@ defmodule Backplane.Memory.Operations.Inventory do
         a.operation == "memory.activity.purge" and
           fragment("COALESCE(?, '')", a.actor) == "system" and
           fragment(
-            "? @> '{\"daily_deleted\":0,\"contributions_deleted\":0}'::jsonb",
+            ~s(? @> '{"daily_deleted":0,"contributions_deleted":0}'::jsonb),
             a.metadata
           )
       )
