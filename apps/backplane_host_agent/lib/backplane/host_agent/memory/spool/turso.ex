@@ -556,8 +556,8 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
   end
 
   defp delivery_fingerprint(attrs) do
-    ~w(event_id idempotency_key integration host_id agent_id client_id project scope session_id parent_session_id event_type occurred_at captured_at payload_hash trace privacy)
-    |> Map.new(fn field -> {field, value(attrs, String.to_existing_atom(field))} end)
+    ~w(event_id idempotency_key integration host_id agent_id client_id project scope session_id parent_session_id event_type occurred_at captured_at payload_hash trace privacy)a
+    |> Map.new(fn field -> {Atom.to_string(field), value(attrs, field)} end)
     |> EventEnvelope.payload_hash()
   end
 
