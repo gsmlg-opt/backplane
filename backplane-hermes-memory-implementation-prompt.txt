@@ -1,0 +1,294 @@
+BACKPLANE HERMES MEMORY INTEGRATION IMPLEMENTATION PROMPT
+
+Repository: https://github.com/gsmlg-opt/backplane
+Agent Note project: backplane
+Review baseline: Backplane f36d09c8103277140b93988ce29b5083940cc0c8, 2026-10-24.
+Hermes reference: NousResearch/hermes-agent bac34e9e9946c9c6a9ce7ce64efadd47f8fa375b.
+
+Implement the changes in this repository. Complete the implementation, scoped verification, documentation, commit, push, and the project's existing release workflow. This is an execution task, not a request to stop after producing a plan.
+
+1. MISSION AND WORKING RULES
+
+Make the Hermes integration provide a verifiable lifecycle:
+
+source capture -> durable acceptance -> canonical processing -> correction or withdrawal -> relevant, current recall.
+
+Reuse Backplane's existing partition authorization, host outbox, capture/event pipeline, evidence model, processing workers, and recall machinery. Extend their contracts where required. Keep compatibility behavior explicit.
+
+Start by reading the applicable AGENTS.md and recalling relevant Agent Note records under project=backplane. Inspect the current working tree and HEAD; the review baseline is evidence, not an instruction to reset or overwrite newer work. Revalidate the affected paths and the supported Hermes contract before editing. Existing tests and notes that encode the wrong Hermes behavior must be corrected.
+
+Work on the current branch. Do not create a branch or worktree unless I explicitly request it. Preserve unrelated changes. Parallelize independent tasks with disjoint ownership after agreeing on shared contracts and migrations. Prefer pure transformation/validation functions and existing OTP supervision patterns.
+
+Make routine implementation choices autonomously. Stop only for a concrete blocker that cannot be resolved within the authorized scope, and report the remaining work accurately.
+
+Primary ownership:
+- integrations/memory/hermes and integrations/memory/tests
+- apps/backplane_host_agent
+- apps/backplane_memory_contract
+- apps/backplane_memory
+- apps/backplane_api, only required memory transport/sync integration
+- apps/backplane_system/priv/repo/migrations, if persistence changes are necessary
+- existing memory configuration, packaging, scoped tests, and docs/memory
+
+Preserve OpenClaw, Codex, Claude Code, and existing generic memory clients when shared contracts change. Do not redesign the whole memory subsystem, add unrelated UI, or migrate unrelated gateway components.
+
+Repository/project/cwd information remains source provenance. Do not turn it into a new authorization hierarchy or restore host/project navigation that was previously rejected. A filesystem cwd must never override the host-bound memory scope.
+
+2. VERIFIED STARTING POINT AND REQUIRED CORRECTIONS
+
+At the review baseline:
+
+A. The Hermes plugin accepts only add/update in on_memory_write and ignores callback metadata. Current Hermes emits add/replace/remove. Its memory-tool patch is normalized to replace, with the complete new entry in content and the complete previous entry in metadata.previous_content. Remove may have empty content.
+
+B. remember already supports request idempotency. Reusing an idempotency key with changed content is an explicit conflict, not an upsert. Host exact-content dedup uses content_hash/scope/memory_type/agent_id and can discard a second occurrence's session/source metadata.
+
+C. The host already persists local memory and outbox atomically and implements retries, restart recovery, canonical ACKs, and dead letters. The plugin's detached daemon threads leave a gap before that durable acceptance and discard delivery results.
+
+D. sync_turn writes truncated user/assistant text directly as episodic memory. This does not create canonical capture events/projected sessions or activate the existing summary/fact extraction pipeline, even when session_id is supplied.
+
+E. Recall V2 and public get exclude expired, deleted, superseded, and archived records. Generic list lacks equivalent lifecycle/expiry filtering, and the plugin injects its results into the system prompt. List responses also omit lifecycle/expiry information.
+
+F. Recall V2 has fusion, deduplication, lifecycle weighting, optional reranking, and token packing. The reviewed vector path lacks an absolute relevance rejection gate. Reranking alone does not remove irrelevant candidates.
+
+G. Current Hermes requires local-only is_available, static system_prompt_block, a useful background-prefetch cache, and on_pre_compress returning reference text rather than mutating conversation messages. Hermes has an optional durable checkpoint API v2.
+
+H. session_id can already persist from host through canonical memory/evidence; the mirror hook fails to send it. Authorized partition isolation exists, but URL agent_id and metadata labels do not automatically isolate profiles.
+
+Treat these as starting observations to verify against current HEAD. Do not describe an existing capability as missing merely because the plugin does not use it.
+
+3. PHASE A: SOURCE IDENTITY, REVISIONS, AND WITHDRAWAL
+
+Define and implement a narrow, versioned external-source mutation contract in the existing memory domain, shared contract package, host facade, and relevant transport. Choose names consistent with the codebase.
+
+Separate:
+- Source entry identity: one entry in one provider installation/profile/target, stable across edits.
+- Mutation identity: one immutable event, stable across retry and restart.
+- Canonical memory identity: the record Backplane serves, which may have several independent sources.
+
+The same native source entry remains the same entry across sessions. Preserve the session provenance of each distinct revision/event without assigning a new entry identity per session. Distinct conversation evidence occurrences remain traceable; retries of the same occurrence do not create additional evidence.
+
+Preserve generic remember's immutable idempotency semantics. Do not overload its idempotency key to mean a mutable source entry.
+
+The contract must represent the operation, source identity, revision or equivalent ordering, immutable event identity, current content when applicable, and actual provenance. Preserve session/parent-session, turn/message references, author/role, target, and repository information when they really exist. Derive authorization from authenticated authority and existing grants; reject caller attempts to inject trusted ownership.
+
+Guarantees:
+- Retrying the same event/payload returns a stable result without duplicating source memberships or evidence.
+- Reusing the same event key for a different immutable payload fails without partial mutation.
+- Reordered or delayed revisions cannot overwrite newer state or resurrect a withdrawn entry.
+- Accepted source changes, receipts, and required persistence are atomic, or are coordinated through the existing recoverable outbox.
+- Identical canonical content can be deduplicated while every independent source occurrence remains addressable and traceable.
+- Fix the mirror path's early content-dedup collision; adding metadata that is then discarded by host dedup is insufficient.
+- Source withdrawal removes that source's active contribution and obsolete revision. It must not globally forget independently supported facts.
+- When a memory/projection has no remaining valid support, automatic current-context reads must stop treating it as effective.
+- Intentional global forget remains a separate operation and retains existing tombstone/derivation protections. Reconciliation must not silently undo it.
+
+Hermes may not expose durable native entry UUIDs. Implement an adapter-owned durable mapping where needed, scoped to installation/profile/target and authorized partition. Use complete previous_content only to resolve an unambiguous existing mapping. Content hashes and old_text search substrings are not source identities. Never use semantic similarity to choose a destructive target.
+
+Several operations in one Hermes batch can share tool_call_id. Do not use tool_call_id alone as an event key. Do not assume an operation index or stable UUID is supplied when it is not. Define durable adapter sequencing and source-state convergence for indistinguishable callbacks. Promise idempotent delivery and deterministic convergence within the actual source contract, not unsupported exactly-once callback interpretation.
+
+Implement source reconciliation for startup, plugin re-enable, missed callbacks, and ambiguous mappings:
+- A complete, successfully read source snapshot is required before absence can imply withdrawal.
+- Failed, inaccessible, unsupported, or partial reads never mean an empty source.
+- Fence snapshot reconciliation against concurrent live mutations.
+- Reconciliation is idempotent and scoped to the integration/profile/target.
+- Preserve unrelated Backplane memories and explicit global-forget decisions.
+
+4. PHASE B: DURABLE HANDOFF AND DELIVERY STATUS
+
+Replace one-daemon-thread-per-operation with a bounded, tracked delivery mechanism.
+
+Before a callback is treated as successfully captured, its immutable event must be durably retained: either through verified host durable acceptance, or through a narrow local delivery journal that survives host unavailability and process exit. If a plugin journal is needed, keep it limited to delivery/source mapping, not a second canonical memory system.
+
+Reuse existing host outbox/capture upload machinery after acceptance. Preserve event IDs, revisions, timestamps, and all hashed fields across retries. Do not regenerate payloads during replay.
+
+Implement:
+- Restart recovery and bounded backoff.
+- Defined retryable versus terminal failures.
+- Bounded shutdown draining; durability must not depend on shutdown completing.
+- Observable local pending, host accepted, canonical committed, and rejected/dead-letter states.
+- Stable receipts or status lookup using actual command/event identities.
+- Safe handling of lost ACKs and HTTP timeouts after acceptance.
+- Explicit failure if local persistence fails; never report durable success in that case.
+- Content-safe diagnostics without raw memory, credentials, or full response bodies.
+
+Hermes already tracks background sync work. Ensure the provider's completion semantics reflect durable handoff instead of immediately returning after launching an untracked child thread.
+
+Do not automatically rebind scopes, relabel stored records, or replay commands rejected for authorization/binding errors. Preserve the distinction between provisional local acceptance and canonical success.
+
+5. PHASE C: CONNECT HERMES CONVERSATION EVIDENCE TO THE EXISTING PIPELINE
+
+Add a Hermes adapter to the existing capture/hooks/event-envelope architecture. The reviewed hook map only has claude_code and codex.
+
+Route conversation evidence through existing ingest and session projections so the existing summary, fact extraction, and downstream workers can consume it. Do not keep using one remember(type=episodic) call per turn as a substitute for event capture.
+
+Preserve, where provided:
+- Session lifecycle and parent session.
+- Stable event/turn/message references and source sequence.
+- Separate user and assistant roles, author information, and available tool evidence.
+- Repository/source provenance and original record references.
+- Input revisions and evidence lineage to resulting memories.
+
+Use actual Hermes messages/context where available. Avoid reingesting the entire growing transcript as new evidence on every turn. Handle retries, overlapping snapshots, resumed sessions, branching, reset, rewind, and on_session_switch without stale session attribution. Explicit memory_save and mirror callbacks must use the correct current session too.
+
+Emit supported session boundaries or integrate with existing incomplete/stale-session handling. An empty on_session_end plus a session_id string is not sufficient.
+
+Replace unmarked user[:500]/assistant[:2000] capture:
+- Preserve full evidence within supported limits, or a resolvable original reference.
+- For bounded excerpts, preserve truncation status, original length/hash, and source reference.
+- Preserve existing privacy/size controls.
+- Do not claim complete archival when originals or message classes are omitted.
+- Existing truncated data cannot be reconstructed without the original source.
+
+Reuse processing-state, revision guards, job retries, and operator visibility. Demonstrate that a captured Hermes session reaches the existing extraction pipeline and that a derived memory links back to its real input evidence.
+
+6. PHASE D: CURRENT CONTEXT, RELEVANCE, AND TRUST
+
+Define one policy for memory eligible for automatic context. Apply it consistently at the relevant canonical, edge, provisional-overlay, cache, and plugin boundaries.
+
+Exclude deleted, expired, superseded, archived, withdrawn, and explicitly forgotten source contributions as appropriate. Pending updates/deletions must not let older canonical content reappear. Preserve existing authorization-error behavior; do not fall back to local data on an authorization or validation failure.
+
+Audit public current-memory reads separately from explicit historical/operator inventory. Keep history available through an explicit supported path. At minimum, remove dynamic list-based startup injection. If agent-facing list promises current memory, make its visibility semantics match that promise without silently changing unrelated operator history.
+
+Use actual validated API capabilities. At the reviewed baseline, public list does not support project and rejects it; do not invent filters or assume they are silently applied. Recall/get source selectors and metadata are not substitutes for authorization.
+
+Implement configurable relevance rejection that can return zero results for unrelated queries:
+- Evaluate real retrieval or reranker relevance, with model/configuration-aware calibration.
+- Do not treat rank-fusion final_score as a probability or apply an arbitrary universal cutoff to it.
+- Preserve useful lexical/exact matches and define behavior when embedding/reranking is unavailable.
+- Keep rejection reasons inspectable without logging sensitive content.
+- Reranking must not merely reorder candidates that the relevance policy should reject.
+
+Use the existing token budget/packing machinery. Apply a final budget after canonical/provisional merge and rendering overhead, with deliberate handling of oversized entries. Avoid slicing selected facts at arbitrary character offsets. Deduplicate by real identity/source revision; preserve distinct evidence when content is similar.
+
+Separate raw conversational evidence, candidate inferences, and established facts in automatic use. Do not promote assistant statements to user-confirmed facts merely because they were remembered or have a supporting request row. Preserve truthful provenance and label uncertainty. Integrate this policy with existing evidence/lifecycle mechanisms rather than inventing a second confidence subsystem.
+
+Expose the necessary count, budget, relevance-policy, and source-selection configuration through existing supported configuration surfaces. Preserve clear, truthful provisional/stale/failed indicators.
+
+7. PHASE E: HERMES PROVIDER CONTRACT
+
+Conform to the supported Hermes interface and record its tested version.
+
+- on_memory_write: support add/replace/remove and actual metadata; only support legacy variants with explicit compatibility tests. Remove with empty content must work.
+- initialize: bind instance state to hermes_home/profile and supplied context; do not share mutable profile bindings through module globals.
+- is_available: local configuration/dependency checks only. Put remote readiness/recovery in initialization or an explicit health flow, without permanently disabling the provider for a transient outage.
+- system_prompt_block: static provider instructions only.
+- queue_prefetch: populate a bounded cache instead of discarding a remote result.
+- prefetch: consume cached, scoped results promptly. Isolate by authorized partition/profile/session/query/policy and appropriate revision/freshness. Invalidate on corrections, withdrawals, scope changes, or revocation.
+- on_pre_compress: return reference context via Hermes's supported channel. Never insert fabricated user messages or mutate the caller's transcript. Keep source references.
+- shutdown: bounded flush and tracked worker teardown, backed by restart recovery.
+- on_session_switch: update session state correctly without changing the profile/authority binding.
+
+Implement the durable pre-compress checkpoint v2 contract for the supported current Hermes baseline, with explicit compatibility behavior for older versions:
+- Advertise the capability only after implementing its durability requirement.
+- Commit the supplied checkpoint evidence before successful return.
+- Raise/report persistence failure so Hermes's checkpoint-required mode can prevent lossy compression.
+- Deduplicate repeated/overlapping checkpoint evidence.
+- Document that current v2 inputs are direct user/assistant evidence, not the entire tool/system transcript.
+- Handle older Hermes versions explicitly without falsely advertising the guarantee.
+
+8. COMPATIBILITY, LEGACY DATA, AND ROLLOUT
+
+Use additive, versioned persistence/contracts where possible. Old clients and new clients must fail or degrade explicitly when a peer lacks the new mutation/capture capability; never emulate replace/remove as append-only remember calls.
+
+Prepare a bounded, resumable reconciliation/import path for existing Hermes mirrors and raw excerpts:
+- Identify records only from reliable existing provenance.
+- Preserve known original IDs and relationships.
+- Mark known excerpts accurately; do not fabricate missing originals or entry identities.
+- Report ambiguous mappings for review without guessing destructive changes.
+- Keep migration/reconciliation replay safe.
+- Provide a dry run and clear rollback/disable instructions for operator-controlled data operations.
+
+Implement the tooling and document the rollout; do not run bulk destructive changes, production replays, credential changes, or live service restarts as an incidental part of development.
+
+Ensure packaged plugin assets, installer/version metadata, and smoke tooling are updated through the existing build/release path. A repository edit is not evidence that the user's installed plugin was upgraded.
+
+9. REQUIRED VERIFICATION
+
+Use the repository's Nix/devenv environment where appropriate. Start with focused tests in the owning packages, then required formatting/compilation and release gates. Do not fix unrelated failures or replace meaningful assertions with weaker ones.
+
+Correct existing plugin tests that currently expect network is_available and fabricated user-message insertion. Fixtures must represent actual Hermes callback shapes, including patch-to-replace normalization; a locally defined fallback MemoryProvider alone cannot establish upstream compatibility.
+
+Add focused regression/integration coverage for:
+
+1. Add -> replace -> remove in a sole-source fixture: exactly the effective source revision is current; removed/old content is absent from automatic context. Separately verify that obsolete source revisions are excluded while identical content remains eligible only if independently supported and otherwise current.
+2. Remove with empty content; exact previous_content handling; missing/ambiguous old identity produces safe reconciliation behavior.
+3. Duplicate delivery, restart replay, and changed-payload idempotency conflict.
+4. Multiple batch operations sharing tool_call_id; no accidental operation collapse.
+5. Same text from independent profiles/targets preserves separate source provenance despite canonical dedup. One native entry remains stable across sessions; distinct event revisions and conversation evidence occurrences retain their own session provenance.
+6. Withdrawing one source preserves independently supported facts; explicit global forget remains effective after reconciliation.
+7. Out-of-order update, delayed add after withdrawal, and concurrent mutations cannot resurrect stale state.
+8. Crash before send; host acceptance followed by lost ACK; restart recovery; exhausted retries; local persistence failure.
+9. Failed/partial source snapshots do not trigger mass withdrawal; concurrent snapshot/live changes converge correctly.
+10. Captured Hermes session creates the required canonical events/projections and derived memory evidence, with correct source roles and session identity.
+11. Session resume/branch/reset/rewind/switch does not misattribute later writes.
+12. Superseded, archived, expired, deleted, or withdrawn data cannot leak through startup, recall, overlay, cache, or offline paths within their documented consistency guarantees.
+13. An unrelated embedded query can return zero; useful matches survive; budgets apply after merge; meaningful content is not corrupted by fixed character slicing.
+14. Assistant guesses are not rendered as user-confirmed facts.
+15. is_available performs no network I/O; system_prompt_block is static; queue_prefetch results are consumed; on_pre_compress leaves messages unchanged and returns context.
+16. Checkpoint failure prevents lossy compression when checkpoint-required mode is used; repeated checkpoints are idempotent.
+17. Profile/source selectors obey intended sharing and existing partition authorization. cwd cannot redefine scope.
+18. Existing generic remember/forget, supported legacy peers, and other packaged integrations retain their contracts.
+
+Include at least one real plugin -> host HTTP test and canonical settlement/readback coverage. Mock-only success is insufficient for delivery and lifecycle claims.
+
+Use a compact end-to-end scenario with repeated facts, an assistant mistake, a user correction, unrelated chat, two independent sources, disconnection/restart, source withdrawal, and explicit forgetting. Assert the final active records, source memberships, delivery state, and injected context, not just HTTP status or test totals.
+
+10. DOCUMENTATION, RELEASE, AND DEFINITION OF DONE
+
+Maintain one coherent implementation document, preferably docs/memory/hermes-memory-integration.md, covering:
+- Ownership and data flow for native memory changes versus conversation evidence.
+- Actual schemas/protocol version, identity/revision rules, and acknowledgment semantics.
+- Failure, retry, conflict, reconciliation, and deletion behavior.
+- Configuration, compatibility, installation/update, migration, and rollback.
+- Source trust, recall eligibility, checkpoint coverage, and known limitations.
+- Reproducible validation and deployed-versus-source boundaries.
+Use a small Mermaid diagram where it clarifies the architecture.
+
+After validation, update the relevant canonical Agent Note topic under project=backplane according to its current skill and revision safeguards. Reconcile now-invalid Hermes contract guidance. Write a human-reviewable architectural explanation, not a stream of task-completion notes.
+
+Finish task-owned commits using repository conventions, push the current branch, and execute the documented release workflow, including the relevant packaged host/plugin artifacts. Follow the established versioning scheme and release qualification. Do not force-push, bypass protected-branch/release gates, or bundle unrelated user changes. If an actual release prerequisite fails, report the exact completed state and remaining blocker; do not claim a release or deployment that did not happen.
+
+The final report must state:
+- The implemented behavior and architectural decisions.
+- Which original issues are closed and which remain, with reasons.
+- Checks actually run and their results.
+- Migration/configuration/installation steps still required by an operator.
+- Commit SHA, pushed branch, release tag/URL, and actual workflow status.
+- Any remaining source-contract or deployment limitations.
+
+Do not stop after fixing the action-name condition, writing a plan, adding mocks, or implementing only the plugin. Completion requires the source lifecycle, durable handoff, pipeline integration, context policy, and actual provider contract to work together within the scope above.
+
+11. PRIMARY REFERENCES
+
+Recheck these at the implementation HEAD; line numbers and layout may change.
+
+Backplane Hermes plugin:
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/integrations/memory/hermes/__init__.py
+
+Existing plugin tests:
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/integrations/memory/tests/test_hermes.py
+
+Host memory commands, dedup, outbox, and idempotency:
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/apps/backplane_host_agent/lib/backplane/host_agent/memory.ex
+
+Host canonical settlement and forget semantics:
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/apps/backplane_api/lib/backplane/api/host_agent_memory_sync.ex
+
+Canonical memory persistence, list visibility, and evidence:
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/apps/backplane_memory/lib/backplane/memory/memories.ex
+
+Existing extraction entry:
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/apps/backplane_memory/lib/backplane/memory/workers/summary_worker.ex
+
+Recall retrieval and selection:
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/apps/backplane_memory/lib/backplane/memory/recall/channels.ex
+https://github.com/gsmlg-opt/backplane/blob/f36d09c8103277140b93988ce29b5083940cc0c8/apps/backplane_memory/lib/backplane/memory/recall/pipeline.ex
+
+Hermes provider contract:
+https://github.com/NousResearch/hermes-agent/blob/bac34e9e9946c9c6a9ce7ce64efadd47f8fa375b/agent/memory_provider.py
+
+Hermes callback normalization and background lifecycle:
+https://github.com/NousResearch/hermes-agent/blob/bac34e9e9946c9c6a9ce7ce64efadd47f8fa375b/agent/memory_manager.py
+
+Hermes checkpoint documentation:
+https://github.com/NousResearch/hermes-agent/blob/bac34e9e9946c9c6a9ce7ce64efadd47f8fa375b/website/docs/developer-guide/memory-provider-plugin.md

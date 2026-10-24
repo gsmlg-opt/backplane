@@ -302,6 +302,10 @@ client/provider evidence only: it does not establish gateway/host transport,
 canonical persistence, background processing, or a calibrated relevance cutoff.
 The Agent Note read required before a guarded update returned `UNAVAILABLE`
 (`Connection failed`); no note mutation was attempted.
+After connectivity recovered, the canonical Hermes topic
+`d395928f-d646-4521-8d3f-9bce583774a1` was updated with revision-guarded patching
+and verified at revision 3. It corrects the pinned callback/checkpoint contract,
+records source/delivery ownership and preserves unresolved acceptance limits.
 
 The provider follow-up adds durable insertion ordering and backoff fencing,
 tracked 30-second source rescans, and complete command/snapshot validation before
