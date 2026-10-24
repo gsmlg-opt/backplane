@@ -641,7 +641,7 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
 
   test "processing inventory opens directly without a source selection", %{conn: conn} do
     {:ok, view, _} = live(conn, "/memory/pipeline")
-    assert has_element?(view, "#memory-source-filters")
+    refute has_element?(view, "#memory-source-filters")
     refute has_element?(view, "#pipeline-partition")
     refute has_element?(view, "#pipeline-states")
   end

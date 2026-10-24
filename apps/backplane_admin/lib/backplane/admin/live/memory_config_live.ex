@@ -96,7 +96,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
   def render(assigns) do
     ~H"""
     <div id="memory-config">
-      <.memory_page_header title="Config" subtitle="Effective typed Memory V2 runtime configuration" />
+      <.memory_page_header title="Config" subtitle="Capture, processing, and retrieval settings with their effective runtime state" />
       <.form id="memory-config-filter" for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="max-w-xl"><.dm_input id="memory-config-query" name="filters[q]" label="Filter settings" value={@query} phx-debounce="300" /></.form>
       <.dm_alert :if={!@authorized?} id="config-unauthorized" variant="warning" title="Read-only configuration" class="mt-4">This LiveView was not mounted through the trusted Memory operator route.</.dm_alert>
       <.dm_alert :if={@mutation_error} id="config-mutation-error" variant="error" title="Setting not saved" class="mt-4">{@mutation_error}</.dm_alert>
@@ -107,21 +107,24 @@ defmodule Backplane.Admin.MemoryConfigLive do
         Host capture paths and local limits are configured in the standalone YAML. A host applies central sync policy during negotiation;
         check its last report on the host page and treat disconnected reports as stale.
       </.dm_alert>
-      <div class="mt-4 overflow-x-auto">
-        <.dm_table :if={@entries != []} id="memory-config-table" data={@entries} compact hover zebra>
-          <:col :let={entry} label="Setting">
-            <span class="font-medium">{entry.label}</span><code class="block text-xs text-on-surface-variant">{entry.key}</code>
-          </:col>
-          <:col :let={entry} label="Configured"><code>{display(entry.configured)}</code></:col>
-          <:col :let={entry} label="Effective">
-            <code>{display(entry.effective)}</code>
+      <p class="mt-5 mb-3 text-sm text-on-surface-variant">{length(@entries)} settings</p>
+      <div :if={@entries != []} id="memory-config-table" class="space-y-3">
+        <section :for={entry <- @entries} class="memory-setting" aria-label={entry.label}>
+          <div>
+            <h2 class="font-semibold">{entry.label}</h2>
+            <code class="mt-1 block text-xs text-on-surface-variant">{entry.key}</code>
+            <p class="mt-3 text-xs text-on-surface-variant">Configured: <code class="text-on-surface">{display(entry.configured)}</code></p>
+          </div>
+          <div>
+            <h3 class="memory-eyebrow mb-2">Effective state</h3>
+            <code class="text-sm">{display(entry.effective)}</code>
             <p class="mt-1 text-xs text-on-surface-variant">{entry.reason}</p>
             <p :if={entry.type == :model} class="mt-1 text-sm" id={"route-" <> form_id(entry.key)}>{entry.route_status}</p>
-            <p class="mt-1 text-xs text-on-surface-variant">{entry.apply_mode}</p>
-          </:col>
-          <:col :let={entry} label="Update">
-            <.form id={"memory-config-form-#{form_id(entry.key)}"} for={%{}} phx-submit="set-setting" class="flex min-w-72 items-end gap-2">
-              <input type="hidden" name="setting[key]" value={entry.key} />
+            <p class="mt-2 text-xs text-on-surface-variant">{entry.apply_mode}</p>
+          </div>
+          <.form id={"memory-config-form-#{form_id(entry.key)}"} for={%{}} phx-submit="set-setting" class="flex min-w-0 items-end gap-2">
+            <input type="hidden" name="setting[key]" value={entry.key} />
+            <div class="min-w-0 flex-1">
               <.dm_select :if={entry.type in [:boolean, :model, :credential]}
                 id={"memory-config-value-#{form_id(entry.key)}"} name="setting[value]"
                 label={entry.label} options={entry.options} value={form_value(entry.configured)} disabled={!@authorized?} />
@@ -129,10 +132,10 @@ defmodule Backplane.Admin.MemoryConfigLive do
                 id={"memory-config-value-#{form_id(entry.key)}"} name="setting[value]" label={entry.label}
                 type="number" step={if entry.type == :float, do: "any", else: "1"}
                 min={entry.minimum} max={entry.maximum} value={entry.configured} disabled={!@authorized?} />
-              <.dm_btn type="submit" size="sm" disabled={!@authorized?}>Save</.dm_btn>
-            </.form>
-          </:col>
-        </.dm_table>
+            </div>
+            <.dm_btn type="submit" native_submit variant="secondary" size="sm" disabled={!@authorized?}>Save</.dm_btn>
+          </.form>
+        </section>
       </div>
       <div class="mt-5 flex gap-3 text-sm"><.link navigate={~p"/memory/pipeline"} class="text-primary underline">Pipeline controls</.link><.link navigate={~p"/memory/audit"} class="text-primary underline">Audit</.link></div>
     </div>

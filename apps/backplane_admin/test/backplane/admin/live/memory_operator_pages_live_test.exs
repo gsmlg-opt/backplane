@@ -5,6 +5,7 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
   alias Backplane.Memory.Coordination.Lease
   alias Backplane.Memory.Audit
   alias Backplane.Memory.Ingest
+  alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Projections.Rebuild
 
   import Backplane.Memory.IngestFixtures
@@ -35,9 +36,10 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     :ok
   end
 
-  test "ordinary inventories open directly with optional source filters", %{conn: conn} do
+  test "ordinary inventories open directly without the shared source filter form", %{conn: conn} do
     for {path, root} <- [
-          {"/memory", "memory-collection"},
+          {"/memory", "memory-overview"},
+          {"/memory/search", "memory-search"},
           {"/memory/sessions", "memory-sessions"},
           {"/memory/timeline", "memory-timeline"},
           {"/memory/memories", "memory-memories"},
@@ -56,13 +58,18 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
         ] do
       {:ok, view, html} = live(recycle(conn), path)
       assert has_element?(view, "##{root}")
-      assert has_element?(view, "#memory-source-filters")
+      refute has_element?(view, "#memory-source-filters")
+      refute has_element?(view, "#memory-source-host")
+      refute has_element?(view, "#memory-source-repository")
+      refute has_element?(view, "#memory-source-project")
+      refute has_element?(view, "button", "Apply source filters")
+      refute has_element?(view, "a", "All sources")
       refute html =~ "Select an exact partition"
       refute html =~ "Register a host to provision"
       refute has_element?(view, "#memory-access")
 
       for error_id <-
-            ~w(memory-collection-error sessions-error timeline-error memories-error lesson-query-error crystal-query-error graph-error profile-error actions-error audit-error pipeline-states-error activity-query-error recall-query-error replay-query-error event-query-error stream-query-error) do
+            ~w(memory-search-error sessions-error timeline-error memories-error lesson-query-error crystal-query-error graph-error profile-error actions-error audit-error pipeline-states-error activity-query-error recall-query-error replay-query-error event-query-error stream-query-error) do
         refute has_element?(view, "##{error_id}"), "#{path} rendered #{error_id}"
       end
     end
@@ -79,6 +86,64 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
       assert has_element?(view, "##{root}")
       assert has_element?(view, "##{empty}")
     end
+  end
+
+  test "audit discloses empty cleanup history and preserves filters when showing it", %{
+    conn: conn
+  } do
+    metadata = %{
+      memory_space_id: @memory_space_id,
+      host_id: @partition["host"],
+      client_id: @partition["client"],
+      scope: @partition["scope"],
+      namespace: @partition["namespace"],
+      cutoff: "2024-08-12",
+      daily_deleted: 0,
+      contributions_deleted: 0
+    }
+
+    for _index <- 1..52 do
+      Audit.log("memory.activity.purge", "system", ["2024-08-12"], metadata)
+    end
+
+    Audit.log("memory.activity.purge", "system", ["2024-08-13"], %{
+      metadata
+      | cutoff: "2024-08-13",
+        daily_deleted: 2
+    })
+
+    query = Map.merge(@partition, %{"operation" => "memory.activity.purge", "actor" => "system"})
+    {:ok, view, _html} = live(conn, "/memory/audit?" <> URI.encode_query(query))
+
+    assert has_element?(view, "#audit-count", "1 matching audit entries")
+    assert has_element?(view, "#audit-empty-runs-summary", "52 empty cleanup runs hidden")
+    assert has_element?(view, "#memory-audit-table", "Before 2024-08-13")
+    assert has_element?(view, "#memory-audit-table", "2 daily rows")
+    refute has_element?(view, "#memory-audit-table", "2024-08-12")
+    refute has_element?(view, "#audit-next")
+
+    view |> element("#audit-toggle-empty-runs") |> render_click()
+    params = assert_patch(view) |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+    assert params["include_empty_runs"] == "true"
+    assert params["offset"] == "0"
+    assert has_element?(view, "#audit-count", "53 matching audit entries")
+    assert has_element?(view, "#memory-audit-table", "No data removed")
+    assert has_element?(view, "#audit-next")
+
+    view |> element("#audit-next") |> render_click()
+    params = assert_patch(view) |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+    assert Map.take(params, Map.keys(query)) == query
+    assert params["include_empty_runs"] == "true"
+    assert params["offset"] == "50"
+
+    view |> element("#audit-toggle-empty-runs") |> render_click()
+    params = assert_patch(view) |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+    assert Map.take(params, Map.keys(query)) == query
+    refute params["include_empty_runs"]
+    assert params["offset"] == "0"
+    assert has_element?(view, "#audit-count", "1 matching audit entries")
+    refute has_element?(view, "#audit-previous")
+    refute has_element?(view, "#memory-audit-table", "2024-08-12")
   end
 
   test "profile and actions expose bounded exact-partition states", %{
@@ -115,6 +180,54 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
 
     assert has_element?(actions, "#memory-actions-table", action.title)
     refute render(actions) =~ "Foreign action"
+  end
+
+  test "profile detail returns to the same inventory page and sources", %{conn: conn} do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    profiles =
+      for index <- 1..26 do
+        %Profile{}
+        |> Profile.changeset(%{
+          memory_space_id: @memory_space_id,
+          host_id: @partition["host"],
+          client_id: @partition["client"],
+          source_client_id: "operator-source-client",
+          scope: @partition["scope"],
+          namespace: @partition["namespace"],
+          project: "operator-profile-#{index}",
+          summary: "Stored profile #{index}",
+          updated_at: DateTime.add(now, -index)
+        })
+        |> Backplane.Repo.insert!()
+      end
+
+    selected = List.last(profiles)
+    previous = Enum.at(profiles, 24)
+    page_query = Map.put(@partition, "offset", "25")
+    {:ok, view, _html} = live(conn, "/memory/profile?" <> URI.encode_query(page_query))
+
+    assert has_element?(view, "#profiles-count", "26 matching profiles")
+    assert has_element?(view, "#memory-profiles-table", selected.project)
+    refute has_element?(view, "#memory-profiles-table", previous.project)
+
+    view
+    |> element("#memory-profiles-table a", selected.project)
+    |> render_click()
+
+    detail_params = assert_patch(view) |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+    assert detail_params == Map.put(page_query, "profile", selected.id)
+    assert has_element?(view, "#profile-summary", selected.summary)
+
+    view |> element("#profile-close-detail") |> render_click()
+
+    returned_params =
+      assert_patch(view) |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+    assert returned_params == page_query
+    refute has_element?(view, "#profile-complete")
+    assert has_element?(view, "#memory-profiles-table", selected.project)
+    refute has_element?(view, "#memory-profiles-table", previous.project)
   end
 
   test "action detail shows every origin and its active lease", %{conn: conn} do
@@ -432,6 +545,33 @@ defmodule Backplane.Admin.MemoryOperatorPagesLiveTest do
     decoded = view |> assert_patch() |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
     assert Map.take(decoded, Map.keys(query)) == query
     refute Map.has_key?(decoded, "offset")
+  end
+
+  test "failed timeline navigation hides the previous count and paging controls", %{conn: conn} do
+    session = "timeline-read-failure"
+
+    ingest_admin_event!(session, 1, "agent.tool.completed", %{
+      "source" => %{"tool_name" => "Read", "tool_response" => "Stored observation"}
+    })
+
+    assert {:ok, _} = Rebuild.session(@partition["host"], session)
+    timeline_path = "/memory/timeline?host=" <> @partition["host"] <> "&session=" <> session
+    {:ok, view, _} = live(conn, timeline_path)
+    assert has_element?(view, "#memory-timeline-list")
+    original_repo = Application.fetch_env!(:backplane_memory, :repo)
+    Backplane.Admin.MemoryFixtures.fail_memory_reads!()
+
+    render_patch(view, timeline_path <> "&offset=50")
+    assert has_element?(view, "#timeline-error")
+    refute has_element?(view, "#timeline-count")
+    refute has_element?(view, "#memory-timeline-list")
+    refute has_element?(view, "#timeline-previous")
+    refute has_element?(view, "#timeline-next")
+
+    Application.put_env(:backplane_memory, :repo, original_repo)
+    render_patch(view, timeline_path)
+    assert has_element?(view, "#memory-timeline-list")
+    refute has_element?(view, "#timeline-error")
   end
 
   defp ingest_admin_event!(session_id, sequence, event_type, payload) do

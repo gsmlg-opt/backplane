@@ -138,25 +138,6 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
            )
   end
 
-  test "source filter form preserves active search and sorting when applying or clearing sources",
-       %{conn: conn} do
-    {:ok, view, _} = live(conn, "/memory/memories?q=shared&sort=oldest&host=offline")
-
-    assert has_element?(
-             view,
-             ~s(#memory-source-filters input[type="hidden"][name="q"][value="shared"])
-           )
-
-    assert has_element?(
-             view,
-             ~s(#memory-source-filters input[type="hidden"][name="sort"][value="oldest"])
-           )
-
-    html = view |> element("#memory-source-filters") |> render()
-    [clear] = html |> Floki.parse_fragment!() |> Floki.find("a") |> Floki.attribute("href")
-    assert URI.decode_query(URI.parse(clear).query) == %{"q" => "shared", "sort" => "oldest"}
-  end
-
   test "global search, count, sorting, optional sources, and no-param detail use stored records",
        %{conn: conn} do
     a = memory!("Global shared source A", nil)
@@ -267,6 +248,35 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
     assert eventually(fn ->
              has_element?(view, "#memory-memories-table", "Newly visible inventory fact")
            end)
+  end
+
+  test "details lead the inventory and failed navigation clears content and pagination", %{
+    conn: conn
+  } do
+    memory = memory!("Readable selected memory", "detail-first-session")
+    detail_path = path("/memory/memories/#{memory.id}")
+    {:ok, view, html} = live(conn, detail_path)
+    {detail_at, _} = :binary.match(html, ~s(id="memory-detail"))
+    {table_at, _} = :binary.match(html, ~s(id="memory-memories-table"))
+    assert detail_at < table_at
+    assert has_element?(view, "#memory-detail a", "Back to memories")
+    refute has_element?(view, "#memory-access[open]")
+    original_repo = Application.fetch_env!(:backplane_memory, :repo)
+    Backplane.Admin.MemoryFixtures.fail_memory_reads!()
+
+    render_patch(view, detail_path <> "&offset=25")
+    assert has_element?(view, "#memories-error")
+    refute has_element?(view, "#memory-detail")
+    refute has_element?(view, "#memory-memories-table")
+    refute has_element?(view, "#memories-count")
+    refute has_element?(view, "#memories-previous")
+    refute has_element?(view, "#memories-next")
+    refute has_element?(view, "#memory-source-summary")
+
+    Application.put_env(:backplane_memory, :repo, original_repo)
+    render_patch(view, detail_path)
+    refute has_element?(view, "#memories-error")
+    assert has_element?(view, "#memory-detail", memory.content)
   end
 
   test "a deleted selected record becomes unavailable while the URL filter remains selected", %{

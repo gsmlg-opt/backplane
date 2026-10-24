@@ -5,12 +5,17 @@ defmodule Backplane.Admin.MemoryComponents do
 
   attr(:title, :string, required: true)
   attr(:subtitle, :string, required: true)
+  slot(:actions)
 
   def memory_page_header(assigns) do
     ~H"""
-    <header class="mb-6">
-      <h1 class="text-2xl font-bold tracking-tight">{@title}</h1>
-      <p class="mt-1 text-sm text-on-surface-variant">{@subtitle}</p>
+    <header class="memory-page-header">
+      <div class="min-w-0">
+        <p class="memory-eyebrow"><.dm_mdi name="brain" class="h-4 w-4" />Memory workspace</p>
+        <h1>{@title}</h1>
+        <p class="memory-page-description">{@subtitle}</p>
+      </div>
+      <div :if={@actions != []} class="memory-page-actions">{render_slot(@actions)}</div>
     </header>
     """
   end
@@ -29,12 +34,30 @@ defmodule Backplane.Admin.MemoryComponents do
     assigns = assign(assigns, ok?: ok?, value: value)
 
     ~H"""
-    <section aria-label={@title}>
+    <section aria-label={@title} class="memory-region">
+      <h2 class="memory-section-title">{@title}</h2>
       <div :if={@ok?}>{render_slot(@inner_block, @value)}</div>
       <.dm_alert :if={!@ok?} variant="error" title={@title} compact>
         Memory data is unavailable. Retry after checking the database connection.
       </.dm_alert>
     </section>
+    """
+  end
+
+  attr(:id, :string, required: true)
+  attr(:title, :string, required: true)
+  attr(:description, :string, required: true)
+  attr(:icon, :string, default: "database-search-outline")
+  slot(:inner_block)
+
+  def memory_blank_state(assigns) do
+    ~H"""
+    <.dm_card id={@id} variant="bordered" padding="lg" class="memory-blank-state">
+      <.dm_mdi name={@icon} class="memory-blank-icon" />
+      <h2>{@title}</h2>
+      <p>{@description}</p>
+      <div :if={@inner_block != []} class="mt-4 flex flex-wrap justify-center gap-3">{render_slot(@inner_block)}</div>
+    </.dm_card>
     """
   end
 

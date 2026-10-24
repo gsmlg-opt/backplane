@@ -99,6 +99,8 @@ defmodule Backplane.Admin.Layouts do
             label: "Operate",
             icon: "cog-outline",
             items: [
+              %{label: "Search", path: "/memory/search", icon: "magnify"},
+              %{label: "Pipeline", path: "/memory/pipeline", icon: "pipe"},
               %{label: "Recall Inspector", path: "/memory/recall", icon: "magnify-scan"},
               %{label: "Audit", path: "/memory/audit", icon: "text-box-search-outline"},
               %{label: "Config", path: "/memory/config", icon: "tune-variant"}
@@ -242,13 +244,6 @@ defmodule Backplane.Admin.Layouts do
         end)
       end)
     end)
-  end
-
-  def memory_selection_path(path) do
-    case String.split(path, "/", trim: true) do
-      ["memory", section | _] -> "/memory/" <> section
-      _ -> "/memory"
-    end
   end
 
   def active_left_nav_id(current_path) do

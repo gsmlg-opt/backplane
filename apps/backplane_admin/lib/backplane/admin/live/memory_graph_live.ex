@@ -1,7 +1,7 @@
 defmodule Backplane.Admin.MemoryGraphLive do
   use Backplane.Admin, :live_view
 
-  import Backplane.Admin.MemoryComponents, only: [memory_page_header: 1]
+  import Backplane.Admin.MemoryComponents, only: [memory_page_header: 1, memory_blank_state: 1]
   import Backplane.Admin.MemoryOperatorComponents
 
   alias Backplane.Memory.Config
@@ -29,7 +29,19 @@ defmodule Backplane.Admin.MemoryGraphLive do
   def handle_params(params, _uri, socket) do
     load(socket, browse_scope(params), domain(params["domain"]), page(params["offset"]))
   rescue
-    error -> {:noreply, assign(socket, error: error)}
+    error ->
+      {:noreply,
+       assign(socket,
+         partition: browse_scope(params),
+         domain: domain(params["domain"]),
+         offset: page(params["offset"]),
+         stats: nil,
+         relations: [],
+         next_offset: nil,
+         total: 0,
+         graph_state: :unavailable,
+         error: error
+       )}
   end
 
   @impl true
@@ -44,11 +56,11 @@ defmodule Backplane.Admin.MemoryGraphLive do
       <.dm_alert :if={@error} id="graph-error" variant="error" title="Graph unavailable">Graph aggregates could not be loaded.</.dm_alert>
       <.dm_alert :if={@graph_state == :disabled} id="graph-disabled" variant="warning" title="Graph disabled">Enable the Memory pipeline and relation classifier to build graph data.</.dm_alert>
       <.dm_alert :if={@graph_state == :provider_unavailable} id="graph-provider-unavailable" variant="warning" title="Graph provider unavailable">Configure the Memory LLM provider before graph extraction can run.</.dm_alert>
-      <.dm_card :if={@graph_state == :empty} id="graph-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No graph data matches</h2></.dm_card>
-      <nav id="graph-domain-filters" class="mb-4 flex gap-2" aria-label="Graph relation domains">
-        <.link :for={domain <- ~w(knowledge lifecycle provenance)} id={"graph-domain-#{domain}"} patch={~p"/memory/graph?#{domain_query(@partition, domain)}"} class="rounded border px-3 py-1 text-sm">{String.capitalize(domain)} ({Map.get(@stats && @stats.relation_count_by_domain || %{}, domain, 0)})</.link>
+      <.memory_blank_state :if={@graph_state == :empty} id="graph-empty" title="No graph data matches" description="Extracted concepts and relations appear here as memories are processed." icon="graph-outline" />
+      <nav id="graph-domain-filters" class="mb-4 flex flex-wrap gap-2" aria-label="Graph relation domains">
+        <.link :for={domain <- ~w(knowledge lifecycle provenance)} id={"graph-domain-#{domain}"} aria-current={if @domain == domain, do: "page"} patch={~p"/memory/graph?#{domain_query(@partition, domain)}"} class={["rounded border px-3 py-1 text-sm", @domain == domain && "border-primary bg-primary/10 text-primary"]}>{String.capitalize(domain)} ({Map.get(@stats && @stats.relation_count_by_domain || %{}, domain, 0)})</.link>
       </nav>
-      <.dm_card id="graph-domain-relations" variant="bordered" padding="sm">
+      <.dm_card :if={!@error} id="graph-domain-relations" variant="bordered" padding="sm">
         <h2 class="font-semibold">{String.capitalize(@domain)} relations</h2>
         <p :if={@relations == []} class="mt-2 text-sm text-on-surface-variant">No relations in this domain.</p>
         <ul :if={@relations != []} class="mt-3 space-y-3">
@@ -59,8 +71,8 @@ defmodule Backplane.Admin.MemoryGraphLive do
           </li>
         </ul>
       </.dm_card>
-      <p id="graph-count" class="mt-3 text-sm">{@total} matching relations in this domain</p>
-      <nav aria-label="Graph pagination" class="mt-3 flex gap-3">
+      <p :if={!@error} id="graph-count" class="mt-3 text-sm">{@total} matching relations in this domain</p>
+      <nav :if={!@error} aria-label="Graph pagination" class="mt-3 flex gap-3">
         <.link :if={@offset > 0} patch={~p"/memory/graph?#{Map.put(domain_query(@partition, @domain), "offset", max(0, @offset - 50))}"}>Previous</.link>
         <.link :if={@next_offset} patch={~p"/memory/graph?#{Map.put(domain_query(@partition, @domain), "offset", @next_offset)}"}>Next</.link>
       </nav>

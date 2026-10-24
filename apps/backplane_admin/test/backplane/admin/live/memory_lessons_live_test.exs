@@ -15,6 +15,32 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     %{partition: partition_fixture("lessons-ui")}
   end
 
+  test "detail precedes inventory and a failed refresh removes stale governance controls", %{
+    conn: conn,
+    partition: partition
+  } do
+    {:ok, lesson} = candidate_lesson(partition, "Stale governed lesson")
+    path = lesson_path(lesson.memory_id, partition)
+    {:ok, view, html} = live(conn, path)
+    {detail_position, _} = :binary.match(html, "lesson-detail-title")
+    {table_position, _} = :binary.match(html, "memory-lessons-table")
+    assert detail_position < table_position
+    assert has_element?(view, "#lesson-action-form")
+
+    original_repo = Application.fetch_env!(:backplane_memory, :repo)
+    Backplane.Admin.MemoryFixtures.fail_memory_reads!()
+    send(view.pid, :refresh_memory_operator)
+    assert has_element?(view, "#lesson-query-error")
+    refute has_element?(view, "#lesson-action-form")
+    refute has_element?(view, "#memory-lessons-table")
+    refute render(view) =~ "Stale governed lesson"
+
+    Application.put_env(:backplane_memory, :repo, original_repo)
+    render_patch(view, path)
+    assert has_element?(view, "#lesson-action-form")
+    refute has_element?(view, "#lesson-query-error")
+  end
+
   test "opens directly and supports optional legacy lesson filters", %{
     conn: conn,
     partition: partition
@@ -22,7 +48,7 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     {:ok, view, html} = live(conn, "/memory/lessons")
     refute html =~ "Select an exact partition"
     refute has_element?(view, "#memory-lessons-table")
-    assert has_element?(view, "#memory-source-filters")
+    refute has_element?(view, "#memory-source-filters")
 
     {:ok, lesson} = active_lesson(partition, "Render lesson", "backplane")
 
@@ -55,13 +81,9 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
 
     for label <- [
           "Rule",
+          "Source host / repository",
           "State",
           "Confidence",
-          "Reinforcement",
-          "Contradictions",
-          "Scope / Project",
-          "Source",
-          "Last use",
           "Evidence"
         ] do
       assert has_element?(view, "#memory-lessons-table th", label)
@@ -124,6 +146,7 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#lesson-state", "active")
+    assert has_element?(view, "#lesson-row-state-#{candidate.memory_id}", "active")
 
     assert [%{actor: "admin_ui:backplane_admin", metadata: metadata}] =
              Audit.list(partition, operation: "lesson.transition")
@@ -143,10 +166,96 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#lesson-state", "archived")
+    assert has_element?(view, "#lesson-row-state-#{candidate.memory_id}", "archived")
     assert has_element?(view, "#lesson-action-reactivate")
 
     assert [%{action: "memory_lesson.govern"}, %{action: "memory_lesson.govern"}] =
              Backplane.Admin.Audit.list()
+  end
+
+  test "governance refreshes filtered inventory totals while retaining page and sources", %{
+    conn: conn,
+    partition: partition
+  } do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    [newest, selected, oldest] =
+      for index <- 1..3 do
+        {:ok, lesson} = active_lesson(partition, "Filtered rule #{index}", "filtered-project")
+
+        lesson
+        |> Ecto.Changeset.change(updated_at: DateTime.add(now, -index))
+        |> Backplane.Repo.update!()
+      end
+
+    {:ok, _other_project} = active_lesson(partition, "Another project", "other-project")
+
+    {:ok, _foreign} =
+      active_lesson(partition_fixture("foreign-governance"), "Foreign rule", "filtered-project")
+
+    query = %{
+      "status" => "active",
+      "project" => "filtered-project",
+      "page" => "2",
+      "per_page" => "1"
+    }
+
+    inventory_path = lessons_path(partition, query)
+    detail_query = URI.parse(inventory_path).query
+
+    {:ok, view, _html} =
+      live(conn, "/memory/lessons/#{selected.memory_id}?" <> detail_query)
+
+    assert has_element?(view, "#lesson-row-state-#{selected.memory_id}", "active")
+    assert has_element?(view, "nav[aria-label='Lesson pagination']", "Page 2 of 3")
+
+    view
+    |> form("#lesson-action-form",
+      governance: %{"action" => "archive", "reason" => "Retire filtered lesson"}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#lesson-state", "archived")
+    refute has_element?(view, "#lesson-row-state-#{selected.memory_id}")
+    assert has_element?(view, "#lesson-row-state-#{oldest.memory_id}", "active")
+    refute has_element?(view, "#lesson-row-state-#{newest.memory_id}")
+    assert has_element?(view, "nav[aria-label='Lesson pagination']", "Page 2 of 2")
+    refute has_element?(view, "#lessons-next-page")
+    refute render(view) =~ "Another project"
+    refute render(view) =~ "Foreign rule"
+
+    view |> element("#lesson-close-detail") |> render_click()
+    assert_patch(view, inventory_path)
+    assert has_element?(view, "#lesson-row-state-#{oldest.memory_id}", "active")
+  end
+
+  test "a rejected governance change clears stale inventory and controls", %{
+    conn: conn,
+    partition: partition
+  } do
+    {:ok, lesson} = candidate_lesson(partition, "Concurrently changed rule")
+    {:ok, view, _html} = live(conn, lesson_path(lesson.memory_id, partition))
+
+    assert {:ok, _lesson} =
+             Lessons.transition(
+               lesson.memory_id,
+               "archived",
+               "Retired by another operator",
+               Ecto.UUID.generate(),
+               partition,
+               @audit
+             )
+
+    view
+    |> form("#lesson-action-form",
+      governance: %{"action" => "promote", "reason" => "Submitted from stale detail"}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#lesson-query-error")
+    refute has_element?(view, "#lesson-action-form")
+    refute has_element?(view, "#memory-lessons-table")
+    refute has_element?(view, "#lesson-state")
   end
 
   @tag :provenance_navigation

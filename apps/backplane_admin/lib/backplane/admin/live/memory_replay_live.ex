@@ -18,7 +18,7 @@ defmodule Backplane.Admin.MemoryReplayLive do
   alias Backplane.Memory.Operations.Inventory
   import Backplane.Admin.MemoryOperatorComponents, only: [browse_scope: 1]
 
-  @partition_params ~w(memory_space_id host client scope namespace)
+  @partition_params ~w(memory_space_id host client scope namespace project repository)
   @speeds [0.5, 1.0, 2.0, 4.0]
   @page_size 100
   @max_events 1_000
@@ -42,6 +42,7 @@ defmodule Backplane.Admin.MemoryReplayLive do
         session_query: %{},
         session_offset: 0,
         session_next: nil,
+        session_query_error: nil,
         events: [],
         kinds: [],
         active_kinds: MapSet.new(),
@@ -74,21 +75,34 @@ defmodule Backplane.Admin.MemoryReplayLive do
           session_choices: page.entries,
           session_query: Backplane.Admin.MemoryOperatorComponents.partition_query(scope),
           session_offset: offset,
-          session_next: page.next_offset
+          session_next: page.next_offset,
+          session_query_error: nil
         )
 
       {:error, reason} ->
-        assign(socket, query_error: reason)
+        clear_choices(socket, params, reason)
     end
   rescue
-    error -> assign(socket, query_error: error)
+    error -> clear_choices(socket, params, error)
+  end
+
+  defp clear_choices(socket, params, reason) do
+    assign(socket,
+      session_choices: [],
+      session_next: nil,
+      session_query:
+        Backplane.Admin.MemoryOperatorComponents.partition_query(browse_scope(params)),
+      session_offset: Backplane.Admin.MemoryOperatorComponents.page(params["offset"]),
+      session_query_error: reason
+    )
   end
 
   @impl true
   def handle_event("select_partition", %{"replay" => params}, socket) do
     if socket.router do
       query =
-        params
+        socket.assigns.session_query
+        |> Map.merge(params)
         |> Map.take(@partition_params ++ ["session"])
         |> Map.new(fn {key, value} -> {key, String.trim(value || "")} end)
 
@@ -274,10 +288,10 @@ defmodule Backplane.Admin.MemoryReplayLive do
       <div :if={@authorized?}>
         <.form id="replay-selector" for={%{}} as={:replay} phx-submit="select_partition" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
           <.dm_input id="replay-session" name="replay[session]" label="Session" value={@session_id || ""} required />
-          <div class="sm:col-span-2 lg:col-span-6"><.dm_btn type="submit" variant="primary">Load replay</.dm_btn></div>
+          <div class="sm:col-span-2 lg:col-span-6"><.dm_btn native_submit type="submit" variant="primary">Load replay</.dm_btn></div>
         </.form>
 
-        <.dm_card :if={is_nil(@session_id)} id="replay-session-inventory" padding="sm">
+        <.dm_card :if={is_nil(@session_id) && !@session_query_error} id="replay-session-inventory" padding="sm">
           <h2 class="font-semibold">Choose a stored session</h2>
           <p :if={@session_choices == []} class="mt-2 text-sm">No projected sessions match.</p>
           <ul class="mt-3 space-y-2">
@@ -286,8 +300,8 @@ defmodule Backplane.Admin.MemoryReplayLive do
           <.link :if={@session_next} navigate={"/memory/replay?" <> URI.encode_query(Map.put(@session_query, "offset", @session_next))} class="mt-3 inline-block text-primary underline">Next sessions</.link>
         </.dm_card>
 
-        <.dm_alert :if={@query_error} id="replay-query-error" variant="error" title="Replay unavailable" compact class="mt-4">
-          The selected session could not be loaded for the current filters.
+        <.dm_alert :if={@query_error || @session_query_error} id="replay-query-error" variant="error" title="Replay unavailable" compact class="mt-4">
+          The session data could not be loaded for the current filters. Try again.
         </.dm_alert>
 
         <.dm_alert :if={@truncated?} id="replay-truncated" variant="warning" title="Replay truncated" compact class="mt-4">
@@ -400,7 +414,20 @@ defmodule Backplane.Admin.MemoryReplayLive do
         socket
 
       params["session"] in [nil, ""] ->
-        assign(socket, partition: nil, session_id: nil, events: [], query_error: nil)
+        socket
+        |> invalidate_timer(false)
+        |> assign(
+          partition: nil,
+          session_id: nil,
+          events: [],
+          kinds: [],
+          active_kinds: MapSet.new(),
+          selected_event_id: nil,
+          selected_source: nil,
+          source_error: nil,
+          truncated?: false,
+          query_error: nil
+        )
 
       true ->
         load(socket, params)
@@ -475,7 +502,18 @@ defmodule Backplane.Admin.MemoryReplayLive do
         |> preserve_or_select_first()
 
       {:error, reason} ->
-        socket |> invalidate_timer(false) |> assign(query_error: reason)
+        socket
+        |> invalidate_timer(false)
+        |> assign(
+          events: [],
+          kinds: [],
+          active_kinds: MapSet.new(),
+          selected_event_id: nil,
+          selected_source: nil,
+          source_error: nil,
+          truncated?: false,
+          query_error: reason
+        )
     end
   end
 

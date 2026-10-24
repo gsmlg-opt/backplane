@@ -56,10 +56,10 @@ defmodule Backplane.Admin.MemoryLessonsLive do
     else
       {:error, :not_found} ->
         {:ok, partition} = partition_result
-        {:noreply, assign(socket, partition: partition, selected: nil, query_error: :not_found)}
+        {:noreply, clear_loaded(socket, partition, :not_found)}
 
       {:error, reason} ->
-        {:noreply, assign(socket, query_error: reason)}
+        {:noreply, clear_loaded(socket, browse_scope(params), reason)}
     end
   end
 
@@ -109,19 +109,28 @@ defmodule Backplane.Admin.MemoryLessonsLive do
           selected.lesson.memory_id
         )
 
-        {:ok, selected} =
-          Lessons.get_admin(selected.lesson.memory_id, record_partition(selected.memory))
+        case reload_governed(socket, selected) do
+          {:ok, socket} ->
+            {:noreply, put_flash(socket, :info, "Lesson state updated.")}
 
-        {:noreply,
-         socket
-         |> assign(selected: selected)
-         |> put_flash(:info, "Lesson state updated.")}
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> clear_loaded(socket.assigns.partition, reason)
+             |> put_flash(
+               :error,
+               "The lesson changed, but its updated state could not be loaded."
+             )}
+        end
 
       {:error, :reason_required} ->
         {:noreply, put_flash(socket, :error, "A reason is required for lesson governance.")}
 
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "The lesson state could not be updated.")}
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> clear_loaded(socket.assigns.partition, reason)
+         |> put_flash(:error, "The lesson state could not be updated.")}
     end
   end
 
@@ -141,22 +150,16 @@ defmodule Backplane.Admin.MemoryLessonsLive do
           <.dm_input id="lesson-project" name="filters[project]" label="Project" value={@filters["project"]} phx-debounce="300" />
         </.form>
 
-        <.dm_card :if={@page.entries == []} variant="bordered" padding="lg" class="mt-4 text-center">
-          <h2 class="text-lg font-semibold">No lessons match</h2>
-          <p class="mt-1 text-sm text-on-surface-variant">Change the state or project filter to inspect other lessons.</p>
-        </.dm_card>
+        <.lesson_detail :if={@selected} entry={@selected} partition={record_partition(@selected.memory, @partition)} filters={@filters} />
+
+        <.memory_blank_state :if={!@query_error && @page.entries == []} id="lessons-empty" title="No lessons match" description="Change the state or project filter to inspect other lessons." icon="school-outline" />
 
         <div class="mt-4 overflow-x-auto">
-          <.dm_table :if={@page.entries != []} id="memory-lessons-table" data={@page.entries} compact hover zebra class="min-w-[84rem]" phx-mounted={fix_dm_table_rowgroup_roles("memory-lessons-table")}>
-            <:col :let={entry} label="Rule"><.link href={lesson_detail_path(entry.lesson.memory_id, @partition, @filters)} class="font-medium text-primary underline underline-offset-2">{entry.memory.content}</.link></:col>
+          <.dm_table :if={@page.entries != []} id="memory-lessons-table" data={@page.entries} compact hover zebra class="min-w-[52rem]" phx-mounted={fix_dm_table_rowgroup_roles("memory-lessons-table")}>
+            <:col :let={entry} label="Rule"><.link href={lesson_detail_path(entry.lesson.memory_id, @partition, @filters)} class="line-clamp-3 font-medium text-primary underline underline-offset-2">{entry.memory.content}</.link><p class="mt-2 text-xs text-on-surface-variant">{entry.project || "All projects"} · {entry.memory.scope}</p></:col>
             <:col :let={entry} label="Source host / repository"><.source_identity record={entry.memory} /></:col>
-            <:col :let={entry} label="State"><.dm_badge variant={state_variant(entry.lesson.status)} size="sm"><span id={"lesson-row-state-#{entry.lesson.memory_id}"}>{entry.lesson.status}</span></.dm_badge></:col>
+            <:col :let={entry} label="State"><.dm_badge variant={state_variant(entry.lesson.status)} size="sm"><span id={"lesson-row-state-#{entry.lesson.memory_id}"}>{entry.lesson.status}</span></.dm_badge><p class="mt-2 text-xs text-on-surface-variant">{entry.lesson.reinforcement_count} reinforcements · {entry.lesson.contradiction_count} contradictions</p></:col>
             <:col :let={entry} label="Confidence">{format_decimal(entry.memory.confidence)}</:col>
-            <:col :let={entry} label="Reinforcement">{entry.lesson.reinforcement_count}</:col>
-            <:col :let={entry} label="Contradictions">{entry.lesson.contradiction_count}</:col>
-            <:col :let={entry} label="Scope / Project">{entry.memory.scope} / {entry.project || "—"}</:col>
-            <:col :let={entry} label="Source">{entry.source}</:col>
-            <:col :let={entry} label="Last use">{format_datetime(entry.lesson.last_applied_at)}</:col>
             <:col :let={entry} label="Evidence">{length(entry.evidence)}</:col>
           </.dm_table>
         </div>
@@ -167,7 +170,6 @@ defmodule Backplane.Admin.MemoryLessonsLive do
           <.memory_link_button :if={@page.page < @page.total_pages} id="lessons-next-page" patch={lessons_page_path(@partition, @filters, @page.page + 1)}>Next</.memory_link_button>
         </nav>
 
-        <.lesson_detail :if={@selected} entry={@selected} partition={record_partition(@selected.memory, @partition)} filters={@filters} />
       </div>
     </div>
     """
@@ -182,7 +184,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
     <aside class="mt-6" aria-labelledby="lesson-detail-title">
       <.dm_card variant="bordered" padding="sm">
         <div class="flex flex-wrap items-start justify-between gap-3">
-          <div><h2 id="lesson-detail-title" class="text-lg font-semibold">{@entry.memory.content}</h2><p class="mt-1 text-sm text-on-surface-variant">{@entry.lesson.context}</p></div>
+          <div class="min-w-0"><h2 id="lesson-detail-title" class="break-words text-lg font-semibold">{@entry.memory.content}</h2><p class="mt-1 break-words text-sm text-on-surface-variant">{@entry.lesson.context}</p></div>
           <.memory_link_button id="lesson-close-detail" patch={~p"/memory/lessons?#{canonical_query(@partition, @filters)}"} variant="ghost" size="sm">Close detail</.memory_link_button>
         </div>
         <dl class="mt-4 grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[max-content_minmax(0,1fr)]">
@@ -218,10 +220,11 @@ defmodule Backplane.Admin.MemoryLessonsLive do
         </section>
 
         <.form :if={available_actions(@entry.lesson.status) != []} id="lesson-action-form" for={%{}} as={:governance} phx-submit="govern" class="mt-5 border-t border-outline-variant pt-4">
+          <p class="mb-3 text-sm text-on-surface-variant">This changes the stored lesson state. A reason is required and the action is audited.</p>
           <.dm_select id="lesson-action" name="governance[action]" label="Action" value={available_actions(@entry.lesson.status) |> hd() |> elem(0)} options={Enum.map(available_actions(@entry.lesson.status), fn {action, label} -> {action, label} end)} />
           <.dm_textarea id="lesson-action-reason" name="governance[reason]" label="Reason" value="" rows={2} required />
           <div class="mt-3 flex flex-wrap gap-2">
-            <.dm_btn id={"lesson-action-#{available_actions(@entry.lesson.status) |> hd() |> elem(0)}"} type="submit" variant="primary">Apply action</.dm_btn>
+            <.dm_btn id={"lesson-action-#{available_actions(@entry.lesson.status) |> hd() |> elem(0)}"} native_submit type="submit" variant="primary">Apply action</.dm_btn>
           </div>
         </.form>
       </.dm_card>
@@ -237,6 +240,28 @@ defmodule Backplane.Admin.MemoryLessonsLive do
   end
 
   defp load_selected(_action, _params, _partition), do: {:ok, nil}
+
+  defp reload_governed(socket, previous) do
+    with {:ok, page} <-
+           Inventory.lessons(socket.assigns.partition, filter_options(socket.assigns.filters)),
+         {:ok, selected} <-
+           Lessons.get_admin(previous.lesson.memory_id, record_partition(previous.memory)) do
+      {:ok, assign(socket, page: page, selected: selected, query_error: nil)}
+    end
+  rescue
+    _ -> {:error, :unavailable}
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
+
+  defp clear_loaded(socket, partition, reason) do
+    assign(socket,
+      partition: partition,
+      selected: nil,
+      page: %{entries: [], page: 1, per_page: @per_page, total: 0, total_pages: 0},
+      query_error: reason
+    )
+  end
 
   defp govern(id, "promote", reason, partition),
     do: Lessons.promote(id, reason, Ecto.UUID.generate(), partition, audit_context())

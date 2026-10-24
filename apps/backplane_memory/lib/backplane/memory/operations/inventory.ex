@@ -272,7 +272,33 @@ defmodule Backplane.Memory.Operations.Inventory do
           ),
         else: query
 
-    paginate(query, opts)
+    empty_purge =
+      dynamic(
+        [a],
+        a.operation == "memory.activity.purge" and
+          fragment("COALESCE(?, '')", a.actor) == "system" and
+          fragment(
+            "? @> '{\"daily_deleted\":0,\"contributions_deleted\":0}'::jsonb",
+            a.metadata
+          )
+      )
+
+    empty_purge_count =
+      query
+      |> where(^empty_purge)
+      |> exclude(:order_by)
+      |> exclude(:select)
+      |> select([a], count())
+      |> repo().one()
+
+    query =
+      if Keyword.get(opts, :include_empty_runs, true),
+        do: query,
+        else: where(query, ^dynamic([a], not (^empty_purge)))
+
+    with {:ok, result} <- paginate(query, opts) do
+      {:ok, Map.put(result, :empty_purge_count, empty_purge_count)}
+    end
   rescue
     _ -> {:error, :unavailable}
   catch
@@ -520,8 +546,19 @@ defmodule Backplane.Memory.Operations.Inventory do
       |> repo().all()
       |> Map.new(&{&1.date, &1})
 
+    first_date =
+      rows
+      |> Map.values()
+      |> Enum.filter(&(&1.event_count > 0))
+      |> Enum.map(& &1.date)
+      |> Enum.min(Date, fn -> nil end)
+
     trends =
-      Enum.map(Date.range(from_date, to_date), &Map.get(rows, &1, Map.put(zero, :date, &1)))
+      if first_date do
+        Enum.map(Date.range(first_date, to_date), &Map.get(rows, &1, Map.put(zero, :date, &1)))
+      else
+        []
+      end
 
     breakdown = fn dimension ->
       query
@@ -570,7 +607,7 @@ defmodule Backplane.Memory.Operations.Inventory do
        agent_breakdown: breakdown.(:agent_id),
        host_breakdown: breakdown.(:host_id),
        recent_events: repo().all(events),
-       summary: Map.merge(summary, %{date_from: from_date, date_to: to_date})
+       summary: Map.merge(summary, %{date_from: first_date, date_to: to_date})
      }}
   rescue
     _ -> {:error, :unavailable}

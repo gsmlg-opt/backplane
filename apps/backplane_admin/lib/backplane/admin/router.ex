@@ -116,6 +116,7 @@ defmodule Backplane.Admin.Router do
         "memory_config_authorized" => true
       } do
       live("/memory", MemoryOverviewLive, :index)
+      live("/memory/search", MemorySearchLive, :index)
       live("/memory/streams", MemoryStreamsLive, :index)
       live("/memory/streams/:stream_id", MemoryStreamsLive, :show)
       live("/memory/events", MemoryEventsLive, :index)

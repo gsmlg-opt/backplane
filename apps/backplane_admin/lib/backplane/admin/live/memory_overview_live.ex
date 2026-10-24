@@ -6,8 +6,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   import Backplane.Admin.MemoryComponents
 
   alias Backplane.Memory.Operations
-  alias Backplane.Memory.Operations.Inventory
-  import Backplane.Admin.MemoryOperatorComponents, only: [browse_scope: 1, partition_query: 1]
   alias Backplane.Memory.Operations.Repair
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Skills.AgentManage
@@ -30,10 +28,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
      assign(socket,
        current_path: "/memory",
        regions: nil,
-       inventory: %{entries: [], total: 0},
-       inventory_error: nil,
-       inventory_scope: %{},
-       inventory_query: "",
        repair_result: nil,
        capture_limit: 50,
        capture_agents: capture_agents()
@@ -41,20 +35,8 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
-    scope = browse_scope(params)
-
-    socket =
-      assign(socket,
-        regions: Operations.overview(),
-        inventory_scope: scope,
-        inventory_query: params["q"] || ""
-      )
-
-    case Inventory.memories(scope, q: params["q"], limit: 8) do
-      {:ok, page} -> {:noreply, assign(socket, inventory: page, inventory_error: nil)}
-      {:error, reason} -> {:noreply, assign(socket, inventory_error: reason)}
-    end
+  def handle_params(_params, _uri, socket) do
+    {:noreply, assign(socket, regions: Operations.overview())}
   end
 
   @impl true
@@ -101,31 +83,20 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div>
+    <div id="memory-overview">
       <.memory_page_header
         title="Memory"
-        subtitle="Authoritative streams, committed events, and guarded V2 rollout"
-      />
-
-      <.dm_card id="memory-collection" variant="bordered" padding="sm" class="mb-5">
-        <h2 class="text-lg font-semibold">Memory collection</h2>
-        <form method="get" action="/memory" class="mt-3 flex flex-wrap items-end gap-3">
-          <input :for={{key, value} <- partition_query(@inventory_scope)} type="hidden" name={key} value={value} />
-          <.dm_input name="q" label="Search memories" value={@inventory_query} />
-          <.dm_btn type="submit" native_submit variant="primary">Search</.dm_btn>
-        </form>
-        <.dm_alert :if={@inventory_error} id="memory-collection-error" variant="error" title="Collection unavailable">The stored collection could not be queried. Retry the query.</.dm_alert>
-        <p :if={!@inventory_error} id="memory-collection-count" class="mt-3 text-sm">{@inventory.total} matching memories across stored sources</p>
-        <ul :if={!@inventory_error} class="mt-3 space-y-2"><li :for={memory <- @inventory.entries}><.link navigate={~p"/memory/memories/#{memory.id}"} class="text-primary underline">{memory.content}</.link><span class="ml-2 text-xs text-on-surface-variant">{memory.host_id || "Unknown source"}</span></li></ul>
-        <.link navigate={~p"/memory/memories?#{Map.put(partition_query(@inventory_scope), "q", @inventory_query)}"} class="mt-4 inline-block text-primary underline">Browse all matching memories</.link>
-      </.dm_card>
+        subtitle="Capture health, stored knowledge, and memory processing at a glance"
+      >
+        <:actions><.memory_link_button id="memory-overview-activity" navigate={~p"/memory/activity"} variant="ghost" size="sm">View activity</.memory_link_button><.memory_link_button id="memory-overview-pipeline" navigate={~p"/memory/pipeline"} variant="ghost" size="sm">Pipeline</.memory_link_button></:actions>
+      </.memory_page_header>
 
       <.dm_card
         :if={is_nil(@regions)}
         id="memory-overview-loading"
         variant="bordered"
       >
-        Loading Memory V2 operations…
+        Loading memory overview…
       </.dm_card>
 
       <div :if={@regions} class="space-y-6">
@@ -163,6 +134,116 @@ defmodule Backplane.Admin.MemoryOverviewLive do
           </section>
         </.memory_region>
 
+        <.memory_region
+          title="Persisted activity"
+          result={@regions.persisted_counts}
+          :let={counts}
+        >
+          <.dm_card variant="bordered" padding="none">
+            <div class="grid sm:grid-cols-2">
+              <.dm_stat
+                title="Open streams"
+                value={Integer.to_string(counts.open_streams)}
+              />
+              <.dm_stat
+                title="Events persisted in 24 hours"
+                value={Integer.to_string(counts.events_last_24h)}
+              />
+            </div>
+          </.dm_card>
+        </.memory_region>
+
+        <.memory_region title="Knowledge health" result={@regions.dashboard} :let={dashboard}>
+          <.dm_card variant="bordered" padding="none">
+            <div class="grid sm:grid-cols-2 lg:grid-cols-4">
+              <.dm_stat title="Memory by type" value={count_map_value(dashboard.knowledge.memories_by_type)} />
+              <.dm_stat title="Memory lifecycle" value={count_map_value(dashboard.knowledge.memories_by_lifecycle)} />
+              <.dm_stat title="Lessons by state" value={count_map_value(dashboard.knowledge.lessons_by_state)} />
+              <.dm_stat title="Crystals" value={metric_value(dashboard.knowledge.crystals)} />
+              <.dm_stat title="Graph nodes / edges" value={"#{dashboard.knowledge.graph_nodes} / #{dashboard.knowledge.graph_edges}"} />
+              <.dm_stat title="Pending contradictions" value={metric_value(dashboard.knowledge.pending_contradictions)} />
+            </div>
+            <div class="flex gap-3 px-4 pb-4 text-sm">
+              <.link href={~p"/memory/lessons"} class="text-primary underline">Review lessons</.link>
+              <.link href={~p"/memory/crystals"} class="text-primary underline">Review crystals</.link>
+            </div>
+          </.dm_card>
+        </.memory_region>
+
+        <div class="grid gap-6 xl:grid-cols-2">
+        <.memory_region
+          title="Recent events"
+          result={@regions.recent_events}
+          :let={events}
+        >
+          <p :if={events == []} class="memory-toolbar text-sm text-on-surface-variant">No recent events.</p>
+          <div :if={events != []} class="overflow-x-auto">
+            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
+            <.dm_table
+              id="memory-recent-events"
+              data={events}
+              compact
+              hover
+              zebra
+              class="min-w-[48rem]"
+              phx-mounted={fix_dm_table_rowgroup_roles("memory-recent-events")}
+            >
+              <:col :let={event} label="Event">
+                <.link
+                  href={~p"/memory/events/#{event.id}"}
+                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
+                >
+                  {event.event_type}
+                </.link>
+              </:col>
+              <:col :let={event} label="Stream">
+                <span class="font-mono text-xs">{event.stream_id}</span>
+              </:col>
+              <:col :let={event} label="Occurred">
+                {format_datetime(event.occurred_at)}
+              </:col>
+            </.dm_table>
+          </div>
+        </.memory_region>
+        <.memory_region
+          title="Active streams"
+          result={@regions.active_streams}
+          :let={streams}
+        >
+          <p :if={streams == []} class="memory-toolbar text-sm text-on-surface-variant">No active streams.</p>
+          <div :if={streams != []} class="overflow-x-auto">
+            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
+            <.dm_table
+              id="memory-active-streams"
+              data={streams}
+              compact
+              hover
+              zebra
+              class="min-w-[48rem]"
+              phx-mounted={fix_dm_table_rowgroup_roles("memory-active-streams")}
+            >
+              <:col :let={stream} label="Stream">
+                <.link
+                  href={~p"/memory/streams/#{stream.stream_id}"}
+                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
+                >
+                  {stream.stream_id}
+                </.link>
+              </:col>
+              <:col :let={stream} label="Project">
+                {stream.project || "—"}
+              </:col>
+              <:col :let={stream} label="Last activity">
+                {format_datetime(stream.last_event_at)}
+              </:col>
+            </.dm_table>
+          </div>
+        </.memory_region>
+        </div>
+
+        <details id="memory-diagnostics" class="memory-disclosure">
+          <summary>Capture, processing &amp; recall diagnostics</summary>
+          <div class="memory-disclosure-body space-y-6">
         <.memory_region
           title="Host capture"
           result={{:ok, @capture_agents.entries}}
@@ -253,25 +334,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
           </div>
         </.memory_region>
 
-        <.memory_region
-          title="Persisted activity"
-          result={@regions.persisted_counts}
-          :let={counts}
-        >
-          <.dm_card variant="bordered" padding="none">
-            <div class="grid sm:grid-cols-2">
-              <.dm_stat
-                title="Open streams"
-                value={Integer.to_string(counts.open_streams)}
-              />
-              <.dm_stat
-                title="Events persisted in 24 hours"
-                value={Integer.to_string(counts.events_last_24h)}
-              />
-            </div>
-          </.dm_card>
-        </.memory_region>
-
         <.memory_region title="Ingestion health" result={@regions.dashboard} :let={dashboard}>
           <.dm_card variant="bordered" padding="none">
             <div class="grid sm:grid-cols-2 lg:grid-cols-5">
@@ -355,23 +417,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
           </.dm_card>
         </.memory_region>
 
-        <.memory_region title="Knowledge health" result={@regions.dashboard} :let={dashboard}>
-          <.dm_card variant="bordered" padding="none">
-            <div class="grid sm:grid-cols-2 lg:grid-cols-4">
-              <.dm_stat title="Memory by type" value={count_map_value(dashboard.knowledge.memories_by_type)} />
-              <.dm_stat title="Memory lifecycle" value={count_map_value(dashboard.knowledge.memories_by_lifecycle)} />
-              <.dm_stat title="Lessons by state" value={count_map_value(dashboard.knowledge.lessons_by_state)} />
-              <.dm_stat title="Crystals" value={metric_value(dashboard.knowledge.crystals)} />
-              <.dm_stat title="Graph nodes / edges" value={"#{dashboard.knowledge.graph_nodes} / #{dashboard.knowledge.graph_edges}"} />
-              <.dm_stat title="Pending contradictions" value={metric_value(dashboard.knowledge.pending_contradictions)} />
-            </div>
-            <div class="flex gap-3 px-4 pb-4 text-sm">
-              <.link href={~p"/memory/lessons"} class="text-primary underline">Review lessons</.link>
-              <.link href={~p"/memory/crystals"} class="text-primary underline">Review crystals</.link>
-            </div>
-          </.dm_card>
-        </.memory_region>
-
         <.memory_region title="Coordination health" result={@regions.dashboard} :let={dashboard}>
           <.dm_card variant="bordered" padding="none">
             <div class="grid sm:grid-cols-2 lg:grid-cols-5">
@@ -383,44 +428,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
             </div>
           </.dm_card>
         </.memory_region>
-
-        <section id="memory-repair-operations" aria-label="Repair operations">
-          <.dm_card variant="bordered" padding="lg">
-            <h2 class="text-lg font-semibold">Repair operations</h2>
-            <p class="mt-1 text-sm text-on-surface-variant">
-              Run one bounded, audited repair inside an exact trusted partition.
-            </p>
-
-            <.form for={%{}} as={:repair} phx-submit="repair" class="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-              <.dm_input id="repair-memory-space" name="repair[memory_space_id]" label="Memory space" value="" required />
-              <.dm_input id="repair-host" name="repair[host_id]" label="Host" value="" required />
-              <.dm_input id="repair-client" name="repair[client_id]" label="Client" value="" required />
-              <.dm_input id="repair-scope" name="repair[scope]" label="Scope" value="" required />
-              <.dm_input id="repair-namespace" name="repair[namespace]" label="Namespace" value="" required />
-              <.dm_select id="repair-kind" name="repair[kind]" label="Operation" value="failed_projections" options={Enum.map(Repair.kinds(), &{&1, humanize(&1)})} />
-              <.dm_input id="repair-idempotency-key" name="repair[idempotency_key]" label="Idempotency key" value="" required />
-              <.dm_input id="repair-target" name="repair[target_id]" label="Target ID" value="" />
-              <.dm_input id="repair-job-ids" name="repair[job_ids]" label="Job IDs (dead letters, comma-separated)" value="" />
-              <.dm_input id="repair-session" name="repair[session_id]" label="Session ID" value="" />
-              <.dm_input id="repair-project" name="repair[project]" label="Project" value="" />
-              <.dm_select id="repair-resolution" name="repair[resolution]" label="Relation resolution" value="" options={[{"", "Not applicable"}, {"confirmed", "Confirmed"}, {"rejected", "Rejected"}]} />
-              <.dm_select id="repair-action" name="repair[action]" label="Lesson action" value="" options={[{"", "Not applicable"}, {"promote", "Promote"}, {"archive", "Archive"}, {"dispute", "Dispute"}, {"supersede", "Supersede"}]} />
-              <.dm_input id="repair-reason" name="repair[reason]" label="Reason" value="" />
-              <.dm_input id="repair-date-from" name="repair[date_from]" type="date" label="Activity from" value="" />
-              <.dm_input id="repair-date-to" name="repair[date_to]" type="date" label="Activity to" value="" />
-              <div class="flex items-end">
-                <.dm_btn type="submit" variant="primary">Run repair</.dm_btn>
-              </div>
-            </.form>
-
-            <.dm_alert :if={match?({:ok, _}, @repair_result)} id="memory-repair-result" variant="success" title="Repair completed" compact>
-              {repair_result_message(@repair_result)}
-            </.dm_alert>
-            <.dm_alert :if={match?({:error, _}, @repair_result)} id="memory-repair-error" variant="error" title="Repair failed" compact>
-              {repair_result_message(@repair_result)}
-            </.dm_alert>
-          </.dm_card>
-        </section>
 
         <.memory_region
           title="Persisted event volume"
@@ -470,74 +477,46 @@ defmodule Backplane.Admin.MemoryOverviewLive do
             </div>
           </.dm_card>
         </.memory_region>
-
-        <.memory_region
-          title="Recent events"
-          result={@regions.recent_events}
-          :let={events}
-        >
-          <div class="overflow-x-auto">
-            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
-            <.dm_table
-              id="memory-recent-events"
-              data={events}
-              compact
-              hover
-              zebra
-              class="min-w-[48rem]"
-              phx-mounted={fix_dm_table_rowgroup_roles("memory-recent-events")}
-            >
-              <:col :let={event} label="Event">
-                <.link
-                  href={~p"/memory/events/#{event.id}"}
-                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
-                >
-                  {event.event_type}
-                </.link>
-              </:col>
-              <:col :let={event} label="Stream">
-                <span class="font-mono text-xs">{event.stream_id}</span>
-              </:col>
-              <:col :let={event} label="Occurred">
-                {format_datetime(event.occurred_at)}
-              </:col>
-            </.dm_table>
           </div>
-        </.memory_region>
+        </details>
 
-        <.memory_region
-          title="Active streams"
-          result={@regions.active_streams}
-          :let={streams}
-        >
-          <div class="overflow-x-auto">
-            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
-            <.dm_table
-              id="memory-active-streams"
-              data={streams}
-              compact
-              hover
-              zebra
-              class="min-w-[48rem]"
-              phx-mounted={fix_dm_table_rowgroup_roles("memory-active-streams")}
-            >
-              <:col :let={stream} label="Stream">
-                <.link
-                  href={~p"/memory/streams/#{stream.stream_id}"}
-                  class="font-mono text-on-surface underline decoration-primary underline-offset-2 hover:decoration-2"
-                >
-                  {stream.stream_id}
-                </.link>
-              </:col>
-              <:col :let={stream} label="Project">
-                {stream.project || "—"}
-              </:col>
-              <:col :let={stream} label="Last activity">
-                {format_datetime(stream.last_event_at)}
-              </:col>
-            </.dm_table>
-          </div>
-        </.memory_region>
+        <details id="memory-repair-operations" class="memory-disclosure" open={not is_nil(@repair_result)}>
+          <summary>Repair operations</summary>
+          <.dm_card variant="bordered" padding="lg">
+            <p class="mt-1 text-sm text-on-surface-variant">
+              Run one bounded, audited repair inside an exact trusted partition.
+            </p>
+
+            <.form for={%{}} as={:repair} phx-submit="repair" class="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <.dm_input id="repair-memory-space" name="repair[memory_space_id]" label="Memory space" value="" required />
+              <.dm_input id="repair-host" name="repair[host_id]" label="Host" value="" required />
+              <.dm_input id="repair-client" name="repair[client_id]" label="Client" value="" required />
+              <.dm_input id="repair-scope" name="repair[scope]" label="Scope" value="" required />
+              <.dm_input id="repair-namespace" name="repair[namespace]" label="Namespace" value="" required />
+              <.dm_select id="repair-kind" name="repair[kind]" label="Operation" value="failed_projections" options={Enum.map(Repair.kinds(), &{&1, humanize(&1)})} />
+              <.dm_input id="repair-idempotency-key" name="repair[idempotency_key]" label="Idempotency key" value="" required />
+              <.dm_input id="repair-target" name="repair[target_id]" label="Target ID" value="" />
+              <.dm_input id="repair-job-ids" name="repair[job_ids]" label="Job IDs (dead letters, comma-separated)" value="" />
+              <.dm_input id="repair-session" name="repair[session_id]" label="Session ID" value="" />
+              <.dm_input id="repair-project" name="repair[project]" label="Project" value="" />
+              <.dm_select id="repair-resolution" name="repair[resolution]" label="Relation resolution" value="" options={[{"", "Not applicable"}, {"confirmed", "Confirmed"}, {"rejected", "Rejected"}]} />
+              <.dm_select id="repair-action" name="repair[action]" label="Lesson action" value="" options={[{"", "Not applicable"}, {"promote", "Promote"}, {"archive", "Archive"}, {"dispute", "Dispute"}, {"supersede", "Supersede"}]} />
+              <.dm_input id="repair-reason" name="repair[reason]" label="Reason" value="" />
+              <.dm_input id="repair-date-from" name="repair[date_from]" type="date" label="Activity from" value="" />
+              <.dm_input id="repair-date-to" name="repair[date_to]" type="date" label="Activity to" value="" />
+              <div class="flex items-end">
+                <.dm_btn type="submit" native_submit variant="primary">Run repair</.dm_btn>
+              </div>
+            </.form>
+
+            <.dm_alert :if={match?({:ok, _}, @repair_result)} id="memory-repair-result" variant="success" title="Repair completed" compact>
+              {repair_result_message(@repair_result)}
+            </.dm_alert>
+            <.dm_alert :if={match?({:error, _}, @repair_result)} id="memory-repair-error" variant="error" title="Repair failed" compact>
+              {repair_result_message(@repair_result)}
+            </.dm_alert>
+          </.dm_card>
+        </details>
       </div>
     </div>
     """

@@ -19,7 +19,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
     for path <- ["/memory/recall", "/memory/recall?host=incomplete&client=client"] do
       {:ok, view, html} = live(recycle(conn), path)
       assert has_element?(view, "#memory-recall-inspector")
-      assert has_element?(view, "#memory-source-filters")
+      refute has_element?(view, "#memory-source-filters")
       refute html =~ "Select an exact memory partition"
     end
   end

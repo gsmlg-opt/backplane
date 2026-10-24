@@ -1,7 +1,7 @@
 defmodule Backplane.Admin.MemoryActionsLive do
   use Backplane.Admin, :live_view
 
-  import Backplane.Admin.MemoryComponents, only: [memory_page_header: 1]
+  import Backplane.Admin.MemoryComponents, only: [memory_page_header: 1, memory_blank_state: 1]
   import Backplane.Admin.MemoryOperatorComponents
 
   alias Backplane.Memory.Operations
@@ -16,6 +16,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
       {:ok,
        assign(socket,
          current_path: "/memory/actions",
+         page_size: @page_size,
          partition: nil,
          rows: [],
          selected: nil,
@@ -65,7 +66,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
           <% end %>
         </div>
       </.dm_card>
-      <.dm_card :if={@rows == [] and !@error} id="actions-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No actions match</h2></.dm_card>
+      <.memory_blank_state :if={@rows == [] and !@error} id="actions-empty" title="No actions match" description="Stored coordination work will appear here when actions are created." icon="checkbox-marked-circle-outline" />
       <div class="overflow-x-auto">
         <.dm_table :if={@rows != []} id="memory-actions-table" data={@rows} compact hover zebra>
           <:col :let={action} label="Action"><.link patch={detail_path(@partition, @project, @offset, action.id)} class="text-primary underline">{action.title}</.link></:col>
@@ -76,7 +77,7 @@ defmodule Backplane.Admin.MemoryActionsLive do
           <:col :let={action} label="Updated">{format_datetime(action.updated_at)}</:col>
         </.dm_table>
       </div>
-      <nav aria-label="Action pagination" class="mt-4 flex justify-end gap-2">
+      <nav :if={!@error} aria-label="Action pagination" class="mt-4 flex justify-end gap-2">
         <.link :if={@offset > 0} id="actions-previous" patch={page_path(@partition, @project, max(0, @offset - @page_size))} class="text-primary underline">Previous</.link>
         <.link :if={@next_offset} id="actions-next" patch={page_path(@partition, @project, @next_offset)} class="text-primary underline">Next</.link>
       </nav>
@@ -106,7 +107,16 @@ defmodule Backplane.Admin.MemoryActionsLive do
          )}
 
       {:error, reason} ->
-        {:noreply, assign(socket, partition: partition, rows: [], selected: nil, error: reason)}
+        {:noreply,
+         assign(socket,
+           partition: partition,
+           rows: [],
+           selected: nil,
+           offset: offset,
+           project: project,
+           next_offset: nil,
+           error: reason
+         )}
     end
   end
 

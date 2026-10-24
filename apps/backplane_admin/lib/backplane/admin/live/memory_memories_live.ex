@@ -168,7 +168,70 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
     ~H"""
     <div id="memory-memories">
       <.memory_page_header title="Memories" subtitle="Durable memory inventory, evidence, and provenance" />
-      <section :if={@access_target} id="memory-access" class="mb-6" aria-labelledby="memory-access-title">
+
+      <aside :if={@selected} id="memory-detail" class="memory-detail-panel">
+        <div class="mb-3"><.link navigate={page_path(@partition, @offset, @filters)} class="text-sm text-primary underline">Back to memories</.link></div>
+        <.dm_card variant="bordered" padding="lg">
+          <h2 class="text-lg font-semibold">Memory detail</h2>
+          <div id="memory-detail-source" class="mt-3"><.source_identity record={@selected.memory} detail /></div>
+          <p class="mt-3 whitespace-pre-wrap">{@selected.memory.content}</p>
+          <div class="mt-4 flex flex-wrap gap-3 text-sm">
+            <.link :if={@selected.memory.session_id not in [nil, ""]} navigate={~p"/memory/sessions/#{@selected.memory.session_id}?#{partition_query(record_partition(@selected.memory, @partition))}"} class="text-primary underline">Session</.link>
+            <.link :if={@selected.memory.session_id not in [nil, ""]} navigate={~p"/memory/replay?#{session_query(@selected.memory, record_partition(@selected.memory, @partition))}"} class="text-primary underline">Replay</.link>
+            <.link navigate={~p"/memory/audit?#{Map.merge(partition_query(record_partition(@selected.memory, @partition)), %{"target" => @selected.memory.id})}"} class="text-primary underline">Audit</.link>
+          </div>
+          <section id="memory-evidence" class="mt-5"><h3 class="font-semibold">Evidence</h3><p :if={@selected.evidence == []} class="mt-2 text-sm text-on-surface-variant">No durable evidence</p><ul class="mt-2 space-y-2"><li :for={evidence <- @selected.evidence}>
+            <.link :if={evidence_path(evidence, @selected.memory.id, record_partition(@selected.memory, @partition))} navigate={evidence_path(evidence, @selected.memory.id, record_partition(@selected.memory, @partition))} class="text-primary underline">{evidence_label(evidence)}</.link>
+            <span :if={!evidence_path(evidence, @selected.memory.id, record_partition(@selected.memory, @partition))}>{evidence.evidence_kind}</span>
+            · {evidence.excerpt || "No excerpt"}
+          </li></ul></section>
+        </.dm_card>
+        <.dm_alert :if={@source_error} id="memory-source-summary-unavailable" variant="warning" title="Summary source unavailable">
+          This summary is missing or is not linked to this memory through this record’s stored source links.
+        </.dm_alert>
+        <section :if={@source_summary} id="memory-source-summary" class="mt-5" aria-labelledby="memory-source-summary-title">
+          <.dm_card variant="bordered" padding="sm">
+            <h3 id="memory-source-summary-title" class="font-semibold">Session summary source</h3>
+            <dl class="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[max-content_minmax(0,1fr)]">
+              <dt>Summary ID</dt><dd class="break-all font-mono">{@source_summary.id}</dd>
+              <dt>Status</dt><dd>{if @source_summary.superseded_at, do: "Historical", else: "Current"}</dd>
+              <dt>Session</dt><dd class="break-all">{@source_summary.session_id}</dd>
+              <dt>Processing version</dt><dd class="break-all">{@source_summary.processing_version}</dd>
+              <dt>Input revision</dt><dd class="break-all font-mono">{@source_summary.input_revision}</dd>
+              <dt>Output revision</dt><dd class="break-all font-mono">{@source_summary.output_revision}</dd>
+            </dl>
+            <p class="mt-3 whitespace-pre-wrap break-words">{@source_summary.content}</p>
+          </.dm_card>
+        </section>
+      </aside>
+      <.form for={%{}} as={:filters} id="memories-filters" phx-submit="filter" class="memory-toolbar mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <.dm_input id="memories-query" name="filters[q]" label="Search" value={@filters["q"] || ""} />
+        <.dm_input id="memories-type" name="filters[type]" label="Type" value={@filters["type"] || ""} />
+        <.dm_input id="memories-session" name="filters[session]" label="Session" value={@filters["session"] || ""} />
+        <.dm_select id="memories-sort" name="filters[sort]" label="Sort" value={@filters["sort"] || "newest"} options={[{"newest", "Newest first"}, {"oldest", "Oldest first"}]} />
+        <.dm_btn type="submit" native_submit variant="primary" class="self-end">Filter</.dm_btn>
+      </.form>
+      <p :if={!@error} id="memories-count" class="mb-3 text-sm text-on-surface-variant">{@total_count} matching memories</p>
+      <.dm_alert :if={@error} id="memories-error" variant="error" title="Memories unavailable">The memory collection could not be loaded.</.dm_alert>
+      <.dm_alert :if={@detail_error} id="memory-detail-unavailable" variant="warning" title="Memory unavailable">This memory is missing, deleted, or unavailable for the current filters.</.dm_alert>
+      <.dm_card :if={@rows == [] and !@error} id="memories-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No memories match</h2></.dm_card>
+      <div class="overflow-x-auto">
+        <.dm_table :if={@rows != []} id="memory-memories-table" data={@rows} compact hover zebra>
+          <:col :let={memory} label="Memory"><.link navigate={detail_path(memory.id, @partition, @offset, @filters)} class="line-clamp-3 whitespace-pre-wrap break-words text-primary underline underline-offset-4">{memory.content}</.link></:col>
+          <:col :let={memory} label="Source"><.source_identity record={memory} /></:col>
+          <:col :let={memory} label="Type">{memory.memory_type}</:col>
+          <:col :let={memory} label="State"><.dm_badge variant={status_variant(memory.lifecycle_state)} size="sm">{memory.lifecycle_state}</.dm_badge></:col>
+          <:col :let={memory} label="Applications">{memory.application_count}</:col>
+          <:col :let={memory} label="Created">{format_datetime(memory.inserted_at)}</:col>
+        </.dm_table>
+      </div>
+      <nav :if={!@error} aria-label="Memory pagination" class="mt-4 flex justify-end gap-2">
+        <.memory_link_button :if={@offset > 0} id="memories-previous" patch={page_path(@partition, max(0, @offset - @page_size), @filters)}>Previous</.memory_link_button>
+        <.memory_link_button :if={@offset + length(@rows) < @total_count} id="memories-next" patch={page_path(@partition, @offset + @page_size, @filters)}>Next</.memory_link_button>
+      </nav>
+
+      <details :if={@access_target} id="memory-access" class="memory-disclosure" open={not is_nil(@access_error) or not is_nil(@access_load_error) or not is_nil(@access_message)}>
+        <summary>Manage host access</summary>
         <.dm_card variant="bordered" padding="sm">
           <h2 id="memory-access-title" class="text-lg font-semibold">Access</h2>
           <p class="mt-2 text-sm text-on-surface-variant">Manage registered hosts independently of source-host and client provenance filters.</p>
@@ -216,66 +279,7 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
             </div>
           </.form>
         </.dm_card>
-      </section>
-      <.form for={%{}} as={:filters} id="memories-filters" phx-submit="filter" class="mb-4 flex flex-wrap items-end gap-3">
-        <.dm_input name="filters[q]" label="Search" value={@filters["q"] || ""} />
-        <.dm_input name="filters[type]" label="Type" value={@filters["type"] || ""} />
-        <.dm_input name="filters[session]" label="Session" value={@filters["session"] || ""} />
-        <.dm_select id="memories-sort" name="filters[sort]" label="Sort" value={@filters["sort"] || "newest"} options={[{"newest", "Newest first"}, {"oldest", "Oldest first"}]} />
-        <.dm_btn type="submit" variant="primary">Filter</.dm_btn>
-      </.form>
-      <p :if={!@error} id="memories-count" class="mb-3 text-sm text-on-surface-variant">{@total_count} matching memories</p>
-      <.dm_alert :if={@error} id="memories-error" variant="error" title="Memories unavailable">The memory collection could not be loaded.</.dm_alert>
-      <.dm_alert :if={@detail_error} id="memory-detail-unavailable" variant="warning" title="Memory unavailable">This memory is missing, deleted, or unavailable for the current filters.</.dm_alert>
-      <.dm_card :if={@rows == [] and !@error} id="memories-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No memories match</h2></.dm_card>
-      <div class="overflow-x-auto">
-        <.dm_table :if={@rows != []} id="memory-memories-table" data={@rows} compact hover zebra>
-          <:col :let={memory} label="Memory"><.link navigate={detail_path(memory.id, @partition, @offset, @filters)} class="text-primary underline">{memory.content}</.link></:col>
-          <:col :let={memory} label="Source"><.source_identity record={memory} /></:col>
-          <:col :let={memory} label="Type">{memory.memory_type}</:col>
-          <:col :let={memory} label="State"><.dm_badge variant={status_variant(memory.lifecycle_state)} size="sm">{memory.lifecycle_state}</.dm_badge></:col>
-          <:col :let={memory} label="Applications">{memory.application_count}</:col>
-          <:col :let={memory} label="Created">{format_datetime(memory.inserted_at)}</:col>
-        </.dm_table>
-      </div>
-      <nav aria-label="Memory pagination" class="mt-4 flex justify-end gap-2">
-        <.memory_link_button :if={@offset > 0} id="memories-previous" patch={page_path(@partition, max(0, @offset - @page_size), @filters)}>Previous</.memory_link_button>
-        <.memory_link_button :if={@offset + length(@rows) < @total_count} id="memories-next" patch={page_path(@partition, @offset + @page_size, @filters)}>Next</.memory_link_button>
-      </nav>
-      <aside :if={@selected} id="memory-detail" class="mt-6">
-        <.dm_card variant="bordered" padding="sm">
-          <h2 class="text-lg font-semibold">Memory detail</h2>
-          <div id="memory-detail-source" class="mt-3"><.source_identity record={@selected.memory} detail /></div>
-          <p class="mt-3 whitespace-pre-wrap">{@selected.memory.content}</p>
-          <div class="mt-4 flex flex-wrap gap-3 text-sm">
-            <.link :if={@selected.memory.session_id not in [nil, ""]} navigate={~p"/memory/sessions/#{@selected.memory.session_id}?#{partition_query(record_partition(@selected.memory, @partition))}"} class="text-primary underline">Session</.link>
-            <.link :if={@selected.memory.session_id not in [nil, ""]} navigate={~p"/memory/replay?#{session_query(@selected.memory, record_partition(@selected.memory, @partition))}"} class="text-primary underline">Replay</.link>
-            <.link navigate={~p"/memory/audit?#{Map.merge(partition_query(record_partition(@selected.memory, @partition)), %{"target" => @selected.memory.id})}"} class="text-primary underline">Audit</.link>
-          </div>
-          <section id="memory-evidence" class="mt-5"><h3 class="font-semibold">Evidence</h3><p :if={@selected.evidence == []} class="mt-2 text-sm text-on-surface-variant">No durable evidence</p><ul class="mt-2 space-y-2"><li :for={evidence <- @selected.evidence}>
-            <.link :if={evidence_path(evidence, @selected.memory.id, record_partition(@selected.memory, @partition))} navigate={evidence_path(evidence, @selected.memory.id, record_partition(@selected.memory, @partition))} class="text-primary underline">{evidence_label(evidence)}</.link>
-            <span :if={!evidence_path(evidence, @selected.memory.id, record_partition(@selected.memory, @partition))}>{evidence.evidence_kind}</span>
-            · {evidence.excerpt || "No excerpt"}
-          </li></ul></section>
-        </.dm_card>
-        <.dm_alert :if={@source_error} id="memory-source-summary-unavailable" variant="warning" title="Summary source unavailable">
-          This summary is missing or is not linked to this memory through this record’s stored source links.
-        </.dm_alert>
-        <section :if={@source_summary} id="memory-source-summary" class="mt-5" aria-labelledby="memory-source-summary-title">
-          <.dm_card variant="bordered" padding="sm">
-            <h3 id="memory-source-summary-title" class="font-semibold">Session summary source</h3>
-            <dl class="mt-3 grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[max-content_minmax(0,1fr)]">
-              <dt>Summary ID</dt><dd class="break-all font-mono">{@source_summary.id}</dd>
-              <dt>Status</dt><dd>{if @source_summary.superseded_at, do: "Historical", else: "Current"}</dd>
-              <dt>Session</dt><dd class="break-all">{@source_summary.session_id}</dd>
-              <dt>Processing version</dt><dd class="break-all">{@source_summary.processing_version}</dd>
-              <dt>Input revision</dt><dd class="break-all font-mono">{@source_summary.input_revision}</dd>
-              <dt>Output revision</dt><dd class="break-all font-mono">{@source_summary.output_revision}</dd>
-            </dl>
-            <p class="mt-3 whitespace-pre-wrap break-words">{@source_summary.content}</p>
-          </.dm_card>
-        </section>
-      </aside>
+      </details>
     </div>
     """
   end
@@ -343,6 +347,10 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
          partition: partition,
          rows: [],
          selected: nil,
+         source_summary: nil,
+         source_error: nil,
+         total_count: 0,
+         offset: page(params["offset"]),
          error: error,
          detail_error: nil,
          query_params: params,

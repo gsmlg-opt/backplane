@@ -39,8 +39,12 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
 
     {:ok, view, html} = live(conn, "/memory")
 
+    assert has_element?(view, "#memory-overview")
+    refute has_element?(view, "#memory-collection")
+    refute has_element?(view, ~s(#memory-overview form[action="/memory"]))
+    refute has_element?(view, ~s(#memory-overview input[name="q"]))
     assert has_element?(view, "h1", "Memory")
-    assert html =~ "Authoritative streams, committed events, and guarded V2 rollout"
+    assert html =~ "Capture health, stored knowledge, and memory processing at a glance"
 
     for label <- ["Pipeline", "Events", "Dual Write"] do
       assert html =~ label

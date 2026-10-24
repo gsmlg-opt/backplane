@@ -3,6 +3,7 @@ defmodule Backplane.Memory.Operations.InventoryTest do
 
   alias Backplane.Memory.Memories.Memory
   alias Backplane.Memory.Operations.Inventory
+  alias Backplane.Memory.Projections.ActivityContribution
 
   test "trusted inventory globally orders, counts and pages across spaces without host registration" do
     a = canonical_partition("inventory-offline-a")
@@ -81,6 +82,69 @@ defmodule Backplane.Memory.Operations.InventoryTest do
     assert {:ok, %{entries: [], total: 1}} = Inventory.audit(%{}, target: id, offset: 1)
   end
 
+  test "audit can hide only confirmed empty system cleanup runs before counting and paging" do
+    partition = canonical_partition("inventory-audit-empty-purges")
+    foreign = canonical_partition("inventory-audit-foreign-purges")
+    empty = %{daily_deleted: 0, contributions_deleted: 0}
+
+    entries = [
+      {"empty", "memory.activity.purge", "system", empty},
+      {"daily", "memory.activity.purge", "system", %{empty | daily_deleted: 1}},
+      {"contributions", "memory.activity.purge", "system", %{empty | contributions_deleted: 1}},
+      {"unknown", "memory.activity.purge", "system", %{daily_deleted: 0}},
+      {"null", "memory.activity.purge", "system", %{empty | daily_deleted: nil}},
+      {"text", "memory.activity.purge", "system",
+       %{daily_deleted: "0", contributions_deleted: "0"}},
+      {"operation", "remember", "system", empty},
+      {"actor", "memory.activity.purge", "operator", empty}
+    ]
+
+    for {target, operation, actor, metadata} <- entries do
+      Backplane.Memory.Audit.log(operation, actor, [target], Map.merge(partition, metadata))
+    end
+
+    repo().insert_all("memory_audit_log", [
+      %{
+        id: Ecto.UUID.dump!(Ecto.UUID.generate()),
+        operation: "memory.activity.purge",
+        actor: nil,
+        target_ids: ["legacy-actor"],
+        metadata: Map.merge(partition, empty),
+        created_at: DateTime.utc_now()
+      }
+    ])
+
+    Backplane.Memory.Audit.log(
+      "memory.activity.purge",
+      "system",
+      ["foreign"],
+      Map.merge(foreign, empty)
+    )
+
+    filters = %{host_id: partition.host_id}
+
+    assert {:ok, %{total: 9, empty_purge_count: 1}} = Inventory.audit(filters)
+
+    assert {:ok, %{total: 8, empty_purge_count: 1, next_offset: 2}} =
+             Inventory.audit(filters, include_empty_runs: false, limit: 2)
+
+    visible_targets =
+      for offset <- [0, 2, 4, 6],
+          {:ok, page} =
+            Inventory.audit(filters, include_empty_runs: false, limit: 2, offset: offset),
+          row <- page.entries,
+          do: hd(row.target_ids)
+
+    assert Enum.sort(visible_targets) ==
+             Enum.sort(~w(daily contributions unknown null text operation actor legacy-actor))
+
+    assert {:ok, %{total: 1, empty_purge_count: 0}} =
+             Inventory.audit(filters, include_empty_runs: false, operation: "remember")
+
+    assert {:ok, %{total: 1, empty_purge_count: 0}} =
+             Inventory.audit(filters, include_empty_runs: false, target: "actor")
+  end
+
   test "repository filtering follows profile source IDs rather than unrelated equal project paths" do
     alias Backplane.Memory.Profiles.Profile
     partition = canonical_partition("inventory-profile")
@@ -141,6 +205,95 @@ defmodule Backplane.Memory.Operations.InventoryTest do
     assert {:ok, %{entries: rows, total: 51, next_offset: 50}} = Inventory.stages(%{})
     assert length(rows) == 50
     assert {:ok, %{entries: [_], total: 51, next_offset: nil}} = Inventory.stages(%{}, offset: 50)
+  end
+
+  test "activity starts at the first matching event date across years and retains gaps within bounds" do
+    partition = canonical_partition("inventory-activity-dates")
+    activity(partition, ~D[2025-12-28], 10)
+    activity(partition, ~D[2025-12-29], 0)
+    activity(partition, ~D[2025-12-31], 2)
+    activity(partition, ~D[2026-01-02], 3)
+    activity(partition, ~D[2026-01-05], 20)
+
+    assert {:ok, report} =
+             Inventory.activity(%{}, date_from: ~D[2025-12-29], date_to: ~D[2026-01-04])
+
+    assert Enum.map(report.heatmap, & &1.date) ==
+             Enum.to_list(Date.range(~D[2025-12-31], ~D[2026-01-04]))
+
+    assert Enum.map(report.trends, & &1.event_count) == [2, 0, 3, 0, 0]
+    assert report.heatmap == report.trends
+    assert report.summary.date_from == ~D[2025-12-31]
+    assert report.summary.date_to == ~D[2026-01-04]
+    assert report.summary.event_count == 5
+  end
+
+  test "activity starts at the first date matching source and content filters" do
+    partition = canonical_partition("inventory-activity-filters")
+    foreign = canonical_partition("inventory-activity-foreign")
+    activity(foreign, ~D[2026-06-01], 10)
+    activity(partition, ~D[2026-06-02], 10, %{project: "other-project"})
+    activity(partition, ~D[2026-06-03], 10, %{agent_id: "other-agent"})
+    activity(partition, ~D[2026-06-04], 10, %{event_type: "task.completed"})
+    activity(partition, ~D[2026-06-06], 1)
+
+    assert {:ok, report} =
+             Inventory.activity(%{host_id: partition.host_id},
+               date_from: ~D[2026-06-01],
+               date_to: ~D[2026-06-08],
+               project: "inventory-project",
+               agent_id: "inventory-agent",
+               event_type: "memory.created"
+             )
+
+    assert report.summary.date_from == ~D[2026-06-06]
+    assert report.summary.event_count == 1
+    assert Enum.map(report.trends, & &1.event_count) == [1, 0, 0]
+    assert [%{key: "inventory-project", event_count: 1}] = report.project_breakdown
+  end
+
+  test "activity without positive event contributions has no artificial date range" do
+    opts = [date_from: ~D[2026-06-01], date_to: ~D[2026-06-08]]
+    assert {:ok, empty} = Inventory.activity(%{}, opts)
+    assert empty.heatmap == []
+    assert empty.trends == []
+    assert empty.summary.date_from == nil
+    assert empty.summary.date_to == ~D[2026-06-08]
+    assert empty.summary.event_count == 0
+
+    activity(canonical_partition("inventory-activity-zero"), ~D[2026-06-01], 0)
+    assert {:ok, zero} = Inventory.activity(%{}, opts)
+    assert zero.heatmap == []
+    assert zero.trends == []
+    assert zero.summary.date_from == nil
+    assert zero.summary.event_count == 0
+  end
+
+  defp activity(partition, date, count, overrides \\ %{}) do
+    now = DateTime.utc_now()
+
+    attrs =
+      Map.merge(partition, %{
+        date: date,
+        subject_id: Ecto.UUID.generate(),
+        project: "inventory-project",
+        agent_id: "inventory-agent",
+        event_type: "memory.created",
+        event_count: count,
+        session_count: 1,
+        memory_count: count,
+        lesson_count: 0,
+        crystal_count: 0,
+        recall_count: 0,
+        action_count: 0,
+        error_count: 0,
+        processing_version: "activity-v1",
+        input_revision: "revision",
+        inserted_at: now,
+        updated_at: now
+      })
+
+    repo().insert_all(ActivityContribution, [Map.merge(attrs, overrides)])
   end
 
   defp memory(partition, content, at, repository \\ nil) do

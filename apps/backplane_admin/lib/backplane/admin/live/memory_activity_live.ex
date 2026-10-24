@@ -64,7 +64,10 @@ defmodule Backplane.Admin.MemoryActivityLive do
          |> reload()}
 
       {:error, reason} ->
-        {:noreply, assign(socket, query_error: reason)}
+        {:noreply,
+         socket
+         |> assign(partition: partition, host_health: host_health(partition))
+         |> clear_activity(reason)}
     end
   end
 
@@ -79,7 +82,7 @@ defmodule Backplane.Admin.MemoryActivityLive do
          )}
 
       {:error, reason} ->
-        {:noreply, assign(socket, query_error: reason)}
+        {:noreply, clear_activity(socket, reason)}
     end
   end
 
@@ -131,14 +134,130 @@ defmodule Backplane.Admin.MemoryActivityLive do
       </.dm_alert>
 
       <.dm_alert :if={@live_update} id="activity-live-update" variant="info" title="Live update received" compact>
-        The view was reloaded from PostgreSQL after projection commit.
+        Activity is up to date.
       </.dm_alert>
 
       <div :if={@partition}>
-        <section class="mt-4" aria-labelledby="activity-host-health-title">
-          <h2 id="activity-host-health-title" class="text-lg font-semibold">
-            Host capture and delivery health
-          </h2>
+
+
+        <p id="activity-source" class="mb-3 break-all text-xs text-on-surface-variant">Source: {Map.get(@partition, :host_id) || "All stored sources"}</p>
+        <details id="activity-filter-panel" class="memory-disclosure" open={@filters != %{}}>
+          <summary>Filter activity</summary>
+        <.form id="activity-filters" for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="memory-disclosure-body grid gap-3 sm:grid-cols-3">
+          <.dm_input id="activity-project-filter" name="filters[project]" label="Project" value={@filters["project"]} phx-debounce="300" />
+          <.dm_input id="activity-agent-filter" name="filters[agent_id]" label="Agent" value={@filters["agent_id"]} phx-debounce="300" />
+          <.dm_input id="activity-event-filter" name="filters[event_type]" label="Event type" value={@filters["event_type"]} phx-debounce="300" />
+        </.form>
+        </details>
+
+        <div :if={!@query_error}>
+        <section id="activity-summary" class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <.summary_stat id="activity-summary-events" label="Events" value={@summary.event_count} />
+          <.summary_stat id="activity-summary-sessions" label="Sessions" value={@summary.session_count} />
+          <.summary_stat id="activity-summary-errors" label="Errors" value={@summary.error_count} />
+          <.summary_stat id="activity-summary-recalls" label="Recalls" value={@summary.recall_count} />
+        </section>
+
+        <section class="mt-6" aria-labelledby="activity-heatmap-title">
+          <h2 id="activity-heatmap-title" class="text-lg font-semibold">Historical heatmap</h2>
+          <p :if={@summary.date_from} id="activity-date-range" class="text-sm text-on-surface-variant">Activity from {Date.to_iso8601(@summary.date_from)} to {Date.to_iso8601(@summary.date_to)} (UTC); darker cells contain more events.</p>
+          <.memory_blank_state :if={@heatmap == []} id="activity-heatmap-empty" title="No activity recorded" description="Activity appears from the first captured event. If capture has started, check the pipeline or try different filters." icon="chart-timeline-variant">
+            <.memory_link_button id="activity-open-pipeline" navigate={~p"/memory/pipeline"} variant="ghost" size="sm">Check pipeline</.memory_link_button>
+          </.memory_blank_state>
+          <div id="activity-heatmap" class="mt-3 grid grid-flow-col grid-rows-7 auto-cols-max justify-start gap-1 overflow-x-auto pb-2" role="grid" aria-label="Historical activity heatmap">
+            <span
+              :for={day <- @heatmap}
+              data-date={Date.to_iso8601(day.date)}
+              data-level={heat_level(day.event_count)}
+              class={heat_class(day.event_count)}
+              title={"#{Date.to_iso8601(day.date)}: #{day.event_count} events, #{day.error_count} errors"}
+              role="gridcell"
+            ></span>
+          </div>
+        </section>
+
+        <section :if={@trends != []} class="mt-6" aria-labelledby="activity-trends-title">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h2 id="activity-trends-title" class="text-lg font-semibold">Trends</h2>
+            <div class="flex gap-2" role="group" aria-label="Trend period">
+              <.dm_btn :for={period <- @periods} id={"activity-period-#{period}"} type="button" size="sm" variant={if @period == period, do: "primary", else: "outline"} phx-click="period" phx-value-period={period} aria-pressed={to_string(@period == period)}>
+                {String.capitalize(period)}
+              </.dm_btn>
+            </div>
+          </div>
+          <div class="mt-3 overflow-x-auto">
+            <.dm_table id="activity-trends" data={@period_trends} compact hover zebra>
+              <:col :let={row} label="Period"><span data-period={row.period}>{row.period}</span></:col>
+              <:col :let={row} label="Events">{row.event_count}</:col>
+              <:col :let={row} label="Sessions">{row.session_count}</:col>
+              <:col :let={row} label="Errors">{row.error_count}</:col>
+              <:col :let={row} label="Memories / Lessons / Crystals">{row.memory_count} / {row.lesson_count} / {row.crystal_count}</:col>
+              <:col :let={row} label="Actions">{row.action_count}</:col>
+              <:col :let={row} label="Recalls">{row.recall_count}</:col>
+            </.dm_table>
+          </div>
+        </section>
+
+        <section :if={@heatmap != []} class="mt-6 grid gap-4 xl:grid-cols-3" aria-label="Activity breakdowns">
+          <.activity_breakdown
+            id="activity-project-breakdown"
+            title="Activity by project"
+            key_label="Project"
+            rows={@project_breakdown}
+          />
+          <.activity_breakdown
+            id="activity-agent-breakdown"
+            title="Activity by agent"
+            key_label="Agent"
+            rows={@agent_breakdown}
+          />
+          <.activity_breakdown
+            id="activity-host-breakdown"
+            title="Activity by host"
+            key_label="Host"
+            rows={@host_breakdown}
+          />
+        </section>
+
+        <section :if={@distribution != []} class="mt-6" aria-labelledby="activity-distribution-title">
+          <h2 id="activity-distribution-title" class="text-lg font-semibold">Event distribution</h2>
+          <div class="mt-3 overflow-x-auto">
+            <.dm_table id="activity-event-distribution" data={@visible_distribution} compact hover zebra>
+              <:col :let={row} label="Event type">{row.key}</:col>
+              <:col :let={row} label="Events">{row.event_count}</:col>
+              <:col :let={row} label="Sessions">{row.session_count}</:col>
+              <:col :let={row} label="Errors">{row.error_count}</:col>
+            </.dm_table>
+          </div>
+          <nav :if={@distribution_pages > 1} class="mt-3 flex items-center justify-between" aria-label="Event distribution pagination">
+            <.dm_btn :if={@distribution_page > 1} id="activity-distribution-previous" type="button" size="sm" variant="outline" phx-click="distribution_page" phx-value-direction="previous">Previous</.dm_btn>
+            <span class="text-sm text-on-surface-variant">Page {@distribution_page} of {@distribution_pages}</span>
+            <.dm_btn :if={@distribution_page < @distribution_pages} id="activity-distribution-next" type="button" size="sm" variant="outline" phx-click="distribution_page" phx-value-direction="next">Next</.dm_btn>
+          </nav>
+        </section>
+
+        <section :if={@recent_events != []} class="mt-6" aria-labelledby="activity-recent-events-title">
+          <h2 id="activity-recent-events-title" class="text-lg font-semibold">Recent live events</h2>
+          <p class="text-sm text-on-surface-variant">
+            Privacy-safe canonical summaries from matching sources.
+          </p>
+          <div class="mt-3 overflow-x-auto">
+            <.dm_table id="activity-recent-events" data={@recent_events} compact hover zebra>
+              <:col :let={event} label="Event">
+                <.link href={~p"/memory/events/#{event.id}"} class="font-mono text-primary underline">
+                  {event.event_type}
+                </.link>
+              </:col>
+              <:col :let={event} label="Project">{event.project || "—"}</:col>
+              <:col :let={event} label="Agent">{event.agent_id || "—"}</:col>
+              <:col :let={event} label="Occurred">{format_datetime(event.occurred_at)}</:col>
+            </.dm_table>
+          </div>
+        </section>
+        </div>
+        <details :if={Map.has_key?(@partition, :host_id)} id="activity-host-diagnostics" class="memory-disclosure">
+          <summary>Host capture and delivery health</summary>
+          <div class="memory-disclosure-body">
           <.dm_card :if={is_nil(@host_health)} id="activity-host-health" variant="bordered" padding="sm" class="mt-3">
             No capture telemetry has been reported for this host.
           </.dm_card>
@@ -174,115 +293,8 @@ defmodule Backplane.Admin.MemoryActivityLive do
               </tbody>
             </table>
           </div>
-        </section>
-
-        <.form id="activity-filters" for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="mt-4 grid gap-3 md:grid-cols-4">
-          <.dm_input id="activity-host-filter" name="filters[host_id]" label="Host" value={Map.get(@partition, :host_id) || "All sources"} readonly />
-          <.dm_input id="activity-project-filter" name="filters[project]" label="Project" value={@filters["project"]} phx-debounce="300" />
-          <.dm_input id="activity-agent-filter" name="filters[agent_id]" label="Agent" value={@filters["agent_id"]} phx-debounce="300" />
-          <.dm_input id="activity-event-filter" name="filters[event_type]" label="Event type" value={@filters["event_type"]} phx-debounce="300" />
-        </.form>
-
-        <section id="activity-summary" class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <.summary_stat id="activity-summary-events" label="Events" value={@summary.event_count} />
-          <.summary_stat id="activity-summary-sessions" label="Sessions" value={@summary.session_count} />
-          <.summary_stat id="activity-summary-errors" label="Errors" value={@summary.error_count} />
-          <.summary_stat id="activity-summary-recalls" label="Recalls" value={@summary.recall_count} />
-        </section>
-
-        <section class="mt-6" aria-labelledby="activity-heatmap-title">
-          <h2 id="activity-heatmap-title" class="text-lg font-semibold">Historical heatmap</h2>
-          <p class="text-sm text-on-surface-variant">Configured {Config.activity_retention_days()}-day retention window ending today; darker cells contain more projected events.</p>
-          <div id="activity-heatmap" class="mt-3 grid grid-flow-col grid-rows-7 gap-1 overflow-x-auto pb-2" role="grid" aria-label="Historical activity heatmap">
-            <span
-              :for={day <- @heatmap}
-              data-date={Date.to_iso8601(day.date)}
-              data-level={heat_level(day.event_count)}
-              class={heat_class(day.event_count)}
-              title={"#{Date.to_iso8601(day.date)}: #{day.event_count} events, #{day.error_count} errors"}
-              role="gridcell"
-            ></span>
-          </div>
-        </section>
-
-        <section class="mt-6" aria-labelledby="activity-trends-title">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <h2 id="activity-trends-title" class="text-lg font-semibold">Trends</h2>
-            <div class="flex gap-2" role="group" aria-label="Trend period">
-              <.dm_btn :for={period <- @periods} id={"activity-period-#{period}"} type="button" size="sm" variant={if @period == period, do: "primary", else: "outline"} phx-click="period" phx-value-period={period}>
-                {String.capitalize(period)}
-              </.dm_btn>
-            </div>
-          </div>
-          <div class="mt-3 overflow-x-auto">
-            <.dm_table id="activity-trends" data={@period_trends} compact hover zebra>
-              <:col :let={row} label="Period"><span data-period={row.period}>{row.period}</span></:col>
-              <:col :let={row} label="Events">{row.event_count}</:col>
-              <:col :let={row} label="Sessions">{row.session_count}</:col>
-              <:col :let={row} label="Errors">{row.error_count}</:col>
-              <:col :let={row} label="Memories / Lessons / Crystals">{row.memory_count} / {row.lesson_count} / {row.crystal_count}</:col>
-              <:col :let={row} label="Actions">{row.action_count}</:col>
-              <:col :let={row} label="Recalls">{row.recall_count}</:col>
-            </.dm_table>
-          </div>
-        </section>
-
-        <section class="mt-6 grid gap-4 xl:grid-cols-3" aria-label="Activity breakdowns">
-          <.activity_breakdown
-            id="activity-project-breakdown"
-            title="Activity by project"
-            key_label="Project"
-            rows={@project_breakdown}
-          />
-          <.activity_breakdown
-            id="activity-agent-breakdown"
-            title="Activity by agent"
-            key_label="Agent"
-            rows={@agent_breakdown}
-          />
-          <.activity_breakdown
-            id="activity-host-breakdown"
-            title="Activity by host"
-            key_label="Host"
-            rows={@host_breakdown}
-          />
-        </section>
-
-        <section class="mt-6" aria-labelledby="activity-distribution-title">
-          <h2 id="activity-distribution-title" class="text-lg font-semibold">Event distribution</h2>
-          <div class="mt-3 overflow-x-auto">
-            <.dm_table id="activity-event-distribution" data={@visible_distribution} compact hover zebra>
-              <:col :let={row} label="Event type">{row.key}</:col>
-              <:col :let={row} label="Events">{row.event_count}</:col>
-              <:col :let={row} label="Sessions">{row.session_count}</:col>
-              <:col :let={row} label="Errors">{row.error_count}</:col>
-            </.dm_table>
-          </div>
-          <nav :if={@distribution_pages > 1} class="mt-3 flex items-center justify-between" aria-label="Event distribution pagination">
-            <.dm_btn :if={@distribution_page > 1} id="activity-distribution-previous" type="button" size="sm" variant="outline" phx-click="distribution_page" phx-value-direction="previous">Previous</.dm_btn>
-            <span class="text-sm text-on-surface-variant">Page {@distribution_page} of {@distribution_pages}</span>
-            <.dm_btn :if={@distribution_page < @distribution_pages} id="activity-distribution-next" type="button" size="sm" variant="outline" phx-click="distribution_page" phx-value-direction="next">Next</.dm_btn>
-          </nav>
-        </section>
-
-        <section class="mt-6" aria-labelledby="activity-recent-events-title">
-          <h2 id="activity-recent-events-title" class="text-lg font-semibold">Recent live events</h2>
-          <p class="text-sm text-on-surface-variant">
-            Privacy-safe canonical summaries from matching sources.
-          </p>
-          <div class="mt-3 overflow-x-auto">
-            <.dm_table id="activity-recent-events" data={@recent_events} compact hover zebra>
-              <:col :let={event} label="Event">
-                <.link href={~p"/memory/events/#{event.id}"} class="font-mono text-primary underline">
-                  {event.event_type}
-                </.link>
-              </:col>
-              <:col :let={event} label="Project">{event.project || "—"}</:col>
-              <:col :let={event} label="Agent">{event.agent_id || "—"}</:col>
-              <:col :let={event} label="Occurred">{format_datetime(event.occurred_at)}</:col>
-            </.dm_table>
-          </div>
-        </section>
+        </div>
+        </details>
       </div>
     </div>
     """
@@ -340,10 +352,26 @@ defmodule Backplane.Admin.MemoryActivityLive do
         assign(socket, Map.merge(report, %{query_error: nil}))
 
       {:error, reason} ->
-        assign(socket, query_error: reason)
+        clear_activity(socket, reason)
     end
   rescue
-    error -> assign(socket, query_error: error)
+    error -> clear_activity(socket, error)
+  end
+
+  defp clear_activity(socket, reason) do
+    assign(socket,
+      query_error: reason,
+      live_update: false,
+      heatmap: [],
+      trends: [],
+      distribution: [],
+      project_breakdown: [],
+      agent_breakdown: [],
+      host_breakdown: [],
+      recent_events: [],
+      summary: zero_summary(),
+      distribution_page: 1
+    )
   end
 
   defp activity_options(filters) do

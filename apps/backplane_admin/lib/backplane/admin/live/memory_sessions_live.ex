@@ -1,7 +1,9 @@
 defmodule Backplane.Admin.MemorySessionsLive do
   use Backplane.Admin, :live_view
 
-  import Backplane.Admin.MemoryComponents, only: [memory_link_button: 1, memory_page_header: 1]
+  import Backplane.Admin.MemoryComponents,
+    only: [memory_link_button: 1, memory_page_header: 1, memory_blank_state: 1]
+
   import Backplane.Admin.MemoryOperatorComponents
 
   alias Backplane.Memory.Projections.SessionDetail
@@ -23,6 +25,7 @@ defmodule Backplane.Admin.MemorySessionsLive do
          offset: 0,
          next_offset: nil,
          total: 0,
+         session_filter: nil,
          error: nil,
          consolidation_result: nil,
          consolidation_error: nil
@@ -44,11 +47,20 @@ defmodule Backplane.Admin.MemorySessionsLive do
          detail: detail,
          rows: [],
          error: nil,
+         consolidation_error: nil,
          consolidation_result: consolidation_progress(session_id, partition)
        )}
     else
       {:error, reason} ->
-        {:noreply, assign(socket, partition: partition, detail: nil, rows: [], error: reason)}
+        {:noreply,
+         assign(socket,
+           partition: partition,
+           detail: nil,
+           rows: [],
+           error: reason,
+           consolidation_result: nil,
+           consolidation_error: nil
+         )}
     end
   end
 
@@ -71,11 +83,22 @@ defmodule Backplane.Admin.MemorySessionsLive do
            offset: offset,
            next_offset: result.next_offset,
            total: result.total,
+           session_filter: params["session"],
            error: nil
          )}
 
       {:error, reason} ->
-        {:noreply, assign(socket, partition: partition, detail: nil, error: reason)}
+        {:noreply,
+         assign(socket,
+           partition: partition,
+           detail: nil,
+           rows: [],
+           total: 0,
+           offset: offset,
+           next_offset: nil,
+           session_filter: params["session"],
+           error: reason
+         )}
     end
   end
 
@@ -171,8 +194,8 @@ defmodule Backplane.Admin.MemorySessionsLive do
     <div id="memory-sessions">
       <.memory_page_header title="Sessions" subtitle="Canonical projected sessions and processing state" />
       <.dm_alert :if={@error} id="sessions-error" variant="error" title="Sessions unavailable">The bounded session query failed.</.dm_alert>
-      <p id="sessions-count" class="mb-3 text-sm">{@total} matching sessions</p>
-      <.dm_card :if={@rows == [] and !@error} id="sessions-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No sessions match</h2></.dm_card>
+      <p :if={!@error} id="sessions-count" class="mb-3 text-sm">{@total} matching sessions</p>
+      <.memory_blank_state :if={@rows == [] and !@error} id="sessions-empty" title="No sessions match" description="Captured sessions appear here after their observations are projected." icon="account-clock-outline" />
       <div class="overflow-x-auto">
         <.dm_table :if={@rows != []} id="memory-sessions-table" data={@rows} compact hover zebra>
           <:col :let={row} label="Session"><.link navigate={~p"/memory/sessions/#{row.session_id}?#{partition_query(row)}"} class="text-primary underline">{row.session_id}</.link></:col>
@@ -193,9 +216,9 @@ defmodule Backplane.Admin.MemorySessionsLive do
           </:col>
         </.dm_table>
       </div>
-      <nav aria-label="Session pagination" class="mt-4 flex justify-end gap-2">
-        <.memory_link_button :if={@offset > 0} id="sessions-previous" patch={~p"/memory/sessions?#{Map.put(partition_query(@partition), "offset", max(0, @offset - @page_size))}"}>Previous</.memory_link_button>
-        <.memory_link_button :if={@next_offset != nil} id="sessions-next" patch={~p"/memory/sessions?#{Map.put(partition_query(@partition), "offset", @offset + @page_size)}"}>Next</.memory_link_button>
+      <nav :if={!@error} aria-label="Session pagination" class="mt-4 flex justify-end gap-2">
+        <.memory_link_button :if={@offset > 0} id="sessions-previous" patch={page_path(@partition, @session_filter, max(0, @offset - @page_size))}>Previous</.memory_link_button>
+        <.memory_link_button :if={@next_offset != nil} id="sessions-next" patch={page_path(@partition, @session_filter, @next_offset)}>Next</.memory_link_button>
       </nav>
     </div>
     """
@@ -203,6 +226,12 @@ defmodule Backplane.Admin.MemorySessionsLive do
 
   defp put_filter(opts, _key, value) when value in [nil, ""], do: opts
   defp put_filter(opts, key, value), do: Keyword.put(opts, key, String.trim(value))
+
+  defp page_path(partition, session, offset) do
+    query = Map.put(partition_query(partition), "offset", offset)
+    query = if session in [nil, ""], do: query, else: Map.put(query, "session", session)
+    ~p"/memory/sessions?#{query}"
+  end
 
   defp format_duration(nil), do: "—"
   defp format_duration(milliseconds), do: "#{milliseconds} ms"

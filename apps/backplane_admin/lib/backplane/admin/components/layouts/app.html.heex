@@ -1,7 +1,16 @@
 <% current_path = assigns[:current_path] || "/dashboard/overview" %>
 <% left_nav_items = Backplane.Admin.Layouts.left_nav_items(current_path) %>
 <% left_nav_heading = Backplane.Admin.Layouts.left_nav_heading(current_path) %>
+<% left_nav_groups = Backplane.Admin.Layouts.left_nav_groups(current_path, assigns[:memory_navigation] || %{}) %>
 <% build_info = Backplane.Admin.BuildInfo.current() %>
+<% memory_section? = String.starts_with?(current_path, "/memory") %>
+<% active_left_item = left_nav_items |> Enum.flat_map(fn item -> Map.get(item, :items, [item]) end) |> Enum.find(&Backplane.Admin.Layouts.active_left_nav?(current_path, &1)) %>
+<% memory_page_label = cond do
+  active_left_item -> active_left_item.label
+  String.starts_with?(current_path, "/memory/events") -> "Events"
+  String.starts_with?(current_path, "/memory/streams") -> "Streams"
+  true -> "Overview"
+end %>
 
 <div class="min-h-full bg-surface text-on-surface">
   <header class="appbar appbar-sticky appbar-primary">
@@ -72,13 +81,27 @@
       id="admin-sidebar"
       sticky
       socket={@socket}
-      groups={Backplane.Admin.Layouts.left_nav_groups(current_path, assigns[:memory_navigation] || %{})}
+      groups={left_nav_groups}
       active={Backplane.Admin.Layouts.active_left_nav_id(current_path)}
       nav_label={left_nav_heading <> " navigation"}
       class="admin-sidebar admin-desktop-sidebar sticky top-16 h-[calc(100dvh-4rem)]"
     />
 
-    <aside class="admin-sidebar lg:hidden">
+    <aside :if={memory_section?} class="memory-mobile-sidebar lg:hidden">
+      <details id="memory-mobile-navigation" class="memory-mobile-menu">
+        <summary><span class="text-xs text-on-surface-variant">Memory /</span><span>{memory_page_label}</span><.dm_mdi name="chevron-down" class="ml-auto h-5 w-5" /></summary>
+        <nav aria-label="Memory navigation" class="memory-mobile-links">
+          <div :for={group <- left_nav_groups} class="memory-mobile-group">
+            <span :if={!String.starts_with?(group.id, "links-")} class="memory-eyebrow">{group.label}</span>
+            <.link :for={child <- group.items} navigate={child.to} aria-current={Backplane.Admin.Layouts.active_left_nav_id(current_path) == child.id && "page"}>
+              <.dm_mdi name={child.icon} class="h-4 w-4" />{child.label}
+            </.link>
+          </div>
+        </nav>
+      </details>
+    </aside>
+
+    <aside :if={!memory_section?} class="admin-sidebar lg:hidden">
       <nav class="admin-sidebar-nav" aria-label={left_nav_heading <> " navigation"}>
         <div class="admin-sidebar-section">{left_nav_heading}</div>
         <div :for={item <- left_nav_items} class="contents">
@@ -117,13 +140,9 @@
       </nav>
     </aside>
 
-    <main class="min-w-0 flex-1 flex flex-col">
+    <main class={["min-w-0 flex-1 flex flex-col", memory_section? && "memory-workspace"]}>
       <div class="admin-content mx-auto max-w-7xl w-full flex-1 flex flex-col px-4 py-6 sm:px-6 lg:px-8">
         <.dm_flash_group flash={@flash} />
-        <Backplane.Admin.MemoryOperatorComponents.source_filters :if={assigns[:memory_navigation]}
-          selection={@memory_navigation}
-          filters={assigns[:memory_route_params] || %{}}
-          path={Backplane.Admin.Layouts.memory_selection_path(current_path)} />
         <.dm_alert :if={assigns[:memory_refresh_error]} id="memory-refresh-error" variant="error" title="Refresh unavailable">{assigns[:memory_refresh_error]}</.dm_alert>
     {@inner_content}
       </div>

@@ -51,19 +51,22 @@ defmodule Backplane.Admin.MemoryTimelineLive do
   def render(assigns) do
     ~H"""
     <div id="memory-timeline">
-      <.memory_page_header title="Timeline" subtitle="Projected observations in deterministic source order" />
-      <.form for={%{}} id="timeline-filters" phx-submit="filter" class="mb-4 grid gap-3 rounded-xl border border-outline-variant p-4 md:grid-cols-4">
-        <label class="text-sm">Event type<input name="filters[event_type]" value={@filters["event_type"]} class="mt-1 w-full rounded border border-outline-variant bg-surface p-2" /></label>
-        <label class="text-sm">Tool<input name="filters[tool]" value={@filters["tool"]} class="mt-1 w-full rounded border border-outline-variant bg-surface p-2" /></label>
-        <label class="text-sm">Minimum importance<input type="number" name="filters[minimum_importance]" value={@filters["minimum_importance"]} class="mt-1 w-full rounded border border-outline-variant bg-surface p-2" /></label>
-        <label class="text-sm">Error status<select name="filters[error]" class="mt-1 w-full rounded border border-outline-variant bg-surface p-2"><option value="" selected={@filters["error"] == ""}>Any</option><option value="false" selected={@filters["error"] == "false"}>Success</option><option value="true" selected={@filters["error"] == "true"}>Error</option></select></label>
-        <label class="text-sm">File<input name="filters[file]" value={@filters["file"]} class="mt-1 w-full rounded border border-outline-variant bg-surface p-2" /></label>
-        <label class="text-sm">From<input name="filters[from]" value={@filters["from"]} placeholder="ISO 8601" class="mt-1 w-full rounded border border-outline-variant bg-surface p-2" /></label>
-        <label class="text-sm">To<input name="filters[to]" value={@filters["to"]} placeholder="ISO 8601" class="mt-1 w-full rounded border border-outline-variant bg-surface p-2" /></label>
-        <div class="flex items-end"><button type="submit" class="rounded bg-primary px-4 py-2 text-on-primary">Apply filters</button></div>
-      </.form>
+      <.memory_page_header title="Timeline" subtitle="Recorded observations, tools, and outcomes in source order" />
+      <details id="timeline-filter-panel" class="memory-disclosure" open={@filters != empty_filters()}>
+        <summary>Filter observations</summary>
+        <.form for={%{}} id="timeline-filters" phx-submit="filter" class="memory-disclosure-body grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <.dm_input id="timeline-event-type" name="filters[event_type]" label="Event type" value={@filters["event_type"]} />
+          <.dm_input id="timeline-tool" name="filters[tool]" label="Tool" value={@filters["tool"]} />
+          <.dm_input id="timeline-importance" name="filters[minimum_importance]" label="Minimum importance" type="number" value={@filters["minimum_importance"]} />
+          <.dm_select id="timeline-error-status" name="filters[error]" label="Error status" value={@filters["error"]} options={[{"", "Any"}, {"false", "Success"}, {"true", "Error"}]} />
+          <.dm_input id="timeline-file" name="filters[file]" label="File" value={@filters["file"]} />
+          <.dm_input id="timeline-from" name="filters[from]" label="From (UTC)" value={@filters["from"]} placeholder="2026-10-24T09:00:00Z" />
+          <.dm_input id="timeline-to" name="filters[to]" label="To (UTC)" value={@filters["to"]} placeholder="2026-10-24T18:00:00Z" />
+          <div class="flex items-end"><.dm_btn type="submit" native_submit variant="primary">Apply filters</.dm_btn></div>
+        </.form>
+      </details>
       <.dm_alert :if={@error} id="timeline-error" variant="error" title="Timeline unavailable">The bounded projection query failed.</.dm_alert>
-      <p id="timeline-count" class="mb-3 text-sm">{@total} matching observations</p>
+      <p :if={!@error} id="timeline-count" class="mb-3 text-sm">{@total} matching observations</p>
       <.dm_card :if={@rows == [] and !@error} id="timeline-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No projected observations</h2><p class="mt-1 text-sm text-on-surface-variant">The session may be pending, skipped, or have no accepted observations.</p></.dm_card>
       <ol :if={@rows != []} id="memory-timeline-list" class="space-y-3">
         <li :for={row <- @rows} class="rounded-xl border border-outline-variant bg-surface-container p-4 text-on-surface">
@@ -75,7 +78,7 @@ defmodule Backplane.Admin.MemoryTimelineLive do
           <p class="mt-2 text-xs text-on-surface-variant">Session {row.session_id} · {format_datetime(row.occurred_at)}</p>
         </li>
       </ol>
-      <nav aria-label="Timeline pagination" class="mt-4 flex justify-end gap-2">
+      <nav :if={!@error} aria-label="Timeline pagination" class="mt-4 flex justify-end gap-2">
         <.memory_link_button :if={@offset > 0} id="timeline-previous" patch={page_path(@partition, @session, @filters, max(0, @offset - @page_size))}>Previous</.memory_link_button>
         <.memory_link_button :if={@next_offset != nil} id="timeline-next" patch={page_path(@partition, @session, @filters, @offset + @page_size)}>Next</.memory_link_button>
       </nav>
@@ -120,6 +123,8 @@ defmodule Backplane.Admin.MemoryTimelineLive do
          assign(socket,
            partition: partition,
            rows: [],
+           total: 0,
+           next_offset: nil,
            offset: offset,
            session: session,
            filters: filters,

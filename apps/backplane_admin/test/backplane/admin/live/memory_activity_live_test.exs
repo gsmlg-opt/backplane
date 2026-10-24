@@ -29,7 +29,7 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     on_exit(fn -> AgentManage.clear() end)
   end
 
-  test "renders retained exact-partition activity with filters, trends, and bounded distribution",
+  test "renders activity from the first recorded day with filters, trends, and bounded distribution",
        %{
          conn: conn
        } do
@@ -43,17 +43,19 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     {:ok, view, html} = activity_live(conn)
 
     assert html =~ "Activity"
-    assert has_element?(view, "#memory-source-host[value=\"#{@partition.host_id}\"]")
-    assert has_element?(view, "#activity-host-filter[readonly][value='#{@partition.host_id}']")
-    retention_days = Backplane.Memory.Config.activity_retention_days()
-    assert element_count(view, "#activity-heatmap [data-date]") == retention_days
+    assert has_element?(view, "#activity-source", @partition.host_id)
+    refute has_element?(view, "#activity-host-filter")
+    first_date = Date.add(today, -2)
+    assert element_count(view, "#activity-heatmap [data-date]") == 3
 
     assert has_element?(
              view,
-             "#activity-heatmap [data-date='#{Date.add(Date.utc_today(), 1 - retention_days)}']"
+             "#activity-heatmap [data-date='#{first_date}']"
            )
 
-    assert has_element?(view, "#activity-heatmap [data-date='#{Date.utc_today()}']")
+    assert has_element?(view, "#activity-heatmap [data-date='#{today}']")
+    assert has_element?(view, "#activity-date-range", "#{first_date} to #{today} (UTC)")
+    refute has_element?(view, "#activity-heatmap-empty")
     assert has_element?(view, "#activity-summary-events", "6")
     assert has_element?(view, "#activity-event-distribution", "memory.recalled")
     assert has_element?(view, "#activity-project-breakdown", "alpha")
@@ -79,12 +81,12 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     assert has_element?(view, "#activity-summary-events", "3")
     refute render(view) =~ "agent.tool.failed"
 
-    retained_dates = Date.range(Date.add(Date.utc_today(), 1 - retention_days), Date.utc_today())
+    activity_dates = Date.range(first_date, today)
 
     period_counts = [
-      {"daily", retention_days},
-      {"monthly", retained_dates |> Enum.map(&{&1.year, &1.month}) |> Enum.uniq() |> length()},
-      {"yearly", retained_dates |> Enum.map(& &1.year) |> Enum.uniq() |> length()}
+      {"daily", 3},
+      {"monthly", activity_dates |> Enum.map(&{&1.year, &1.month}) |> Enum.uniq() |> length()},
+      {"yearly", activity_dates |> Enum.map(& &1.year) |> Enum.uniq() |> length()}
     ]
 
     for {period, expected_rows} <- period_counts do
@@ -132,6 +134,25 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     assert has_element?(view, "#activity-summary-events", "3")
     assert has_element?(view, "#activity-recent-events", "task.completed")
 
+    first_date = Date.add(today, -3)
+    insert_activity!(first_date, "backfill", "agent", "memory.recalled", 1)
+
+    Phoenix.PubSub.broadcast(
+      Backplane.PubSub,
+      "memory:v2:activity",
+      {:memory_activity_updated,
+       Map.merge(@partition, %{date_from: first_date, date_to: first_date})}
+    )
+
+    assert has_element?(view, "#activity-summary-events", "4")
+    assert element_count(view, "#activity-heatmap [data-date]") == 4
+    assert has_element?(view, "#activity-date-range", "#{first_date} to #{today}")
+
+    assert has_element?(
+             view,
+             "#activity-heatmap [data-date='#{Date.add(today, -1)}'][data-level='0']"
+           )
+
     insert_activity!(today, "foreign", "agent", "agent.tool.failed", 50, host_id: "foreign-host")
 
     Phoenix.PubSub.broadcast(
@@ -145,10 +166,10 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
        })}
     )
 
-    assert has_element?(view, "#activity-summary-events", "3")
+    assert has_element?(view, "#activity-summary-events", "4")
 
     {:ok, reconnected, _html} = activity_live(recycle(conn))
-    assert has_element?(reconnected, "#activity-summary-events", "3")
+    assert has_element?(reconnected, "#activity-summary-events", "4")
     assert has_element?(reconnected, "#activity-recent-events", "task.completed")
   end
 
@@ -158,7 +179,13 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     {:ok, view, html} = live(conn, "/memory/activity")
     refute html =~ "Activity partition unavailable"
     assert has_element?(view, "#activity-heatmap")
+    assert has_element?(view, "#activity-heatmap-empty", "No activity recorded")
+    refute has_element?(view, "#activity-heatmap [data-date]")
+    refute has_element?(view, "#activity-trends [data-period]")
+    refute has_element?(view, "#activity-date-range")
     assert has_element?(view, "#activity-summary-events", "0")
+    refute has_element?(view, "#activity-host-diagnostics")
+    refute html =~ "No capture telemetry has been reported for this host"
   end
 
   test "global activity aggregates every durable source and optional URL filters", %{conn: conn} do
@@ -166,19 +193,22 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
     repo().delete_all(ActivityContribution)
     repo().delete_all(ActivityDaily)
     today = Date.utc_today()
-    insert_activity!(today, "alpha", "agent", "memory.recalled", 1)
+    insert_activity!(Date.add(today, -4), "alpha", "agent", "memory.recalled", 1)
     insert_activity!(today, "beta", "agent", "task.completed", 7, host_id: "zz-host")
     {:ok, view, _} = live(conn, "/memory/activity")
     assert has_element?(view, "#activity-summary-events", "8")
+    assert element_count(view, "#activity-heatmap [data-date]") == 5
     assert has_element?(view, "#activity-host-breakdown", "zz-host")
     assert has_element?(view, "#activity-host-breakdown", @partition.host_id)
     {:ok, filtered, _} = live(recycle(conn), "/memory/activity?host=zz-host")
     assert has_element?(filtered, "#activity-summary-events", "7")
+    assert element_count(filtered, "#activity-heatmap [data-date]") == 1
     refute has_element?(filtered, "#activity-project-breakdown", "alpha")
 
     render_patch(filtered, "/memory/activity")
     assert has_element?(filtered, "#activity-summary-events", "8")
-    assert has_element?(filtered, "#memory-source-host[value='']")
+    assert element_count(filtered, "#activity-heatmap [data-date]") == 5
+    assert has_element?(filtered, "#activity-source", "All stored sources")
 
     render_patch(filtered, "/memory/activity?project=" <> String.duplicate("x", 513))
     assert has_element?(filtered, "#activity-query-error")
@@ -234,6 +264,36 @@ defmodule Backplane.Admin.MemoryActivityLiveTest do
 
     assert has_element?(view, "#activity-host-health", "Disconnected")
     assert has_element?(view, "#activity-host-health", "3")
+
+    render_patch(
+      view,
+      "/memory/activity?host=another-host&project=" <> String.duplicate("x", 513)
+    )
+
+    assert has_element?(view, "#activity-query-error")
+    assert has_element?(view, "#activity-source", "another-host")
+    refute has_element?(view, "#activity-host-health", "0.2.0")
+    refute has_element?(view, "#activity-summary")
+  end
+
+  test "failed activity reads hide previous totals and dates and recover", %{conn: conn} do
+    insert_activity!(Date.utc_today(), "read-failure", "agent", "task.completed", 7)
+    {:ok, view, _} = activity_live(conn)
+    assert has_element?(view, "#activity-summary-events", "7")
+    original_repo = Application.fetch_env!(:backplane_memory, :repo)
+    Backplane.Admin.MemoryFixtures.fail_memory_reads!()
+
+    render_patch(view, "/memory/activity?host=" <> @partition.host_id)
+    assert has_element?(view, "#activity-query-error")
+    refute has_element?(view, "#activity-summary")
+    refute has_element?(view, "#activity-heatmap [data-date]")
+    refute has_element?(view, "#activity-heatmap-empty")
+    refute has_element?(view, "#activity-live-update")
+
+    Application.put_env(:backplane_memory, :repo, original_repo)
+    render_patch(view, "/memory/activity?host=" <> @partition.host_id)
+    refute has_element?(view, "#activity-query-error")
+    assert has_element?(view, "#activity-summary-events", "7")
   end
 
   defp activity_live(conn, partition \\ @partition) do

@@ -3,6 +3,7 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
   @memory_v2_top_paths [
     "/memory",
+    "/memory/search",
     "/memory/streams",
     "/memory/events",
     "/memory/sessions",
@@ -81,6 +82,8 @@ defmodule Backplane.Admin.RouteBoundaryTest do
       {"Graph", "/memory/graph"},
       {"Profile", "/memory/profile"},
       {"Actions", "/memory/actions"},
+      {"Search", "/memory/search"},
+      {"Pipeline", "/memory/pipeline"},
       {"Recall Inspector", "/memory/recall"},
       {"Audit", "/memory/audit"},
       {"Config", "/memory/config"}
@@ -100,7 +103,7 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
     mobile_items =
       document
-      |> Floki.find(~s(nav[aria-label="Memory navigation"] a.admin-sidebar-link))
+      |> Floki.find("#memory-mobile-navigation nav a")
       |> Enum.map(fn link ->
         {
           link |> Floki.text() |> String.trim(),
@@ -128,8 +131,38 @@ defmodule Backplane.Admin.RouteBoundaryTest do
       id = String.downcase(group)
 
       assert has_element?(view, "#admin-sidebar-group-#{id} > summary", group)
-      assert has_element?(view, ".admin-sidebar-group-title", group)
+      assert has_element?(view, "#memory-mobile-navigation .memory-eyebrow", group)
     end
+
+    assert has_element?(
+             view,
+             ~s(#admin-sidebar-group-operate a[href="/memory/search"]),
+             "Search"
+           )
+
+    {:ok, search, _html} = live(recycle(conn), "/memory/search")
+
+    assert has_element?(search, ~s(#admin-sidebar a[href="/memory/search"][aria-current="page"]))
+    refute has_element?(search, ~s(#admin-sidebar a[href="/memory"][aria-current="page"]))
+
+    assert has_element?(
+             search,
+             ~s(#admin-sidebar-navigation[data-active-nav="memory-search"])
+           )
+  end
+
+  test "mobile Memory navigation preserves the same source selection as desktop", %{conn: conn} do
+    query = %{"host" => "navigation-host", "repository" => "navigation-repo"}
+    {:ok, view, html} = live(conn, "/memory/search?" <> URI.encode_query(query))
+    document = Floki.parse_fragment!(html)
+
+    desktop_paths = Floki.attribute(document, "#admin-sidebar a[aria-label]", "href")
+    mobile_paths = Floki.attribute(document, "#memory-mobile-navigation nav a", "href")
+    assert mobile_paths == desktop_paths
+    assert Enum.all?(mobile_paths, &(URI.decode_query(URI.parse(&1).query) == query))
+    assert has_element?(view, "#memory-mobile-navigation summary", "Search")
+    refute has_element?(view, "#memory-mobile-navigation[open]")
+    assert has_element?(view, ~s(#memory-mobile-navigation a[aria-current="page"]), "Search")
   end
 
   test "Memory V2 pages accept client theme changes without disconnecting", %{conn: conn} do

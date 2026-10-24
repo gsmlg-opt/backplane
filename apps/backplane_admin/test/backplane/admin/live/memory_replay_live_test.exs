@@ -15,6 +15,8 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
 
   use Backplane.Admin.LiveCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias Backplane.Memory.Coordination.Action
   alias Backplane.Memory.Crystals.{Crystal, SourceEvent}
   alias Backplane.Memory.Events.Store
@@ -45,6 +47,50 @@ defmodule Backplane.Admin.MemoryReplayLiveTest do
     |> repo().insert!(on_conflict: :nothing)
 
     :ok
+  end
+
+  test "session inventory failures remain visible and recover", %{conn: conn} do
+    original_repo = Application.fetch_env!(:backplane_memory, :repo)
+    Backplane.Admin.MemoryFixtures.fail_memory_reads!()
+    {:ok, view, _} = live(conn, "/memory/replay")
+    assert has_element?(view, "#replay-query-error")
+    refute has_element?(view, "#replay-session-inventory")
+
+    Application.put_env(:backplane_memory, :repo, original_repo)
+    render_patch(view, "/memory/replay?offset=0")
+    refute has_element?(view, "#replay-query-error")
+    assert has_element?(view, "#replay-session-inventory")
+  end
+
+  test "loading replay preserves the selected source partition", %{conn: conn} do
+    session = session_id("source-retention")
+    append!(session, 1, "agent.prompt.submitted", %{"source" => %{"prompt" => "Scoped prompt"}})
+    assert {:ok, _} = Rebuild.session(@partition.host_id, session)
+
+    # A duplicate identifier in another stored source makes an unscoped lookup ambiguous.
+    snapshot =
+      Backplane.Repo.one!(
+        from(s in Backplane.Memory.Projections.Snapshot,
+          where: s.projector == "session" and s.host_id == ^@partition.host_id
+        )
+      )
+
+    Backplane.Repo.insert!(%{
+      snapshot
+      | id: Ecto.UUID.generate(),
+        subject_id: snapshot.subject_id <> ":other",
+        host_id: "other-replay-host",
+        read_model: Map.put(snapshot.read_model, "host_id", "other-replay-host")
+    })
+
+    params = replay_params(session)
+    {:ok, view, _} = live(conn, "/memory/replay?" <> URI.encode_query(params))
+    assert has_element?(view, "#replay-player")
+
+    assert {:error, {:live_redirect, %{to: redirect}}} =
+             view |> form("#replay-selector", replay: %{session: session}) |> render_submit()
+
+    assert URI.decode_query(URI.parse(redirect).query) == params
   end
 
   test "router grants separate trusted-operator replay capabilities while direct mounts fail closed",

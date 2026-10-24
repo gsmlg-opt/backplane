@@ -53,7 +53,13 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
     else
       {:error, :partition_required} ->
         {:noreply,
-         assign(socket, partition: nil, selected: nil, selected_source: nil, query_error: nil)}
+         assign(socket,
+           partition: nil,
+           selected: nil,
+           selected_source: nil,
+           page: %{entries: [], next_cursor: nil},
+           query_error: nil
+         )}
 
       {:error, :not_found} ->
         {:ok, partition} = partition_result
@@ -63,11 +69,20 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
            partition: partition,
            selected: nil,
            selected_source: nil,
+           page: %{entries: [], next_cursor: nil},
            query_error: :not_found
          )}
 
       {:error, reason} ->
-        {:noreply, assign(socket, query_error: reason)}
+        {:noreply,
+         assign(socket,
+           partition: browse_scope(params),
+           selected: nil,
+           selected_source: nil,
+           query: String.trim(params["query"] || ""),
+           page: %{entries: [], next_cursor: nil},
+           query_error: reason
+         )}
     end
   end
 
@@ -125,9 +140,10 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
           <.dm_input id="crystal-query" name="filters[query]" label="Search crystals" value={@query} phx-debounce="300" />
         </.form>
 
-        <.dm_card :if={@page.entries == []} variant="bordered" padding="lg" class="mt-4 text-center">
-          <h2 class="text-lg font-semibold">No crystals match</h2>
-        </.dm_card>
+        <.crystal_detail :if={@selected} detail={@selected} partition={record_partition(@selected.crystal, @partition)} query={@query} />
+        <.source_detail :if={@selected_source} source={@selected_source} />
+
+        <.memory_blank_state :if={!@query_error && @page.entries == []} id="crystals-empty" title="No crystals match" description="Completed-work digests appear here after crystallization finishes." icon="diamond-stone" />
 
         <div class="mt-4 overflow-x-auto">
           <.dm_table :if={@page.entries != []} id="memory-crystals-table" data={@page.entries} compact hover zebra>
@@ -145,8 +161,6 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
           <.memory_link_button id="crystals-next-page" patch={next_path(@partition, @query, @page.next_cursor)}>Next</.memory_link_button>
         </nav>
 
-        <.crystal_detail :if={@selected} detail={@selected} partition={record_partition(@selected.crystal, @partition)} query={@query} />
-        <.source_detail :if={@selected_source} source={@selected_source} />
       </div>
     </div>
     """
@@ -161,11 +175,19 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
     <aside id="crystal-detail" class="mt-6" aria-labelledby="crystal-detail-title">
       <.dm_card variant="bordered" padding="sm">
         <div class="flex flex-wrap items-start justify-between gap-3">
-          <h2 id="crystal-detail-title" class="text-lg font-semibold">{@detail.crystal.title}</h2>
+          <h2 id="crystal-detail-title" class="min-w-0 break-words text-lg font-semibold">{@detail.crystal.title}</h2>
           <.memory_link_button id="crystal-close-detail" patch={~p"/memory/crystals?#{query_params(@partition, @query)}"} variant="ghost" size="sm">Close detail</.memory_link_button>
         </div>
 
-        <dl class="mt-4 grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[max-content_minmax(0,1fr)]">
+        <section class="mt-5"><h3 class="font-semibold">Narrative</h3><p class="memory-record-content mt-2">{@detail.crystal.narrative}</p></section>
+        <.string_list id="crystal-outcomes" title="Outcomes" values={@detail.crystal.key_outcomes} />
+        <.string_list id="crystal-decisions" title="Decisions" values={@detail.crystal.decisions} />
+        <.string_list id="crystal-files" title="Files" values={@detail.crystal.files_affected} />
+        <.string_list id="crystal-unresolved" title="Unresolved items" values={@detail.crystal.unresolved_items} />
+
+        <details id="crystal-metadata" class="memory-disclosure">
+          <summary>Identity and processing details</summary>
+          <dl class="memory-disclosure-body grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[max-content_minmax(0,1fr)]">
           <.identity_value label="Crystal ID" value={@detail.crystal.id} />
           <.identity_value label="Memory ID" value={@detail.crystal.memory_id} />
           <.identity_value label="Source kind" value={@detail.crystal.source_kind} />
@@ -175,13 +197,8 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
           <.identity_value label="Prompt version" value={@detail.crystal.prompt_version} />
           <.identity_value label="Input revision" value={@detail.crystal.input_revision} />
           <.identity_value label="Output revision" value={@detail.crystal.output_revision} />
-        </dl>
-
-        <section class="mt-5"><h3 class="font-semibold">Narrative</h3><p class="mt-2 whitespace-pre-wrap">{@detail.crystal.narrative}</p></section>
-        <.string_list id="crystal-outcomes" title="Outcomes" values={@detail.crystal.key_outcomes} />
-        <.string_list id="crystal-decisions" title="Decisions" values={@detail.crystal.decisions} />
-        <.string_list id="crystal-files" title="Files" values={@detail.crystal.files_affected} />
-        <.string_list id="crystal-unresolved" title="Unresolved items" values={@detail.crystal.unresolved_items} />
+          </dl>
+        </details>
 
         <section id="crystal-evidence" class="mt-5">
           <h3 class="font-semibold">Evidence and links</h3>
@@ -195,7 +212,8 @@ defmodule Backplane.Admin.MemoryCrystalsLive do
           </div>
         </section>
 
-        <.dm_btn id="crystal-rerun" type="button" variant="primary" phx-click="rerun" class="mt-5">Rerun crystallization</.dm_btn>
+        <p class="mt-5 text-sm text-on-surface-variant">Rerunning queues processing for this stored source revision.</p>
+        <.dm_btn id="crystal-rerun" type="button" variant="primary" phx-click="rerun" class="mt-2">Rerun crystallization</.dm_btn>
       </.dm_card>
     </aside>
     """

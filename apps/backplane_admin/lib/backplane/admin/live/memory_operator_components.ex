@@ -3,34 +3,6 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
 
   @partition_keys ~w(memory_space_id host client scope namespace)
 
-  attr(:path, :string, required: true)
-  attr(:selection, :map, default: %{})
-  attr(:filters, :map, default: %{})
-
-  def source_filters(assigns) do
-    assigns =
-      assign(
-        assigns,
-        :filters,
-        Map.take(
-          assigns.filters,
-          ~w(q type session sort event_type tool minimum_importance error file from to status operation actor target query agent run stream state limit agent_id)
-        )
-      )
-
-    ~H"""
-    <form id="memory-source-filters" method="get" action={@path} class="mb-5 flex flex-wrap items-end gap-3">
-      <input :for={{key, value} <- @filters} type="hidden" name={key} value={value} />
-      <input :for={{key, value} <- Map.take(@selection, ~w(memory_space_id client scope namespace))} type="hidden" name={key} value={value} />
-      <.dm_input id="memory-source-host" name="host" label="Source host (optional)" value={@selection["host"] || ""} />
-      <.dm_input id="memory-source-repository" name="repository" label="Repository (optional)" value={@selection["repository"] || ""} />
-      <.dm_input id="memory-source-project" name="project" label="Legacy project (optional)" value={@selection["project"] || ""} />
-      <.dm_btn type="submit" native_submit variant="primary">Apply source filters</.dm_btn>
-      <.link href={@path <> "?" <> URI.encode_query(@filters)} class="text-primary underline">All sources</.link>
-    </form>
-    """
-  end
-
   attr(:record, :map, required: true)
   attr(:detail, :boolean, default: false)
 

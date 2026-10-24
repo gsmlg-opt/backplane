@@ -28,6 +28,32 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
     %{partition: partition}
   end
 
+  test "detail precedes inventory and a failed refresh removes stale rerun controls", %{
+    conn: conn,
+    partition: partition
+  } do
+    crystal = crystal("Stale crystal detail", partition)
+    path = crystal_detail_path(crystal.id, partition)
+    {:ok, view, html} = live(conn, path)
+    {detail_position, _} = :binary.match(html, "id=\"crystal-detail\"")
+    {table_position, _} = :binary.match(html, "id=\"memory-crystals-table\"")
+    assert detail_position < table_position
+    assert has_element?(view, "#crystal-rerun")
+
+    original_repo = Application.fetch_env!(:backplane_memory, :repo)
+    Backplane.Admin.MemoryFixtures.fail_memory_reads!()
+    send(view.pid, :refresh_memory_operator)
+    assert has_element?(view, "#crystal-query-error")
+    refute has_element?(view, "#crystal-rerun")
+    refute has_element?(view, "#memory-crystals-table")
+    refute render(view) =~ "Stale crystal detail"
+
+    Application.put_env(:backplane_memory, :repo, original_repo)
+    render_patch(view, path)
+    assert has_element?(view, "#crystal-rerun")
+    refute has_element?(view, "#crystal-query-error")
+  end
+
   test "opens directly and supports optional legacy crystal filters", %{
     conn: conn,
     partition: partition
@@ -35,7 +61,7 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
     {:ok, view, html} = live(conn, "/memory/crystals")
     refute html =~ "Select an exact partition"
     refute has_element?(view, "#memory-crystals-table")
-    assert has_element?(view, "#memory-source-filters")
+    refute has_element?(view, "#memory-source-filters")
 
     crystal = crystal("Visible crystal", partition)
     _foreign = crystal("Foreign crystal", partition_fixture("other-crystal"))
