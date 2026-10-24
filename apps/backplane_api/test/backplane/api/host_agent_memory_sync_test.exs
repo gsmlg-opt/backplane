@@ -317,6 +317,10 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
         metadata: %{"crystal" => %{"source" => "summary"}}
       )
 
+    Backplane.Memory.SourceSupport.refresh!(Map.from_struct(crystal))
+    crystal = Repo.get!(MemorySchema, crystal.id)
+    assert crystal.metadata["current_context"] == independent_current_context()
+
     Repo.query!(
       "UPDATE bpm_memories SET updated_at = '2026-01-01 00:00:00'::timestamp WHERE id = $1",
       [Ecto.UUID.dump!(crystal.id)]
@@ -484,7 +488,10 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert is_integer(revision) and revision > 0
 
     stored = Repo.get!(MemorySchema, canonical_id)
-    assert Map.drop(stored.metadata, ["host_memory_command_revision"]) == metadata
+
+    assert Map.drop(stored.metadata, ["host_memory_command_revision"]) ==
+             Map.put(metadata, "current_context", independent_current_context())
+
     refute Map.has_key?(stored.metadata, "host_memory")
     assert stored.host_id == host.id
     assert stored.client_id == "host:#{host.id}"
@@ -510,6 +517,10 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
         memory_type: "episodic",
         metadata: metadata
       )
+
+    Backplane.Memory.SourceSupport.refresh!(Map.from_struct(crystal))
+    crystal = Repo.get!(MemorySchema, crystal.id)
+    assert crystal.metadata == Map.put(metadata, "current_context", independent_current_context())
 
     assert [[budget]] =
              Repo.query!(
@@ -538,7 +549,7 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
              HostAgentMemorySync.apply_sync_item(host, item)
 
     assert canonical_id == crystal.id
-    assert Repo.get!(MemorySchema, canonical_id).metadata == metadata
+    assert Repo.get!(MemorySchema, canonical_id).metadata == crystal.metadata
 
     assert [[false]] =
              Repo.query!(
@@ -1130,6 +1141,17 @@ defmodule Backplane.Api.HostAgentMemorySyncTest do
     assert directive_id == "deleted:#{deleted.id}"
     assert deleted_id == deleted.id
     assert deleted_hash == Base.encode16(deleted.content_hash, case: :lower)
+  end
+
+  defp independent_current_context do
+    %{
+      "policy_version" => "current_context.v1",
+      "support_complete" => true,
+      "independent_support" => true,
+      "trust" => "candidate_inference",
+      "source_refs" => [],
+      "valid_until" => nil
+    }
   end
 
   defp create_host!(suffix, memory_scope) do

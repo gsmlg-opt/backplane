@@ -81,6 +81,24 @@ defmodule Backplane.Memory.Recall.PipelineTest do
     assert event == mutation["event_id"]
     assert result.evidence_refs != []
 
+    assert [
+             %{
+               source_type: "request",
+               source_id: request_id,
+               evidence_kind: "derives",
+               support_score: +0.0
+             },
+             %{source_type: "source_mutation", source_id: ^event}
+           ] = Memories.list_evidence(id)
+
+    request = repo().get!(Backplane.Memory.Memories.RememberRequest, request_id)
+    assert request.origin == "external_source"
+    refute request.independent_support
+
+    refute Backplane.Memory.CurrentContext.metadata(
+             repo().get!(Backplane.Memory.Memories.Memory, id)
+           )["independent_support"]
+
     withdrawal =
       mutation
       |> Map.merge(%{

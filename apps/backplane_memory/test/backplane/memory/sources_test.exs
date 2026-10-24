@@ -40,6 +40,47 @@ defmodule Backplane.Memory.SourcesTest do
 
   defp current(c), do: Memories.list([current: true], c.partition)
 
+  test "edge publication waits for source evidence and withdrawal emits one tombstone", c do
+    repo().query!(
+      "INSERT INTO bpm_memory_space_entitlements (memory_space_id,host_id,scope,namespace,status,inserted_at,updated_at) VALUES ($1,$2,$3,$4,'active',now(),now())",
+      [
+        Ecto.UUID.dump!(c.partition.memory_space_id),
+        Ecto.UUID.dump!(Ecto.UUID.generate()),
+        c.partition.scope,
+        c.partition.namespace
+      ]
+    )
+
+    args = mutation(c, 1, "Publish only supported source context")
+
+    assert {:ok, %{canonical_id: id, revision: revision}} =
+             Sources.mutate(args, c.partition)
+
+    assert [[^revision, "upsert", payload]] =
+             repo().query!(
+               "SELECT revision, op, payload FROM bpm_memory_changes WHERE memory_id=$1 ORDER BY revision",
+               [Ecto.UUID.dump!(id)]
+             ).rows
+
+    assert payload["effective_support"]
+    assert payload["support_complete"]
+    refute payload["independent_support"]
+    assert payload["trust"] == "candidate_inference"
+    assert [%{"event_id" => event_id, "source_revision" => 1}] = payload["source_refs"]
+    assert event_id == args["event_id"]
+
+    assert {:ok, %{revision: withdrawn_revision}} =
+             Sources.mutate(withdraw(c, 2), c.partition)
+
+    assert withdrawn_revision > revision
+
+    assert [[^revision, "upsert"], [^withdrawn_revision, "delete"]] =
+             repo().query!(
+               "SELECT revision, op FROM bpm_memory_changes WHERE memory_id=$1 ORDER BY revision",
+               [Ecto.UUID.dump!(id)]
+             ).rows
+  end
+
   test "sole source correction and withdrawal retain history but stop current reads", c do
     assert {:ok, %{canonical_id: first}} =
              Sources.mutate(mutation(c, 1, "Hermes likes blue"), c.partition)
@@ -141,7 +182,21 @@ defmodule Backplane.Memory.SourcesTest do
     assert MapSet.new(Enum.map(current(c), & &1.id)) == MapSet.new([source_id, output.id])
     assert {:ok, _} = Sources.mutate(withdraw(c, 2), c.partition)
     assert current(c) == []
-    assert length(Memories.list_evidence(output.id)) == 1
+
+    assert [
+             %{
+               source_type: "request",
+               source_id: request_id,
+               evidence_kind: "derives",
+               support_score: +0.0
+             },
+             %{source_type: "source_mutation", source_id: mutation_id, support_score: 0.8}
+           ] = Memories.list_evidence(output.id)
+
+    assert mutation_id == args["event_id"]
+    request = repo().get!(Backplane.Memory.Memories.RememberRequest, request_id)
+    assert request.origin == "derived"
+    refute request.independent_support
   end
 
   test "expired or archived roots stop derived reads and cannot create a new current output", c do

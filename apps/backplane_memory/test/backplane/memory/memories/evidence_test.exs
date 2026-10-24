@@ -133,7 +133,12 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                )
 
       assert [
-               %{source_type: "request", evidence_kind: "supports"},
+               %{
+                 source_type: "request",
+                 source_id: request_id,
+                 evidence_kind: "derives",
+                 support_score: +0.0
+               },
                %{
                  source_type: "session",
                  source_id: "host:source-session",
@@ -142,6 +147,11 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
                  excerpt: "source excerpt"
                }
              ] = Memories.list_evidence(memory.id)
+
+      request = repo().get!(RememberRequest, request_id)
+      assert request.origin == "derived"
+      refute request.independent_support
+      assert repo().aggregate(Evidence, :count) == 2
     end
 
     test "keyed retries canonicalize typed evidence independently of list and map order" do

@@ -985,20 +985,20 @@ defmodule Backplane.Memory.Memories do
             suppressed? = not is_nil(memory.deleted_at)
 
             unless suppressed? do
-              if request.origin == "direct" do
-                %Evidence{}
-                |> Evidence.changeset(%{
-                  memory_id: memory.id,
-                  source_request_id: request.id,
-                  session_id: attrs.session_id,
-                  agent_id: attrs.agent_id,
-                  host_id: attrs.host_id,
-                  evidence_kind: "supports",
-                  support_score: 1.0,
-                  excerpt: attrs.content
-                })
-                |> repo().insert!()
-              end
+              # Every accepted request remains traceable. A derived/source receipt
+              # records delivery, while only its real input evidence supplies support.
+              %Evidence{}
+              |> Evidence.changeset(%{
+                memory_id: memory.id,
+                source_request_id: request.id,
+                session_id: attrs.session_id,
+                agent_id: attrs.agent_id,
+                host_id: attrs.host_id,
+                evidence_kind: if(request.independent_support, do: "supports", else: "derives"),
+                support_score: if(request.independent_support, do: 1.0, else: 0.0),
+                excerpt: attrs.content
+              })
+              |> repo().insert!()
 
               typed_ids = insert_typed_evidence!(memory.id, typed_evidence)
 
@@ -1430,7 +1430,9 @@ defmodule Backplane.Memory.Memories do
         {merge_repository_sources!(memory, attrs.metadata), false}
 
       nil ->
-        case repo().insert(MemorySchema.changeset(%MemorySchema{}, attrs)) do
+        # Publish only after the request and its real support have been attached.
+        # Source mutations remain unpublished until their membership is saved.
+        case repo().insert(MemorySchema.changeset(%MemorySchema{effective_support: false}, attrs)) do
           {:ok, memory} -> {memory, true}
           {:error, changeset} -> repo().rollback(changeset)
         end

@@ -110,7 +110,20 @@ defmodule Backplane.Memory.SourceCommandsTest do
                put_in(command, ["arguments", "content"], "changed after lost ACK")
              )
 
-    assert length(Memories.list_evidence(id)) == 1
+    assert [
+             %{
+               source_type: "request",
+               source_id: request_id,
+               evidence_kind: "derives",
+               support_score: +0.0
+             },
+             %{source_type: "source_mutation", source_id: mutation_id, evidence_kind: "supports"}
+           ] = Memories.list_evidence(id)
+
+    assert mutation_id == command["command_id"]
+    request = repo().get!(Backplane.Memory.Memories.RememberRequest, request_id)
+    assert request.origin == "external_source"
+    refute request.independent_support
   end
 
   test "immutable event identity must match command identity and reject nested trusted fields",

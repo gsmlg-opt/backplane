@@ -385,6 +385,17 @@ defmodule Backplane.Memory.Memories.EvidenceConcurrencyTest do
         try do
           repo().query!(
             """
+            DELETE FROM bpm_memory_request_evidence
+            WHERE request_id IN (
+              SELECT id FROM bpm_memory_remember_requests
+              WHERE idempotency_key = $1 OR idempotency_key LIKE $2
+            )
+            """,
+            [prefix, "#{prefix}:%"]
+          )
+
+          repo().query!(
+            """
             DELETE FROM bpm_memory_evidence
             WHERE memory_id IN (
               SELECT id FROM bpm_memories WHERE content LIKE $1

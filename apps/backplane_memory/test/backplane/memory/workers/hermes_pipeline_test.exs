@@ -133,10 +133,25 @@ defmodule Backplane.Memory.Workers.HermesPipelineTest do
       evidence = Memories.list_evidence(memory.id)
       assert Enum.any?(evidence, &(&1.source_type == "summary" and &1.source_id == summary.id))
 
-      assert Enum.any?(
-               evidence,
-               &(&1.source_type == "event" and &1.source_id == Enum.at(events, 2)["event_id"])
-             )
+      assert Enum.any?(evidence, fn item ->
+               item.source_type == "request" and item.evidence_kind == "derives" and
+                 item.support_score == 0.0
+             end)
+
+      assert {:ok, verification} =
+               Memories.verify(memory.id, Map.from_struct(projected))
+
+      corrected_event_id = Enum.at(events, 2)["event_id"]
+      assert Enum.any?(verification.summaries, &(&1.id == summary.id))
+
+      assert Enum.any?(verification.summary_event_links, fn link ->
+               link.summary_id == summary.id and link.event_id == corrected_event_id
+             end)
+
+      assert Enum.any?(verification.source_events, &(&1.id == corrected_event_id))
+      corrected_event = repo().get!(Event, corrected_event_id)
+      assert corrected_event.role == "user"
+      assert corrected_event.content == "Current project language is Elixir"
 
       assert Backplane.Memory.CurrentContext.metadata(memory)["trust"] == "candidate_inference"
     end)
