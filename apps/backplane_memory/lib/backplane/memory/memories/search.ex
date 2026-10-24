@@ -159,12 +159,12 @@ defmodule Backplane.Memory.Memories.Search do
 
     calibration = Config.recall_relevance()
     model = Client.model(opts)
-    opts = opts |> Keyword.put(:model, model) |> Keyword.put(:embedding_model, model)
+    opts = Keyword.put(opts, :model, model)
     lexical = text_recall(query, queries, opts)
     lexical_ids = MapSet.new(lexical, & &1.id)
 
     vector =
-      case vector_recall(queries, opts) do
+      case vector_recall(queries, Keyword.put(opts, :embedding_model, model)) do
         {:ok, rows} -> rows
         _ -> []
       end

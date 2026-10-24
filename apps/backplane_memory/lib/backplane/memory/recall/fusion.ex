@@ -54,21 +54,40 @@ defmodule Backplane.Memory.Recall.Fusion do
     |> Enum.reduce_while({:ok, []}, fn {identity, occurrences}, {:ok, acc} ->
       candidates = occurrences |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
 
-      if length(candidates) == 1,
-        do: {:cont, {:ok, [fuse_occurrences(occurrences) | acc]}},
-        else: {:halt, {:error, {:conflicting_candidate, identity}}}
+      case newest_candidate(candidates) do
+        {:ok, candidate} ->
+          {:cont, {:ok, [fuse_occurrences(occurrences, candidate) | acc]}}
+
+        :error ->
+          {:halt, {:error, {:conflicting_candidate, identity}}}
+      end
     end)
   end
 
-  defp fuse_occurrences(occurrences) do
-    # Fixed channel precedence makes the representative candidate deterministic.
-    candidate =
-      occurrences
-      |> Enum.min_by(fn {_identity, _candidate, channel, rank, _score, _rrf} ->
-        {Enum.find_index(@channels, &(&1 == channel)), rank}
-      end)
-      |> elem(1)
+  defp newest_candidate([first | rest]) do
+    Enum.reduce_while(rest, {:ok, first}, fn candidate, {:ok, newest} ->
+      case merge_revision(newest, candidate) do
+        {:ok, merged} -> {:cont, {:ok, merged}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
 
+  defp merge_revision(
+         %{current_context: %{revision: left_revision}} = left,
+         %{current_context: %{revision: right_revision}} = right
+       )
+       when is_integer(left_revision) and is_integer(right_revision) do
+    # Parallel channels can straddle an embedding/bookkeeping updated_at write.
+    # Reconcile only the timestamp; every semantic and provenance field must match.
+    if %{left | current_context: %{left.current_context | revision: right_revision}} === right,
+      do: {:ok, if(left_revision >= right_revision, do: left, else: right)},
+      else: :error
+  end
+
+  defp merge_revision(_left, _right), do: :error
+
+  defp fuse_occurrences(occurrences, candidate) do
     ranks =
       Map.new(occurrences, fn {_id, _candidate, channel, rank, _score, _rrf} ->
         {channel, rank}

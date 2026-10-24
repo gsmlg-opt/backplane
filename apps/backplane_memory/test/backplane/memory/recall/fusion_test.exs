@@ -83,6 +83,94 @@ defmodule Backplane.Memory.Recall.FusionTest do
              )
   end
 
+  test "revision-only drift selects the newest identical candidate regardless of channel order" do
+    base = candidate("00000000-0000-4000-8000-000000000001", :memory)
+    snapshots = Enum.map([100, 200, 300], &%{base | current_context: %{revision: &1}})
+    newest = List.last(snapshots)
+
+    for a <- snapshots, b <- snapshots -- [a], c <- snapshots -- [a, b] do
+      channels = %{
+        fts: outcome(:ok, [{a, 0.8}]),
+        vector: outcome(:ok, [{b, 0.9}]),
+        graph: outcome(:ok, [{c, 0.7}])
+      }
+
+      assert {:ok, [%{candidate: ^newest, ranks: ranks, scores: scores}]} =
+               Fusion.fuse(channels, %{fts: 1.0, vector: 1.0, graph: 1.0}, 60)
+
+      assert ranks == %{fts: 1, vector: 1, graph: 1}
+      assert Map.take(scores, [:fts, :vector, :graph]) == %{fts: 0.8, vector: 0.9, graph: 0.7}
+      assert_in_delta scores.rrf, 1.0 / 61.0, 1.0e-12
+    end
+  end
+
+  test "revision drift cannot hide substantive candidate or support conflicts" do
+    base = candidate("00000000-0000-4000-8000-000000000001", :memory)
+    id = base.id
+
+    before = %{
+      base
+      | current_context: %{
+          revision: 100,
+          trust: "candidate_inference",
+          effective_support: true,
+          support_complete: true,
+          independent_support: false,
+          source_refs: []
+        }
+    }
+
+    newer = %{before | current_context: %{before.current_context | revision: 200}}
+
+    conflicts = [
+      %{newer | content: "different content"},
+      %{newer | memory_space_id: Ecto.UUID.generate()},
+      %{newer | host_id: "other host"},
+      %{newer | client_id: "other client"},
+      %{newer | scope: "other scope"},
+      %{newer | namespace: "other namespace"},
+      %{newer | source_ids: [Ecto.UUID.generate()]},
+      %{newer | source_refs: [%{type: :event, id: Ecto.UUID.generate()}]},
+      %{newer | evidence_count: 2},
+      %{newer | confidence: 0.5},
+      %{newer | lifecycle_state: :archived},
+      put_in(newer.current_context.trust, "established_fact"),
+      put_in(newer.current_context.effective_support, false),
+      put_in(newer.current_context.support_complete, false),
+      put_in(newer.current_context.independent_support, true),
+      put_in(newer.current_context.source_refs, [%{event_id: Ecto.UUID.generate()}])
+    ]
+
+    for conflicting <- conflicts do
+      assert {:error, {:conflicting_candidate, {:memory, ^id}}} =
+               Fusion.fuse(
+                 %{
+                   fts: outcome(:ok, [{before, 1.0}]),
+                   vector: outcome(:ok, [{conflicting, 1.0}])
+                 },
+                 %{fts: 1.0, vector: 1.0},
+                 60
+               )
+    end
+  end
+
+  test "missing or non-integer revisions do not qualify for revision-only reconciliation" do
+    base = candidate("00000000-0000-4000-8000-000000000001", :memory)
+    id = base.id
+    valid = %{base | current_context: %{revision: 100}}
+
+    for context <- [%{}, %{revision: nil}, %{revision: "200"}, %{revision: 200.0}] do
+      invalid = %{base | current_context: context}
+
+      assert {:error, {:conflicting_candidate, {:memory, ^id}}} =
+               Fusion.fuse(
+                 %{fts: outcome(:ok, [{valid, 1.0}]), vector: outcome(:ok, [{invalid, 1.0}])},
+                 %{fts: 1.0, vector: 1.0},
+                 60
+               )
+    end
+  end
+
   defp outcome(status, rows, error \\ nil),
     do: %{status: status, candidates: rows, error: error, duration_us: 1}
 

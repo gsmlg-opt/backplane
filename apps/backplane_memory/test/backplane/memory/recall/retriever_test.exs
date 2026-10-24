@@ -72,6 +72,38 @@ defmodule Backplane.Memory.Recall.RetrieverTest do
     assert result.trace.channel_availability["vector"]
   end
 
+  test "a later vector snapshot preserves a lexical match across timestamp-only revision drift" do
+    owner = self()
+    older = %{candidate() | current_context: %{revision: 100}}
+    newer = %{older | current_context: %{revision: 200}}
+
+    task =
+      Task.async(fn ->
+        Retriever.retrieve(plan(),
+          channel_fns: %{
+            fts: fn _, _ ->
+              send(owner, :lexical_snapshot_read)
+              {:ok, [{older, 0.8}]}
+            end,
+            vector: fn _, _ ->
+              send(owner, {:vector_waiting, self()})
+              receive do: (:release -> {:ok, [{newer, 0.9}]})
+            end,
+            graph: fn _, _ -> {:unavailable, :no_entities} end
+          }
+        )
+      end)
+
+    assert_receive :lexical_snapshot_read, 1_000
+    assert_receive {:vector_waiting, vector}, 1_000
+    send(vector, :release)
+
+    assert {:ok, result} = Task.await(task)
+    assert [%{candidate: ^newer, ranks: %{fts: 1, vector: 1}}] = result.fused
+    assert result.channels.fts.status == :ok
+    assert result.channels.vector.status == :ok
+  end
+
   test "an explicit bounded timeout terminates the slow channel without losing lexical results" do
     owner = self()
     wanted = candidate()
