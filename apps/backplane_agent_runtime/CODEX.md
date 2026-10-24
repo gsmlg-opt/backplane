@@ -142,6 +142,18 @@ run's exact grants/revisions, and pass the returned `registry`, `tools`, and
 `authority` together to `Conversation`. Do not merge profile fields with an old
 catalog or persist `backend_context`, PIDs, callbacks, credentials, or grants.
 
+One `DynamicRuntime` can serve independent callers, runs and incarnations with
+overlapping candidate names. Each exact owner has its own candidate corpus and
+publication state, retained until Runtime shutdown. `tool_search` uses the
+generic metadata and English BM25 algorithm pinned to Codex revision
+`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`: names, descriptions, recursive input
+properties, namespace descriptions and custom syntax are searchable. It runs in
+pure Elixir with packaged data. Specialized Codex MCP indexing and namespace
+grouping are outside this compatibility scope. Queries must be nonblank UTF-8
+strings; stopword-only queries return no matches. The default limit is 8 and
+must fit the configured per-owner bound. Publication still takes effect at the
+next model turn. See `docs/agent-runtime/codex-tools/deferred-owner-search-validation.md`.
+
 The standalone local example is `examples/codex_local.exs`:
 
 ```sh
@@ -206,6 +218,15 @@ completion prepares detachment, commits the run finish, then acknowledges
 retention. Cancellation/failure/session close fence admission and perform bounded
 cleanup; restart creates a fresh session identity and never replays effects.
 See `docs/agent-runtime/codex-tools/session-resources.md` for the host API.
+
+A managed child can retain its own Session while sharing its root's MultiAgent
+manager and unchanged native collaboration contracts. Return the child's fresh
+binding from `child_options/3`; the manager adopts it before starting the child.
+Successful follow-ups use that same open Session with fresh run authority.
+Child failure or target-only interruption closes local resources; root/recursive
+close also reaches idle retained child Sessions. Unknown adoption or close
+receipts preserve ownership obligations and prevent replacement. Host-owned
+Session infrastructure remains inspectable after resource close.
 
 ## Command response budgets
 

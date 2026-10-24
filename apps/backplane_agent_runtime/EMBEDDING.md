@@ -408,6 +408,20 @@ activation kind. Rejected attempts consume their reservation; retrying the same
 task receives a fresh attempt and run ID. A replacement retains its stable agent
 identity while receiving a fresh attempt and run ID.
 
+For independent native child resources, retain one host-supervised
+`Codex.Session` per stable child and return its freshly bound `session_binding`
+with the child's admitted profile. MultiAgent calls
+`Session.adopt_managed_child/3` after authority validation and before synchronous
+Conversation startup. Keep the existing shared-manager contracts and their
+binding metadata. Child attach/detach validates locally, avoiding a callback
+into the waiting manager. A successful follow-up must reuse the same open
+Session; replacement is allowed only after confirmed closure of the old resource
+obligation. Child and root Session infrastructure may have different host owners.
+Allocations rejected before adoption, or allocated by a callback that raises
+before returning options, remain the host's cleanup responsibility. The public
+callback example and lifecycle rules are in
+`docs/agent-runtime/codex-tools/session-resources.md`.
+
 Returning `{:ok, options}` acknowledges that the host has persisted the
 birth/activation intent and associated the supplied identity with its store.
 Durable hosts must complete that transaction before returning success. They can
