@@ -58,7 +58,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
        %{
          dynamic: dynamic,
          candidates: candidates,
-         discovered: MapSet.new(),
+         discovery_owners: %{},
          mcp_adapter: Keyword.get(opts, :mcp_adapter),
          plugin_adapter: Keyword.get(opts, :plugin_adapter),
          plugin_context: Keyword.get(opts, :plugin_context, %{})
@@ -84,14 +84,14 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   defp execute(%{tool_name: "tool_search", arguments: arguments} = operation, state) do
-    owner = operation.run_id
-
-    with {:ok, state} <- discover_owner(state, owner),
+    with {:ok, owner_key} <- discovery_owner(operation),
+         {:ok, state, dynamic} <- discover_owner(state, owner_key),
          query when is_binary(query) <- arguments["query"],
          limit <- arguments["limit"] || 8,
          :ok <- positive_limit(limit),
-         {:ok, results} <- Dynamic.search(state.dynamic, owner, query, limit: limit),
-         {:ok, state, publication} <- publish_results(state, operation, results) do
+         {:ok, results} <- Dynamic.search(dynamic, operation.run_id, query, limit: limit),
+         {:ok, state, publication} <-
+           publish_results(state, operation, owner_key, dynamic, results) do
       {:ok, %{tools: results, publication: publication}, state}
     else
       nil -> {:error, validation("query is required")}
@@ -126,24 +126,48 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
 
   defp execute(_operation, _state), do: {:error, Error.new(:not_found, "unknown dynamic tool")}
 
-  defp discover_owner(%{discovered: discovered} = state, owner) do
-    if MapSet.member?(discovered, owner) do
-      {:ok, state}
+  defp discovery_owner(operation) do
+    with run when is_binary(run) and run != "" <- Map.get(operation, :run_id),
+         incarnation when is_integer(incarnation) and incarnation > 0 <-
+           Map.get(operation, :incarnation),
+         {:ok, caller} <- discovery_caller(operation) do
+      {:ok, {caller, run, incarnation}}
     else
-      case Dynamic.discover(state.dynamic, owner, state.candidates, source: :host) do
-        {:ok, dynamic, _found} ->
-          {:ok, %{state | dynamic: dynamic, discovered: MapSet.put(discovered, owner)}}
-
-        {:error, %Error{} = error} ->
-          {:error, error}
-      end
+      {:error, %Error{} = error} -> {:error, error}
+      _ -> {:error, validation("dynamic run and positive incarnation are required")}
     end
   end
 
-  defp publish_results(state, _operation, []), do: {:ok, state, %{status: :no_matches}}
+  defp discovery_caller(operation) do
+    case Map.fetch(operation, :caller) do
+      :error -> {:ok, :host_direct}
+      {:ok, caller} when is_binary(caller) and caller != "" -> {:ok, caller}
+      _ -> {:error, validation("dynamic caller must be a nonempty string")}
+    end
+  end
 
-  defp publish_results(state, operation, results) do
-    with {:ok, dynamic} <- publish_dynamic(state.dynamic, operation.run_id, results),
+  defp discover_owner(state, {_caller, run, _incarnation} = owner_key) do
+    case Map.fetch(state.discovery_owners, owner_key) do
+      {:ok, dynamic} ->
+        {:ok, state, dynamic}
+
+      :error ->
+        with {:ok, dynamic} <- Dynamic.new(max_results: state.dynamic.max_results),
+             {:ok, dynamic, _found} <-
+               Dynamic.discover(dynamic, run, state.candidates, source: :host) do
+          {:ok, put_owner(state, owner_key, dynamic), dynamic}
+        end
+    end
+  end
+
+  defp put_owner(state, key, dynamic),
+    do: %{state | discovery_owners: Map.put(state.discovery_owners, key, dynamic)}
+
+  defp publish_results(state, _operation, _key, _dynamic, []),
+    do: {:ok, state, %{status: :no_matches}}
+
+  defp publish_results(state, operation, owner_key, dynamic, results) do
+    with {:ok, dynamic} <- publish_dynamic(dynamic, operation.run_id, results),
          %{stage_catalog: stage, catalog_snapshot: current} <- operation.backend_context,
          :ok <- publication_callback(stage),
          {:ok, registry, authority, tools} <- extend_catalog(state, current, operation, results),
@@ -161,7 +185,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
            }
          },
          {:ok, receipt} <- stage.(update) do
-      {:ok, %{state | dynamic: dynamic}, receipt}
+      {:ok, put_owner(state, owner_key, dynamic), receipt}
     else
       {:error, %Error{} = error} -> {:error, error}
       _ -> {:error, unsupported("catalog publication context is unavailable")}

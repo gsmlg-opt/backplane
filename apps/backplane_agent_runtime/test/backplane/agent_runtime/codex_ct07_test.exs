@@ -189,92 +189,218 @@ defmodule Backplane.AgentRuntime.CodexCt07Test do
              Dynamic.call(state, snapshot, "run-a", "mcp::failure", %{})
   end
 
+  test "one public runtime accepts overlapping candidates for successive independent owners" do
+    runtime = start_supervised!({DynamicRuntime, candidates: [attrs("echo")]})
+
+    for {caller, run_id, incarnation} <- [
+          {"host", "first-run", 1},
+          {"host", "second-run", 1},
+          {"other", "first-run", 1},
+          {"host", "first-run", 2}
+        ] do
+      assert {:ok, %{tools: [], publication: %{status: :no_matches}}} =
+               DynamicRuntime.call(%{
+                 tool_name: "tool_search",
+                 arguments: %{"query" => "unmatched"},
+                 caller: caller,
+                 run_id: run_id,
+                 incarnation: incarnation,
+                 backend_context: %{runtime: runtime}
+               })
+    end
+  end
+
+  defp search_operation(runtime, extra \\ %{}) do
+    Map.merge(
+      %{
+        tool_name: "tool_search",
+        arguments: %{"query" => "echo"},
+        caller: "host",
+        run_id: "owner-run",
+        incarnation: 1,
+        backend_context: %{
+          runtime: runtime,
+          stage_catalog: fn update ->
+            {:ok, %{status: :staged, revision: update.catalog.revision}}
+          end,
+          catalog_snapshot: %{
+            revision: 1,
+            registry: %Backplane.AgentRuntime.ToolRegistry{},
+            authority: %{caller: "host", run_id: "owner-run", grants: [], tool_revisions: %{}},
+            tools: []
+          }
+        }
+      },
+      extra
+    )
+  end
+
+  test "publication consumes only the current caller run and incarnation" do
+    runtime = start_supervised!({DynamicRuntime, candidates: [attrs("echo")]})
+    base = search_operation(runtime)
+
+    for operation <- [
+          base,
+          %{base | caller: "other"},
+          %{base | run_id: "other-run"},
+          %{base | incarnation: 2},
+          Map.delete(base, :caller)
+        ] do
+      assert {:ok, %{tools: [%{name: "mcp::echo"}], publication: %{status: :staged}}} =
+               DynamicRuntime.call(operation)
+
+      assert {:ok, %{tools: [], publication: %{status: :no_matches}}} =
+               DynamicRuntime.call(operation)
+    end
+  end
+
+  test "invalid owner identities fail without changing candidate state" do
+    runtime = start_supervised!({DynamicRuntime, candidates: [attrs("echo")]})
+    base = search_operation(runtime)
+
+    for extra <- [
+          %{caller: nil},
+          %{caller: ""},
+          %{caller: 1},
+          %{run_id: nil},
+          %{run_id: ""},
+          %{run_id: 1},
+          %{incarnation: 0},
+          %{incarnation: nil},
+          %{incarnation: "1"}
+        ] do
+      assert {:error, %Error{class: :validation}} = DynamicRuntime.call(Map.merge(base, extra))
+      assert Process.alive?(runtime)
+    end
+
+    assert {:ok, %{tools: [_]}} = DynamicRuntime.call(base)
+  end
+
+  test "failed staging preserves the previous owner partition" do
+    runtime = start_supervised!({DynamicRuntime, candidates: [attrs("echo")]})
+    base = search_operation(runtime)
+
+    assert {:ok, %{tools: []}} =
+             DynamicRuntime.call(%{base | arguments: %{"query" => "unmatched"}})
+
+    rejected =
+      put_in(
+        base.backend_context.stage_catalog,
+        fn _ -> {:error, Error.new(:resource_conflict, "stale producer")} end
+      )
+
+    assert {:error, %Error{class: :resource_conflict}} = DynamicRuntime.call(rejected)
+    assert {:ok, %{tools: [_]}} = DynamicRuntime.call(base)
+  end
+
+  test "within owner duplicates and active catalog collisions stay fenced" do
+    duplicate = start_supervised!({DynamicRuntime, candidates: [attrs("echo"), attrs("echo")]})
+    assert {:error, %Error{class: :validation}} = DynamicRuntime.call(search_operation(duplicate))
+
+    {:ok, runtime} = DynamicRuntime.start_link(candidates: [attrs("echo")])
+    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
+    base = search_operation(runtime)
+    {:ok, contract} = Backplane.AgentRuntime.Codex.Contract.new(attrs("echo"))
+
+    {:ok, registry} =
+      Backplane.AgentRuntime.ToolRegistry.register(
+        base.backend_context.catalog_snapshot.registry,
+        Backplane.AgentRuntime.Codex.Contract.descriptor(contract)
+      )
+
+    collision = put_in(base.backend_context.catalog_snapshot.registry, registry)
+    assert {:error, %Error{class: :resource_conflict}} = DynamicRuntime.call(collision)
+    assert {:ok, %{tools: [_]}} = DynamicRuntime.call(base)
+  end
+
   test "tool search publishes through Conversation for the next provider turn" do
     candidate = attrs("echo", %{backend: ConversationBackend})
     runtime = start_supervised!({DynamicRuntime, candidates: [candidate]})
 
-    authority = %{
-      caller: "host",
-      run_id: "dynamic-run",
-      grants: ["tool_search"],
-      tool_revisions: %{"tool_search" => 1}
-    }
+    for run_id <- ["dynamic-run", "dynamic-second-run"] do
+      authority = %{
+        caller: "host",
+        run_id: run_id,
+        grants: ["tool_search"],
+        tool_revisions: %{"tool_search" => 1}
+      }
 
-    assert {:ok, profile} =
-             Codex.profile(:dynamic, %{dynamic_runtime: runtime}, authority,
-               tools: ["tool_search"]
-             )
+      assert {:ok, profile} =
+               Codex.profile(:dynamic, %{dynamic_runtime: runtime}, authority,
+                 tools: ["tool_search"]
+               )
 
-    {:ok, store} = EphemeralStore.new(1)
+      {:ok, store} = EphemeralStore.new(1)
 
-    {:ok, conversation} =
-      Conversation.start_link(
-        run_id: "dynamic-run",
-        store: EphemeralStore,
-        context: store,
-        provider: Provider,
-        provider_context: %{test: self()},
-        subscriber: self(),
-        registry: profile.registry,
-        tools: profile.tools,
-        authority: profile.authority,
-        schema_admission: :strict,
-        work: 12,
-        run_timeout: 5_000
-      )
+      {:ok, conversation} =
+        Conversation.start_link(
+          run_id: run_id,
+          store: EphemeralStore,
+          context: store,
+          provider: Provider,
+          provider_context: %{test: self()},
+          subscriber: self(),
+          registry: profile.registry,
+          tools: profile.tools,
+          authority: profile.authority,
+          schema_admission: :strict,
+          work: 12,
+          run_timeout: 5_000
+        )
 
-    assert {:ok, _} = Conversation.prompt(conversation, "discover echo")
-    assert_receive {:provider, %{tools: [%{name: "tool_search"}]}, search_provider}
+      assert {:ok, _} = Conversation.prompt(conversation, "discover echo")
+      assert_receive {:provider, %{tools: [%{name: "tool_search"}]}, search_provider}
 
-    send(search_provider, {
-      :events,
-      [
-        %{
-          type: :tool_call_completed,
-          tool_call: %{
-            id: "search-1",
-            name: "tool_search",
-            arguments: %{"query" => "echo"}
-          }
-        },
-        %{type: :response_completed, message: %{role: :assistant, content: "searching"}}
-      ]
-    })
+      send(search_provider, {
+        :events,
+        [
+          %{
+            type: :tool_call_completed,
+            tool_call: %{
+              id: "search-1",
+              name: "tool_search",
+              arguments: %{"query" => "echo"}
+            }
+          },
+          %{type: :response_completed, message: %{role: :assistant, content: "searching"}}
+        ]
+      })
 
-    assert_receive {:agent_runtime, "dynamic-run", %{type: :tool_completed}}
+      assert_receive {:agent_runtime, ^run_id, %{type: :tool_completed}}
 
-    assert_receive {:provider, %{catalog_revision: revision, tools: tools, messages: messages},
-                    echo_provider}
+      assert_receive {:provider, %{catalog_revision: revision, tools: tools, messages: messages},
+                      echo_provider}
 
-    assert %{is_error: false, publication: %{status: :staged}} = List.last(messages).result
-    assert revision == 2
-    assert Enum.any?(tools, &(&1.name == "mcp::echo"))
+      assert %{is_error: false, publication: %{status: :staged}} = List.last(messages).result
+      assert revision == 2
+      assert Enum.any?(tools, &(&1.name == "mcp::echo"))
 
-    send(echo_provider, {
-      :events,
-      [
-        %{
-          type: :tool_call_completed,
-          tool_call: %{
-            id: "echo-1",
-            name: "mcp::echo",
-            arguments: %{"value" => "published"}
-          }
-        },
-        %{type: :response_completed, message: %{role: :assistant, content: "calling"}}
-      ]
-    })
+      send(echo_provider, {
+        :events,
+        [
+          %{
+            type: :tool_call_completed,
+            tool_call: %{
+              id: "echo-1",
+              name: "mcp::echo",
+              arguments: %{"value" => "published"}
+            }
+          },
+          %{type: :response_completed, message: %{role: :assistant, content: "calling"}}
+        ]
+      })
 
-    assert_receive {:agent_runtime, "dynamic-run", %{type: :tool_completed}}
-    assert_receive {:provider, %{messages: messages}, done_provider}
-    assert %{is_error: false, value: "published"} = List.last(messages).result
+      assert_receive {:agent_runtime, ^run_id, %{type: :tool_completed}}
+      assert_receive {:provider, %{messages: messages}, done_provider}
+      assert %{is_error: false, value: "published"} = List.last(messages).result
 
-    send(done_provider, {
-      :events,
-      [%{type: :response_completed, message: %{role: :assistant, content: "done"}}]
-    })
+      send(done_provider, {
+        :events,
+        [%{type: :response_completed, message: %{role: :assistant, content: "done"}}]
+      })
 
-    assert_receive {:agent_runtime, "dynamic-run", %{type: :run_completed}}
+      assert_receive {:agent_runtime, ^run_id, %{type: :run_completed}}
+    end
   end
 
   test "MCP resources cross a real local JSON-RPC boundary through Conversation" do
