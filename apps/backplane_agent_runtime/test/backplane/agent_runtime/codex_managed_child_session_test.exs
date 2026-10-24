@@ -579,6 +579,54 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
     assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
   end
 
+  test "collector deadline covers blocked stages before attempting the later Session close" do
+    ctx = runtime()
+    test = self()
+
+    {provider, _} =
+      tool(ctx.provider, "root", "spawn_agent", %{"task_name" => "worker", "message" => "work"})
+
+    assert_receive {:provider, _, _, _}, 1_000
+
+    {_, _} =
+      tool(provider, "root", "spawn_agent", %{"task_name" => "sibling", "message" => "work"})
+
+    assert_receive {:provider, _, _, _}, 1_000
+    state = :sys.get_state(ctx.manager)
+    [first, later] = Enum.map(Map.keys(state.agents), &state.agents[&1])
+    first_binding = state.child_sessions[first.id].binding
+    later_binding = state.child_sessions[later.id].binding
+
+    {:ok, _} =
+      ResourceRegistry.register(
+        later_binding.resource_registry,
+        later_binding.owner_id,
+        :logical,
+        :later,
+        owner_pid: later_binding.session,
+        cleanup: fn ->
+          send(test, :later_session_close_attempted)
+          :ok
+        end
+      )
+
+    suspended = [first_binding.session, first.pid, later.pid]
+    Enum.each(suspended, &:sys.suspend/1)
+    closer = Task.async(fn -> MultiAgent.close_session(ctx.manager) end)
+
+    try do
+      assert {:error, %Error{class: :unknown_outcome}} = Task.await(closer, 35_000)
+      assert_receive :later_session_close_attempted, 100
+      assert Session.status(later_binding.session).phase == :closed
+      assert {:ok, _} = MultiAgent.snapshot(ctx.manager)
+      retained = :sys.get_state(ctx.manager).agents
+      assert retained[first.name].execution_reserved
+      assert retained[later.name].execution_reserved
+    after
+      Enum.each(suspended, &:sys.resume/1)
+    end
+  end
+
   test "replacement Session is refused until retained ownership has confirmed closure" do
     ctx = runtime()
     assert {:ok, _} = call(ctx, "spawn_agent", %{"task_name" => "worker", "message" => "work"})
