@@ -628,6 +628,15 @@ defmodule Backplane.Memory.LLMTest do
       assert LLM.capture_suppressed?()
       assert Plug.Conn.get_req_header(conn, "x-backplane-memory-capture") == ["skip"]
       [origin] = Plug.Conn.get_req_header(conn, "x-backplane-memory-origin")
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = Jason.decode!(body)
+
+      if origin == "procedure" do
+        assert [%{"role" => "user", "content" => prompt}] = request["messages"]
+        assert prompt =~ "Extract 3-7 reusable workflows or procedures"
+        assert String.ends_with?(prompt, "Memories:\nbounded memories\n")
+      end
+
       send(parent, {:provider_origin, origin})
 
       Req.Test.json(conn, %{
@@ -641,6 +650,71 @@ defmodule Backplane.Memory.LLMTest do
 
     assert {:ok, ["first", "second"]} = LLM.extract_procedures("bounded memories")
     assert_receive {:provider_origin, "procedure"}
+    refute LLM.capture_suppressed?()
+  end
+
+  test "fact extraction requests concrete durable user corrections without a forced fact count" do
+    summary = """
+    Session transient-session-id | source=notes-import | correlation=record-42 | events=3
+    [conversation.user_message] My standing preference is meeting notes in Spanish for weekly reviews. Correlation: record-42.
+    [conversation.agent_message] I assume you prefer French meeting notes.
+    [conversation.user_message] Correction: Spanish is my preference, not French.
+    """
+
+    fact = "The user prefers meeting notes in Spanish for weekly reviews."
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      assert LLM.capture_suppressed?()
+      assert Plug.Conn.get_req_header(conn, "x-backplane-memory-origin") == ["fact"]
+      assert Plug.Conn.get_req_header(conn, "x-backplane-memory-capture") == ["skip"]
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = Jason.decode!(body)
+      assert request["model"] == "test-model"
+
+      assert [
+               %{"role" => "system", "content" => prompt},
+               %{"role" => "user", "content" => ^summary}
+             ] = request["messages"]
+
+      refute prompt =~ summary
+
+      # This checks the production request contract, not a simulated model's
+      # semantic ability; the normal live scenario verifies actual extraction.
+      assert prompt =~ "Preserve the actual subject, relationship, value"
+      assert prompt =~ ~s(a user's "I" or "my" refers to that user)
+      assert prompt =~ "Make that user attribution explicit"
+      assert prompt =~ "Distinguish the stated subject and scope from provenance"
+      assert prompt =~ "Preserve an explicitly stated project or other scope"
+      assert prompt =~ "omit incidental provenance from the fact"
+      assert prompt =~ "it is not source evidence. Never extract its facts."
+      assert prompt =~ "latest explicit user correction"
+      assert prompt =~ "Assistant-only guesses are unconfirmed"
+      assert prompt =~ "Do not replace concrete facts with generic lessons"
+      assert prompt =~ "no minimum count"
+      refute prompt =~ "Extract 3-7"
+      refute prompt =~ "Do not include session-specific details."
+
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => "- " <> fact}}]})
+    end)
+
+    assert {:ok, [^fact]} = LLM.extract_facts(summary)
+    refute LLM.capture_suppressed?()
+  end
+
+  test "fact extraction permits no durable facts without fabricating filler" do
+    Req.Test.stub(__MODULE__, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+      [
+        %{"role" => "system", "content" => prompt},
+        %{"role" => "user", "content" => "The session started at 10:00 and ended at 10:01."}
+      ] = Jason.decode!(body)["messages"]
+
+      assert prompt =~ "If no supported durable facts remain, return an empty response."
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => " \n"}}]})
+    end)
+
+    assert {:ok, []} = LLM.extract_facts("The session started at 10:00 and ended at 10:01.")
     refute LLM.capture_suppressed?()
   end
 
