@@ -99,6 +99,44 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
       do: {:error, %{"code" => "unauthorized", "retryable" => false}}
   end
 
+  defmodule DiesOnPush do
+    def push(channel, event, payload) do
+      GenServer.stop(channel)
+      Backplane.HostAgent.Channel.push(channel, event, payload)
+    end
+  end
+
+  defmodule SourceChannel do
+    def push(channel, event, payload) do
+      send(self(), {:source_dispatch, channel, payload})
+
+      if Process.alive?(channel) do
+        {:ok,
+         %{
+           "protocol" => "memory_commands.v2",
+           "items" =>
+             Enum.map(payload["items"], fn item ->
+               Map.take(item, ~w(command_id access partition))
+               |> Map.put("status", "committed")
+               |> Map.put("source_result", %{
+                 "protocol" => "memory_sources.v1",
+                 "event_id" => item["command_id"],
+                 "status" => "committed",
+                 "outcome" => "applied",
+                 "canonical_id" => "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                 "revision" => 9,
+                 "source_revision" => 1,
+                 "authority" => "canonical",
+                 "consistency" => "canonical"
+               })
+             end)
+         }}
+      else
+        Backplane.HostAgent.Channel.push(channel, event, payload)
+      end
+    end
+  end
+
   defmodule CallChannel do
     def push(channel, event, payload, _timeout),
       do: GenServer.call(channel, {event, payload}, 10)
@@ -355,6 +393,117 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
              Store.query(c.store, "SELECT state,last_error FROM memory_outbox")
 
     assert [] == claim(c)
+  end
+
+  for stale_channel <- [:provider, :access] do
+    @tag stale_channel: stale_channel
+    test "dead #{stale_channel} channel preserves source commands until authenticated reconnect",
+         c do
+      alias Backplane.HostAgent.Memory.Syncer
+      alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+
+      assert :ok = install_sources(c)
+      context = %{access_server: c.owner, agent_id: "Rikka"}
+      args = source_mutation()
+      assert {:ok, %{"status" => "pending"}} = Sources.call("source_mutate", args, context)
+      assert {:ok, %{rows: [original]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
+      assert original["state"] == "pending"
+      assert original["attempts"] == 0
+
+      {:ok, channel} = Agent.start_link(fn -> nil end)
+      GenServer.stop(channel)
+      refute Process.alive?(channel)
+
+      negotiated =
+        inventory()
+        |> Map.put("extensions", ~w(memory_access.v1 memory_commands.v2 memory_sources.v1))
+
+      assert :ok =
+               Access.install_inventory(
+                 %{id: 2, sent_at_ms: 10_000, channel: channel},
+                 negotiated,
+                 c.owner
+               )
+
+      MemoryProxy.set_channel(if(c.stale_channel == :provider, do: channel, else: self()))
+      opts = [store: c.store, access_server: c.owner, channel_module: SourceChannel]
+      results = for _ <- 1..6, do: Syncer.drain_shared(opts)
+
+      assert {:ok, %{rows: [^original]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
+      assert Enum.all?(results, &(&1 == {:error, :not_connected}))
+      refute_received {:source_dispatch, _, _}
+      assert {:ok, %{"status" => "pending"}} = Sources.call("source_mutate", args, context)
+
+      assert :ok =
+               Access.install_inventory(
+                 %{id: 3, sent_at_ms: 10_000, channel: self()},
+                 negotiated,
+                 c.owner
+               )
+
+      MemoryProxy.set_channel(self())
+      assert {:ok, %{drained: 1}} = Syncer.drain_shared(opts)
+      assert_receive {:source_dispatch, _, %{"items" => [payload]}}
+      assert payload == Jason.decode!(original["payload"])
+      assert {:ok, %{rows: [settled]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
+      assert settled["state"] == "done"
+      assert settled["attempts"] == 0
+      assert settled["payload"] == original["payload"]
+      assert settled["payload_digest"] == original["payload_digest"]
+      assert settled["command_id"] == original["command_id"]
+
+      assert {:ok, %{"status" => "committed", "authority" => "canonical", "revision" => 9}} =
+               Sources.call(
+                 "source_status",
+                 Map.take(args, ~w(protocol source event_id)),
+                 context
+               )
+    end
+  end
+
+  test "source push transport failure counts once and dead channel drains preserve retry state",
+       c do
+    alias Backplane.HostAgent.Memory.Syncer
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+
+    assert :ok = install_sources(c)
+    {:ok, channel} = Agent.start_link(fn -> nil end)
+
+    context = %{
+      access_server: c.owner,
+      agent_id: "Rikka",
+      sync_opts: [channel: channel, channel_module: DiesOnPush]
+    }
+
+    assert {:ok, %{"status" => "pending"}} =
+             Sources.call("source_mutate", source_mutation(), context)
+
+    refute Process.alive?(channel)
+    assert {:ok, %{rows: [attempted]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
+    assert attempted["state"] == "retry_wait"
+    assert attempted["attempts"] == 1
+    assert attempted["last_error"] == "transport_failure"
+
+    for _ <- 1..6 do
+      assert {:error, :not_connected} =
+               Syncer.drain_shared(store: c.store, access_server: c.owner, channel: channel)
+    end
+
+    assert {:ok, %{rows: [^attempted]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
+
+    assert {:ok, %{drained: 1}} =
+             Syncer.drain_shared(
+               store: c.store,
+               access_server: c.owner,
+               channel: self(),
+               channel_module: SourceChannel
+             )
+
+    assert {:ok, %{rows: [settled]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
+    assert settled["state"] == "done"
+    assert settled["attempts"] == 1
+    assert settled["payload"] == attempted["payload"]
+    assert settled["payload_digest"] == attempted["payload_digest"]
   end
 
   defp install_sources(c, version \\ 1, caps \\ ~w(read deliver remember forget)) do
@@ -1187,13 +1336,12 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     assert {:error, :unauthorized} = Access.begin_request({:access_id, @id}, :read, c.owner)
   end
 
-  test "closed real channel keeps a zero-lease shared write pending and retries the same durable command",
+  test "channel dying during push keeps a zero-lease shared write pending and retries the same durable command",
        c do
     assert :ok = install(c)
     target = activate(c)
     assert {:error, :access_lease_expired} = local_read(c, target)
     {:ok, closed_channel} = Agent.start_link(fn -> nil end)
-    GenServer.stop(closed_channel)
 
     args = %{
       "memory_access_id" => @id,
@@ -1204,7 +1352,7 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     context = %{
       access_server: c.owner,
       agent_id: "actor-b",
-      sync_opts: [channel: closed_channel]
+      sync_opts: [channel: closed_channel, channel_module: DiesOnPush]
     }
 
     assert {:ok, %{"command_id" => command_id, "status" => "pending"} = pending} =

@@ -48,6 +48,13 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     end
   end
 
+  defmodule DiesOnPush do
+    def push(channel, event, payload) do
+      GenServer.stop(channel)
+      Backplane.HostAgent.Channel.push(channel, event, payload)
+    end
+  end
+
   setup %{tmp_dir: tmp_dir} do
     store = start_memory!(tmp_dir)
     {:ok, store: store, opts: memory_opts(store)}
@@ -498,10 +505,11 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
     assert_outbox(store, id, "dead_letter", 2)
   end
 
-  test "closed real channel retries the same durable row without retaining request payload", %{
-    store: store,
-    opts: opts
-  } do
+  test "channel dying during push retries the same durable row without retaining request payload",
+       %{
+         store: store,
+         opts: opts
+       } do
     marker = "private-closed-channel-content"
     {:ok, %{"id" => id}} = Memory.remember(%{"content" => marker}, opts)
 
@@ -509,12 +517,12 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
              Store.query(store, "SELECT seq FROM memory_outbox WHERE memory_id = ?", [id])
 
     {:ok, channel} = Agent.start_link(fn -> nil end)
-    GenServer.stop(channel)
 
     assert {:error, {:channel_exit, {:noproc, _}}} =
              Syncer.drain_once(
                store: store,
                channel: channel,
+               channel_module: DiesOnPush,
                now_fun: fn -> "2026-06-17T00:00:00Z" end,
                jitter_fun: fn -> 0.5 end
              )
@@ -554,17 +562,21 @@ defmodule Backplane.HostAgent.Memory.SyncerTest do
              Store.query(store, "SELECT seq,memory_id FROM memory_outbox", [])
   end
 
-  test "closed real channel at final attempt dead-letters without tuple serialization failure", %{
+  test "channel dying during final push dead-letters without tuple serialization failure", %{
     store: store,
     opts: opts
   } do
     marker = "private-final-attempt-content"
     {:ok, %{"id" => id}} = Memory.remember(%{"content" => marker}, opts)
     {:ok, channel} = Agent.start_link(fn -> nil end)
-    GenServer.stop(channel)
 
     assert {:error, {:channel_exit, {:noproc, _}}} =
-             Syncer.drain_once(store: store, channel: channel, max_attempts: 1)
+             Syncer.drain_once(
+               store: store,
+               channel: channel,
+               channel_module: DiesOnPush,
+               max_attempts: 1
+             )
 
     assert_outbox(store, id, "dead_letter", 1)
 

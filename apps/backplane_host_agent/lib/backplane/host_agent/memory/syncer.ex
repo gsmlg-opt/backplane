@@ -82,7 +82,8 @@ defmodule Backplane.HostAgent.Memory.Syncer do
              :all,
              :drain,
              fn context ->
-               with {:ok, rows} <-
+               with {:ok, channel} <- live_channel(context.channel || fallback_channel),
+                    {:ok, rows} <-
                       if(context.store == opts.store,
                         do: Memory.shared_claim(context, now(opts), opts.max_attempts),
                         else: {:ok, []}
@@ -91,7 +92,7 @@ defmodule Backplane.HostAgent.Memory.Syncer do
                   %{
                     rows: rows,
                     generation: context.generation,
-                    channel: context.channel || fallback_channel
+                    channel: channel
                   }}
                end
              end,
@@ -592,18 +593,23 @@ defmodule Backplane.HostAgent.Memory.Syncer do
     :exit, reason -> {:error, reason}
   end
 
-  defp connected_channel(%{channel: channel}) when is_pid(channel), do: {:ok, channel}
+  defp connected_channel(%{channel: channel}) when is_pid(channel), do: live_channel(channel)
 
   defp connected_channel(%{channel_provider: channel_provider}) do
     if function_exported?(channel_provider, :channel, 0) do
-      case channel_provider.channel() do
-        channel when is_pid(channel) -> {:ok, channel}
-        _ -> {:error, :not_connected}
-      end
+      live_channel(channel_provider.channel())
     else
       {:error, :not_connected}
     end
   end
+
+  # An unavailable channel is not a delivery attempt. Once admitted, failures
+  # during push still settle through the normal bounded transport retry path.
+  defp live_channel(channel) when is_pid(channel) do
+    if Process.alive?(channel), do: {:ok, channel}, else: {:error, :not_connected}
+  end
+
+  defp live_channel(_channel), do: {:error, :not_connected}
 
   defp transaction(store, fun) do
     case Store.transaction(store, fun) do
