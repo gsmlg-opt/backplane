@@ -1,7 +1,7 @@
 defmodule Backplane.AgentRuntime.Codex.MultiAgentInteractionTest do
   use ExUnit.Case, async: true
 
-  alias Backplane.AgentRuntime.{EphemeralStore, Error, ToolRegistry}
+  alias Backplane.AgentRuntime.{Conversation, EphemeralStore, Error, ToolRegistry}
   alias Backplane.AgentRuntime.Codex.MultiAgent
 
   defmodule Provider do
@@ -67,8 +67,21 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentInteractionTest do
           meta.command
         )
 
-      if resolution? and :ets.take(context.gates, :resolution) != [] do
-        send(context.test, {:resolution_checkpoint, self()})
+      checkpoint =
+        cond do
+          match?({:cleanup_settled, _, _}, meta.command) and
+              :ets.take(context.gates, :cancellation) != [] ->
+            :cancellation_checkpoint
+
+          resolution? and :ets.take(context.gates, :resolution) != [] ->
+            :resolution_checkpoint
+
+          true ->
+            nil
+        end
+
+      if checkpoint do
+        send(context.test, {checkpoint, self()})
 
         receive do
           :ack ->
@@ -111,6 +124,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentInteractionTest do
          max_concurrent_threads_per_session: max_threads,
          child_options: fn _request, run_id, context ->
            {:ok, table} = EphemeralStore.new(1)
+           :ets.insert(gates, {{:store, run_id}, table})
            send(test_pid, {:child_options, run_id, context})
 
            {:ok,
@@ -232,6 +246,389 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentInteractionTest do
       assert resolved.agent.pending_interaction == nil
       assert record(runtime, child.name).pending_interaction == nil
       assert is_binary(JSON.encode!(resolved))
+    end
+  end
+
+  test "public cancellation settles a preparation interaction without dispatching its backend" do
+    {runtime, _} = start_runtime()
+    child = spawn_child(runtime)
+    requested = ask(child.hook)
+    correlation = requested.agent.pending_interaction.correlation
+    reason = String.duplicate("é", 512)
+
+    assert :ok = MultiAgent.cancel_interaction(runtime, correlation, reason)
+    assert_receive {:codex_collaboration, %{type: :interrupted} = interrupted}, 1_000
+    assert interrupted.interaction_id == correlation.interaction_id
+    assert interrupted.reason == reason
+    assert interrupted.agent.pending_interaction == nil
+    retained = record(runtime, child.name)
+    assert retained.status == :interrupted
+    assert retained.pending_interaction == nil
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             MultiAgent.cancel_interaction(runtime, correlation, "Duplicate cancellation")
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             MultiAgent.resolve_interaction(runtime, correlation, true)
+
+    refute_receive {:backend, _}, 20
+    refute_receive {:codex_collaboration, %{type: :interaction_resolved}}, 20
+  end
+
+  test "cancellation validates every correlation field and reason before delivery" do
+    {runtime, _} = start_runtime()
+    child = spawn_child(runtime)
+    requested = ask(child.hook)
+    correlation = requested.agent.pending_interaction.correlation
+
+    for invalid <- [
+          nil,
+          %{},
+          Map.delete(correlation, :incarnation),
+          Map.put(correlation, :extra, true),
+          %{correlation | incarnation: 0},
+          %{correlation | interaction_id: <<255>>}
+        ] do
+      assert {:error, %Error{class: :validation}} =
+               MultiAgent.cancel_interaction(runtime, invalid, "Cancel")
+    end
+
+    for {key, value} <- [
+          manager_id: "other-manager",
+          run_id: "other-run",
+          incarnation: correlation.incarnation + 1,
+          interaction_id: "other-interaction"
+        ] do
+      assert {:error, %Error{class: :resource_conflict}} =
+               MultiAgent.cancel_interaction(runtime, Map.put(correlation, key, value), "Cancel")
+    end
+
+    assert {:error, %Error{class: :not_found}} =
+             MultiAgent.cancel_interaction(
+               runtime,
+               %{correlation | agent_id: "missing"},
+               "Cancel"
+             )
+
+    for reason <- [nil, "", " \n\t", <<255>>, String.duplicate("é", 513), :cancelled, %{}] do
+      assert {:error, %Error{class: :validation}} =
+               MultiAgent.cancel_interaction(runtime, correlation, reason)
+    end
+
+    assert record(runtime, child.name).pending_interaction == requested.agent.pending_interaction
+    assert :ok = MultiAgent.resolve_interaction(runtime, correlation, true)
+    assert_receive {:preparation_answer, {:ok, true}}, 1_000
+    assert_receive {:backend, _}, 1_000
+  end
+
+  test "cancellation waits for terminal store acknowledgement and keeps the manager responsive" do
+    {runtime, gates} = start_runtime()
+    child = spawn_child(runtime)
+    requested = ask(child.hook)
+    correlation = requested.agent.pending_interaction.correlation
+    :ets.insert(gates, {:cancellation, true})
+
+    cancellation =
+      Task.async(fn -> MultiAgent.cancel_interaction(runtime, correlation, "Cancel") end)
+
+    assert_receive {:cancellation_checkpoint, store}, 1_000
+
+    try do
+      assert Task.yield(cancellation, 20) == nil
+      assert {:ok, _} = MultiAgent.snapshot(runtime)
+      other = spawn_child(runtime, "during_cancellation")
+      assert record(runtime, other.name).status == :running
+
+      assert {:error, %Error{class: :resource_conflict}} =
+               MultiAgent.cancel_interaction(runtime, correlation, "Duplicate")
+
+      assert {:error, %Error{class: :resource_conflict}} =
+               MultiAgent.resolve_interaction(runtime, correlation, true)
+    after
+      send(store, :ack)
+    end
+
+    assert :ok = Task.await(cancellation)
+    [{{:store, _}, table}] = :ets.lookup(gates, {:store, child.run_id})
+    assert {:ok, %{run: persisted}} = EphemeralStore.load(table, child.run_id)
+    assert persisted.state == :cancelled
+    assert persisted.context.conversation.pending_interaction == nil
+    assert record(runtime, child.name).pending_interaction == nil
+    refute_receive {:backend, _}, 20
+    refute_receive {:codex_collaboration, %{type: :interaction_resolved}}, 20
+  end
+
+  test "an answer reserved before cancellation remains the only submitted operation" do
+    {runtime, gates} = start_runtime()
+    child = spawn_child(runtime)
+    requested = ask(backend(child))
+    correlation = requested.agent.pending_interaction.correlation
+    :ets.insert(gates, {:resolution, true})
+    answer = Task.async(fn -> MultiAgent.resolve_interaction(runtime, correlation, true) end)
+    assert_receive {:resolution_checkpoint, store}, 1_000
+
+    try do
+      assert {:error, %Error{class: :resource_conflict}} =
+               MultiAgent.cancel_interaction(runtime, correlation, "Too late")
+    after
+      send(store, :ack)
+    end
+
+    assert :ok = Task.await(answer)
+    assert_receive {:backend_answer, {:ok, true}}, 1_000
+    assert record(runtime, child.name).status == :running
+    refute_receive {:codex_collaboration, %{type: :interrupted}}, 20
+  end
+
+  test "the child rejects a stale manager projection without cancelling a newer interaction" do
+    {runtime, _} = start_runtime()
+    child = spawn_child(runtime)
+    worker = backend(child)
+    first = ask(worker)
+
+    assert :ok =
+             MultiAgent.resolve_interaction(
+               runtime,
+               first.agent.pending_interaction.correlation,
+               true
+             )
+
+    assert_receive {:backend_answer, {:ok, true}}, 1_000
+    second = ask(worker, %{kind: :second})
+    child_pid = :sys.get_state(runtime).agents[child.name].pid
+
+    :sys.replace_state(runtime, fn state ->
+      state
+      |> put_in([:agents, child.name, :pending_interaction], first.agent.pending_interaction)
+      |> put_in([:agents, child.name, :interaction_resolution_id], nil)
+      |> update_in(
+        [:agents, child.name, :interaction_ids],
+        &MapSet.delete(&1, second.interaction_id)
+      )
+    end)
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             MultiAgent.cancel_interaction(
+               runtime,
+               first.agent.pending_interaction.correlation,
+               "Stale cancellation"
+             )
+
+    actual = Conversation.status(child_pid)
+    assert actual.phase == :waiting_interaction
+    assert actual.conversation.pending_interaction.id == second.interaction_id
+    refute :sys.get_state(runtime).agents[child.name].interaction_closed
+
+    send(
+      runtime,
+      {:agent_runtime, child.run_id,
+       %{
+         type: :interaction_requested,
+         incarnation: second.agent.incarnation,
+         interaction_id: second.interaction_id,
+         request: second.agent.pending_interaction.request
+       }}
+    )
+
+    assert record(runtime, child.name).pending_interaction == second.agent.pending_interaction
+
+    assert :ok =
+             MultiAgent.resolve_interaction(
+               runtime,
+               second.agent.pending_interaction.correlation,
+               true
+             )
+
+    assert_receive {:backend_answer, {:ok, true}}, 1_000
+  end
+
+  for failure <- [:store_failure, :lost_ack, :terminal_ack_lost, :worker_down, :timeout] do
+    test "cancellation #{failure} remains uncertain and never retries" do
+      {runtime, gates} = start_runtime(2)
+      child = spawn_child(runtime)
+      requested = ask(child.hook)
+      correlation = requested.agent.pending_interaction.correlation
+      :ets.insert(gates, {:cancellation, true})
+
+      cancellation =
+        Task.async(fn -> MultiAgent.cancel_interaction(runtime, correlation, "Cancel") end)
+
+      assert_receive {:cancellation_checkpoint, store}, 1_000
+      [{token, settlement}] = Map.to_list(:sys.get_state(runtime).settlements)
+
+      try do
+        case unquote(failure) do
+          :store_failure ->
+            send(store, :fail)
+
+          :lost_ack ->
+            send(store, :lose_ack)
+            [{{:store, _}, table}] = :ets.lookup(gates, {:store, child.run_id})
+
+            assert eventually(fn ->
+                     match?(
+                       {:ok, %{run: %{state: :cancelled}}},
+                       EphemeralStore.load(table, child.run_id)
+                     )
+                   end)
+
+            send(runtime, {:settlement_timeout, token})
+
+          :terminal_ack_lost ->
+            assert :erlang.suspend_process(settlement.worker)
+            send(store, :ack)
+
+            assert eventually(fn ->
+                     Conversation.status(settlement.pins[child.name].pid).phase == :terminal
+                   end)
+
+            send(runtime, {:settlement_timeout, token})
+
+          :worker_down ->
+            Process.exit(settlement.worker, :kill)
+
+          :timeout ->
+            send(runtime, {:settlement_timeout, token})
+        end
+
+        assert {:error, %Error{class: :unknown_outcome}} = Task.await(cancellation)
+
+        assert {:error, %Error{class: :resource_conflict}} =
+                 MultiAgent.cancel_interaction(runtime, correlation, "Do not retry")
+
+        assert {:error, %Error{class: :resource_conflict}} =
+                 MultiAgent.resolve_interaction(runtime, correlation, true)
+
+        assert record(runtime, child.name).cleanup == :uncertain
+
+        assert {:error, %Error{class: :resource_conflict}} =
+                 call(runtime, "spawn_agent", %{"task_name" => "blocked", "message" => "work"})
+
+        refute_receive {:cancellation_checkpoint, _}, 20
+        refute_receive {:backend, _}, 20
+        refute_receive {:codex_collaboration, %{type: :interaction_resolved}}, 20
+      after
+        send(store, :ack)
+      end
+    end
+  end
+
+  test "backend cancellation retains uncertain execution capacity while siblings continue" do
+    {runtime, _} = start_runtime(3)
+    child = spawn_child(runtime)
+    requested = ask(backend(child))
+    sibling = spawn_child(runtime, "sibling")
+
+    assert {:error, %Error{class: :unknown_outcome}} =
+             MultiAgent.cancel_interaction(
+               runtime,
+               requested.agent.pending_interaction.correlation,
+               "Cancel"
+             )
+
+    assert record(runtime, child.name).pending_interaction == nil
+    assert record(runtime, child.name).cleanup == :uncertain
+    assert record(runtime, sibling.name).status == :running
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             call(runtime, "spawn_agent", %{"task_name" => "blocked", "message" => "work"})
+
+    send(sibling.hook, :allow)
+    assert_receive {:backend, _}, 1_000
+  end
+
+  test "old cancellation correlations reject replacements while historical interrupt targets current work" do
+    {runtime, _} = start_runtime()
+    child = spawn_child(runtime)
+    requested = ask(child.hook)
+
+    assert :ok =
+             MultiAgent.cancel_interaction(
+               runtime,
+               requested.agent.pending_interaction.correlation,
+               "Cancel"
+             )
+
+    assert {:ok, _} =
+             call(runtime, "followup_task", %{"target" => child.name, "message" => "Again"})
+
+    assert_receive {:child_options, replacement_run_id, _}, 1_000
+    assert replacement_run_id != child.run_id
+    assert_receive {:provider, %{run_id: ^replacement_run_id}, provider}, 1_000
+
+    send(
+      provider,
+      {:events,
+       [
+         %{
+           type: :tool_call_completed,
+           tool_call: %{id: "question", name: "question", arguments: %{}}
+         },
+         %{type: :response_completed, message: %{role: :assistant, content: "asking"}}
+       ]}
+    )
+
+    assert_receive {:preparation, hook}, 1_000
+    replacement = ask(hook)
+
+    assert {:error, %Error{class: :resource_conflict}} =
+             MultiAgent.cancel_interaction(
+               runtime,
+               requested.agent.pending_interaction.correlation,
+               "Stale"
+             )
+
+    assert record(runtime, child.name).pending_interaction ==
+             replacement.agent.pending_interaction
+
+    assert {:ok, %{status: :interrupted}} =
+             call(runtime, "interrupt_agent", %{"target" => child.run_id})
+
+    assert record(runtime, child.name).run_id == replacement_run_id
+    assert record(runtime, child.name).pending_interaction == nil
+    refute_receive {:backend, _}, 20
+  end
+
+  for shutdown <- [:normal, :kill] do
+    test "manager #{shutdown} exit stops its held cancellation worker" do
+      {runtime, gates} = start_runtime()
+      child = spawn_child(runtime)
+      requested = ask(child.hook)
+      :ets.insert(gates, {:cancellation, true})
+
+      cancellation =
+        Task.async(fn ->
+          try do
+            MultiAgent.cancel_interaction(
+              runtime,
+              requested.agent.pending_interaction.correlation,
+              "Cancel"
+            )
+          catch
+            :exit, _ -> :manager_stopped
+          end
+        end)
+
+      assert_receive {:cancellation_checkpoint, _store}, 1_000
+      [{_token, settlement}] = Map.to_list(:sys.get_state(runtime).settlements)
+      supervisor = :sys.get_state(runtime).child_supervisor
+      monitor = Process.monitor(settlement.worker)
+
+      assert Enum.any?(DynamicSupervisor.which_children(supervisor), fn {_, pid, _, _} ->
+               pid == settlement.worker
+             end)
+
+      if unquote(shutdown) == :normal do
+        assert :ok = GenServer.stop(runtime, :normal)
+        assert {:error, %Error{class: :unknown_outcome}} = Task.await(cancellation)
+      else
+        Process.exit(runtime, :kill)
+        assert :manager_stopped = Task.await(cancellation)
+      end
+
+      assert_receive {:DOWN, ^monitor, :process, _, _}, 1_000
+      refute Process.alive?(settlement.worker)
+      assert eventually(fn -> not Process.alive?(supervisor) end)
     end
   end
 
@@ -471,6 +868,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentInteractionTest do
 
       assert {:error, %Error{class: :resource_conflict}} =
                MultiAgent.resolve_interaction(runtime, correlation, true)
+
+      assert {:error, %Error{class: :resource_conflict}} =
+               MultiAgent.cancel_interaction(runtime, correlation, "Already closed")
 
       refute_receive {:codex_collaboration, %{type: :interaction_resolved}}, 20
     end

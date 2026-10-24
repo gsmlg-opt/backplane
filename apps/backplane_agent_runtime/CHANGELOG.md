@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.35
+
+- Add host-only `Codex.MultiAgent.cancel_interaction/3` for exact five-field
+  interaction cancellation (#85). Atomically reserve against resolution,
+  validate the child's current producer, and acknowledge only after terminal
+  persistence and reconciled cleanup/effects. Bound the nonblank diagnostic UTF-8
+  reason to 1024 bytes. Preserve uncertain outcomes and capacity reservations without
+  automatic retries, named-interrupt fallback or descendant cancellation.
+
 ## 1.10.15
 
 - Add validated `provider_output_limit: non_neg_integer() | :infinity` for

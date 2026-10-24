@@ -137,6 +137,11 @@ defmodule Backplane.AgentRuntime.Conversation do
     do: GenServer.call(pid, {:stage_catalog, nil, update}, :infinity)
 
   def cancel(pid), do: GenServer.call(pid, :cancel)
+
+  @doc false
+  def cancel_interaction(pid, correlation),
+    do: GenServer.call(pid, {:cancel_interaction, correlation})
+
   def status(pid), do: GenServer.call(pid, :status)
 
   @impl true
@@ -294,6 +299,26 @@ defmodule Backplane.AgentRuntime.Conversation do
     case stage_catalog(s, token, update) do
       {:ok, receipt, next} -> {:reply, {:ok, receipt}, next}
       {:error, %Error{} = error} -> {:reply, {:error, error}, s}
+    end
+  end
+
+  def handle_call({:cancel_interaction, correlation}, from, s) do
+    case s.interaction do
+      %{id: id, token: token} ->
+        expected = %{run_id: s.run.run_id, incarnation: s.run.incarnation, interaction_id: id}
+
+        if is_map(correlation) and Map.take(correlation, Map.keys(expected)) == expected and
+             s.phase == :waiting_interaction and current_effect?(s, token) do
+          GenServer.reply(from, :ok)
+          {:noreply, stop(s, :cancelled)}
+        else
+          {:reply, {:error, Error.new(:resource_conflict, "interaction is stale or unavailable")},
+           s}
+        end
+
+      _ ->
+        {:reply, {:error, Error.new(:resource_conflict, "interaction is stale or unavailable")},
+         s}
     end
   end
 

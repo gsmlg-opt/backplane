@@ -58,7 +58,7 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   `:code_mode`, and `:services` families. Missing families and duplicate
   canonical names fail before admission.
 
-### Observing and resolving child interactions
+### Observing, resolving and cancelling child interactions
 
 `Codex.MultiAgent.subscribe(manager)` atomically returns the complete child roster
 and its process-local `manager_id`/revision watermark. Later
@@ -90,6 +90,27 @@ default). A longer child commit can therefore outlast the manager's wait.
 Lost acknowledgement returns
 `:unknown_outcome`; never retry automatically. A submitted interaction stays
 reserved until later observation or cancellation reconciles it.
+
+To cancel that exact pending interaction, call
+`Codex.MultiAgent.cancel_interaction(manager, correlation, reason)` with the same
+five-field correlation. `reason` must be a nonblank UTF-8 string of at most 1024
+bytes; it is diagnostic text in the `:interrupted` observer event, without a
+guarantee that the Store persists it. Malformed input fails validation; unknown
+children return `:not_found`; stale, replaced, closed or duplicate interactions
+return `:resource_conflict`. Cancellation and resolution share one atomic manager
+reservation. The child also validates its run, incarnation, interaction and live
+producer before accepting cancellation.
+
+Cancellation settles asynchronously. `:ok` requires exact child acceptance, an
+acknowledged terminal checkpoint, a cleared pending interaction and reconciled
+cleanup/effects. A dispatched backend can remain `:unknown_outcome` and retain
+execution capacity. Lost workers, lost Store acknowledgements and timeouts return
+`:unknown_outcome`; reconcile observer records and the host Store before further
+action. Never retry automatically or fall back to interruption by agent name:
+replacement may have started another run. A generic `run_cancelled` event is not
+an exact interaction cancellation receipt. This API preserves existing stop and
+deadline policies, affects only the correlated child run, and does not recurse
+into descendants. Model-facing interruption retains its existing target rules.
 
 Interrupt, close, session shutdown, replacement, child exit and storage failure
 invalidate pending answers. Cancellation never emits `:interaction_resolved`.

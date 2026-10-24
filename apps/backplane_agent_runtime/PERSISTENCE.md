@@ -108,6 +108,23 @@ restart reconciliation must retain serializable resource/run identities and
 backend-specific evidence in their own recovery system. Never serialize registry
 values, PIDs, ports, cleanup functions, dispatch closures, credentials or grants.
 
+`Codex.MultiAgent.cancel_interaction/3` uses the observed five-field interaction
+correlation and shares an atomic manager reservation with resolution. Child
+acceptance checks the run, incarnation, interaction and live producer. Its `:ok`
+acknowledges terminal checkpoint persistence, pending interaction removal and
+reconciled cleanup/effects, rather than merely delivery of a cancellation request.
+An already dispatched backend can retain an `:unknown_outcome` execution intent
+and continue to reserve capacity.
+
+Worker loss, Store acknowledgement loss or timeout leaves cancellation uncertain,
+even when a terminal checkpoint may already exist. Reconcile observer snapshots
+with the host Store; a generic `run_cancelled` event is not an exact cancellation
+receipt. Do not retry automatically or fall back to interruption by agent name,
+which could target a replacement run. The supplied reason is diagnostic text in
+the `:interrupted` observer event, with no guarantee of persisted reason history.
+An `EphemeralStore` acknowledgement supplies only its local ETS guarantee;
+durability still depends on the host adapter's documented boundary.
+
 LocalCommand separates active/output records, unresolved session obligations,
 and recent confirmed-release receipts. An obligation's confirmed evidence stays
 pinned until the ResourceRegistry consumes it; only then may it enter the bounded

@@ -4,7 +4,7 @@ defmodule BackplaneAuth.MixProject do
   def project do
     [
       app: :backplane_auth,
-      version: "1.10.34",
+      version: "1.10.35",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",

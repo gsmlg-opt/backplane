@@ -41,6 +41,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def resolve_interaction(runtime, correlation, value),
     do: GenServer.call(runtime, {:resolve_interaction, correlation, value}, :infinity)
 
+  @doc """
+  Cancels only the current child interaction identified by the exact correlation.
+
+  Success acknowledges terminal persistence and confirmed resource settlement.
+  The reason is diagnostic text (at most 1024 bytes), not a stop policy. An
+  unknown outcome must be reconciled through observation, never retried.
+  """
+  def cancel_interaction(runtime, correlation, reason),
+    do: GenServer.call(runtime, {:cancel_interaction, correlation, reason}, :infinity)
+
   def snapshot(runtime), do: GenServer.call(runtime, :snapshot)
   def subscribe(runtime, observer \\ self()), do: GenServer.call(runtime, {:subscribe, observer})
 
@@ -198,6 +208,25 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, agent} <- interaction_destination(state, correlation) do
       {:noreply, deliver_interaction(state, agent, correlation, value, from)}
     else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:cancel_interaction, correlation, reason}, from, state) do
+    with :ok <- validate_interaction_correlation(correlation),
+         :ok <- validate_cancellation_reason(reason),
+         {:ok, agent} <- interaction_destination(state, correlation),
+         false <- settling?(state, agent.name) do
+      state =
+        put_in(
+          state,
+          [:agents, agent.name, :interaction_resolution_id],
+          correlation.interaction_id
+        )
+
+      defer_settlement(state, [agent.name], {:cancel_interaction, correlation, reason}, from)
+    else
+      true -> {:reply, {:error, settlement_conflict()}, state}
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
     end
   end
@@ -498,6 +527,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       else: {:noreply, start_settlement(state, request)}
   end
 
+  # The child may already have advanced beyond the manager's observed pending
+  # interaction. Only its exact acceptance may invalidate that projection.
+  defp fence_settlement(state, %{command: {:cancel_interaction, _, _}}), do: state
+
   defp fence_settlement(state, request) do
     closing =
       request.command == :close_session or match?({:dispatch, :close, _, _}, request.command)
@@ -526,7 +559,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       id: token,
       start:
         {Task, :start_link,
-         [fn -> send(manager, {:settlement, token, collect_settlement(agents, all)}) end]},
+         [
+           fn ->
+             send(manager, {:settlement, token, collect_settlement(agents, all, request.command)})
+           end
+         ]},
       restart: :temporary
     }
 
@@ -552,7 +589,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  defp collect_settlement(agents, all) do
+  defp collect_settlement([{name, agent}], _all, {:cancel_interaction, correlation, _reason}) do
+    cancel = cancel_exact_interaction(agent.pid, correlation)
+    snapshot = if cancel == :ok, do: settled_snapshot(agent), else: cancel
+    %{name => %{cancel_result: cancel, settlement_result: snapshot}}
+  end
+
+  defp collect_settlement(agents, all, _command) do
     Enum.reduce_while(agents, %{}, fn {name, agent}, evidence ->
       cancel = cancel_agent(agent)
       snapshot = if cancel in [:ok, :already_closed], do: settled_snapshot(agent), else: cancel
@@ -562,6 +605,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         do: {:cont, next},
         else: {:halt, next}
     end)
+  end
+
+  defp cancel_exact_interaction(pid, correlation) do
+    Conversation.cancel_interaction(pid, correlation)
+  catch
+    :exit, _ ->
+      {:error, Error.new(:unknown_outcome, "interaction cancellation acknowledgement was lost")}
   end
 
   defp complete_settlement(state, token, evidence) do
@@ -642,6 +692,27 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp continue_settlement(state, %{command: :close_session}) do
     {:reply, result, next} = close_session_state(state)
     {result, next}
+  end
+
+  defp continue_settlement(state, %{command: {:cancel_interaction, correlation, reason}} = entry) do
+    [name] = entry.names
+    agent = state.agents[name]
+
+    case agent.settlement_evidence.cancel_result do
+      :ok ->
+        metadata = %{interaction_id: correlation.interaction_id, reason: reason}
+
+        case interrupt_target(state, name, agent, metadata) do
+          {:ok, next} -> {:ok, next}
+          {:error, error, next} -> {{:error, error}, next}
+        end
+
+      {:error, %Error{class: :resource_conflict} = error} ->
+        {{:error, error}, state}
+
+      {:error, %Error{} = error} ->
+        {{:error, error}, reserve_uncertain(state, name, error)}
+    end
   end
 
   defp continue_settlement(state, %{command: {:dispatch, action, arguments, caller}, from: from}) do
@@ -1203,6 +1274,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp valid_interaction_text?(value),
     do: is_binary(value) and value != "" and String.valid?(value)
+
+  defp validate_cancellation_reason(reason) do
+    if valid_interaction_text?(reason) and byte_size(reason) <= 1024 and
+         String.trim(reason) != "",
+       do: :ok,
+       else: validation("cancellation reason must be nonblank UTF-8 text of at most 1024 bytes")
+  end
 
   defp interaction_correlation(state, agent, interaction_id) do
     %{
@@ -2777,7 +2855,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       else: :ok
   end
 
-  defp interrupt_target(state, name, _agent) do
+  defp interrupt_target(state, name, _agent, metadata \\ %{}) do
     state =
       invalidate_interaction(state, name, Error.new(:resource_conflict, "agent is interrupted"))
 
@@ -2799,7 +2877,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           state
           |> put_in([:agents, name], interrupted)
           |> Map.update!(:updates, &MapSet.put(&1, name))
-          |> publish(:interrupted, name)
+          |> publish(:interrupted, name, metadata)
 
         {:ok, next}
       else

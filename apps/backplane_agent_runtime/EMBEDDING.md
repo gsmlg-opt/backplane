@@ -379,6 +379,27 @@ grants, adapter contexts and raw failures. Creation and start are published befo
 provider execution; cancellation acceptance is not confirmed interruption.
 Unexpected process exit or lost cleanup acknowledgement retains uncertainty.
 
+For a pending interaction, pass its exact `manager_id`, `agent_id`, `run_id`,
+`incarnation` and `interaction_id` correlation to
+`Codex.MultiAgent.cancel_interaction(manager, correlation, reason)`. The nonblank
+UTF-8 reason is limited to 1024 bytes and appears as diagnostic text in the
+`:interrupted` event; persistence of that reason is not guaranteed. Resolution
+and cancellation reserve the interaction atomically in the manager, and the
+child checks the exact run/incarnation, interaction and live producer before
+acceptance. Malformed arguments fail validation, unknown children return
+`:not_found`, and stale, replaced, closed or duplicate interactions return
+`:resource_conflict`.
+
+Settlement runs asynchronously so Store waits do not block manager observation.
+`:ok` requires child acceptance, terminal checkpoint acknowledgement, pending
+interaction removal and reconciled cleanup/effects. Dispatched work can remain
+`:unknown_outcome` and continue to reserve capacity. Worker loss, Store
+acknowledgement loss and timeouts also return `:unknown_outcome`; use observer
+snapshots and the host Store to reconcile. Never retry automatically or substitute
+an interrupt by name. A generic `run_cancelled` event does not prove exact
+interaction cancellation. Existing stop/deadline policies and model-facing
+interruption targets are unchanged; this operation does not cancel descendants.
+
 The trusted `child_options(request, run_id, parent_context)` callback prepares
 each spawn or replacement activation before execution. The manager consumes a
 unique reservation before invoking it. `parent_context.child` supplies the
