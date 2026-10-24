@@ -1,6 +1,6 @@
 # Managed child Sessions, deferred metadata search, and async call identity
 
-Status: proposed; implementation awaits user review.
+Status: approved by the user on 2026-10-25; implementation and release authorized.
 
 Repository: `gsmlg-opt/backplane`, `main` at
 `ab8f2f5d9a581bdf5168a3670ffd2c858a226b0e` (`1.10.35`).
@@ -437,4 +437,4 @@ Production deployment is outside this release request.
 - [x] Verification, package contents and release proof separated.
 - [x] Source review corrections applied: authority narrowing, stable Session
   identity, monitor lifetime, complete cleanup receipts, f32 grouping and limits.
-- [ ] User has approved implementation of this written design.
+- [x] User has approved implementation of this written design.
