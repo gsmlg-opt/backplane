@@ -32,7 +32,9 @@ except ImportError:
 
 DEFAULT_BASE_URL = "http://127.0.0.1:4222"
 DEFAULT_AGENT_ID = "hermes"
-TIMEOUT = 2
+# Canonical recall can include model/embedding work. Prefetch remains asynchronous;
+# use a bounded socket timeout that permits normal multi-second responses.
+TIMEOUT = 20
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 SOURCE_RECONCILE_INTERVAL = 30
 ERROR_CODES = {
@@ -210,7 +212,7 @@ class BackplaneMemoryProvider(MemoryProvider):
         self._cache, self._prefetch_jobs = OrderedDict(), OrderedDict()
         self._generation, self._peer, self._peer_checked = 0, None, 0
         self._stopping, self._wake = threading.Event(), threading.Event()
-        self._worker, self._closed = None, False
+        self._worker, self._worker_done, self._closed = None, False, False
         if self._automatic:
             with self._journal.transaction():
                 capture.boundary(self, "session-start", session_id, dedup_key="session-start:" + session_id)
@@ -534,10 +536,14 @@ class BackplaneMemoryProvider(MemoryProvider):
             while not self._stopping.is_set():
                 try:
                     self._deliver_once()
+                    if self._stopping.is_set():
+                        break
                     with self._state_lock:
                         job = self._prefetch_jobs.popitem(last=False) if self._prefetch_jobs else None
                     if job:
                         self._fetch_context(*job)
+                    if self._stopping.is_set():
+                        break
                     if self._automatic:
                         now = time.monotonic()
                         periodic = now >= next_source_reconcile
@@ -555,9 +561,10 @@ class BackplaneMemoryProvider(MemoryProvider):
                 self._wake.wait(0.25)
                 self._wake.clear()
         finally:
-            self._worker_done = True
-            if self._closed:
-                self._journal.close()
+            with self._journal.lock:
+                self._worker_done = True
+                if self._closed:
+                    self._journal.close()
 
     def queue_prefetch(self, query, *, session_id=""):
         self._ensure_open()
@@ -608,11 +615,14 @@ class BackplaneMemoryProvider(MemoryProvider):
             self._stopping.set()
             self._wake.set()
             worker.join(timeout=3)
-        self._final_status = self._journal.status()
-        self._bound_at_shutdown = bool(self._journal.get("binding_fingerprint"))
-        self._closed = True
-        if not worker or not worker.is_alive():
-            self._journal.close()
+        # Coordinate ownership with the worker finalizer. A thread can still be
+        # alive after its finalizer has finished; is_alive alone leaks that DB.
+        with self._journal.lock:
+            self._final_status = self._journal.status()
+            self._bound_at_shutdown = bool(self._journal.get("binding_fingerprint"))
+            self._closed = True
+            if not worker or self._worker_done or not worker.is_alive():
+                self._journal.close()
 
     def flush(self, *, timeout=10, canonical=False):
         """Wait for tracked delivery, without converting host acceptance into canonical success."""

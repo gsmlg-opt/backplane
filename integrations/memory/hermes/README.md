@@ -157,7 +157,13 @@ rebinds, relabels, discards, or replays authorization/binding rejections.
 
 `flush(timeout=10, canonical=True)` waits for canonical settlement. `canonical=False`
 only waits for host handoff. Graceful shutdown drains briefly and joins the worker
-with a bound; restart recovery is required for work left behind. Unknown status
+with a bound (up to two seconds draining and three seconds joining). HTTP uses a
+20-second socket timeout so normal multi-second canonical recall can complete;
+automatic prefetch still returns promptly from its local cache. If an in-flight
+request outlives shutdown's join, its tracked worker retains the journal until
+finalization, then closes it safely. After an in-flight delivery or recall returns,
+the worker checks for shutdown before starting its next queued phase. Restart
+recovery is required for work left behind. Unknown status
 is neither rejection nor success. Persistent binding fingerprints prevent replay
 into a changed authority. A changed URL/agent/selector/profile binding requires an
 explicit operator migration; do not delete the journal to silence the error.
