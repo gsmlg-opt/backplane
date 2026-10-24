@@ -2202,26 +2202,28 @@ defmodule Backplane.Memory.Service do
 
       {:ok,
        %{
-         record: %{
-           id: memory.id,
-           canonical_id: memory.id,
-           kind: "memory",
-           content: memory.content,
-           memory_type: memory.memory_type,
-           tags: memory.tags,
-           lifecycle_state: memory.lifecycle_state,
-           expires_at: memory.expires_at,
-           inserted_at: memory.inserted_at,
-           updated_at: memory.updated_at,
-           project: project,
-           provenance: %{
-             source_host_id: memory.host_id,
-             source_client_id: memory.source_client_id,
-             agent_id: memory.agent_id,
-             session_id: memory.session_id,
-             repository_sources: MemoryRepository.sources(memory.metadata["repository_sources"])
+         record:
+           %{
+             id: memory.id,
+             canonical_id: memory.id,
+             kind: "memory",
+             content: memory.content,
+             memory_type: memory.memory_type,
+             tags: memory.tags,
+             lifecycle_state: memory.lifecycle_state,
+             expires_at: memory.expires_at,
+             inserted_at: memory.inserted_at,
+             updated_at: memory.updated_at,
+             project: project,
+             provenance: %{
+               source_host_id: memory.host_id,
+               source_client_id: memory.source_client_id,
+               agent_id: memory.agent_id,
+               session_id: memory.session_id,
+               repository_sources: MemoryRepository.sources(memory.metadata["repository_sources"])
+             }
            }
-         },
+           |> Map.merge(Backplane.Memory.CurrentContext.result(memory)),
          mode: "online",
          authority: "canonical",
          consistency: "canonical",
@@ -2233,7 +2235,7 @@ defmodule Backplane.Memory.Service do
 
   defp do_handle_list(args) when is_map(args) do
     opts =
-      []
+      [current: true]
       |> add_if(args, "type", :type)
       |> add_if(args, "scope", :scope)
       |> add_if(args, "namespace", :namespace)
@@ -2262,6 +2264,7 @@ defmodule Backplane.Memory.Service do
              tags: r.tags,
              inserted_at: r.inserted_at
            }
+           |> Map.merge(Backplane.Memory.CurrentContext.result(r))
          end)
      }}
   end

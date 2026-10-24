@@ -72,7 +72,7 @@ defmodule Backplane.HostAgent.Memory.V1ToV2UpgradeTest do
     assert {:ok, _} = Store.execute(store, "DELETE FROM memory_outbox WHERE seq=20")
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 5} = Migrator.current_version(store)
+    assert {:ok, 6} = Migrator.current_version(store)
 
     assert {:ok,
             %{

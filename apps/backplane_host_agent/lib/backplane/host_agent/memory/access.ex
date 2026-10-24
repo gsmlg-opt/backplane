@@ -96,7 +96,14 @@ defmodule Backplane.HostAgent.Memory.Access do
   @impl true
   def handle_call(:status, _from, state) do
     safe =
-      Map.take(state, [:negotiated, :blocked, :generation, :default_access_id, :global_fenced])
+      Map.take(state, [
+        :negotiated,
+        :blocked,
+        :generation,
+        :default_access_id,
+        :global_fenced,
+        :extensions
+      ])
 
     {:reply, Map.put(safe, :accesses, Map.values(state.entries)), state}
   end
@@ -376,7 +383,7 @@ defmodule Backplane.HostAgent.Memory.Access do
            is_map(reply["result"]) or
              reply["status"] in ["batch", "current", "advanced", "progress", "duplicate"] do
       entry =
-        if ticket.operation in [:remember, :forget] or
+        if ticket.operation in [:remember, :forget, :source] or
              reply["status"] in ["advanced", "progress", "duplicate"],
            do: entry,
            else: %{entry | deadline: lease_deadline(entry, ticket.sent_at_ms)}
@@ -439,14 +446,18 @@ defmodule Backplane.HostAgent.Memory.Access do
       is_nil(entry) or entry.status == "fenced" ->
         {:error, :unauthorized}
 
-      operation not in [:read, :deliver, :remember, :forget] ->
+      operation not in [:read, :deliver, :remember, :forget, :source] ->
         {:error, :invalid_request}
 
-      to_string(operation) not in entry.capabilities ->
+      not allowed_operation?(operation, entry.capabilities) ->
         {:error, :unauthorized}
 
       operation in [:remember, :forget] and "memory_commands.v2" not in state.extensions ->
         {:error, :unsupported_shared_commands}
+
+      operation == :source and
+          not Enum.all?(~w(memory_commands.v2 memory_sources.v1), &(&1 in state.extensions)) ->
+        {:error, :unsupported_capability}
 
       true ->
         {:ok, entry}
@@ -497,8 +508,9 @@ defmodule Backplane.HostAgent.Memory.Access do
     end
   end
 
-  defp local_admission(_state, _target, _entry, operation) when operation in [:remember, :forget],
-    do: :ok
+  defp local_admission(_state, _target, _entry, operation)
+       when operation in [:remember, :forget, :source],
+       do: :ok
 
   defp local_admission(_, _, _, _), do: {:error, :stale_request}
 
@@ -509,6 +521,7 @@ defmodule Backplane.HostAgent.Memory.Access do
         store: state.store,
         edge_store: state.edge_store,
         edge_config: state.edge_config,
+        extensions: state.extensions,
         connection_generation: state.generation
       })
 
@@ -606,7 +619,9 @@ defmodule Backplane.HostAgent.Memory.Access do
       """
       UPDATE memory_outbox SET state='dead_letter', last_error='authority_changed', dead_lettered_at=?, next_attempt_at=NULL, updated_at=?
       WHERE access_id=? AND state IN ('pending','retry_wait') AND (authority_version != ? OR ?='fenced'
-        OR op NOT IN (SELECT value FROM json_each(?)))
+        OR (CASE WHEN op IN ('source_mutate','source_reconcile')
+          THEN NOT ('remember' IN (SELECT value FROM json_each(?)) AND 'forget' IN (SELECT value FROM json_each(?)))
+          ELSE op NOT IN (SELECT value FROM json_each(?)) END))
       """,
       [
         timestamp(),
@@ -614,6 +629,8 @@ defmodule Backplane.HostAgent.Memory.Access do
         entry.access_id,
         entry.authority_version,
         entry.status,
+        Jason.encode!(entry.capabilities),
+        Jason.encode!(entry.capabilities),
         Jason.encode!(entry.capabilities)
       ]
     )
@@ -720,6 +737,13 @@ defmodule Backplane.HostAgent.Memory.Access do
   end
 
   defp valid_entry?(_), do: false
+
+  @doc false
+  def allowed_operation?(operation, capabilities)
+      when operation in [:source, "source_mutate", "source_reconcile"],
+      do: "remember" in capabilities and "forget" in capabilities
+
+  def allowed_operation?(operation, capabilities), do: to_string(operation) in capabilities
 
   defp uuid?(value),
     do:

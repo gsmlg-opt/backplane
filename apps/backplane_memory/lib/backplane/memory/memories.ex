@@ -54,6 +54,7 @@ defmodule Backplane.Memory.Memories do
     :expires_at,
     :deleted_at,
     :lifecycle_state,
+    :effective_support,
     :namespace,
     :inserted_at,
     :updated_at
@@ -65,6 +66,7 @@ defmodule Backplane.Memory.Memories do
     :source_summary_id,
     :source_request_id,
     :source_crystal_id,
+    :source_mutation_id,
     :source_session_id
   ]
   @evidence_input_fields @evidence_source_fields ++
@@ -266,9 +268,11 @@ defmodule Backplane.Memory.Memories do
 
         memory =
           MemorySchema
+          |> Backplane.Memory.CurrentContext.query()
           |> where([m], m.id == ^filters["id"] and is_nil(m.deleted_at))
           |> where([m], is_nil(m.expires_at) or m.expires_at > ^now)
           |> where([m], m.lifecycle_state not in ["superseded", "archived", "tombstoned"])
+          |> where([m], m.effective_support)
           |> apply_exact_partition(partition)
           |> select([m], struct(m, ^@non_vector_fields))
           |> repo().one()
@@ -594,6 +598,8 @@ defmodule Backplane.Memory.Memories do
   end
 
   defp soft_tombstone_locked!(memory) do
+    Backplane.Memory.Sources.suppress_memory!(memory.id)
+
     memory
     |> MemorySchema.lifecycle_changeset(%{
       deleted_at: DateTime.utc_now(),
@@ -601,6 +607,8 @@ defmodule Backplane.Memory.Memories do
       superseded_by: nil
     })
     |> repo().update!()
+
+    Backplane.Memory.SourceSupport.refresh!(partition_identity(memory))
 
     Backplane.Memory.Audit.log(
       "forget",
@@ -739,6 +747,11 @@ defmodule Backplane.Memory.Memories do
   end
 
   defp apply_list_filters(query, opts) do
+    query =
+      if Keyword.get(opts, :current, false),
+        do: Backplane.Memory.CurrentContext.query(query),
+        else: query
+
     query =
       if Keyword.get(opts, :include_deleted, false) do
         query
@@ -951,27 +964,53 @@ defmodule Backplane.Memory.Memories do
                 idempotency_scope: scope,
                 idempotency_key: key,
                 request_hash: request_hash,
-                memory_id: memory.id
+                memory_id: memory.id,
+                independent_support:
+                  typed_evidence == [] and
+                    Keyword.get(opts, :request_origin, "direct") == "direct" and
+                    attrs.metadata["source"] not in [
+                      "hermes.memory_write.add",
+                      "hermes.memory_write.update",
+                      "hermes.sync_turn"
+                    ],
+                origin:
+                  Keyword.get(
+                    opts,
+                    :request_origin,
+                    if(typed_evidence == [], do: "direct", else: "derived")
+                  )
               })
               |> repo().insert!()
 
             suppressed? = not is_nil(memory.deleted_at)
 
             unless suppressed? do
-              %Evidence{}
-              |> Evidence.changeset(%{
-                memory_id: memory.id,
-                source_request_id: request.id,
-                session_id: attrs.session_id,
-                agent_id: attrs.agent_id,
-                host_id: attrs.host_id,
-                evidence_kind: "supports",
-                support_score: 1.0,
-                excerpt: attrs.content
-              })
-              |> repo().insert!()
+              if request.origin == "direct" do
+                %Evidence{}
+                |> Evidence.changeset(%{
+                  memory_id: memory.id,
+                  source_request_id: request.id,
+                  session_id: attrs.session_id,
+                  agent_id: attrs.agent_id,
+                  host_id: attrs.host_id,
+                  evidence_kind: "supports",
+                  support_score: 1.0,
+                  excerpt: attrs.content
+                })
+                |> repo().insert!()
+              end
 
-              insert_typed_evidence!(memory.id, typed_evidence)
+              typed_ids = insert_typed_evidence!(memory.id, typed_evidence)
+
+              Enum.each(typed_ids, fn evidence_id ->
+                repo().insert!(
+                  %Backplane.Memory.Sources.RequestEvidence{
+                    request_id: request.id,
+                    evidence_id: evidence_id
+                  },
+                  on_conflict: :nothing
+                )
+              end)
             end
 
             {memory, inserted?, not suppressed?, request}
@@ -993,7 +1032,8 @@ defmodule Backplane.Memory.Memories do
             })
           )
 
-          {memory, inserted?, evidence_changed?}
+          Backplane.Memory.SourceSupport.refresh!(partition_identity(memory))
+          {repo().get!(MemorySchema, memory.id), inserted?, evidence_changed?}
         end)
       end)
 
@@ -1185,7 +1225,7 @@ defmodule Backplane.Memory.Memories do
   end
 
   defp insert_typed_evidence!(memory_id, evidence) do
-    Enum.each(evidence, fn attrs ->
+    Enum.map(evidence, fn attrs ->
       changeset = Evidence.changeset(%Evidence{}, Map.put(attrs, :memory_id, memory_id))
 
       case repo().insert(changeset, on_conflict: :nothing) do
@@ -1211,15 +1251,15 @@ defmodule Backplane.Memory.Memories do
   end
 
   defp ensure_stored_evidence_matches!(memory_id, attrs) do
-    stored =
+    row =
       Evidence
       |> where([e], e.memory_id == ^memory_id)
       |> evidence_source_query(evidence_source_identity(attrs))
       |> repo().one!()
-      |> Map.from_struct()
-      |> Map.take(@evidence_input_fields)
 
-    if stored == attrs, do: :ok, else: repo().rollback(:conflicting_evidence)
+    stored = row |> Map.from_struct() |> Map.take(@evidence_input_fields)
+
+    if stored == attrs, do: row.id, else: repo().rollback(:conflicting_evidence)
   end
 
   defp evidence_source_query(query, {:event, id}),
@@ -1236,6 +1276,9 @@ defmodule Backplane.Memory.Memories do
 
   defp evidence_source_query(query, {:crystal, id}),
     do: where(query, [e], e.source_crystal_id == ^id)
+
+  defp evidence_source_query(query, {:mutation, id}),
+    do: where(query, [e], e.source_mutation_id == ^id)
 
   defp evidence_source_query(query, {:session, host_id, session_id}),
     do: where(query, [e], e.host_id == ^host_id and e.source_session_id == ^session_id)
@@ -1336,6 +1379,9 @@ defmodule Backplane.Memory.Memories do
 
   defp evidence_source_identity(%{source_crystal_id: id}) when not is_nil(id),
     do: {:crystal, id}
+
+  defp evidence_source_identity(%{source_mutation_id: id}) when not is_nil(id),
+    do: {:mutation, id}
 
   defp evidence_source_identity(%{source_session_id: session_id, host_id: host_id}),
     do: {:session, host_id, session_id}
@@ -1478,6 +1524,9 @@ defmodule Backplane.Memory.Memories do
 
   defp evidence_source(%Evidence{source_summary_id: id}) when not is_nil(id), do: {"summary", id}
   defp evidence_source(%Evidence{source_request_id: id}) when not is_nil(id), do: {"request", id}
+
+  defp evidence_source(%Evidence{source_mutation_id: id}) when not is_nil(id),
+    do: {"source_mutation", id}
 
   defp evidence_source(%Evidence{host_id: host, source_session_id: session}),
     do: {"session", "#{host}:#{session}"}

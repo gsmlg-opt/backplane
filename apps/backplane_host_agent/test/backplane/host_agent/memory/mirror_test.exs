@@ -491,6 +491,43 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert [%{"lifecycle_state" => "disputed"}] = result["items"]
   end
 
+  test "source support and governing expiry apply to offline list recall and stats", c do
+    context = %{
+      "policy_version" => "current_context.v1",
+      "trust" => "candidate_inference",
+      "support_complete" => true,
+      "independent_support" => false,
+      "effective_support" => true,
+      "source_refs" => [],
+      "valid_until" => nil
+    }
+
+    changes =
+      for {id, revision, overrides} <- [
+            {"current", 1, %{}},
+            {"unsupported", 2, %{"effective_support" => false}},
+            {"expired-root", 3, %{"valid_until" => "2000-01-01T00:00:00"}},
+            {"future-root", 4, %{"valid_until" => "2999-01-01T00:00:00+00:00"}}
+          ] do
+        upsert(revision, id, "matching evidence")
+        |> put_in(["payload", "metadata"], %{"current_context" => Map.merge(context, overrides)})
+      end
+
+    assert {:ok, _} = Mirror.apply_delivery(delta(1, changes), c.opts)
+
+    for operation <- ["list", "recall"] do
+      args =
+        if operation == "recall", do: Map.put(@partition, "query", "matching"), else: @partition
+
+      assert {:ok, %{"items" => items}} = Mirror.offline_read(operation, args, c.opts)
+      assert Enum.map(items, & &1["canonical_id"]) == ["current", "future-root"]
+      assert Enum.all?(items, &(&1["policy_version"] == "current_context.v1"))
+      assert Enum.all?(items, &is_integer(&1["revision"]))
+    end
+
+    assert {:ok, %{"count" => 2}} = Mirror.offline_read("stats", @partition, c.opts)
+  end
+
   test "transport item and byte limits reject before opening a transaction", c do
     delivery = delta(1, [upsert(1, "a", "alpha"), upsert(2, "b", "beta")])
     opts = Keyword.put(c.opts, :config, Map.put(@config, :max_changes, 1))

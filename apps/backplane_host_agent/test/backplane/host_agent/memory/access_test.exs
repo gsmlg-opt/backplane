@@ -236,6 +236,155 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     assert {:error, :stale_request} = Access.finish_request(ticket, read_reply(target), c.owner)
   end
 
+  test "source capabilities separate local support from negotiated canonical readiness", c do
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+    context = %{access_server: c.owner, agent_id: "Rikka"}
+
+    assert {:ok, %{"supported" => true, "ready" => false}} =
+             Sources.call("source_capabilities", %{}, context)
+
+    assert :ok = install(c)
+    assert {:ok, %{"ready" => false}} = Sources.call("source_capabilities", %{}, context)
+
+    assert {:error, :unsupported_capability} =
+             Sources.call("source_mutate", source_mutation(), context)
+
+    assert :ok = install_sources(c)
+
+    assert {:ok, %{"ready" => true, "binding" => binding}} =
+             Sources.call("source_capabilities", %{}, context)
+
+    assert binding["partition"] == @partition
+    assert :ok = install_sources(c, 2, ["remember"])
+    assert {:error, :unauthorized} = Sources.call("source_mutate", source_mutation(), context)
+  end
+
+  test "source commands bypass local content dedup and preserve immutable provenance", c do
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+    assert :ok = install_sources(c)
+    context = %{access_server: c.owner, agent_id: "Rikka", sync_opts: [channel: nil]}
+    args = source_mutation()
+
+    assert {:ok, %{"status" => "pending", "event_id" => id}} =
+             Sources.call("source_mutate", args, context)
+
+    assert {:ok, %{"status" => "pending", "event_id" => ^id}} =
+             Sources.call("source_mutate", args, context)
+
+    assert {:error, :idempotency_conflict} =
+             Sources.call("source_mutate", Map.put(args, "content", "changed"), context)
+
+    assert {:error, :idempotency_conflict} =
+             Sources.call("source_mutate", args, %{context | agent_id: "other"})
+
+    second =
+      args
+      |> Map.put("event_id", Ecto.UUID.generate())
+      |> Map.put("entry_id", Ecto.UUID.generate())
+
+    assert {:ok, %{"status" => "pending"}} = Sources.call("source_mutate", second, context)
+
+    assert {:ok, %{rows: rows}} =
+             Store.query(c.store, "SELECT payload FROM memory_outbox ORDER BY seq")
+
+    assert length(rows) == 2
+    assert Enum.all?(rows, &(Jason.decode!(&1["payload"])["arguments"]["agent_id"] == "Rikka"))
+
+    assert Enum.all?(
+             rows,
+             &(Jason.decode!(&1["payload"])["arguments"]["provenance"]["session_id"] ==
+                 "actual-session")
+           )
+  end
+
+  test "source ACK keeps canonical outcome and status is bound to original source and authority",
+       c do
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+    assert :ok = install_sources(c)
+    context = %{access_server: c.owner, agent_id: "Rikka", sync_opts: [channel: nil]}
+    args = source_mutation()
+    assert {:ok, %{"status" => "pending"}} = Sources.call("source_mutate", args, context)
+    [row] = rows = claim(c)
+
+    source_result = %{
+      "protocol" => "memory_sources.v1",
+      "event_id" => args["event_id"],
+      "status" => "committed",
+      "outcome" => "applied",
+      "canonical_id" => "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "revision" => 9,
+      "source_revision" => 1,
+      "authority" => "canonical",
+      "consistency" => "canonical"
+    }
+
+    ack = ack(row, "committed") |> Map.put("source_result", source_result)
+    assert {:ok, %{drained: 1}} = settle(c, rows, ack)
+    status = Map.take(args, ~w(protocol source event_id))
+
+    assert {:ok,
+            %{
+              "status" => "committed",
+              "outcome" => "applied",
+              "revision" => 9,
+              "authority" => "canonical"
+            }} = Sources.call("source_status", status, context)
+
+    assert {:error, :not_found} =
+             Sources.call(
+               "source_status",
+               put_in(status, ["source", "profile_id"], "different"),
+               context
+             )
+
+    assert :ok = install_sources(c, 2)
+    assert {:error, :not_found} = Sources.call("source_status", status, context)
+  end
+
+  test "revoking either source grant dead letters pending source commands", c do
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+    assert :ok = install_sources(c)
+    context = %{access_server: c.owner, agent_id: "Rikka", sync_opts: [channel: nil]}
+
+    assert {:ok, %{"status" => "pending"}} =
+             Sources.call("source_mutate", source_mutation(), context)
+
+    assert :ok = install_sources(c, 2, ["remember"])
+
+    assert {:ok, %{rows: [%{"state" => "dead_letter", "last_error" => "authority_changed"}]}} =
+             Store.query(c.store, "SELECT state,last_error FROM memory_outbox")
+
+    assert [] == claim(c)
+  end
+
+  defp install_sources(c, version \\ 1, caps \\ ~w(read deliver remember forget)) do
+    inventory =
+      inventory(version, 0, caps)
+      |> Map.put("extensions", ~w(memory_access.v1 memory_commands.v2 memory_sources.v1))
+
+    Access.install_inventory(%{id: 1, sent_at_ms: 10_000}, inventory, c.owner)
+  end
+
+  defp source_mutation do
+    %{
+      "protocol" => "memory_sources.v1",
+      "event_id" => "2699493c-6347-4138-baba-8b09393a8500",
+      "entry_id" => "34aa960d-50c9-4086-ad8e-06f9a340b03f",
+      "source" => %{
+        "integration" => "hermes",
+        "installation_id" => "b6b8672a-74a0-4df7-b533-ec0a99f49df8",
+        "profile_id" => "default",
+        "target" => "memory"
+      },
+      "revision" => 1,
+      "operation" => "upsert",
+      "content" => "same canonical content",
+      "type" => "semantic",
+      "occurred_at" => "2026-10-24T01:00:00Z",
+      "provenance" => %{"session_id" => "actual-session"}
+    }
+  end
+
   test "unknown selectors and unsupported capabilities never fall back", c do
     assert :ok = install(c, 1, 0, ["remember"])
     assert {:error, :unauthorized} = Access.begin_request({:access_id, @other}, :read, c.owner)

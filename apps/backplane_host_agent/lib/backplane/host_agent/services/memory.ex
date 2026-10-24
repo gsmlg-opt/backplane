@@ -12,6 +12,7 @@ defmodule Backplane.HostAgent.Services.Memory do
   alias Backplane.MemoryToolContract
 
   @facade_methods ~w(remember recall list get forget stats facet_tag facet_query)
+  @source_methods ~w(source_capabilities source_mutate source_reconcile source_status)
 
   @impl true
   def prefix, do: "memory"
@@ -42,13 +43,18 @@ defmodule Backplane.HostAgent.Services.Memory do
          &Map.has_key?(args, &1)
        ) or
          (Map.has_key?(args, "memory_access_id") and
-            method not in ~w(remember recall list get forget stats)) do
+            method not in (@source_methods ++ ~w(remember recall list get forget stats))) do
       {:error, if(method == "get", do: :invalid_arguments, else: :invalid_request)}
     else
-      if method in @facade_methods do
-        call_facade(method, args, ctx)
-      else
-        call_legacy(method, args, ctx)
+      cond do
+        method in @source_methods ->
+          Backplane.HostAgent.MemorySourceFacade.call(method, args, ctx)
+
+        method in @facade_methods ->
+          call_facade(method, args, ctx)
+
+        true ->
+          call_legacy(method, args, ctx)
       end
     end
   end

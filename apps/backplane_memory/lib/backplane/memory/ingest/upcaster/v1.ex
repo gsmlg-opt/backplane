@@ -60,10 +60,17 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
        trace: event["trace"] || %{},
        raw_envelope: raw_envelope,
        ingest_auth_token_id: auth_token_id
-     }}
+     }
+     |> Map.merge(message_attributes(event))}
   end
 
   def upcast(_event, _auth_context), do: {:error, :unsupported_schema}
+
+  defp message_attributes(%{"integration" => "hermes", "payload" => %{"source" => source}}) do
+    %{content: source["content"], role: source["role"], actor_type: source["role"]}
+  end
+
+  defp message_attributes(_), do: %{}
 
   defp stream_id(host_id, session_id, _event_id) when is_binary(session_id),
     do: "capture:#{host_id}:#{session_id}"

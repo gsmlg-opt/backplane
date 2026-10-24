@@ -55,6 +55,7 @@ defmodule Backplane.Memory.Memories.Search do
 
       rows =
         M
+        |> Backplane.Memory.CurrentContext.query()
         |> where(
           [m],
           is_nil(m.deleted_at) and not is_nil(m.embedding) and
@@ -315,6 +316,7 @@ defmodule Backplane.Memory.Memories.Search do
 
   defp fts_search(query, opts) do
     M
+    |> Backplane.Memory.CurrentContext.query()
     |> where(
       [m],
       is_nil(m.deleted_at) and

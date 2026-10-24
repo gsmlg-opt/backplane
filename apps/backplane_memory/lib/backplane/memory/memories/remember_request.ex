@@ -10,15 +10,25 @@ defmodule Backplane.Memory.Memories.RememberRequest do
     field(:idempotency_key, :string)
     field(:request_hash, :binary)
     field(:memory_id, :binary_id)
+    field(:origin, :string, default: "direct")
+    field(:independent_support, :boolean)
     timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(request, attrs) do
     request
-    |> cast(attrs, [:idempotency_scope, :idempotency_key, :request_hash, :memory_id])
+    |> cast(attrs, [
+      :idempotency_scope,
+      :idempotency_key,
+      :request_hash,
+      :memory_id,
+      :origin,
+      :independent_support
+    ])
     |> validate_required([:idempotency_scope, :idempotency_key, :request_hash, :memory_id])
     |> validate_length(:idempotency_scope, min: 1)
     |> validate_length(:idempotency_key, min: 1)
+    |> validate_inclusion(:origin, ~w(direct external_source derived))
     |> unique_constraint([:idempotency_scope, :idempotency_key],
       name: :bpm_memory_remember_requests_scope_key_uniq
     )

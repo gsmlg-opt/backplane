@@ -87,6 +87,40 @@ defmodule Backplane.HostAgent.Memory.SpoolTursoTest do
     assert %{pending_depth: 1} = Spool.stats(spool)
   end
 
+  test "Hermes delivery receipts survive ACK compaction and restart without accepting changed input",
+       %{tmp_dir: dir} do
+    {:ok, clock} = Agent.start_link(fn -> ~U[2026-10-24 00:00:00Z] end)
+    now = fn -> Agent.get(clock, & &1) end
+    path = Path.join(dir, "hermes-receipts.db")
+    opts = [clock: now, compaction_grace_ms: 0, delivery_receipt_days: 30]
+    spool = start_spool!(path, opts)
+
+    input =
+      attrs("hermes-event", "hermes-key", "hermes-session") |> Map.put(:integration, "hermes")
+
+    assert {:ok, first} = Spool.append(spool, input)
+    assert :ok = Spool.acknowledge(spool, [first["event_id"]])
+    send(spool, :compact_acknowledged)
+    assert [] = Spool.next_batch(spool, 10, 100_000)
+    assert {:ok, %{state: :acknowledged}} = Spool.event_status(spool, first["event_id"])
+    assert {:duplicate, ^first} = Spool.append(spool, input)
+
+    assert {:error, :identity_collision} =
+             Spool.append(spool, Map.put(input, :occurred_at, "2026-10-24T01:00:00Z"))
+
+    assert {:error, :identity_collision} =
+             Spool.append(spool, Map.put(input, :payload, %{"message" => "changed"}))
+
+    GenServer.stop(spool)
+    reopened = start_spool!(path, opts)
+    assert {:ok, %{state: :acknowledged}} = Spool.event_status(reopened, first["event_id"])
+    assert {:duplicate, ^first} = Spool.append(reopened, input)
+    Agent.update(clock, &DateTime.add(&1, 31, :day))
+    assert {:error, :not_found} = Spool.event_status(reopened, first["event_id"])
+    assert {:ok, _} = Spool.append(reopened, input)
+    assert {:ok, %{state: :pending}} = Spool.event_status(reopened, first["event_id"])
+  end
+
   test "same idempotency key is a duplicate and preserves the first envelope", %{tmp_dir: dir} do
     spool = start_spool!(Path.join(dir, "idempotency-duplicate.db"))
     assert {:ok, first} = Spool.append(spool, attrs("first-event", "same-key", "s1"))

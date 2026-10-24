@@ -33,6 +33,7 @@ defmodule Backplane.Memory.Memories.Memory do
     field(:expires_at, :utc_datetime_usec)
     field(:deleted_at, :utc_datetime_usec)
     field(:lifecycle_state, :string, default: "active")
+    field(:effective_support, :boolean, default: true)
 
     timestamps(type: :utc_datetime_usec)
   end

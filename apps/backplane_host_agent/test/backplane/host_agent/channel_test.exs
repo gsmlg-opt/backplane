@@ -243,7 +243,13 @@ defmodule Backplane.HostAgent.ChannelTest do
     assert {:ok, %{}, _} = Channel.join(self(), "host-shared")
     assert_receive {:join, _, "host_agent:host-shared", %{"memory_v2" => offer}}
     assert offer["partitions"] == []
-    assert offer["extensions"] == ["memory_access.v1", "memory_commands.v2"]
+
+    assert offer["extensions"] == [
+             "memory_access.v1",
+             "memory_commands.v2",
+             "memory_sources.v1",
+             "hermes_capture.v1"
+           ]
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane_host_agent, key)

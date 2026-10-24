@@ -17,6 +17,7 @@ defmodule Backplane.Memory.SharedCommands.Receipt do
     field(:canonical_id, :binary_id)
     field(:revision, :integer)
     field(:error_code, :string)
+    field(:result, :map, default: %{})
     timestamps(type: :utc_datetime_usec)
   end
 end

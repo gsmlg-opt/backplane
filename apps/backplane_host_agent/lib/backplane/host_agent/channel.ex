@@ -81,7 +81,12 @@ defmodule Backplane.HostAgent.Channel do
         Map.put(
           payload,
           "memory_v2",
-          Map.put(offer, "extensions", ["memory_access.v1", "memory_commands.v2"])
+          Map.put(offer, "extensions", [
+            "memory_access.v1",
+            "memory_commands.v2",
+            "memory_sources.v1",
+            "hermes_capture.v1"
+          ])
         )
 
       :disabled ->
@@ -89,7 +94,12 @@ defmodule Backplane.HostAgent.Channel do
           "offers" => ["host_memory.v2"],
           "partitions" => [],
           "max_frame_bytes" => 524_288,
-          "extensions" => ["memory_access.v1", "memory_commands.v2"]
+          "extensions" => [
+            "memory_access.v1",
+            "memory_commands.v2",
+            "memory_sources.v1",
+            "hermes_capture.v1"
+          ]
         })
     end
   end

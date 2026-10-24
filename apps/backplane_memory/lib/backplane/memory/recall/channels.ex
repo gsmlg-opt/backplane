@@ -349,6 +349,7 @@ defmodule Backplane.Memory.Recall.Channels do
 
   defp active_memory_query(query, plan) do
     query
+    |> Backplane.Memory.CurrentContext.query()
     |> exact_partition(plan)
     |> where(
       [memory],

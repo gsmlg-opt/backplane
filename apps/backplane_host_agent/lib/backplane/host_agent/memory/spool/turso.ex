@@ -13,6 +13,8 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
   @encryption_verifier_key "encryption_key_verifier_v1"
 
   @schema [
+    "CREATE TABLE IF NOT EXISTS capture_delivery_receipts (event_id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,fingerprint TEXT NOT NULL,sequence INTEGER,acknowledged_at TEXT NOT NULL,expires_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS capture_delivery_receipts_expiry_idx ON capture_delivery_receipts(expires_at,acknowledged_at,event_id)",
     "CREATE TABLE IF NOT EXISTS capture_session_sequences (session_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL)",
     """
     CREATE TABLE IF NOT EXISTS capture_event_spool (
@@ -107,6 +109,8 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
         :retry_max_ms,
         :compaction_batch_size,
         :compaction_grace_ms,
+        :delivery_receipt_days,
+        :max_delivery_receipts,
         :max_import_fingerprints,
         :clock,
         :jitter_fun
@@ -138,6 +142,8 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
               compaction_batch_size: Keyword.get(opts, :compaction_batch_size, 100),
               compaction_grace_ms: Keyword.get(opts, :compaction_grace_ms, 60_000),
               max_import_fingerprints: Keyword.get(opts, :max_import_fingerprints, 100_000),
+              delivery_receipt_days: Keyword.get(opts, :delivery_receipt_days, 30),
+              max_delivery_receipts: Keyword.get(opts, :max_delivery_receipts, 100_000),
               compaction_timer: nil,
               clock: Keyword.get(opts, :clock, &DateTime.utc_now/0),
               jitter_fun: Keyword.get(opts, :jitter_fun, &default_jitter/1)
@@ -178,7 +184,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
     reply =
       case filter_payload(attrs) do
         {:ok, filtered_attrs} ->
-          case duplicate(store, filtered_attrs, state.cipher) do
+          case duplicate(store, filtered_attrs, state.cipher, state.clock.() |> iso8601()) do
             {:ok, nil} ->
               insert(
                 store,
@@ -233,11 +239,25 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
     now = state.clock.() |> iso8601()
 
     result =
-      safe_execute(
-        store,
-        "UPDATE capture_event_spool SET state = 'acknowledged', acknowledged_at = ? WHERE event_id IN (#{placeholders})",
-        [now | event_ids]
-      )
+      safe_transaction(store, fn conn ->
+        with {:ok, %Result{rows: rows}} <-
+               Store.query(
+                 conn,
+                 "SELECT event_id,envelope_json FROM capture_event_spool WHERE event_id IN (#{placeholders})",
+                 event_ids
+               ),
+             :ok <- retain_delivery_receipts(conn, rows, now, state),
+             {:ok, _} <-
+               Store.execute(
+                 conn,
+                 "UPDATE capture_event_spool SET state = 'acknowledged', acknowledged_at = ? WHERE event_id IN (#{placeholders})",
+                 [now | event_ids]
+               ) do
+          :ok
+        else
+          {:error, reason} -> DBConnection.rollback(conn, reason)
+        end
+      end)
 
     state = if match?({:ok, _}, result), do: schedule_compaction(state), else: state
 
@@ -274,7 +294,20 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
            }}
 
         {:ok, %Result{rows: []}} ->
-          {:error, :not_found}
+          case safe_query(
+                 store,
+                 "SELECT event_id FROM capture_delivery_receipts WHERE event_id=? AND expires_at>?",
+                 [event_id, iso8601(state.clock.())]
+               ) do
+            {:ok, %Result{rows: [_]}} ->
+              {:ok, %{state: :acknowledged, acknowledged: true, reason: nil}}
+
+            {:ok, %Result{rows: []}} ->
+              {:error, :not_found}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
 
         {:error, reason} ->
           {:error, reason}
@@ -487,16 +520,88 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
     sequence
   end
 
-  defp duplicate(store, attrs, cipher) do
+  defp duplicate(store, attrs, cipher, now) do
     case safe_query(
            store,
            "SELECT event_id, idempotency_key, envelope_json FROM capture_event_spool WHERE event_id = ? OR idempotency_key = ?",
            [value(attrs, :event_id), value(attrs, :idempotency_key)]
          ) do
-      {:ok, %Result{rows: []}} -> import_duplicate(store, attrs, cipher)
+      {:ok, %Result{rows: []}} -> delivery_duplicate(store, attrs, cipher, now)
       {:ok, %Result{rows: [row]}} -> compare_duplicate(row, attrs, cipher)
       {:ok, %Result{rows: _rows}} -> {:error, :identity_collision}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delivery_duplicate(store, attrs, cipher, now) do
+    case safe_query(
+           store,
+           "SELECT * FROM capture_delivery_receipts WHERE (event_id=? OR idempotency_key=?) AND expires_at>?",
+           [value(attrs, :event_id), value(attrs, :idempotency_key), now]
+         ) do
+      {:ok, %Result{rows: []}} ->
+        import_duplicate(store, attrs, cipher)
+
+      {:ok, %Result{rows: [row]}} ->
+        if row["fingerprint"] == delivery_fingerprint(attrs),
+          do: EventEnvelope.build(put_value(attrs, :sequence, row["sequence"])),
+          else: {:error, :identity_collision}
+
+      {:ok, %Result{rows: _}} ->
+        {:error, :identity_collision}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp delivery_fingerprint(attrs) do
+    ~w(event_id idempotency_key integration host_id agent_id client_id project scope session_id parent_session_id event_type occurred_at captured_at payload_hash trace privacy)
+    |> Map.new(fn field -> {field, value(attrs, String.to_existing_atom(field))} end)
+    |> EventEnvelope.payload_hash()
+  end
+
+  defp retain_delivery_receipts(conn, rows, now, state) do
+    expires_at = DateTime.add(state.clock.(), state.delivery_receipt_days, :day) |> iso8601()
+
+    result =
+      Enum.reduce_while(rows, :ok, fn row, :ok ->
+        with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], state.cipher),
+             {:ok, envelope} <- Jason.decode(json) do
+          if envelope["integration"] == "hermes" do
+            case Store.execute(
+                   conn,
+                   "INSERT INTO capture_delivery_receipts(event_id,idempotency_key,fingerprint,sequence,acknowledged_at,expires_at) VALUES (?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
+                   [
+                     envelope["event_id"],
+                     envelope["idempotency_key"],
+                     delivery_fingerprint(envelope),
+                     envelope["sequence"],
+                     now,
+                     expires_at
+                   ]
+                 ) do
+              {:ok, _} -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          else
+            {:cont, :ok}
+          end
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    with :ok <- result,
+         {:ok, _} <-
+           Store.execute(conn, "DELETE FROM capture_delivery_receipts WHERE expires_at<=?", [now]),
+         {:ok, _} <-
+           Store.execute(
+             conn,
+             "DELETE FROM capture_delivery_receipts WHERE event_id IN (SELECT event_id FROM capture_delivery_receipts ORDER BY acknowledged_at DESC,event_id DESC LIMIT -1 OFFSET ?)",
+             [state.max_delivery_receipts]
+           ) do
+      :ok
     end
   end
 

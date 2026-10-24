@@ -199,7 +199,10 @@ defmodule Backplane.HostAgent.Memory do
 
             if entry && entry.status != "fenced" &&
                  entry.authority_version == row["authority_version"] &&
-                 row["op"] in entry.capabilities && "memory_commands.v2" in context.extensions &&
+                 Access.allowed_operation?(row["op"], entry.capabilities) &&
+                 "memory_commands.v2" in context.extensions &&
+                 (row["op"] not in ~w(source_mutate source_reconcile) or
+                    "memory_sources.v1" in context.extensions) &&
                  bytes + size < 500_000 do
               execute!(
                 conn,
@@ -239,7 +242,7 @@ defmodule Backplane.HostAgent.Memory do
 
                 execute!(
                   conn,
-                  "UPDATE memory_outbox SET state=?,ack_canonical_id=?,ack_revision=?,ack_partition=?,last_error=?,completed_at=?,dead_lettered_at=?,next_attempt_at=NULL,updated_at=? WHERE command_id=? AND state IN ('inflight','dead_letter')",
+                  "UPDATE memory_outbox SET state=?,ack_canonical_id=?,ack_revision=?,ack_partition=?,last_error=?,completed_at=?,dead_lettered_at=?,next_attempt_at=NULL,updated_at=?,ack_result=? WHERE command_id=? AND state IN ('inflight','dead_letter')",
                   [
                     if(rejected, do: "dead_letter", else: "done"),
                     ack["canonical_id"],
@@ -249,6 +252,7 @@ defmodule Backplane.HostAgent.Memory do
                     if(not rejected, do: now),
                     if(rejected, do: now),
                     now,
+                    if(ack["source_result"], do: Jason.encode!(ack["source_result"])),
                     row["command_id"]
                   ]
                 )
@@ -321,7 +325,13 @@ defmodule Backplane.HostAgent.Memory do
       ack["partition"] == payload["partition"] and
       case ack["status"] do
         status when status in ["committed", "duplicate"] ->
-          is_binary(ack["canonical_id"]) and is_integer(ack["revision"]) and ack["revision"] > 0
+          if row["op"] in ~w(source_mutate source_reconcile) do
+            is_map(ack["source_result"]) and
+              ack["source_result"]["protocol"] == "memory_sources.v1" and
+              ack["source_result"]["event_id"] == row["command_id"]
+          else
+            is_binary(ack["canonical_id"]) and is_integer(ack["revision"]) and ack["revision"] > 0
+          end
 
         "rejected" ->
           ack["code"] in ~w(unauthorized authority_changed partition_mismatch not_found invalid_request idempotency_conflict)

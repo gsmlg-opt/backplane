@@ -9,6 +9,7 @@ defmodule Backplane.Memory.Memories.EvidenceInheritance do
     :source_event_id,
     :source_observation_id,
     :source_summary_id,
+    :source_mutation_id,
     :source_session_id
   ]
 
@@ -21,7 +22,8 @@ defmodule Backplane.Memory.Memories.EvidenceInheritance do
       |> where(
         [e],
         not is_nil(e.source_event_id) or not is_nil(e.source_observation_id) or
-          not is_nil(e.source_summary_id) or not is_nil(e.source_session_id)
+          not is_nil(e.source_summary_id) or not is_nil(e.source_session_id) or
+          not is_nil(e.source_mutation_id)
       )
       |> order_by([e], asc: e.created_at, asc: e.id)
       |> limit(^(limit + 1))

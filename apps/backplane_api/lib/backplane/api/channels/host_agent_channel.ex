@@ -314,7 +314,8 @@ defmodule Backplane.Api.HostAgentChannel do
   defp handle_memory_in("memory_sync", %{"protocol" => "memory_commands.v2"} = payload, socket) do
     result =
       with :ok <- selected_extension(socket, "memory_access.v1"),
-           :ok <- selected_extension(socket, "memory_commands.v2") do
+           :ok <- selected_extension(socket, "memory_commands.v2"),
+           :ok <- selected_sources_extension(socket, payload) do
         EdgeSync.safe(fn -> HostAgentMemorySync.settle_commands(shared_auth(socket), payload) end)
       end
 
@@ -461,6 +462,21 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp handle_memory_in("memory_wipe_ack", payload, socket),
     do: compat_ack("wipe", payload, socket)
+
+  defp selected_sources_extension(socket, %{"items" => items}) when is_list(items) do
+    cond do
+      not Enum.all?(items, &is_map/1) ->
+        {:error, :invalid_request}
+
+      Enum.any?(items, &(&1["op"] in ~w(source_mutate source_reconcile))) ->
+        selected_extension(socket, "memory_sources.v1")
+
+      true ->
+        :ok
+    end
+  end
+
+  defp selected_sources_extension(_, _), do: {:error, :invalid_request}
 
   @impl true
   def handle_info({:memory_access_changed, hint}, socket) do

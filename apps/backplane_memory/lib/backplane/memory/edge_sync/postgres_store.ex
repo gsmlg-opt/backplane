@@ -164,7 +164,7 @@ defmodule Backplane.Memory.EdgeSync.PostgresStore do
 
     extensions =
       Enum.filter(
-        ["memory_access.v1", "memory_commands.v2"],
+        ["memory_access.v1", "memory_commands.v2", "memory_sources.v1", "hermes_capture.v1"],
         &(&1 in Map.get(offer, "extensions", []))
       )
 

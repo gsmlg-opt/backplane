@@ -29,7 +29,10 @@ defmodule Backplane.Memory.Memories.DerivationGovernance do
     # Workers currently attribute whole sessions, not individual facts to events.
     # A changed summary revision still belongs to the same governed source subject.
     if MapSet.size(incoming_roots) > 0 and
-         Enum.all?(incoming_roots, &match?({:captured_session, _, _}, &1)) do
+         Enum.all?(
+           incoming_roots,
+           &(match?({:captured_session, _, _}, &1) or match?({:external_source, _, _}, &1))
+         ) do
       by_memory = Enum.group_by(stored, & &1.memory_id)
 
       Enum.find(tombstones, fn memory ->
@@ -77,6 +80,32 @@ defmodule Backplane.Memory.Memories.DerivationGovernance do
         )
       )
 
+    mutation_ids =
+      evidence
+      |> Enum.map(&Map.get(&1, :source_mutation_id))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    mutations =
+      repo().all(
+        from(mu in Backplane.Memory.Sources.Mutation,
+          join: s in Backplane.Memory.Sources.Source,
+          on: s.id == mu.source_id,
+          where:
+            mu.id in ^mutation_ids and s.memory_space_id == ^partition.memory_space_id and
+              s.host_id == ^partition.host_id and s.scope == ^partition.scope and
+              s.namespace == ^partition.namespace,
+          select: {mu.id, mu.source_id, mu.entry_id}
+        )
+      )
+
+    sources =
+      Map.put(
+        sources,
+        :source_mutation_id,
+        Map.new(mutations, fn {id, source, entry} -> {id, {:external_source, source, entry}} end)
+      )
+
     Map.put(
       sources,
       :source_session_id,
@@ -90,6 +119,10 @@ defmodule Backplane.Memory.Memories.DerivationGovernance do
     evidence
     |> Enum.flat_map(fn source ->
       cond do
+        Map.get(source, :source_mutation_id) ->
+          id = Map.get(source, :source_mutation_id)
+          [Map.get(sources[:source_mutation_id], id, {:unresolved, :mutation, id})]
+
         Map.get(source, :source_session_id) ->
           id = Map.get(source, :source_session_id)
           [Map.get(sources[:source_session_id], id, {:unresolved, :session, id})]

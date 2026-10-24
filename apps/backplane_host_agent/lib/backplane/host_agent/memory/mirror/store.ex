@@ -427,9 +427,13 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       {:ok, as_of, _} = DateTime.from_iso8601(p["last_sync_at"])
 
       filters =
-        "#{@where} AND generation = ? AND lifecycle_state IN ('active', 'disputed') AND (edge_expires_at IS NULL OR edge_expires_at > ?)"
+        "#{@where} AND generation = ? AND lifecycle_state IN ('active', 'disputed') " <>
+          "AND (edge_expires_at IS NULL OR julianday(edge_expires_at) > julianday(?)) " <>
+          "AND COALESCE(json_extract(metadata, '$.current_context.effective_support'), 1) = 1 " <>
+          "AND (json_extract(metadata, '$.current_context.valid_until') IS NULL " <>
+          "OR julianday(json_extract(metadata, '$.current_context.valid_until')) > julianday(?))"
 
-      values = params(args) ++ [p["active_generation"], timestamp]
+      values = params(args) ++ [p["active_generation"], timestamp, timestamp]
 
       metadata = %{
         "mode" => "offline",
@@ -612,9 +616,26 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
   end
 
   defp decode_item!(item) do
-    Enum.reduce(["tags", "metadata", "source_refs"], item, fn key, acc ->
-      Map.update!(acc, key, &Jason.decode!/1)
-    end)
+    decoded =
+      Enum.reduce(["tags", "metadata", "source_refs"], item, fn key, acc ->
+        Map.update!(acc, key, &Jason.decode!/1)
+      end)
+
+    context = get_in(decoded, ["metadata", "current_context"]) || %{}
+
+    Map.merge(
+      decoded,
+      Map.take(context, [
+        "policy_version",
+        "trust",
+        "source_refs",
+        "support_complete",
+        "independent_support",
+        "effective_support",
+        "valid_until"
+      ])
+    )
+    |> Map.put("revision", decoded["server_revision"])
   end
 
   @doc false

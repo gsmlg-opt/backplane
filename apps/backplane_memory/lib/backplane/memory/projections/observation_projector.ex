@@ -4,7 +4,7 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
   alias Backplane.Memory.Projections.{EventOrder, Revision}
 
   def project(events) when is_list(events) do
-    ordered = EventOrder.sort(events)
+    ordered = EventOrder.current_inputs(events)
     first = List.first(ordered)
 
     %{

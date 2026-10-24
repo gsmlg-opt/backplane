@@ -49,6 +49,10 @@ defmodule Backplane.HostAgent.MemoryRouter do
     handle_capture(conn, integration, hook)
   end
 
+  post "/capture/v1/status" do
+    handle_capture_status(conn)
+  end
+
   post "/memory/:agent_id/call/:method" do
     handle_call(conn, agent_id, method)
   end
@@ -150,6 +154,60 @@ defmodule Backplane.HostAgent.MemoryRouter do
         {:error, :capture_unavailable}
     end
   end
+
+  defp handle_capture_status(conn) do
+    with %{"event_ids" => ids} = args <- conn.body_params,
+         true <- Map.keys(args) == ["event_ids"] and is_list(ids) and length(ids) in 1..100,
+         true <- Enum.all?(ids, &Backplane.MemorySourceContract.uuid?/1),
+         {:ok, runtime} <- capture_runtime() do
+      items =
+        Enum.map(ids, fn id ->
+          case runtime.spool_module.event_status(runtime.spool, id) do
+            {:ok, %{state: :acknowledged}} ->
+              %{"event_id" => id, "status" => "canonical_committed"}
+
+            {:ok, %{state: :dead_letter, reason: reason}} ->
+              %{
+                "event_id" => id,
+                "status" => "rejected",
+                "error_code" => capture_error_code(reason)
+              }
+
+            {:ok, _} ->
+              %{"event_id" => id, "status" => "host_accepted"}
+
+            {:error, :not_found} ->
+              %{"event_id" => id, "status" => "unknown"}
+
+            {:error, _} ->
+              %{"event_id" => id, "status" => "unknown"}
+          end
+        end)
+
+      send_json(conn, 200, %{
+        "ok" => true,
+        "result" => %{"protocol" => "hermes_capture.v1", "items" => items}
+      })
+    else
+      {:error, :capture_unavailable} -> capture_unavailable(conn)
+      _ -> send_json(conn, 400, %{"ok" => false, "error" => "invalid_arguments"})
+    end
+  end
+
+  defp capture_error_code(reason)
+       when reason in [:unauthorized, ":unauthorized"], do: "unauthorized"
+
+  defp capture_error_code(reason)
+       when reason in [
+              "unauthorized",
+              "invalid_event",
+              "unsupported_schema",
+              "oversized",
+              "identity_collision"
+            ],
+       do: reason
+
+  defp capture_error_code(_), do: "capture_rejected"
 
   defp capture_body(%{"memory_access_id" => _}), do: {:error, {:malformed, [:memory_access_id]}}
   defp capture_body(body) when is_map(body), do: {:ok, body}
@@ -573,7 +631,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp direct_memory_call(_conn, _agent_id, method, %{"memory_access_id" => _})
-       when method not in ~w(remember recall list get stats forget),
+       when method not in ~w(remember recall list get stats forget source_capabilities source_mutate source_reconcile source_status),
        do: {:error, :invalid_request}
 
   defp direct_memory_call(conn, agent_id, method, args) do

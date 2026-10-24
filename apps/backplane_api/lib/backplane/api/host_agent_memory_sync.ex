@@ -90,7 +90,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
               map_size(partition) == 3 and is_map(arguments) and is_integer(version) and
               version > 0 do
     Ecto.UUID.cast(id) != :error and Ecto.UUID.cast(access_id) != :error and
-      op in ["remember", "forget"] and
+      op in ["remember", "forget", "source_mutate", "source_reconcile"] and
       Enum.sort(Map.keys(partition)) == ~w(memory_space_id namespace scope) and
       match?({:ok, _}, Backplane.Memory.PartitionIdentity.validate(partition)) and
       Enum.all?(

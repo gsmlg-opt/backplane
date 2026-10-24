@@ -123,6 +123,59 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     assert %{pending_depth: 1} = Spool.stats(spool)
   end
 
+  test "Hermes capture status distinguishes durable local acceptance canonical ACK and rejection",
+       %{spool: spool} do
+    id = "2699493c-6347-4138-baba-8b09393a8500"
+
+    body = %{
+      "protocol" => "hermes_capture.v1",
+      "event_id" => id,
+      "installation_id" => "b6b8672a-74a0-4df7-b533-ec0a99f49df8",
+      "profile_id" => "primary",
+      "source_sequence" => 1,
+      "session_id" => "actual-session",
+      "occurred_at" => "2026-10-24T01:00:00Z",
+      "captured_at" => "2026-10-24T01:00:00Z",
+      "role" => "assistant",
+      "content" => "candidate statement",
+      "agent_id" => "Rikka"
+    }
+
+    assert %{status: 202} = post_hook("hermes", "message", body)
+
+    request = fn ids ->
+      conn(:post, "/capture/v1/status", Jason.encode!(%{"event_ids" => ids}))
+      |> put_req_header("content-type", "application/json")
+      |> MemoryRouter.call(MemoryRouter.init([]))
+    end
+
+    assert %{
+             "ok" => true,
+             "result" => %{
+               "protocol" => "hermes_capture.v1",
+               "items" => [%{"event_id" => ^id, "status" => "host_accepted"}]
+             }
+           } = request.([id]).resp_body |> Jason.decode!()
+
+    assert :ok = Spool.acknowledge(spool, [id])
+
+    assert %{"result" => %{"items" => [%{"status" => "canonical_committed"}]}} =
+             request.([id]).resp_body |> Jason.decode!()
+
+    other = "34aa960d-50c9-4086-ad8e-06f9a340b03f"
+
+    assert %{status: 202} =
+             post_hook("hermes", "message", %{body | "event_id" => other, "source_sequence" => 2})
+
+    assert :ok = Spool.reject(spool, other, :unauthorized, true)
+
+    assert %{
+             "result" => %{"items" => [%{"status" => "rejected", "error_code" => "unauthorized"}]}
+           } = request.([other]).resp_body |> Jason.decode!()
+
+    assert %{status: 400} = request.(["bad-id"])
+  end
+
   test "durably captures before returning live lifecycle context", %{spool: spool} do
     enable_context(100)
 

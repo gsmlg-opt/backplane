@@ -7,7 +7,12 @@ defmodule Backplane.Memory.SharedCommands do
   alias Backplane.MemorySpaces
   alias Backplane.MemorySpaces.Entitlement
 
-  @operations %{"remember" => :remember, "forget" => :forget}
+  @operations %{
+    "remember" => :remember,
+    "forget" => :forget,
+    "source_mutate" => :source_mutate,
+    "source_reconcile" => :source_reconcile
+  }
   @codes %{
     "unauthorized" => :unauthorized,
     "authority_changed" => :authority_changed,
@@ -18,7 +23,7 @@ defmodule Backplane.Memory.SharedCommands do
   @doc "Commits a mutation and its minimal receipt atomically, or returns its saved outcome."
   def settle(auth, envelope) do
     with {:ok, command} <- normalize(envelope),
-         {:ok, actor} <- Authorization.host_actor(auth, command.operation) do
+         {:ok, actor} <- Authorization.host_actor(auth, permission_operation(command.operation)) do
       repo().transaction(fn ->
         case settle_locked(actor, command) do
           {:ok, ack} -> ack
@@ -75,7 +80,7 @@ defmodule Backplane.Memory.SharedCommands do
       case MemorySpaces.resolve_host_access(
              actor.host_id,
              {:access_id, access.id},
-             command.operation
+             permission_operation(command.operation)
            ) do
         {:ok, current} when current.authority_version != command.version ->
           save(actor, command, {:rejected, :authority_changed})
@@ -84,22 +89,27 @@ defmodule Backplane.Memory.SharedCommands do
           MemorySpaces.with_host_access(
             actor,
             {:access_id, access.id},
-            command.operation,
+            permission_operation(command.operation),
             command.version,
             fn _ ->
-              case effect(actor, command) do
-                {:ok, canonical_id} ->
-                  save(
-                    actor,
-                    command,
-                    {:committed, canonical_id, revision(command.partition, canonical_id)}
-                  )
+              with :ok <- source_permissions(actor, access, command) do
+                case effect(actor, command) do
+                  {:ok, %{} = result} ->
+                    save(actor, command, {:source, result})
 
-                {:error, :not_found} ->
-                  save(actor, command, {:rejected, :not_found})
+                  {:ok, canonical_id} ->
+                    save(
+                      actor,
+                      command,
+                      {:committed, canonical_id, revision(command.partition, canonical_id)}
+                    )
 
-                {:error, reason} ->
-                  {:error, reason}
+                  {:error, :not_found} ->
+                    save(actor, command, {:rejected, :not_found})
+
+                  {:error, reason} ->
+                    {:error, reason}
+                end
               end
             end
           )
@@ -155,6 +165,38 @@ defmodule Backplane.Memory.SharedCommands do
   defp effect(actor, %{operation: :forget} = command),
     do: Memories.tombstone_shared(command.arguments["id"], command.partition, identity(actor))
 
+  defp effect(actor, %{operation: operation} = command)
+       when operation in [:source_mutate, :source_reconcile] do
+    authority =
+      Map.merge(command.partition, %{
+        host_id: actor.host_id,
+        client_id: "host:" <> actor.host_id,
+        source_client_id: actor.source_client_id,
+        agent_id: command.arguments["agent_id"]
+      })
+
+    args = Map.delete(command.arguments, "agent_id")
+
+    if operation == :source_mutate,
+      do: Backplane.Memory.Sources.mutate(args, authority),
+      else: Backplane.Memory.Sources.reconcile(args, authority)
+  end
+
+  defp permission_operation(operation) when operation in [:source_mutate, :source_reconcile],
+    do: :remember
+
+  defp permission_operation(operation), do: operation
+
+  defp source_permissions(actor, access, %{operation: operation})
+       when operation in [:source_mutate, :source_reconcile] do
+    case MemorySpaces.resolve_host_access(actor.host_id, {:access_id, access.id}, :forget) do
+      {:ok, current} when current.authority_version == access.authority_version -> :ok
+      _ -> {:error, :unauthorized}
+    end
+  end
+
+  defp source_permissions(_, _, _), do: :ok
+
   defp save(actor, command, outcome) do
     attrs =
       %{
@@ -173,6 +215,14 @@ defmodule Backplane.Memory.SharedCommands do
 
           {:rejected, code} ->
             %{status: "rejected", error_code: Atom.to_string(code)}
+
+          {:source, result} ->
+            %{
+              status: "committed",
+              canonical_id: result[:canonical_id],
+              revision: result[:revision],
+              result: result |> Map.new(fn {key, value} -> {to_string(key), value} end)
+            }
         end
       )
 
@@ -187,11 +237,16 @@ defmodule Backplane.Memory.SharedCommands do
     }
 
     if receipt.status == "committed" do
-      Map.merge(base, %{
-        status: if(duplicate?, do: :duplicate, else: :committed),
-        canonical_id: receipt.canonical_id,
-        revision: receipt.revision
-      })
+      base =
+        Map.merge(base, %{
+          status: if(duplicate?, do: :duplicate, else: :committed),
+          canonical_id: receipt.canonical_id,
+          revision: receipt.revision
+        })
+
+      if receipt.operation in ~w(source_mutate source_reconcile),
+        do: Map.put(base, :source_result, receipt.result),
+        else: base
     else
       Map.merge(base, %{status: :rejected, code: Map.fetch!(@codes, receipt.error_code)})
     end
@@ -240,6 +295,7 @@ defmodule Backplane.Memory.SharedCommands do
          true <- Enum.sort(Map.keys(target)) == ~w(memory_space_id namespace scope),
          {:ok, partition} <- PartitionIdentity.validate(target),
          args = normalize_arguments(operation, args),
+         true <- operation not in [:source_mutate, :source_reconcile] or args["event_id"] == id,
          {:ok, json} <-
            CanonicalJSON.encode(%{
              "op" => op,
@@ -275,6 +331,9 @@ defmodule Backplane.Memory.SharedCommands do
 
   defp normalize_arguments(:forget, args), do: args
 
+  defp normalize_arguments(operation, args) when operation in [:source_mutate, :source_reconcile],
+    do: args
+
   defp validate_arguments(:remember, args) do
     valid? =
       Enum.all?(
@@ -306,6 +365,22 @@ defmodule Backplane.Memory.SharedCommands do
   end
 
   defp validate_arguments(:forget, _), do: {:error, :invalid_request}
+
+  defp validate_arguments(operation, args)
+       when operation in [:source_mutate, :source_reconcile] do
+    case Backplane.MemorySourceContract.validate(
+           Atom.to_string(operation),
+           Map.delete(args, "agent_id")
+         ) do
+      {:ok, _} ->
+        if is_nil(args["agent_id"]) or bounded_string?(args["agent_id"], 512),
+          do: :ok,
+          else: {:error, :invalid_request}
+
+      _ ->
+        {:error, :invalid_request}
+    end
+  end
 
   defp valid_facets?(facets) when is_list(facets) and length(facets) <= 100 do
     valid? =

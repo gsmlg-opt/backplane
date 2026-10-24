@@ -450,6 +450,9 @@ defmodule Backplane.Memory.Memories.Verification do
   defp evidence_source(%Evidence{source_summary_id: id}) when not is_nil(id), do: {"summary", id}
   defp evidence_source(%Evidence{source_request_id: id}) when not is_nil(id), do: {"request", id}
 
+  defp evidence_source(%Evidence{source_mutation_id: id}) when not is_nil(id),
+    do: {"source_mutation", id}
+
   defp evidence_source(%Evidence{host_id: host, source_session_id: session}),
     do: {"session", "#{host}:#{session}"}
 
