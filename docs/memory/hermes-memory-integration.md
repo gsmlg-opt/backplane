@@ -345,6 +345,14 @@ for the ten changed Elixir files. The owning processing regression selection
 passed 61 tests and edge-sync regressions passed 42 tests. These local results
 are separate from CI, publication and installation evidence.
 
+CI at `4053ada7` passed compilation, formatting, Dialyzer and workflow-contract
+checks. Its Memory job completed 1,448 tests with two activity-retention failures
+and five exclusions before the overall test run was cancelled by the next push.
+The same two global-count assertions failed with `3 != 0` at the original
+pre-Hermes `f36d09c8` baseline ([run 40076035113](https://github.com/gsmlg-opt/backplane/actions/runs/40076035113)).
+They remain an out-of-scope baseline failure. The SQL-literal Credo finding was
+fixed without changing the evaluated query; CI for that fix is separate evidence.
+
 The working tree based on `main@2628e085` passed the combined backend selection:
 536 tests, zero failures (contract 4, Memory 330, Host Agent 163, API 39). This
 includes the previously failing native-source recall, request/derived evidence,
@@ -435,9 +443,10 @@ by the observed failures. Retry limits and terminal delivery states remain
 authoritative. Owned databases, fixture directories and observed processes were
 independently confirmed absent after the latest runs.
 
-Full live acceptance remains open; passing backend tests do not replace it. The published
-`v1.10.35` release targets upstream `ab8f2f5d`, which excludes this local Hermes
-implementation; it is not release evidence for these changes.
+Full live acceptance remains open; passing backend tests do not replace it. The
+latest inspected release, `v1.10.36`, targets `207d13fc` and predates this Hermes
+implementation and its recovery changes. It is not release evidence for these
+changes. No new release has been dispatched while live acceptance remains red.
 
 Run the standalone scenario with an already available PostgreSQL/pgvector service
 and a real Hermes interpreter. `HERMES_PYTHON` can select an interpreter when the
