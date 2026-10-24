@@ -5,6 +5,8 @@ defmodule Backplane.Admin.MemoryConfigLive do
 
   alias Backplane.Memory.Config
 
+  @embedding_model_keys ~w(memory.embed_model memory.recall_relevance_vector_model)
+
   @impl true
   def mount(params, session, socket) do
     if connected?(socket) do
@@ -156,7 +158,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
             [{"true", "true"}, {"false", "false"}]
 
           :model ->
-            choices = if entry.key == "memory.embed_model", do: embedding_options(), else: models
+            choices = if entry.key in @embedding_model_keys, do: embedding_options(), else: models
             with_current(choices, entry.configured)
 
           :credential ->
@@ -217,7 +219,8 @@ defmodule Backplane.Admin.MemoryConfigLive do
 
   defp with_current(options, _), do: options
 
-  defp route_status(%{key: "memory.embed_model", effective: model}) when is_binary(model) do
+  defp route_status(%{key: key, effective: model})
+       when key in @embedding_model_keys and is_binary(model) do
     case Backplane.Embedding.resolve_model(model) do
       {:ok, provider, raw_model} ->
         "Route resolved: " <> provider.name <> " / " <> raw_model <> "; request health unverified"

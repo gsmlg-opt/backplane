@@ -301,6 +301,11 @@ matches eligible; a calibrated weak reranker result rejects semantic-only
 candidates. The synthetic cosine measurements below are diagnostic examples,
 not an operator calibration.
 
+Admin uses the embedding registry for both `memory.embed_model` and the calibrated
+vector-model selector, including their route-readiness checks. Processing and
+reranker selectors use the LLM registry. A configured unavailable route remains
+visible and marked unavailable.
+
 Canonical `memory.recall_token_budget` defaults to 4096. An explicit request
 budget is supported by both recall paths, and the host applies the final budget
 again after canonical/provisional merging. The provider's separate

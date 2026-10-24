@@ -45,20 +45,54 @@ defmodule Backplane.Admin.MemoryConfigLiveTest do
       })
 
     embedding_id = Backplane.Embedding.model_id(%{model | provider: embedding_provider})
-    :ets.insert(:backplane_settings, {"memory.embed_model", embedding_id})
+    embedding_keys = ~w(memory.embed_model memory.recall_relevance_vector_model)
+    llm_id = "memory-config-llm-only/llm-only"
+
+    for key <- embedding_keys, do: :ets.insert(:backplane_settings, {key, embedding_id})
+
     {:ok, view, _} = live(conn, "/memory/config?q=Embedding+model")
-    assert has_element?(view, "option[value='#{embedding_id}']", embedding_id)
-    refute has_element?(view, "option[value='#{embedding_id}']", "unavailable")
     refute has_element?(view, "option[value='memory-config-llm-only/llm-only']")
-    assert has_element?(view, "#route-memory-embed_model", "Route resolved: memory-config-embed")
-    assert has_element?(view, "#route-memory-embed_model", "request health unverified")
 
-    render_submit(view, "set-setting", %{
-      "setting" => %{"key" => "memory.embed_model", "value" => "memory-config-llm-only/llm-only"}
-    })
+    for key <- embedding_keys do
+      id = String.replace(key, ".", "-")
+      selector = "#memory-config-value-#{id}"
+      assert has_element?(view, "#{selector} option[value='#{embedding_id}']", embedding_id)
+      refute has_element?(view, "#{selector} option[value='#{embedding_id}']", "unavailable")
+      refute has_element?(view, "#{selector} option[value='#{llm_id}']")
+      assert has_element?(view, "#route-#{id}", "Route resolved: memory-config-embed")
+      assert has_element?(view, "#route-#{id}", "request health unverified")
+    end
 
-    assert has_element?(view, "#route-memory-embed_model", "no enabled embedding provider route")
-    assert has_element?(view, "option[value='memory-config-llm-only/llm-only']", "unavailable")
+    for key <- embedding_keys do
+      id = String.replace(key, ".", "-")
+
+      render_submit(view, "set-setting", %{"setting" => %{"key" => key, "value" => llm_id}})
+
+      assert Settings.get(key) == llm_id
+      assert has_element?(view, "#route-#{id}", "no enabled embedding provider route")
+
+      assert has_element?(
+               view,
+               "#memory-config-value-#{id} option[value='#{llm_id}']",
+               "unavailable"
+             )
+    end
+
+    render_change(view, "filter", %{"filters" => %{"q" => "model"}})
+
+    for key <- ~w(memory.llm_model memory.recall_relevance_reranker_model) do
+      id = String.replace(key, ".", "-")
+      selector = "#memory-config-value-#{id}"
+      assert has_element?(view, "#{selector} option[value='#{llm_id}']", llm_id)
+      refute has_element?(view, "#{selector} option[value='#{llm_id}']", "unavailable")
+      refute has_element?(view, "#{selector} option[value='#{embedding_id}']")
+
+      render_submit(view, "set-setting", %{"setting" => %{"key" => key, "value" => llm_id}})
+
+      assert Settings.get(key) == llm_id
+      assert has_element?(view, "#route-#{id}", "Route resolved: memory-config-llm-only")
+      assert has_element?(view, "#route-#{id}", "request health unverified")
+    end
   end
 
   setup do
