@@ -204,7 +204,15 @@ registry、ARM musl fixture 因第三方 lazy_html 下载及缺少 make 的源�
 隔离1.10.34 候选在10.0.4 依赖下通过 warnings-as-errors 编译、修改 manifest 格式、
 542项范围回归，以及 CI contract8/0、release config26/0、Hex dependency5/0。
 frozen npm 安装和公开端、管理端的 Tailwind/JavaScript 构建均通过；
-四个最低版本约束和八个 lock entry 之外的依赖保持不变。远端候选 CI 和正式发布尚待执行。
+四个最低版本约束和八个 lock entry 之外的依赖保持不变。
+
+候选049c5909 的六个远端工作流均通过。首次正式发布 run40068713984 在 qualification
+之前因第三方 MDExNative0.2.12 下载的 GitHub 重定向头超过 OTP10240字节上限而失败；
+没有发布 tag、归档、Hex 包或镜像。锁定版本已正式支持 `artifact_source: :cloudflare`，
+本轮在 compile-time config 中选择这一官方分发源。四个 Linux GNU/macOS x64/arm64
+归档无重定向且 SHA256 与包内公布值一致；隔离冷启动复现 GitHub 失败，并验证 Cloudflare
+下载、warnings-as-errors 编译及 Markdown native 调用成功。版本、目标和完整性校验不变，
+不新增 downloader 或源码回退。该配置候选仍须新源码 CI 和完整正式发布验证。
 
 ## 可复查源码
 

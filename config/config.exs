@@ -3,6 +3,9 @@ import Config
 config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
 config :tzdata, :autoupdate, :disabled
 
+# Use the upstream artifact source without GitHub's oversized redirect headers.
+config :mdex_native, artifact_source: :cloudflare
+
 config :backplane_system, ecto_repos: [Backplane.Repo]
 
 config :backplane, bootstrap_admin_emails: []
