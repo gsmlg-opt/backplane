@@ -1,8 +1,8 @@
 defmodule Backplane.AgentRuntime.CodexCt07Test do
   use ExUnit.Case, async: true
 
-  alias Backplane.AgentRuntime.{Codex, Conversation, EphemeralStore, Error}
-  alias Backplane.AgentRuntime.Codex.{Dynamic, DynamicRuntime}
+  alias Backplane.AgentRuntime.{Codex, Conversation, EphemeralStore, Error, ToolCatalog}
+  alias Backplane.AgentRuntime.Codex.{Contract, Dynamic, DynamicRuntime}
 
   defmodule Backend do
     def execute(%{"value" => value}), do: {:ok, %{value: value}}
@@ -233,6 +233,99 @@ defmodule Backplane.AgentRuntime.CodexCt07Test do
       },
       extra
     )
+  end
+
+  test "metadata search finds description-only credentials" do
+    runtime =
+      start_supervised!(
+        {DynamicRuntime, candidates: [attrs("vault", %{description: "Read credentials"})]}
+      )
+
+    base = search_operation(runtime, %{arguments: %{"query" => "credential"}})
+    assert {:ok, %{tools: [%{name: "mcp::vault"}]}} = DynamicRuntime.call(base)
+  end
+
+  for {label, schema, query} <- [
+        {"atom property names", %{type: "object", properties: %{secret_key: %{type: "string"}}},
+         "secret_key"},
+        {"boolean property schemas",
+         %{"type" => "object", "properties" => %{"allowed" => true, "blocked" => false}},
+         "allowed blocked"},
+        {"boolean item schemas",
+         %{
+           "type" => "object",
+           "properties" => %{"entries" => %{"type" => "array", "items" => false}}
+         }, "entries"},
+        {"boolean anyOf schemas",
+         %{
+           "type" => "object",
+           "properties" => %{"choice" => %{"anyOf" => [true, false]}}
+         }, "choice"}
+      ] do
+    @search_schema schema
+    @search_query query
+    test "metadata search preserves strict admission of #{label}" do
+      candidate = attrs("inspect", %{schema: @search_schema})
+      assert {:ok, contract} = Contract.new(candidate)
+
+      assert {:ok, %{accepted: ["mcp::inspect"], rejected: []}} =
+               ToolCatalog.admit_batch([Contract.descriptor(contract)],
+                 mode: :strict,
+                 authority: %{
+                   caller: "host",
+                   run_id: "owner-run",
+                   grants: ["mcp::inspect"],
+                   tool_revisions: %{"mcp::inspect" => 1}
+                 }
+               )
+
+      runtime = start_supervised!({DynamicRuntime, candidates: [candidate]})
+
+      assert {:ok, %{tools: [%{name: "mcp::inspect"}], publication: %{status: :staged}}} =
+               DynamicRuntime.call(
+                 search_operation(runtime, %{arguments: %{"query" => @search_query}})
+               )
+    end
+  end
+
+  test "empty metadata search queries fail validation" do
+    runtime = start_supervised!({DynamicRuntime, candidates: [attrs("echo")]})
+
+    assert {:error, %Error{class: :validation}} =
+             DynamicRuntime.call(search_operation(runtime, %{arguments: %{"query" => ""}}))
+  end
+
+  test "malformed queries and limits fail without crashing the runtime" do
+    runtime = start_supervised!({DynamicRuntime, candidates: [attrs("echo")], max_results: 1})
+    base = search_operation(runtime)
+
+    for arguments <- [
+          nil,
+          [],
+          42,
+          %{},
+          %{"query" => nil},
+          %{"query" => 42},
+          %{"query" => <<255>>},
+          %{"query" => "  "},
+          %{"query" => "echo"},
+          %{"query" => "echo", "limit" => nil},
+          %{"query" => "echo", "limit" => 0},
+          %{"query" => "echo", "limit" => 2},
+          %{"query" => "echo", "limit" => "1"},
+          %{"query" => "echo", "limit" => 1.0}
+        ] do
+      assert {:error, %Error{class: :validation}} =
+               DynamicRuntime.call(%{base | arguments: arguments})
+
+      assert Process.alive?(runtime)
+    end
+
+    assert {:ok, %{tools: [], publication: %{status: :no_matches}}} =
+             DynamicRuntime.call(%{base | arguments: %{"query" => "the and is", "limit" => 1}})
+
+    assert {:ok, %{tools: [_]}} =
+             DynamicRuntime.call(%{base | arguments: %{"query" => "echo", "limit" => 1}})
   end
 
   test "publication consumes only the current caller run and incarnation" do

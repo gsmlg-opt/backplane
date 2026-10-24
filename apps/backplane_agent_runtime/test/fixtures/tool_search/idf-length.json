@@ -1,0 +1,328 @@
+{
+  "input": {
+    "texts": [
+      "rare common common",
+      "common",
+      "common other",
+      "rare padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding "
+    ],
+    "queries": [
+      "rare",
+      "common",
+      "rare rare common"
+    ]
+  },
+  "expected": {
+    "documents": [
+      {
+        "hashes": [
+          3580238089,
+          2810239736,
+          2810239736
+        ],
+        "normalized": "rare common common",
+        "text": "rare common common",
+        "tokens": [
+          "rare",
+          "common",
+          "common"
+        ]
+      },
+      {
+        "hashes": [
+          2810239736
+        ],
+        "normalized": "common",
+        "text": "common",
+        "tokens": [
+          "common"
+        ]
+      },
+      {
+        "hashes": [
+          2810239736
+        ],
+        "normalized": "common other",
+        "text": "common other",
+        "tokens": [
+          "common"
+        ]
+      },
+      {
+        "hashes": [
+          3580238089,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183,
+          3736521183
+        ],
+        "normalized": "rare padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding ",
+        "text": "rare padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding ",
+        "tokens": [
+          "rare",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad",
+          "pad"
+        ]
+      }
+    ],
+    "queries": [
+      {
+        "query": "rare",
+        "scores": [
+          {
+            "id": 0,
+            "score": 1.0877653360366821
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.3223811984062195
+          }
+        ]
+      },
+      {
+        "query": "common",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.6533904671669006
+          },
+          {
+            "id": 1,
+            "score": 0.5882362127304077
+          },
+          {
+            "id": 2,
+            "score": 0.5882362127304077
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "rare rare common",
+        "scores": [
+          {
+            "id": 0,
+            "score": 2.82892107963562
+          },
+          {
+            "id": 1,
+            "score": 0.5882362127304077
+          },
+          {
+            "id": 2,
+            "score": 0.5882362127304077
+          },
+          {
+            "id": 3,
+            "score": 0.644762396812439
+          }
+        ]
+      }
+    ]
+  }
+}

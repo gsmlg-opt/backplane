@@ -8,7 +8,7 @@ defmodule Backplane.AgentRuntime.Codex.Dynamic do
   """
 
   alias Backplane.AgentRuntime.{Error, ToolCatalog}
-  alias Backplane.AgentRuntime.Codex.Contract
+  alias Backplane.AgentRuntime.Codex.{Contract, ToolSearch}
 
   defstruct entries: %{}, revision: 0, snapshots: %{}, receipts: %{}, max_results: 50
 
@@ -45,19 +45,23 @@ defmodule Backplane.AgentRuntime.Codex.Dynamic do
 
   @doc "Searches only candidates owned by the requesting host and never publishes them."
   @spec search(t(), term(), String.t(), keyword()) :: {:ok, [map()]} | {:error, Error.t()}
-  def search(%__MODULE__{} = state, owner, query \\ "", opts \\ []) when is_binary(query) do
+  def search(state, owner, query \\ "", opts \\ [])
+
+  def search(%__MODULE__{} = state, owner, query, opts) do
     with :ok <- owner_valid(owner),
+         {:ok, query} <- ToolSearch.query(query),
          {:ok, limit} <- limit(opts, state.max_results) do
-      results =
+      entries =
         state.entries
         |> Map.values()
-        |> Enum.filter(fn entry ->
-          owner_visible?(entry, owner) and entry.status == :discovered and
-            (query == "" or String.contains?(entry.contract.tool_name, query))
-        end)
-        |> Enum.sort_by(& &1.contract.tool_name)
+        |> Enum.filter(&(owner_visible?(&1, owner) and &1.status == :discovered))
+
+      documents = Enum.map(entries, &{&1.contract.tool_name, &1.search_text})
+
+      results =
+        ToolSearch.rank(documents, query)
         |> Enum.take(limit)
-        |> Enum.map(&summary/1)
+        |> Enum.map(fn {name, _score} -> summary(Map.fetch!(state.entries, name)) end)
 
       {:ok, results}
     end
@@ -182,13 +186,14 @@ defmodule Backplane.AgentRuntime.Codex.Dynamic do
     Enum.reduce_while(candidates, {:ok, [], %{}}, fn attrs, {:ok, found, entries} ->
       attrs = Map.put_new(attrs, :source, %{kind: source, owner: owner})
 
-      case Contract.new(attrs) do
-        {:ok, contract} ->
+      case normalize_candidate(attrs) do
+        {:ok, contract, search_text} ->
           if Map.has_key?(entries, contract.tool_name) do
             {:halt, {:error, validation("dynamic tool namespace collision")}}
           else
             entry = %{
               contract: contract,
+              search_text: search_text,
               owner: owner,
               status: :discovered,
               publication_revision: nil
@@ -205,6 +210,12 @@ defmodule Backplane.AgentRuntime.Codex.Dynamic do
       {:ok, found, entries} -> {:ok, Enum.reverse(found), entries}
       error -> error
     end
+  end
+
+  defp normalize_candidate(attrs) do
+    with {:ok, contract} <- Contract.new(attrs),
+         {:ok, text} <- ToolSearch.text(contract),
+         do: {:ok, contract, text}
   end
 
   defp dispatch(%{backend: nil}, _arguments),

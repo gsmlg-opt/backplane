@@ -1,0 +1,590 @@
+{
+  "input": {
+    "texts": [
+      "Éléphant Straße Æneid 北亰 中文 🍕🚀🍋 🦄☣",
+      "͸ 􏿿 é́",
+      "can't you're won't let's couldn't've John's O'Reilly l'amour foo_bar __ __foo bar__ a1 1a 3.14 1,234 1;23 a:b a.b a,b a;z 3:4 a.1 1.a 1_2",
+      "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+      "the and is",
+      "",
+      "alpha alpha rare",
+      "alpha beta gamma delta epsilon",
+      "rare",
+      "alpha",
+      "alpha",
+      "\u0000\n\té‍𐍈"
+    ],
+    "queries": [
+      "alpha",
+      "alpha alpha rare",
+      "rare",
+      "the and is",
+      "北亰 pizza",
+      "unknown",
+      "3.14 foo_bar"
+    ]
+  },
+  "expected": {
+    "documents": [
+      {
+        "hashes": [
+          1752827626,
+          1127478048,
+          1735840090,
+          4285980564,
+          1934529778,
+          1159880468,
+          92797783,
+          2484807314,
+          4048563455,
+          1727451791,
+          283581030,
+          2314420309
+        ],
+        "normalized": "Elephant Strasse AEneid Bei Jing Zhong Wen pizza rocket lemon unicorn biohazard",
+        "text": "Éléphant Straße Æneid 北亰 中文 🍕🚀🍋 🦄☣",
+        "tokens": [
+          "eleph",
+          "strass",
+          "aeneid",
+          "bei",
+          "jing",
+          "zhong",
+          "wen",
+          "pizza",
+          "rocket",
+          "lemon",
+          "unicorn",
+          "biohazard"
+        ]
+      },
+      {
+        "hashes": [
+          13021349
+        ],
+        "normalized": "[?] [?] e",
+        "text": "͸ 􏿿 é́",
+        "tokens": [
+          "e"
+        ]
+      },
+      {
+        "hashes": [
+          2937562076,
+          260719075,
+          1033618836,
+          439473134,
+          195492475,
+          3186117577,
+          3320122051,
+          3417051606,
+          935381966,
+          620175528,
+          3982597727,
+          4239384973,
+          2695425692,
+          1472940065,
+          2596714251,
+          1812096339,
+          1568887328,
+          401207687,
+          107042942,
+          1555982965,
+          2646367888,
+          2646367888,
+          542936393
+        ],
+        "normalized": "can't you're won't let's couldn't've John's O'Reilly l'amour foo_bar __ __foo bar__ a1 1a 3.14 1,234 1;23 a:b a.b a,b a;z 3:4 a.1 1.a 1_2",
+        "text": "can't you're won't let's couldn't've John's O'Reilly l'amour foo_bar __ __foo bar__ a1 1a 3.14 1,234 1;23 a:b a.b a,b a;z 3:4 a.1 1.a 1_2",
+        "tokens": [
+          "can't",
+          "let",
+          "couldn't'v",
+          "john",
+          "o'reilli",
+          "l'amour",
+          "foo_bar",
+          "__foo",
+          "bar__",
+          "a1",
+          "1a",
+          "3.14",
+          "1,234",
+          "1;23",
+          "a:b",
+          "a.b",
+          "b",
+          "z",
+          "3",
+          "4",
+          "1",
+          "1",
+          "1_2"
+        ]
+      },
+      {
+        "hashes": [],
+        "normalized": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+        "text": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "the and is",
+        "text": "the and is",
+        "tokens": []
+      },
+      {
+        "hashes": [],
+        "normalized": "",
+        "text": "",
+        "tokens": []
+      },
+      {
+        "hashes": [
+          3155001261,
+          3155001261,
+          3580238089
+        ],
+        "normalized": "alpha alpha rare",
+        "text": "alpha alpha rare",
+        "tokens": [
+          "alpha",
+          "alpha",
+          "rare"
+        ]
+      },
+      {
+        "hashes": [
+          3155001261,
+          3166133234,
+          2557372775,
+          2145075775,
+          3751367113
+        ],
+        "normalized": "alpha beta gamma delta epsilon",
+        "text": "alpha beta gamma delta epsilon",
+        "tokens": [
+          "alpha",
+          "beta",
+          "gamma",
+          "delta",
+          "epsilon"
+        ]
+      },
+      {
+        "hashes": [
+          3580238089
+        ],
+        "normalized": "rare",
+        "text": "rare",
+        "tokens": [
+          "rare"
+        ]
+      },
+      {
+        "hashes": [
+          3155001261
+        ],
+        "normalized": "alpha",
+        "text": "alpha",
+        "tokens": [
+          "alpha"
+        ]
+      },
+      {
+        "hashes": [
+          3155001261
+        ],
+        "normalized": "alpha",
+        "text": "alpha",
+        "tokens": [
+          "alpha"
+        ]
+      },
+      {
+        "hashes": [
+          3094345321
+        ],
+        "normalized": "\u0000ehw",
+        "text": "\u0000\n\té‍𐍈",
+        "tokens": [
+          "ehw"
+        ]
+      }
+    ],
+    "queries": [
+      {
+        "query": "alpha",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 1.5690207481384277
+          },
+          {
+            "id": 7,
+            "score": 0.9624404907226562
+          },
+          {
+            "id": 8,
+            "score": 0.0
+          },
+          {
+            "id": 9,
+            "score": 1.5304381847381592
+          },
+          {
+            "id": 10,
+            "score": 1.5304381847381592
+          },
+          {
+            "id": 11,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "alpha alpha rare",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 4.974522113800049
+          },
+          {
+            "id": 7,
+            "score": 1.9248809814453125
+          },
+          {
+            "id": 8,
+            "score": 2.3783926963806152
+          },
+          {
+            "id": 9,
+            "score": 3.0608763694763184
+          },
+          {
+            "id": 10,
+            "score": 3.0608763694763184
+          },
+          {
+            "id": 11,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "rare",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 1.8364804983139038
+          },
+          {
+            "id": 7,
+            "score": 0.0
+          },
+          {
+            "id": 8,
+            "score": 2.3783926963806152
+          },
+          {
+            "id": 9,
+            "score": 0.0
+          },
+          {
+            "id": 10,
+            "score": 0.0
+          },
+          {
+            "id": 11,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "the and is",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          },
+          {
+            "id": 7,
+            "score": 0.0
+          },
+          {
+            "id": 8,
+            "score": 0.0
+          },
+          {
+            "id": 9,
+            "score": 0.0
+          },
+          {
+            "id": 10,
+            "score": 0.0
+          },
+          {
+            "id": 11,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "北亰 pizza",
+        "scores": [
+          {
+            "id": 0,
+            "score": 3.5631489753723145
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          },
+          {
+            "id": 7,
+            "score": 0.0
+          },
+          {
+            "id": 8,
+            "score": 0.0
+          },
+          {
+            "id": 9,
+            "score": 0.0
+          },
+          {
+            "id": 10,
+            "score": 0.0
+          },
+          {
+            "id": 11,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "unknown",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 0.0
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          },
+          {
+            "id": 7,
+            "score": 0.0
+          },
+          {
+            "id": 8,
+            "score": 0.0
+          },
+          {
+            "id": 9,
+            "score": 0.0
+          },
+          {
+            "id": 10,
+            "score": 0.0
+          },
+          {
+            "id": 11,
+            "score": 0.0
+          }
+        ]
+      },
+      {
+        "query": "3.14 foo_bar",
+        "scores": [
+          {
+            "id": 0,
+            "score": 0.0
+          },
+          {
+            "id": 1,
+            "score": 0.0
+          },
+          {
+            "id": 2,
+            "score": 1.4674485921859741
+          },
+          {
+            "id": 3,
+            "score": 0.0
+          },
+          {
+            "id": 4,
+            "score": 0.0
+          },
+          {
+            "id": 5,
+            "score": 0.0
+          },
+          {
+            "id": 6,
+            "score": 0.0
+          },
+          {
+            "id": 7,
+            "score": 0.0
+          },
+          {
+            "id": 8,
+            "score": 0.0
+          },
+          {
+            "id": 9,
+            "score": 0.0
+          },
+          {
+            "id": 10,
+            "score": 0.0
+          },
+          {
+            "id": 11,
+            "score": 0.0
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -3,7 +3,13 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
 
   use GenServer
 
-  alias Backplane.AgentRuntime.{Codex.Contract, Codex.Dynamic, Error, ToolRegistry}
+  alias Backplane.AgentRuntime.{
+    Codex.Contract,
+    Codex.Dynamic,
+    Codex.ToolSearch,
+    Error,
+    ToolRegistry
+  }
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []),
@@ -85,16 +91,14 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
 
   defp execute(%{tool_name: "tool_search", arguments: arguments} = operation, state) do
     with {:ok, owner_key} <- discovery_owner(operation),
+         {:ok, query, limit} <- search_arguments(arguments),
          {:ok, state, dynamic} <- discover_owner(state, owner_key),
-         query when is_binary(query) <- arguments["query"],
-         limit <- arguments["limit"] || 8,
          :ok <- positive_limit(limit),
          {:ok, results} <- Dynamic.search(dynamic, operation.run_id, query, limit: limit),
          {:ok, state, publication} <-
            publish_results(state, operation, owner_key, dynamic, results) do
       {:ok, %{tools: results, publication: publication}, state}
     else
-      nil -> {:error, validation("query is required")}
       {:error, %Error{} = error} -> {:error, error}
     end
   end
@@ -125,6 +129,14 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   defp execute(_operation, _state), do: {:error, Error.new(:not_found, "unknown dynamic tool")}
+
+  defp search_arguments(arguments) when is_map(arguments) do
+    with {:ok, query} <- ToolSearch.query(Map.get(arguments, "query")) do
+      {:ok, query, Map.get(arguments, "limit", 8)}
+    end
+  end
+
+  defp search_arguments(_), do: {:error, validation("search arguments must be an object")}
 
   defp discovery_owner(operation) do
     with run when is_binary(run) and run != "" <- Map.get(operation, :run_id),
