@@ -32,6 +32,10 @@ defmodule Backplane.AgentRuntime.Codex.Session do
   def adopt_managed_child(_, _, _),
     do: {:error, Error.new(:validation, "invalid managed child adoption")}
 
+  @doc false
+  def fence_managed_child(%{binding: %{session: session}} = identity),
+    do: GenServer.call(session, {:fence_managed_child, identity})
+
   def attach(binding, catalog),
     do: GenServer.call(binding.session, {:attach, binding, self(), catalog})
 
@@ -155,6 +159,17 @@ defmodule Backplane.AgentRuntime.Codex.Session do
       {:reply, :ok, %{state | managed_child: child, manager_monitor: ref}}
     else
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:fence_managed_child, identity}, _from, state) do
+    if state.managed_child != nil and
+         identity == Map.take(state.managed_child, [:admission, :binding]) do
+      result = fence_registry(state)
+      phase = if state.phase in [:closing, :closed], do: state.phase, else: :fenced
+      {:reply, result, %{state | phase: phase}}
+    else
+      {:reply, refusal("stale or foreign managed child fence"), state}
     end
   end
 

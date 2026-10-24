@@ -620,12 +620,37 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp collect_settlement(agents, _all, _command) do
+    # Fence every Session before any cancellation or cleanup receipt can block.
+    # Run cancellation also starts for every target before waiting on snapshots.
+    fences =
+      Map.new(agents, fn {name, agent} -> {name, fence_child_session(agent[:managed_session])} end)
+
+    cancellations = Map.new(agents, fn {name, agent} -> {name, cancel_agent(agent)} end)
+
     Map.new(agents, fn {name, agent} ->
-      cancel = cancel_agent(agent)
-      snapshot = if cancel in [:ok, :already_closed], do: settled_snapshot(agent), else: cancel
+      cancel = cancellations[name]
+
+      snapshot =
+        with :ok <- fences[name],
+             :ok <- normalize_cancel(cancel),
+             do: settled_snapshot(agent)
+
       close = close_child_session(agent[:managed_session])
       {name, %{cancel_result: cancel, settlement_result: snapshot, session_close_result: close}}
     end)
+  end
+
+  defp fence_child_session(nil), do: :ok
+  defp fence_child_session(%{status: status}) when status in [:rejected, :closed], do: :ok
+
+  defp fence_child_session(entry) do
+    Session.fence_managed_child(Map.take(entry, [:admission, :binding]))
+  catch
+    :exit, reason ->
+      {:error,
+       Error.new(:unknown_outcome, "child Session admission fence acknowledgement unavailable",
+         cause: reason
+       )}
   end
 
   defp close_child_session(nil), do: :not_managed

@@ -499,6 +499,86 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
     assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
   end
 
+  test "recursive close fences an active grandchild before waiting for idle child cleanup" do
+    ctx = runtime(v1_contracts: true)
+    test = self()
+
+    {_, _} =
+      tool(ctx.provider, "root", "spawn_agent", %{"task_name" => "worker", "message" => "work"})
+
+    assert_receive {:child_binding, child}
+    assert_receive {:provider, run, _, provider}, 1_000
+
+    {provider, _} =
+      tool(provider, run, "spawn_agent", %{"task_name" => "nested", "message" => "nested"})
+
+    assert_receive {:child_binding, nested}
+    assert_receive {:provider, nested_run, _, _nested_provider}, 1_000
+    send(provider, {:events, [done()]})
+    eventually(fn -> Session.status(child.session).phase == :idle end)
+
+    {:ok, _} =
+      ResourceRegistry.register(child.resource_registry, child.owner_id, :logical, :blocked,
+        owner_pid: child.session,
+        cleanup: fn ->
+          send(test, {:cleanup_blocked, self()})
+
+          receive do
+            :release -> :ok
+          end
+        end
+      )
+
+    state = :sys.get_state(ctx.manager)
+    {:ok, root_owner} = Session.validate(ctx.binding, %{run_id: "root", incarnation: 1})
+
+    closer =
+      Task.async(fn ->
+        MultiAgent.call(%{
+          tool_name: "multi_agent_v1::close_agent",
+          tool_revision: 1,
+          run_id: "root",
+          incarnation: 1,
+          caller: state.parent_authority.caller,
+          effective_authority: state.parent_authority,
+          arguments: %{"target" => run},
+          backend_context: %{runtime: ctx.manager, profile: :v1, resource_owner: root_owner}
+        })
+      end)
+
+    assert_receive {:cleanup_blocked, cleanup}, 1_000
+
+    try do
+      assert {:error, %Error{class: :forbidden}} =
+               Session.validate(nested, %{run_id: nested_run, incarnation: nested.run_incarnation})
+
+      {_, plan} = ctx.sessions["/root/worker/nested"]
+
+      operation = %{
+        tool_name: "update_plan",
+        tool_revision: 1,
+        run_id: nested_run,
+        incarnation: nested.run_incarnation,
+        arguments: %{"plan" => [%{"step" => "must not run", "status" => "completed"}]},
+        backend_context: %{session_binding: nested, family: :local, context: %{plan: plan}}
+      }
+
+      assert {:error, %Error{class: :forbidden}} =
+               Backplane.AgentRuntime.Codex.Backend.execute(operation)
+
+      assert {:ok, %{content: %{}}} = Plan.read(plan)
+      assert {:ok, _} = MultiAgent.snapshot(ctx.manager)
+      assert Session.status(ctx.root).phase == :active
+    after
+      send(cleanup, :release)
+      assert {:ok, %{status: :shutdown}} = Task.await(closer, 7_000)
+    end
+
+    assert Session.status(child.session).phase == :closed
+    assert Session.status(nested.session).phase == :closed
+    assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
+  end
+
   test "replacement Session is refused until retained ownership has confirmed closure" do
     ctx = runtime()
     assert {:ok, _} = call(ctx, "spawn_agent", %{"task_name" => "worker", "message" => "work"})
