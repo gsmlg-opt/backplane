@@ -1,6 +1,6 @@
 # Runtime internal requests 86–89 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Deliver the approved managed-child Session protocol, pinned metadata search, owner isolation and async call identity in published 1.10.36.
 
@@ -27,7 +27,7 @@ and `docs/agent-runtime/codex-tools/session-resources.md`.
 
 ### Task A1: reproduce the public attach failure
 
-- [ ] Add an ExUnit integration using two real Sessions, unchanged
+- [x] Add an ExUnit integration using two real Sessions, unchanged
   `MultiAgent.contracts/2`, a local native `update_plan` profile, a root
   Conversation and a real manager-created child through `child_options/3`.
   Adapt the public lifecycle setup in `codex_session_lifetime_test.exs`; assert
@@ -42,9 +42,9 @@ assert_receive {:provider, :child, %{run_id: child_run_id}, child_provider}
 assert child_run_id == child_binding.run_id
 ```
 
-- [ ] Run the dedicated test through the locked standalone wrapper. Confirm the
+- [x] Run the dedicated test through the locked standalone wrapper. Confirm the
   missing-adoption refusal, rather than fixture/compile failure.
-- [ ] Add `Session.adopt_managed_child/3` and local association validation:
+- [x] Add `Session.adopt_managed_child/3` and local association validation:
 
 ```elixir
 def adopt_managed_child(binding, admission, authority) do
@@ -56,44 +56,44 @@ end
   immutable manager/agent ownership, supported authority shape and semantic
   subset (tool names, revisions and binding fingerprints). Reject malformed
   data with Runtime Error values. Record/monitor the adopted manager.
-- [ ] In MultiAgent, record prospective Session obligations before adoption,
+- [x] In MultiAgent, record prospective Session obligations before adoption,
   call adoption after option/authority checks and before `start_child`, and
   require the same retained Session for a successful follow-up.
-- [ ] Separate root-owned manager calls from adopted child local attach/detach.
+- [x] Separate root-owned manager calls from adopted child local attach/detach.
   Run the new test and existing Session lifetime/incarnation tests; commit the
   coherent admission and attach implementation after green.
 
 ### Task A2: authenticate children and retain native resources
 
-- [ ] Add real native and bound collaboration calls from adopted children, plus
+- [x] Add real native and bound collaboration calls from adopted children, plus
   malformed manager/agent/attempt/run/incarnation, stale binding and changed
   ancestor grant/revision cases. Verify rejection before effects.
-- [ ] Extend existing manager owner authentication to match the exact current
+- [x] Extend existing manager owner authentication to match the exact current
   adopted binding and validated Session owner. Preserve root and sessionless
   child branches and current Policy checks.
-- [ ] Add command, plan and Code Mode retention across successful follow-up.
+- [x] Add command, plan and Code Mode retention across successful follow-up.
   Reject a new child Session while the old retained obligation is open; permit
   a new infrastructure Session after confirmed old closure.
-- [ ] Run dedicated and bound/mailbox/birth/lifecycle regression tests. Commit
+- [x] Run dedicated and bound/mailbox/birth/lifecycle regression tests. Commit
   after green; do not modify Conversation unless a narrow integration gap is
   demonstrated and coordinated with work package C.
 
 ### Task A3: close all child resource obligations conservatively
 
-- [ ] Add child close/cancel isolation, V2 target-only interrupt, V1/root recursive
+- [x] Add child close/cancel isolation, V2 target-only interrupt, V1/root recursive
   cleanup including idle children, manager/owner/Session loss after follow-up,
   and first-target-uncertain/second-target-retained tests.
-- [ ] Add off-manager Session-close receipt collection to existing settlement
+- [x] Add off-manager Session-close receipt collection to existing settlement
   workers. Fence all recursive targets, attempt all obligations, aggregate
   uncertainty, and never substitute a retained Conversation snapshot for a
   confirmed Session-close receipt.
-- [ ] Use current Session PID/owner incarnation for infrastructure DOWN; use the
+- [x] Use current Session PID/owner incarnation for infrastructure DOWN; use the
   full attempt/run/binding identity for run-level asynchronous notifications.
   Late notifications must not mutate a newer activation.
-- [ ] Add startup/prompt/receipt/Store finish failure and lost-ack tests. Retain
+- [x] Add startup/prompt/receipt/Store finish failure and lost-ack tests. Retain
   unknown obligations/reservations; never close explicitly rejected foreign
   Sessions or retry unknown effects.
-- [ ] Run scoped tests and the normal-stop infrastructure regression. Document
+- [x] Run scoped tests and the normal-stop infrastructure regression. Document
   public child_options usage and host responsibility for unreturned/rejected
   allocations. Commit `feat(agent-runtime): support managed child sessions (fixes #86)`.
 
@@ -106,7 +106,7 @@ remain parent-owned until integration.
 
 ### Task B1: partition discovery (#88)
 
-- [ ] Add the exact public two-run reproduction to `codex_ct07_test.exs` using
+- [x] Add the exact public two-run reproduction to `codex_ct07_test.exs` using
   a query that has no matches, so no stage callback is required:
 
 ```elixir
@@ -119,36 +119,36 @@ for run_id <- ["run-one", "run-two"] do
 end
 ```
 
-- [ ] Run it and observe the second-run namespace collision.
-- [ ] Store a Dynamic per `{caller_identity, run_id, incarnation}`. A missing
+- [x] Run it and observe the second-run namespace collision.
+- [x] Store a Dynamic per `{caller_identity, run_id, incarnation}`. A missing
   caller maps to private `:host_direct`; present callers must be nonempty
   binaries. Validate run/incarnation before lookup. Keep plugin state separate.
-- [ ] Test caller/run/incarnation partitioning, within-owner collisions, failed
+- [x] Test caller/run/incarnation partitioning, within-owner collisions, failed
   staging rollback, correct next-turn publication, and unchanged low-level
   Dynamic collision/snapshot semantics. Run CT07; commit
   `fix(agent-runtime): isolate deferred candidates by run owner (fixes #88)`.
 
 ### Task B2: pin metadata text and tokenizer evidence (#87)
 
-- [ ] Add description-only credential-query and empty-query regressions. Run
+- [x] Add description-only credential-query and empty-query regressions. Run
   them and confirm existing name-only/list-all behavior fails assertions.
-- [ ] Add a standalone Rust development oracle with exact Cargo.lock versions
+- [x] Add a standalone Rust development oracle with exact Cargo.lock versions
   from the approved Codex pin. Generate checked-in fixtures for text, tokens,
   FxHash32 identities and scores. Record crate checksums and source/licensing.
   Rust must not be needed by normal Mix tests or the published package.
-- [ ] Implement focused text/token helpers using `contract.name`, named
+- [x] Implement focused text/token helpers using `contract.name`, named
   namespace/default description, function underscore expansion, recursive
   schema descriptions/sorted properties/items/anyOf, and custom format.syntax.
   Reject malformed optional text; exclude output/backend/credential fields.
-- [ ] Vendor exact deunicode data/notices and stopwords under `priv`; port
+- [x] Vendor exact deunicode data/notices and stopwords under `priv`; port
   ASCII word boundaries, English Snowball and FxHash32 with overflow and Rust
   string hashing. Qualify text/tokens/hashes against pinned fixtures.
-- [ ] Include contractions/decimals/underscores, English exceptions, accents,
+- [x] Include contractions/decimals/underscores, English exceptions, accents,
   CJK, emoji, unknown Unicode, stopwords and a broad stemmer vocabulary.
 
 ### Task B3: implement ranking and publication safety
 
-- [ ] Fit the current owner's discovered-only corpus and compute BM25 using
+- [x] Fit the current owner's discovered-only corpus and compute BM25 using
   per-operation f32 rounding, including this exact grouping:
 
 ```text
@@ -157,16 +157,16 @@ idf = ln(1 + (N - df + 0.5) / (df + 0.5))
 score = sum(idf * tf_weight, for each occurrence of a query token)
 ```
 
-- [ ] Use `k1=1.2`, `b=.75`, source avgdl conversion/fallback256, repeated
+- [x] Use `k1=1.2`, `b=.75`, source avgdl conversion/fallback256, repeated
   query tokens, positive matches and canonical-name ties. Compare non-tied
   ordering and score tolerance against the oracle.
-- [ ] Validate UTF-8/nonblank query and explicit positive bounded limit.
+- [x] Validate UTF-8/nonblank query and explicit positive bounded limit.
   Omitted limit remains 8 and must fit the configured bound; stopword-only
   input yields no matches. Malformed input must leave Runtime alive.
-- [ ] Remove successfully staged published entries from corpus statistics;
+- [x] Remove successfully staged published entries from corpus statistics;
   failed staging preserves state. Test cross-owner isolation, stale producer,
   run/incarnation/revision checks, cancellation and same-batch execution fence.
-- [ ] Run search and CT07 suites; document exact generic-algorithm scope and
+- [x] Run search and CT07 suites; document exact generic-algorithm scope and
   retained-owner/cancellation limits. Commit
   `feat(agent-runtime): search pinned Codex tool metadata (fixes #87)`.
 
@@ -178,7 +178,7 @@ Conversation before editing shared regions.
 
 ### Task C1: reproduce direct and nested identity gaps
 
-- [ ] Add a provider step with two identical async questions and one async
+- [x] Add a provider step with two identical async questions and one async
   message. Assert distinct invocation IDs and preserved provider call IDs:
 
 ```elixir
@@ -189,14 +189,14 @@ assert first.tool_call_id == "question-one"
 assert second.tool_call_id == "question-two"
 ```
 
-- [ ] Run the test and confirm missing identity fields fail it.
-- [ ] At `{:chunk, token, event}`, enrich only the two async native event types
+- [x] Run the test and confirm missing identity fields fail it.
+- [x] At `{:chunk, token, event}`, enrich only the two async native event types
   from an executing current direct/nested invocation. Override payload IDs;
   reject provider/preparation/stale producers. Keep generic metadata emissions.
-- [ ] Add nested Code Mode, spoofed ID, stale/cancelled callback and
+- [x] Add nested Code Mode, spoofed ID, stale/cancelled callback and
   subscriber:nil cases. Verify event IDs against persisted tool invocation
   records and JSON-safe public projection. Do not add notification replay.
-- [ ] Run focused control/Conversation/nested suites. Commit
+- [x] Run focused control/Conversation/nested suites. Commit
   `fix(agent-runtime): correlate native async events (fixes #89)`.
 
 ## Integration and release

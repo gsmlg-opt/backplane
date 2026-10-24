@@ -2,6 +2,14 @@
 
 ## 1.10.36
 
+- Adopt host-created child Sessions into shared collaboration managers (#86).
+  Keep command, Plan and Code Mode resources across successful follow-ups;
+  authenticate exact child bindings and independently confirm recursive cleanup.
+- Isolate deferred discovery by caller, run and incarnation (#88), preserving
+  failed-stage rollback and next-turn publication.
+- Search function names, descriptions and schema metadata with the pinned Codex
+  tokenizer and BM25 ranking (#87). Reject blank or malformed input, keep corpus
+  statistics owner-local, and ship pure Elixir execution with pinned data/notices.
 - Include trusted invocation and tool-call IDs on native async question/message
   events (#89), including actual nested Code Mode call IDs. Preserve existing
   event metadata and immediate acceptance without promising durable receipt.
