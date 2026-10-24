@@ -5,6 +5,7 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
 
   attr(:record, :map, required: true)
   attr(:detail, :boolean, default: false)
+  attr(:host_names, :map, default: %{})
 
   def source_identity(assigns) do
     metadata =
@@ -13,14 +14,22 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
     repositories =
       Map.get(assigns.record, :repository_sources) || metadata["repository_sources"] || []
 
+    host_id = source_value(Map.get(assigns.record, :host_id), nil)
+    host_name = source_value(Map.get(assigns.host_names, host_id), nil)
+
     assigns =
       assign(assigns,
+        host_id: host_id,
+        host_name: host_name,
+        agent_id: source_value(Map.get(assigns.record, :agent_id), "Unknown agent"),
         repositories: repositories,
         project: Map.get(assigns.record, :project) || metadata["project"]
       )
 
     ~H"""
-    <span class="block break-all text-xs">{Map.get(@record, :host_id) || "Unknown source"}</span>
+    <span class="block break-all text-xs">Host: {@host_name || @host_id || "Unknown host"}</span>
+    <span :if={@detail and @host_name} class="block break-all text-xs text-on-surface-variant">Host ID: {@host_id}</span>
+    <span class="block break-all text-xs">Agent: {@agent_id}</span>
     <span :if={!@detail} :for={source <- @repositories} class="block break-all text-xs text-on-surface-variant">{source["repository_id"] || source["checkout_root"] || source["cwd"] || "Unknown repository"}</span>
     <div :if={@detail} class="mt-2 space-y-2 text-sm">
       <p :if={@repositories == []} class="text-on-surface-variant">Repository unresolved: no stored source association.</p>
@@ -36,6 +45,11 @@ defmodule Backplane.Admin.MemoryOperatorComponents do
     </div>
     """
   end
+
+  defp source_value(value, fallback) when is_binary(value),
+    do: if(String.trim(value) == "", do: fallback, else: value)
+
+  defp source_value(_value, fallback), do: fallback
 
   def browse_scope(params) do
     for {url, key} <- [

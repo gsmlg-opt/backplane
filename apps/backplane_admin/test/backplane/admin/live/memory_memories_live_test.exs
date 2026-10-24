@@ -47,6 +47,102 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
     assert has_element?(view, "#memory-detail-source", "Repository unresolved")
   end
 
+  test "sources identify each stored host and agent in the global inventory and detail", %{
+    conn: conn
+  } do
+    host = source_host!("Rikka workstation")
+    other_host = source_host!("Other workstation")
+    memory = memory!("Rikka source fact", nil, %{host_id: host.id, agent_id: "Rikka"})
+    other = memory!("Other source fact", nil, %{host_id: other_host.id, agent_id: "Other agent"})
+
+    {:ok, view, _} = live(conn, "/memory/memories")
+
+    for {record, source_host, agent} <- [
+          {memory, host, "Rikka"},
+          {other, other_host, "Other agent"}
+        ] do
+      row = "#memory-memories-table tr:has(a[href*='#{record.id}'])"
+      assert has_element?(view, row, "Host: #{source_host.name}")
+      assert has_element?(view, row, "Agent: #{agent}")
+    end
+
+    refute has_element?(
+             view,
+             "#memory-memories-table tr:has(a[href*='#{memory.id}'])",
+             other_host.name
+           )
+
+    refute has_element?(
+             view,
+             "#memory-memories-table tr:has(a[href*='#{memory.id}'])",
+             "Other agent"
+           )
+
+    {:ok, detail, _} = live(recycle(conn), "/memory/memories/#{memory.id}")
+    assert has_element?(detail, "#memory-detail-source", "Host: #{host.name}")
+    assert has_element?(detail, "#memory-detail-source", "Host ID: #{host.id}")
+    assert has_element?(detail, "#memory-detail-source", "Agent: Rikka")
+
+    host
+    |> Backplane.Skills.Host.changeset(%{name: "Renamed workstation"})
+    |> Backplane.Repo.update!()
+
+    send(detail.pid, :refresh_memory_operator)
+    assert has_element?(detail, "#memory-detail-source", "Host: Renamed workstation")
+    assert has_element?(detail, "#memory-detail-source", "Host ID: #{host.id}")
+    assert has_element?(detail, "#memory-detail-source", "Agent: Rikka")
+  end
+
+  test "unregistered source hosts retain their IDs and source identity values are escaped", %{
+    conn: conn
+  } do
+    host = source_host!("<script>registered host</script>")
+    memory = memory!("Escaped source fact", nil, %{host_id: host.id, agent_id: "<b>Rikka</b>"})
+    removed_host = Ecto.UUID.generate()
+    historical = memory!("Historical source fact", nil, %{host_id: removed_host})
+    historical_host = "<script>historical host</script>"
+    memory!("Escaped historical source fact", nil, %{host_id: historical_host})
+
+    {:ok, view, _} = live(conn, "/memory/memories")
+    assert has_element?(view, "#memory-memories-table", "Host: #{host.name}")
+    assert has_element?(view, "#memory-memories-table", "Agent: <b>Rikka</b>")
+    assert has_element?(view, "#memory-memories-table", "Host: #{removed_host}")
+    assert has_element?(view, "#memory-memories-table", "Host: #{historical_host}")
+    refute has_element?(view, "#memory-memories-table script")
+    refute has_element?(view, "#memory-memories-table b")
+
+    {:ok, detail, _} = live(recycle(conn), "/memory/memories/#{memory.id}")
+    assert has_element?(detail, "#memory-detail-source", "Host: #{host.name}")
+    assert has_element?(detail, "#memory-detail-source", "Agent: <b>Rikka</b>")
+    refute has_element?(detail, "#memory-detail-source script")
+    refute has_element?(detail, "#memory-detail-source b")
+
+    Backplane.Repo.delete!(host)
+    send(detail.pid, :refresh_memory_operator)
+    assert has_element?(detail, "#memory-detail-source", "Host: #{host.id}")
+    refute has_element?(detail, "#memory-detail-source", host.name)
+
+    {:ok, historical_detail, _} = live(recycle(conn), "/memory/memories/#{historical.id}")
+    assert has_element?(historical_detail, "#memory-detail-source", "Host: #{removed_host}")
+  end
+
+  test "missing agents remain unknown instead of using source metadata" do
+    for agent_id <- [nil, "", " "] do
+      html =
+        render_component(&Backplane.Admin.MemoryOperatorComponents.source_identity/1, %{
+          record: %{
+            host_id: agent_id,
+            agent_id: agent_id,
+            metadata: %{"agent_id" => "Guessed agent"}
+          }
+        })
+
+      assert Floki.text(Floki.parse_fragment!(html)) =~ "Agent: Unknown agent"
+      assert Floki.text(Floki.parse_fragment!(html)) =~ "Host: Unknown host"
+      refute html =~ "Guessed agent"
+    end
+  end
+
   test "detail retains each stored repository and path association and escapes historical values",
        %{
          conn: conn
@@ -120,6 +216,104 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
              ~s(#memory-detail a[href="#{path("/memory/replay", %{"session" => "session-a"})}"]),
              "Replay"
            )
+  end
+
+  test "stored session IDs identify conversations and link to same-session memories in their partition",
+       %{conn: conn} do
+    session = "local-7153008f162595e0d82c47208db5f052434aaaa5f26d2f9cba4d74f2e5248ab6"
+    selected = memory!("Selected conversation turn", session)
+    companion = memory!("Another turn in the same conversation", session)
+    other = memory!("A different conversation", "local-another-conversation")
+    foreign_space = Ecto.UUID.generate()
+
+    Backplane.Repo.insert!(%Backplane.MemorySpaces.MemorySpace{
+      id: foreign_space,
+      kind: "private",
+      status: "active"
+    })
+
+    foreign =
+      memory!("Same session string from a foreign source", session, %{
+        memory_space_id: foreign_space,
+        host_id: "foreign-session-host",
+        client_id: "foreign-session-client"
+      })
+
+    {:ok, inventory, _} = live(conn, "/memory/memories")
+    same_session_path = path("/memory/memories", %{"session" => session, "offset" => 0})
+    row = "#memory-memories-table tr:has(a[href*='/memory/memories/#{selected.id}?'])"
+
+    assert has_element?(inventory, "#{row} a[href=\"#{same_session_path}\"]", session)
+
+    assert has_element?(
+             inventory,
+             "#memory-memories-table tr:has(a[href*='/memory/memories/#{other.id}?'])",
+             other.session_id
+           )
+
+    {:ok, detail, _} =
+      live(recycle(conn), "/memory/memories/#{selected.id}?q=Selected&offset=25")
+
+    assert has_element?(detail, "#memory-detail-session", "Session ID")
+    assert has_element?(detail, "#memory-detail-session", session)
+
+    detail
+    |> element(~s(#memory-detail a[href="#{same_session_path}"]), "Same-session memories")
+    |> render_click()
+
+    assert_patch(detail, same_session_path)
+    assert has_element?(detail, "#memories-count", "2 matching memories")
+    assert has_element?(detail, "#memory-memories-table", selected.content)
+    assert has_element?(detail, "#memory-memories-table", companion.content)
+    refute has_element?(detail, "#memory-memories-table", other.content)
+    refute has_element?(detail, "#memory-memories-table", foreign.content)
+    assert has_element?(detail, ~s(#memories-session[value="#{session}"]))
+    refute has_element?(detail, "#memories-previous")
+    refute has_element?(detail, "#memory-detail")
+  end
+
+  test "session IDs are escaped while sessionless records show no invented conversation links", %{
+    conn: conn
+  } do
+    session = ~s(session-<script>historical</script>?&")
+    memory = memory!("Historical session source", session)
+    {:ok, view, _} = live(conn, "/memory/memories")
+
+    assert has_element?(view, "#memory-memories-table", session)
+    refute has_element?(view, "#memory-memories-table script")
+
+    {:ok, detail, _} = live(recycle(conn), "/memory/memories/#{memory.id}")
+    assert has_element?(detail, "#memory-detail-session", session)
+    refute has_element?(detail, "#memory-detail-session script")
+
+    href =
+      detail
+      |> element("#memory-detail", "Same-session memories")
+      |> render()
+      |> Floki.parse_fragment!()
+      |> Floki.find("a")
+      |> Enum.find(&(Floki.text(&1) == "Same-session memories"))
+      |> then(&Floki.attribute(&1, "href"))
+      |> hd()
+
+    assert URI.decode_query(URI.parse(href).query)["session"] == session
+
+    for session_id <- [nil, "", " "] do
+      sessionless =
+        memory!("Sessionless #{inspect(session_id)}", nil)
+        |> Ecto.Changeset.change(session_id: session_id)
+        |> Backplane.Repo.update!()
+
+      {:ok, no_session, _} = live(recycle(conn), "/memory/memories/#{sessionless.id}")
+      assert has_element?(no_session, "#memory-detail-session", "No session recorded")
+      refute has_element?(no_session, "#memory-detail a", "Same-session memories")
+      refute has_element?(no_session, ~s(#memory-detail a[href^="/memory/sessions/"]))
+      refute has_element?(no_session, ~s(#memory-detail a[href^="/memory/replay?"]))
+
+      row = "#memory-memories-table tr:has(a[href*='/memory/memories/#{sessionless.id}?'])"
+      assert has_element?(no_session, row, "No session recorded")
+      refute has_element?(no_session, "#{row} a[href*='session=']")
+    end
   end
 
   test "session-filtered inventory excludes other sessions and preserves the filter in detail links",
@@ -865,20 +1059,34 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
     host
   end
 
-  defp memory!(content, session) do
-    %Memory{}
-    |> Memory.changeset(%{
-      memory_space_id: @space,
-      host_id: @query["host"],
-      client_id: @query["client"],
-      scope: @query["scope"],
-      namespace: @query["namespace"],
-      content: content,
-      memory_type: "semantic",
-      agent_id: "inventory-agent",
-      session_id: session,
-      metadata: %{}
+  defp source_host!(name) do
+    %Backplane.Skills.Host{}
+    |> Backplane.Skills.Host.changeset(%{
+      name: name,
+      memory_scope: "source-#{Ecto.UUID.generate()}"
     })
+    |> Backplane.Repo.insert!()
+  end
+
+  defp memory!(content, session, overrides \\ %{}) do
+    %Memory{}
+    |> Memory.changeset(
+      Map.merge(
+        %{
+          memory_space_id: @space,
+          host_id: @query["host"],
+          client_id: @query["client"],
+          scope: @query["scope"],
+          namespace: @query["namespace"],
+          content: content,
+          memory_type: "semantic",
+          agent_id: "inventory-agent",
+          session_id: session,
+          metadata: %{}
+        },
+        overrides
+      )
+    )
     |> Backplane.Repo.insert!()
   end
 

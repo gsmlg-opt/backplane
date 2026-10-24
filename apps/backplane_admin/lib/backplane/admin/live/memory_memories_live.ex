@@ -22,6 +22,7 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
        page_size: @page_size,
        partition: nil,
        rows: [],
+       source_host_names: %{},
        selected: nil,
        source_summary: nil,
        source_error: nil,
@@ -152,6 +153,7 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
   def render(assigns) do
     assigns =
       assigns
+      |> assign_new(:source_host_names, fn -> %{} end)
       |> assign_new(:access_target, fn ->
         Map.take(assigns.partition, [:memory_space_id, :scope, :namespace])
       end)
@@ -173,11 +175,16 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
         <div class="mb-3"><.link navigate={page_path(@partition, @offset, @filters)} class="text-sm text-primary underline">Back to memories</.link></div>
         <.dm_card variant="bordered" padding="lg">
           <h2 class="text-lg font-semibold">Memory detail</h2>
-          <div id="memory-detail-source" class="mt-3"><.source_identity record={@selected.memory} detail /></div>
+          <div id="memory-detail-source" class="mt-3"><.source_identity record={@selected.memory} host_names={@source_host_names} detail /></div>
+          <dl id="memory-detail-session" class="mt-3 text-sm">
+            <dt class="text-on-surface-variant">Session ID</dt>
+            <dd class="break-all font-mono">{if has_session?(@selected.memory), do: @selected.memory.session_id, else: "No session recorded"}</dd>
+          </dl>
           <p class="mt-3 whitespace-pre-wrap">{@selected.memory.content}</p>
           <div class="mt-4 flex flex-wrap gap-3 text-sm">
-            <.link :if={@selected.memory.session_id not in [nil, ""]} navigate={~p"/memory/sessions/#{@selected.memory.session_id}?#{partition_query(record_partition(@selected.memory, @partition))}"} class="text-primary underline">Session</.link>
-            <.link :if={@selected.memory.session_id not in [nil, ""]} navigate={~p"/memory/replay?#{session_query(@selected.memory, record_partition(@selected.memory, @partition))}"} class="text-primary underline">Replay</.link>
+            <.link :if={has_session?(@selected.memory)} patch={same_session_path(@selected.memory)} class="text-primary underline">Same-session memories</.link>
+            <.link :if={has_session?(@selected.memory)} navigate={~p"/memory/sessions/#{@selected.memory.session_id}?#{partition_query(record_partition(@selected.memory, @partition))}"} class="text-primary underline">Session</.link>
+            <.link :if={has_session?(@selected.memory)} navigate={~p"/memory/replay?#{session_query(@selected.memory, record_partition(@selected.memory, @partition))}"} class="text-primary underline">Replay</.link>
             <.link navigate={~p"/memory/audit?#{Map.merge(partition_query(record_partition(@selected.memory, @partition)), %{"target" => @selected.memory.id})}"} class="text-primary underline">Audit</.link>
           </div>
           <section id="memory-evidence" class="mt-5"><h3 class="font-semibold">Evidence</h3><p :if={@selected.evidence == []} class="mt-2 text-sm text-on-surface-variant">No durable evidence</p><ul class="mt-2 space-y-2"><li :for={evidence <- @selected.evidence}>
@@ -218,8 +225,12 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
       <div class="overflow-x-auto">
         <.dm_table :if={@rows != []} id="memory-memories-table" data={@rows} compact hover zebra>
           <:col :let={memory} label="Memory"><.link navigate={detail_path(memory.id, @partition, @offset, @filters)} class="line-clamp-3 whitespace-pre-wrap break-words text-primary underline underline-offset-4">{memory.content}</.link></:col>
-          <:col :let={memory} label="Source"><.source_identity record={memory} /></:col>
-          <:col :let={memory} label="Type">{memory.memory_type}</:col>
+          <:col :let={memory} label="Source" class="min-w-32"><.source_identity record={memory} host_names={@source_host_names} /></:col>
+          <:col :let={memory} label="Session">
+            <.link :if={has_session?(memory)} patch={same_session_path(memory)} title={memory.session_id} class="block w-40 text-primary underline underline-offset-4"><span class="block truncate font-mono text-xs">{memory.session_id}</span><span class="text-xs">Same-session memories</span></.link>
+            <span :if={!has_session?(memory)} class="text-xs text-on-surface-variant">No session recorded</span>
+          </:col>
+          <:col :let={memory} label="Type" class="whitespace-nowrap">{memory.memory_type}</:col>
           <:col :let={memory} label="State"><.dm_badge variant={status_variant(memory.lifecycle_state)} size="sm">{memory.lifecycle_state}</.dm_badge></:col>
           <:col :let={memory} label="Applications">{memory.application_count}</:col>
           <:col :let={memory} label="Created">{format_datetime(memory.inserted_at)}</:col>
@@ -298,6 +309,7 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
     {:ok, inventory} = Inventory.memories(partition, opts ++ [limit: @page_size, offset: offset])
     rows = inventory.entries
     total_count = inventory.total
+    source_host_names = Map.new(Hosts.list_hosts(), &{&1.id, &1.name})
 
     selected =
       case {socket.assigns.live_action, params["id"]} do
@@ -332,6 +344,7 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
        source_summary: source_summary,
        source_error: source_error,
        rows: rows,
+       source_host_names: source_host_names,
        selected: selected,
        offset: offset,
        error: nil,
@@ -346,6 +359,7 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
        assign(socket,
          partition: partition,
          rows: [],
+         source_host_names: %{},
          selected: nil,
          source_summary: nil,
          source_error: nil,
@@ -565,6 +579,14 @@ defmodule Backplane.Admin.MemoryMemoriesLive do
 
   defp session_query(memory, partition),
     do: Map.merge(partition_query(partition), %{"session" => memory.session_id || ""})
+
+  defp same_session_path(memory),
+    do: page_path(record_partition(memory), 0, %{"session" => memory.session_id})
+
+  defp has_session?(memory) do
+    session_id = Map.get(memory, :session_id)
+    is_binary(session_id) and String.trim(session_id) != ""
+  end
 
   defp evidence_path(%{source_type: "event", source_id: id}, _memory_id, partition)
        when is_binary(id),
