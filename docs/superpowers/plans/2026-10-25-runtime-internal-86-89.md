@@ -201,11 +201,11 @@ assert second.tool_call_id == "question-two"
 
 ## Integration and release
 
-- [ ] Independently review each work package against the spec, then review
+- [x] Independently review each work package against the spec, then review
   code quality. Fix review findings and re-run affected checks before merge.
-- [ ] Integrate issue commits into the release worktree; update CODEX,
+- [x] Integrate issue commits into the release worktree; update CODEX,
   EMBEDDING, CHANGELOG and the approved acceptance matrix with actual evidence.
-- [ ] Run the complete Runtime suite serially with `--max-cases 1`, warnings-as-
+- [x] Run the complete Runtime suite serially with `--max-cases 1`, warnings-as-
   errors compilation, scoped formatting/static checks and standalone package
   smoke. Do not repair unrelated pre-existing Credo findings.
 - [ ] Merge approved/tested work into clean main, run exact-main release/CI/Hex
@@ -217,3 +217,35 @@ assert second.tool_call_id == "question-two"
   exercising all four request contracts and a selected backend effect.
 - [ ] Close the original requests with verified release evidence, remove only
   fully integrated task worktrees/branches, and report release URL/run/status.
+
+
+### Source qualification evidence (2026-10-25)
+
+Code reviewed and tested at `259739e65be2b13b25ee59d9cd60c8bb5f7f26df`;
+subsequent acceptance-document edits do not change Runtime source.
+Independent specification and quality reviews passed for all four requests.
+The managed-child review corrections include exact capability authentication,
+all-target admission fencing before cleanup waits, and a collector deadline
+covering every bounded stage. The blocked-first-target regressions confirm that
+later native effects are refused and every independent close is attempted;
+unknown outcomes retain their execution reservations.
+
+- Complete Runtime suite: `mix test --max-cases 1 --seed 982893`, 938 tests,
+  zero failures, with real Deno 2.8.3 and command stdin/follow-up coverage.
+- Dedicated managed-child and related regression suite: 148 tests, zero failures.
+  Async identity acceptance: six direct/nested/spoof/stale/cancel/no-subscriber cases.
+- Force compilation with warnings as errors, changed-file formatting, strict
+  Runtime Credo, and standalone Hex build passed. All nine pinned search oracle
+  fixtures match, including 894 punctuation-edge cases and the full stemmer corpus.
+- Dialyzer analyzed 86 freshly compiled Runtime BEAM files. Its two Task opacity
+  warnings in unchanged `image.ex` and `execution.ex` also occur in the freshly
+  compiled `ab8f2f5d` baseline; there are no new warnings. The unrelated root
+  Memory Credo finding remains outside these requests.
+- Release, CI and Hex dependency source contracts passed: 31, 8 and 8 tests.
+- The standalone 1.10.36 Hex archive contains 115 files, all 476,399 vendored data
+  bytes and required notices; development oracle/test fixtures are excluded.
+
+These results establish source qualification. The remaining release checkboxes
+above are pending at this source commit. Publication, archive provenance, GHCR,
+HexDocs and fresh Hex consumer evidence must come from the terminal canonical
+release workflow and the release evidence attached to the original requests.
