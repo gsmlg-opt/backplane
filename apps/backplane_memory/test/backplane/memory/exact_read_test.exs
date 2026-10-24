@@ -390,6 +390,37 @@ defmodule Backplane.Memory.ExactReadTest do
     assert current.authority_version == access.authority_version
   end
 
+  test "legacy recall accepts a final rendered budget and skips oversized whole memories", c do
+    previous = :ets.lookup(:backplane_settings, "memory.recall_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", false})
+
+    on_exit(fn ->
+      :ets.delete(:backplane_settings, "memory.recall_v2.enabled")
+      :ets.insert(:backplane_settings, previous)
+    end)
+
+    memory = seed!(c, %{content: "budgetneedle user preference"})
+
+    assert {:ok, full} =
+             Service.call(
+               "memory::recall",
+               %{"query" => "budgetneedle", "token_budget" => 1000},
+               c.auth
+             )
+
+    assert [%{id: id}] = full.results
+    assert id == memory.id
+    assert full.used_tokens == byte_size(full.rendered_context)
+    assert full.used_tokens > byte_size(memory.content)
+
+    assert {:ok, %{results: [], used_tokens: 0, rendered_context: ""}} =
+             Service.call(
+               "memory::recall",
+               %{"query" => "budgetneedle", "token_budget" => byte_size(memory.content)},
+               c.auth
+             )
+  end
+
   test "legacy recall rejects unsupported constraints by stable sorted field names", c do
     previous = :ets.lookup(:backplane_settings, "memory.recall_v2.enabled")
     :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", false})
@@ -413,7 +444,7 @@ defmodule Backplane.Memory.ExactReadTest do
     assert {:error, {:unsupported_filter, fields}} = Service.call("memory::recall", args, c.auth)
 
     assert fields ==
-             ~w(channel_weights entity_hints facets include_working project temporal_hints token_budget)
+             ~w(channel_weights entity_hints facets include_working project temporal_hints)
 
     assert {:error, :unauthorized} = Service.call("memory::recall", args, %{c.auth | scopes: []})
 

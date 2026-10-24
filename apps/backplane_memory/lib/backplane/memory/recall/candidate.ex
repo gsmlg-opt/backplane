@@ -25,7 +25,8 @@ defmodule Backplane.Memory.Recall.Candidate do
     :expires_at,
     :application_count,
     :evidence_ids,
-    :source_refs
+    :source_refs,
+    :current_context
   ]
   @known @required ++ @optional
 
@@ -46,6 +47,7 @@ defmodule Backplane.Memory.Recall.Candidate do
                 :project,
                 :source_host_id,
                 :session_id,
+                current_context: %{},
                 evidence_ids: [],
                 source_refs: [],
                 repository_sources: []
@@ -122,6 +124,7 @@ defmodule Backplane.Memory.Recall.Candidate do
          evidence_count: evidence_count,
          source_ids: source_ids,
          evidence_ids: evidence_ids,
+         current_context: Map.get(attrs, :current_context, %{}),
          source_refs: source_refs,
          channel_scores: channel_scores,
          lifecycle_state: lifecycle_state,

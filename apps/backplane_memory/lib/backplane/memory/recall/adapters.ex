@@ -62,6 +62,7 @@ defmodule Backplane.Memory.Recall.Adapters do
         token_estimate: value(artifact, :token_estimate, estimate(value(artifact, :content))),
         inserted_at: value(artifact, :inserted_at),
         expires_at: value(artifact, :expires_at),
+        current_context: current_context(artifact),
         application_count: value(artifact, :application_count, 0)
       })
     end
@@ -97,6 +98,7 @@ defmodule Backplane.Memory.Recall.Adapters do
         token_estimate: estimate(value(artifact, :content)),
         inserted_at: value(artifact, :inserted_at),
         expires_at: value(artifact, :expires_at),
+        current_context: current_context(artifact),
         application_count: 0
       })
     else
@@ -178,6 +180,7 @@ defmodule Backplane.Memory.Recall.Adapters do
         token_estimate: estimate(value(memory, :content)),
         inserted_at: value(lesson, :created_at, value(memory, :inserted_at)),
         expires_at: value(memory, :expires_at),
+        current_context: current_context(memory),
         application_count: value(memory, :application_count, 0)
       })
     else
@@ -218,9 +221,24 @@ defmodule Backplane.Memory.Recall.Adapters do
       inserted_at:
         value(artifact, :inserted_at, value(artifact, :created_at, value(artifact, :occurred_at))),
       expires_at: value(artifact, :expires_at),
+      current_context: %{
+        policy_version: Backplane.Memory.CurrentContext.policy_version(),
+        trust: if(kind == :observation, do: "raw_evidence", else: "candidate_inference"),
+        effective_support: true,
+        support_complete: false,
+        independent_support: false,
+        lifecycle_state: value(artifact, :lifecycle_state, :active),
+        expires_at: value(artifact, :expires_at),
+        revision: nil
+      },
       application_count: 0
     }
   end
+
+  defp current_context(%Backplane.Memory.Memories.Memory{} = memory),
+    do: Backplane.Memory.CurrentContext.result(memory)
+
+  defp current_context(_artifact), do: %{}
 
   defp source_refs([], _required_type, _self_id, _self_type), do: {:error, :missing_provenance}
 

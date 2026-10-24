@@ -31,6 +31,10 @@ defmodule Backplane.Memory.Config do
   @recall_token_budget "memory.recall_token_budget"
   @recall_reranker_enabled "memory.recall_reranker_enabled"
   @recall_reranker_top_k "memory.recall_reranker_top_k"
+  @relevance_vector_model "memory.recall_relevance_vector_model"
+  @relevance_vector_min "memory.recall_relevance_vector_min"
+  @relevance_reranker_model "memory.recall_relevance_reranker_model"
+  @relevance_reranker_min "memory.recall_relevance_reranker_min"
   @lesson_auto_extract "memory.lesson_auto_extract"
   @lesson_auto_promote "memory.lesson_auto_promote"
   @lesson_promote_confidence "memory.lesson_promote_confidence"
@@ -77,6 +81,14 @@ defmodule Backplane.Memory.Config do
      :session_stale_after_seconds},
     {@fallback_sweep_batch_size, "Fallback sweep batch", :integer, 1, 500,
      :fallback_sweep_batch_size},
+    {@relevance_vector_model, "Calibrated recall embedding model", :model, nil, nil,
+     :recall_relevance_vector_model},
+    {@relevance_vector_min, "Calibrated minimum cosine similarity", :float, -1.0, 1.0,
+     :recall_relevance_vector_min},
+    {@relevance_reranker_model, "Calibrated reranker provider/model route", :model, nil, nil,
+     :recall_relevance_reranker_model},
+    {@relevance_reranker_min, "Calibrated minimum reranker relevance", :float, 0.0, 1.0,
+     :recall_relevance_reranker_min},
     {@recall_token_budget, "Recall token budget", :integer, 1, 100_000, :recall_token_budget},
     {@recall_rrf_k, "Recall fusion constant", :integer, 1, 1_000, :recall_rrf_k},
     {@recall_reranker_enabled, "Recall reranking", :boolean, nil, nil, :recall_reranker_enabled?},
@@ -460,6 +472,31 @@ defmodule Backplane.Memory.Config do
   @doc "Returns the reranker input cap (inclusive range 1..500; default 20)."
   def recall_reranker_top_k,
     do: bounded_integer(@recall_reranker_top_k, 20, 1, 500)
+
+  @doc "Semantic cutoffs apply only to the exact model calibrated by the operator; otherwise use lexical evidence."
+  def recall_relevance do
+    %{
+      vector_model: recall_relevance_vector_model(),
+      vector_min: recall_relevance_vector_min(),
+      reranker_model: recall_relevance_reranker_model(),
+      reranker_min: recall_relevance_reranker_min()
+    }
+  end
+
+  def recall_relevance_vector_model, do: calibrated_model(@relevance_vector_model)
+  def recall_relevance_reranker_model, do: calibrated_model(@relevance_reranker_model)
+  def recall_relevance_vector_min, do: bounded_number(@relevance_vector_min, 1.0, -1.0, 1.0)
+  def recall_relevance_reranker_min, do: bounded_number(@relevance_reranker_min, 1.0, 0.0, 1.0)
+
+  defp calibrated_model(key) do
+    case Settings.get(key) do
+      model when is_binary(model) ->
+        if(String.trim(model) == "", do: nil, else: String.trim(model))
+
+      _ ->
+        nil
+    end
+  end
 
   def lesson_auto_extract?, do: llm_configured?() and strict_boolean(@lesson_auto_extract, true)
   def lesson_auto_promote?, do: strict_boolean(@lesson_auto_promote, false)

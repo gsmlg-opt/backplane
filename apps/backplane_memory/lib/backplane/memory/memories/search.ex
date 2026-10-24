@@ -5,14 +5,16 @@ defmodule Backplane.Memory.Memories.Search do
   Embedding is generated through an injectable function so tests can run without
   the LLM proxy. Production callers use the default `Embedding.Client.embed/3`.
 
-  `hybrid_recall/2` prefers vector search when it is configured and available,
-  and falls back to full-text search when vector search is not ready.
+  `hybrid_recall/2` combines lexical evidence with model-calibrated semantic
+  relevance and falls back to lexical matches when calibration is unavailable.
   """
 
   import Ecto.Query
 
   alias Backplane.Memory.Embedding.Client
   alias Backplane.Memory.Memories.Memory, as: M
+  alias Backplane.Memory.Recall.Relevance
+  alias Backplane.Memory.{Config, CurrentContext}
   alias Backplane.Memory.Numeric
   alias Backplane.Memory.Privacy.Filter
   alias Pgvector.HalfVector
@@ -47,7 +49,13 @@ defmodule Backplane.Memory.Memories.Search do
   """
   @spec recall(String.t(), keyword()) :: {:ok, [result()]} | {:error, term()}
   def recall(query, opts \\ []) when is_binary(query) do
-    embed_fn = Keyword.get(opts, :embed_fn, &Client.embed/3)
+    model = Client.model(opts)
+
+    embed_fn =
+      Keyword.get(opts, :embed_fn, fn texts, mode, embed_opts ->
+        Client.embed(texts, mode, Keyword.put(embed_opts, :model, model))
+      end)
+
     limit = Keyword.get(opts, :limit, @default_limit)
 
     with {:ok, [vector]} <- embed_fn.([query], :query, []) do
@@ -64,20 +72,9 @@ defmodule Backplane.Memory.Memories.Search do
         |> apply_filters(opts)
         |> order_by([m], fragment("? <=> ?", m.embedding, ^hv))
         |> limit(^limit)
-        |> select([m], %{
-          id: m.id,
-          content: m.content,
-          scope: m.scope,
-          memory_type: m.memory_type,
-          agent_id: m.agent_id,
-          host_id: m.host_id,
-          tags: m.tags,
-          metadata: m.metadata,
-          inserted_at: m.inserted_at,
-          distance: fragment("? <=> ?", m.embedding, ^hv),
-          confidence: m.confidence
-        })
+        |> select([m], {m, fragment("? <=> ?", m.embedding, ^hv)})
         |> repo().all()
+        |> Enum.map(fn {memory, distance} -> result(memory, distance) end)
 
       writeback_fn =
         Keyword.get(
@@ -132,18 +129,20 @@ defmodule Backplane.Memory.Memories.Search do
     )
   end
 
+  defp apply_filter({:embedding_model, model}, query) when is_binary(model) and model != "",
+    do: where(query, [memory], memory.embedding_model == ^model)
+
   defp apply_filter({:min_confidence, v}, q) when is_float(v),
     do: where(q, [m], m.confidence >= ^v)
 
   defp apply_filter(_, q), do: q
 
   @doc """
-  Vector-preferred recall with full-text fallback.
+  Recall with lexical fallback and calibrated semantic rejection.
 
-  When vector search is configured and returns rows, only vector rows are
-  returned. When vector search is unavailable, fails, or has no embedded rows
-  for the active filters, recall degrades to FTS-only and does not expose
-  embedder/provider errors to clients.
+  Semantic-only rows require a raw cosine or reranker cutoff calibrated for the
+  exact configured model. Missing calibration or provider failures preserve
+  lexical matches, and unrelated queries can return no results.
 
   FTS fallback uses Reciprocal Rank Fusion (RRF) across expanded text queries.
   Returns top-N results deduped by memory ID.
@@ -158,16 +157,47 @@ defmodule Backplane.Memory.Memories.Search do
     limit = Keyword.get(opts, :limit, @default_limit)
     queries = maybe_expand_query(query, opts)
 
-    result =
-      case vector_recall(queries, opts) do
-        {:ok, rows} when rows != [] ->
-          rows
-          |> rerank_results(query, opts)
-          |> Enum.take(limit)
+    calibration = Config.recall_relevance()
+    model = Client.model(opts)
+    opts = opts |> Keyword.put(:model, model) |> Keyword.put(:embedding_model, model)
+    lexical = text_recall(query, queries, opts)
+    lexical_ids = MapSet.new(lexical, & &1.id)
 
-        _ ->
-          text_recall(query, queries, opts)
+    vector =
+      case vector_recall(queries, opts) do
+        {:ok, rows} -> rows
+        _ -> []
       end
+
+    result =
+      (vector ++ lexical)
+      |> dedup_by_id()
+      |> rerank_results(query, opts)
+      |> Enum.filter(fn row ->
+        scores = %{vector: 1.0 - row.distance}
+        scores = if row.id in lexical_ids, do: Map.put(scores, :fts, 1.0), else: scores
+
+        scores =
+          if Map.has_key?(row, :reranker_score),
+            do: Map.put(scores, :reranker, row.reranker_score),
+            else: scores
+
+        # A vector from another model cannot use the active model's calibration.
+        embedding_model = if row.embedding_model == model, do: model
+
+        Relevance.accepted?(
+          query,
+          row.content,
+          scores,
+          embedding_model,
+          Map.get(row, :reranker_model),
+          calibration
+        )
+      end)
+      |> Enum.take(limit)
+      |> Enum.map(
+        &Map.merge(&1, %{relevance_accepted: true, relevance_policy: Relevance.policy_version()})
+      )
 
     writeback_fn =
       Keyword.get(opts, :writeback_fn, &Backplane.Memory.Workers.AccessWritebackWorker.enqueue/1)
@@ -214,11 +244,29 @@ defmodule Backplane.Memory.Memories.Search do
       top_k = Enum.take(candidates, k)
       descriptors = reranker_descriptors(top_k)
 
+      model = Backplane.Settings.get("memory.llm_model")
+
       case llm_module.rerank(filtered_query(query), descriptors) do
-        {:ok, rows} -> apply_reranking(rows, top_k, candidates)
-        {:skip, _reason} -> candidates
-        {:error, _reason} -> candidates
-        _malformed -> candidates
+        {:ok, rows} ->
+          ranked = apply_reranking(rows, top_k, candidates)
+
+          if model == Backplane.Settings.get("memory.llm_model"),
+            do:
+              Enum.map(ranked, fn row ->
+                if Map.has_key?(row, :reranker_score),
+                  do: Map.put(row, :reranker_model, model),
+                  else: row
+              end),
+            else: candidates
+
+        {:skip, _reason} ->
+          candidates
+
+        {:error, _reason} ->
+          candidates
+
+        _malformed ->
+          candidates
       end
     else
       candidates
@@ -267,7 +315,9 @@ defmodule Backplane.Memory.Memories.Search do
       reordered =
         ranked
         |> Enum.sort_by(fn {token, score} -> {-score, token} end)
-        |> Enum.map(fn {token, _score} -> Enum.at(top_k, token) end)
+        |> Enum.map(fn {token, score} ->
+          Map.put(Enum.at(top_k, token), :reranker_score, score)
+        end)
 
       reordered ++ Enum.drop(all, length(top_k))
     else
@@ -304,13 +354,12 @@ defmodule Backplane.Memory.Memories.Search do
       Client.configured?()
   end
 
-  defp text_recall(query, queries, opts) do
+  defp text_recall(_query, queries, opts) do
     limit = Keyword.get(opts, :limit, @default_limit)
 
     queries
     |> Enum.map(&fts_search(&1, opts))
     |> rrf_fuse()
-    |> rerank_results(query, opts)
     |> Enum.take(limit)
   end
 
@@ -329,20 +378,17 @@ defmodule Backplane.Memory.Memories.Search do
       desc: m.inserted_at
     )
     |> limit(50)
-    |> select([m], %{
-      id: m.id,
-      content: m.content,
-      scope: m.scope,
-      memory_type: m.memory_type,
-      agent_id: m.agent_id,
-      host_id: m.host_id,
-      tags: m.tags,
-      metadata: m.metadata,
-      inserted_at: m.inserted_at,
-      distance: 0.0,
-      confidence: m.confidence
-    })
     |> repo().all()
+    |> Enum.map(&result(&1, 0.0))
+  end
+
+  defp result(memory, distance) do
+    memory
+    |> Map.take(
+      ~w(id content scope memory_type agent_id host_id tags metadata inserted_at confidence embedding_model)a
+    )
+    |> Map.put(:distance, distance)
+    |> Map.merge(CurrentContext.result(memory))
   end
 
   defp rerank_results(results, query, opts) do

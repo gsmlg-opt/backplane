@@ -88,6 +88,30 @@ defmodule Backplane.Memory.ConfigTest do
     :ok
   end
 
+  test "relevance calibration is model-bound, operator-visible and conservatively unset by default" do
+    keys =
+      ~w(memory.recall_relevance_vector_model memory.recall_relevance_vector_min memory.recall_relevance_reranker_model memory.recall_relevance_reranker_min)
+
+    snapshot = Map.new(keys, &{&1, :ets.lookup(@settings_table, &1)})
+
+    on_exit(fn ->
+      for {key, rows} <- snapshot do
+        :ets.delete(@settings_table, key)
+        :ets.insert(@settings_table, rows)
+      end
+    end)
+
+    for key <- keys, do: :ets.delete(@settings_table, key)
+    assert Config.recall_relevance().vector_model == nil
+    for key <- keys, do: assert(Enum.any?(Config.editable_settings(), &(&1.key == key)))
+    put_setting("memory.recall_relevance_vector_model", "embedding-a")
+    put_setting("memory.recall_relevance_vector_min", 0.65)
+    assert Config.recall_relevance().vector_model == "embedding-a"
+    assert Config.recall_relevance().vector_min == 0.65
+    put_setting("memory.recall_relevance_vector_min", "0.2")
+    assert Config.recall_relevance().vector_min == 1.0
+  end
+
   test "model-dependent features use the persisted model selection instead of an adapter" do
     keys = ~w(memory.llm_model memory.lesson_auto_extract memory.crystals_enabled)
     snapshot = Map.new(keys, &{&1, :ets.lookup(@settings_table, &1)})

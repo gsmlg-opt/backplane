@@ -2120,10 +2120,10 @@ defmodule Backplane.Memory.Service do
 
   defp do_handle_recall_legacy(query, args) do
     unsupported =
-      ~w(project facets temporal_hints entity_hints token_budget channel_weights include_working)
+      ~w(project facets temporal_hints entity_hints channel_weights include_working)
       |> Enum.filter(fn key ->
         Map.has_key?(args, key) and
-          (key in ~w(token_budget channel_weights include_working) or
+          (key in ~w(channel_weights include_working) or
              args[key] not in [nil, "", [], %{}])
       end)
       |> Enum.sort()
@@ -2144,7 +2144,16 @@ defmodule Backplane.Memory.Service do
       |> add_if(args, "agent_id", :agent_id)
       |> add_if(args, "tag", :tag)
 
-    with {:ok, results} <- Search.hybrid_recall(query, opts), do: {:ok, %{results: results}}
+    with {:ok, results} <- Search.hybrid_recall(query, opts) do
+      packed =
+        Backplane.Memory.Recall.Packer.pack_results(
+          results,
+          args["token_budget"] || Config.recall_token_budget()
+        )
+
+      {:ok,
+       if(Map.has_key?(args, "token_budget"), do: packed, else: Map.take(packed, [:results]))}
+    end
   end
 
   defp do_handle_recall_v2(query, args) do
@@ -2179,11 +2188,16 @@ defmodule Backplane.Memory.Service do
 
         limit = args["limit"] || 10
 
-        Pipeline.run(plan,
-          request_id: Ecto.UUID.generate(),
-          correlation_id: Ecto.UUID.generate(),
-          post_fusion_opts: [limit: limit]
-        )
+        with {:ok, result} <-
+               Pipeline.run(plan,
+                 request_id: Ecto.UUID.generate(),
+                 correlation_id: Ecto.UUID.generate(),
+                 post_fusion_opts: [limit: limit],
+                 packer_opts: [rendered?: true]
+               ) do
+          packed = Backplane.Memory.Recall.Packer.pack_results(result.results, plan.token_budget)
+          {:ok, Map.merge(result, packed)}
+        end
     end
   end
 

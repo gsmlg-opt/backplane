@@ -453,7 +453,7 @@ defmodule Backplane.HostAgent.Memory do
   defp unsupported_read_filters("recall", args, _mirror?) do
     explicit =
       Enum.filter(
-        ~w(agent_id host_id tag token_budget channel_weights include_working),
+        ~w(agent_id host_id tag channel_weights include_working),
         &(not is_nil(Reducer.value(args, &1)))
       )
 

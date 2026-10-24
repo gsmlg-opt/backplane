@@ -159,12 +159,15 @@ defmodule Backplane.Memory.Recall.Reranker do
 
   defp options(opts) do
     with :ok <- validate_option_keys(opts) do
+      model = Keyword.get(opts, :model, configured_model())
+
       config = %{
         enabled: Keyword.get(opts, :enabled, Config.recall_reranker_enabled?()),
         top_k: Keyword.get(opts, :top_k, Config.recall_reranker_top_k()),
         timeout: Keyword.get(opts, :timeout_ms, @default_timeout),
-        provider: Keyword.get(opts, :provider, &llm_provider/2),
-        model: Keyword.get(opts, :model, configured_model()),
+        provider:
+          Keyword.get(opts, :provider, fn query, items -> bound_provider(query, items, model) end),
+        model: model,
         task_supervisor: Keyword.get(opts, :task_supervisor, configured_task_supervisor())
       }
 
@@ -259,6 +262,15 @@ defmodule Backplane.Memory.Recall.Reranker do
       :recall_task_supervisor,
       Backplane.Memory.Recall.TaskSupervisor
     )
+  end
+
+  defp bound_provider(query, items, model) do
+    if configured_model() == model do
+      result = llm_provider(query, items)
+      if configured_model() == model, do: result, else: {:error, :reranker_model_changed}
+    else
+      {:error, :reranker_model_changed}
+    end
   end
 
   defp llm_provider(query, items) do

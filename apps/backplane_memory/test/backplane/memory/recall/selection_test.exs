@@ -193,6 +193,22 @@ defmodule Backplane.Memory.Recall.SelectionTest do
     end
   end
 
+  test "rendered packing includes trust and references without slicing content" do
+    [trace] = traces([1], [1.0])
+    row = %{id: trace.candidate.id, content: trace.candidate.content}
+    rendered = Packer.pack_results([row], 1000)
+    assert {:ok, [rejected], %{used_tokens: 0}} = Packer.pack([trace], 1, rendered?: true)
+    assert rejected.rejection_reason == "token_budget"
+
+    assert {:ok, [selected], metadata} =
+             Packer.pack([trace], rendered.used_tokens + 1, rendered?: true)
+
+    assert selected.selected
+    assert selected.candidate.content == trace.candidate.content
+    assert metadata.used_tokens >= byte_size(rendered.rendered_context)
+    assert metadata.used_tokens <= metadata.token_budget
+  end
+
   test "packing never exceeds budget and prefers marginal relevance per token over rank" do
     [a, b, c] = traces([9, 5, 5], [0.9, 0.8, 0.8])
     assert {:ok, packed, %{used_tokens: 10, token_budget: 10}} = Packer.pack([a, b, c], 10)

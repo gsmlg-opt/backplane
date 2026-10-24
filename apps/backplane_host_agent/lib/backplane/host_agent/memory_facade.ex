@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   alias Backplane.HostAgent.{HubProxy, Memory, MemoryProxy}
   alias Backplane.MemoryReadRequest
-  alias Backplane.HostAgent.Memory.{Access, Reducer, Syncer}
+  alias Backplane.HostAgent.Memory.{Access, ContextPacker, Reducer, Syncer}
 
   @commands ~w(remember forget)
   @command_functions %{"remember" => :remember, "forget" => :forget}
@@ -326,6 +326,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
     canonical
     |> merge_overlay(method, overlay, args)
+    |> pack_context(method, args)
     |> normalize_result(method)
     |> Map.put_new("partition_revision", nil)
     |> Map.put_new("last_sync_age_seconds", nil)
@@ -393,6 +394,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
     canonical
     |> merge_overlay(method, overlay, args)
+    |> pack_context(method, args)
     |> normalize_result(method)
     |> sync_offline_items(method, canonical)
     |> Map.merge(%{
@@ -430,6 +432,8 @@ defmodule Backplane.HostAgent.MemoryFacade do
     overlay
     |> Map.delete(:offset_applied)
     |> normalize_offline_result(method, upserts)
+    |> pack_context(method, args)
+    |> normalize_result(method)
     |> Map.merge(%{
       "mode" => "offline",
       "authority" =>
@@ -473,6 +477,24 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp pack_context(result, "recall", args) do
+    budget = Reducer.value(args, "token_budget") || result["token_budget"] || 4_096
+    packed = ContextPacker.pack(normalized_results(result), budget)
+
+    result
+    |> Map.put("results", packed.results)
+    |> Map.put("rendered_context", packed.rendered_context)
+    |> Map.put("used_tokens", packed.used_tokens)
+    |> Map.put("token_budget", packed.token_budget)
+    |> then(fn result ->
+      if Map.has_key?(result, "upserts"),
+        do: Map.put(result, "upserts", packed.results),
+        else: result
+    end)
+  end
+
+  defp pack_context(result, _method, _args), do: result
 
   defp normalize_result(result, "recall") do
     Map.put(result, "hits", normalized_results(result))

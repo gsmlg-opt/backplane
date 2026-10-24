@@ -264,8 +264,8 @@ defmodule Backplane.Memory.Memories.SearchTest do
       assert [first_id, second_id] == [strongest.id, weaker.id]
     end
 
-    test "uses vector results only when vector search is available" do
-      vector_mem =
+    test "unknown semantic calibration preserves lexical results while rejecting unrelated vectors" do
+      _vector_mem =
         insert_with_embedding(
           "vector memory",
           vec(%{0 => 1.0}),
@@ -274,7 +274,7 @@ defmodule Backplane.Memory.Memories.SearchTest do
           scope: "vector-scope"
         )
 
-      {:ok, _text_only_mem} =
+      {:ok, text_only_mem} =
         Memories.remember("text-only keyword",
           agent_id: "agent-vector",
           host_id: "host-vector",
@@ -287,7 +287,7 @@ defmodule Backplane.Memory.Memories.SearchTest do
                  embed_fn: embed_const(vec(%{0 => 1.0}))
                )
 
-      assert id == vector_mem.id
+      assert id == text_only_mem.id
     end
 
     test "applies the trusted partition before the full-text candidate limit" do

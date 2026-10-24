@@ -114,7 +114,7 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
   end
 
   describe "reranker" do
-    test "reranker skips when memory.reranker_enabled is not 'true'" do
+    test "without calibration only lexical matches survive when reranking is disabled" do
       # Default: reranker_enabled not set → candidates returned as-is (not reversed)
       base = canonical_memory_opts("h", agent_id: "b")
       m1 = insert_with_embedding("first memory", vec(%{0 => 1.0}), base)
@@ -128,11 +128,8 @@ defmodule Backplane.Memory.Memories.SearchExpansionTest do
         )
 
       ids = Enum.map(results, & &1.id)
-      # Both memories should appear; reranker reversal is NOT applied so m1 leads on vector score
       assert m1.id in ids
-      assert m2.id in ids
-      # m1 should rank before m2 (closer in vector space to query)
-      assert Enum.find_index(ids, &(&1 == m1.id)) < Enum.find_index(ids, &(&1 == m2.id))
+      refute m2.id in ids
     end
 
     test "reranker reorders when memory.reranker_enabled is 'true'" do

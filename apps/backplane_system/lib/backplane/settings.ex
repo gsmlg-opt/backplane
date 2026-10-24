@@ -177,6 +177,30 @@ defmodule Backplane.Settings do
       type: "integer",
       desc: "Recall diversity maximum per source session (allowed range 1..100)"
     },
+    "memory.recall_relevance_vector_model" => %{
+      value: nil,
+      type: "string",
+      desc:
+        "Exact embedding model with an operator-calibrated cosine cutoff; unset uses lexical fallback"
+    },
+    "memory.recall_relevance_vector_min" => %{
+      value: 1.0,
+      type: "float",
+      desc:
+        "Calibrated minimum raw cosine similarity (allowed range -1..1); inert without calibrated model"
+    },
+    "memory.recall_relevance_reranker_model" => %{
+      value: nil,
+      type: "string",
+      desc:
+        "Literal provider/raw_model reranker route with an operator-calibrated cutoff; aliases and unknown models use lexical fallback"
+    },
+    "memory.recall_relevance_reranker_min" => %{
+      value: 1.0,
+      type: "float",
+      desc:
+        "Calibrated minimum raw reranker relevance (allowed range 0..1); inert without calibrated model"
+    },
     "memory.recall_token_budget" => %{
       value: 4_096,
       type: "integer",

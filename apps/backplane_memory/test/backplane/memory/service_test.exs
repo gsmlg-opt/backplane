@@ -572,14 +572,15 @@ defmodule Backplane.Memory.ServiceTest do
                  %{
                    "query" => "public v2 recall contract",
                    "limit" => 5,
-                   "token_budget" => 100
+                   "token_budget" => 256
                  },
                  auth
                )
 
       assert result.status == :ok
       assert is_binary(result.recall_run_id)
-      assert result.used_tokens <= 100
+      assert result.used_tokens <= 256
+      assert result.used_tokens == byte_size(result.rendered_context)
       assert [%{id: ^memory_id, kind: :memory, source_ids: [_ | _]}] = result.results
       assert result.channels.fts.status == :ok
 

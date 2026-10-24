@@ -3,7 +3,17 @@ defmodule Backplane.Memory.Recall.Pipeline do
 
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Embedding.Client
-  alias Backplane.Memory.Recall.{Packer, PostFusion, QueryPlan, Reranker, Retriever, Run, Store}
+
+  alias Backplane.Memory.Recall.{
+    Packer,
+    PostFusion,
+    QueryPlan,
+    Relevance,
+    Reranker,
+    Retriever,
+    Run,
+    Store
+  }
 
   @options [
     :request_id,
@@ -55,6 +65,8 @@ defmodule Backplane.Memory.Recall.Pipeline do
   end
 
   defp run_stages(plan, opts, run, started, partition) do
+    calibration = Backplane.Memory.Config.recall_relevance()
+
     retriever_opts =
       opts
       |> Keyword.get(:retriever_opts, [])
@@ -66,7 +78,10 @@ defmodule Backplane.Memory.Recall.Pipeline do
            emit_retrieval(retrieval_result, retrieval_us, partition),
          {post_result, post_us} <-
            timed(fn ->
-             PostFusion.apply(retrieval.fused, Keyword.get(opts, :post_fusion_opts, []))
+             PostFusion.apply(
+               retrieval.fused,
+               Keyword.delete(Keyword.get(opts, :post_fusion_opts, []), :limit)
+             )
            end),
          {:ok, post_fusion} <-
            emit_result(:post_fusion, post_result, post_us, partition),
@@ -81,6 +96,15 @@ defmodule Backplane.Memory.Recall.Pipeline do
          {:ok, reranked, reranker_meta} <-
            emit_reranker(rerank_result, rerank_us, partition, opts),
          ranked <- add_reranker_ranks(post_fusion, reranked),
+         ranked <-
+           Relevance.apply(
+             ranked,
+             plan.normalized_query,
+             opts[:query_embedding_model],
+             if(reranker_meta.status == :ok, do: reranker_meta.model),
+             calibration
+           ),
+         ranked <- PostFusion.select_relevant(ranked, Keyword.get(opts, :post_fusion_opts, [])),
          {pack_result, pack_us} <-
            timed(fn ->
              Packer.pack(ranked, plan.token_budget, Keyword.get(opts, :packer_opts, []))
@@ -326,7 +350,7 @@ defmodule Backplane.Memory.Recall.Pipeline do
   defp normalize_result(trace) do
     candidate = trace.candidate
 
-    %{
+    Map.merge(candidate.current_context, %{
       id: candidate.id,
       kind: candidate.kind,
       memory_type: candidate.memory_type,
@@ -339,8 +363,12 @@ defmodule Backplane.Memory.Recall.Pipeline do
       repository_sources: candidate.repository_sources,
       confidence: candidate.confidence,
       lifecycle_state: candidate.lifecycle_state,
-      token_estimate: trace.token_estimate
-    }
+      token_estimate: trace.token_estimate,
+      evidence_refs: candidate.source_refs,
+      source_refs: Map.get(candidate.current_context, :source_refs, []),
+      relevance_accepted: true,
+      relevance_policy: Relevance.policy_version()
+    })
   end
 
   defp public_channels(channels) do

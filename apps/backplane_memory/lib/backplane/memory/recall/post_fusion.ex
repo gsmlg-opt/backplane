@@ -42,6 +42,20 @@ defmodule Backplane.Memory.Recall.PostFusion do
     end
   end
 
+  @doc false
+  def select_relevant(traces, opts) do
+    {eligible, rejected} = Enum.split_with(traces, &(&1.selected and is_nil(&1.rejection_reason)))
+
+    {selected, overflow} =
+      select(
+        eligible,
+        Keyword.get(opts, :max_per_session, Config.recall_max_per_session()),
+        Keyword.get(opts, :limit)
+      )
+
+    selected ++ rejected ++ overflow
+  end
+
   defp score_all(items, now) do
     Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
       case score(item, now) do

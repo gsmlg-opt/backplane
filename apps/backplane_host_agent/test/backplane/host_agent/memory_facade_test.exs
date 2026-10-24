@@ -544,6 +544,29 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
              )
   end
 
+  test "online final budget applies after canonical and provisional merge including all rendered overhead" do
+    args = %{"query" => "insight"}
+    context = %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
+    assert {:ok, full} = MemoryFacade.call("recall", args, context)
+    assert length(full["results"]) == 2
+    [first | _] = full["results"]
+    packed = Backplane.HostAgent.Memory.ContextPacker.pack([first], 1000)
+
+    assert {:ok, bounded} =
+             MemoryFacade.call(
+               "recall",
+               Map.put(args, "token_budget", packed.used_tokens),
+               context
+             )
+
+    assert bounded["results"] == [first]
+    assert bounded["hits"] == bounded["results"]
+    assert bounded["used_tokens"] == byte_size(bounded["rendered_context"])
+    assert bounded["used_tokens"] <= bounded["token_budget"]
+    assert bounded["rendered_context"] =~ "pending local memory"
+    assert bounded["rendered_context"] =~ first["content"]
+  end
+
   test "online recall includes an unmatched pending remember exactly once" do
     assert {:ok, %{"results" => results, "hits" => hits}} =
              MemoryFacade.call(

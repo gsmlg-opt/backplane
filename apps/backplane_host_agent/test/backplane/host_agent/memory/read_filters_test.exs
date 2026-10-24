@@ -424,7 +424,6 @@ defmodule Backplane.HostAgent.Memory.ReadFiltersTest do
            ["agent_id", "tag"]},
           {"recall", %{"query" => "needle", "host_id" => "creator-host"}, ["host_id"]},
           {"recall", %{"query" => "needle", "include_working" => false}, ["include_working"]},
-          {"recall", %{"query" => "needle", "token_budget" => 20}, ["token_budget"]},
           {"recall",
            %{"query" => "needle", "facets" => [%{"dimension" => "kind", "value" => "plan"}]},
            ["facets"]},
@@ -438,9 +437,9 @@ defmodule Backplane.HostAgent.Memory.ReadFiltersTest do
        c do
     target = remember!(c, "needle target", %{"project" => "target"})
     for index <- 1..105, do: remember!(c, "needle unrelated #{index}", %{"project" => "other"})
-    args = %{"query" => "needle", "project" => "target", "token_budget" => 20}
+    args = %{"query" => "needle", "project" => "target", "channel_weights" => %{"fts" => 1.0}}
 
-    assert {:error, {:unsupported_filter, ["token_budget"]}} =
+    assert {:error, {:unsupported_filter, ["channel_weights"]}} =
              MemoryFacade.call("recall", args, c.context)
 
     assert {:ok, _} = Memory.forget(%{"id" => target["id"]}, c.opts)

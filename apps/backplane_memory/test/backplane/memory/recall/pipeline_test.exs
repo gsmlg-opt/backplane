@@ -27,6 +27,174 @@ defmodule Backplane.Memory.Recall.PipelineTest do
     :ok
   end
 
+  test "canonical recall keeps real governing source membership and revision, then excludes withdrawal without hiding operator history" do
+    source = %{
+      "integration" => "hermes",
+      "installation_id" => Ecto.UUID.generate(),
+      "profile_id" => "primary",
+      "target" => "memory"
+    }
+
+    mutation = %{
+      "protocol" => "memory_sources.v1",
+      "source" => source,
+      "entry_id" => Ecto.UUID.generate(),
+      "event_id" => Ecto.UUID.generate(),
+      "revision" => 7,
+      "operation" => "upsert",
+      "content" => "Hermes retrieval evidence",
+      "type" => "semantic",
+      "occurred_at" => "2026-10-24T01:00:00Z",
+      "provenance" => %{"role" => "assistant"}
+    }
+
+    assert {:ok, %{canonical_id: id}} = Backplane.Memory.Sources.mutate(mutation, @partition)
+
+    opts = [
+      trace?: false,
+      reranker_opts: [enabled: false],
+      retriever_opts: [
+        channel_fns: %{
+          vector: fn _, _ -> {:unavailable, :down} end,
+          graph: fn _, _ -> {:unavailable, :down} end
+        }
+      ]
+    ]
+
+    plan = Map.merge(@partition, %{query: "Hermes retrieval"})
+    assert {:ok, %{results: [result]}} = Pipeline.run(plan, opts)
+    assert result.id == id
+    assert result.trust == "candidate_inference"
+    assert result.support_complete
+
+    assert [
+             %{
+               "source" => ^source,
+               "entry_id" => entry,
+               "source_revision" => 7,
+               "event_id" => event,
+               "active" => true
+             }
+           ] = result.source_refs
+
+    assert entry == mutation["entry_id"]
+    assert event == mutation["event_id"]
+    assert result.evidence_refs != []
+
+    withdrawal =
+      mutation
+      |> Map.merge(%{
+        "revision" => 8,
+        "event_id" => Ecto.UUID.generate(),
+        "operation" => "withdraw"
+      })
+      |> Map.delete("content")
+
+    assert {:ok, _} = Backplane.Memory.Sources.mutate(withdrawal, @partition)
+    assert {:ok, %{results: []}} = Pipeline.run(plan, opts)
+    assert Enum.any?(Memories.list([], @partition), &(&1.id == id))
+  end
+
+  test "an actual embedded unrelated query can return zero with an inspectable raw-score rejection" do
+    keys = ~w(memory.recall_relevance_vector_model memory.recall_relevance_vector_min)
+    snapshot = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
+
+    on_exit(fn ->
+      for {key, rows} <- snapshot do
+        :ets.delete(:backplane_settings, key)
+        :ets.insert(:backplane_settings, rows)
+      end
+    end)
+
+    model = "provider/calibrated-embedding"
+    :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_model", model})
+    :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_min", 0.6})
+
+    {:ok, memory} =
+      Memories.remember(
+        "Elixir concurrency preference",
+        Map.to_list(@partition) ++ [agent_id: @partition.client_id]
+      )
+
+    repo().update!(
+      Backplane.Memory.Memories.Memory.embed_changeset(
+        memory,
+        [1.0 | List.duplicate(0.0, 2559)],
+        model
+      )
+    )
+
+    assert {:ok, result} =
+             Pipeline.run(Map.merge(@partition, %{query: "tropical marine biology"}),
+               trace?: true,
+               query_embedding_model: model,
+               reranker_opts: [enabled: false],
+               retriever_opts: [
+                 embed_fn: fn _, _, _ -> {:ok, [[0.0, 1.0 | List.duplicate(0.0, 2558)]]} end
+               ]
+             )
+
+    assert result.results == []
+    assert result.channels.vector.count == 1
+    assert {:ok, _, [stored]} = Store.get(result.recall_run_id, @partition)
+    refute stored.selected
+    assert stored.rejection_reason == "below_threshold"
+    assert stored.vector_score == 0.0
+  end
+
+  test "canonical recall preserves current support, source revision and candidate trust without promoting request evidence" do
+    {:ok, memory} =
+      Memories.remember(
+        "Elixir preference",
+        Map.to_list(@partition) ++ [agent_id: @partition.client_id]
+      )
+
+    assert {:ok, result} =
+             Pipeline.run(Map.merge(@partition, %{query: "Elixir"}),
+               trace?: false,
+               reranker_opts: [enabled: false],
+               retriever_opts: [
+                 channel_fns: %{
+                   vector: fn _, _ -> {:unavailable, :down} end,
+                   graph: fn _, _ -> {:unavailable, :down} end
+                 }
+               ]
+             )
+
+    assert [selected] = result.results
+    assert selected.id == memory.id
+    assert selected.policy_version == "current_context.v1"
+    assert selected.trust == "candidate_inference"
+    assert selected.effective_support
+    assert selected.revision == DateTime.to_unix(memory.updated_at, :microsecond)
+    assert selected.source_refs == Backplane.Memory.CurrentContext.result(memory).source_refs
+    assert selected.evidence_refs != []
+    assert selected.relevance_accepted
+  end
+
+  test "unknown calibration rejects semantic-only candidates and preserves useful lexical candidates after the count cap" do
+    unrelated = candidate(content: "unrelated material")
+    lexical = candidate(content: "query preference")
+
+    assert {:ok, result} =
+             Pipeline.run(Map.merge(@partition, %{query: "query"}),
+               trace?: false,
+               query_embedding_model: "uncalibrated-model",
+               post_fusion_opts: [limit: 1],
+               reranker_opts: [enabled: false],
+               retriever_opts: [
+                 channel_fns: %{
+                   fts: fn _, _ -> {:ok, [{lexical, 0.01}]} end,
+                   vector: fn _, _ -> {:ok, [{unrelated, 0.99}, {lexical, 0.2}]} end,
+                   graph: fn _, _ -> {:unavailable, :down} end
+                 }
+               ]
+             )
+
+    assert [%{id: id}] = result.results
+    assert id == lexical.id
+  end
+
   test "FTS-only recall returns normalized provenance-bearing results within budget" do
     candidate = candidate(content: "bounded result", tokens: 5)
 
@@ -179,8 +347,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
               correlation_id: ^correlation_id,
               query_embedding_model: "embed-model",
               reranker_model: "rerank-model"
-            },
-            [stored]} =
+            }, [stored]} =
              Store.get(run_id, @partition)
 
     assert stored.selected
@@ -364,11 +531,22 @@ defmodule Backplane.Memory.Recall.PipelineTest do
   test "a slow semantic query pins the Settings model for selection and persisted trace despite a concurrent change" do
     alias Backplane.Memory.Memories.Memory
     setting = :ets.lookup(:backplane_settings, "memory.embed_model")
+
+    calibration =
+      for key <- ~w(memory.recall_relevance_vector_model memory.recall_relevance_vector_min),
+          into: %{},
+          do: {key, :ets.lookup(:backplane_settings, key)}
+
     previous = Application.get_env(:backplane_memory, :embed_model)
     model = "current-query-model"
     vector = [1.0 | List.duplicate(0.0, 2559)]
 
     on_exit(fn ->
+      for {key, rows} <- calibration do
+        :ets.delete(:backplane_settings, key)
+        :ets.insert(:backplane_settings, rows)
+      end
+
       :ets.delete(:backplane_settings, "memory.embed_model")
       Enum.each(setting, &:ets.insert(:backplane_settings, &1))
 
@@ -397,6 +575,8 @@ defmodule Backplane.Memory.Recall.PipelineTest do
       end
 
     [wanted, historical] = memories
+    :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_model", model})
+    :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_min", 0.8})
     :ets.insert(:backplane_settings, {"memory.embed_model", model})
     Application.put_env(:backplane_memory, :embed_model, "stale-env-model")
 
