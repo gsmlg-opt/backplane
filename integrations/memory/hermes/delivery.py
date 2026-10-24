@@ -57,6 +57,15 @@ class DeliveryJournal:
         """)
         try:
             with self.transaction():
+                # Existing journals already have SQLite insertion rowids. Backfill
+                # them once without touching immutable payloads or wall timestamps.
+                columns = {row[1] for row in self.db.execute('PRAGMA table_info(delivery)')}
+                if 'queue_sequence' not in columns:
+                    self.db.execute('ALTER TABLE delivery ADD COLUMN queue_sequence INTEGER')
+                    self.db.execute('UPDATE delivery SET queue_sequence=rowid')
+                self.db.execute('CREATE UNIQUE INDEX IF NOT EXISTS delivery_order ON delivery(queue_sequence)')
+                last = self.db.execute('SELECT coalesce(max(queue_sequence),0) FROM delivery').fetchone()[0]
+                self.set('sequence:delivery', max(last, int(self.get('sequence:delivery', '0'))))
                 saved = self.get("binding")
                 if saved and saved != canonical_json(binding):
                     raise ValueError("journal_binding_changed")
@@ -110,12 +119,15 @@ class DeliveryJournal:
             count, size = self.db.execute("SELECT count(*),coalesce(sum(length(CAST(payload AS BLOB))),0) FROM delivery WHERE state!='canonical_committed'").fetchone()
             if count >= self.max_pending or size + len(encoded.encode()) > self.max_bytes:
                 raise RuntimeError("delivery_journal_full")
-            self.db.execute("INSERT INTO delivery(event_id,path,payload,digest,created_at) VALUES (?,?,?,?,?)", (event_id, path, encoded, digest, time.time()))
+            self.db.execute("INSERT INTO delivery(event_id,path,payload,digest,created_at,queue_sequence) VALUES (?,?,?,?,?,?)", (event_id, path, encoded, digest, time.time(), self.sequence('delivery')))
         return event_id
 
     def pending(self, *, now=None, limit=32):
         with self.lock:
-            return [dict(row) for row in self.db.execute("SELECT * FROM delivery WHERE state IN ('local_pending','host_accepted') AND next_at<=? ORDER BY created_at,event_id LIMIT ?", (time.time() if now is None else now, limit))]
+            now = time.time() if now is None else now
+            # Unaccepted work in backoff fences all later unsent stages. Already
+            # host-accepted work may poll independently of subsequent handoffs.
+            return [dict(row) for row in self.db.execute("SELECT * FROM delivery WHERE state IN ('local_pending','host_accepted') AND next_at<=? AND queue_sequence<coalesce((SELECT min(queue_sequence) FROM delivery WHERE state='local_pending' AND next_at>?),9223372036854775807) ORDER BY queue_sequence LIMIT ?", (now, now, limit))]
 
     def retry(self, event_id, code, *, now=None):
         with self.transaction():
@@ -151,7 +163,7 @@ class DeliveryJournal:
 
     def prune(self, retain=1024):
         with self.transaction():
-            self.db.execute("DELETE FROM delivery WHERE event_id IN (SELECT event_id FROM (SELECT event_id,row_number() OVER (ORDER BY created_at DESC) AS n,sum(length(CAST(payload AS BLOB))) OVER (ORDER BY created_at DESC) AS bytes FROM delivery WHERE state='canonical_committed') WHERE n>? OR bytes>4194304)", (retain,))
+            self.db.execute("DELETE FROM delivery WHERE event_id IN (SELECT event_id FROM (SELECT event_id,row_number() OVER (ORDER BY queue_sequence DESC) AS n,sum(length(CAST(payload AS BLOB))) OVER (ORDER BY queue_sequence DESC) AS bytes FROM delivery WHERE state='canonical_committed') WHERE n>? OR bytes>4194304)", (retain,))
             self.db.execute("DELETE FROM callbacks WHERE id IN (SELECT id FROM (SELECT id,row_number() OVER (ORDER BY id DESC) AS n,sum(length(CAST(payload AS BLOB))) OVER (ORDER BY id DESC) AS bytes FROM callbacks WHERE processed=1) WHERE n>? OR bytes>4194304)", (retain,))
 
     def close(self):

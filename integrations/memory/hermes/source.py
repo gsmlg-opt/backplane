@@ -9,6 +9,7 @@ import time
 import uuid
 
 from .delivery import canonical_json
+from . import source_contract
 
 
 @contextmanager
@@ -97,6 +98,7 @@ def reconcile(provider, target, *, force=False, dry_run=False):
                 except RuntimeError:
                     journal.set("source-state:" + target, "native_egress_scrub_unavailable")
                     return {"complete": False, "target": target, "error": "native_egress_scrub_unavailable"}
+                source_contract.provenance(wire_provenance)
                 approved_additions = set()
                 ambiguities = 0
                 for row in callbacks:
@@ -153,23 +155,31 @@ def reconcile(provider, target, *, force=False, dry_run=False):
                 plan += [(entry, "upsert", entry["content"]) for key, entry in by_id.items() if key not in current or current[key]["content"] != entry["content"]]
                 if len(all_rows) + sum(entry["entry_id"] not in all_rows for entry in by_id.values()) > 10000:
                     raise RuntimeError("source_identity_journal_full")
+                mutations = []
                 for entry, operation, content in plan:
                     revision = journal.sequence("source:" + target)
                     event_id = str(uuid.uuid4())
                     payload = {**provider._source_common(target), "entry_id": entry["entry_id"], "event_id": event_id, "revision": revision, "operation": operation, "type": "semantic", "occurred_at": provider._now(), "provenance": wire_provenance}
                     if content is not None:
                         payload["content"] = wire_contents[content]
-                    journal.enqueue(event_id, provider._method_path("source_mutate"), payload)
-                    journal.db.execute("INSERT INTO source_entries(target,entry_id,content,active,revision) VALUES (?,?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET content=excluded.content,active=excluded.active,revision=excluded.revision", (target, entry["entry_id"], content if content is not None else entry["content"], int(operation == "upsert"), revision))
-                    journal.db.execute("INSERT OR IGNORE INTO source_aliases VALUES (?,?,?)", (target, entry["content"], entry["entry_id"]))
+                    mutations.append((entry, content, source_contract.payload(payload)))
                 complete = len(desired) == len(entries) and not unresolved
+                snapshot_commands = []
                 if complete:
                     snapshot_entries = [{"entry_id": desired[content]["entry_id"], "content": wire_contents[content], "type": "semantic", "provenance": wire_provenance} for content in entries]
-                    digest = hashlib.sha256(canonical_json(snapshot_entries).encode()).hexdigest()
                     state_digest = hashlib.sha256(canonical_json([(desired[c]["entry_id"], c) for c in entries]).encode()).hexdigest()
                     if force or state_digest != journal.get("snapshot:" + target):
-                        _queue_snapshot(provider, target, snapshot_entries, digest)
+                        snapshot_commands = source_contract.snapshot(provider, target, snapshot_entries)
                         journal.set("snapshot:" + target, state_digest)
+                # Every command is prepared and validated before enqueue or head
+                # updates. The surrounding transaction also rolls back aliases,
+                # revision allocation and callbacks if any preparation fails.
+                for entry, content, payload in mutations:
+                    journal.enqueue(payload['event_id'], provider._method_path("source_mutate"), payload)
+                    journal.db.execute("INSERT INTO source_entries(target,entry_id,content,active,revision) VALUES (?,?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET content=excluded.content,active=excluded.active,revision=excluded.revision", (target, entry["entry_id"], content if content is not None else entry["content"], int(payload['operation'] == "upsert"), payload['revision']))
+                    journal.db.execute("INSERT OR IGNORE INTO source_aliases VALUES (?,?,?)", (target, entry["content"], entry["entry_id"]))
+                for payload in snapshot_commands:
+                    journal.enqueue(payload['event_id'], provider._method_path('source_reconcile'), payload)
                 if callbacks:
                     journal.db.execute("UPDATE callbacks SET processed=1 WHERE target=? AND id<=?", (target, callbacks[-1]["id"]))
                 if ambiguities:
@@ -178,6 +188,9 @@ def reconcile(provider, target, *, force=False, dry_run=False):
                     provider._invalidate_context()
                 journal.set("source-state:" + target, "ready" if complete else "identity_chain_pending")
                 return {"complete": complete, "target": target, "entries": len(entries), "mutations": len(plan), "pending_identity_chains": unresolved}
+    except source_contract.SourceValidationError as error:
+        journal.set('source-state:' + target, str(error))
+        return {'complete':False,'target':target,'error':str(error)}
     except (OSError, UnicodeError):
         if not dry_run:
             journal.set("source-state:" + target, "source_snapshot_unavailable")
@@ -188,24 +201,3 @@ def reconcile(provider, target, *, force=False, dry_run=False):
         if not dry_run:
             journal.set("source-state:" + target, "native_egress_scrub_unavailable")
         return {"complete": False, "target": target, "error": "native_egress_scrub_unavailable"}
-
-
-def _queue_snapshot(provider, target, entries, snapshot_hash):
-    journal = provider._journal
-    pages, page = [], []
-    for entry in entries:
-        if page and (len(page) >= 100 or len(canonical_json(page + [entry]).encode()) > 470000):
-            pages.append(page)
-            page = []
-        page.append(entry)
-    if page:
-        pages.append(page)
-    reconciliation_id = str(uuid.uuid4())
-    common = {**provider._source_common(target), "reconciliation_id": reconciliation_id}
-    def enqueue(body):
-        event_id = str(uuid.uuid4())
-        journal.enqueue(event_id, provider._method_path("source_reconcile"), {**common, "event_id": event_id, **body})
-    enqueue({"phase": "begin", "revision": journal.sequence("source:" + target), "page_count": len(pages), "entry_count": len(entries), "snapshot_hash": snapshot_hash})
-    for index, page in enumerate(pages):
-        enqueue({"phase": "page", "page_index": index, "page_hash": hashlib.sha256(canonical_json(page).encode()).hexdigest(), "entries": page})
-    enqueue({"phase": "commit", "complete": True})

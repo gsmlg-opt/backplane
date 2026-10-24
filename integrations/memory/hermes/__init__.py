@@ -34,6 +34,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:4222"
 DEFAULT_AGENT_ID = "hermes"
 TIMEOUT = 2
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+SOURCE_RECONCILE_INTERVAL = 30
 ERROR_CODES = {
     "invalid_scope", "unknown_scope", "memory_scope_mismatch", "invalid_arguments", "invalid_request",
     "unauthorized", "forbidden", "access_denied", "not_found", "binding_changed", "unknown_scope",
@@ -528,6 +529,7 @@ class BackplaneMemoryProvider(MemoryProvider):
         return bool(rows)
 
     def _worker_loop(self):
+        next_source_reconcile = time.monotonic()
         try:
             while not self._stopping.is_set():
                 try:
@@ -536,11 +538,16 @@ class BackplaneMemoryProvider(MemoryProvider):
                         job = self._prefetch_jobs.popitem(last=False) if self._prefetch_jobs else None
                     if job:
                         self._fetch_context(*job)
-                    for target in ("memory", "user"):
-                        with self._journal.lock:
-                            pending = self._journal.db.execute("SELECT 1 FROM callbacks WHERE target=? AND processed=0 LIMIT 1", (target,)).fetchone()
-                        if pending:
-                            source.reconcile(self, target)
+                    if self._automatic:
+                        now = time.monotonic()
+                        periodic = now >= next_source_reconcile
+                        if periodic:
+                            next_source_reconcile = now + SOURCE_RECONCILE_INTERVAL
+                        for target in ("memory", "user"):
+                            with self._journal.lock:
+                                pending = self._journal.db.execute("SELECT 1 FROM callbacks WHERE target=? AND processed=0 LIMIT 1", (target,)).fetchone()
+                            if periodic or pending:
+                                source.reconcile(self, target)
                     self._journal.prune()
                 except Exception:
                     # Keep diagnostics content-safe. The durable rows stay available.

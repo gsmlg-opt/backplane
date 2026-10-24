@@ -82,6 +82,11 @@ as Hermes, strictly reads the complete UTF-8/BOM-compatible native file, and spl
 entries using `\n§\n`. Missing, inaccessible, undecodable, oversized, unsupported,
 or failed-lock reads defer reconciliation. Only a successfully read empty file
 means an empty source. Reads never create or rewrite native memory files.
+The same tracked delivery worker checks both targets at startup and at a bounded
+30-second interval, so files appearing later and changes with missed callbacks
+converge without a restart. Pending callbacks are retried between periodic checks.
+Non-primary contexts do not perform these automatic scans. The interval is a
+scheduling target; an in-flight transport request or file lock can delay a scan.
 
 Complete old-entry matches must be unambiguous. Ordered callback receipts and
 exact value aliases retain chains such as old → new → third even when the native
@@ -100,6 +105,18 @@ receipts without manufacturing new source evidence. Native batch callbacks have
 no batch-end signal or stable operation IDs; this is convergent source state,
 not a claim of exactly-once interpretation of indistinguishable callbacks.
 
+Preparation follows the frozen host source contract: 262144 UTF-8 bytes per
+complete content, 480000 bytes per complete command including its envelope and
+provenance, 100 entries per page, 100 pages / 10000 entries and 16777216 bytes for
+the flattened encoded snapshot. Provenance also obeys supported fields, text and
+repository-list limits, portable JSON types and reserved ownership restrictions.
+No fact or provenance is cropped. The entire mutation/manifest set is validated
+before the first enqueue; invalid preparation rolls back source heads, aliases,
+revision allocation and delivery writes while retaining the callback for review.
+Safe `source_snapshots` codes distinguish `invalid_source_payload`,
+`source_command_too_large` and `source_snapshot_too_large`. These local deferrals
+require correcting the source/provenance or reducing the selected snapshot.
+
 Native files are private local source mapping data. Before immutable wire payloads
 are hashed/journaled, content and provenance pass Hermes's public
 `agent.memory_manager.redact_for_egress` re-export. The helper's failure sentinel
@@ -114,6 +131,11 @@ SQLite `synchronous=FULL` transaction. One context-preserving tracked worker
 retries transport failures with bounded exponential backoff. A timeout or lost
 ACK resends the exact stored payload. HTTP errors are closed explicitly and only
 safe error codes/statuses enter diagnostics.
+Delivery order uses a durable insertion sequence, independent of equal/backward
+wall clocks or event UUID ordering. Existing journals backfill the sequence from
+their original SQLite insertion order without rewriting payloads. Unaccepted
+work in retry backoff fences later unsent stages, preserving manifest order after
+a lost acknowledgment; host-accepted status polling remains independent.
 
 `memory_delivery_status` / `provider.delivery_status()` distinguish:
 
