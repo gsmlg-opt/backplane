@@ -1954,9 +1954,6 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  defp deliver_now(_state, _name, %{closure: {:uncertain, _}}, _action, _message),
-    do: {:error, Error.new(:unknown_outcome, "agent cleanup is not settled")}
-
   defp deliver_now(state, _name, %{status: :running, pid: pid}, :followup, message),
     do: normalize_delivery(state, Conversation.follow_up(pid, message))
 
