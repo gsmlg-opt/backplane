@@ -170,6 +170,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          settlements: %{},
          settlement_queue: [],
          session_owner: nil,
+         child_sessions: %{},
          session_closed: false,
          child_options: child_options,
          admission_receipt: admission_receipt,
@@ -513,7 +514,10 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp settlement_pin(state, agent),
     do:
-      Map.put(Map.take(agent, [:id, :run_id, :incarnation, :pid]), :manager_id, state.manager_id)
+      Map.merge(Map.take(agent, [:id, :attempt_id, :run_id, :incarnation, :pid]), %{
+        manager_id: state.manager_id,
+        session_binding: get_in(state.child_sessions, [agent.id, :binding])
+      })
 
   defp defer_settlement(state, names, command, from) do
     pins = Map.new(names, &{&1, settlement_pin(state, state.agents[&1])})
@@ -552,7 +556,19 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp start_settlement(state, request) do
     token = make_ref()
     manager = self()
-    agents = Enum.map(request.names, &{&1, state.agents[&1]})
+
+    agents =
+      Enum.map(request.names, fn name ->
+        agent =
+          Map.put(
+            state.agents[name],
+            :managed_session,
+            state.child_sessions[state.agents[name].id]
+          )
+
+        {name, agent}
+      end)
+
     all = request.command == :close_session
 
     spec = %{
@@ -592,20 +608,136 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp collect_settlement([{name, agent}], _all, {:cancel_interaction, correlation, _reason}) do
     cancel = cancel_exact_interaction(agent.pid, correlation)
     snapshot = if cancel == :ok, do: settled_snapshot(agent), else: cancel
-    %{name => %{cancel_result: cancel, settlement_result: snapshot}}
+    evidence = %{cancel_result: cancel, settlement_result: snapshot}
+
+    evidence =
+      if cancel == :ok,
+        do:
+          Map.put(evidence, :session_close_result, close_child_session(agent[:managed_session])),
+        else: evidence
+
+    %{name => evidence}
   end
 
-  defp collect_settlement(agents, all, _command) do
-    Enum.reduce_while(agents, %{}, fn {name, agent}, evidence ->
-      cancel = cancel_agent(agent)
-      snapshot = if cancel in [:ok, :already_closed], do: settled_snapshot(agent), else: cancel
-      next = Map.put(evidence, name, %{cancel_result: cancel, settlement_result: snapshot})
+  defp collect_settlement(agents, _all, _command) do
+    # Fence every Session before any cancellation or cleanup receipt can block.
+    # Run cancellation also starts for every target before waiting on snapshots.
+    fences =
+      Map.new(agents, fn {name, agent} -> {name, fence_child_session(agent[:managed_session])} end)
 
-      if all or match?({:ok, _}, snapshot),
-        do: {:cont, next},
-        else: {:halt, next}
+    cancellations = Map.new(agents, fn {name, agent} -> {name, cancel_agent(agent)} end)
+
+    Map.new(agents, fn {name, agent} ->
+      cancel = cancellations[name]
+
+      snapshot =
+        with :ok <- fences[name],
+             :ok <- normalize_cancel(cancel),
+             do: settled_snapshot(agent)
+
+      close = close_child_session(agent[:managed_session])
+      {name, %{cancel_result: cancel, settlement_result: snapshot, session_close_result: close}}
     end)
   end
+
+  defp fence_child_session(nil), do: :ok
+  defp fence_child_session(%{status: status}) when status in [:rejected, :closed], do: :ok
+
+  defp fence_child_session(entry) do
+    Session.fence_managed_child(Map.take(entry, [:admission, :binding]))
+  catch
+    :exit, reason ->
+      {:error,
+       Error.new(:unknown_outcome, "child Session admission fence acknowledgement unavailable",
+         cause: reason
+       )}
+  end
+
+  defp close_child_session(nil), do: :not_managed
+  defp close_child_session(%{status: :rejected}), do: :not_managed
+  defp close_child_session(%{status: :closed, close_result: result}), do: result
+
+  defp close_child_session(%{binding: binding}) do
+    task =
+      Task.async(fn ->
+        try do
+          Session.close(binding.session)
+        catch
+          :exit, reason ->
+            {:error,
+             Error.new(:unknown_outcome, "child Session close acknowledgement unavailable",
+               cause: reason
+             )}
+        end
+      end)
+
+    case Task.yield(task, @settlement_wait_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, %{status: :confirmed, owner_id: id}} = result} when id == binding.owner_id ->
+        result
+
+      {:ok, {:error, %Error{}} = error} ->
+        error
+
+      _ ->
+        {:error,
+         Error.new(
+           :unknown_outcome,
+           "child Session close acknowledgement timed out or mismatched"
+         )}
+    end
+  end
+
+  defp confirmed_session_close?({:ok, %{status: :confirmed}}), do: true
+  defp confirmed_session_close?(:not_managed), do: true
+  defp confirmed_session_close?(_), do: false
+
+  defp child_session_notification(
+         state,
+         %{admission: %{agent_id: _}, binding: _} = child,
+         notification
+       ) do
+    case state.child_sessions[child.admission.agent_id] do
+      %{binding: binding, admission: admission} = entry
+      when binding == child.binding and admission == child.admission ->
+        case notification do
+          :closing ->
+            state
+
+          {:closed, result} ->
+            confirmed =
+              match?(
+                {:ok, %{status: :confirmed, owner_id: id}} when id == binding.owner_id,
+                result
+              )
+
+            status = if confirmed, do: :closed, else: :uncertain
+
+            state =
+              put_in(state, [:child_sessions, admission.agent_id], %{
+                entry
+                | status: status,
+                  close_result: result
+              })
+
+            case Enum.find(state.agents, fn {_name, agent} -> agent.id == admission.agent_id end) do
+              {name, _} when not confirmed ->
+                reserve_uncertain(
+                  state,
+                  name,
+                  Error.new(:unknown_outcome, "managed child Session close is unconfirmed")
+                )
+
+              _ ->
+                state
+            end
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp child_session_notification(state, _, _), do: state
 
   defp cancel_exact_interaction(pid, correlation) do
     Conversation.cancel_interaction(pid, correlation)
@@ -678,6 +810,27 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         if settlement_pin(acc, agent) == pin and valid_settlement?(supplied, pin),
           do: supplied,
           else: unavailable
+
+      acc =
+        case {acc.child_sessions[agent.id], accepted[:session_close_result]} do
+          {nil, _} ->
+            acc
+
+          {_child, nil} ->
+            acc
+
+          {_child, :not_managed} ->
+            acc
+
+          {child, result} ->
+            status = if confirmed_session_close?(result), do: :closed, else: :uncertain
+
+            put_in(acc, [:child_sessions, agent.id], %{
+              child
+              | status: status,
+                close_result: result
+            })
+        end
 
       put_in(acc, [:agents, name], Map.put(agent, :settlement_evidence, accepted))
     end)
@@ -760,6 +913,45 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   @impl true
+  def handle_info({:cleanup_failed_birth, name, attempt_id}, state) do
+    agent = state.agents[name]
+    entry = state.child_sessions[agent.id]
+
+    if agent.attempt_id == attempt_id and entry != nil do
+      manager = self()
+      # Cleanup runs independently of manager admission and observation calls.
+      worker = fn ->
+        cancel = cancel_agent(agent)
+        close = close_child_session(entry)
+
+        send(
+          manager,
+          {:failed_birth_closed, Map.take(entry, [:admission, :binding]), cancel, close}
+        )
+      end
+
+      DynamicSupervisor.start_child(state.child_supervisor, %{
+        id: make_ref(),
+        start: {Task, :start_link, [worker]},
+        restart: :temporary
+      })
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:failed_birth_closed, identity, _cancel, result}, state) do
+    {:noreply, child_session_notification(state, identity, {:closed, result})}
+  end
+
+  def handle_info({:managed_child_session_closing, child}, state) do
+    {:noreply, child_session_notification(state, child, :closing)}
+  end
+
+  def handle_info({:managed_child_session_closed, child, result}, state) do
+    {:noreply, child_session_notification(state, child, {:closed, result})}
+  end
+
   def handle_info({:codex_bind_input, pid, identity}, state) do
     result =
       cond do
@@ -858,15 +1050,68 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
      )}
   end
 
+  def handle_info({:managed_child_runtime, identity, run_id, event}, state) when is_map(event) do
+    valid =
+      case state.run_index[run_id] do
+        nil ->
+          false
+
+        name ->
+          agent = state.agents[name]
+
+          case state.child_sessions[agent.id] do
+            %{binding: binding, admission: admission} ->
+              identity == %{binding: binding, admission: admission} and
+                admission.run_id == agent.run_id and admission.attempt_id == agent.attempt_id and
+                admission.incarnation == agent.incarnation and
+                event[:incarnation] == agent.incarnation
+
+            _ ->
+              false
+          end
+      end
+
+    state = if valid, do: update_from_event(state, run_id, event), else: state
+    {:noreply, wake_waiters(state)}
+  end
+
   def handle_info({:agent_runtime, run_id, event}, state) when is_map(event) do
-    state = update_from_event(state, run_id, event)
+    managed =
+      case state.run_index[run_id] do
+        nil -> false
+        name -> Map.has_key?(state.child_sessions, state.agents[name].id)
+      end
+
+    state = if managed, do: state, else: update_from_event(state, run_id, event)
     {:noreply, wake_waiters(state)}
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
-    case Enum.find(state.settlements, fn {_, entry} -> entry.monitor == ref end) do
-      {token, _} -> {:noreply, complete_settlement(state, token, %{})}
-      nil -> interaction_or_child_down(state, ref, pid, reason)
+    case Enum.find(state.child_sessions, fn {_id, entry} ->
+           entry.monitor == ref and entry.binding.session == pid
+         end) do
+      {_id, %{status: :closed}} ->
+        {:noreply, state}
+
+      {id, entry} ->
+        error =
+          Error.new(:unknown_outcome, "managed child Session infrastructure stopped",
+            cause: reason
+          )
+
+        state = put_in(state, [:child_sessions, id], %{entry | status: :uncertain})
+
+        case Enum.find(state.agents, fn {_name, agent} -> agent.id == id end) do
+          {name, agent} ->
+            if is_pid(agent.pid), do: send(agent.pid, {:codex_session_close, entry.binding.token})
+            {:noreply, reserve_uncertain(state, name, error)}
+
+          nil ->
+            {:noreply, state}
+        end
+
+      nil ->
+        settlement_or_child_down(state, ref, pid, reason)
     end
   end
 
@@ -890,6 +1135,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   def handle_info(_, state), do: {:noreply, state}
+
+  defp settlement_or_child_down(state, ref, pid, reason) do
+    case Enum.find(state.settlements, fn {_, entry} -> entry.monitor == ref end) do
+      {token, _} -> {:noreply, complete_settlement(state, token, %{})}
+      nil -> interaction_or_child_down(state, ref, pid, reason)
+    end
+  end
 
   defp interaction_or_child_down(state, ref, pid, reason) do
     case Enum.find(state.interaction_deliveries, fn {_token, entry} ->
@@ -1650,9 +1902,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         _ -> Error.new(:unknown_outcome, "agent storage failed")
       end
 
-    state
-    |> invalidate_interaction(name, error)
-    |> publish(:storage_failed, name)
+    state = state |> invalidate_interaction(name, error) |> publish(:storage_failed, name)
+
+    if Map.has_key?(state.child_sessions, state.agents[name].id),
+      do: reserve_uncertain(state, name, error),
+      else: state
   end
 
   defp terminal_message(pid, event) do
@@ -1674,9 +1928,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   defp deliver(state, name, agent, action, message) do
-    if state.session_closed or settling?(state, name) or agent.closure == :in_progress,
-      do: {:error, settlement_conflict()},
-      else: deliver_now(state, name, agent, action, message)
+    cond do
+      match?({:uncertain, _}, agent.closure) ->
+        {:error, Error.new(:unknown_outcome, "agent ownership or execution is unconfirmed")}
+
+      state.session_closed or settling?(state, name) or agent.closure == :in_progress ->
+        {:error, settlement_conflict()}
+
+      true ->
+        deliver_now(state, name, agent, action, message)
+    end
   end
 
   defp deliver_now(state, name, agent, :interrupt_message, message) do
@@ -1833,7 +2094,21 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     opts = Keyword.put(opts, :collaboration_input, %{runtime: self(), name: name})
     attempt = state.admissions[state.agents[name].attempt_id]
 
-    case admission_operation(fn -> start_child(state.child_supervisor, opts) end) do
+    {adoption, state} = adopt_child_session(state, name, opts, attempt)
+    entry = state.child_sessions[state.agents[name].id]
+
+    opts =
+      if entry && entry.status == :accepted,
+        do: Keyword.put(opts, :managed_child_identity, Map.take(entry, [:admission, :binding])),
+        else: Keyword.delete(opts, :managed_child_identity)
+
+    result =
+      case adoption do
+        :ok -> admission_operation(fn -> start_child(state.child_supervisor, opts) end)
+        {:error, _} = error -> error
+      end
+
+    case result do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         agent = %{state.agents[name] | pid: pid, monitor: ref}
@@ -1860,17 +2135,152 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         agent = %{
           state.agents[name]
           | status: {:errored, :startup_failure},
-            execution_reserved: false,
-            closure: :confirmed
+            execution_reserved: adopted_obligation?(state, state.agents[name].id),
+            closure:
+              if(adopted_obligation?(state, state.agents[name].id),
+                do: {:uncertain, error},
+                else: :confirmed
+              )
         }
 
         next = state |> put_in([:agents, name], agent) |> publish(:settled, name)
+
+        next =
+          if adopted_obligation?(state, agent.id),
+            do: update_in(next, [:agents, name], &Map.put(&1, :admission_uncertain, true)),
+            else: next
+
+        if adopted_obligation?(state, agent.id),
+          do: send(self(), {:cleanup_failed_birth, name, attempt.attempt_id})
+
         {error, next} = reject_admission(next, attempt, :failed, error)
         {:error, error, next}
     end
   end
 
+  defp retained_child_session(state, id, opts) do
+    case state.child_sessions[id] do
+      nil ->
+        :ok
+
+      %{status: status} when status in [:closed, :rejected] ->
+        :ok
+
+      %{status: status} when status in [:pending, :uncertain] ->
+        {:error, Error.new(:unknown_outcome, "prior child Session obligation is unconfirmed")}
+
+      %{binding: previous} ->
+        case Keyword.get(opts, :session_binding) do
+          %{session: session, owner_id: owner, incarnation: incarnation}
+          when session == previous.session and owner == previous.owner_id and
+                 incarnation == previous.incarnation ->
+            :ok
+
+          _ ->
+            {:error, Error.new(:resource_conflict, "prior child Session closure is unconfirmed")}
+        end
+    end
+  end
+
+  defp adopt_child_session(state, name, opts, attempt) do
+    agent = state.agents[name]
+    binding = Keyword.get(opts, :session_binding)
+    previous = state.child_sessions[agent.id]
+
+    cond do
+      is_nil(binding) and is_nil(previous) ->
+        {:ok, state}
+
+      is_nil(binding) and previous.status == :closed ->
+        {:ok, state}
+
+      not is_map(binding) or not is_pid(binding[:session]) ->
+        {{:error, Error.new(:forbidden, "managed child requires its retained Session")}, state}
+
+      previous != nil and previous.status != :closed and
+          {previous.binding.session, previous.binding.owner_id, previous.binding.incarnation} !=
+            {binding.session, binding[:owner_id], binding[:incarnation]} ->
+        {{:error, Error.new(:resource_conflict, "prior child Session closure is unconfirmed")},
+         state}
+
+      previous != nil and previous.status in [:pending, :uncertain] ->
+        {{:error, Error.new(:unknown_outcome, "prior Session adoption is unconfirmed")}, state}
+
+      true ->
+        admission = %{
+          manager: self(),
+          manager_id: state.manager_id,
+          agent_id: agent.id,
+          attempt_id: attempt.attempt_id,
+          run_id: attempt.run_id,
+          incarnation: attempt.incarnation
+        }
+
+        monitor =
+          if previous && previous.binding.session == binding.session,
+            do: previous.monitor,
+            else: Process.monitor(binding.session)
+
+        entry = %{
+          binding: binding,
+          admission: admission,
+          authority: Keyword.get(opts, :authority),
+          status: :pending,
+          monitor: monitor,
+          close_result: nil
+        }
+
+        state = put_in(state, [:child_sessions, agent.id], entry)
+
+        result =
+          try do
+            Session.adopt_managed_child(binding, admission, entry.authority)
+          catch
+            :exit, reason ->
+              {:error,
+               Error.new(:unknown_outcome, "child Session adoption acknowledgement unavailable",
+                 cause: reason
+               )}
+          end
+
+        status =
+          case result do
+            :ok -> :accepted
+            {:error, %Error{class: :unknown_outcome}} -> :uncertain
+            {:error, _} -> :rejected
+          end
+
+        if status == :rejected, do: Process.demonitor(monitor, [:flush])
+        entry = %{entry | status: status}
+        {result, put_in(state, [:child_sessions, agent.id], entry)}
+    end
+  end
+
+  defp adopted_obligation?(state, id),
+    do:
+      state.child_sessions[id] != nil and
+        state.child_sessions[id].status in [:accepted, :pending, :uncertain]
+
   defp fail_activation(state, name, attempt, error) do
+    if adopted_obligation?(state, state.agents[name].id) do
+      state = update_in(state, [:agents, name], &Map.put(&1, :admission_uncertain, true))
+
+      state =
+        reserve_uncertain(
+          state,
+          name,
+          Error.new(:unknown_outcome, "managed child admission acknowledgement is unconfirmed")
+        )
+
+      send(self(), {:cleanup_failed_birth, name, attempt.attempt_id})
+      {error, state} = reject_admission(state, attempt, :failed, error)
+      {:error, error, state}
+    else
+      fail_legacy_activation(state, name, attempt, error)
+    end
+  end
+
+  defp fail_legacy_activation(state, name, attempt, error) do
     agent = state.agents[name]
 
     cleanup =
@@ -1930,6 +2340,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
              child_configuration(opts, attempt.run_id, attempt.incarnation),
            {:ok, opts} <- previous_child_limits(opts, previous_run),
            {:ok, opts} <- attribute_child(opts, parent),
+           :ok <- retained_child_session(state, attempt.agent_id, opts),
            do: {:ok, opts, metadata}
     end)
   end
@@ -2092,7 +2503,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp settlement_snapshot(_), do: nil
 
-  defp settled_snapshot(%{settlement_evidence: %{settlement_result: result}}), do: result
+  defp settled_snapshot(%{admission_uncertain: true}),
+    do: {:error, Error.new(:unknown_outcome, "managed child admission is unconfirmed")}
+
+  defp settled_snapshot(%{settlement_evidence: %{settlement_result: result} = evidence}) do
+    if confirmed_session_close?(Map.get(evidence, :session_close_result, :not_managed)),
+      do: result,
+      else: {:error, Error.new(:unknown_outcome, "child Session cleanup is unconfirmed")}
+  end
 
   defp settled_snapshot(%{snapshot: snapshot, snapshot_identity: identity, run_id: run_id})
        when is_map(snapshot) and is_map(identity) do
@@ -2199,12 +2617,15 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp cancel_owned_tree(state, name, :close) do
     names = [name | descendant_names(state, name)]
 
-    Enum.reduce_while(names, {:ok, state}, fn child_name, {:ok, acc} ->
-      case Map.fetch(acc.agents, child_name) do
-        :error ->
-          {:cont, {:ok, acc}}
+    {state, errors} =
+      Enum.reduce(names, {state, []}, fn child_name, {acc, errors} ->
+        agent = acc.agents[child_name]
 
-        {:ok, _agent} ->
+        if agent.closure == :confirmed do
+          closed = %{agent | status: :shutdown}
+          acc = put_in(acc, [:agents, child_name], closed)
+          {publish(acc, :closed, child_name), errors}
+        else
           acc =
             invalidate_interaction(
               acc,
@@ -2212,71 +2633,38 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
               Error.new(:resource_conflict, "agent is closing")
             )
 
-          agent = acc.agents[child_name]
+          result =
+            with :ok <- normalize_cancel(cancel_agent(agent)),
+                 {:ok, closed} <- maybe_close_child(acc, agent, :close),
+                 do: {:ok, closed}
 
-          if agent.closure == :confirmed do
-            acc =
-              if agent.status != :shutdown and agent.pid == nil and not agent.execution_reserved do
-                closed = %{agent | status: :shutdown}
+          case result do
+            {:ok, closed} ->
+              acc = put_in(acc, [:agents, child_name], %{closed | status: :shutdown})
 
+              acc = %{
                 acc
-                |> put_in([:agents, child_name], closed)
-                |> Map.update!(:updates, &MapSet.put(&1, child_name))
-                |> publish(:closed, child_name)
-              else
-                acc
-              end
+                | monitors: maybe_delete_monitor(acc.monitors, agent.monitor),
+                  updates: MapSet.put(acc.updates, child_name)
+              }
 
-            {:cont, {:ok, acc}}
-          else
-            agent = %{agent | closure: :in_progress}
+              {publish(acc, :closed, child_name), errors}
 
-            acc = put_in(acc, [:agents, child_name], agent)
-
-            case cancel_agent(agent) do
-              :ok ->
-                case maybe_close_child(acc, agent, :close) do
-                  {:ok, closed_agent} ->
-                    closed_agent = %{closed_agent | status: :shutdown}
-                    acc = put_in(acc, [:agents, child_name], closed_agent)
-                    acc = publish(acc, :closed, child_name)
-
-                    {:cont,
-                     {:ok,
-                      %{
-                        acc
-                        | monitors: maybe_delete_monitor(acc.monitors, closed_agent.monitor),
-                          updates: MapSet.put(acc.updates, child_name)
-                      }}}
-
-                  {:error, %Error{} = error} ->
-                    uncertain = %{agent | status: :interrupted, closure: {:uncertain, error}}
-                    acc = put_in(acc, [:agents, child_name], uncertain)
-                    acc = publish(acc, :cleanup_uncertain, child_name)
-
-                    {:halt,
-                     {:error, error, %{acc | updates: MapSet.put(acc.updates, child_name)}}}
-                end
-
-              :already_closed ->
-                {:cont, {:ok, acc}}
-
-              {:error, %Error{} = error} ->
-                acc =
-                  put_in(acc, [:agents, child_name], %{
-                    agent
-                    | status: :interrupted,
-                      closure: {:uncertain, error}
-                  })
-
-                acc = publish(acc, :cleanup_uncertain, child_name)
-
-                {:halt, {:error, error, acc}}
-            end
+            {:error, %Error{} = error} ->
+              acc = put_in(acc, [:agents, child_name, :status], :interrupted)
+              {reserve_uncertain(acc, child_name, error), [error | errors]}
           end
-      end
-    end)
+        end
+      end)
+
+    case errors do
+      [] -> {:ok, state}
+      [error | _] -> {:error, error, state}
+    end
   end
+
+  defp normalize_cancel(:already_closed), do: :ok
+  defp normalize_cancel(result), do: result
 
   defp maybe_close_child(state, %{pid: pid} = agent, :close) when is_pid(pid) do
     with {:ok, snapshot} <- settled_snapshot(agent),
@@ -2395,7 +2783,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       Map.has_key?(operation, :collaboration_binding) ->
         {:error, Error.new(:forbidden, "bound collaboration requires call_bound/2")}
 
-      bound_policy ->
+      bound_policy or (name != nil and Map.has_key?(state.child_sessions, state.agents[name].id)) ->
         wait = %{
           default: state.default_wait_timeout_ms,
           min: state.min_wait_timeout_ms,
@@ -2493,18 +2881,38 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     |> Map.update(:tool_revisions, %{}, &Map.take(&1, names))
   end
 
-  defp bound_session_owner(%{session_owner: nil}, _caller, _owner, _operation),
-    do: {:error, Error.new(:forbidden, "bound collaboration requires a session owner")}
-
   defp bound_session_owner(state, caller, owner, operation) do
     valid =
       case owner do
         %{owner_id: id, incarnation: incarnation} ->
-          state.session_owner == {id, incarnation}
+          if caller.name == state.parent_name do
+            state.session_owner == {id, incarnation}
+          else
+            agent = state.agents[caller.name]
+
+            case state.child_sessions[agent.id] do
+              %{status: :accepted, binding: binding, admission: admission} ->
+                id == binding.owner_id and incarnation == binding.incarnation and
+                  owner[:owner_pid] == binding.owner_pid and
+                  owner[:session_binding] == binding and
+                  admission.attempt_id == agent.attempt_id and
+                  admission.run_id == agent.run_id and admission.incarnation == agent.incarnation
+
+              nil ->
+                is_nil(Keyword.get(agent.opts, :session_binding)) and
+                  state.session_owner == {id, incarnation}
+
+              _ ->
+                false
+            end
+          end
 
         nil when caller.name != state.parent_name ->
-          state.agents[caller.name].pid ==
-            get_in(operation, [:backend_context, :resource_owner_pid])
+          agent = state.agents[caller.name]
+
+          is_nil(Keyword.get(agent.opts, :session_binding)) and
+            not adopted_obligation?(state, agent.id) and
+            agent.pid == get_in(operation, [:backend_context, :resource_owner_pid])
 
         _ ->
           false
@@ -2610,19 +3018,20 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       name = state.run_index[run_id] ->
         agent = state.agents[name]
 
-        if agent.run_id == run_id and agent.status == :running and not settling?(state, name),
-          do:
-            {:ok,
-             %{
-               name: name,
-               agent_id: agent.id,
-               incarnation: agent.incarnation,
-               run_id: run_id,
-               authority: current_child_authority(state, agent),
-               goal: Keyword.get(agent.opts, :goal),
-               goal_binding: Keyword.get(agent.opts, :goal_binding)
-             }},
-          else: {:error, Error.new(:forbidden, "stale collaboration run")}
+        if agent.run_id == run_id and agent.status == :running and agent.closure == :open and
+             not settling?(state, name),
+           do:
+             {:ok,
+              %{
+                name: name,
+                agent_id: agent.id,
+                incarnation: agent.incarnation,
+                run_id: run_id,
+                authority: current_child_authority(state, agent),
+                goal: Keyword.get(agent.opts, :goal),
+                goal_binding: Keyword.get(agent.opts, :goal_binding)
+              }},
+           else: {:error, Error.new(:forbidden, "stale collaboration run")}
 
       true ->
         {:error, Error.new(:forbidden, "collaboration caller is not in this run tree")}

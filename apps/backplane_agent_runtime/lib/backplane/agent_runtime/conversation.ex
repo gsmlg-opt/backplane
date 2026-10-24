@@ -3042,8 +3042,15 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     event = Map.merge(event, metadata)
 
-    if pid = Keyword.get(s.opts, :subscriber),
-      do: send(pid, {:agent_runtime, s.run.run_id, event})
+    if pid = Keyword.get(s.opts, :subscriber) do
+      message =
+        case Keyword.get(s.opts, :managed_child_identity) do
+          nil -> {:agent_runtime, s.run.run_id, event}
+          identity -> {:managed_child_runtime, identity, s.run.run_id, event}
+        end
+
+      send(pid, message)
+    end
 
     :ok
   end
