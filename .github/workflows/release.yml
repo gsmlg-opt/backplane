@@ -155,6 +155,11 @@ jobs:
           elixir test/build_web_assets_script_test.exs
           mix run --no-start test/web_assets_test.exs
 
+      - name: Verify Hermes provider contract
+        run: >-
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover
+          -s integrations/memory/tests -p 'test_hermes*.py' -v
+
       - name: Prepare qualification database
         run: |
           mix ecto.create
@@ -250,6 +255,14 @@ jobs:
             apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs \
             apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs \
             apps/backplane_api/test/backplane/api/memory_v2_edge_qualification_test.exs
+
+      - name: Verify Hermes source lifecycle
+        run: |
+          mix test \
+            apps/backplane_memory_contract/test/backplane/memory_source_contract_test.exs \
+            apps/backplane_memory/test/backplane/memory/sources_test.exs \
+            apps/backplane_memory/test/backplane/memory/source_commands_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/access_test.exs
 
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
@@ -433,6 +446,24 @@ jobs:
               Turso.query(pid, "SELECT 1 AS value")
             GenServer.stop(pid)
           '
+
+      - name: Verify packaged Hermes provider
+        if: matrix.release == 'host_agent'
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          roots = list(Path('_build/prod/rel/host_agent/lib').glob(
+              'backplane_host_agent-*/priv/integrations/memory'))
+          if len(roots) != 1:
+              raise SystemExit('expected one packaged memory integration directory')
+          subprocess.run([
+              sys.executable, '-B', '-m', 'unittest', 'discover',
+              '-s', str(roots[0] / 'tests'), '-p', 'test_hermes*.py', '-v',
+          ], check=True)
+          PY
 
       - name: Archive OTP release
         shell: bash
