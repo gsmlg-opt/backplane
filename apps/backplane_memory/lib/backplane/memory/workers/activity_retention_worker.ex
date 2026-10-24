@@ -30,12 +30,14 @@ defmodule Backplane.Memory.Workers.ActivityRetentionWorker do
     daily_deleted = delete_batch("memory_activity_daily", cutoff, batch_size)
     continued = contributions_deleted == batch_size or daily_deleted == batch_size
 
-    Audit.log("memory.activity.purge", "system", [Date.to_iso8601(cutoff)], %{
-      cutoff: Date.to_iso8601(cutoff),
-      contributions_deleted: contributions_deleted,
-      daily_deleted: daily_deleted,
-      bounded: true
-    })
+    if contributions_deleted > 0 or daily_deleted > 0 do
+      Audit.log("memory.activity.purge", "system", [Date.to_iso8601(cutoff)], %{
+        cutoff: Date.to_iso8601(cutoff),
+        contributions_deleted: contributions_deleted,
+        daily_deleted: daily_deleted,
+        bounded: true
+      })
+    end
 
     if continued do
       %{"today" => Date.to_iso8601(today), "batch_size" => batch_size}
