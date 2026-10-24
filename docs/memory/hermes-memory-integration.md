@@ -223,9 +223,18 @@ turns cannot be reconstructed without originals.
 The bounded journal worker retains immutable deliveries through process exit,
 host outages and lost acknowledgments. Retryable transport failures use bounded
 backoff; terminal authority/validation failures remain rejected for inspection.
-Shutdown has a bounded drain/join and does not determine durability. Observable
+HTTP uses a 20-second socket timeout; asynchronous prefetch still consumes its
+cache promptly. Shutdown drains for up to two seconds and joins for up to three.
+An in-flight worker retains its journal until finalization; worker and caller
+coordinate final closure under the journal lock. The worker stops before another
+queued phase after observing shutdown. Restart recovery does not depend on
+shutdown completing. Observable
 states distinguish local pending, host accepted, canonical committed and rejected.
 Diagnostics expose safe codes/identities, not memory bodies or credentials.
+Command sync checks both the provider channel and the Access-selected channel
+before claiming a durable command. A known-dead channel is offline and consumes
+no attempt; a channel that fails during an actual push follows the normal retry
+budget. Reconnect retains the original command payload, digest and identity.
 
 Automatic context shares one eligibility policy across canonical reads, edge
 mirrors, provisional overlays and provider caches. Deleted, expired, archived,
@@ -248,6 +257,19 @@ their request evidence is `derives` with score `0.0`, and the request keeps its
 actual origin and `independent_support=false`. Mutation, summary and event roots
 remain the governing evidence. This change does not backfill historical request
 receipts or infer missing legacy source identities.
+
+The fact-extraction prompt requests concrete subjects, values and qualifiers,
+including durable user or project preferences learned in one session. It directs
+the model to resolve first-person claims to their speaker, preserve explicit
+scope, separate incidental provenance, follow user corrections in evidence order
+and omit rejected assistant guesses, incidental chat and processing metadata.
+Extraction now permits any number of supported facts, including none, instead of
+requiring a minimum of three. These are model
+instructions, not additional confirmation: evidence and current-context policy
+still determine each record's support and trust.
+The policy is sent as a system message, with the exact summary in a separate user
+message. This separates instructions from evidence without changing the public
+fact-list result or treating an assistant acknowledgment as user confirmation.
 
 Relevance rejection uses lexical evidence or calibrated raw semantic/reranker
 scores tied to the configured model, not rank-fusion scores as probabilities.
@@ -314,6 +336,15 @@ support after withdrawals have been applied; it can expose obsolete content.
 
 ## Verification and release evidence
 
+The current local checkpoint remains incomplete: the normal real-model scenario
+passes 13 of 14 gates and fails `derived_current_user_correction_missing`.
+Independent checks passed the 78-test Python suite, 74-test semantic oracle,
+eight workflow-contract tests, 32 release-configuration tests, seven host
+HTTP/packaged-client compatibility tests, repository formatting and strict Credo
+for the ten changed Elixir files. The owning processing regression selection
+passed 61 tests and edge-sync regressions passed 42 tests. These local results
+are separate from CI, publication and installation evidence.
+
 The working tree based on `main@2628e085` passed the combined backend selection:
 536 tests, zero failures (contract 4, Memory 330, Host Agent 163, API 39). This
 includes the previously failing native-source recall, request/derived evidence,
@@ -348,10 +379,12 @@ A separate real HTTP/WebSocket diagnostic deliberately advanced the fixture
 timestamp between channel reads with real embeddings and normal tracing. It
 returned corrected context without obsolete content in three successful HTTP 200
 requests (1.895, 3.642 and 2.968 seconds), using an explicit 20-second diagnostic
-deadline. This closes the backend race but does not prove plugin acceptance: the
-unchanged plugin still uses a two-second deadline. Its deadline repair awaits
-completion before full provider acceptance can pass. All owned resources were
-cleaned and independently checked again.
+deadline. This isolated the backend race. The production provider now uses a
+20-second socket timeout and a synchronized worker/journal closure handoff.
+Five focused slow-HTTP, lost-ACK/restart and shutdown tests passed; the complete
+source and isolated copied-package suites subsequently passed 78 tests each,
+including merged-context budget and session-continuity fixtures. All owned
+diagnostic resources were cleaned and independently checked.
 
 The context observer now follows the provider's current cache generation and
 requires a fresh, completed result under the same session and binding, including
@@ -361,8 +394,46 @@ over owned loopback HTTP reproduced the old-generation and diagnostic failures
 before the correction. Five checks then passed: generation recovery, fixed-code
 diagnostics, initial correction-failure diagnostics, rejection of expired/failed
 cache results, and rejection of session changes. This verifies the observer;
-neither the full scenario nor the native-context boundary was rerun, and the
-production provider deadline is unchanged.
+this controlled observer check alone does not establish canonical acceptance.
+
+The subsequent full real-model scenario passed authenticated HTTP/WebSocket,
+native replacement/withdrawal context, immutable replay/conflict, corrected and
+unrelated context, and actual Hermes checkpoint refusal/retry. It failed outage
+settlement: the host command syncer admitted a cached channel PID after that
+process had exited, exhausting transport retries while the connection owner was
+suspended. Capture upload retained pending events without consuming retries.
+The harness also accepted cached negotiation flags as recovery readiness. The
+syncer now checks channel liveness before claiming, and recovery readiness checks
+a fresh live channel/socket/generation plus actual connectivity. Focused host
+regressions passed 278 tests, and the next actual full scenario passed socket
+outage/provider restart, full host restart, canonical capture/projection,
+post-capture context and global forgetting. Real summary/extraction reached the
+semantic assertion for an assistant mistake. Guarded diagnostics now retain
+bounded current-summary/event/request lineage before semantic checks, so cleanup
+does not erase the failing synthetic facts. The bounded oracle checks each
+statement independently: a refuted assistant guess or qualified generic
+possibility cannot substitute for the required user's corrected preference.
+
+The latest normal real-model scenario still passed only 13 of 14 gates. Its
+complete, current nine-event summary contains the user's correction, but the
+derived fact adds an incidental correlation identifier as the preference's
+scope. The gate remains red with `derived_current_user_correction_missing`.
+Removing the forced fact count, clarifying attribution/provenance, adding a
+neutral example and separating system rules from user evidence did not resolve
+that behavior. The owning LLM/summary/episodic/Hermes regression selection passed
+61 tests; those request-contract checks do not establish model compliance.
+
+A separate owned diagnostic observed the production final
+`HttpClient` -> `HTTP.fetch` request: the configured `openai/gpt-4.1-mini`, system
+policy and exact retained synthetic summary were preserved. The actual HTTP 200
+response still attached the incidental identifier as scope. This establishes an
+extraction-compliance blocker for that request, rather than a missing policy in
+the final transport. The diagnostic bypassed database-backed routing/auth
+selection and does not replace full acceptance. A source-linked subject/scope
+validation design remains unresolved; further prompt-only tuning is unsupported
+by the observed failures. Retry limits and terminal delivery states remain
+authoritative. Owned databases, fixture directories and observed processes were
+independently confirmed absent after the latest runs.
 
 Full live acceptance remains open; passing backend tests do not replace it. The published
 `v1.10.35` release targets upstream `ab8f2f5d`, which excludes this local Hermes
