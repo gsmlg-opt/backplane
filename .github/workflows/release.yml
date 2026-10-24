@@ -262,7 +262,26 @@ jobs:
             apps/backplane_memory_contract/test/backplane/memory_source_contract_test.exs \
             apps/backplane_memory/test/backplane/memory/sources_test.exs \
             apps/backplane_memory/test/backplane/memory/source_commands_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/access_test.exs
+            apps/backplane_memory/test/backplane/memory/workers/hermes_pipeline_test.exs \
+            apps/backplane_memory/test/backplane/memory/workers/episodic_worker_test.exs \
+            apps/backplane_memory/test/backplane/memory/memories/evidence_test.exs \
+            apps/backplane_memory/test/backplane/memory/memories/evidence_concurrency_test.exs \
+            apps/backplane_memory/test/backplane/memory/recall/relevance_test.exs \
+            apps/backplane_memory/test/backplane/memory/recall/fusion_test.exs \
+            apps/backplane_memory/test/backplane/memory/recall/retriever_test.exs \
+            apps/backplane_memory/test/backplane/memory/recall/pipeline_test.exs \
+            apps/backplane_memory/test/backplane/memory/recall/selection_test.exs \
+            apps/backplane_memory/test/backplane/memory/memories/search_test.exs \
+            apps/backplane_memory/test/backplane/memory/memories/search_expansion_test.exs \
+            apps/backplane_memory/test/backplane/memory/exact_read_test.exs \
+            apps/backplane_memory/test/backplane/memory/config_test.exs \
+            apps/backplane_memory/test/backplane/memory/service_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/access_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/hermes_hook_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/spool_turso_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/context_packer_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory_facade_test.exs \
+            apps/backplane_api/test/backplane/api/host_agent_memory_sync_test.exs
 
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
