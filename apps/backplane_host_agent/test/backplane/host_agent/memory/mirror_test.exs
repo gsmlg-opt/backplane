@@ -454,19 +454,22 @@ defmodule Backplane.HostAgent.Memory.MirrorTest do
     assert {:ok, %{"items" => []}} =
              Mirror.offline_read("list", Map.put(@partition, "q", "missing"), c.opts)
 
-    assert {:ok, %{"items" => [%{"canonical_id" => "a"}]}} =
+    assert {:error, :invalid_arguments} =
              Mirror.offline_read(
                "recall",
                Map.merge(@partition, %{"query" => "NEIGHBOR", "q" => "sentinel"}),
                c.opts
              )
+
+    assert {:ok, %{"items" => [%{"canonical_id" => "a"}]}} =
+             Mirror.offline_read("recall", Map.put(@partition, "query", "NEIGHBOR"), c.opts)
   end
 
   test "offline list q uses the existing query type and byte bounds", c do
     assert {:ok, _} = Mirror.apply_delivery(delta(1, [upsert(1, "a", "source")]), c.opts)
 
     for invalid <- [nil, false, 1, [], %{}, String.duplicate("x", 4097)] do
-      assert {:error, :invalid_request} =
+      assert {:error, :invalid_arguments} =
                Mirror.offline_read("list", Map.put(@partition, "q", invalid), c.opts)
     end
 

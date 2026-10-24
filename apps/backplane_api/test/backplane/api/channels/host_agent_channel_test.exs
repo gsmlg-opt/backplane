@@ -757,6 +757,28 @@ defmodule Backplane.Api.HostAgentChannelTest do
       %{socket: socket}
     end
 
+    test "get forwards only the exact canonical selector through the authenticated service", %{
+      socket: socket,
+      host: host
+    } do
+      id = Ecto.UUID.generate()
+      args = %{"id" => id, "project" => "backplane"}
+      ref = push(socket, "memory_call", %{"method" => "get", "arguments" => args})
+      assert_reply(ref, :ok, %{"ok" => true, "result" => %{"echo" => "get"}})
+      assert_received {:memory_service, {:get, ^args, auth}}
+      assert auth.principal_metadata["memory_partition_id"] == "host:" <> host.id
+      assert "memory.read" in auth.scopes
+
+      ref =
+        push(socket, "memory_call", %{
+          "method" => "get",
+          "arguments" => Map.put(args, "scope", host.memory_scope)
+        })
+
+      assert_reply(ref, :ok, %{"ok" => false, "error" => "invalid_arguments"})
+      refute_received {:memory_service, _}
+    end
+
     test "remember derives the canonical host partition outside wire arguments",
          %{host: host, socket: socket} do
       ref =

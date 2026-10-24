@@ -5,6 +5,7 @@ defmodule Backplane.MemoryToolContract do
     memory::facet_query
     memory::facet_tag
     memory::forget
+    memory::get
     memory::list
     memory::recall
     memory::remember
@@ -68,7 +69,7 @@ defmodule Backplane.MemoryToolContract do
   @read_tools ~w(
     memory::access_log memory::activity_summary memory::crystal_get memory::crystal_list
     memory::crystal_search memory::expand_query memory::facet_query memory::file_history
-    memory::graph_query memory::graph_stats memory::list memory::lesson_recall memory::patterns
+    memory::get memory::graph_query memory::graph_stats memory::list memory::lesson_recall memory::patterns
     memory::profile memory::recall memory::recall_explain memory::relations memory::sessions
     memory::slot_list memory::slot_read memory::smart_search memory::stats memory::team_feed
     memory::timeline memory::verify
@@ -132,7 +133,10 @@ defmodule Backplane.MemoryToolContract do
   def metadata(name) do
     with {:ok, permission} <- permission(name),
          class when class != :unknown <- route_class(name) do
-      {:ok, %{"backplane" => Map.merge(%{"permission" => permission}, route_metadata(class))}}
+      route =
+        if name == "memory::get", do: route_metadata(:server_only), else: route_metadata(class)
+
+      {:ok, %{"backplane" => Map.merge(%{"permission" => permission}, route)}}
     else
       _ -> :error
     end
@@ -209,6 +213,36 @@ defmodule Backplane.MemoryToolContract do
         "properties" => %{
           "id" => %{"type" => "string"},
           "memory_access_id" => @memory_access_id_schema
+        },
+        "required" => ["id"]
+      }
+    },
+    "memory::get" => %{
+      name: "memory::get",
+      description:
+        "Read a complete canonical memory by its UUID. Requires an online canonical read.",
+      input_schema: %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "properties" => %{
+          "id" => %{"type" => "string", "format" => "uuid"},
+          "memory_access_id" => @memory_access_id_schema,
+          "project" => %{"type" => "string", "minLength" => 1, "maxLength" => 1_024},
+          "source" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "minProperties" => 1,
+            "properties" =>
+              Map.new(
+                ~w(repository_id checkout_root cwd),
+                &{&1,
+                 %{
+                   "type" => "string",
+                   "minLength" => 1,
+                   "maxLength" => 4_096
+                 }}
+              )
+          }
         },
         "required" => ["id"]
       }

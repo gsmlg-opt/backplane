@@ -11,7 +11,7 @@ defmodule Backplane.HostAgent.Services.Memory do
   alias Backplane.HostAgent.Memory.Store
   alias Backplane.MemoryToolContract
 
-  @facade_methods ~w(remember recall list forget stats facet_tag facet_query)
+  @facade_methods ~w(remember recall list get forget stats facet_tag facet_query)
 
   @impl true
   def prefix, do: "memory"
@@ -42,8 +42,8 @@ defmodule Backplane.HostAgent.Services.Memory do
          &Map.has_key?(args, &1)
        ) or
          (Map.has_key?(args, "memory_access_id") and
-            method not in ~w(remember recall list forget stats)) do
-      {:error, :invalid_request}
+            method not in ~w(remember recall list get forget stats)) do
+      {:error, if(method == "get", do: :invalid_arguments, else: :invalid_request)}
     else
       if method in @facade_methods do
         call_facade(method, args, ctx)
@@ -54,7 +54,7 @@ defmodule Backplane.HostAgent.Services.Memory do
   end
 
   defp call_facade(method, args, ctx) do
-    with {:ok, context} <- facade_context(ctx, args) do
+    with {:ok, context} <- facade_context(ctx, args, method) do
       case facade(ctx).call(method, args, context) do
         {:ok, %{} = result} -> {:ok, result}
         {:ok, other} -> {:error, {:memory_facade_unavailable, {:unexpected_reply, {:ok, other}}}}
@@ -155,14 +155,14 @@ defmodule Backplane.HostAgent.Services.Memory do
 
   defp facade(ctx), do: Map.get(ctx, :memory_facade, MemoryFacade)
 
-  defp facade_context(ctx, args) do
+  defp facade_context(ctx, args, method) do
     context =
       ctx
       |> Map.put_new(:agent_id, "local")
       |> Map.put_new(:store, Application.get_env(:backplane_host_agent, :memory_store, Store))
       |> Map.put_new(:config, Application.get_env(:backplane_host_agent, :memory_config, %{}))
 
-    if Map.has_key?(args, "memory_access_id") do
+    if method == "get" or Map.has_key?(args, "memory_access_id") do
       {:ok, context}
     else
       case EdgeSyncer.read_context(args) do

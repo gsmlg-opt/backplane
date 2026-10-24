@@ -236,7 +236,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
   end
 
   defmodule RemoteNestedTransport do
-    def call(_method, %{"reason" => reason}, _opts), do: {:error, reason}
+    def call(_method, _args, _opts), do: {:error, Process.get(:facade_transport_reason)}
   end
 
   defmodule RemoteUnauthorized do
@@ -346,7 +346,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     end
 
     assert {:ok, %{"partition_revision" => 9, "last_sync_age_seconds" => 2}} =
-             MemoryFacade.call("recall", %{}, %{
+             MemoryFacade.call("recall", %{"query" => "canonical"}, %{
                agent_id: "codex",
                remote_adapter: RevisionRemote,
                local_adapter: EmptyOverlay
@@ -994,6 +994,8 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
     ]
 
     for reason <- reasons do
+      Process.put(:facade_transport_reason, reason)
+
       assert {:ok,
               %{
                 "mode" => "offline",
@@ -1003,7 +1005,7 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
               }} =
                MemoryFacade.call(
                  "recall",
-                 %{"reason" => reason},
+                 %{"query" => "pending"},
                  %{
                    agent_id: "codex",
                    remote_adapter: RemoteNestedTransport,
@@ -1029,10 +1031,12 @@ defmodule Backplane.HostAgent.MemoryFacadeTest do
           :closed,
           :disconnected
         ] do
+      Process.put(:facade_transport_reason, reason)
+
       assert {:ok, %{"mode" => "offline"}} =
                MemoryFacade.call(
                  "recall",
-                 %{"reason" => reason},
+                 %{"query" => "pending"},
                  %{
                    agent_id: "codex",
                    remote_adapter: RemoteNestedTransport,

@@ -47,22 +47,46 @@ defmodule Backplane.HostAgent.Memory.Mirror do
     with :ok <- protection(opts),
          true <- operation in ["recall", "list", "stats"] and is_map(args),
          true <- partition?(Map.take(args, ["memory_space_id", "scope", "namespace"])),
-         true <- is_integer(Map.get(args, "limit", 20)) and Map.get(args, "limit", 20) > 0,
-         true <-
-           is_binary(Map.get(args, "query", "")) and byte_size(Map.get(args, "query", "")) <= 4096,
-         true <-
-           operation != "list" or
-             (is_binary(Map.get(args, "q", "")) and byte_size(Map.get(args, "q", "")) <= 4096) do
+         {:ok, normalized} <- normalize_read(operation, args) do
+      default_limit = if operation == "list", do: 50, else: 10
+
       Store.read(
         store(opts),
         operation,
-        Map.put(args, "limit", min(Map.get(args, "limit", 20), 100)),
+        Map.put(normalized, "limit", min(Map.get(normalized, "limit", default_limit), 100)),
         Keyword.get(opts, :access_target)
       )
     else
       false -> {:error, :invalid_request}
       error -> error
     end
+  end
+
+  defp normalize_read("stats", args), do: {:ok, args}
+
+  defp normalize_read(operation, args) do
+    partition = Map.take(args, ["memory_space_id", "scope", "namespace"])
+
+    with true <- bounded_queries?(args),
+         {:ok, normalized} <-
+           Backplane.MemoryReadRequest.validate(
+             operation,
+             Map.drop(args, ["memory_space_id", "scope", "namespace"])
+           ) do
+      {:ok, Map.merge(normalized, partition)}
+    else
+      false -> {:error, :invalid_arguments}
+      error -> error
+    end
+  end
+
+  defp bounded_queries?(args) do
+    Enum.all?(~w(query q), fn key ->
+      case Map.fetch(args, key) do
+        :error -> true
+        {:ok, value} -> is_binary(value) and byte_size(value) <= 4096
+      end
+    end)
   end
 
   defp protection(opts) do

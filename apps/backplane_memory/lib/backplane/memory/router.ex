@@ -30,6 +30,10 @@ defmodule Backplane.Memory.Router do
     tool_response(conn, "memory::graph_stats", conn.query_params)
   end
 
+  get "/memories/:id" do
+    tool_response(conn, "memory::get", Map.put(conn.query_params, "id", id))
+  end
+
   get "/profile" do
     project = conn.query_params["project"] || ""
 
@@ -291,6 +295,7 @@ defmodule Backplane.Memory.Router do
   end
 
   defp request_tool("GET", ["graph", "stats"]), do: "memory::graph_stats"
+  defp request_tool("GET", ["memories", _id]), do: "memory::get"
   defp request_tool("GET", ["profile"]), do: "memory::profile"
   defp request_tool("POST", ["query", "expand"]), do: "memory::expand_query"
   defp request_tool("POST", ["lessons"]), do: "memory::lesson_save"
@@ -328,6 +333,11 @@ defmodule Backplane.Memory.Router do
         |> put_resp_content_type("application/json")
         |> send_resp(200, Jason.encode!(rest_result(tool, result)))
 
+      {:error, reason} when tool == "memory::get" ->
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(get_error_status(reason), Jason.encode!(%{error: get_error_code(reason)}))
+
       {:error, :unauthorized} ->
         conn
         |> put_resp_content_type("application/json")
@@ -344,6 +354,16 @@ defmodule Backplane.Memory.Router do
         |> send_resp(400, Jason.encode!(%{error: format_error(reason)}))
     end
   end
+
+  defp get_error_status(:not_found), do: 404
+  defp get_error_status(:unauthorized), do: 403
+  defp get_error_status(:canonical_unavailable), do: 503
+  defp get_error_status(:payload_too_large), do: 413
+  defp get_error_status(:unsupported_operation), do: 501
+  defp get_error_status(_reason), do: 400
+
+  defp get_error_code({:unsupported_filter, _fields}), do: "unsupported_filter"
+  defp get_error_code(reason), do: format_error(reason)
 
   defp resource_response(conn, uri) do
     case Service.read_resource(uri, conn.assigns.memory_auth) do

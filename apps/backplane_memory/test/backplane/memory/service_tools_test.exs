@@ -40,6 +40,43 @@ defmodule Backplane.Memory.ServiceToolsTest do
   }
 
   @full_tool_contracts Map.new([
+                         {"memory::get",
+                          %{
+                            "type" => "object",
+                            "additionalProperties" => false,
+                            "required" => ["id"],
+                            "properties" => %{
+                              "id" => %{"type" => "string", "format" => "uuid"},
+                              "memory_access_id" => @memory_access_id_schema,
+                              "project" => %{
+                                "type" => "string",
+                                "minLength" => 1,
+                                "maxLength" => 1_024
+                              },
+                              "source" => %{
+                                "type" => "object",
+                                "additionalProperties" => false,
+                                "minProperties" => 1,
+                                "properties" => %{
+                                  "repository_id" => %{
+                                    "type" => "string",
+                                    "minLength" => 1,
+                                    "maxLength" => 4_096
+                                  },
+                                  "checkout_root" => %{
+                                    "type" => "string",
+                                    "minLength" => 1,
+                                    "maxLength" => 4_096
+                                  },
+                                  "cwd" => %{
+                                    "type" => "string",
+                                    "minLength" => 1,
+                                    "maxLength" => 4_096
+                                  }
+                                }
+                              }
+                            }
+                          }},
                          {"memory::activity_summary",
                           %{
                             "additionalProperties" => false,
@@ -928,15 +965,15 @@ defmodule Backplane.Memory.ServiceToolsTest do
   # ──────────────────────────────────────────────
 
   describe "tools/0 — core tools (always available)" do
-    test "returns the exact 41 core names and input schemas" do
+    test "returns the exact 42 core names and input schemas" do
       set_tool_mode("core")
       tools = Service.tools()
       names = Enum.map(tools, & &1.name)
 
-      assert length(tools) == 41
-      assert length(Enum.uniq(names)) == 41
+      assert length(tools) == 42
+      assert length(Enum.uniq(names)) == 42
       assert contracts(tools) == @core_tool_contracts
-      assert map_size(@core_tool_contracts) == 41
+      assert map_size(@core_tool_contracts) == 42
     end
 
     test "all returned tools have required fields" do
@@ -964,7 +1001,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
   end
 
   describe "tools/0 — extended tools (memory.tools = 'all')" do
-    test "only the five shared operations expose an optional access UUID selector" do
+    test "only the six shared operations expose an optional access UUID selector" do
       set_tool_mode("all")
       tools = Service.tools()
 
@@ -972,7 +1009,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
         Enum.filter(tools, &Map.has_key?(&1.input_schema["properties"], "memory_access_id"))
 
       assert shared_tools |> Enum.map(& &1.name) |> Enum.sort() ==
-               ~w(memory::forget memory::list memory::recall memory::remember memory::stats)
+               ~w(memory::forget memory::get memory::list memory::recall memory::remember memory::stats)
 
       for tool <- shared_tools do
         schema = tool.input_schema
@@ -991,15 +1028,15 @@ defmodule Backplane.Memory.ServiceToolsTest do
       end
     end
 
-    test "returns the exact 52 full server names and input schemas" do
+    test "returns the exact 53 full server names and input schemas" do
       set_tool_mode("all")
       tools = Service.tools()
       names = Enum.map(tools, & &1.name)
 
-      assert length(tools) == 52
-      assert length(Enum.uniq(names)) == 52
+      assert length(tools) == 53
+      assert length(Enum.uniq(names)) == 53
       assert contracts(tools) == @full_tool_contracts
-      assert map_size(@full_tool_contracts) == 52
+      assert map_size(@full_tool_contracts) == 53
     end
   end
 

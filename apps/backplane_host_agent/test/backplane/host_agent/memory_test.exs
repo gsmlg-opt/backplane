@@ -544,7 +544,7 @@ defmodule Backplane.HostAgent.MemoryTest do
              Memory.pending_overlay(%{"type" => "semantic"}, opts)
   end
 
-  test "pending overlay omits recall upserts for nonempty canonical facets but keeps forgets", %{
+  test "pending overlay rejects unsupported recall facets when eligible upserts exist", %{
     tmp_dir: tmp_dir
   } do
     store = start_memory!(tmp_dir)
@@ -554,7 +554,7 @@ defmodule Backplane.HostAgent.MemoryTest do
     assert {:ok, %{"id" => deleted_id}} = Memory.remember(%{"content" => "facet deletion"}, opts)
     assert {:ok, _} = Memory.forget(%{"id" => deleted_id}, opts)
 
-    assert {:ok, %{"upserts" => [], "delete_ids" => [^deleted_id], "pending_operations" => 1}} =
+    assert {:error, {:unsupported_filter, ["facets"]}} =
              Memory.pending_overlay(
                %{"query" => "facet", "facets" => %{"kind" => ["decision"]}},
                opts

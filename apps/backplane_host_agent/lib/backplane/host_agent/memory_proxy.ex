@@ -12,7 +12,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
   alias Backplane.HostAgent.{Channel, Connector, Telemetry, Trace}
   alias Backplane.HostAgent.Memory.Access
 
-  @methods ~w(remember recall list forget stats lifecycle_context)
+  @methods ~w(remember recall list get forget stats lifecycle_context)
   @method_set MapSet.new(@methods)
   @reconnect_lock_resource {__MODULE__, :reconnect}
 
@@ -237,7 +237,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
 
       true ->
         arguments =
-          if Keyword.get(opts, :inject_agent_id, true),
+          if method != "get" and Keyword.get(opts, :inject_agent_id, true),
             do: Map.put(args, "agent_id", agent_id),
             else: args
 
@@ -291,13 +291,13 @@ defmodule Backplane.HostAgent.MemoryProxy do
     with :ok <- authorize_private(),
          {:ok, channel} <- ensure_channel(connector_module, push_module),
          :ok <- authorize_private() do
-      case push_channel(push_module, channel, payload, timeout) do
+      case push_private_channel(push_module, channel, payload, timeout) do
         {:error, :not_connected} ->
           mark_channel_dead()
 
           with {:ok, reconnected_channel} <- reconnect(connector_module, push_module, channel),
                :ok <- authorize_private() do
-            push_channel(push_module, reconnected_channel, payload, timeout)
+            push_private_channel(push_module, reconnected_channel, payload, timeout)
           end
 
         result ->
@@ -350,7 +350,41 @@ defmodule Backplane.HostAgent.MemoryProxy do
     end
   end
 
+  defp push_private_channel(push_module, channel, %{"method" => "get"} = payload, timeout) do
+    identity = connection_identity(state())
+
+    if elem(identity, 0) == channel,
+      do: push_channel(push_module, channel, payload, timeout, {:connection, identity}),
+      else: {:error, :stale_connection}
+  end
+
+  defp push_private_channel(push_module, channel, payload, timeout),
+    do: push_channel(push_module, channel, payload, timeout)
+
   defp push_channel(push_module, channel, payload, timeout, generation \\ nil) do
+    connection = state()
+
+    if (payload["method"] == "get" or Map.has_key?(payload, "access")) and
+         not selected_connection?(connection, channel, generation) do
+      {:error, :stale_connection}
+    else
+      push_selected_channel(push_module, channel, payload, timeout, generation, connection)
+    end
+  end
+
+  defp selected_connection?(connection, channel, {:connection, expected}) do
+    elem(expected, 0) == channel and connection_identity(connection) == expected
+  end
+
+  defp selected_connection?(connection, channel, generation) do
+    case connection_identity(connection) do
+      {^channel, %{id: ^generation}} -> true
+      {^channel, _snapshot_generation} when is_nil(generation) -> true
+      _ -> false
+    end
+  end
+
+  defp push_selected_channel(push_module, channel, payload, timeout, generation, connection) do
     result =
       case safe_push(push_module, channel, payload, timeout) do
         {:ok, %{"ok" => true, "result" => result}} -> {:ok, result}
@@ -370,8 +404,16 @@ defmodule Backplane.HostAgent.MemoryProxy do
         :ok
     end
 
-    result
+    if payload["method"] == "get" and
+         connection_identity(connection) != connection_identity(state()),
+       do: {:error, :stale_connection},
+       else: result
   end
+
+  defp connection_identity(%{channel: channel} = state),
+    do: {channel, state[:memory_generation]}
+
+  defp connection_identity(channel), do: {channel, nil}
 
   defp safe_push(push_module, channel, payload, timeout) do
     try do

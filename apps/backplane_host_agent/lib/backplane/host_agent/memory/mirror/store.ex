@@ -418,6 +418,11 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
       if p == nil or p["last_sync_at"] == nil,
         do: DBConnection.rollback(conn, :mirror_unavailable)
 
+      case Backplane.HostAgent.Memory.read_filter_support(operation, args, :offline, false, true) do
+        :ok -> :ok
+        {:error, reason} -> DBConnection.rollback(conn, reason)
+      end
+
       timestamp = now()
       {:ok, as_of, _} = DateTime.from_iso8601(p["last_sync_at"])
 
@@ -448,7 +453,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
           if operation == "recall", do: Map.get(args, "query", ""), else: Map.get(args, "q", "")
 
         base = Map.put(metadata, "items", [])
-        items = read_items!(conn, filters, values, query, args["limit"], base)
+        items = read_items!(conn, filters, values, {operation, args, query}, args["limit"], base)
         touch_items!(conn, args, p["active_generation"], items, timestamp)
         Map.put(base, "items", items)
       end
@@ -565,7 +570,7 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
         "SELECT canonical_id, memory_type, content, content_hash, confidence, lifecycle_state, tags, metadata, source_refs, server_revision, edge_expires_at FROM edge_memories WHERE " <>
           filters <>
           " AND instr(lower(content), lower(?)) > 0 AND canonical_id > ? ORDER BY canonical_id LIMIT 1",
-        values ++ [query, last_id]
+        values ++ [elem(query, 2), last_id]
       )
 
     case row do
@@ -577,18 +582,31 @@ defmodule Backplane.HostAgent.Memory.Mirror.Store do
         encoded = Jason.encode!(item)
         next_bytes = list_bytes + byte_size(encoded) + if(accepted == [], do: 0, else: 1)
 
-        if envelope + next_bytes <= 524_288 do
-          collect_items!(
-            conn,
-            filters,
-            values,
-            query,
-            limit - 1,
-            raw["canonical_id"],
-            {[item | accepted], next_bytes, envelope}
-          )
-        else
-          Enum.reverse(accepted)
+        cond do
+          not Backplane.HostAgent.Memory.read_item_matches?(elem(query, 0), elem(query, 1), item) ->
+            collect_items!(
+              conn,
+              filters,
+              values,
+              query,
+              limit,
+              raw["canonical_id"],
+              {accepted, list_bytes, envelope}
+            )
+
+          envelope + next_bytes <= 524_288 ->
+            collect_items!(
+              conn,
+              filters,
+              values,
+              query,
+              limit - 1,
+              raw["canonical_id"],
+              {[item | accepted], next_bytes, envelope}
+            )
+
+          true ->
+            Enum.reverse(accepted)
         end
     end
   end

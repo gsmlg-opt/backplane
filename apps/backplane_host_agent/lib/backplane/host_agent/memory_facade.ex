@@ -2,6 +2,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
   @moduledoc "Routes core host memory operations across canonical and provisional stores."
 
   alias Backplane.HostAgent.{HubProxy, Memory, MemoryProxy}
+  alias Backplane.MemoryReadRequest
   alias Backplane.HostAgent.Memory.{Access, Reducer, Syncer}
 
   @commands ~w(remember forget)
@@ -36,6 +37,9 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   @spec call(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
   def call(method, args, context)
+
+  def call("get", args, context) when is_map(args) and is_map(context),
+    do: Backplane.HostAgent.MemoryRecordRead.call(args, context)
 
   def call(method, %{"memory_access_id" => selector} = args, context) do
     with true <- method in (@commands ++ @reads) and is_binary(selector),
@@ -74,7 +78,10 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   def call(method, args, context)
       when method in @reads and is_map(args) and is_map(context) do
-    with :ok <- MemoryProxy.authorize_private(), do: remote_first(method, args, context)
+    with :ok <- MemoryProxy.authorize_private(),
+         {:ok, args} <- validate_read(method, args) do
+      remote_first(method, args, context)
+    end
   end
 
   def call(method, args, context) when method in ~w(facet_tag facet_query) do
@@ -92,7 +99,23 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
   defp access_server(context), do: Map.get(context, :access_server, Access)
 
+  defp validate_read(method, args) when method in ~w(recall list),
+    do: MemoryReadRequest.validate(method, args)
+
+  defp validate_read(_method, args), do: {:ok, args}
+
   defp shared_read(method, args, context, target, ticket) do
+    case validate_read(method, Map.delete(args, "scope")) do
+      {:ok, normalized} ->
+        do_shared_read(method, normalized, context, target, ticket)
+
+      {:error, _} = error ->
+        _ = Access.finish_request(ticket, error, access_server(context))
+        error
+    end
+  end
+
+  defp do_shared_read(method, args, context, target, ticket) do
     adapter = Map.get(context, :remote_adapter, MemoryProxy)
 
     reply =
@@ -333,6 +356,12 @@ defmodule Backplane.HostAgent.MemoryFacade do
   defp offline_result(method, args, context), do: do_offline_result(method, args, context)
 
   defp do_offline_result(method, args, context) do
+    with :ok <- Memory.read_filter_support(method, args, :offline, false) do
+      do_supported_offline_result(method, args, context)
+    end
+  end
+
+  defp do_supported_offline_result(method, args, context) do
     case edge_read(method, args, context) do
       {:ok, canonical} ->
         with {:ok, overlay} <-
@@ -341,8 +370,10 @@ defmodule Backplane.HostAgent.MemoryFacade do
         end
 
       {:error, reason} when reason in [:mirror_unavailable, :no_committed_mirror] ->
-        with {:ok, overlay} <- pending_overlay(method, args, context, :offline) do
-          {:ok, provisional_offline_result(method, overlay, args)}
+        with {:ok, overlay} <- pending_overlay(method, args, context, :offline),
+             result = provisional_offline_result(method, overlay, args),
+             :ok <- bounded_provisional_result(result) do
+          {:ok, result}
         end
 
       {:error, reason} ->
@@ -376,6 +407,12 @@ defmodule Backplane.HostAgent.MemoryFacade do
       "overlay_truncated" => overlay_truncated?(overlay),
       "history_available" => true
     })
+  end
+
+  defp bounded_provisional_result(result) do
+    if byte_size(Jason.encode!(result)) <= 524_288,
+      do: :ok,
+      else: {:error, :payload_too_large}
   end
 
   defp provisional_offline_result(method, overlay, args) do
@@ -519,7 +556,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
   end
 
   defp offline_results(results, "recall", args, _offset_applied?),
-    do: Enum.take(results, Reducer.limit(args))
+    do: Enum.take(results, min(nonnegative_integer(args, "limit", 10), @overlay_cap))
 
   defp offline_results(results, "list", args, offset_applied?) do
     offset = if offset_applied?, do: 0, else: nonnegative_integer(args, "offset", 0)
@@ -563,8 +600,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
 
     if is_list(upserts) and is_list(delete_ids) do
       bounded_upserts = Enum.take(upserts, @overlay_cap)
-      remaining = @overlay_cap - length(bounded_upserts)
-      bounded_delete_ids = Enum.take(delete_ids, remaining)
+      bounded_delete_ids = Enum.uniq(delete_ids)
 
       bounded =
         overlay
@@ -572,7 +608,7 @@ defmodule Backplane.HostAgent.MemoryFacade do
         |> maybe_put_bounded("delete_ids", bounded_delete_ids)
         |> Map.put(
           "overlay_truncated",
-          overlay_truncated?(overlay) or length(upserts) + length(delete_ids) > @overlay_cap
+          overlay_truncated?(overlay) or length(upserts) > @overlay_cap
         )
 
       {:ok, bounded}

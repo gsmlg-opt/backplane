@@ -253,6 +253,62 @@ defmodule Backplane.Memory.Memories do
     end
   end
 
+  @doc "Reads one currently visible canonical memory in the exact ownership tuple."
+  @spec public_get(String.t(), map() | keyword(), map()) ::
+          {:ok, MemorySchema.t()} | {:error, :not_found | :unauthorized | :invalid_arguments}
+  def public_get(id, partition, filters) when is_map(filters) do
+    with {:ok, partition} <- exact_partition(partition),
+         {:ok, filters} <- Backplane.MemoryReadRequest.validate("get", Map.put(filters, "id", id)) do
+      metadata = %{action: "public_get", memory_id: id}
+
+      :telemetry.span([:backplane, :memory, :access], metadata, fn ->
+        now = DateTime.utc_now()
+
+        memory =
+          MemorySchema
+          |> where([m], m.id == ^filters["id"] and is_nil(m.deleted_at))
+          |> where([m], is_nil(m.expires_at) or m.expires_at > ^now)
+          |> where([m], m.lifecycle_state not in ["superseded", "archived", "tombstoned"])
+          |> apply_exact_partition(partition)
+          |> select([m], struct(m, ^@non_vector_fields))
+          |> repo().one()
+
+        result =
+          if memory && public_filters_match?(memory, filters),
+            do: {:ok, memory},
+            else: {:error, :not_found}
+
+        {result,
+         Map.put(metadata, :status, if(match?({:ok, _}, result), do: :ok, else: :not_found))}
+      end)
+    end
+  end
+
+  def public_get(_id, _partition, _filters), do: {:error, :invalid_arguments}
+
+  defp public_filters_match?(memory, filters) do
+    metadata = memory.metadata || %{}
+    project = Backplane.MemoryReadRequest.normalize_project(metadata["project"])
+
+    project_matches? =
+      not Map.has_key?(filters, "project") or project == {:ok, filters["project"]}
+
+    source_matches? =
+      case filters["source"] do
+        nil ->
+          true
+
+        constraints ->
+          metadata["repository_sources"]
+          |> Backplane.MemoryRepository.sources()
+          |> Enum.any?(fn source ->
+            Enum.all?(constraints, fn {key, value} -> source[key] == value end)
+          end)
+      end
+
+    project_matches? and source_matches?
+  end
+
   if Mix.env() == :test do
     @doc false
     def trusted_get(id), do: get_unpartitioned(id)

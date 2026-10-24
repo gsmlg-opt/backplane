@@ -20,6 +20,8 @@ defmodule Backplane.Memory.Service do
   alias Backplane.Memory.Recall.Pipeline
   alias Backplane.Memory.Recall.Store, as: RecallStore
   alias Backplane.MemoryToolContract
+  alias Backplane.MemoryReadRequest
+  alias Backplane.MemoryRepository
   alias Backplane.Memory.Replay
   alias Backplane.Registry.InputValidator
   alias Backplane.Skills.AgentManage
@@ -62,7 +64,7 @@ defmodule Backplane.Memory.Service do
   def call(name, args, auth) when is_binary(name) and is_map(args) and is_map(auth) do
     case Enum.find(tools(), &(&1.name == name)) do
       %{handler: handler, input_schema: schema} ->
-        case InputValidator.validate(args, schema) do
+        case validate_initial_schema(name, args, schema) do
           :ok -> handler.(args, auth)
           {:error, _reason} -> {:error, :invalid_arguments}
         end
@@ -74,7 +76,8 @@ defmodule Backplane.Memory.Service do
 
   @doc "Reads one explicitly selected canonical partition, rechecking authority before release."
   def call_shared(name, args, auth, %{access_id: access_id, authority_version: version} = claim)
-      when name in ["memory::recall", "memory::list", "memory::stats"] and is_map(args) and
+      when name in ["memory::recall", "memory::list", "memory::stats", "memory::get"] and
+             is_map(args) and
              map_size(claim) == 2 and is_integer(version) and version > 0 do
     raw_authority =
       ~w(memory_access_id memory_space_id host_id client_id source_client_id namespace auth actor access authority_version __trusted_internal__ requesting_actor)
@@ -86,11 +89,13 @@ defmodule Backplane.Memory.Service do
              Map.keys(args),
              &(&1 in ((Map.keys(schema["properties"]) -- ["memory_access_id"]) ++ ["scope"]))
            ),
-         :ok <- InputValidator.validate(args, schema),
+         :ok <- validate_initial_schema(name, args, schema),
          {:ok, actor, access} <-
            Authorization.authorize_access(auth, {:access_id, access_id}, :read),
          true <- access.authority_version == version,
          true <- not Map.has_key?(args, "scope") or args["scope"] == access.partition.scope,
+         {:ok, args} <- validate_public_read(name, args),
+         :ok <- validate_get_schema(name, args),
          trusted =
            Map.merge(
              args,
@@ -118,7 +123,8 @@ defmodule Backplane.Memory.Service do
             method: name
           })
 
-          {:ok, %{access: claim, partition: current.partition, result: result}}
+          reply = %{access: claim, partition: current.partition, result: result}
+          if name == "memory::get", do: bounded_get_reply(reply), else: {:ok, reply}
         end
       )
     else
@@ -133,6 +139,7 @@ defmodule Backplane.Memory.Service do
   defp shared_read("memory::recall", args), do: do_handle_recall(args)
   defp shared_read("memory::list", args), do: do_handle_list(args)
   defp shared_read("memory::stats", args), do: do_handle_stats(args)
+  defp shared_read("memory::get", args), do: do_handle_get(args)
 
   defp shared_read_mismatch(args, auth, claim) do
     case Authorization.authorize_access(auth, {:access_id, claim.access_id}, :read) do
@@ -166,6 +173,10 @@ defmodule Backplane.Memory.Service do
   @doc "Authenticated direct boundary for listing memories."
   def handle_list(args, auth), do: call("memory::list", args, auth)
   def handle_list(_args), do: {:error, :unauthorized}
+
+  @doc "Authenticated direct boundary for reading one complete canonical memory."
+  def handle_get(args, auth), do: call("memory::get", args, auth)
+  def handle_get(_args), do: {:error, :unauthorized}
 
   @doc "Authenticated direct boundary for forgetting a memory."
   def handle_forget(args, auth), do: call("memory::forget", args, auth)
@@ -278,14 +289,64 @@ defmodule Backplane.Memory.Service do
   end
 
   defp authorized_tool_call(name, handler, args, auth) do
-    with {:ok, trusted_args, _partition} <- Authorization.authorize_tool(name, args, auth) do
+    with {:ok, trusted_args, _partition} <- Authorization.authorize_tool(name, args, auth),
+         {:ok, normalized_args} <- validate_public_read(name, args),
+         :ok <- validate_get_schema(name, normalized_args),
+         {:ok, trusted_args} <-
+           authorize_normalized_args(name, args, normalized_args, auth, trusted_args) do
       Backplane.Memory.PipelineTelemetry.span("tool." <> name, trusted_args, fn ->
-        case :erlang.fun_info(handler, :arity) do
-          {:arity, 2} -> handler.(args, auth)
-          {:arity, 1} -> handler.(trusted_args)
+        result =
+          case :erlang.fun_info(handler, :arity) do
+            {:arity, 2} -> handler.(normalized_args, auth)
+            {:arity, 1} -> handler.(trusted_args)
+          end
+
+        if name == "memory::get" do
+          with {:ok, result} <- result,
+               {:ok, current_args, _partition} <-
+                 Authorization.authorize_tool(name, normalized_args, auth),
+               # A mutable default must not authorize content queried from its previous owner.
+               true <-
+                 Map.take(current_args, ~w(memory_space_id scope namespace)) ==
+                   Map.take(trusted_args, ~w(memory_space_id scope namespace)) do
+            bounded_get_reply(result)
+          else
+            false -> {:error, :unauthorized}
+            {:error, _reason} = error -> error
+          end
+        else
+          result
         end
       end)
     end
+  end
+
+  defp authorize_normalized_args(_name, args, args, _auth, trusted_args), do: {:ok, trusted_args}
+
+  defp authorize_normalized_args(name, _args, normalized_args, auth, _trusted_args) do
+    with {:ok, trusted_args, _partition} <-
+           Authorization.authorize_tool(name, normalized_args, auth),
+         do: {:ok, trusted_args}
+  end
+
+  defp validate_public_read("memory::" <> method, args) when method in ~w(recall list get),
+    do: MemoryReadRequest.validate(method, args)
+
+  defp validate_public_read(_name, args), do: {:ok, args}
+
+  # The get schema's string bounds apply to normalized values, after authorization.
+  defp validate_initial_schema("memory::get", _args, _schema), do: :ok
+  defp validate_initial_schema(_name, args, schema), do: InputValidator.validate(args, schema)
+
+  defp validate_get_schema("memory::get", args),
+    do: InputValidator.validate(args, MemoryToolContract.tool!("memory::get").input_schema)
+
+  defp validate_get_schema(_name, _args), do: :ok
+
+  defp bounded_get_reply(result) do
+    if byte_size(Jason.encode!(%{"ok" => true, "result" => result})) <= 524_288,
+      do: {:ok, result},
+      else: {:error, :payload_too_large}
   end
 
   defp all_core_tools do
@@ -646,6 +707,12 @@ defmodule Backplane.Memory.Service do
           "additionalProperties" => false
         },
         handler: &do_handle_recall/1
+      },
+      %{
+        name: "memory::get",
+        description: MemoryToolContract.tool!("memory::get").description,
+        input_schema: MemoryToolContract.tool!("memory::get").input_schema,
+        handler: &do_handle_get/1
       },
       %{
         name: "memory::list",
@@ -2052,6 +2119,23 @@ defmodule Backplane.Memory.Service do
   defp lesson_strengthen_result({:error, reason}), do: {:error, reason}
 
   defp do_handle_recall_legacy(query, args) do
+    unsupported =
+      ~w(project facets temporal_hints entity_hints token_budget channel_weights include_working)
+      |> Enum.filter(fn key ->
+        Map.has_key?(args, key) and
+          (key in ~w(token_budget channel_weights include_working) or
+             args[key] not in [nil, "", [], %{}])
+      end)
+      |> Enum.sort()
+
+    if unsupported == [] do
+      do_handle_supported_legacy_recall(query, args)
+    else
+      {:error, {:unsupported_filter, unsupported}}
+    end
+  end
+
+  defp do_handle_supported_legacy_recall(query, args) do
     opts =
       [limit: args["limit"] || 10]
       |> add_if(args, "memory_space_id", :memory_space_id)
@@ -2060,23 +2144,7 @@ defmodule Backplane.Memory.Service do
       |> add_if(args, "agent_id", :agent_id)
       |> add_if(args, "tag", :tag)
 
-    case args["facets"] do
-      facets when is_list(facets) and facets != [] ->
-        facet_ids = Backplane.Memory.Facets.query(facets)
-
-        if facet_ids == [] do
-          {:ok, %{results: []}}
-        else
-          {:ok, results} = Search.hybrid_recall(query, opts)
-          id_set = MapSet.new(facet_ids)
-          filtered = Enum.filter(results, fn r -> MapSet.member?(id_set, r.id) end)
-          {:ok, %{results: filtered}}
-        end
-
-      _ ->
-        {:ok, results} = Search.hybrid_recall(query, opts)
-        {:ok, %{results: results}}
-    end
+    with {:ok, results} <- Search.hybrid_recall(query, opts), do: {:ok, %{results: results}}
   end
 
   defp do_handle_recall_v2(query, args) do
@@ -2116,6 +2184,50 @@ defmodule Backplane.Memory.Service do
           correlation_id: Ecto.UUID.generate(),
           post_fusion_opts: [limit: limit]
         )
+    end
+  end
+
+  defp do_handle_get(args) do
+    with {:ok, memory} <-
+           Memories.public_get(
+             args["id"],
+             partition_from_args(args),
+             Map.take(args, ~w(project source))
+           ) do
+      project =
+        case MemoryReadRequest.normalize_project(memory.metadata["project"]) do
+          {:ok, project} -> project
+          _ -> nil
+        end
+
+      {:ok,
+       %{
+         record: %{
+           id: memory.id,
+           canonical_id: memory.id,
+           kind: "memory",
+           content: memory.content,
+           memory_type: memory.memory_type,
+           tags: memory.tags,
+           lifecycle_state: memory.lifecycle_state,
+           expires_at: memory.expires_at,
+           inserted_at: memory.inserted_at,
+           updated_at: memory.updated_at,
+           project: project,
+           provenance: %{
+             source_host_id: memory.host_id,
+             source_client_id: memory.source_client_id,
+             agent_id: memory.agent_id,
+             session_id: memory.session_id,
+             repository_sources: MemoryRepository.sources(memory.metadata["repository_sources"])
+           }
+         },
+         mode: "online",
+         authority: "canonical",
+         consistency: "canonical",
+         stale: false,
+         history_available: true
+       }}
     end
   end
 

@@ -79,6 +79,7 @@ defmodule Backplane.MemoryToolContractTest do
              "memory::facet_query",
              "memory::facet_tag",
              "memory::forget",
+             "memory::get",
              "memory::list",
              "memory::recall",
              "memory::remember",
@@ -91,18 +92,40 @@ defmodule Backplane.MemoryToolContractTest do
 
       assert is_map(schema)
 
-      assert metadata == %{
-               "permission" => MemoryToolContract.permission!(name),
-               "authority" => "canonical",
-               "consistency" => "canonical_or_bounded_stale",
-               "availability" => "online_or_offline"
-             }
+      expected = %{
+        "permission" => MemoryToolContract.permission!(name),
+        "authority" => "canonical",
+        "consistency" => "canonical_or_bounded_stale",
+        "availability" => "online_or_offline"
+      }
+
+      expected =
+        if name == "memory::get",
+          do: Map.merge(expected, %{"consistency" => "canonical", "availability" => "online"}),
+          else: expected
+
+      assert metadata == expected
     end
 
     assert MemoryToolContract.tool!("memory::remember").input_schema["required"] == [
              "content",
              "agent_id"
            ]
+  end
+
+  test "get is an exact canonical read with closed argument and source schemas" do
+    tool = MemoryToolContract.tool!("memory::get")
+    schema = tool.input_schema
+    assert MemoryToolContract.permission!(tool.name) == "memory.read"
+    assert MemoryToolContract.route_class(tool.name) == :canonical_overlap
+    assert schema["additionalProperties"] == false
+    assert schema["required"] == ["id"]
+    assert schema["properties"]["id"]["format"] == "uuid"
+    assert Enum.sort(Map.keys(schema["properties"])) == ~w(id memory_access_id project source)
+    source = schema["properties"]["source"]
+    assert source["additionalProperties"] == false
+    assert source["minProperties"] == 1
+    assert Enum.sort(Map.keys(source["properties"])) == ~w(checkout_root cwd repository_id)
   end
 
   test "classifies server-only and device-local names without overlap" do

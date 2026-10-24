@@ -336,30 +336,44 @@ defmodule Backplane.HostAgent.Memory do
   @doc false
   def shared_overlay(target, method, args, mode, revision) do
     if Access.local_owner?(target) do
-      with {:ok, %Result{rows: rows}} <-
-             Store.query(
-               target.store,
-               "SELECT * FROM memory_outbox WHERE access_id=? AND authority_version=? AND target_partition=? AND (state IN ('pending','inflight','retry_wait') OR (? AND state='done' AND ack_revision>?)) ORDER BY seq DESC LIMIT 101",
-               [
-                 target.access_id,
-                 target.authority_version,
-                 Jason.encode!(target.partition),
-                 if(mode == :offline, do: 1, else: 0),
-                 revision || -1
-               ]
-             ) do
-        visible = Enum.take(rows, 100)
+      {clauses, filters} = overlay_remember_filters(args, method)
 
+      sql = """
+      SELECT memory.* FROM (
+        SELECT *, NULL AS deleted_at, json_extract(payload, '$.arguments.content') AS content,
+          json_extract(payload, '$.arguments.type') AS memory_type,
+          json_extract(payload, '$.arguments.tags') AS tags,
+          json_extract(payload, '$.arguments.metadata') AS metadata,
+          json_extract(payload, '$.arguments.agent_id') AS agent_id
+        FROM memory_outbox
+      ) AS memory
+      WHERE access_id=? AND authority_version=? AND target_partition=?
+        AND (state IN ('pending','inflight','retry_wait') OR (? AND state='done' AND ack_revision>?))
+        AND (op='forget' OR (op='remember' AND #{Enum.join(clauses, " AND ")}))
+      """
+
+      params =
+        [
+          target.access_id,
+          target.authority_version,
+          Jason.encode!(target.partition),
+          if(mode == :offline, do: 1, else: 0),
+          revision || -1
+        ] ++ filters
+
+      with :ok <- read_filter_support(method, args, mode, false),
+           :ok <- check_overlay_support(target.store, sql, params, method, args, mode),
+           {:ok, visible, truncated?} <-
+             shared_overlay_rows(target.store, sql, params, method) do
         upserts =
           for row <- visible,
               row["op"] == "remember",
-              payload = Jason.decode!(row["payload"]),
-              item = payload["arguments"],
-              shared_visible?(item, args),
+              item = Jason.decode!(row["payload"])["arguments"],
               do:
                 Map.merge(item, %{
                   "id" => row["ack_canonical_id"] || row["command_id"],
                   "canonical_id" => row["ack_canonical_id"],
+                  "memory_type" => item["type"],
                   "scope" => target.partition["scope"],
                   "source" => "shared_command"
                 })
@@ -367,7 +381,7 @@ defmodule Backplane.HostAgent.Memory do
         deletes =
           for row <- visible,
               row["op"] == "forget",
-              do: Jason.decode!(row["payload"])["arguments"]["id"]
+              do: row["delete_id"] || Jason.decode!(row["payload"])["arguments"]["id"]
 
         {:ok,
          %{
@@ -375,7 +389,7 @@ defmodule Backplane.HostAgent.Memory do
            "delete_ids" => deletes,
            "pending_operations" => Enum.count(visible, &(&1["state"] != "done")),
            "acknowledged_operations" => Enum.count(visible, &(&1["state"] == "done")),
-           "overlay_truncated" => length(rows) > 100
+           "overlay_truncated" => truncated?
          }}
       end
     else
@@ -383,13 +397,120 @@ defmodule Backplane.HostAgent.Memory do
     end
   end
 
-  defp shared_visible?(item, args) do
-    query = args["query"] || args["q"] || ""
+  defp shared_overlay_rows(store, sql, params, "stats") do
+    case Store.query(store, sql <> " ORDER BY seq DESC LIMIT ?", params ++ [@overlay_query_limit]) do
+      {:ok, %Result{rows: rows}} ->
+        {:ok, Enum.take(rows, @overlay_cap), length(rows) > @overlay_cap}
 
-    String.contains?(String.downcase(item["content"]), String.downcase(query)) and
-      (is_nil(args["type"]) or args["type"] == item["type"]) and
-      (is_nil(args["tag"]) or args["tag"] in item["tags"]) and
-      (is_nil(args["agent_id"]) or args["agent_id"] == item["agent_id"])
+      {:error, reason} ->
+        storage_error(reason)
+    end
+  end
+
+  defp shared_overlay_rows(store, sql, params, _method),
+    do: read_overlay_rows(store, sql, params, "json_extract(payload, '$.arguments.id')")
+
+  # Forget identities suppress canonical rows regardless of how many content rows fit.
+  # The unbounded query projects identifiers and state only, never memory content.
+  defp read_overlay_rows(store, sql, params, delete_id_sql) do
+    with {:ok, %Result{rows: remembers}} <-
+           Store.query(
+             store,
+             "SELECT * FROM (#{sql}) AS eligible WHERE op='remember' ORDER BY seq DESC LIMIT ?",
+             params ++ [@overlay_query_limit]
+           ),
+         {:ok, %Result{rows: forgets}} <-
+           Store.query(
+             store,
+             "SELECT seq, op, state, #{delete_id_sql} AS delete_id FROM (#{sql}) AS eligible WHERE op='forget' ORDER BY seq DESC",
+             params
+           ) do
+      {:ok, Enum.take(remembers, @overlay_cap) ++ forgets, length(remembers) > @overlay_cap}
+    else
+      {:error, reason} -> storage_error(reason)
+    end
+  end
+
+  @doc false
+  def read_filter_support(method, args, mode, eligible_upserts?, mirror? \\ false) do
+    fields = unsupported_read_filters(method, args, mirror?)
+
+    if fields != [] and (mode == :offline or eligible_upserts?),
+      do: {:error, {:unsupported_filter, fields}},
+      else: :ok
+  end
+
+  defp unsupported_read_filters("recall", args, _mirror?) do
+    explicit =
+      Enum.filter(
+        ~w(agent_id host_id tag token_budget channel_weights include_working),
+        &(not is_nil(Reducer.value(args, &1)))
+      )
+
+    collections =
+      Enum.filter(
+        ~w(facets temporal_hints entity_hints),
+        &nonempty_collection?(Reducer.value(args, &1))
+      )
+
+    Enum.sort(explicit ++ collections)
+  end
+
+  defp unsupported_read_filters("list", args, mirror?) do
+    []
+    |> then(fn fields -> if wildcard_query?(args), do: ["q" | fields], else: fields end)
+    |> then(fn fields ->
+      if mirror? and Reducer.value(args, "offset", 0) > 0, do: ["offset" | fields], else: fields
+    end)
+    |> then(fn fields ->
+      if mirror? and not is_nil(Reducer.value(args, "agent_id")),
+        do: ["agent_id" | fields],
+        else: fields
+    end)
+    |> Enum.sort()
+  end
+
+  defp unsupported_read_filters(_method, _args, _mirror?), do: []
+
+  defp wildcard_query?(args) do
+    case Reducer.value(args, "q") do
+      value when is_binary(value) -> String.contains?(value, ["%", "_", "\\"])
+      _ -> false
+    end
+  end
+
+  defp check_overlay_support(store, sql, params, method, args, mode) do
+    if mode == :offline or unsupported_read_filters(method, args, false) == [] do
+      read_filter_support(method, args, mode, false)
+    else
+      case Store.query(
+             store,
+             "SELECT 1 FROM (#{sql}) AS candidates WHERE op='remember' LIMIT 1",
+             params
+           ) do
+        {:ok, %Result{rows: rows}} -> read_filter_support(method, args, mode, rows != [])
+        {:error, reason} -> storage_error(reason)
+      end
+    end
+  end
+
+  @doc false
+  def read_item_matches?(method, args, item) do
+    metadata = item["metadata"] || %{}
+    project = Reducer.value(args, "project")
+
+    query =
+      if method == "recall", do: Reducer.value(args, "query"), else: Reducer.value(args, "q")
+
+    type = item["memory_type"] || item["type"]
+
+    (is_nil(query) or
+       String.contains?(String.downcase(item["content"] || ""), String.downcase(query))) and
+      (is_nil(project) or project == "" or
+         (is_map(metadata) and is_binary(metadata["project"]) and metadata["project"] == project)) and
+      (method != "recall" or type != "working") and
+      (is_nil(read_value(args, "type")) or args["type"] == type) and
+      (is_nil(read_value(args, "tag")) or args["tag"] in (item["tags"] || []))
   end
 
   def remember(args, opts \\ []) when is_map(args) do
@@ -711,9 +832,14 @@ defmodule Backplane.HostAgent.Memory do
     store = store(opts)
     config = memory_config(opts)
 
-    with {:ok, scope} <- resolve_read_scope(store, args, config) do
-      method = Keyword.get(opts, :method)
+    method =
+      Keyword.get(opts, :method) || if(Reducer.value(args, "query"), do: "recall", else: "list")
 
+    opts = Keyword.put(opts, :method, method)
+    mode = Keyword.get(opts, :overlay_mode, :online)
+
+    with {:ok, scope} <- resolve_read_scope(store, args, config),
+         :ok <- read_filter_support(method, args, mode, false) do
       result =
         case method do
           "stats" -> pending_overlay_stats(store, scope, opts)
@@ -762,12 +888,19 @@ defmodule Backplane.HostAgent.Memory do
         "outbox.seq, outbox.op, outbox.state, outbox.payload, outbox.ack_revision, outbox.ack_canonical_id, memory.id, memory.content, memory.scope, memory.tags, memory.facets, memory.metadata, memory.confidence, memory.remote_id, memory.memory_type, memory.agent_id"
       end
 
-    suffix = if stats?, do: "GROUP BY outbox.state", else: "ORDER BY outbox.seq DESC LIMIT ?"
+    {clauses, filter_params} = overlay_remember_filters(args, Keyword.get(opts, :method))
+
+    remember_filter =
+      if stats?,
+        do: "1=1",
+        else: "(outbox.op='forget' OR (outbox.op='remember' AND #{Enum.join(clauses, " AND ")}))"
+
+    filter_params = if stats?, do: [], else: filter_params
 
     params =
       [scope] ++ partition_params ++ [if(offline and is_map(partition), do: 1, else: 0), revision]
 
-    params = if stats?, do: params, else: params ++ [@overlay_query_limit]
+    params = params ++ filter_params
 
     sql = """
     SELECT #{fields}
@@ -778,87 +911,109 @@ defmodule Backplane.HostAgent.Memory do
       AND NOT EXISTS (SELECT 1 FROM memory_outbox newer WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq)
       AND ((outbox.state IN ('pending','inflight','retry_wait') AND json_extract(outbox.payload, '$.canonical_id') IS NOT NULL)
         OR (? AND outbox.state = 'done' AND (outbox.ack_revision IS NULL OR outbox.ack_revision > ?)))
-    #{suffix}
+      AND #{remember_filter}
     """
 
-    case Store.query(store, sql, params) do
-      {:ok, %Result{rows: rows}} when stats? ->
-        acknowledged =
-          Enum.find_value(rows, 0, fn row ->
-            if row["state"] == "done", do: row["operation_count"]
-          end)
-
-        pending =
-          Enum.reduce(rows, 0, fn row, count ->
-            if row["state"] != "done", do: count + row["operation_count"], else: count
-          end)
-
-        {:ok,
-         %{
-           upserts: [],
-           delete_ids: [],
-           pending: pending,
-           acknowledged: acknowledged,
-           truncated: pending + acknowledged > @overlay_cap
-         }}
-
-      {:ok, %Result{rows: rows}} ->
-        rows =
-          Enum.filter(rows, fn row -> row["op"] == "forget" or overlay_visible?(row, args) end)
-
-        commands = Enum.take(rows, @overlay_cap)
-
-        result =
-          Enum.reduce(
-            commands,
-            %{
-              upserts: [],
-              delete_ids: [],
-              pending: 0,
-              acknowledged: 0,
-              truncated: length(rows) > @overlay_cap
-            },
-            fn row, acc ->
-              acc =
-                if row["state"] == "done",
-                  do: %{acc | acknowledged: acc.acknowledged + 1},
-                  else: %{acc | pending: acc.pending + 1}
-
-              case row["op"] do
-                "forget" ->
-                  payload = Reducer.decode_json(row["payload"], %{})
-
-                  %{
-                    acc
-                    | delete_ids:
-                        acc.delete_ids ++
-                          [
-                            row["ack_canonical_id"] || payload["canonical_id"] || row["remote_id"] ||
-                              row["id"]
-                          ]
-                  }
-
-                "remember" ->
-                  item =
-                    provisional_item(row)
-                    |> Map.merge(%{
-                      "authority" => "canonical",
-                      "provisional" => false,
-                      "source" => "acknowledged_command",
-                      "revision" => row["ack_revision"]
-                    })
-
-                  %{acc | upserts: acc.upserts ++ [item]}
-              end
-            end
+    support =
+      if stats?,
+        do: :ok,
+        else:
+          check_overlay_support(
+            store,
+            sql,
+            params,
+            Keyword.get(opts, :method),
+            args,
+            Keyword.get(opts, :overlay_mode, :online)
           )
 
-        {:ok, result}
+    with :ok <- support,
+         {:ok, rows, truncated?} <- acknowledged_overlay_rows(store, sql, params, stats?) do
+      case {stats?, rows} do
+        {true, rows} ->
+          acknowledged =
+            Enum.find_value(rows, 0, fn row ->
+              if row["state"] == "done", do: row["operation_count"]
+            end)
 
-      {:error, reason} ->
-        storage_error(reason)
+          pending =
+            Enum.reduce(rows, 0, fn row, count ->
+              if row["state"] != "done", do: count + row["operation_count"], else: count
+            end)
+
+          {:ok,
+           %{
+             upserts: [],
+             delete_ids: [],
+             pending: pending,
+             acknowledged: acknowledged,
+             truncated: pending + acknowledged > @overlay_cap
+           }}
+
+        {false, rows} ->
+          commands = rows
+
+          result =
+            Enum.reduce(
+              commands,
+              %{
+                upserts: [],
+                delete_ids: [],
+                pending: 0,
+                acknowledged: 0,
+                truncated: truncated?
+              },
+              fn row, acc ->
+                acc =
+                  if row["state"] == "done",
+                    do: %{acc | acknowledged: acc.acknowledged + 1},
+                    else: %{acc | pending: acc.pending + 1}
+
+                case row["op"] do
+                  "forget" ->
+                    payload = Reducer.decode_json(row["payload"], %{})
+
+                    delete_id =
+                      row["delete_id"] || row["ack_canonical_id"] || payload["canonical_id"] ||
+                        row["remote_id"] || row["id"]
+
+                    %{acc | delete_ids: [delete_id | acc.delete_ids]}
+
+                  "remember" ->
+                    item =
+                      provisional_item(row)
+                      |> Map.merge(%{
+                        "authority" => "canonical",
+                        "provisional" => false,
+                        "source" => "acknowledged_command",
+                        "revision" => row["ack_revision"]
+                      })
+
+                    %{acc | upserts: acc.upserts ++ [item]}
+                end
+              end
+            )
+
+          {:ok, %{result | delete_ids: Enum.reverse(result.delete_ids)}}
+      end
     end
   end
+
+  defp acknowledged_overlay_rows(store, sql, params, true) do
+    case Store.query(store, sql <> " GROUP BY outbox.state", params) do
+      {:ok, %Result{rows: rows}} -> {:ok, rows, false}
+      {:error, reason} -> storage_error(reason)
+    end
+  end
+
+  defp acknowledged_overlay_rows(store, sql, params, false),
+    do:
+      read_overlay_rows(
+        store,
+        sql,
+        params,
+        "COALESCE(ack_canonical_id, json_extract(payload, '$.canonical_id'), remote_id, id)"
+      )
 
   def recall(args, opts \\ []) when is_map(args) do
     store = store(opts)
@@ -1182,11 +1337,14 @@ defmodule Backplane.HostAgent.Memory do
 
   defp pending_overlay_combined_rows(store, scope, args, opts) do
     {partition_sql, partition_params} = pending_partition_filter(opts)
-    {remember_clauses, remember_params} = overlay_remember_filters(args)
+
+    {remember_clauses, remember_params} =
+      overlay_remember_filters(args, Keyword.get(opts, :method))
+
     remember_filter = Enum.join(remember_clauses, " AND ")
 
     sql = """
-    SELECT outbox.seq, outbox.op, memory.id, memory.content, memory.scope, memory.tags,
+    SELECT outbox.seq, outbox.op, outbox.state, memory.id, memory.content, memory.scope, memory.tags,
            memory.metadata, memory.confidence, memory.remote_id, memory.memory_type,
            memory.agent_id, memory.facets
     FROM memory_outbox AS outbox
@@ -1204,31 +1362,31 @@ defmodule Backplane.HostAgent.Memory do
         outbox.op = 'forget'
         OR (outbox.op = 'remember' AND #{remember_filter})
     )
-    ORDER BY outbox.seq DESC
-    LIMIT ?
     """
 
-    params = [scope] ++ partition_params ++ remember_params ++ [@overlay_query_limit]
+    params = [scope] ++ partition_params ++ remember_params
 
-    case Store.query(store, sql, params) do
-      {:ok, %Result{rows: rows}} ->
-        truncated? = length(rows) > @overlay_cap
-
-        visible_rows =
-          rows
-          |> Enum.take(@overlay_cap)
-          |> Enum.filter(&overlay_visible?(&1, args))
-
-        {:ok, overlay_from_rows(visible_rows, truncated?)}
-
-      {:error, reason} ->
-        storage_error(reason)
+    with :ok <-
+           check_overlay_support(
+             store,
+             sql,
+             params,
+             Keyword.get(opts, :method),
+             args,
+             Keyword.get(opts, :overlay_mode, :online)
+           ),
+         {:ok, rows, truncated?} <-
+           read_overlay_rows(store, sql, params, "COALESCE(remote_id, id)") do
+      {:ok, overlay_from_rows(rows, truncated?)}
     end
   end
 
   defp pending_overlay_offline_list(store, scope, args, opts) do
     {partition_sql, partition_params} = pending_partition_filter(opts)
-    {remember_clauses, remember_params} = overlay_remember_filters(args)
+
+    {remember_clauses, remember_params} =
+      overlay_remember_filters(args, Keyword.get(opts, :method))
+
     remember_filter = Enum.join(remember_clauses, " AND ")
 
     remember_sql = """
@@ -1259,17 +1417,13 @@ defmodule Backplane.HostAgent.Memory do
 
     with {:ok, %Result{rows: remember_rows}} <- Store.query(store, remember_sql, remember_params),
          bounded_remembers =
-           remember_rows
-           |> Enum.take(@overlay_cap)
-           |> Enum.filter(&overlay_visible?(&1, args)),
-         remaining = @overlay_cap - length(bounded_remembers),
+           Enum.take(remember_rows, @overlay_cap),
          {:ok, %Result{rows: forget_rows}} <-
-           pending_overlay_forget_rows(store, scope, remaining, opts) do
-      truncated? =
-        length(remember_rows) > @overlay_cap or length(forget_rows) > remaining
+           pending_overlay_forget_rows(store, scope, opts) do
+      truncated? = length(remember_rows) > @overlay_cap
 
       overlay =
-        (bounded_remembers ++ Enum.take(forget_rows, remaining))
+        (bounded_remembers ++ forget_rows)
         |> overlay_from_rows(truncated?)
         |> maybe_mark_offset_applied(true)
 
@@ -1279,7 +1433,7 @@ defmodule Backplane.HostAgent.Memory do
     end
   end
 
-  defp pending_overlay_forget_rows(store, scope, remaining, opts) do
+  defp pending_overlay_forget_rows(store, scope, opts) do
     {partition_sql, partition_params} = pending_partition_filter(opts)
 
     sql = """
@@ -1297,39 +1451,44 @@ defmodule Backplane.HostAgent.Memory do
         WHERE newer.memory_id = outbox.memory_id AND newer.seq > outbox.seq
       )
     ORDER BY outbox.seq DESC
-    LIMIT ?
     """
 
-    Store.query(store, sql, [scope] ++ partition_params ++ [remaining + 1])
+    Store.query(store, sql, [scope] ++ partition_params)
   end
 
   defp maybe_mark_offset_applied(overlay, true), do: Map.put(overlay, :offset_applied, true)
 
-  defp overlay_remember_filters(args) do
-    if unsupported_recall_facets?(args) do
-      {["0 = 1"], []}
-    else
-      query = Reducer.optional_string(args, "query") || Reducer.optional_string(args, "q")
-      memory_type = Reducer.optional_string(args, "type")
-      agent_id = Reducer.optional_string(args, "agent_id")
-      tag = Reducer.optional_string(args, "tag")
+  defp overlay_remember_filters(args, method) do
+    query =
+      if method == "list" and wildcard_query?(args),
+        do: nil,
+        else: read_value(args, "query") || read_value(args, "q")
 
+    project = read_value(args, "project")
+
+    {clauses, params} =
       {[], []}
-      |> add_optional_clause(query, "lower(memory.content) LIKE ? ESCAPE '\\'", fn value ->
-        Reducer.like_pattern(value)
-      end)
-      |> add_optional_clause(memory_type, "memory.memory_type = ?", & &1)
-      |> add_optional_clause(agent_id, "memory.agent_id = ?", & &1)
+      |> add_optional_clause(query, "instr(lower(memory.content), lower(?)) > 0", & &1)
+      |> add_optional_clause(read_value(args, "type"), "memory.memory_type = ?", & &1)
+      |> add_optional_clause(read_value(args, "agent_id"), "memory.agent_id = ?", & &1)
       |> add_optional_clause(
-        tag,
+        read_value(args, "tag"),
         "EXISTS (SELECT 1 FROM json_each(COALESCE(memory.tags, '[]')) WHERE value = ?)",
         & &1
       )
-      |> then(fn
-        {[], []} -> {["1 = 1"], []}
-        filters -> filters
-      end)
-    end
+      |> add_optional_clause(
+        project,
+        "(json_type(memory.metadata, '$.project') = 'text' AND json_extract(memory.metadata, '$.project') = ?)",
+        & &1
+      )
+
+    clauses =
+      if method == "recall" and Reducer.value(args, "include_working") != true,
+        do: ["memory.memory_type != 'working'" | clauses],
+        else: clauses
+
+    clauses = ["memory.deleted_at IS NULL" | clauses]
+    {clauses, params}
   end
 
   defp pending_overlay_stats(store, scope, opts) do
@@ -1370,7 +1529,7 @@ defmodule Backplane.HostAgent.Memory do
           {[provisional_item(row) | upserts], delete_ids}
 
         %{"op" => "forget"} = row, {upserts, delete_ids} ->
-          delete_id = row["remote_id"] || row["id"]
+          delete_id = row["delete_id"] || row["remote_id"] || row["id"]
           {upserts, [delete_id | delete_ids]}
       end)
 
@@ -1382,39 +1541,15 @@ defmodule Backplane.HostAgent.Memory do
     }
   end
 
-  defp overlay_visible?(%{"op" => "forget"}, _args), do: true
-
-  defp overlay_visible?(%{"op" => "remember"} = row, args) do
-    not unsupported_recall_facets?(args) and
-      matches_overlay_query?(row, args) and
-      matches_overlay_value?(row, "memory_type", Reducer.optional_string(args, "type")) and
-      matches_overlay_value?(row, "agent_id", Reducer.optional_string(args, "agent_id")) and
-      matches_overlay_tag?(row, Reducer.optional_string(args, "tag"))
-  end
-
-  defp unsupported_recall_facets?(args) do
-    is_binary(Reducer.optional_string(args, "query")) and
-      nonempty_collection?(Reducer.value(args, "facets"))
-  end
-
   defp nonempty_collection?(value) when is_map(value), do: map_size(value) > 0
   defp nonempty_collection?(value) when is_list(value), do: value != []
   defp nonempty_collection?(_value), do: false
 
-  defp matches_overlay_query?(row, args) do
-    query = Reducer.optional_string(args, "query") || Reducer.optional_string(args, "q")
-
-    is_nil(query) or
-      String.contains?(String.downcase(row["content"] || ""), String.downcase(query))
-  end
-
-  defp matches_overlay_value?(_row, _key, nil), do: true
-  defp matches_overlay_value?(row, key, value), do: row[key] == value
-
-  defp matches_overlay_tag?(_row, nil), do: true
-
-  defp matches_overlay_tag?(row, tag) do
-    tag in Reducer.decode_json(row["tags"], [])
+  defp read_value(args, key) do
+    case Reducer.value(args, key) do
+      "" -> nil
+      value -> value
+    end
   end
 
   defp provisional_item(row) do

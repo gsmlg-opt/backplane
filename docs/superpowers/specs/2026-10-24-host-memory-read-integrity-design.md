@@ -1,6 +1,6 @@
 # Host Memory 过滤完整性与精确读取
 
-状态：待用户审阅，尚未实施。日期：2026-10-24（Asia/Shanghai）。
+状态：用户已批准并实施，本地范围验证通过；1.10.34 尚未发布。日期：2026-10-24（Asia/Shanghai）。
 基线：`main@9c67cc183c6c37374d2eb2a41264709df8eef78e`。
 范围：internal requests #83、#84。下一可用 patch 目标为 **1.10.34**；
 此前的 1.10.33 候选 tag 已存在，但其发布失败。
@@ -176,6 +176,26 @@ DuskMoon native 下载阻塞 `duskmoon-dev/duskmoon-bundler#5` 已于
 新的发布必须对新源码重新验证，完成正式 qualification、所有构建和 installed smoke，
 并确认 GitHub assets/checksums、五个 Hex/HexDocs 包、GHCR 以及 main/tag 来源。
 本设计和本地测试都不代表已发布、Synapsis 已接入或生产已部署。
+
+## 实施与验证
+
+实现保持上述 contract、Service、Access 和 Store 边界，没有 schema migration。
+默认 private 的精确读取在最终鉴权时比较实际查询的完整 ownership tuple，
+防止读取期间切换 default 后，用新 partition 的权限释放旧 partition 内容。
+pending/acknowledged forget 的标识选择独立于 100 条 upsert 内容上限；
+删除覆盖不能因 upsert 填满候选而消失。provisional-only 响应超出既有大小上限时明确失败。
+Host proxy 在发送 get 前检查选定 channel 与完整 connection generation，响应前再次校验；
+forget 标识以 prepend/reverse 线性累积，512 条真实删除记录的回归确认顺序及抑制行为。
+
+本地范围验证覆盖 contract、Memory、Host Agent、API/channel，共 464 项测试通过；
+修改文件的格式、warnings-as-errors 编译、scoped strict Credo 和 14 个修改模块的
+Dialyzer 检查通过（沿用仓库既有 ignore 规则）。权限切换和删除覆盖问题均有先失败后通过的回归。
+设计一致性与代码质量复审均通过。首次最终测试中两个既有 API 测试超过 100ms 消息等待；
+未修改代码的单独复跑及相同 seed 的完整复跑均通过。
+
+截至 2026-10-24 04:53 UTC，上游 10.0.4 正式发布 run40063695995 正在构建 native 包；
+最新已发布版本仍为 10.0.3，当前依赖的八个 10.0.4 Hex 包均返回 404，安装验证尚未完成。
+因此依赖升级、1.10.34 qualification、构建与发布仍受上述 blocker policy 约束。
 
 ## 可复查源码
 

@@ -594,7 +594,7 @@ defmodule Backplane.Api.HostAgentChannel do
         "lifecycle_context" ->
           service.handle_lifecycle_context(args, auth)
 
-        operation when operation in ~w(recall list forget stats) ->
+        operation when operation in ~w(recall list get forget stats) ->
           service.call("memory::#{operation}", args, auth)
 
         _ ->
@@ -606,8 +606,9 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  defp memory_method_permission(method) when method in ~w(recall list stats lifecycle_context),
-    do: "host_agent.recall"
+  defp memory_method_permission(method)
+       when method in ~w(recall list get stats lifecycle_context),
+       do: "host_agent.recall"
 
   defp memory_method_permission(method) when method in ~w(remember forget),
     do: "host_agent.import"

@@ -437,9 +437,23 @@ defmodule Backplane.HostAgent.MemoryRouter do
         send_json(conn, 503, %{"ok" => false, "error" => "canonical memory is unavailable"})
 
       {:error, reason} ->
-        send_json(conn, 400, %{"ok" => false, "error" => format_error(reason)})
+        status = if method == "get", do: get_error_status(reason), else: 400
+        send_json(conn, status, %{"ok" => false, "error" => format_error(reason)})
     end
   end
+
+  defp get_error_status(reason) when reason in [:not_found, "not_found"], do: 404
+  defp get_error_status(reason) when reason in [:unauthorized, "unauthorized"], do: 403
+
+  defp get_error_status(reason) when reason in [:canonical_unavailable, "canonical_unavailable"],
+    do: 503
+
+  defp get_error_status(reason) when reason in [:payload_too_large, "payload_too_large"], do: 413
+
+  defp get_error_status(reason) when reason in [:unsupported_operation, "unsupported_operation"],
+    do: 501
+
+  defp get_error_status(_reason), do: 400
 
   defp handle_mcp(conn, agent_id) do
     body = conn.body_params || %{}
@@ -502,7 +516,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp tool_call(conn, id, agent_id, %{"name" => name, "arguments" => args})
        when is_binary(name) and is_map(args) do
     if forbidden_authority?(args) do
-      send_json(conn, 200, jsonrpc_result(id, tool_result("invalid_request", true)))
+      error = if name == "memory::get", do: "invalid_arguments", else: "invalid_request"
+      send_json(conn, 200, jsonrpc_result(id, tool_result(error, true)))
     else
       case MemoryToolContract.route_class(name) do
         :canonical_overlap ->
@@ -558,12 +573,12 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp direct_memory_call(_conn, _agent_id, method, %{"memory_access_id" => _})
-       when method not in ~w(remember recall list stats forget),
+       when method not in ~w(remember recall list get stats forget),
        do: {:error, :invalid_request}
 
   defp direct_memory_call(conn, agent_id, method, args) do
     if forbidden_authority?(args),
-      do: {:error, :invalid_request},
+      do: {:error, if(method == "get", do: :invalid_arguments, else: :invalid_request)},
       else: do_direct_memory_call(conn, agent_id, method, args)
   end
 

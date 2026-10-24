@@ -28,6 +28,13 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     end
   end
 
+  defmodule ReplacingGetChannel do
+    def push(channel, "memory_call", _payload, _timeout) do
+      MemoryProxy.set_connection(%{channel: channel, memory_generation: %{id: 2}}, %{})
+      {:ok, %{"ok" => true, "result" => %{"content" => "old connection content"}}}
+    end
+  end
+
   defmodule DeniedChannel do
     def push(_, _, _, _), do: {:error, %{"code" => "unauthorized", "retryable" => false}}
   end
@@ -145,6 +152,71 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     end)
 
     :ok
+  end
+
+  test "get never injects the route agent as a record constraint" do
+    MemoryProxy.set_channel(self())
+    args = %{"id" => "11111111-1111-4111-8111-111111111111"}
+
+    assert {:ok, _} =
+             MemoryProxy.call("get", args, agent_id: "reader", channel_module: FakeChannel)
+
+    assert_received {:push, _, "memory_call", %{"method" => "get", "arguments" => ^args}}
+  end
+
+  test "get rejects replies after the connection generation changes on the same channel" do
+    MemoryProxy.set_connection(%{channel: self(), memory_generation: %{id: 1}}, %{})
+
+    assert {:error, :stale_connection} =
+             MemoryProxy.call("get", %{}, agent_id: "reader", channel_module: ReplacingGetChannel)
+  end
+
+  test "get rejects a channel replaced after selection but before its connection snapshot" do
+    old_channel = start_supervised!({Agent, fn -> nil end})
+    MemoryProxy.set_connection(%{channel: old_channel, memory_generation: %{id: 1}}, %{})
+
+    result =
+      replace_before_push_snapshot(
+        fn -> MemoryProxy.call("get", %{}, agent_id: "reader", channel_module: FakeChannel) end,
+        fn -> MemoryProxy.set_connection(%{channel: self(), memory_generation: %{id: 2}}, %{}) end
+      )
+
+    assert {:error, :stale_connection} = result
+    refute_received {:push, ^old_channel, "memory_call", _}
+  end
+
+  test "explicit access rejects a generation replaced before the connection snapshot" do
+    MemoryProxy.set_connection(%{channel: self(), memory_generation: %{id: 1}}, %{})
+    access = %{"access_id" => "11111111-1111-4111-8111-111111111111", "authority_version" => 1}
+
+    result =
+      replace_before_push_snapshot(
+        fn ->
+          MemoryProxy.call("get", %{},
+            agent_id: "reader",
+            channel_module: FakeChannel,
+            access: access,
+            connection_generation: 1
+          )
+        end,
+        fn -> MemoryProxy.set_connection(%{channel: self(), memory_generation: %{id: 2}}, %{}) end
+      )
+
+    assert {:error, :stale_connection} = result
+    refute_received {:push, _, "memory_call", _}
+  end
+
+  test "default get pins its selected generation before the connection snapshot" do
+    MemoryProxy.set_connection(%{channel: self(), memory_generation: %{id: 1}}, %{})
+
+    result =
+      replace_before_push_snapshot(
+        fn -> MemoryProxy.call("get", %{}, agent_id: "reader", channel_module: FakeChannel) end,
+        fn -> MemoryProxy.set_connection(%{channel: self(), memory_generation: %{id: 2}}, %{}) end
+      )
+
+    assert {:error, :stale_connection} = result
+    refute_received {:push, _, "memory_call", _}
   end
 
   test "a negotiated v1 scope mismatch blocks private memory without retiring the channel" do
@@ -729,6 +801,54 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
     pid
+  end
+
+  defp replace_before_push_snapshot(call, replace) do
+    with_otp_debugger(fn -> replace_at_push_entry(call, replace) end)
+  end
+
+  defp replace_at_push_entry(call, replace) do
+    # The OTP interpreter pauses at the actual selected push, before state() runs.
+    # This makes the selection/snapshot race deterministic without product hooks.
+    assert {:module, MemoryProxy} = apply(:int, :ni, [MemoryProxy])
+    apply(:int, :subscribe, [])
+    assert :ok = apply(:int, :break_in, [MemoryProxy, :push_channel, 5])
+    task = Task.async(call)
+    pid = task.pid
+
+    try do
+      assert_receive {:int, {:new_status, ^pid, :break, _}}, 2_000
+      replace.()
+      assert :ok = apply(:int, :del_break_in, [MemoryProxy, :push_channel, 5])
+      assert :ok = apply(:int, :continue, [pid])
+      Task.await(task, 2_000)
+    after
+      apply(:int, :del_break_in, [MemoryProxy, :push_channel, 5])
+
+      if Process.alive?(pid) do
+        apply(:int, :continue, [pid])
+        Task.shutdown(task, :brutal_kill)
+      end
+
+      apply(:int, :nn, [MemoryProxy])
+    end
+  end
+
+  defp with_otp_debugger(fun) do
+    # Mix prunes optional OTP applications from its code path, even when installed.
+    [path] =
+      :code.root_dir() |> to_string() |> Path.join("lib/debugger-*/ebin") |> Path.wildcard()
+
+    path = String.to_charlist(path)
+    present? = path in :code.get_path()
+    assert true = :code.add_patha(path)
+
+    try do
+      assert {:module, :int} = Code.ensure_loaded(:int)
+      fun.()
+    after
+      unless present?, do: :code.del_path(path)
+    end
   end
 
   defp attach_telemetry(id) do
