@@ -96,3 +96,87 @@ Focused regressions exercise real A-to-B command stdin, a Deno cell with a queue
 nested call authorized under B, an active child and subsequent child followup,
 fresh B budgets/revisions, stale/foreign binding rejection, failed finish
 acknowledgement, uncertain cleanup, cancellation and native host-death cleanup.
+
+## Managed child Sessions
+
+A root Session owns its collaboration manager. Each stable managed child may
+also own a separate Session for commands, plans and Code Mode cells. These child
+Sessions share the root manager; attaching a child does not rebind the manager's
+root owner. Host owner PIDs may differ between root and child Sessions.
+
+The existing `child_options/3` callback returns the child's fresh Session binding
+alongside its normally admitted catalog. The host retains the Session by the
+stable `parent.child.agent_id`, while each callback receives a new run ID,
+`parent.child.attempt_id` and increasing `parent.child.incarnation`:
+
+```elixir
+child_options = fn request, run_id, parent ->
+  # These functions are host-owned; they do not call the manager synchronously.
+  session = child_sessions.fetch!(parent.child.agent_id)
+  authority = child_authority.(run_id, parent.authority)
+  {:ok, binding} = Session.bind(session, authority,
+    incarnation: parent.child.incarnation)
+  {:ok, profile} = catalog_for_child.(binding, authority)
+
+  {:ok,
+   [run_id: run_id,
+    incarnation: parent.child.incarnation,
+    session_binding: binding,
+    registry: profile.registry,
+    tools: profile.tools,
+    authority: profile.authority] ++ conversation_options.(request, run_id)}
+end
+```
+
+`child_sessions`, `child_authority`, `catalog_for_child` and
+`conversation_options` represent the host's existing allocation, policy, catalog
+and provider/Store integration. Fetch native collaboration contracts with
+`MultiAgent.contracts/3` before invoking the manager's tools and keep them in
+host-owned state for catalog construction. `child_options/3` runs inside the
+manager: it must not call the manager, including through a profile that discovers
+collaboration contracts synchronously. Preserve the original contract schemas,
+backend `family` metadata and collaboration bindings. Attach the fresh Session
+binding to descriptor backend contexts, as `Codex.profile/4` does for its returned
+registry; building a profile does not itself grant authority.
+
+After validating those options, MultiAgent records the exact prospective
+association and calls `Session.adopt_managed_child/3` before starting the child
+Conversation. Hosts do not need an additional adoption call. Adoption requires
+the actual manager caller, the exact reserved binding and run/incarnation, a
+stable manager/agent association, and authority within the Session reservation.
+Catalog admission can narrow this authority. A root Session cannot be reused as
+a child, and one child Session cannot be reassigned to another manager or child.
+Each invocation still checks the child's current binding, caller, grants,
+revisions and ancestor authority.
+
+Successful completion prepares local resources, acknowledges the Store finish,
+and detaches before releasing execution capacity. The idle child retains its
+resources and remains a manager cleanup obligation even if its Conversation is
+unloaded. Follow-up uses that same Session with a fresh run/token and higher
+incarnation. A second Session is refused while the old resource owner remains
+open; a new Session becomes eligible only after confirmed closure. Closed
+Session infrastructure cannot bind again.
+
+Child cancellation, local Session close and V2 target-only interruption close
+only that child's resources. Root, siblings and independently running descendants
+remain available. V1 recursive close and root Session close attempt every targeted
+child Session, including idle completed children, even after an earlier uncertain
+result. A successful retained Conversation snapshot is not a Session-close
+receipt. Off-manager workers require independent close evidence and keep
+observation responsive while waiting. Session infrastructure loss is monitored
+across follow-ups; manager loss makes each adopted Session close locally.
+
+Unknown adoption, startup, prompt, receipt, finish or cleanup acknowledgements
+retain the exact obligation and execution reservation. They do not authorize
+retry, replacement or effect replay. Run notifications carry private full
+admission/binding correlation; stale notifications cannot settle a newer run.
+These capabilities remain process-local and are excluded from public manager
+records and checkpoints.
+
+Once adoption was accepted or may have been accepted, the manager attempts local
+cleanup after startup or admission failure. Explicitly rejected foreign/root
+bindings are not closed by that manager. Allocations rejected before adoption,
+and allocations made by a callback that raises before returning its options,
+remain the host's responsibility. Closing resources leaves the host-supervised
+Session infrastructure alive for inspection; normal infrastructure shutdown still
+tears down its own Registry and supervisors.

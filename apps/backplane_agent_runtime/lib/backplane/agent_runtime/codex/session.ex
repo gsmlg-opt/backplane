@@ -24,6 +24,14 @@ defmodule Backplane.AgentRuntime.Codex.Session do
   def bind(_session, _authority, _opts),
     do: {:error, Error.new(:validation, "session binding requires authority and options")}
 
+  @doc "Adopts an exact reserved binding for a manager's reserved child attempt."
+  def adopt_managed_child(%{session: session} = binding, admission, authority)
+      when is_pid(session) and is_map(admission) and is_map(authority),
+      do: GenServer.call(session, {:adopt_managed_child, binding, admission, authority})
+
+  def adopt_managed_child(_, _, _),
+    do: {:error, Error.new(:validation, "invalid managed child adoption")}
+
   def attach(binding, catalog),
     do: GenServer.call(binding.session, {:attach, binding, self(), catalog})
 
@@ -70,6 +78,9 @@ defmodule Backplane.AgentRuntime.Codex.Session do
          phase: :idle,
          active: nil,
          runtimes: [],
+         root_used: false,
+         managed_child: nil,
+         manager_monitor: nil,
          used_runs: MapSet.new(),
          max_turns: max_turns,
          cleanup: :not_requested,
@@ -126,6 +137,27 @@ defmodule Backplane.AgentRuntime.Codex.Session do
       {:reply, {:error, Error.new(:resource_conflict, "session is not available for a new run")},
        state}
 
+  def handle_call({:adopt_managed_child, binding, admission, authority}, from, state) do
+    with :ok <- exact_binding(state, binding),
+         true <- state.phase == :reserved or refusal("managed child is not reserved"),
+         true <- not state.root_used or refusal("root Session cannot become a child"),
+         true <-
+           valid_admission?(admission, binding, elem(from, 0)) or
+             refusal("invalid managed child admission"),
+         true <-
+           authority_subset?(authority, state.active.authority) or
+             refusal("managed child authority exceeds reserved authority"),
+         true <-
+           compatible_adoption?(state.managed_child, admission, binding) or
+             refusal("Session belongs to another managed child") do
+      child = %{admission: admission, binding: binding, authority: authority}
+      ref = state.manager_monitor || Process.monitor(admission.manager)
+      {:reply, :ok, %{state | managed_child: child, manager_monitor: ref}}
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
   def handle_call({:attach, binding, pid, catalog}, _from, state) do
     with :ok <- exact_binding(state, binding),
          true <- state.phase == :reserved or refusal("session binding is already attached"),
@@ -133,7 +165,20 @@ defmodule Backplane.AgentRuntime.Codex.Session do
            catalog.authority.run_id == binding.run_id or refusal("session run authority differs") do
       runtimes = Enum.uniq(state.runtimes ++ collaboration_runtimes(catalog.registry))
 
-      case rebind_runtimes(runtimes, binding, catalog.authority) do
+      result =
+        case state.managed_child do
+          nil ->
+            rebind_runtimes(runtimes, binding, catalog.authority)
+
+          child ->
+            if child.binding == binding and
+                 authority_subset?(catalog.authority, child.authority) and
+                 Enum.all?(runtimes, &(&1 == child.admission.manager)),
+               do: :ok,
+               else: {:error, Error.new(:forbidden, "managed child catalog differs"), []}
+        end
+
+      case result do
         :ok ->
           active = %{
             state.active
@@ -142,7 +187,14 @@ defmodule Backplane.AgentRuntime.Codex.Session do
               authority: catalog.authority
           }
 
-          {:reply, :ok, %{state | phase: :active, active: active, runtimes: runtimes}}
+          {:reply, :ok,
+           %{
+             state
+             | phase: :active,
+               active: active,
+               runtimes: if(state.managed_child, do: [], else: runtimes),
+               root_used: state.root_used or is_nil(state.managed_child)
+           }}
 
         {:error, error, rebound} ->
           state = %{state | runtimes: Enum.uniq(state.runtimes ++ rebound)}
@@ -164,7 +216,12 @@ defmodule Backplane.AgentRuntime.Codex.Session do
            true <-
              (is_pid(state.active.pid) and Process.alive?(state.active.pid)) or
                refusal("session run owner is unavailable") do
-        {:ok, Map.take(binding, [:owner_id, :incarnation, :owner_pid, :resource_registry])}
+        {:ok,
+         Map.put(
+           Map.take(binding, [:owner_id, :incarnation, :owner_pid, :resource_registry]),
+           :session_binding,
+           binding
+         )}
       end
 
     {:reply, result, state}
@@ -228,6 +285,14 @@ defmodule Backplane.AgentRuntime.Codex.Session do
   def handle_info({ref, result}, %{cleanup_task: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     Enum.each(state.close_waiters, &GenServer.reply(&1, result))
+
+    if state.managed_child do
+      send(
+        state.managed_child.admission.manager,
+        {:managed_child_session_closed, state.managed_child, result}
+      )
+    end
+
     {:noreply, %{state | phase: :closed, cleanup: result, cleanup_task: nil, close_waiters: []}}
   end
 
@@ -239,8 +304,18 @@ defmodule Backplane.AgentRuntime.Codex.Session do
 
         Enum.each(state.close_waiters, &GenServer.reply(&1, result))
 
+        if state.managed_child do
+          send(
+            state.managed_child.admission.manager,
+            {:managed_child_session_closed, state.managed_child, result}
+          )
+        end
+
         {:noreply,
          %{state | phase: :closed, cleanup: result, cleanup_task: nil, close_waiters: []}}
+
+      ref == state.manager_monitor and state.phase not in [:closed, :closing] ->
+        {:noreply, begin_close(state, [], false)}
 
       ref == state.owner_monitor and state.phase not in [:closed, :closing] ->
         {:noreply, begin_close(state, [], false)}
@@ -336,6 +411,13 @@ defmodule Backplane.AgentRuntime.Codex.Session do
     if state.active != nil and is_pid(state.active.pid) and not fenced,
       do: send(state.active.pid, {:codex_session_close, state.active.binding.token})
 
+    if state.managed_child do
+      send(
+        state.managed_child.admission.manager,
+        {:managed_child_session_closing, state.managed_child}
+      )
+    end
+
     %{state | phase: :closing, cleanup_task: task, close_waiters: waiters}
   end
 
@@ -386,6 +468,58 @@ defmodule Backplane.AgentRuntime.Codex.Session do
   defp exact_binding(%{active: %{binding: actual}}, binding) when actual == binding, do: :ok
   defp exact_binding(_, _), do: refusal("stale or foreign session binding")
   defp refusal(message), do: {:error, Error.new(:forbidden, message)}
+
+  defp valid_admission?(admission, binding, caller) do
+    admission[:manager] == caller and is_pid(caller) and
+      Enum.all?([:manager_id, :agent_id, :attempt_id, :run_id], fn key ->
+        is_binary(admission[key]) and admission[key] != ""
+      end) and admission[:run_id] == binding.run_id and
+      admission[:incarnation] == binding.run_incarnation
+  end
+
+  defp compatible_adoption?(nil, _, _), do: true
+
+  defp compatible_adoption?(child, admission, binding) do
+    previous = child.admission
+    same = Enum.all?([:manager, :manager_id, :agent_id], &(previous[&1] == admission[&1]))
+
+    same and
+      ((child.binding == binding and previous == admission) or
+         (child.binding != binding and admission.incarnation > previous.incarnation))
+  end
+
+  defp authority_subset?(child, parent) do
+    valid_authority?(child) and valid_authority?(parent) and
+      child.caller == parent.caller and child.run_id == parent.run_id and
+      Enum.all?(child.grants, fn name ->
+        name in parent.grants and revision(child, name) == revision(parent, name) and
+          Map.get(Map.get(child, :tool_bindings, %{}), name) ==
+            Map.get(Map.get(parent, :tool_bindings, %{}), name)
+      end)
+  end
+
+  defp valid_authority?(authority) when is_map(authority) do
+    is_binary(authority[:caller]) and authority[:caller] != "" and
+      is_binary(authority[:run_id]) and authority[:run_id] != "" and
+      is_list(authority[:grants]) and Enum.all?(authority.grants, &is_binary/1) and
+      (not Map.has_key?(authority, :tool_revision) or
+         (is_integer(authority.tool_revision) and authority.tool_revision > 0)) and
+      is_map(Map.get(authority, :tool_revisions, %{})) and
+      Enum.all?(Map.get(authority, :tool_revisions, %{}), fn {name, rev} ->
+        is_binary(name) and is_integer(rev) and rev > 0
+      end) and is_map(Map.get(authority, :tool_bindings, %{})) and
+      Enum.all?(Map.get(authority, :tool_bindings, %{}), fn {name, value} ->
+        is_binary(name) and is_binary(value) and value != ""
+      end) and
+      Enum.all?(authority.grants, fn name ->
+        is_integer(revision(authority, name)) and revision(authority, name) > 0
+      end)
+  end
+
+  defp valid_authority?(_), do: false
+
+  defp revision(authority, name),
+    do: Map.get(Map.get(authority, :tool_revisions, %{}), name, authority[:tool_revision])
 
   defp collaboration_runtimes(%ToolRegistry{tools: tools}) do
     tools
