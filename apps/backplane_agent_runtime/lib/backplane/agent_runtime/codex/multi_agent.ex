@@ -2883,8 +2883,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           end
 
         nil when caller.name != state.parent_name ->
-          state.agents[caller.name].pid ==
-            get_in(operation, [:backend_context, :resource_owner_pid])
+          agent = state.agents[caller.name]
+
+          is_nil(Keyword.get(agent.opts, :session_binding)) and
+            not adopted_obligation?(state, agent.id) and
+            agent.pid == get_in(operation, [:backend_context, :resource_owner_pid])
 
         _ ->
           false

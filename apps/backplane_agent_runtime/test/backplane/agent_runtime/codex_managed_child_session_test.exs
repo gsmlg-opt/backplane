@@ -1,11 +1,12 @@
 defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
   use ExUnit.Case, async: false
-  alias Backplane.AgentRuntime.{Conversation, EphemeralStore, Plan, Error, Command}
+  alias Backplane.AgentRuntime.{Conversation, EphemeralStore, Plan, Error, Command, ToolEffects}
 
   alias Backplane.AgentRuntime.Codex.{
     Session,
     MultiAgent,
     Catalog,
+    Contract,
     Tools,
     ResourceRegistry,
     CodeMode
@@ -34,6 +35,13 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
     def prepare_tool(_invocation, context) do
       context.interact.(%{prompt: "approve managed child work"})
       :allow
+    end
+  end
+
+  defmodule BoundAdapter do
+    def execute(operation) do
+      send(operation.backend_context.test, {:bound_operation, operation})
+      MultiAgent.call_bound(operation, operation.arguments)
     end
   end
 
@@ -340,6 +348,154 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
              call(child, "send_message", %{"target" => "/root", "message" => "revoked"})
 
     assert {:ok, _} = call(child, "list_agents", %{})
+    assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
+  end
+
+  test "adopted native child cannot replace its Session capability with its Conversation PID" do
+    ctx = runtime()
+    assert {:ok, _} = call(ctx, "spawn_agent", %{"task_name" => "worker", "message" => "work"})
+    assert_receive {:child_binding, binding}
+    assert_receive {:provider, _, _, _}, 1_000
+    agent = :sys.get_state(ctx.manager).agents["/root/worker"]
+
+    operation = %{
+      tool_name: "list_agents",
+      tool_revision: 1,
+      run_id: agent.run_id,
+      incarnation: agent.incarnation,
+      caller: agent.authority.caller,
+      effective_authority: agent.authority,
+      arguments: %{},
+      backend_context: %{runtime: ctx.manager, profile: :v2, resource_owner_pid: agent.pid}
+    }
+
+    assert {:error, %Error{class: :forbidden}} = MultiAgent.call(operation)
+
+    assert {:ok, _} =
+             MultiAgent.call(put_in(operation.backend_context[:session_binding], binding))
+
+    assert {:ok, _} = call(%{ctx | binding: binding}, "list_agents", %{})
+    assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
+  end
+
+  test "host-bound collaboration executes under the adopted child's exact Session capability" do
+    ctx = runtime(bound_contract: true)
+
+    {_, _} =
+      tool(ctx.provider, "root", "spawn_agent", %{"task_name" => "worker", "message" => "work"})
+
+    assert_receive {:child_binding, binding}
+    assert_receive {:provider, run, _, provider}, 1_000
+    {provider, result} = tool(provider, run, "host::child_list", %{})
+    assert [%{agent_name: "/root/worker"}] = result.agents
+    assert_receive {:bound_operation, operation}
+    assert operation.backend_context.session_binding == binding
+    agent = :sys.get_state(ctx.manager).agents["/root/worker"]
+
+    omitted =
+      update_in(operation.backend_context, fn backend ->
+        backend
+        |> Map.drop([:session_binding, :resource_owner])
+        |> Map.put(:resource_owner_pid, agent.pid)
+      end)
+
+    forged = put_in(operation.backend_context.session_binding.token, make_ref())
+
+    for invalid <- [omitted, forged] do
+      assert {:rejected, proof} = MultiAgent.call_bound(invalid, %{})
+
+      assert {:ok, %{error: %Error{class: :forbidden}}} =
+               ToolEffects.validate_rejection(proof, invalid)
+    end
+
+    assert {:ok, _} = MultiAgent.call_bound(operation, %{})
+    assert Process.alive?(provider)
+    assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
+  end
+
+  test "sessionless children retain native and host-bound Conversation ownership" do
+    ctx =
+      runtime(
+        bound_contract: true,
+        child_transform: fn opts ->
+          opts
+          |> Keyword.delete(:session_binding)
+          |> Keyword.update!(:registry, fn registry ->
+            %{
+              registry
+              | tools:
+                  Map.new(registry.tools, fn {name, descriptor} ->
+                    {name,
+                     update_in(descriptor.backend_context, &Map.delete(&1, :session_binding))}
+                  end)
+            }
+          end)
+        end
+      )
+
+    {_, _} =
+      tool(ctx.provider, "root", "spawn_agent", %{"task_name" => "worker", "message" => "work"})
+
+    assert_receive {:provider, run, _, provider}, 1_000
+    {provider, native} = tool(provider, run, "list_agents", %{})
+    assert [%{agent_name: "/root/worker"}] = native.agents
+    {_, bound} = tool(provider, run, "host::child_list", %{})
+    assert [%{agent_name: "/root/worker"}] = bound.agents
+    assert_receive {:bound_operation, operation}
+    refute Map.has_key?(operation.backend_context, :session_binding)
+    refute Map.has_key?(operation.backend_context, :resource_owner)
+    assert is_pid(operation.backend_context.resource_owner_pid)
+    assert :sys.get_state(ctx.manager).child_sessions == %{}
+    assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
+  end
+
+  test "V1 recursive close reaches retained idle child and grandchild Session resources" do
+    ctx = runtime(v1_contracts: true)
+    test = self()
+
+    {root_provider, _} =
+      tool(ctx.provider, "root", "spawn_agent", %{"task_name" => "worker", "message" => "work"})
+
+    assert_receive {:child_binding, child}
+    assert_receive {:provider, run, _, provider}, 1_000
+
+    {provider, _} =
+      tool(provider, run, "spawn_agent", %{"task_name" => "nested", "message" => "nested"})
+
+    assert_receive {:child_binding, nested}
+    assert_receive {:provider, _, _, nested_provider}, 1_000
+
+    for {name, binding} <- [child: child, grandchild: nested] do
+      assert {:ok, _} =
+               ResourceRegistry.register(
+                 binding.resource_registry,
+                 binding.owner_id,
+                 :logical,
+                 name,
+                 owner_pid: binding.session,
+                 cleanup: fn ->
+                   send(test, {:closed_resource, name})
+                   :ok
+                 end
+               )
+    end
+
+    send(provider, {:events, [done()]})
+    send(nested_provider, {:events, [done()]})
+    eventually(fn -> Session.status(child.session).phase == :idle end)
+    eventually(fn -> Session.status(nested.session).phase == :idle end)
+    refute_receive {:closed_resource, _}, 20
+
+    {root_provider, result} =
+      tool(root_provider, "root", "multi_agent_v1::close_agent", %{"target" => run})
+
+    assert result.status == :shutdown
+    assert_receive {:closed_resource, :child}
+    assert_receive {:closed_resource, :grandchild}
+    assert Session.status(child.session).phase == :closed
+    assert Session.status(nested.session).phase == :closed
+    assert Session.status(ctx.root).phase == :active
+    assert Process.alive?(root_provider)
     assert {:ok, %{status: :confirmed}} = Session.close(ctx.root)
   end
 
@@ -784,7 +940,10 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
         "send_message",
         "interrupt_agent",
         "update_plan"
-      ] ++ Keyword.get(opts, :extra_tools, [])
+      ] ++
+        Keyword.get(opts, :extra_tools, []) ++
+        if(Keyword.get(opts, :bound_contract), do: ["host::child_list"], else: []) ++
+        if(Keyword.get(opts, :v1_contracts), do: ["multi_agent_v1::close_agent"], else: [])
 
     native_context = Keyword.get(opts, :context, %{})
     opts_config = opts
@@ -842,6 +1001,30 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
     end)
 
     contracts = MultiAgent.contracts(:v2, manager)
+
+    contracts =
+      if Keyword.get(opts, :v1_contracts),
+        do: contracts ++ MultiAgent.contracts(:v1, manager),
+        else: contracts
+
+    contracts =
+      if Keyword.get(opts, :bound_contract) do
+        {:ok, bound} =
+          MultiAgent.bind_contract(manager, :list, %{
+            namespace: "host",
+            name: "child_list",
+            tool_revision: 1,
+            backend: BoundAdapter,
+            backend_context: %{test: test},
+            schema: %{"type" => "object", "properties" => %{}, "additionalProperties" => false},
+            safety: %{read_only: true, retry_safe: false, parallel_safe: false}
+          })
+
+        contracts ++ [bound]
+      else
+        contracts
+      end
+
     :ets.insert(table, {:contracts, contracts})
     opts = options(root, "root", 1, tools, {contracts, root_plan}, test, native_context)
     {:ok, pid} = Conversation.start_link(opts)
@@ -866,6 +1049,18 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
 
   defp options(session, run, incarnation, tools, {contracts, plan}, test, native_context) do
     authority = authority(run, tools)
+
+    bindings =
+      Map.new(
+        for contract <- contracts,
+            Map.has_key?(contract, :collaboration_binding),
+            contract.tool_name in tools,
+            do: {contract.tool_name, contract.collaboration_binding.fingerprint}
+      )
+
+    authority =
+      if map_size(bindings) > 0, do: Map.put(authority, :tool_bindings, bindings), else: authority
+
     {:ok, binding} = Session.bind(session, authority, incarnation: incarnation)
 
     context =
@@ -878,7 +1073,13 @@ defmodule Backplane.AgentRuntime.CodexManagedChildSessionTest do
       })
 
     local = Tools.contracts(context) ++ CodeMode.contracts(context)
-    selected = Enum.filter(local ++ contracts, &(&1.name in tools))
+
+    selected =
+      Enum.filter(
+        local ++ contracts,
+        &(Contract.canonical_name(&1[:namespace], &1.name) in tools)
+      )
+
     {:ok, profile} = Catalog.admit(selected, authority)
 
     registry = %{
