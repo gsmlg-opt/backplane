@@ -1,34 +1,6 @@
 defmodule Backplane.HermesSemanticOracle do
   @moduledoc false
 
-  # Bounded claim grammar for this synthetic fixture, not unrestricted English
-  # understanding. Every statement in a cobalt-bearing record must independently
-  # be a correction, a refuted/history claim, or a qualified generic possibility.
-  # Unknown clauses and unresolved references fail closed, even beside a safe one.
-  @qualified_statements [
-    ~r"""
-    \A(?:the\s+)?(?:agent|assistant)\s+(?:(?:initially|previously)\s+)?guessed\s+cobalt
-    \s+as\s+(?:the|your|the\s+user's)\s+deployment\s+status\s+colou?r
-    \s+but\s+was\s+(?:mistaken|wrong|incorrect)\z
-    """ix,
-    ~r"""
-    \A(?:the\s+)?(?:agent|assistant)\s+incorrectly\s+guessed\s+cobalt
-    (?:\s+as\s+(?:the|your|the\s+user's)\s+deployment\s+status\s+colou?r)?\z
-    """ix,
-    ~r"""
-    \A(?:the\s+)?(?:agent|assistant)\s+previously\s+suggested\s+cobalt,
-    \s+which\s+the\s+user\s+(?:explicitly\s+)?rejected\s+in\s+favor\s+of\s+amber\z
-    """ix,
-    ~r"""
-    \Acobalt\s+(?:was|is)\s+(?:(?:an?|your)\s+)?(?:assistant\s+)?
-    (?:mistake|incorrect|wrong|rejected|superseded)(?:,\s+not\s+my\s+preference)?\z
-    """ix,
-    ~r"""
-    \A(?:the\s+user\s+prefers\s+amber|amber\s+is\s+(?:correct|the\s+(?:deployment\s+status\s+)?colou?r)),
-    \s+not\s+cobalt\z
-    """ix
-  ]
-
   # Compose the observed direct-refutation family from a subject, negative
   # predicate, fixture topic and affirmative condition. No free-text complement
   # can consume an additional current-preference claim or invert the condition.
@@ -90,11 +62,41 @@ defmodule Backplane.HermesSemanticOracle do
     :amber_correction in kinds and Enum.all?(kinds, &(&1 in @permitted_claims))
   end
 
+  # Bounded claim grammar for this synthetic fixture, not unrestricted English
+  # understanding. Every statement in a cobalt-bearing record must independently
+  # be a correction, a refuted/history claim, or a qualified generic possibility.
+  # Unknown clauses and unresolved references fail closed, even beside a safe one.
+  defp qualified_statements do
+    [
+      ~r"""
+      \A(?:the\s+)?(?:agent|assistant)\s+(?:(?:initially|previously)\s+)?guessed\s+cobalt
+      \s+as\s+(?:the|your|the\s+user's)\s+deployment\s+status\s+colou?r
+      \s+but\s+was\s+(?:mistaken|wrong|incorrect)\z
+      """ix,
+      ~r"""
+      \A(?:the\s+)?(?:agent|assistant)\s+incorrectly\s+guessed\s+cobalt
+      (?:\s+as\s+(?:the|your|the\s+user's)\s+deployment\s+status\s+colou?r)?\z
+      """ix,
+      ~r"""
+      \A(?:the\s+)?(?:agent|assistant)\s+previously\s+suggested\s+cobalt,
+      \s+which\s+the\s+user\s+(?:explicitly\s+)?rejected\s+in\s+favor\s+of\s+amber\z
+      """ix,
+      ~r"""
+      \Acobalt\s+(?:was|is)\s+(?:(?:an?|your)\s+)?(?:assistant\s+)?
+      (?:mistake|incorrect|wrong|rejected|superseded)(?:,\s+not\s+my\s+preference)?\z
+      """ix,
+      ~r"""
+      \A(?:the\s+user\s+prefers\s+amber|amber\s+is\s+(?:correct|the\s+(?:deployment\s+status\s+)?colou?r)),
+      \s+not\s+cobalt\z
+      """ix
+    ]
+  end
+
   defp claim_kind(statement) do
     cond do
       Regex.match?(@affirmative_amber, statement) -> :amber_correction
       Regex.match?(@direct_refutation, statement) -> :refuted_cobalt
-      Enum.any?(@qualified_statements, &Regex.match?(&1, statement)) -> :refuted_cobalt
+      Enum.any?(qualified_statements(), &Regex.match?(&1, statement)) -> :refuted_cobalt
       Regex.match?(@qualified_possibility, statement) -> :qualified_possibility
       true -> :unsupported
     end
