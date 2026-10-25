@@ -335,7 +335,6 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
 
     test "returns an ordered chain and counts derived from rows" do
       assert {:ok, memory} = Memories.remember("ordered", direct_opts("ordered-one"))
-      Process.sleep(2)
       assert {:ok, ^memory} = Memories.remember("ordered", direct_opts("ordered-two"))
 
       assert {:ok, verification} = Memories.trusted_verify(memory.id)
@@ -348,7 +347,47 @@ defmodule Backplane.Memory.Memories.EvidenceTest do
       assert verification.source_diversity == 1
       assert Enum.map(verification.evidence, & &1.source_type) == ["request", "request"]
       assert Memories.list_evidence(memory.id) == verification.evidence
-      assert verification.evidence == Enum.sort_by(verification.evidence, &{&1.created_at, &1.id})
+
+      assert verification.evidence ==
+               Enum.sort_by(
+                 verification.evidence,
+                 &{DateTime.to_unix(&1.created_at, :microsecond), &1.id}
+               )
+    end
+
+    test "orders evidence across second boundaries and breaks timestamp ties by UUID" do
+      assert {:ok, memory} = Memories.remember("chronological", direct_opts("chronological"))
+      assert [request] = Memories.list_evidence(memory.id)
+
+      earlier = ~U[2020-01-01 00:00:00.900000Z]
+      later = ~U[2020-01-01 00:00:01.100000Z]
+      earlier_id = "00000000-0000-0000-0000-000000000001"
+      later_low_id = "00000000-0000-0000-0000-000000000002"
+      later_high_id = "00000000-0000-0000-0000-000000000003"
+
+      for {id, created_at, session} <- [
+            {later_high_id, later, "chronological-later-high"},
+            {later_low_id, later, "chronological-later-low"},
+            {earlier_id, earlier, "chronological-earlier"}
+          ] do
+        %Evidence{id: id, created_at: created_at}
+        |> Evidence.changeset(Map.put(session_evidence(session), :memory_id, memory.id))
+        |> repo().insert!()
+      end
+
+      assert {:ok, verification} = Memories.trusted_verify(memory.id)
+      assert verification.evidence_count == 4
+      assert verification.supporting_count == 4
+      assert Memories.list_evidence(memory.id) == verification.evidence
+
+      assert Enum.map(verification.evidence, & &1.id) ==
+               [earlier_id, later_low_id, later_high_id, request.id]
+
+      assert verification.evidence ==
+               Enum.sort_by(
+                 verification.evidence,
+                 &{DateTime.to_unix(&1.created_at, :microsecond), &1.id}
+               )
     end
 
     test "keeps retrieval, application, and contradictory evidence counts distinct" do
