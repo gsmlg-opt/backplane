@@ -19,8 +19,8 @@ defmodule Backplane.AiProtocol.Media do
 
   def preflight(request, protocol) do
     Enum.reduce_while(request.input, :ok, fn
-      %{role: role, content: blocks}, :ok ->
-        case preflight_blocks(blocks, role, protocol) do
+      %{role: _, content: blocks} = message, :ok ->
+        case preflight_blocks(blocks, message, protocol) do
           :ok -> {:cont, :ok}
           error -> {:halt, error}
         end
@@ -30,19 +30,20 @@ defmodule Backplane.AiProtocol.Media do
     end)
   end
 
-  def encode(%{type: type} = block, protocol) when type in @types do
+  def encode(block, protocol), do: encode(block, protocol, %{role: :user, extensions: %{}})
+
+  def encode(%{type: type} = block, protocol, message) when type in @types do
     with {:ok, block} <- ContentBlock.new(block),
          :ok <- portable_metadata(block, protocol) do
-      encode_media(block, protocol)
+      encode_in_message(block, protocol, message)
     end
   end
 
-  defp preflight_blocks(blocks, role, protocol) do
+  defp preflight_blocks(blocks, message, protocol) do
     Enum.reduce_while(blocks, :ok, fn
       %{type: type} = block, :ok when type in @types ->
-        case encode(block, protocol) do
-          {:ok, _wire} when role == :user -> {:cont, :ok}
-          {:ok, _wire} -> {:halt, unsupported(protocol, type, "message_role")}
+        case encode(block, protocol, message) do
+          {:ok, _wire} -> {:cont, :ok}
           error -> {:halt, error}
         end
 
@@ -169,6 +170,49 @@ defmodule Backplane.AiProtocol.Media do
 
   defp portable_metadata(%{extensions: extensions, type: type}, protocol) do
     if extensions == %{}, do: :ok, else: unsupported(protocol, type, "media_metadata")
+  end
+
+  defp encode_in_message(block, protocol, %{role: :user}), do: encode_media(block, protocol)
+
+  defp encode_in_message(block, :anthropic, %{role: :tool, extensions: extensions}) do
+    if extensions == %{},
+      do: encode_tool_media(block),
+      else: unsupported(:anthropic, block.type, "tool_message_metadata")
+  end
+
+  defp encode_in_message(block, protocol, _message) do
+    case encode_media(block, protocol) do
+      {:ok, _wire} -> unsupported(protocol, block.type, "message_role")
+      error -> error
+    end
+  end
+
+  defp encode_tool_media(%{
+         type: :resource,
+         data: %{"mime_type" => "application/pdf", "uri" => uri} = data
+       })
+       when map_size(data) == 2,
+       do: pdf_document(uri, :resource)
+
+  defp encode_tool_media(%{
+         type: :resource_link,
+         data: %{"mime_type" => "application/pdf", "uri" => uri, "name" => name} = data
+       })
+       when map_size(data) == 3 do
+    with {:ok, document} <- pdf_document(uri, :resource_link),
+         do: {:ok, Map.put(document, "title", name)}
+  end
+
+  defp encode_tool_media(%{type: type}), do: unsupported(:anthropic, type, "media_form")
+
+  defp pdf_document(uri, type) do
+    case URI.new(uri) do
+      {:ok, %URI{scheme: "https"}} ->
+        {:ok, %{"type" => "document", "source" => %{"type" => "url", "url" => uri}}}
+
+      _ ->
+        unsupported(:anthropic, type, "resource_uri_scheme")
+    end
   end
 
   defp encode_media(%{type: :audio, data: %{"mime_type" => mime, "data" => data}}, :openai)

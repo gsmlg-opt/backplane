@@ -132,16 +132,32 @@ Codec support is explicit:
 | --- | --- |
 | OpenAI Chat | User input with inline `audio/wav` or `audio/mpeg`, encoded as `input_audio` WAV/MP3 |
 | Google | User inline WAV, MPEG/MP3, AIFF, AAC, OGG or FLAC audio; URI-only resources with HTTP, HTTPS or GS identities, encoded as `inlineData`/`fileData` |
-| Anthropic | New audio/resource/link forms return incompatibility |
+| Anthropic | Tool-result HTTPS PDF resource references and named PDF resource links, encoded as URL document blocks |
 | OpenAI Responses | New audio/resource/link forms return incompatibility |
 
-All four codecs reject these new kinds in tool results and other message roles.
-Inline resources and named resource links remain canonical portable content, but
-currently have no lossless provider mapping. Unsupported forms or media with
-extensions return `:incompatible` and `upstream_outcome: :not_submitted` during
-encoding, including Google tool results with a native function-response override.
+Anthropic tool results accept `:resource` data with exactly `uri` and `mime_type`,
+or `:resource_link` data with exactly `uri`, `mime_type` and `name`. The URI must
+use HTTPS and the MIME must be exactly `application/pdf`. Both become native
+`document` blocks with a `{"type":"url","url":URI}` source; the link's exact
+`name` becomes the document's `title`. Canonical JSON persistence retains the
+original resource/link kind and data. Encoding preserves block order, tool call
+identity and success/error status without fetching or normalizing the URI.
+
+Both block and tool-message extensions must be empty for these PDF forms. Inline
+`text`/`data`, optional link `title`/`description`/`size`, other MIME types and URI
+schemes remain incompatible. Other codecs and other Anthropic message roles do
+not gain these tool-result routes. All codecs continue to reject tool-result
+audio. Unsupported forms or media with extensions return `:incompatible` and
+`upstream_outcome: :not_submitted` during encoding, including Google tool results
+with a native function-response override.
 Hosts must only submit successfully encoded requests. The codecs never flatten
 media into explanatory text or discard URI/metadata to obtain a supported form.
+
+The selected Anthropic model must support PDF URL documents; successful local
+encoding does not prove remote model acceptance. The independently authored
+[native fixture provenance](test/fixtures/anthropic/PROVENANCE.md) and
+[source notes](SOURCE_NOTES.md) describe the official schema evidence and the
+canonical JSON-reload/native-encoding checks, without claiming provider execution.
 
 Google response and stream decoding preserve audio as `:audio` and file parts as
 URI-only `:resource`, retaining additional media metadata under

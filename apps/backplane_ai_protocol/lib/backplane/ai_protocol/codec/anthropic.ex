@@ -116,7 +116,7 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp encode_tool_result(message, opts) do
     with {:ok, content} <-
-           message.content |> Enum.map(&encode_block(&1, opts)) |> collect() do
+           message.content |> Enum.map(&encode_tool_block(&1, message, opts)) |> collect() do
       {:ok,
        %{
          "role" => "user",
@@ -131,6 +131,12 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
        }}
     end
   end
+
+  defp encode_tool_block(%ContentBlock{type: type} = block, message, _opts)
+       when type in [:audio, :resource, :resource_link],
+       do: Backplane.AiProtocol.Media.encode(block, :anthropic, message)
+
+  defp encode_tool_block(block, _message, opts), do: encode_block(block, opts)
 
   defp encode_block(%ContentBlock{type: :text, text: text}, _opts),
     do: {:ok, %{"type" => "text", "text" => text}}

@@ -1,6 +1,6 @@
 # Provider tool-result media: native PDF references
 
-Status: proposed for issue #108; implementation awaits approval.
+Status: approved by the user on 2026-10-25 for implementation and release 1.10.38.
 
 ## Problem and acceptance boundary
 
@@ -119,7 +119,8 @@ encoding; no provider request-decoding API is invented.
 Run the owning AI Protocol suite and required compile/format/static/workflow
 checks. After official publication, use a fresh Hex-only consumer to repeat the
 contract and JSON-reload checks. A task-local loopback HTTP fixture can capture
-the exact serialized request from `Codec.encode_rest_request/3`; it must not add
+the exact serialized request from `Codec.encode_request(:anthropic, request)`;
+host-owned JSON/HTTP transport must not add
 an HTTP dependency to this pure codec package or contact a real provider. This
 proves local wire delivery only.
 

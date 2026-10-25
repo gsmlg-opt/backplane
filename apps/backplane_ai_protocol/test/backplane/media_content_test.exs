@@ -17,6 +17,18 @@ defmodule Backplane.AiProtocol.MediaContentTest do
     data: %{"uri" => "fixture://document", "mime_type" => "text/plain", "text" => "Fixture"}
   }
   @link %{type: :resource_link, data: %{"uri" => "fixture://document", "name" => "Fixture"}}
+  @pdf_resource %{
+    type: :resource,
+    data: %{"uri" => "https://example.invalid/document.pdf", "mime_type" => "application/pdf"}
+  }
+  @pdf_link %{
+    type: :resource_link,
+    data: %{
+      "uri" => "https://example.invalid/link.pdf",
+      "mime_type" => "application/pdf",
+      "name" => "Reference"
+    }
+  }
 
   test "audio and resource identities retain inline bodies, references and portable metadata" do
     fixtures = [
@@ -297,6 +309,158 @@ defmodule Backplane.AiProtocol.MediaContentTest do
     refute_received :transport_submitted
   end
 
+  for status <- [:success, :error] do
+    is_error = status == :error
+
+    test "Anthropic PDF references preserve canonical JSON reload and #{status} tool status" do
+      status = unquote(status)
+      message = tool_message([@pdf_resource, @pdf_link], status)
+      restored = restore_tool_message(message)
+      assert restored == message
+      assert Enum.map(restored.content, & &1.type) == [:resource, :resource_link]
+      assert Enum.map(restored.content, & &1.data) == [@pdf_resource.data, @pdf_link.data]
+
+      assert {:ok, wire} = Codec.encode_request(:anthropic, tool_request(restored))
+      expected = Map.put(pdf_tool_result_fixture(), "is_error", unquote(is_error))
+      assert List.last(wire["messages"]) == %{"role" => "user", "content" => [expected]}
+      assert restored == message
+    end
+  end
+
+  test "Anthropic native PDF references retain mixed text and image tool-result order" do
+    image = %{
+      type: :image,
+      data: %{"source" => "base64", "media_type" => "image/png", "data" => "AA=="}
+    }
+
+    message =
+      tool_message([
+        %{type: :text, text: "before"},
+        image,
+        @pdf_resource,
+        @pdf_link,
+        %{type: :text, text: "after"}
+      ])
+
+    assert {:ok, wire} =
+             Codec.encode_request(:anthropic, tool_request(restore_tool_message(message)))
+
+    assert %{"content" => [%{"content" => content} = result]} = List.last(wire["messages"])
+    assert result["tool_use_id"] == "call-pdf"
+    assert result["is_error"] == false
+
+    expected = [
+      %{"type" => "text", "text" => "before"},
+      %{
+        "type" => "image",
+        "source" => %{"type" => "base64", "media_type" => "image/png", "data" => "AA=="}
+      }
+    ]
+
+    assert content ==
+             expected ++
+               pdf_tool_result_fixture()["content"] ++ [%{"type" => "text", "text" => "after"}]
+  end
+
+  test "Anthropic PDF links copy their exact URI and display name without normalizing canonical data" do
+    uri = "https://Example.invalid/report%20one.pdf?version=2&tag=%2F#page=3"
+    name = "报告 / PDF reference"
+    block = %{@pdf_link | data: %{@pdf_link.data | "uri" => uri, "name" => name}}
+    message = tool_message([block])
+
+    assert {:ok, wire} =
+             Codec.encode_request(:anthropic, tool_request(restore_tool_message(message)))
+
+    assert %{
+             "content" => [
+               %{
+                 "content" => [
+                   %{"type" => "document", "title" => ^name, "source" => source}
+                 ]
+               }
+             ]
+           } = List.last(wire["messages"])
+
+    assert source == %{"type" => "url", "url" => uri}
+    assert hd(message.content).type == :resource_link
+    assert hd(message.content).data == block.data
+  end
+
+  test "PDF tool media rejects each extra body or metadata field before submission" do
+    extra_forms = [
+      Map.put(@pdf_resource, :data, Map.put(@pdf_resource.data, "text", "inline text")),
+      Map.put(@pdf_resource, :data, Map.put(@pdf_resource.data, "data", "AA==")),
+      Map.put(@pdf_link, :data, Map.put(@pdf_link.data, "title", "Reference")),
+      Map.put(@pdf_link, :data, Map.put(@pdf_link.data, "description", "Description")),
+      Map.put(@pdf_link, :data, Map.put(@pdf_link.data, "size", 0))
+    ]
+
+    for block <- extra_forms do
+      assert_tool_media_incompatible(:anthropic, tool_message([block]))
+    end
+
+    for block <- [@pdf_resource, @pdf_link] do
+      annotated = Map.put(block, :extensions, %{"mcp::annotations" => %{"priority" => 1}})
+      assert_tool_media_incompatible(:anthropic, tool_message([annotated]))
+
+      message = tool_message([block])
+
+      for metadata <- [
+            %{"mcp::result" => %{"structuredContent" => %{"ok" => true}}},
+            %{"google::function_response" => %{"result" => "must not hide metadata"}}
+          ] do
+        assert_tool_media_incompatible(:anthropic, %{message | extensions: metadata})
+      end
+    end
+
+    refute_received :transport_submitted
+  end
+
+  test "PDF tool media rejects unsupported MIME, URI scheme and missing link MIME" do
+    for block <- [@pdf_resource, @pdf_link],
+        mime <- ["text/plain", "application/octet-stream", "application/pdf; charset=utf-8"],
+        do:
+          assert_tool_media_incompatible(
+            :anthropic,
+            tool_message([%{block | data: Map.put(block.data, "mime_type", mime)}])
+          )
+
+    for block <- [@pdf_resource, @pdf_link],
+        uri <- ["http://example.invalid/file.pdf", "gs://fixture/file.pdf", "fixture://file.pdf"],
+        do:
+          assert_tool_media_incompatible(
+            :anthropic,
+            tool_message([%{block | data: Map.put(block.data, "uri", uri)}])
+          )
+
+    assert_tool_media_incompatible(
+      :anthropic,
+      tool_message([%{@pdf_link | data: Map.delete(@pdf_link.data, "mime_type")}])
+    )
+
+    refute_received :transport_submitted
+  end
+
+  test "new PDF tool routes do not admit other protocols, message roles or tool audio" do
+    for protocol <- [:openai, :openai_responses, :google], block <- [@pdf_resource, @pdf_link] do
+      assert_tool_media_incompatible(protocol, tool_message([block]))
+    end
+
+    for role <- [:system, :developer, :user, :assistant], block <- [@pdf_resource, @pdf_link] do
+      assert {:ok, request} =
+               Request.new(%{model: "fixture", input: [%{role: role, content: [block]}]})
+
+      assert {:error, %Error{kind: :incompatible, upstream_outcome: :not_submitted}} =
+               encode_then_submit(:anthropic, request)
+    end
+
+    for protocol <- [:anthropic, :openai, :openai_responses, :google] do
+      assert_tool_media_incompatible(protocol, tool_message([@audio]))
+    end
+
+    refute_received :transport_submitted
+  end
+
   test "translation requires explicit media capabilities instead of inferring text support" do
     request = user_request([@audio])
     source = %{capabilities: %{"role_user" => :supported, "audio" => :supported}}
@@ -359,6 +523,78 @@ defmodule Backplane.AiProtocol.MediaContentTest do
              Request.new(%{model: "fixture", input: [%{role: :user, content: content}]})
 
     request
+  end
+
+  defp tool_message(content, status \\ :success) do
+    assert {:ok, message} =
+             Message.new(%{
+               role: :tool,
+               tool_call_id: "call-pdf",
+               status: status,
+               content: content
+             })
+
+    message
+  end
+
+  defp tool_request(message) do
+    assert {:ok, request} =
+             Request.new(%{
+               model: "fixture",
+               input: [
+                 %{
+                   role: :assistant,
+                   content: [
+                     %{
+                       type: :tool_call,
+                       tool_call: %{
+                         id: "call-pdf",
+                         name: "read_pdf",
+                         raw_arguments: {:json, "{}"}
+                       }
+                     }
+                   ]
+                 },
+                 message
+               ]
+             })
+
+    request
+  end
+
+  defp restore_tool_message(message) do
+    assert {:ok, json} = Serialization.to_json(message)
+
+    assert {:ok, restored} =
+             Serialization.decode_and_validate(json, fn attrs ->
+               status =
+                 case attrs["status"] do
+                   "success" -> :success
+                   "error" -> :error
+                 end
+
+               Message.new(%{
+                 role: :tool,
+                 tool_call_id: attrs["tool_call_id"],
+                 status: status,
+                 content: attrs["content"],
+                 extensions: attrs["extensions"]
+               })
+             end)
+
+    restored
+  end
+
+  defp pdf_tool_result_fixture do
+    __DIR__
+    |> Path.join("../fixtures/anthropic/pdf_tool_result.json")
+    |> File.read!()
+    |> Jason.decode!()
+  end
+
+  defp assert_tool_media_incompatible(protocol, message) do
+    assert {:error, %Error{kind: :incompatible, upstream_outcome: :not_submitted}} =
+             encode_then_submit(protocol, tool_request(message))
   end
 
   defp encode_then_submit(protocol, request) do
