@@ -136,8 +136,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-17 postgresql-server-dev-17 build-essential
           git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
-          make -C /tmp/pgvector with_llvm=no
-          sudo make -C /tmp/pgvector with_llvm=no install
+          make -C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no
+          sudo make -C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no install
           sudo pg_ctlcluster 16 main stop || true
           sudo pg_dropcluster --stop 17 main || true
           sudo pg_createcluster 17 main --start --port 5432

@@ -984,6 +984,57 @@ defmodule Backplane.ReleaseConfigTest do
              Enum.find_index(steps, &(&1["name"] == "Prepare qualification database"))
   end
 
+  @tag :tmp_dir
+  test "qualification compiles and installs pgvector with the PostgreSQL 17 toolchain", %{
+    tmp_dir: directory
+  } do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    steps = workflow["jobs"]["qualify-memory-v2"]["steps"]
+    setup = Enum.find(steps, &(&1["name"] == "Start PostgreSQL 17 with pgvector"))
+
+    commands =
+      setup["run"]
+      |> String.split("\n", trim: true)
+      |> Enum.filter(&Regex.match?(~r/^(sudo )?make -C \/tmp\/pgvector\b/, &1))
+
+    assert commands == [
+             "make -C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no",
+             "sudo make -C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no install"
+           ]
+
+    assert setup["run"] =~ "postgresql-17 postgresql-server-dev-17"
+    assert setup["run"] =~ "sudo pg_createcluster 17 main --start --port 5432"
+
+    bin = Path.join(directory, "bin")
+    log = Path.join(directory, "make-calls.log")
+    File.mkdir_p!(bin)
+
+    File.write!(Path.join(bin, "make"), ~S"""
+    #!/bin/sh
+    printf '%s\n' "$*" >> "$PGVECTOR_MAKE_CALLS"
+    """)
+
+    File.write!(Path.join(bin, "sudo"), "#!/bin/sh\nexec env -u PG_CONFIG \"$@\"\n")
+    for command <- ~w(make sudo), do: File.chmod!(Path.join(bin, command), 0o755)
+
+    {output, status} =
+      System.cmd("bash", ["-e", "-c", Enum.join(commands, "\n")],
+        env: [
+          {"PATH", bin <> ":" <> System.fetch_env!("PATH")},
+          {"PG_CONFIG", "/wrong/default/postgresql/18/bin/pg_config"},
+          {"PGVECTOR_MAKE_CALLS", log}
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+
+    assert File.read!(log) |> String.split("\n", trim: true) == [
+             "-C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no",
+             "-C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no install"
+           ]
+  end
+
   test "release gates publication on Memory V2 qualification and installed migration smoke" do
     workflow = File.read!(".github/workflows/release.yml")
 
