@@ -5,9 +5,10 @@ Backplane Memory. The supported upstream contract is Hermes commit
 `bac34e9e9946c9c6a9ce7ce64efadd47f8fa375b`. Installation and live verification are
 separate from changing the packaged source.
 
-Implementation and integrated verification are in progress. The contracts below
-are the accepted implementation boundary; the verification section must be
-completed before treating this document as a release record.
+The local source checkpoint passed the normal 14-gate integrated scenario on
+2026-10-26. The contracts below describe the implementation boundary. Verification,
+CI, publication and operator installation are separate evidence surfaces; this
+document does not establish release or production deployment.
 
 ## Ownership and data flow
 
@@ -252,6 +253,16 @@ corrections suppress older source content before canonical acknowledgment;
 insufficient offline support metadata requires conservative suppression.
 Authorization or validation rejection cannot trigger local fallback.
 
+Durable native remove/replace callback acceptance also invalidates the provider
+cache before a source snapshot can be read. If that snapshot is unavailable or
+undecodable, pending callbacks suppress affected local installation/profile/target
+contributions in cached and fresh automatic context, including after a provider
+restart. This conservatively suppresses the target while entry identity is
+unresolved; independently supported contributions and other profiles remain
+eligible. Failed reads do not change canonical source heads or imply withdrawal.
+A later complete snapshot reconciles the callback and refreshes eligibility even
+when the source content is unchanged.
+
 New canonical candidates start unpublished (`effective_support=false`) until the
 existing support projection has attached the request and real input evidence.
 Source mutations wait for their source membership too. This prevents an initial
@@ -267,18 +278,74 @@ actual origin and `independent_support=false`. Mutation, summary and event roots
 remain the governing evidence. This change does not backfill historical request
 receipts or infer missing legacy source identities.
 
-The fact-extraction prompt requests concrete subjects, values and qualifiers,
-including durable user or project preferences learned in one session. It directs
-the model to resolve first-person claims to their speaker, preserve explicit
-scope, separate incidental provenance, follow user corrections in evidence order
-and omit rejected assistant guesses, incidental chat and processing metadata.
-Extraction now permits any number of supported facts, including none, instead of
-requiring a minimum of three. These are model
-instructions, not additional confirmation: evidence and current-context policy
-still determine each record's support and trust.
-The policy is sent as a system message, with the exact summary in a separate user
-message. This separates instructions from evidence without changing the public
-fact-list result or treating an assistant acknowledgment as user confirmation.
+New episodic extraction uses the internal `source_fact.v1` contract. It loads the
+summary's complete, current original events, verifies their partition/session
+membership, and excludes superseded message revisions. Missing, truncated or
+oversized evidence fails closed. The configured model is pinned for two separate
+requests per attempt: structured fact proposals and an independent semantic
+assessment. Both requests retain original evidence separately from system policy
+and request strict JSON-schema output. Existing worker retry limits still apply.
+
+The first response must classify every bounded unit exactly once for durability,
+self-contained meaning and currentness. Only units with all three explicitly
+supported decisions may have proposals, with exactly one proposal per selected
+unit. Missing/duplicate/extra decisions, mismatched units, missing selected
+proposals or proposals for uncertain/unsupported units reject the entire result.
+The server does not prune rejected candidates after validation, repair fields or
+make a third model call. All returned proposals still undergo deterministic source
+checks and the independent full-sequence assessment.
+
+The `verbatim_source_unit.v1` extraction policy constrains statements to an enum
+of complete retained user/tool text units. Units end at a terminal run of
+`. ! ? 。 ！ ？`, including trailing quote/bracket closers, followed by whitespace
+or the end of the event. Commas, semicolons, colons and line breaks alone do not
+split units. Without a matching boundary the whole event is a unit. Only outer
+whitespace is excluded; punctuation and original first-person wording remain.
+These boundaries are mechanical spans, not proof of semantic completeness.
+
+A proposal separates subject, property, value and semantic scope. Its statement
+must equal one entire unit byte for byte. Entity/property/value/explicit-scope
+text must occur in that same unit, and all their references must use its citation.
+A speaker subject identifies the recorded user role. Extra citations can retain
+correction evidence, but cannot supply missing assertion fields or omitted scope.
+The server never paraphrases, joins units or repairs malformed proposals. Each
+field references that fact's own zero-based citation list. The server binds unique
+exact event quotes to retained-text hashes and
+half-open UTF-8 byte spans; supplied stale or forged coordinates are rejected.
+Speaker claims require recorded user evidence, and correction links require an
+earlier assertion in the same stream plus a later user citation. An incidental
+source identifier does not establish semantic scope.
+
+The assessor must explicitly support subject attribution, property/value
+entailment, scope, current corrections, durability, statement equivalence and a
+self-contained assertion for every candidate. The latter requires all necessary
+conditions, negation, quantifiers and surrounding qualifications to be preserved;
+uncertain abbreviations, quoted punctuation and cross-unit dependencies abstain.
+Missing, malformed, uncertain or unsupported verdicts reject the
+whole extraction before publication. Empty extraction requires its own affirmative
+assessment. Rejections remain visible through existing failed/dead-letter
+processing states. Source evidence is checked again under the existing locks
+before atomic persistence, and the exact assessed statement is stored with its
+source contract and pinned assessment model.
+
+These checks preserve existing derived/candidate trust and summary governance;
+they do not manufacture independent support or user confirmation. Exact citations
+and valid JSON do not prove entailment. The two requests use the same configured
+model, so semantic mistakes about completeness or currentness can correlate;
+precision is favored over recall. Verbatim publication prevents invented wording
+and dropping qualifiers inside a unit; it does not prove independence from
+surrounding units. Nonunique repeated quotes, cross-message synthesis and
+assertions that cannot stand alone may be omitted.
+
+Limits are explicit: at most 128 units and 32 proposals, at most 2,000 UTF-8 bytes per unit,
+65,536 total unit bytes and 65,536 encoded bundle bytes; the complete JSON model
+request, including the statement enum, must fit 100,000 bytes. Oversized input is
+rejected observably rather than truncated or partially covered.
+
+The legacy `extract_facts/1` result remains available to existing callers, but
+cannot bypass the episodic worker's new contract. Completed historical processing
+is not automatically replayed, and existing memories are not retroactively marked
+as validated.
 
 Relevance rejection uses lexical evidence or calibrated raw semantic/reranker
 scores tied to the configured model, not rank-fusion scores as probabilities.
@@ -350,124 +417,42 @@ support after withdrawals have been applied; it can expose obsolete content.
 
 ## Verification and release evidence
 
-The current local checkpoint remains incomplete: the normal real-model scenario
-passes 13 of 14 gates and fails `derived_current_user_correction_missing`.
-Independent checks passed the 78-test Python suite, 74-test semantic oracle,
-eight workflow-contract tests, 32 release-configuration tests, seven host
-HTTP/packaged-client compatibility tests, repository formatting and strict Credo
-for the ten changed Elixir files. The owning processing regression selection
-passed 61 tests and edge-sync regressions passed 42 tests. These local results
-are separate from CI, publication and installation evidence.
+### Current local evidence
 
-The Admin embedding-calibration registry regression passed four focused tests
-and the subsequent full Admin CI suite (486 tests). A deterministic ordered
-candidate/forget race reproduced `40P01` before the lock-order correction. After
-the correction, the related relations/source/remember/edge selection passed 83
-tests and the final concurrency file passed three tests. These results preserve
-the unresolved real-model extraction boundary.
+The 2026-10-26 A14 source checkpoint passed the unchanged normal live scenario:
+**14 of 14 gates, exit 0**. The run used the original fixture, configured
+`openai/gpt-4.1-mini`, frozen oracle and normal harness, without external diagnostic
+instrumentation. Its evidence tier is
+`owned_fixture_actual_http_websocket_committed_repo_async_styx`;
+`production_installation_verified=false`.
 
-CI at `4053ada7` passed compilation, formatting, Dialyzer and workflow-contract
-checks. Its Memory job completed 1,448 tests with two activity-retention failures
-and five exclusions before the overall test run was cancelled by the next push.
-The same two global-count assertions failed with `3 != 0` at the original
-pre-Hermes `f36d09c8` baseline ([run 40076035113](https://github.com/gsmlg-opt/backplane/actions/runs/40076035113)).
-They remain an out-of-scope baseline failure. The SQL-literal Credo finding was
-fixed without changing the evaluated query; CI for that fix is separate evidence.
+The run verified authenticated HTTP/WebSocket capture; native replacement,
+withdrawal, independent support, replay and conflict; current-context relevance,
+trust and whole-entry budgets; outage/provider restart and full owned host restart;
+canonical capture/projection; real asynchronous summary/extraction and embedding;
+checkpoint refusal/retry; intentional global forget; and complete final fixture
+state. Extraction produced one governed current memory from two derived requests,
+including the user's corrected preference, without promoting the assistant guess.
+Both profiles finished with no local-pending, host-accepted, rejected or
+pending-reconciliation deliveries.
 
-The working tree based on `main@2628e085` passed the combined backend selection:
-536 tests, zero failures (contract 4, Memory 330, Host Agent 163, API 39). This
-includes the previously failing native-source recall, request/derived evidence,
-summary-to-event lineage, isolated spool, lexical provider-outage fallback, and
-exact edge revision/byte-budget cases, plus revision-drift fusion regressions.
-Test-environment compilation with warnings
-as errors, scoped formatting, scoped strict Credo and diff checks passed.
-Migration `20261024000004` was applied only to test databases.
-The coordinator additionally ran the configuration/current-read compatibility
-selection (25 tests), release configuration (31 tests), workflow contract (eight
-tests), repository formatting and diff checks; all passed.
+| Evidence surface | Observed result | Boundary |
+|---|---|---|
+| Normal owned live scenario | 14/14 gates; real extraction, embedding and final state passed | Isolated fixture, real host/API/background/model paths; no production installation claim |
+| Final owning BEAM selection | 101 tests, 0 failures; seed `97720` | Includes mixed-batch rejection without publication, source-unit bounds, ordered evidence/nonempty request preservation and production deduplication/order |
+| Parent Python provider/runtime rerun | 81 tests, 0 failures, with `ResourceWarning` treated as an error | Source/provider/runtime compatibility |
+| Unchanged OpenClaw suite | Earlier 5/5 Node checks passed | Compatibility evidence; separate from Hermes live settlement |
+| Frozen semantic-oracle suite | 74 tests passed | Validates the oracle; does not substitute for the live scenario |
+| A14 static checks | Scoped formatting, warnings-as-errors compilation and strict Credo passed | Owning changed files; separate from repository-wide and CI results |
+| Owned resource cleanup | All four live cleanup checks true; independent inventory of seven owned runs found zero databases, directories or marker-bearing processes | Only resources created by these runs |
 
-The current source and isolated copied-package Hermes suites each passed 70
-tests with `ResourceWarning` treated as an error; OpenClaw's five Node checks also
-passed. These are contract/compatibility evidence, not real canonical settlement.
-The standalone HTTP/model scenario is implemented in
-`test/hermes_memory_live_acceptance.exs`. Its first actual run passed authenticated
-HTTP/WebSocket negotiation, native source lifecycle/replay, and the real Hermes
-required-checkpoint refusal/retry gate. Unrelated-query cache verification and
-outage/restart settlement failed, blocking downstream extraction acceptance.
-The harness also raised during cleanup; its exact owned database, directory and
-processes were independently verified removed afterward. After correcting harness
-cleanup and adding safe boundary diagnostics, a bounded rerun passed native
-source lifecycle, replay and canonical settlement for both profiles: no source
-deliveries remained pending or rejected. Native current-context recall still
-failed: its first observed request returned HTTP 400, followed by requests timing
-out at the provider's two-second deadline. The underlying HTTP 400 reason is
-now reproduced as `retrieval_failed`: concurrent FTS/vector reads can differ
-only in the timestamp-derived context revision, which the old fusion conflict
-check rejected. The new regression failed before the fix and passed afterward.
-A separate real HTTP/WebSocket diagnostic deliberately advanced the fixture
-timestamp between channel reads with real embeddings and normal tracing. It
-returned corrected context without obsolete content in three successful HTTP 200
-requests (1.895, 3.642 and 2.968 seconds), using an explicit 20-second diagnostic
-deadline. This isolated the backend race. The production provider now uses a
-20-second socket timeout and a synchronized worker/journal closure handoff.
-Five focused slow-HTTP, lost-ACK/restart and shutdown tests passed; the complete
-source and isolated copied-package suites subsequently passed 78 tests each,
-including merged-context budget and session-continuity fixtures. All owned
-diagnostic resources were cleaned and independently checked.
+Local session logs are `/tmp/hermes-live-astra14-full.log`,
+`/tmp/hermes-live-astra14-focused.log`, `/tmp/hermes-parent-a14-python.log` and
+`/tmp/hermes-live-astra14-cleanup-verified.log`. These temporary paths identify
+session evidence, not published release artifacts. The five frozen input files
+and approved dependency lockfile were unchanged during A14 verification.
 
-The context observer now follows the provider's current cache generation and
-requires a fresh, completed result under the same session and binding, including
-valid empty results. It also retains fixed public recall-stage error codes in
-safe diagnostics. A controlled test using the actual Hermes provider and plugin
-over owned loopback HTTP reproduced the old-generation and diagnostic failures
-before the correction. Five checks then passed: generation recovery, fixed-code
-diagnostics, initial correction-failure diagnostics, rejection of expired/failed
-cache results, and rejection of session changes. This verifies the observer;
-this controlled observer check alone does not establish canonical acceptance.
-
-The subsequent full real-model scenario passed authenticated HTTP/WebSocket,
-native replacement/withdrawal context, immutable replay/conflict, corrected and
-unrelated context, and actual Hermes checkpoint refusal/retry. It failed outage
-settlement: the host command syncer admitted a cached channel PID after that
-process had exited, exhausting transport retries while the connection owner was
-suspended. Capture upload retained pending events without consuming retries.
-The harness also accepted cached negotiation flags as recovery readiness. The
-syncer now checks channel liveness before claiming, and recovery readiness checks
-a fresh live channel/socket/generation plus actual connectivity. Focused host
-regressions passed 278 tests, and the next actual full scenario passed socket
-outage/provider restart, full host restart, canonical capture/projection,
-post-capture context and global forgetting. Real summary/extraction reached the
-semantic assertion for an assistant mistake. Guarded diagnostics now retain
-bounded current-summary/event/request lineage before semantic checks, so cleanup
-does not erase the failing synthetic facts. The bounded oracle checks each
-statement independently: a refuted assistant guess or qualified generic
-possibility cannot substitute for the required user's corrected preference.
-
-The latest normal real-model scenario still passed only 13 of 14 gates. Its
-complete, current nine-event summary contains the user's correction, but the
-derived fact adds an incidental correlation identifier as the preference's
-scope. The gate remains red with `derived_current_user_correction_missing`.
-Removing the forced fact count, clarifying attribution/provenance, adding a
-neutral example and separating system rules from user evidence did not resolve
-that behavior. The owning LLM/summary/episodic/Hermes regression selection passed
-61 tests; those request-contract checks do not establish model compliance.
-
-A separate owned diagnostic observed the production final
-`HttpClient` -> `HTTP.fetch` request: the configured `openai/gpt-4.1-mini`, system
-policy and exact retained synthetic summary were preserved. The actual HTTP 200
-response still attached the incidental identifier as scope. This establishes an
-extraction-compliance blocker for that request, rather than a missing policy in
-the final transport. The diagnostic bypassed database-backed routing/auth
-selection and does not replace full acceptance. A source-linked subject/scope
-validation design remains unresolved; further prompt-only tuning is unsupported
-by the observed failures. Retry limits and terminal delivery states remain
-authoritative. Owned databases, fixture directories and observed processes were
-independently confirmed absent after the latest runs.
-
-Full live acceptance remains open; passing backend tests do not replace it. The
-latest inspected release, `v1.10.36`, targets `207d13fc` and predates this Hermes
-implementation and its recovery changes. It is not release evidence for these
-changes. No new release has been dispatched while live acceptance remains red.
+### Reproducing the checks
 
 Run the standalone scenario with an already available PostgreSQL/pgvector service
 and a real Hermes interpreter. `HERMES_PYTHON` can select an interpreter when the
@@ -484,74 +469,134 @@ MIX_ENV=test BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=1 \
 The runner refuses an existing database or fixture directory, binds temporary
 loopback ports and cleans up its owned resources. Each failed or blocked gate
 keeps the overall run unsuccessful. The checkpoint fault gate uses the actual
-Hermes caller/manager and owned SQLite persistence failure; its retry checks
+Hermes caller/manager and an owned SQLite persistence failure. Its retry verifies
 dispatch to a sentinel compressor, not completion of summary compression.
-Release qualification also runs the focused Hermes regressions from
-`.github/workflows/release.yml`; packaged-provider tests run on the assembled
-host artifacts.
 
-### Earlier scoped checks and their limits
+Provider, compatibility and oracle checks can be run separately:
 
-The 2026-10-24 workspace checkpoint is incomplete and is not a release record.
-The source-tree Python Hermes suite passed 60 tests. A focused BEAM run completed
-198 tests with two failures; the separate canonical snapshot builder suite
-passed three tests. Test-environment compilation with warnings as errors passed.
-The initial formatting check found one indentation issue in the new pipeline
-test; that file was formatted before committing this checkpoint.
-The final scoped formatting and diff checks passed, as did the release-config
-suite (31 tests) and CI-workflow suite (eight tests).
+```sh
+PYTHONWARNINGS=error::ResourceWarning PYTHONDONTWRITEBYTECODE=1 \
+  python3 -B -m unittest discover \
+  -s integrations/memory/tests -p 'test_hermes*.py' -v
+node --test integrations/memory/tests/test_openclaw.mjs
+MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs
+```
 
-The two failing assertions at that earlier checkpoint were the new Hermes
-pipeline test expecting direct event evidence where the extraction result retains
-summary evidence, and the existing episodic worker test expecting four evidence
-rows where derived writes retained two. Neither failure was repaired or waived at
-that checkpoint. A prior isolated spool run also failed when
-`delivery_fingerprint/1` converted a field with
-`String.to_existing_atom/1`; the combined run did not reproduce it, and the
-load-order dependency remained unresolved then. The current recovery retains
-truthful request receipts, checks actual summary/event lineage, and uses
-compile-time fingerprint keys; the combined passing selection above verifies
-those repairs.
+The recorded 101-test owning selection was:
 
-After merging upstream `ab8f2f5d` into `c94c4227`, test-environment compilation
-with warnings as errors and the 60-test source Python suite passed again. The
-generic Memory/recall compatibility selection ran 94 tests with two additional
-file-compression provenance failures caused by the same missing request evidence;
-Codex/Claude capture hooks passed eight tests and OpenClaw passed five Node tests.
+```sh
+env -u MIX_TEST_PARTITION -u BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL \
+  MIX_ENV=test mix test \
+  apps/backplane_memory/test/backplane/memory/llm_test.exs \
+  apps/backplane_memory/test/backplane/memory/fact_extraction_test.exs \
+  apps/backplane_memory/test/backplane/memory/workers/episodic_worker_test.exs \
+  apps/backplane_memory/test/backplane/memory/workers/hermes_pipeline_test.exs \
+  apps/backplane_memory/test/backplane/memory/workers/stage_processing_test.exs \
+  apps/backplane_memory/test/backplane/memory/memories/verification_test.exs
+```
 
-A synthetic live probe exercised the actual Memory LLM and embedding clients
-directly against OpenRouter. `openai/gpt-4.1-mini` returned four supported facts,
-including the user's Elixir correction, and `openai/text-embedding-3-large`
-returned three vectors with 2,560 dimensions. Related and unrelated example
-queries scored cosine similarities of 0.4314 and 0.0427 respectively. This is
-client/provider evidence only: it does not establish gateway/host transport,
-canonical persistence, background processing, or a calibrated relevance cutoff.
-The Agent Note read required before a guarded update returned `UNAVAILABLE`
-(`Connection failed`); no note mutation was attempted.
-After connectivity recovered, the canonical Hermes topic
-`d395928f-d646-4521-8d3f-9bce583774a1` was updated with revision-guarded patching
-and verified at revision 3. It corrects the pinned callback/checkpoint contract,
-records source/delivery ownership and preserves unresolved acceptance limits.
-The current source/evidence publication boundary and narrow revision-drift fusion
-rule were then incorporated into the same topic and verified at revision 4.
-It identifies the local implementation checkpoint and the outstanding provider
-deadline/full-acceptance limit; it does not claim publication or installation.
+Release qualification runs the source lifecycle regressions in
+`.github/workflows/release.yml` before publication; packaged-provider tests run on
+assembled host artifacts. Repository/release contract checks are separate commands:
 
-The provider follow-up adds durable insertion ordering and backoff fencing,
-tracked 30-second source rescans, and complete command/snapshot validation before
-enqueue. Its source and isolated copied-package suites passed 70 tests each with
-`ResourceWarning` treated as an error; 14 Python files compiled successfully.
-The updated packaged-client compatibility suite passed four tests, using owned
-temporary Hermes homes, blocked real networking and bounded worker shutdown.
-These fixture results preserve the distinction between local durability and real
-canonical settlement. The four reproduced BEAM evidence assertions and spool
-load-order failure were closed by the current backend recovery. Real integrated
-acceptance and release qualification remain separate requirements.
+```sh
+MIX_ENV=test mix run --no-start test/release_config_test.exs
+MIX_ENV=test mix run --no-start test/ci_workflow_test.exs
+```
 
-Integrated implementation verification remains pending. Required evidence includes
-source add/replace/remove and independent support; immutable replay/conflict;
-snapshot fencing; crash/lost-ACK/restart recovery; real provider-to-host HTTP and
-canonical readback; capture-to-extraction lineage; current-context relevance,
-trust and budget; pinned Hermes checkpoint behavior; and legacy-client
-compatibility. Unit, contract, live, CI, release and deployment evidence must be
-reported separately.
+### Material earlier failures and the resulting safeguards
+
+Earlier results explain the implementation; they are not the current live
+qualification result:
+
+- **Free paraphrase and correlated model errors.** Earlier normal runs reached
+  13/14 gates but attached an incidental source identifier as the user's preference
+  scope (`derived_current_user_correction_missing`). Final transport inspection
+  showed that the configured model, system policy and retained evidence arrived
+  intact. Prompt-only changes did not resolve the error. Structured proposals
+  and a separate assessment then exposed a correlated same-model error: a
+  diagnostic approved an invented subject and failed extraction plus final state
+  (12/14 gates). Exact source-unit publication, explicit per-unit selection and
+  independent full-sequence assessment now replace free paraphrase publication.
+  Valid JSON and positive model verdicts alone cannot authorize invented wording.
+- **Recall revision races and provider deadlines.** Concurrent FTS/vector reads
+  returned HTTP 400 `retrieval_failed` when only timestamp-derived context
+  revisions differed. The regression failed before the narrow fusion correction
+  and passed afterward. A separate real HTTP/WebSocket diagnostic with real
+  embeddings returned corrected context in three HTTP 200 requests (1.895, 3.642
+  and 2.968 seconds), using an explicit 20-second diagnostic deadline. The
+  provider's former two-second deadline was insufficient; it now uses 20 seconds
+  and synchronized worker/journal closure. Those diagnostic timings are not a
+  latency guarantee or relevance calibration.
+- **Outage admission, observer freshness and cleanup.** A prior full run exhausted
+  command retries after admitting a cached channel PID that had exited. Cached
+  negotiation flags also falsely indicated recovery readiness. Channel liveness
+  now gates claiming, and readiness requires a fresh live channel/socket/generation
+  and connectivity. The observer requires completed, unexpired results from the
+  current cache generation/session/binding, including valid empty results. Earlier
+  cleanup exceptions and stale-cache diagnostics were reproduced and corrected;
+  their exact owned resources were independently removed. Controlled observer
+  tests and 278 host regressions supported these repairs; A14 separately verifies
+  actual outage/restart settlement and cleanup.
+- **Source lock ordering.** An ordered candidate/forget race reproduced PostgreSQL
+  `40P01` before the partition-lock/ordered-memory-lock correction. The related
+  relations/source/remember/edge selection then passed 83 tests and the final
+  concurrency file passed three tests. These checks address locking, separately
+  from model semantics.
+- **Evidence lineage and load-order assumptions.** An early focused run had
+  198 tests with two failures: direct-event versus summary evidence, and four
+  expected evidence rows versus two retained rows for derived writes. A later
+  94-test compatibility selection found two file-compression provenance failures
+  from the same missing request evidence. An isolated spool run also exposed
+  `String.to_existing_atom/1` fingerprint dependence on atom load order. Truthful
+  request receipts, actual summary/event lineage and compile-time fingerprint
+  keys addressed these failures. The subsequent combined backend selection passed
+  536 tests (contract 4, Memory 330, Host Agent 163, API 39); configuration/current
+  reads passed 25 tests, release configuration 31 and workflow contracts eight.
+  Migration `20261024000004` was applied only to test databases.
+
+Earlier supporting evidence also includes the Admin embedding-calibration registry
+regression (four tests) and full Admin CI suite (486 tests). CI at `4053ada7`
+passed compilation, formatting, Dialyzer and workflow-contract checks; a SQL-literal
+Credo finding was subsequently fixed without changing the evaluated query.
+These historical checks do not qualify a later commit or artifact automatically.
+
+**Known baseline failure:** the two global activity-retention count assertions
+failed with `3 != 0` before Hermes at `f36d09c8`
+([run 40076035113](https://github.com/gsmlg-opt/backplane/actions/runs/40076035113))
+and recurred on committed `c4ce197d`
+([run 40203194254](https://github.com/gsmlg-opt/backplane/actions/runs/40203194254)).
+The latter Memory job completed 1,448 tests, two failures and five exclusions.
+The retention worker and its tests were unchanged between those commits; the
+exact origin of the remaining rows was not proven. No out-of-scope retention
+repair or waiver is implied by the Hermes live pass.
+
+### Evidence limits and operator actions
+
+The live result qualifies this isolated scenario. It does not prove arbitrary
+semantic entailment: selection and assessment use the same configured model and
+can make correlated errors. Mechanical source spans prevent invented publication
+bytes and intra-unit qualifier slicing, but do not establish independence from
+surrounding context. Conservative rejection intentionally reduces recall.
+
+An earlier direct-client OpenRouter probe returned four example facts and three
+2,560-dimensional embeddings. Example related/unrelated cosine values of 0.4314
+and 0.0427 were diagnostics only; they establish neither calibrated thresholds
+nor gateway/host lifecycle behavior. Use the workload-specific calibration
+requirements above.
+
+CI, integrated dependency/static checks, published-artifact parity and production
+installation must each be established for the exact delivered revision through
+their own evidence. The local checks recorded here neither claim nor preclude
+those separate results. Canonical Agent Note revisions 3 and 4 recorded earlier
+contracts and acceptance boundaries; their historical verification status must
+be reconciled against the current source and evidence rather than treated as a
+release record.
+
+Operators still need to follow the existing release gates, deploy canonical
+capabilities/migrations and the host, explicitly upgrade the installed Hermes
+plugin, and perform any selected legacy dry-run/reconciliation/import. Production
+bulk replay, destructive historical cleanup, credential changes and installed
+plugin upgrades are not established by these development checks. Preserve the
+journal and source suppression state when disabling or recovering the provider;
+follow the rollout and rollback limits above.

@@ -930,6 +930,8 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "--exclude memory_qualification_runtime"
     assert workflow =~ "memory_m18_outage_qualification_test.exs"
     assert workflow =~ "memory_v2_edge_qualification_test.exs"
+    assert workflow =~ "apps/backplane_memory/test/backplane/memory/fact_extraction_test.exs"
+    assert workflow =~ "apps/backplane_memory/test/backplane/memory/llm_test.exs"
     assert workflow =~ "mix backplane.memory.edge_cutover_check"
     assert workflow =~ "Resolve migration-seeded empty memory slots in the qualification database"
     assert workflow =~ "bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))"

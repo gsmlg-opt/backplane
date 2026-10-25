@@ -6,13 +6,13 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
   import Ecto.Query
 
   alias Backplane.Memory.Summaries.Summary
-  alias Backplane.Memory.Memories
+  alias Backplane.Memory.{FactExtraction, Memories}
   alias Backplane.Memory.Config
   alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.{ProcessingState, ProjectedSession, Source}
   alias Backplane.Memory.Workers.{GraphExtractWorker, ProceduralWorker, StageResumeWorker}
 
-  @processing_version "episodic-v1"
+  @processing_version "episodic-v2"
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
@@ -102,23 +102,55 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     end
   end
 
-  defp model_configured? do
+  defp model_configured?, do: not is_nil(configured_model())
+
+  defp configured_model do
     case Backplane.Settings.get("memory.llm_model") do
-      model when is_binary(model) -> String.trim(model) != ""
-      _ -> false
+      model when is_binary(model) ->
+        if(String.trim(model) == "", do: nil, else: String.trim(model))
+
+      _ ->
+        nil
     end
   end
 
-  defp extract(%Summary{} = summary, _partition, llm_module) do
-    case llm_module.extract_facts(summary.content) do
-      {:ok, facts} when is_list(facts) ->
-        {:ok, normalize_outputs(facts)}
+  defp extract(%Summary{} = summary, partition, llm_module) do
+    with model when is_binary(model) <- configured_model(),
+         {:ok, bundle} <- source_bundle(summary, partition),
+         true <-
+           Code.ensure_loaded?(llm_module) and
+             function_exported?(llm_module, :extract_fact_candidates, 3) and
+             function_exported?(llm_module, :assess_fact_candidates, 3),
+         {:ok, candidates} <- llm_module.extract_fact_candidates(summary.content, bundle, model),
+         {:ok, linked} <- FactExtraction.validate(candidates, bundle),
+         {:ok, assessment} <- llm_module.assess_fact_candidates(bundle, linked, model),
+         {:ok, facts} <- FactExtraction.accept(linked, assessment) do
+      {:ok, Enum.map(facts, &Map.put(&1, "assessment_model", model)),
+       FactExtraction.digest(bundle)}
+    else
+      false -> {:error, :source_fact_contract_unavailable}
+      nil -> {:skip, :no_model}
+      result -> result
+    end
+  end
 
-      {:skip, reason} ->
-        {:skip, reason}
+  defp source_bundle(summary, partition) do
+    sources =
+      repo().all(
+        from(link in Backplane.Memory.Summaries.SourceEvent,
+          join: event in Backplane.Memory.Events.Event,
+          on: event.id == link.event_id,
+          where: link.summary_id == ^summary.id,
+          select: {link, event}
+        )
+      )
 
-      {:error, reason} ->
-        {:error, reason}
+    if Enum.all?(sources, fn {link, _event} ->
+         link.host_id == summary.host_id and link.session_id == summary.session_id
+       end) do
+      FactExtraction.bundle(summary, partition, Enum.map(sources, &elem(&1, 1)))
+    else
+      {:error, :fact_source_partition_mismatch}
     end
   end
 
@@ -156,8 +188,17 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     end
   end
 
-  defp persist_result(summary, partition, state_attrs, {:ok, facts}, _job) do
-    case persist_facts(summary, partition, facts) do
+  defp persist_result(summary, partition, state_attrs, {:ok, facts, source_digest}, _job) do
+    result =
+      with {:ok, bundle} <- source_bundle(summary, partition),
+           true <- FactExtraction.digest(bundle) == source_digest do
+        persist_facts(summary, partition, facts)
+      else
+        false -> {:error, :stale_fact_sources}
+        error -> error
+      end
+
+    case result do
       :ok ->
         with {:ok, _} <- ProceduralWorker.enqueue(partition, summary.project || ""),
              {:ok, _} <- GraphExtractWorker.enqueue(summary.session_id, partition) do
@@ -231,7 +272,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     facts
     |> Enum.with_index()
     |> Enum.reduce_while(:ok, fn {fact, ordinal}, :ok ->
-      case Memories.remember(fact,
+      case Memories.remember(fact["statement"],
              type: "semantic",
              memory_space_id: partition.memory_space_id,
              scope: partition.scope,
@@ -241,7 +282,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
              agent_id: summary.agent_id || "consolidation",
              host_id: summary.host_id,
              session_id: summary.session_id,
-             metadata: %{"project" => summary.project || ""},
+             metadata: %{"project" => summary.project || "", "source_fact" => fact},
              idempotency_scope: "memory-worker:episodic",
              idempotency_key: idempotency_key(summary, ordinal),
              evidence: [summary_evidence(summary)]
@@ -250,15 +291,6 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
-  end
-
-  defp normalize_outputs(outputs) do
-    outputs
-    |> Enum.filter(&is_binary/1)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.uniq()
-    |> Enum.sort()
   end
 
   defp processing_attrs(summary, partition) do

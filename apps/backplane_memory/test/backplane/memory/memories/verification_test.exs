@@ -41,10 +41,16 @@ defmodule Backplane.Memory.Memories.VerificationTest do
   end
 
   defmodule MockLLM do
-    def extract_facts(content) do
-      suffix = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-      {:ok, ["verified automatic fact #{suffix}"]}
+    def extract_fact_candidates(_content, bundle, _model) do
+      {:ok,
+       Backplane.Memory.FactExtractionFixtures.proposals(
+         [hd(bundle["assertion_units"])["text"]],
+         bundle
+       )}
     end
+
+    def assess_fact_candidates(_bundle, facts, _model),
+      do: {:ok, Backplane.Memory.FactExtractionFixtures.assessment(facts)}
 
     def extract_procedures(_content), do: {:ok, ["verified automatic procedure"]}
   end

@@ -1,6 +1,7 @@
 """Conservative automatic-context policy and whole-entry final packing."""
 
 from datetime import datetime, timezone
+import json
 import re
 
 
@@ -25,7 +26,18 @@ def render_context(provider, query, result):
     lines, used, seen = [], 0, set()
     with provider._journal.lock:
         heads = {row["entry_id"]: dict(row) for row in provider._journal.db.execute("SELECT * FROM source_entries")}
+        # An unresolved callback cannot choose a destructive entry identity. It
+        # can conservatively suppress this profile/target's contribution until
+        # a complete snapshot resolves it. The durable journal survives restart.
+        pending_targets = {
+            row["target"] for row in provider._journal.db.execute(
+                "SELECT target,payload FROM callbacks WHERE processed=0")
+            if json.loads(row["payload"]).get("action") in {"remove", "replace"}
+        }
+        pending_targets.update(row["target"] for row in provider._journal.db.execute(
+            "SELECT DISTINCT target FROM source_chains"))
         unsettled = provider._journal.db.execute("SELECT 1 FROM delivery WHERE path LIKE '%source_%' AND state!='canonical_committed' LIMIT 1").fetchone() is not None
+        unsettled = unsettled or bool(pending_targets)
     for row in rows:
         if not isinstance(row, dict) or row.get("policy_version") != "current_context.v1":
             continue
@@ -43,6 +55,8 @@ def render_context(provider, query, result):
                 continue
             src = ref.get("source") or {}
             local = src.get("installation_id") == provider._journal.installation_id and src.get("profile_id") == provider._journal.profile_id
+            if local and src.get("target") in pending_targets:
+                continue
             head = heads.get(ref.get("entry_id")) if local else None
             if head and (not head["active"] or head["revision"] > ref.get("source_revision", 0)):
                 continue

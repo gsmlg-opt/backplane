@@ -28,13 +28,28 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   alias Backplane.MemorySpaces.BackfillIssue
 
   defmodule MockLLM do
-    def extract_facts(content) do
+    def extract_fact_candidates(content, bundle, model) do
       send(self(), {:episodic_input, content})
+      send(self(), {:proposal_model, model})
+
+      if Process.get(:change_model_during_proposal),
+        do: :ets.insert(:backplane_settings, {"memory.llm_model", "changed-model"})
 
       case Process.get(:episodic_result, {:ok, Process.get(:episodic_facts, [])}) do
         {:raise, message} -> raise message
+        {:ok, facts} -> {:ok, Backplane.Memory.FactExtractionFixtures.proposals(facts, bundle)}
         result -> result
       end
+    end
+
+    def assess_fact_candidates(_bundle, facts, model) do
+      send(self(), {:assessment_model, model})
+
+      {:ok,
+       Process.get(
+         :episodic_assessment,
+         Backplane.Memory.FactExtractionFixtures.assessment(facts)
+       )}
     end
   end
 
@@ -46,19 +61,23 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
     def clear, do: :persistent_term.erase(@key)
 
-    def extract_facts(content) do
+    def extract_fact_candidates(content, bundle, _model) do
       %{owner: owner, blocked_content: blocked_content} = :persistent_term.get(@key)
 
       if content == blocked_content do
         send(owner, {:episodic_llm_blocked, self(), content})
 
         receive do
-          {:release_episodic_facts, facts} -> {:ok, facts}
+          {:release_episodic_facts, facts} ->
+            {:ok, Backplane.Memory.FactExtractionFixtures.proposals(facts, bundle)}
         end
       else
         {:ok, []}
       end
     end
+
+    def assess_fact_candidates(_bundle, facts, _model),
+      do: {:ok, Backplane.Memory.FactExtractionFixtures.assessment(facts)}
   end
 
   setup do
@@ -78,9 +97,124 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     :ok
   end
 
-  test "normalizes facts and makes reordered retries effect-free" do
-    summary = insert_summary("episodic-stable", "project-a", "summary revision")
-    Process.put(:episodic_facts, [" z fact ", "a fact", "a fact", " "])
+  defmodule LegacyLLM do
+    def extract_facts(_content), do: {:ok, ["unvalidated legacy assertion"]}
+  end
+
+  test "semantic uncertainty leaves evidence intact and records failure without publishing" do
+    summary =
+      insert_canonical_summary(
+        "unverified-host",
+        "unverified-session",
+        "Original user evidence",
+        ["A proposed assertion"]
+      )
+
+    Process.put(:episodic_facts, ["A proposed assertion"])
+    Process.put(:episodic_assessment, %{"empty_supported" => false, "verdicts" => []})
+    assert {:error, :fact_semantics_unverified} = perform(summary.session_id)
+    refute repo().exists?(Memory)
+    assert repo().get!(Summary, summary.id).content == "Original user evidence"
+    assert repo().aggregate(Backplane.Memory.Summaries.SourceEvent, :count) == 1
+
+    assert %State{status: "failed", last_error: "fact_semantics_unverified"} =
+             repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id)
+  end
+
+  test "fully positive model verdicts cannot publish an invented or paraphrased assertion" do
+    summary = insert_canonical_summary("verbatim-host", "verbatim-session", "I prefer tea.")
+    Process.put(:episodic_facts, ["The user's preference is tea."])
+    assert {:error, :invalid_fact_assertion} = perform(summary.session_id)
+    refute_received {:assessment_model, _}
+    refute repo().exists?(Memory)
+    assert repo().get!(Summary, summary.id).content == "I prefer tea."
+  end
+
+  test "mixed valid and invented assertions publish no part of the batch" do
+    summary =
+      insert_canonical_summary("mixed-source-host", "mixed-source-session", "Original evidence", [
+        "I prefer tea.",
+        "My label is jade."
+      ])
+
+    Process.put(:episodic_facts, ["I prefer tea.", "The user's label is jade."])
+    assert {:error, :invalid_fact_assertion} = perform(summary.session_id)
+    refute_received {:assessment_model, _}
+    refute repo().exists?(Memory)
+    refute repo().exists?(RememberRequest)
+    assert repo().aggregate(Backplane.Memory.Summaries.SourceEvent, :count) == 2
+
+    assert repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id).status ==
+             "failed"
+  end
+
+  test "mixed supported and uncertain assessments publish no part of the batch" do
+    summary =
+      insert_canonical_summary(
+        "mixed-verdict-host",
+        "mixed-verdict-session",
+        "Original evidence",
+        ["I prefer tea.", "My label is jade."]
+      )
+
+    Process.put(:episodic_facts, ["I prefer tea.", "My label is jade."])
+    verdicts = Backplane.Memory.FactExtractionFixtures.assessment([:first, :second])
+
+    Process.put(
+      :episodic_assessment,
+      put_in(verdicts, ["verdicts", Access.at(1), "self_contained"], "uncertain")
+    )
+
+    assert {:error, :fact_semantics_unverified} = perform(summary.session_id)
+    assert_received {:assessment_model, "test-model"}
+    refute repo().exists?(Memory)
+    refute repo().exists?(RememberRequest)
+    assert repo().aggregate(Backplane.Memory.Summaries.SourceEvent, :count) == 2
+
+    assert repo().get_by!(State, projector: "episodic", subject_id: summary.subject_id).status ==
+             "failed"
+  end
+
+  test "padding or blank assertions are rejected rather than normalized into source facts" do
+    summary = insert_canonical_summary("padding-host", "padding-session", "I prefer tea.")
+
+    for text <- [" I prefer tea. ", " "] do
+      Process.put(:episodic_facts, [text])
+      assert {:error, _} = perform(summary.session_id)
+      refute repo().exists?(Memory)
+    end
+  end
+
+  test "legacy string extractors cannot bypass source validation" do
+    summary =
+      insert_canonical_summary("legacy-model-host", "legacy-model-session", "Original evidence")
+
+    Application.put_env(:backplane_memory, :llm_module, LegacyLLM)
+    assert {:error, :source_fact_contract_unavailable} = perform(summary.session_id)
+    refute repo().exists?(Memory)
+  end
+
+  test "one configured model is pinned through proposal, assessment and stored provenance" do
+    summary =
+      insert_canonical_summary("pinned-host", "pinned-session", "Original user evidence", [
+        "A proposed assertion"
+      ])
+
+    Process.put(:episodic_facts, ["A proposed assertion"])
+    Process.put(:change_model_during_proposal, true)
+    assert :ok = perform(summary.session_id)
+    assert_received {:proposal_model, "test-model"}
+    assert_received {:assessment_model, "test-model"}
+    memory = repo().one!(Memory)
+    assert memory.metadata["source_fact"]["assessment_model"] == "test-model"
+    assert Backplane.Memory.CurrentContext.metadata(memory)["trust"] == "candidate_inference"
+  end
+
+  test "production validation deduplicates and orders facts and reordered retries are effect-free" do
+    summary =
+      insert_summary("episodic-stable", "project-a", "summary revision", ["a fact", "z fact"])
+
+    Process.put(:episodic_facts, ["z fact", "a fact", "a fact"])
 
     assert :ok = perform(summary.session_id)
     assert_received {:episodic_input, "summary revision"}
@@ -110,8 +244,14 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   test "an incomplete multi-fact retry preserves its first conflict and rolls back earlier writes" do
-    summary = insert_canonical_summary("episodic-conflict", "session", "fixed revision")
-    key = Enum.join(["episodic-v1", summary.id, digest(summary.content), 1], ":")
+    summary =
+      insert_canonical_summary("episodic-conflict", "session", "fixed revision", [
+        "a new first fact",
+        "b conflicting second fact",
+        "c later fact"
+      ])
+
+    key = Enum.join(["episodic-v2", summary.id, digest(summary.content), 1], ":")
 
     assert {:ok, _existing} =
              Memories.remember(
@@ -149,8 +289,8 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   test "the same fact from independent summaries reuses the candidate and adds provenance" do
-    first = insert_summary("episodic-one", "shared-project", "first source")
-    second = insert_summary("episodic-two", "shared-project", "second source")
+    first = insert_summary("episodic-one", "shared-project", "first source", ["shared fact"])
+    second = insert_summary("episodic-two", "shared-project", "second source", ["shared fact"])
     Process.put(:episodic_facts, ["shared fact"])
 
     assert :ok = perform(first.session_id)
@@ -172,7 +312,10 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
   test "summary_id selects the exact canonical host/session evidence" do
     session_id = "shared-canonical-session"
-    selected = insert_canonical_summary("host-selected", session_id, "selected source")
+
+    selected =
+      insert_canonical_summary("host-selected", session_id, "selected source", ["selected fact"])
+
     _decoy = insert_canonical_summary("host-decoy", session_id, "decoy source")
     Process.put(:episodic_facts, ["selected fact"])
 
@@ -205,7 +348,14 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
       events =
         [
           capture_event(host_id, session_id, correlation_id, 1, "agent.session.started"),
-          capture_event(host_id, session_id, correlation_id, 2, "agent.tool.completed"),
+          capture_event(
+            host_id,
+            session_id,
+            correlation_id,
+            2,
+            "agent.tool.completed",
+            "correlated automatic fact"
+          ),
           capture_event(host_id, session_id, correlation_id, 3, "agent.session.ended")
         ]
 
@@ -260,7 +410,14 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
       events = [
         capture_event(host_id, session_id, correlation_id, 1, "agent.session.started"),
-        capture_event(host_id, session_id, correlation_id, 2, "agent.tool.completed"),
+        capture_event(
+          host_id,
+          session_id,
+          correlation_id,
+          2,
+          "agent.tool.completed",
+          "governed captured fact"
+        ),
         capture_event(host_id, session_id, correlation_id, 3, "agent.session.ended")
       ]
 
@@ -359,7 +516,10 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   test "fresh explicit remember and an independent subject remain possible after forget" do
     for {suffix, explicit?} <- [{"explicit", true}, {"independent", false}] do
       host = "host-governance-#{suffix}"
-      first = insert_canonical_summary(host, "governed", "original source")
+
+      first =
+        insert_canonical_summary(host, "governed", "original source", ["same fact #{suffix}"])
+
       fact = "same fact #{suffix}"
       Process.put(:episodic_facts, [fact])
       assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => first.id}})
@@ -384,7 +544,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
         assert is_nil(replacement.deleted_at)
       else
         independent =
-          insert_canonical_summary(host, "independent", "independent supporting source")
+          insert_canonical_summary(host, "independent", "independent supporting source", [fact])
 
         assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => independent.id}})
 
@@ -402,7 +562,11 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   test "suppression cannot bypass canonical source partition validation" do
-    first = insert_canonical_summary("host-invalid-source", "session", "source")
+    first =
+      insert_canonical_summary("host-invalid-source", "session", "source", [
+        "partition-guarded fact"
+      ])
+
     Process.put(:episodic_facts, ["partition-guarded fact"])
     assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => first.id}})
     original = repo().get_by!(Memory, content: "partition-guarded fact")
@@ -443,7 +607,9 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   test "archive does not become source-governed forget suppression" do
-    first = insert_canonical_summary("host-archive", "session", "original source")
+    first =
+      insert_canonical_summary("host-archive", "session", "original source", ["archived fact"])
+
     Process.put(:episodic_facts, ["archived fact"])
     assert :ok = EpisodicWorker.perform(%Styx.Job{args: %{"summary_id" => first.id}})
     memory = repo().get_by!(Memory, content: "archived fact")
@@ -458,7 +624,9 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
   test "a discarded extraction can be re-enqueued and remains fact-idempotent" do
     Styx.Testing.with_testing_mode(:manual, fn ->
-      summary = insert_canonical_summary("host-heal", "session-heal", "healing source")
+      summary =
+        insert_canonical_summary("host-heal", "session-heal", "healing source", ["healed fact"])
+
       Process.put(:episodic_facts, ["healed fact"])
 
       assert {:ok, discarded} = EpisodicWorker.enqueue_summary(summary.id)
@@ -696,7 +864,11 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   test "a revision advancing during extraction cannot persist stale semantic facts" do
-    old = insert_canonical_summary("episodic-persist-race", "session", "old content")
+    old =
+      insert_canonical_summary("episodic-persist-race", "session", "old content", [
+        "stale semantic fact"
+      ])
+
     BlockingLLM.configure(self(), old.content)
     Application.put_env(:backplane_memory, :llm_module, BlockingLLM)
 
@@ -784,7 +956,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
              )
   end
 
-  defp insert_summary(session_id, project, content) do
+  defp insert_summary(session_id, project, content, source_texts) do
     partition = canonical_partition("legacy", scope: project)
 
     summary =
@@ -796,7 +968,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
       |> repo().insert!()
 
     insert_projected_session!(summary, partition)
-    summary
+    Backplane.Memory.FactExtractionFixtures.link_summary!(summary, source_texts)
   end
 
   defp artifact_snapshot do
@@ -805,7 +977,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     end
   end
 
-  defp insert_canonical_summary(host_id, session_id, content) do
+  defp insert_canonical_summary(host_id, session_id, content, source_texts \\ nil) do
     revision = digest("#{host_id}:#{session_id}:#{content}")
     partition = canonical_partition(host_id, scope: "project-canonical")
 
@@ -827,7 +999,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
       |> repo().insert!()
 
     insert_projected_session!(summary, partition)
-    summary
+    Backplane.Memory.FactExtractionFixtures.link_summary!(summary, source_texts)
   end
 
   defp insert_projected_session!(summary, partition) do
@@ -889,6 +1061,9 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
       output_revision: digest(content)
     })
     |> repo().insert!()
+    |> Backplane.Memory.FactExtractionFixtures.link_summary!(
+      Backplane.Memory.FactExtractionFixtures.source_texts(old)
+    )
   end
 
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
@@ -899,8 +1074,8 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
         args: %{"summary_id" => repo().get_by!(Summary, session_id: session_id).id}
       })
 
-  defp capture_event(host_id, session_id, correlation_id, sequence, event_type) do
-    payload = %{"message" => "correlation source #{sequence}"}
+  defp capture_event(host_id, session_id, correlation_id, sequence, event_type, content \\ nil) do
+    payload = %{"message" => content || "correlation source #{sequence}"}
 
     valid_event(%{
       "event_id" => Ecto.UUID.generate(),

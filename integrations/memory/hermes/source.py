@@ -77,6 +77,9 @@ def capture_callback(provider, action, target, content, metadata):
         if count >= journal.max_pending:
             raise RuntimeError("delivery_journal_full")
         journal.db.execute("INSERT INTO callbacks(target,payload) VALUES (?,?)", (target, canonical_json(callback)))
+        # Fence cached and in-flight context at durable callback acceptance, even
+        # when the native file cannot yet provide an authoritative snapshot.
+        provider._invalidate_context()
     return reconcile(provider, target)
 
 
@@ -184,7 +187,7 @@ def reconcile(provider, target, *, force=False, dry_run=False):
                     journal.db.execute("UPDATE callbacks SET processed=1 WHERE target=? AND id<=?", (target, callbacks[-1]["id"]))
                 if ambiguities:
                     journal.set("source-ambiguities:" + target, int(journal.get("source-ambiguities:" + target, "0")) + ambiguities)
-                if plan:
+                if plan or callbacks:
                     provider._invalidate_context()
                 journal.set("source-state:" + target, "ready" if complete else "identity_chain_pending")
                 return {"complete": complete, "target": target, "entries": len(entries), "mutations": len(plan), "pending_identity_chains": unresolved}

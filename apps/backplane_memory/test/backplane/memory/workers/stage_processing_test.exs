@@ -24,14 +24,21 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
     memory.procedure_extraction_v2.enabled memory.relation_classifier.enabled memory.llm_model memory.crystals_enabled)
 
   defmodule Model do
-    def extract_facts(content) do
+    def extract_fact_candidates(_content, bundle, _model) do
       send(self(), :facts_called)
 
       if Process.get(:disable_during_facts),
         do: :ets.insert(:backplane_settings, {"memory.fact_extraction_v2.enabled", false})
 
-      {:ok, for(index <- 1..10, do: "fact #{index}: #{String.slice(content, 0, 40)}")}
+      {:ok,
+       Backplane.Memory.FactExtractionFixtures.proposals(
+         bundle["assertion_units"] |> Enum.take(10) |> Enum.map(& &1["text"]),
+         bundle
+       )}
     end
+
+    def assess_fact_candidates(_bundle, facts, _model),
+      do: {:ok, Backplane.Memory.FactExtractionFixtures.assessment(facts)}
 
     def extract_procedures(_content) do
       send(self(), :procedures_called)
@@ -749,7 +756,13 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
         "sequence" => sequence,
         "event_type" => type,
         "idempotency_key" => "#{host}:#{sequence}",
-        "payload" => %{"message" => "verified deployment step #{sequence}"}
+        "payload" => %{
+          "message" =>
+            if(sequence == 2,
+              do: Enum.map_join(1..10, " ", &"Verified deployment action #{&1}."),
+              else: "verified deployment step #{sequence}"
+            )
+        }
       })
     end)
     |> Enum.chunk_every(50)

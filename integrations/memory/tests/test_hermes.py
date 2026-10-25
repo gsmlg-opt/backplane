@@ -130,6 +130,103 @@ class HermesContractTest(unittest.TestCase):
         self.assertEqual([r["operation"] for r in self.rows("source_mutate")],["upsert"])
         self.assertGreater(self.provider.delivery_status()["pending_reconciliation"],0)
 
+    def _pending_context_fixture(self):
+        self.write_source("memory", ["alpha old fact"])
+        self.provider.on_memory_write("add", "memory", "alpha old fact")
+        for delivery in self.provider._journal.pending(limit=100):
+            self.provider._journal.accept(delivery["event_id"], {
+                "status": "committed", "event_id": delivery["event_id"],
+                "canonical_id": "fixture-memory", "authority": "canonical"})
+        entry = dict(self.provider._journal.db.execute(
+            "SELECT * FROM source_entries WHERE target='memory' AND active=1").fetchone())
+        ref = {"source": self.provider._source("memory"), "entry_id": entry["entry_id"],
+               "source_revision": entry["revision"], "event_id": "fixture-event", "active": True}
+        row = {"id": "fixture-memory", "revision": 1, "content": "alpha old fact",
+               "policy_version": "current_context.v1", "lifecycle_state": "active",
+               "effective_support": True, "support_complete": True,
+               "independent_support": False, "source_refs": [ref],
+               "trust": "candidate_inference", "relevance_accepted": True}
+        return row, entry
+
+    def _fetch_pending_context(self, row):
+        self.provider.queue_prefetch("alpha")
+        key, unused = self.provider._prefetch_jobs.popitem(last=False)
+        with patch.object(plugin, "_post", return_value={"ok": True, "result": {"results": [row]}}):
+            self.provider._fetch_context(key, unused)
+        return self.provider.prefetch("alpha")
+
+    def _assert_pending_change_suppressed(self, action):
+        from importlib import import_module
+        render = import_module(plugin.__name__ + ".context").render_context
+        row, entry = self._pending_context_fixture()
+        self.assertIn("alpha old fact", self._fetch_pending_context(row))
+        generation = self.provider._generation
+        (self.home / "memories" / "MEMORY.md").write_bytes(b"\xff")
+        self.provider.on_memory_write(action, "memory", "" if action == "remove" else "alpha replacement fact",
+                                      metadata={"previous_content": "alpha old fact"})
+        self.assertGreater(self.provider._generation, generation)
+        self.assertEqual(self.provider.prefetch("alpha"), "")
+        self.assertEqual(render(self.provider, "alpha", {"results": [row]})[0], "")
+        self.assertEqual(self._fetch_pending_context(row), "")
+        self.assertEqual(self.provider.delivery_status()["pending_reconciliation"], 1)
+        self.assertEqual([json.loads(r["payload"])["operation"] for r in self.provider._journal.db.execute(
+            "SELECT payload FROM delivery WHERE path LIKE '%source_mutate'")], ["upsert"])
+        self.assertEqual(self.provider._journal.db.execute(
+            "SELECT active FROM source_entries WHERE entry_id=?", (entry["entry_id"],)).fetchone()[0], 1)
+
+        # A pending callback removes only this local contribution, never independent support.
+        other = copy.deepcopy(row["source_refs"][0])
+        other["source"]["profile_id"] = "independent-profile"
+        for supported in [dict(row, independent_support=True), dict(row, source_refs=row["source_refs"] + [other])]:
+            self.assertIn("alpha old fact", render(self.provider, "alpha", {"results": [supported]})[0])
+
+        self.provider.shutdown()
+        self.provider = self.new_provider()
+        self.assertEqual(self.provider.delivery_status()["pending_reconciliation"], 1)
+        self.assertEqual(self._fetch_pending_context(row), "")
+
+        self.write_source("memory", [] if action == "remove" else ["alpha replacement fact"])
+        result = plugin.source.reconcile(self.provider, "memory")
+        self.assertTrue(result["complete"])
+        self.assertEqual(self.provider.delivery_status()["pending_reconciliation"], 0)
+        self.assertEqual(render(self.provider, "alpha", {"results": [row]})[0], "")
+        if action == "replace":
+            head = dict(self.provider._journal.db.execute(
+                "SELECT * FROM source_entries WHERE entry_id=?", (entry["entry_id"],)).fetchone())
+            current = copy.deepcopy(row)
+            current["content"] = "alpha replacement fact"
+            current["revision"] = 2
+            current["source_refs"][0]["source_revision"] = head["revision"]
+            self.assertIn("alpha replacement fact", render(self.provider, "alpha", {"results": [current]})[0])
+
+    def test_pending_remove_suppresses_cached_and_fresh_context_across_restart(self):
+        self._assert_pending_change_suppressed("remove")
+
+    def test_pending_replace_suppresses_cached_and_fresh_context_across_restart(self):
+        self._assert_pending_change_suppressed("replace")
+
+    def test_pending_callback_fences_inflight_cache_and_no_change_recovery(self):
+        from importlib import import_module
+        render = import_module(plugin.__name__ + ".context").render_context
+        row, _ = self._pending_context_fixture()
+        self.provider.queue_prefetch("alpha")
+        key, unused = self.provider._prefetch_jobs.popitem(last=False)
+        (self.home / "memories" / "MEMORY.md").write_bytes(b"\xff")
+        def concurrent_callback(*_args):
+            self.provider.on_memory_write("remove", "memory", "", metadata={"previous_content": "alpha old fact"})
+            return {"ok": True, "result": {"results": [row]}}
+        with patch.object(plugin, "_post", side_effect=concurrent_callback):
+            self.provider._fetch_context(key, unused)
+        self.assertNotIn(key, self.provider._cache)
+        self.assertEqual(self.provider.prefetch("alpha"), "")
+        # A complete authoritative snapshot may show a late callback changed nothing.
+        generation = self.provider._generation
+        self.write_source("memory", ["alpha old fact"])
+        self.assertTrue(plugin.source.reconcile(self.provider, "memory")["complete"])
+        self.assertGreater(self.provider._generation, generation)
+        self.assertEqual(self.provider.delivery_status()["pending_reconciliation"], 0)
+        self.assertIn("alpha old fact", render(self.provider, "alpha", {"results": [row]})[0])
+
     def test_native_snapshot_scrubs_wire_and_resolves_scrubbed_full_previous(self):
         secret="synthetic-private-secret"
         self.provider._native_scrubber=lambda value:value.replace(secret,"[redacted]")

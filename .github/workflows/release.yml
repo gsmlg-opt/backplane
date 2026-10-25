@@ -265,6 +265,8 @@ jobs:
             apps/backplane_memory_contract/test/backplane/memory_source_contract_test.exs \
             apps/backplane_memory/test/backplane/memory/sources_test.exs \
             apps/backplane_memory/test/backplane/memory/source_commands_test.exs \
+            apps/backplane_memory/test/backplane/memory/fact_extraction_test.exs \
+            apps/backplane_memory/test/backplane/memory/llm_test.exs \
             apps/backplane_memory/test/backplane/memory/workers/hermes_pipeline_test.exs \
             apps/backplane_memory/test/backplane/memory/workers/episodic_worker_test.exs \
             apps/backplane_memory/test/backplane/memory/memories/evidence_test.exs \

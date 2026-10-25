@@ -24,6 +24,203 @@ defmodule Backplane.Memory.LLMTest do
     :ok
   end
 
+  test "ordered original evidence and a nonempty proposal reach the independent assessor unchanged" do
+    source = %{
+      "summary_id" => "summary",
+      "input_revision" => "revision",
+      "events" => [
+        %{"id" => "first", "role" => "user", "text" => "My label is café.", "sequence" => 1},
+        %{"id" => "guess", "role" => "assistant", "text" => "I guessed tea.", "sequence" => 2},
+        %{"id" => "last", "role" => "user", "text" => "The label remains café.", "sequence" => 3}
+      ],
+      "assertion_units" => [
+        %{
+          "unit_index" => 0,
+          "event_id" => "first",
+          "text" => "My label is café.",
+          "start_byte" => 0,
+          "end_byte" => 18
+        },
+        %{
+          "unit_index" => 1,
+          "event_id" => "last",
+          "text" => "The label remains café.",
+          "start_byte" => 0,
+          "end_byte" => 24
+        }
+      ]
+    }
+
+    proposal = %{
+      "unit_index" => 0,
+      "statement" => "My label is café.",
+      "subject" => %{"kind" => "speaker", "text" => "user", "citation" => 0},
+      "property" => %{"text" => "label", "citation" => 0},
+      "value" => %{"text" => "café", "citation" => 0},
+      "semantic_scope" => %{"kind" => "unspecified"},
+      "citations" => [%{"event_id" => "first", "quote" => "My label is café."}],
+      "correction_of" => []
+    }
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      assert LLM.capture_suppressed?()
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      request = Jason.decode!(body)
+      assert request["model"] == "test-model"
+      refute Map.has_key?(request, "temperature")
+      assert %{"type" => "json_schema", "json_schema" => schema} = request["response_format"]
+      assert schema["strict"] == true
+      assert schema["schema"]["additionalProperties"] == false
+
+      assert [
+               %{"role" => "system", "content" => policy},
+               %{"role" => "user", "content" => evidence}
+             ] = request["messages"]
+
+      assert Jason.decode!(evidence)["source"] == source
+
+      response =
+        case Plug.Conn.get_req_header(conn, "x-backplane-memory-origin") do
+          ["fact"] ->
+            assert schema["name"] == "source_fact_candidates"
+            fact = schema["schema"]["properties"]["facts"]["items"]
+            assert fact["additionalProperties"] == false
+
+            assert Enum.sort(fact["required"]) ==
+                     ~w(citations correction_of property semantic_scope statement subject unit_index value)
+
+            assert fact["properties"]["statement"]["enum"] == [
+                     "My label is café.",
+                     "The label remains café."
+                   ]
+
+            assert fact["properties"]["unit_index"]["enum"] == [0, 1]
+            assert fact["properties"]["subject"]["properties"]["citation"]["minimum"] == 0
+            assert length(fact["properties"]["semantic_scope"]["anyOf"]) == 2
+            assert policy =~ "THIS fact's citations"
+            assert policy =~ "ORIGINAL EVENTS"
+            assert Jason.decode!(evidence)["summary"] == "summary unchanged"
+
+            %{
+              "decisions" => [selection(0), %{selection(1) | "self_contained" => "uncertain"}],
+              "facts" => [proposal]
+            }
+
+          ["fact-validation"] ->
+            assert schema["name"] == "source_fact_assessment"
+            assert Jason.decode!(evidence)["candidates"] == [proposal]
+            verdict = schema["schema"]["properties"]["verdicts"]["items"]
+
+            assert verdict["properties"]["self_contained"]["enum"] ==
+                     ~w(supported unsupported uncertain)
+
+            assert policy =~ "self_contained"
+            assert policy =~ "statement_equivalent"
+            Backplane.Memory.FactExtractionFixtures.assessment([proposal])
+        end
+
+      Req.Test.json(conn, %{
+        "choices" => [%{"message" => %{"content" => Jason.encode!(response)}}]
+      })
+    end)
+
+    assert {:ok, [^proposal]} = LLM.extract_fact_candidates("summary unchanged", source)
+    :ets.insert(:backplane_settings, {"memory.llm_model", "changed-model"})
+
+    assert {:ok, %{"empty_supported" => false}} =
+             LLM.assess_fact_candidates(source, [proposal], "test-model")
+  end
+
+  test "selection decisions are complete unique and exactly match all proposed source units" do
+    source = %{
+      "events" => [],
+      "assertion_units" => [
+        %{"unit_index" => 0, "event_id" => "event", "text" => "I prefer tea."}
+      ]
+    }
+
+    fact = %{
+      "unit_index" => 0,
+      "statement" => "I prefer tea.",
+      "subject" => %{"citation" => 0},
+      "citations" => [%{"event_id" => "event", "quote" => "I prefer tea."}]
+    }
+
+    invalid = [
+      %{"facts" => []},
+      %{"decisions" => [], "facts" => []},
+      %{"decisions" => [selection(0), selection(0)], "facts" => [fact]},
+      %{"decisions" => [selection(1)], "facts" => [fact]},
+      %{"decisions" => [Map.delete(selection(0), "current")], "facts" => [fact]},
+      %{"decisions" => [selection(0)], "facts" => []},
+      %{"decisions" => [selection(0)], "facts" => [fact, fact]},
+      %{"decisions" => [%{selection(0) | "durable" => "unsupported"}], "facts" => [fact]},
+      %{"decisions" => [selection(0)], "facts" => [%{fact | "statement" => "A rewritten fact."}]},
+      %{
+        "decisions" => [selection(0)],
+        "facts" => [put_in(fact, ["citations", Access.at(0), "event_id"], "foreign")]
+      }
+    ]
+
+    for response <- invalid do
+      Req.Test.stub(__MODULE__, fn conn ->
+        Req.Test.json(conn, %{
+          "choices" => [%{"message" => %{"content" => Jason.encode!(response)}}]
+        })
+      end)
+
+      assert {:error, :invalid_fact_selection} = LLM.extract_fact_candidates("summary", source)
+    end
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      response = %{
+        "decisions" => [%{selection(0) | "self_contained" => "uncertain"}],
+        "facts" => []
+      }
+
+      Req.Test.json(conn, %{
+        "choices" => [%{"message" => %{"content" => Jason.encode!(response)}}]
+      })
+    end)
+
+    assert {:ok, []} = LLM.extract_fact_candidates("summary", source)
+  end
+
+  defp selection(index),
+    do: %{
+      "unit_index" => index,
+      "durable" => "supported",
+      "self_contained" => "supported",
+      "current" => "supported"
+    }
+
+  test "the complete structured request including source enum is bounded before HTTP" do
+    Req.Test.stub(__MODULE__, fn _ -> flunk("oversized request must not reach HTTP") end)
+
+    source = %{
+      "events" => [],
+      "assertion_units" => Enum.map(1..60, &%{"text" => "#{&1}: " <> String.duplicate("x", 995)})
+    }
+
+    assert {:error, :fact_request_too_large} = LLM.extract_fact_candidates("summary", source)
+  end
+
+  test "malformed structured extraction does not fall back to legacy strings" do
+    Req.Test.stub(__MODULE__, fn conn ->
+      send(self(), :fact_request)
+
+      Req.Test.json(conn, %{
+        "choices" => [%{"message" => %{"content" => "plain unvalidated text"}}]
+      })
+    end)
+
+    assert {:error, :invalid_fact_response} =
+             LLM.extract_fact_candidates("summary", %{"events" => []})
+
+    assert_received :fact_request
+    refute_received :fact_request
+  end
+
   @tag :graph_schema
   test "graph extraction requests bounded filtered source text and validates entity references" do
     response = %{

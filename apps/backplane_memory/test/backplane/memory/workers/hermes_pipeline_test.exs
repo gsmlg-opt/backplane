@@ -8,10 +8,18 @@ defmodule Backplane.Memory.Workers.HermesPipelineTest do
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
 
   defmodule ExtractionFixture do
-    def extract_facts(content) do
+    def extract_fact_candidates(content, bundle, _model) do
       send(self(), {:hermes_extraction_input, content})
-      {:ok, ["Current project language is Elixir"]}
+
+      {:ok,
+       Backplane.Memory.FactExtractionFixtures.proposals(
+         ["Current project language is Elixir"],
+         bundle
+       )}
     end
+
+    def assess_fact_candidates(_bundle, facts, _model),
+      do: {:ok, Backplane.Memory.FactExtractionFixtures.assessment(facts)}
   end
 
   setup do
