@@ -5,10 +5,11 @@ Backplane Memory. The supported upstream contract is Hermes commit
 `bac34e9e9946c9c6a9ce7ce64efadd47f8fa375b`. Installation and live verification are
 separate from changing the packaged source.
 
-The local source checkpoint passed the normal 14-gate integrated scenario on
-2026-10-26. The contracts below describe the implementation boundary. Verification,
-CI, publication and operator installation are separate evidence surfaces; this
-document does not establish release or production deployment.
+The combined source at `main@eb35ecfc` passed the unchanged normal 14-gate live
+scenario on 2026-10-26: exit 0 in 48.3 seconds. The contracts below describe the
+implementation boundary. Verification, CI, publication and operator installation
+are separate evidence surfaces; this document does not establish release or
+production deployment.
 
 ## Ownership and data flow
 
@@ -419,11 +420,12 @@ support after withdrawals have been applied; it can expose obsolete content.
 
 ### Current local evidence
 
-The 2026-10-26 A14 source checkpoint passed the unchanged normal live scenario:
-**14 of 14 gates, exit 0**. The run used the original fixture, configured
-`openai/gpt-4.1-mini`, frozen oracle and normal harness, without external diagnostic
-instrumentation. Its evidence tier is
+The final combined source at `main@eb35ecfc` passed the unchanged normal live
+scenario on 2026-10-26: **14 of 14 gates, exit 0 in 48.3 seconds**. The run used
+the original fixture, configured `openai/gpt-4.1-mini`, frozen oracle and normal
+harness, without external diagnostic instrumentation. Its evidence tier is
 `owned_fixture_actual_http_websocket_committed_repo_async_styx`;
+`boundary_diagnosis_only=false`, `synthetic_semantic_diagnostic_only=false` and
 `production_installation_verified=false`.
 
 The run verified authenticated HTTP/WebSocket capture; native replacement,
@@ -431,26 +433,122 @@ withdrawal, independent support, replay and conflict; current-context relevance,
 trust and whole-entry budgets; outage/provider restart and full owned host restart;
 canonical capture/projection; real asynchronous summary/extraction and embedding;
 checkpoint refusal/retry; intentional global forget; and complete final fixture
-state. Extraction produced one governed current memory from two derived requests,
-including the user's corrected preference, without promoting the assistant guess.
+state. The final fixture had two current records, including one governed
+conversation memory from two derived requests retaining the user's corrected
+preference without promoting the assistant guess.
 Both profiles finished with no local-pending, host-accepted, rejected or
 pending-reconciliation deliveries.
 
 | Evidence surface | Observed result | Boundary |
 |---|---|---|
-| Normal owned live scenario | 14/14 gates; real extraction, embedding and final state passed | Isolated fixture, real host/API/background/model paths; no production installation claim |
+| Final combined-source normal live scenario | 14/14 gates, exit 0; real extraction, embedding and asynchronous processing passed | Directly exercises `eb35ecfc` with the approved dependencies; isolated fixture, no production installation claim |
 | Final owning BEAM selection | 101 tests, 0 failures; seed `97720` | Includes mixed-batch rejection without publication, source-unit bounds, ordered evidence/nonempty request preservation and production deduplication/order |
 | Parent Python provider/runtime rerun | 81 tests, 0 failures, with `ResourceWarning` treated as an error | Source/provider/runtime compatibility |
 | Unchanged OpenClaw suite | Earlier 5/5 Node checks passed | Compatibility evidence; separate from Hermes live settlement |
 | Frozen semantic-oracle suite | 74 tests passed | Validates the oracle; does not substitute for the live scenario |
 | A14 static checks | Scoped formatting, warnings-as-errors compilation and strict Credo passed | Owning changed files; separate from repository-wide and CI results |
-| Owned resource cleanup | All four live cleanup checks true; independent inventory of seven owned runs found zero databases, directories or marker-bearing processes | Only resources created by these runs |
+| Owned resource cleanup | All four final live cleanup checks true; independent inventory found zero owned databases, fixture directories or marker-bearing processes | Earlier inventory of seven owned runs also found zero resources; only task-owned resources checked |
 
-Local session logs are `/tmp/hermes-live-astra14-full.log`,
-`/tmp/hermes-live-astra14-focused.log`, `/tmp/hermes-parent-a14-python.log` and
+Final live evidence is in `/tmp/hermes-parent-final-normal-live.log` and
+`/tmp/hermes-parent-final-normal-live-results.json`. Earlier A14 also passed the
+normal 14-gate scenario and supplies the focused/static evidence above; its logs
+are `/tmp/hermes-live-astra14-full.log`, `/tmp/hermes-live-astra14-focused.log`,
+`/tmp/hermes-parent-a14-python.log` and
 `/tmp/hermes-live-astra14-cleanup-verified.log`. These temporary paths identify
 session evidence, not published release artifacts. The five frozen input files
-and approved dependency lockfile were unchanged during A14 verification.
+and approved dependency lockfile remained unchanged.
+
+### Integrated checkpoint
+
+The integrated source checkpoint is `main` at `eb35ecfc`, committed and pushed.
+It includes the approved 18-entry dependency refresh: eight DuskMoon bundler
+packages at `10.0.6`, eight HTTP-stack packages at `0.21.17`, `ex_turso` at
+`3.1.8` with force-build verification, and `rustler_precompiled` at `0.10.1`.
+`phoenix_duskmoon` remains at `10.0.11`. The approved `mix.lock` SHA256 is
+`9d1cc4d91df8ed792429e324ce6edac6296f7f8fdbcbfe9faf99ee4dcfe5469a`.
+
+| Integrated evidence surface | Observed result | Boundary |
+|---|---|---|
+| Dependency compatibility selection | 125 tests, 0 failures across MCP Protocol, Relayixir, Admin and Host Agent | Scoped consumer checks, not every dependency's upstream suite |
+| AI media compatibility | 18 tests, 0 failures | Separate from Agent Runtime execution |
+| Development compilation | `mix compile --warnings-as-errors`, exit 0 | Development environment |
+| Isolated development Dialyzer | Exit 0 in 266.6 seconds; passed with existing warning/ignore rules | Fresh canonical build and core/project PLTs; separate from Linux CI |
+| Production assets | `mix assets.deploy`, exit 0; public and admin profiles built and digested | Asset assembly, not release assembly or deployment |
+| Fresh integrated Memory suite, first run | 1,474 tests, 2 failures; seed `614032` | Qualification performance and Mix-task tests failed; retention assertions passed |
+| Fresh integrated Memory suite, return-traced diagnostic | 1,474 tests, 0 failures; same seed; 227.1 seconds, exit 0 | Instrumented full-suite evidence; original qualification failure remains unreproduced |
+| Final standard Memory suite after the comparator regression | 1,475 tests, 0 failures; seed `614032`; 250.4 seconds, exit 0 | Fresh owned database; no tracing, diagnostic mode or test exclusions |
+
+The first run's performance test failed `assert report.passed`, but did not print
+its report. The separate CI-smoke Mix-task report accepted and persisted
+1,900 of 2,000 requested events; 100 returned retryable `storage_error`, with
+19 of 20 durable projection frontiers/jobs. Integrity and ingest-throughput gates
+failed despite approximately 1,442 events/second exceeding the 50/second speed
+threshold: completeness and projection work are also required. The original
+storage exception and its cause were not established.
+
+The same-seed diagnostic captured qualification returns without a production
+source repair. Its performance and CI reports accepted and persisted all
+2,000 measured events and passed every gate. That pass does not identify or fix
+the first failure. These are sandbox-suite measurements, not the separate
+real-pool release qualification. The subsequent uninstrumented Linux CI smoke
+report at `eb35ecfc` also accepted and persisted 2,000 of 2,000 events with every
+qualification gate passing. All fresh databases created for these integrated
+runs were dropped. Session evidence is in
+`/tmp/hermes-parent-integrated-memory-full.log`,
+`/tmp/hermes-parent-qualification-full-diag-tests.log` and
+`/tmp/hermes-parent-qualification-full-diagnostic.jsonl`; execution and cleanup
+results are in `/tmp/hermes-parent-qualification-full-diagnostic-results.json`.
+
+The local Agent Runtime selection completed 14 tests with eight failures on
+macOS. Seven reported unavailable `code_mode`; one reported an exact
+admission-authority mismatch. Read-only diagnosis confirmed that Code Mode
+requires Linux process-lifecycle evidence (`/proc` and `kill`) and Deno, while
+the host was Darwin without `/proc/self/stat` or Deno in `PATH`. Empty Code Mode
+contracts also explain the fixture's authority mismatch: its grants still name
+`exec` and `wait`. Installing Deno alone cannot satisfy the Linux gate. The
+dedicated Linux [Agent Runtime run 40210083122](https://github.com/gsmlg-opt/backplane/actions/runs/40210083122)
+passed at upstream `3ae1dff0`; the runtime sources and its workflow are unchanged
+in `eb35ecfc`. That inherited result is distinct from exact-head runtime
+verification, and the local runtime selection is not recorded as passing.
+
+Development Dialyzer completed successfully with a fresh canonical build and
+isolated core/project PLTs, retaining the existing analysis and ignore rules.
+Its summary was `Total errors: 118, Skipped: 118, Unnecessary Skips: 51`, followed
+by `passed successfully`; these are 118 findings covered by existing filters,
+not 118 unhandled errors. Results are in
+`/tmp/hermes-parent-isolated-dialyzer-results.json` and its referenced log. An
+earlier test-env run's three warnings do not establish the development CI result.
+The first dev run failed PLT preparation on missing consolidated BEAM files before
+emitting 8,587 errors; that invalid analysis is not accepted as source diagnoses.
+The original integrated command results remain recorded in
+`/tmp/hermes-parent-integrated-checks.json`.
+
+At the `eb35ecfc` runtime-source checkpoint,
+[CI run 40213275784](https://github.com/gsmlg-opt/backplane/actions/runs/40213275784)
+passed all five checks. The Memory job in
+[Test run 40213275775](https://github.com/gsmlg-opt/backplane/actions/runs/40213275775)
+completed 1,474 tests with one failure and five existing qualification-runtime
+exclusions. Its failure was a different, reproducible test-comparator defect:
+the database correctly returned evidence at `16:55:03.963980` before
+`16:55:04.007552`, while default Elixir struct ordering reversed the timestamps.
+The assertion now compares Unix microseconds and UUIDs. A fixed second-boundary
+and equal-time UUID fixture failed the old comparator and passed the correction;
+the 26-test evidence file passed without sleeps, evidence mutation or weakened
+count assertions. Runtime ordering code was unchanged. The corresponding
+RED/GREEN and owned-database cleanup records are in
+`/tmp/hermes-chrono-results.json`.
+
+The final standard full-suite run then passed all 1,475 tests, including the
+qualification runtime tests, without diagnostic tracing or exclusions. Its
+command was `MIX_ENV=test mix test apps/backplane_memory/test --seed 614032`
+with a fresh owned `MIX_TEST_PARTITION`; the database was dropped afterward.
+The command and cleanup records are in
+`/tmp/hermes-parent-final-memory-standard-results.json`.
+
+Delivery must independently verify the final commit's CI/Test workflows and the
+immutable SHA selected by the existing release workflow. Published artifacts,
+package registries and operator installation require their own receipts; local
+checks do not establish them.
 
 ### Reproducing the checks
 
@@ -561,15 +659,18 @@ passed compilation, formatting, Dialyzer and workflow-contract checks; a SQL-lit
 Credo finding was subsequently fixed without changing the evaluated query.
 These historical checks do not qualify a later commit or artifact automatically.
 
-**Known baseline failure:** the two global activity-retention count assertions
+**Historical retention baseline:** the two global activity-retention count assertions
 failed with `3 != 0` before Hermes at `f36d09c8`
 ([run 40076035113](https://github.com/gsmlg-opt/backplane/actions/runs/40076035113))
 and recurred on committed `c4ce197d`
 ([run 40203194254](https://github.com/gsmlg-opt/backplane/actions/runs/40203194254)).
 The latter Memory job completed 1,448 tests, two failures and five exclusions.
 The retention worker and its tests were unchanged between those commits; the
-exact origin of the remaining rows was not proven. No out-of-scope retention
-repair or waiver is implied by the Hermes live pass.
+exact origin of the remaining rows was not proven by those runs. Upstream
+`b4f74387` subsequently added committed summary-activity fixture cleanup and is
+integrated in `eb35ecfc`. The retention assertions pass in both fresh integrated
+Memory suites above. The historical failures are retained as evidence, not a
+current waiver; no Hermes retention workaround was applied.
 
 ### Evidence limits and operator actions
 
@@ -585,13 +686,13 @@ and 0.0427 were diagnostics only; they establish neither calibrated thresholds
 nor gateway/host lifecycle behavior. Use the workload-specific calibration
 requirements above.
 
-CI, integrated dependency/static checks, published-artifact parity and production
-installation must each be established for the exact delivered revision through
-their own evidence. The local checks recorded here neither claim nor preclude
-those separate results. Canonical Agent Note revisions 3 and 4 recorded earlier
-contracts and acceptance boundaries; their historical verification status must
-be reconciled against the current source and evidence rather than treated as a
-release record.
+The combined-source live pass and completed integrated checks above supplement
+the earlier A14 evidence. Exact delivery CI, Linux runtime verification,
+published-artifact parity and production installation each have separate
+evidence boundaries. Canonical Agent Note revisions 3 and 4
+recorded earlier contracts and acceptance boundaries; their historical verification
+status must be reconciled against the current source and evidence rather than
+treated as a release record.
 
 Operators still need to follow the existing release gates, deploy canonical
 capabilities/migrations and the host, explicitly upgrade the installed Hermes
