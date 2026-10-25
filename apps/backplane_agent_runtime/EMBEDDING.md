@@ -704,7 +704,10 @@ return a typed error. Do not rewrite the patch, mutate authority, or select a ne
 backend to apply host policy.
 
 Path authorization traverses dangling links and link-target ancestors before
-checking physical containment. Patch write targets also reject multiply linked
+checking physical containment. Native `view_image` uses the same authorization
+before inspecting or reading image files. Confined link chains remain readable;
+outward targets, cycles and traversal-limit exhaustion return typed errors.
+Patch write targets also reject multiply linked
 regular files, including through inward symlinks; reads and source removals do
 not require a single link. Both move forms inspect destinations before changing
 the source. Preflight is not a transaction or a future filesystem snapshot:
