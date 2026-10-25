@@ -30,7 +30,7 @@ Let's connect to an existing MCP server in under three minutes:
 
 ```elixir
 # In your mix.exs
-{:backplane_mcp_protocol, "~> 1.10.36"}
+{:backplane_mcp_protocol, "~> 1.10.37"}
 ```
 
 Add a client to your supervision tree:

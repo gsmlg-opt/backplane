@@ -489,6 +489,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
         tools
         |> Map.values()
         |> Enum.reject(&(&1.tool_name in ["exec", "wait"]))
+        |> Enum.reject(&(Map.get(&1, :codex_exposure) == :direct_model_only))
         |> Enum.filter(&(&1.tool_name in operation.effective_authority.grants))
         |> Enum.map(fn tool ->
           %{

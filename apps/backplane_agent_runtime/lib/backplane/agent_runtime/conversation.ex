@@ -46,6 +46,7 @@ defmodule Backplane.AgentRuntime.Conversation do
          opts = Keyword.put(opts, :host_feedback, feedback),
          :ok <- ProviderOutput.validate_options(opts),
          :ok <- validate_session_options(opts),
+         :ok <- validate_presentation_history(Keyword.get(opts, :run)),
          :ok <- GoalBridge.validate_options(opts),
          :ok <- validate_inherited_deadline(opts),
          {:ok, opts} <- admit_initial_catalog(opts),
@@ -78,6 +79,45 @@ defmodule Backplane.AgentRuntime.Conversation do
       do: {:error, Error.new(:forbidden, "restored runs cannot attach a session binding")},
       else: :ok
   end
+
+  defp validate_presentation_history(nil), do: :ok
+
+  defp validate_presentation_history(run) when is_map(run) do
+    records = Map.get(run, :tool_presentations, %{})
+    intents = Map.get(run, :execution_intents, %{})
+    results = Map.get(run, :tool_results, %{})
+
+    if is_map(records) and is_map(intents) and is_map(results) do
+      Enum.reduce_while(records, :ok, fn {id, record}, :ok ->
+        operation = get_in(intents, ["tool:#{id}", :operation])
+
+        with true <- is_map(record) and is_map(operation),
+             true <-
+               operation[:run_id] == run[:run_id] and operation[:incarnation] == run[:incarnation] and
+                 operation[:invocation_id] == id,
+             revision when is_integer(revision) and revision > 0 <- record[:revision],
+             true <- revision <= run.expected_revision,
+             :ok <-
+               ToolEffects.validate_presentation_record(
+                 Map.delete(record, :revision),
+                 operation,
+                 results[id]
+               ) do
+          {:cont, :ok}
+        else
+          _ ->
+            {:halt,
+             {:error,
+              Error.new(:validation, "stored result presentation does not match selected run")}}
+        end
+      end)
+    else
+      {:error, Error.new(:validation, "stored result presentations are malformed")}
+    end
+  end
+
+  defp validate_presentation_history(_),
+    do: {:error, Error.new(:validation, "stored run is malformed")}
 
   defp admit_initial_catalog(opts) do
     mode = Keyword.get(opts, :schema_admission, Keyword.get(opts, :admission_mode))
@@ -132,6 +172,10 @@ defmodule Backplane.AgentRuntime.Conversation do
   def public_interaction(value), do: HostFeedback.public(value)
 
   def resolve(pid, id, value), do: GenServer.call(pid, {:resolve, id, value}, :infinity)
+
+  @doc "Delivers to the current accepting turn only; skipped input is never retained."
+  def notify_active(pid, content, communication, expected),
+    do: GenServer.call(pid, {:notify_active, content, communication, expected}, :infinity)
 
   def stage_catalog(pid, update),
     do: GenServer.call(pid, {:stage_catalog, nil, update}, :infinity)
@@ -198,7 +242,10 @@ defmodule Backplane.AgentRuntime.Conversation do
       opts: opts,
       run: run,
       conversation:
-        Map.put_new(get_in(run, [:context, :conversation]) || conversation, :host_feedback, []),
+        restore_presentations(
+          run,
+          Map.put_new(get_in(run, [:context, :conversation]) || conversation, :host_feedback, [])
+        ),
       phase: phase,
       supervisor: sup,
       limits: limits,
@@ -227,6 +274,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       provider_output: ProviderOutput.new(),
       catalog: catalog,
       pending_catalog: nil,
+      accepting_turn: nil,
       catalog_receipts: [],
       new_context_requested: false,
       resource_registries: resource_registries(catalog.registry),
@@ -255,6 +303,39 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   @impl true
+  def handle_call({:notify_active, content, communication, expected}, from, s) do
+    cond do
+      expected != input_identity(s) ->
+        {:reply, {:ok, %{status: :skipped_stale}}, s}
+
+      is_nil(s.accepting_turn) or s.stopping != nil or
+          s.phase not in [:running, :waiting_interaction] ->
+        {:reply, {:ok, %{status: :skipped_inactive}}, s}
+
+      not is_map(communication) or not is_binary(communication[:result_id]) or
+          byte_size(communication.result_id) not in 1..256 ->
+        {:reply, {:error, Error.new(:validation, "notification identity is required")}, s}
+
+      not is_binary(content) or not String.valid?(content) or content == "" or
+          byte_size(content) > 16_384 ->
+        {:reply, {:error, Error.new(:validation, "notification text exceeds bound")}, s}
+
+      true ->
+        message = %{
+          role: :user,
+          content: content,
+          id: communication.result_id,
+          collaboration: communication
+        }
+
+        {:noreply,
+         enqueue(
+           %{s | callers: [from | s.callers]},
+           {:active_notification, message, expected, s.accepting_turn, from}
+         )}
+    end
+  end
+
   def handle_call({:queue_only, content, communication, expected}, from, s) do
     cond do
       expected != input_identity(s) ->
@@ -772,6 +853,53 @@ defmodule Backplane.AgentRuntime.Conversation do
     reply(s, from, {:error, Error.new(:resource_conflict, "run is not accepting input")})
   end
 
+  defp process(s, {:active_notification, message, expected, turn, from}) do
+    cond do
+      expected != input_identity(s) ->
+        reply(s, from, {:ok, %{status: :skipped_stale}})
+
+      s.accepting_turn != turn or s.stopping != nil or
+          s.phase not in [:running, :waiting_interaction] ->
+        reply(s, from, {:ok, %{status: :skipped_inactive}})
+
+      true ->
+        records = Map.get(s.conversation, :active_notifications, %{})
+
+        case Map.fetch(records, message.id) do
+          {:ok, ^message} ->
+            reply(
+              s,
+              from,
+              {:ok, %{status: :accepted, message_id: message.id, acceptance: :checkpointed}}
+            )
+
+          {:ok, _} ->
+            reply(
+              s,
+              from,
+              {:error,
+               Error.new(:resource_conflict, "notification ID belongs to another payload")}
+            )
+
+          :error ->
+            conversation =
+              s.conversation
+              |> Map.put(:active_notifications, Map.put(records, message.id, message))
+              |> Map.update(:mailbox, [message], &(&1 ++ [message]))
+
+            checkpoint(s, conversation, fn next ->
+              input_activity(next, :mailbox)
+
+              reply(
+                next,
+                from,
+                {:ok, %{status: :accepted, message_id: message.id, acceptance: :checkpointed}}
+              )
+            end)
+        end
+    end
+  end
+
   defp process(s, {:mailbox, message, from}) do
     if s.phase in [:terminal, :storage_failed, :recovery_required, :cancelling] do
       reply(
@@ -966,6 +1094,7 @@ defmodule Backplane.AgentRuntime.Conversation do
             turn_id: conversation.turn_id
           })
 
+          s = %{s | accepting_turn: conversation.turn_id}
           s = acknowledge_admission(s, :ok)
 
           if mode == :steering do
@@ -1055,12 +1184,13 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp process(s, {:effect_result, {:tool, invocation, rest, catalog}, result}) do
-    s = discard_failed_catalog(s, invocation, result)
+    s = discard_failed_catalog(s, invocation, actual_outcome(result))
 
     if tool_settlement(catalog, invocation, result) == :uncertain do
       stop(%{s | last_error: uncertain_error(result)}, :uncertain)
     else
       normalized = tool_result(result)
+      presentation = result_presentation(result) || enclosing_presentation(s, invocation)
 
       conversation =
         GoalBridge.queue(s, s.conversation, [
@@ -1070,10 +1200,19 @@ defmodule Backplane.AgentRuntime.Conversation do
       input =
         invocation
         |> Map.put(:result, normalized)
+        |> put_presentation(presentation)
         |> Map.put(:context, Map.put(s.run.context, :conversation, conversation))
 
       commit(s, {:tool_completed, now(), input}, %{}, [], fn s, _ ->
         s = settle_catalog_producer(s, invocation, normalized)
+
+        emit(s, %{
+          type: :tool_settled,
+          invocation: invocation,
+          result: normalized,
+          presentation: presentation
+        })
+
         deliver_goal(s, &append_tool_result(&1, invocation, normalized, rest, catalog))
       end)
     end
@@ -1496,7 +1635,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp validate_prepared_tool(s, invocation, descriptor, catalog, continuation) do
     with {:ok, arguments} <- validate_tool_arguments(descriptor, invocation.arguments),
          invocation = %{invocation | arguments: arguments},
-         {:ok, _} <- Policy.authorize_tool(catalog.authority, descriptor, invocation) do
+         {:ok, _} <- Policy.authorize_tool(catalog.authority, descriptor, invocation),
+         :ok <- managed_tool_authority(s, descriptor, invocation) do
       case continuation do
         {:nested, from} ->
           invoke_nested_tool(s, invocation, catalog, from)
@@ -1531,21 +1671,47 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp invoke_tool(s, invocation, descriptor, rest, catalog, approval) do
-    if admission_expired?(s) do
-      stop(s, :deadline_exceeded)
+    with :ok <- managed_tool_authority(s, descriptor, invocation) do
+      if admission_expired?(s) do
+        stop(s, :deadline_exceeded)
+      else
+        commit_tool(
+          %{s | tool_admission_deadline: nil},
+          invocation,
+          descriptor,
+          rest,
+          catalog,
+          approval
+        )
+      end
     else
-      commit_tool(
-        %{s | tool_admission_deadline: nil},
-        invocation,
-        descriptor,
-        rest,
-        catalog,
-        approval
-      )
+      {:error, error} -> reject_prepared_tool(s, invocation, catalog, {:direct, rest}, error)
+    end
+  end
+
+  defp managed_tool_authority(s, descriptor, invocation) do
+    case Keyword.get(s.opts, :managed_authorization) do
+      nil ->
+        :ok
+
+      identity ->
+        try do
+          Backplane.AgentRuntime.Codex.MultiAgent.authorize_managed_tool(
+            identity.runtime,
+            identity,
+            descriptor,
+            invocation
+          )
+        catch
+          :exit, reason ->
+            {:error,
+             Error.new(:forbidden, "managed admission authority is unavailable", cause: reason)}
+        end
     end
   end
 
   defp commit_tool(s, invocation, _descriptor, rest, catalog, approval) do
+    invocation = Map.put(invocation, :enclosing_invocation_id, invocation.invocation_id)
     resource_owner_pid = self()
 
     opts =
@@ -1602,7 +1768,12 @@ defmodule Backplane.AgentRuntime.Conversation do
       role: :tool,
       tool_call_id: invocation.tool_call_id,
       name: invocation.tool_name,
-      result: result
+      result:
+        model_result(
+          result,
+          Map.get(Map.get(s.run, :tool_presentations, %{}), Map.get(invocation, :invocation_id))
+        ),
+      invocation_id: Map.get(invocation, :invocation_id)
     }
 
     checkpoint(s, %{s.conversation | messages: s.conversation.messages ++ [message]}, fn s ->
@@ -1611,9 +1782,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     end)
   end
 
-  defp after_boundary(s, tools?) do
-    s = publish_catalog(s)
+  defp after_boundary(s, tools?), do: publish_catalog(s, &after_catalog_boundary(&1, tools?))
 
+  defp after_catalog_boundary(s, tools?) do
     case s.conversation.steering do
       [message | rest] ->
         checkpoint(s, %{s.conversation | steering: rest}, &begin_prompt(&1, message, :steering))
@@ -1653,6 +1824,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp finish_turn(s, outcome) do
+    s = %{s | accepting_turn: nil}
     turn = %{turn_id: s.conversation.turn_id, outcome: outcome, error: s.last_error}
 
     conversation =
@@ -2368,6 +2540,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     %{reply(s, from, result) | admission: nil}
   end
 
+  defp tool_result({:ok, %ToolEffects.PresentedResult{result: result}}),
+    do: Map.put_new(result, :is_error, false)
+
   defp tool_result({:ok, result}) when is_map(result), do: Map.put_new(result, :is_error, false)
   defp tool_result({:error, error}), do: %{is_error: true, error: error}
   defp tool_result(_), do: %{is_error: true, error: "malformed tool result"}
@@ -2376,6 +2551,76 @@ defmodule Backplane.AgentRuntime.Conversation do
     do: GenServer.reply(from, {:error, error})
 
   defp reject_nested_preparation(_, _), do: :ok
+
+  # Settlement may be durable while its subsequent history checkpoint failed.
+  # Rebuild only the selected run's accepted projection, never execute the effect
+  # or hook. Nested decisions without an enclosing settlement remain unprojected.
+  defp restore_presentations(run, conversation) do
+    Map.get(run, :tool_presentations, %{})
+    |> Enum.sort_by(fn {_id, value} -> value.revision end)
+    |> Enum.reduce(conversation, fn {id, value}, current ->
+      identity = value.identity
+      messages = current.messages
+
+      if identity.enclosing_invocation_id == id and
+           Map.has_key?(Map.get(run, :tool_results, %{}), id) and
+           not Enum.any?(messages, &(&1[:invocation_id] == id)) do
+        message = %{
+          role: :tool,
+          tool_call_id: identity.tool_call_id,
+          name: identity.tool_name,
+          invocation_id: id,
+          result: model_result(run.tool_results[id], value)
+        }
+
+        %{current | messages: messages ++ [message]}
+      else
+        current
+      end
+    end)
+  end
+
+  defp actual_outcome({:ok, %ToolEffects.PresentedResult{result: result}}), do: {:ok, result}
+  defp actual_outcome(result), do: result
+  defp result_presentation({:ok, %ToolEffects.PresentedResult{presentation: value}}), do: value
+  defp result_presentation(_), do: nil
+  defp put_presentation(input, nil), do: input
+  defp put_presentation(input, value), do: Map.put(input, :presentation, value)
+
+  defp model_result(_result, %{decision: %{type: :block, text: text}}),
+    do: %{is_error: true, error: Error.new(:forbidden, text)}
+
+  defp model_result(_result, %{decision: %{type: :stopped, text: text}}),
+    do: %{is_error: false, stopped: true, content: [%{type: :text, text: text}]}
+
+  defp model_result(result, _), do: result
+
+  defp consumer_result(_result, %{decision: %{type: :block, text: text}}),
+    do: {:error, Error.new(:forbidden, text)}
+
+  defp consumer_result(result, _), do: actual_outcome(result)
+
+  defp enclosing_presentation(s, invocation) do
+    Map.get(s.run, :tool_presentations, %{})
+    |> Map.values()
+    |> Enum.filter(fn value ->
+      value.identity[:enclosing_invocation_id] == invocation.invocation_id and
+        value.decision.type == :stopped
+    end)
+    |> Enum.max_by(& &1.revision, fn -> nil end)
+    |> case do
+      nil ->
+        nil
+
+      value ->
+        value
+        |> Map.delete(:revision)
+        |> Map.put(
+          :identity,
+          ToolEffects.presentation_identity(invocation)
+        )
+    end
+  end
 
   defp current_effect?(%{preparation: %{token: token, task: %{ref: _}}, stopping: nil}, token),
     do: true
@@ -2393,7 +2638,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp complete_nested(%{nested: nested} = s, normalized) do
-    s = discard_failed_catalog(s, nested.invocation, normalized)
+    s = discard_failed_catalog(s, nested.invocation, actual_outcome(normalized))
 
     if tool_settlement(nested.catalog, nested.invocation, normalized) == :uncertain do
       GenServer.reply(nested.from, normalized)
@@ -2405,6 +2650,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp settle_nested_result(s, nested, normalized) do
     result = tool_result(normalized)
+    presentation = result_presentation(normalized)
 
     conversation =
       GoalBridge.queue(s, s.conversation, [
@@ -2414,6 +2660,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     completion =
       nested.invocation
       |> Map.put(:result, result)
+      |> put_presentation(presentation)
       |> Map.put(:context, Map.put(s.run.context, :conversation, conversation))
 
     s =
@@ -2427,10 +2674,18 @@ defmodule Backplane.AgentRuntime.Conversation do
       end
 
     next = fn next_state, _prepared ->
-      next_state = settle_nested_catalog(next_state, nested.invocation, normalized)
+      next_state =
+        settle_nested_catalog(next_state, nested.invocation, actual_outcome(normalized))
+
+      emit(next_state, %{
+        type: :tool_settled,
+        invocation: nested.invocation,
+        result: result,
+        presentation: presentation
+      })
 
       deliver_goal(next_state, fn acknowledged ->
-        GenServer.reply(nested.from, normalized)
+        GenServer.reply(nested.from, consumer_result(normalized, presentation))
         %{acknowledged | nested: nil}
       end)
     end
@@ -2869,23 +3124,47 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp settle_catalog_producer(s, _invocation, _result), do: s
 
-  defp publish_catalog(%{pending_catalog: nil} = s), do: s
+  defp publish_catalog(%{pending_catalog: nil} = s, next), do: next.(s)
 
-  defp publish_catalog(%{pending_catalog: %{producer_settled?: false}} = s),
-    do: discard_pending_catalog(s)
+  defp publish_catalog(%{pending_catalog: %{producer_settled?: false}} = s, next),
+    do: next.(discard_pending_catalog(s))
 
-  defp publish_catalog(%{pending_catalog: pending} = s) do
+  defp publish_catalog(%{pending_catalog: pending} = s, next) do
     receipt = ToolCatalog.receipt(pending.catalog, :published)
-    emit(s, %{type: :catalog_published, catalog_revision: pending.catalog.revision})
+    publication = receipt
 
-    %{
-      s
-      | catalog: pending.catalog,
-        resource_registries:
-          Enum.uniq(s.resource_registries ++ resource_registries(pending.catalog.registry)),
-        pending_catalog: nil,
-        catalog_receipts: remember_receipt(s.catalog_receipts, pending.update, receipt)
-    }
+    checkpoint(s, Map.put(s.conversation, :catalog_publication, publication), fn s ->
+      result =
+        try do
+          case Keyword.get(s.opts, :session_binding) do
+            nil -> :ok
+            binding -> Session.adopt_catalog(binding, s.catalog.revision, pending.catalog)
+          end
+        catch
+          :exit, reason ->
+            {:error,
+             Error.new(:unknown_outcome, "catalog adoption acknowledgement unavailable",
+               cause: reason
+             )}
+        end
+
+      case result do
+        :ok ->
+          emit(s, %{type: :catalog_published, catalog_revision: pending.catalog.revision})
+
+          next.(%{
+            s
+            | catalog: pending.catalog,
+              resource_registries:
+                Enum.uniq(s.resource_registries ++ resource_registries(pending.catalog.registry)),
+              pending_catalog: nil,
+              catalog_receipts: remember_receipt(s.catalog_receipts, pending.update, receipt)
+          })
+
+        {:error, error} ->
+          stop(%{s | last_error: error}, :uncertain)
+      end
+    end)
   end
 
   defp resource_registries(%ToolRegistry{tools: tools}) do
@@ -3151,12 +3430,14 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     with :ok <- nested_name(name, outer.tool_name),
          {:ok, descriptor} <- ToolRegistry.lookup(catalog.registry, name),
+         :ok <- nested_exposure(descriptor),
          :ok <- nested_approval(descriptor),
          invocation =
            outer
            |> Map.take([:run_id, :incarnation, :step_id, :attempt_id, :turn_id])
            |> Map.merge(%{
              invocation_id: id("nested_invocation"),
+             enclosing_invocation_id: outer.invocation_id,
              tool_call_id: id("nested_call"),
              tool_name: name,
              tool_revision: descriptor.tool_revision,
@@ -3177,6 +3458,11 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp prepare_nested_tool(_s, _token, _request),
     do: {:error, Error.new(:resource_conflict, "stale nested tool request")}
+
+  defp nested_exposure(%{codex_exposure: :direct_model_only}),
+    do: {:error, Error.new(:forbidden, "tool is available only to direct model calls")}
+
+  defp nested_exposure(_descriptor), do: :ok
 
   defp outer_invocation(_invocation, %{effect: %{role: {:tool, outer, _, _}}}), do: outer
   defp outer_invocation(invocation, _s), do: invocation

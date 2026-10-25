@@ -118,6 +118,45 @@ ownership. MCP form rendering and answer validation remain in the Sigma
 tool/interaction adapter. Nested interaction is supported through the same
 trusted context; a nested invocation has its own token and settlement identity.
 
+### Native settlement and consumer presentation
+
+A trusted backend can return `ToolEffects.present(operation, actual_result,
+%{type: :block | :stopped, text: feedback})` after native work completes. Pass the
+original Runtime operation; the helper binds exact run/incarnation, turn, step,
+attempt, invocation/call, catalog/descriptor revision, arguments and enclosing
+invocation. A presentation cannot be reused for identical arguments in another
+call. It is independent of `append_feedback` additional context and is never a
+`ToolEffects.reject/2` non-dispatch assertion.
+
+Runtime validates the envelope and atomically commits the actual result in
+`run.tool_results` and the separate decision in `run.tool_presentations` through
+`tool_completed`. Kernel validates the decision against the authoritative active
+invocation too. Goal accounting uses the actual result. A `tool_settled` subscriber
+event carries actual result plus presentation after acknowledgement; canonical
+`tool_completed` messages carry the model projection. Subscriber delivery itself
+is not durable acknowledgement.
+
+`block` projects an error to direct model output and replies with a typed consumer
+error to a nested dispatcher only after settlement acknowledgement, so real Deno
+can enter its catch branch without repeating the completed mutation. `stopped`
+projects feedback text to the model while nested Code Mode receives the original
+value. A stopped nested result suppresses the enclosing tool's model output when
+that enclosing invocation settles. Multiple nested stops select the latest
+accepted decision in that boundary. Separate batches, resumed wait invocations,
+reused provider call IDs and child runs retain distinct Runtime identities.
+
+A projection checkpoint can fail after native settlement is durable. Restoring
+the selected run validates its records against journaled execution intents and
+reconstructs missing direct/enclosing history projections without executing any
+backend or hook. A nested decision whose enclosing invocation never settles
+remains accepted but unprojected; it cannot be promoted into a fabricated outer
+success. Cancellation preserves already committed nested results/decisions and
+reconciles active outer work normally. Failed/lost settlement acknowledgement
+prevents consumer continuation; the host loads and reconciles the Store rather
+than replaying native work. Restored Conversations remain inspection-only. A
+Store's durability is its advertised capability; EphemeralStore cannot survive a
+host restart.
+
 The native async tools use a separate notification path. Their
 `:async_user_input_requested` and `:async_user_message` events include trusted
 `invocation_id` and `tool_call_id` fields for the executing direct or nested
@@ -320,6 +359,32 @@ outer tool remains active. Publication still occurs once at the existing
 post-batch boundary, so calls in the discovery batch remain pinned to the old
 catalog.
 
+Publication now checkpoints its receipt before acknowledging fenced adoption
+into the attached Session and its MultiAgent delegation ceilings. Only the exact
+attached Conversation can advance that Session's expected catalog revision;
+only that Session can update the manager's exact root/child binding. A failed or
+partial adoption stops dependent effects and admissions for reconciliation. No
+backend contexts, credentials or authority payloads are added to persistence.
+Root publication, child publication and later delegation use the committed
+ancestor ceilings. Each subsequent managed-child tool admission also checks the
+current manager grants, descriptor revisions and collaboration bindings;
+revocation cannot undo a previously admitted external effect. Followup admission
+uses the current ceilings. Hosts do not rebind an active Session to publish tools.
+
+Dynamic discovery retains candidates after staging. They are consumed only when
+a subsequent trusted committed catalog snapshot contains the staged canonical
+names and revisions, including after an intervening host publication. Discarded
+staging leaves them available to another successful discovery in the same owner,
+run and incarnation. Discovery never replays native effects.
+
+`codex_exposure: :direct_model_only` retains direct provider definitions and
+explicit grants while excluding Code Mode metadata and aliases. Conversation
+also rejects nested access before preparation, approval or intent commit,
+including after wait/resume. History and Notes use this exposure; profiles and
+catalog refresh preserve it. Canonical MCP local names retain the complete
+UUID-qualified identity and may contain further `::` separators; namespaces
+remain a single validated segment.
+
 A nested producer stops accepting callbacks when its execution ends, before
 its settlement acknowledgement arrives. Failed, error-marked, timed-out,
 cancelled or uncertain producers relinquish their own staged catalog then;
@@ -513,6 +578,26 @@ state until the next run admits and checkpoints it. Manager replacement does
 not restore those queues. Durable hosts must reconcile their own accepted
 messages and activation intents; observers do not provide mailbox persistence.
 
+For message-board style notifications, use
+`MultiAgent.notify_active(manager, sender_operation, recipient_identity,
+%{id: stable_id, text: preview, metadata: bounded_metadata})`. The sender is the
+trusted Runtime operation with exact incarnation and Session owner context.
+Recipient identity contains `manager_id`, `agent_id`, `run_id`, and `incarnation`
+from that tree; the root's stable agent ID is exposed as `snapshot.root.agent_id`
+and the root host already owns its run binding. IDs are at most 256 bytes, text
+8192 bytes and serializable metadata 4096 JSON bytes.
+
+The manager validates membership and forwards only to the pinned live
+Conversation. Conversation captures its accepting turn generation and rechecks it
+when the queued job executes. Finishing a turn closes acceptance before its
+checkpoint, including before a same-run followup. Responses are
+`{:ok, %{status: :accepted | :skipped_inactive | :skipped_stale}}`; exact duplicate
+IDs return the prior acceptance and conflicting payloads fail. Skipped notices
+are never placed in manager mailboxes, never start a turn and are not restored.
+Accepted live notices may become ordinary history. Ambiguous checkpoint/delivery
+failures remain errors and must not trigger automatic retries. Ordinary
+`send_message` retains its queued delivery contract.
+
 ### Host-named collaboration contracts
 
 `Codex.MultiAgent.bind_contract(manager, action, attrs)` binds a host's tool
@@ -607,6 +692,24 @@ initiate bounded cleanup even if the Conversation remains alive. Command ownersh
 is registered before launch/polling. A host selecting a Codex profile must not
 assume returned sessions survive completion of their run. This repair introduces
 no implicit session-lifetime extension.
+
+Hosts can inspect every patch action in `prepare_tool/2` with
+`Codex.ApplyPatch.preflight(workspace, exact_raw_patch)`. It reuses execution's
+parser and returns the physical root, raw-patch SHA-256 and ordered absolute
+`operations` with kind, source path and both move destinations. Duplicates retain
+their order. Validate the whole returned list and return `{:deny, reason}` before
+any tool intent, directory creation or write. The function reads no file content
+and permits missing update/delete sources; malformed syntax or unsafe paths
+return a typed error. Do not rewrite the patch, mutate authority, or select a new
+backend to apply host policy.
+
+Path authorization traverses dangling links and link-target ancestors before
+checking physical containment. Patch write targets also reject multiply linked
+regular files, including through inward symlinks; reads and source removals do
+not require a single link. Both move forms inspect destinations before changing
+the source. Preflight is not a transaction or a future filesystem snapshot:
+execution remains ordered and records partial writes truthfully, and concurrent
+hostile filesystem changes require OS isolation in addition to these checks.
 
 Numeric command sessions are bound to the trusted invocation incarnation as well
 as the run owner. Reservation cleanup carries a stable session identity from
@@ -834,7 +937,31 @@ must return promptly, must not dispatch providers, and must not synchronously
 reenter Goal. Schedule the accepted turn through the existing owner after the
 callback returns; bind fresh Session/Goal capabilities and pass
 `goal_trigger: :goal`. Host generation must change when user input or
-cancellation invalidates a reservation.
+cancellation invalidates a reservation. The request also includes a unique
+Runtime-generated `reservation_token`; retain it with the host's atomic slot.
+`Goal.idle/2` returns the admission with both `host_generation` and
+`reservation_token` added. A host may echo them but must not replace them.
+
+If user input or a session operation supersedes the slot before release, first
+atomically fence that exact token/generation in the ordinary host owner, then
+call `Goal.withdraw_admission(goal, admission, :superseded)`. For explicit
+cancellation use `:cancelled`: its acknowledgement follows durable continuation
+deferral, without changing Goal status to paused or inventing a Runtime receipt.
+Success is `{:ok, {:withdrawn, reason}}`. A stale or duplicate identity returns
+`{:ok, {:not_withdrawn, :stale}}`; it cannot affect a newer reservation.
+Unrelated bindings, receipt tracking, accounting and active elapsed time survive.
+Storage errors do not confirm withdrawal; keep the host fence and reconcile.
+
+The host must never execute a successfully withdrawn reservation. If its atomic
+release already won, use ordinary Runtime cancellation even before Goal observes
+a start receipt. A newly observed committed start for the admitted run and
+incarnation also returns `{:ok, {:not_withdrawn, :started}}`, including when
+Runtime mints a turn ID different from the host's logical admission ID. Goal
+binds that Runtime turn's first fresh start; only its fresh terminal receipt
+clears the reservation. Replayed start/terminal receipts cannot clear a newer
+token even if the host reuses run identities. Withdrawal compares the complete
+returned run, logical turn, incarnation, generation and token. `restore/1` is
+recovery and must not be used to withdraw a reservation.
 
 After ordinary run settlement, receipt reconciliation and Session readiness,
 the owner calls `Goal.idle(goal, current_host_generation)`. There is no polling

@@ -236,6 +236,7 @@ defmodule Backplane.AgentRuntime.Execution do
           :tool_revision,
           :catalog_revision,
           :tool_call_id,
+          :enclosing_invocation_id,
           :turn_id
         ])
         |> Map.put(:arguments, arguments)
@@ -361,6 +362,12 @@ defmodule Backplane.AgentRuntime.Execution do
 
   defp call_adapter(adapter, function, operation) do
     case apply(adapter, function, [operation]) do
+      {:presented, presentation} when function == :execute ->
+        ToolEffects.validate_presentation(presentation, operation)
+
+      {:ok, %ToolEffects.PresentedResult{}} ->
+        {:error, Error.new(:unknown_outcome, "unvalidated result presentation")}
+
       {:ok, result} when is_map(result) ->
         {:ok, result}
 
@@ -409,6 +416,7 @@ defmodule Backplane.AgentRuntime.Execution do
             :tool_revision,
             :catalog_revision,
             :tool_call_id,
+            :enclosing_invocation_id,
             :turn_id,
             :arguments,
             :caller,

@@ -38,6 +38,7 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
       end
       |> Map.put(:incarnation, Map.get(operation, :incarnation, 1))
       |> Map.put(:resource_owner, Map.get(backend_context, :resource_owner))
+      |> Map.put(:runtime_operation, operation)
 
     Tools.call(context, operation.tool_name, operation.arguments)
   end

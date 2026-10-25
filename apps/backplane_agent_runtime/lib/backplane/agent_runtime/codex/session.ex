@@ -39,6 +39,15 @@ defmodule Backplane.AgentRuntime.Codex.Session do
   def attach(binding, catalog),
     do: GenServer.call(binding.session, {:attach, binding, self(), catalog})
 
+  @doc "Adopts a catalog only from its attached Conversation after durable publication."
+  def adopt_catalog(binding, expected_revision, catalog),
+    do:
+      GenServer.call(
+        binding.session,
+        {:adopt_catalog, binding, expected_revision, catalog},
+        :infinity
+      )
+
   def validate(binding, operation),
     do: GenServer.call(binding.session, {:validate, binding, operation})
 
@@ -129,7 +138,13 @@ defmodule Backplane.AgentRuntime.Codex.Session do
           resource_registry: state.registry
         }
 
-        active = %{binding: binding, pid: nil, monitor: nil, authority: authority}
+        active = %{
+          binding: binding,
+          pid: nil,
+          monitor: nil,
+          authority: authority,
+          catalog_revision: nil
+        }
 
         {:reply, {:ok, binding},
          %{state | phase: :reserved, active: active, used_runs: MapSet.put(state.used_runs, run)}}
@@ -183,7 +198,7 @@ defmodule Backplane.AgentRuntime.Codex.Session do
       result =
         case state.managed_child do
           nil ->
-            rebind_runtimes(runtimes, binding, catalog.authority)
+            rebind_runtimes(runtimes, binding, catalog.authority, Map.get(catalog, :revision, 1))
 
           child ->
             if child.binding == binding and
@@ -199,7 +214,8 @@ defmodule Backplane.AgentRuntime.Codex.Session do
             state.active
             | pid: pid,
               monitor: Process.monitor(pid),
-              authority: catalog.authority
+              authority: catalog.authority,
+              catalog_revision: Map.get(catalog, :revision, 1)
           }
 
           {:reply, :ok,
@@ -215,6 +231,40 @@ defmodule Backplane.AgentRuntime.Codex.Session do
           state = %{state | runtimes: Enum.uniq(state.runtimes ++ rebound)}
           {:reply, {:error, error}, begin_close(state, [], true)}
       end
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:adopt_catalog, binding, expected, catalog}, from, state) do
+    with :ok <- exact_binding(state, binding),
+         true <-
+           (state.phase == :active and state.active.pid == elem(from, 0)) or
+             refusal("catalog publisher is not attached"),
+         true <-
+           (state.active.catalog_revision == expected and catalog.revision == expected + 1) or
+             refusal("stale catalog revision"),
+         true <-
+           (valid_authority?(catalog.authority) and
+              catalog.authority.caller == state.active.authority.caller and
+              catalog.authority.run_id == binding.run_id) or refusal("catalog authority differs"),
+         runtimes =
+           if(state.managed_child,
+             do: [state.managed_child.admission.manager],
+             else: state.runtimes
+           ),
+         true <-
+           Enum.all?(collaboration_runtimes(catalog.registry), &(&1 in runtimes)) or
+             refusal("catalog introduces another manager"),
+         :ok <- each_runtime(runtimes, &MultiAgent.adopt_catalog(&1, binding, expected, catalog)) do
+      active = %{state.active | authority: catalog.authority, catalog_revision: catalog.revision}
+
+      child =
+        if state.managed_child,
+          do: %{state.managed_child | authority: catalog.authority},
+          else: nil
+
+      {:reply, :ok, %{state | active: active, managed_child: child}}
     else
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
     end
@@ -548,11 +598,11 @@ defmodule Backplane.AgentRuntime.Codex.Session do
     |> Enum.uniq()
   end
 
-  defp rebind_runtimes(runtimes, binding, authority) do
+  defp rebind_runtimes(runtimes, binding, authority, catalog_revision) do
     Enum.reduce_while(runtimes, {:ok, []}, fn runtime, {:ok, rebound} ->
       result =
         try do
-          MultiAgent.rebind_parent(runtime, binding, authority)
+          MultiAgent.rebind_parent(runtime, binding, authority, catalog_revision)
         catch
           :exit, reason ->
             {:error,

@@ -9,7 +9,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Common.reject_custom_tools(request),
+    with :ok <- Backplane.AiProtocol.Media.preflight(request, :openai),
+         :ok <- Common.reject_custom_tools(request),
          :ok <- Common.reject_state_references(request),
          :ok <-
            Common.reject_reserved(request.settings, request.output_constraints, [
@@ -163,6 +164,17 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
              reasoning,
              details
            )
+  end
+
+  defp encode_blocks(
+         [%ContentBlock{type: :audio} = audio | rest],
+         content,
+         calls,
+         reasoning,
+         details
+       ) do
+    with {:ok, wire} <- Backplane.AiProtocol.Media.encode(audio, :openai),
+         do: encode_blocks(rest, [wire | content], calls, reasoning, details)
   end
 
   defp encode_blocks(

@@ -2,7 +2,7 @@ defmodule Backplane.AgentRuntime.CodexSourceConformanceTest do
   use ExUnit.Case, async: false
 
   alias Backplane.AgentRuntime.{Codex, Conversation, EphemeralStore, Error}
-  alias Backplane.AgentRuntime.Codex.{CodeMode, Contract, ResourceRegistry}
+  alias Backplane.AgentRuntime.Codex.{CodeMode, ResourceRegistry}
 
   @fixture Path.expand("../../fixtures/code_mode_source/contract.json", __DIR__)
   @source JSON.decode!(File.read!(@fixture))
@@ -457,10 +457,7 @@ defmodule Backplane.AgentRuntime.CodexSourceConformanceTest do
         revision: 2,
         registry: current.registry,
         authority: current.authority,
-        tools:
-          Enum.map(current.contracts, fn {_name, contract} ->
-            Contract.provider_definition(contract)
-          end)
+        tools: current.tools
       }
     }
 

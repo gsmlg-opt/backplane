@@ -24,7 +24,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
 
   @impl true
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
-    with :ok <- Common.reject_state_references(request),
+    with :ok <- Backplane.AiProtocol.Media.preflight(request, :openai_responses),
+         :ok <- Common.reject_state_references(request),
          :ok <-
            Common.reject_reserved(
              request.settings,

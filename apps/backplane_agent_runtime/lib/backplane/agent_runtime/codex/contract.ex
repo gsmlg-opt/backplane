@@ -7,6 +7,10 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
   A contract is descriptive only. Execution authority remains in the existing
   registry and `Conversation` admission path; importing a contract never grants
   access to its backend.
+
+  Names split at the first `::`: the namespace is one segment, while the local
+  name retains its entire nonempty remainder (including MCP source identities
+  and raw names containing `::`). Names never imply execution authority.
   """
 
   @type input_kind :: :function | :custom
@@ -22,7 +26,7 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
           output_schema: map() | nil,
           format: map() | nil,
           tool_revision: pos_integer(),
-          exposure: :direct | :code_mode_only | :deferred | :hidden,
+          exposure: :direct | :direct_model_only | :code_mode_only | :deferred | :hidden,
           backend: module() | nil,
           backend_context: map(),
           safety: map(),
@@ -134,7 +138,7 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
 
     cond do
       is_nil(value) -> {:ok, nil}
-      is_binary(value) and valid_name?(value) -> {:ok, value}
+      is_binary(value) and valid_name?(value, key) -> {:ok, value}
       true -> {:error, Error.new(:validation, "#{key} must be a non-empty name")}
     end
   end
@@ -147,7 +151,8 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
     end
   end
 
-  defp valid_name?(value), do: value != "" and not String.contains?(value, "::")
+  defp valid_name?(value, :namespace), do: value != "" and not String.contains?(value, "::")
+  defp valid_name?(value, :name), do: value != ""
 
   defp input_kind(attrs) do
     value = Map.get(attrs, :input_kind, Map.get(attrs, "input_kind", :function))
@@ -194,12 +199,26 @@ defmodule Backplane.AgentRuntime.Codex.Contract do
     value = Map.get(attrs, :exposure, Map.get(attrs, "exposure", :direct))
 
     case value do
-      value when value in [:direct, :code_mode_only, :deferred, :hidden] -> {:ok, value}
-      "direct" -> {:ok, :direct}
-      "code_mode_only" -> {:ok, :code_mode_only}
-      "deferred" -> {:ok, :deferred}
-      "hidden" -> {:ok, :hidden}
-      _ -> {:error, Error.new(:validation, "invalid Codex tool exposure")}
+      value when value in [:direct, :direct_model_only, :code_mode_only, :deferred, :hidden] ->
+        {:ok, value}
+
+      "direct" ->
+        {:ok, :direct}
+
+      "direct_model_only" ->
+        {:ok, :direct_model_only}
+
+      "code_mode_only" ->
+        {:ok, :code_mode_only}
+
+      "deferred" ->
+        {:ok, :deferred}
+
+      "hidden" ->
+        {:ok, :hidden}
+
+      _ ->
+        {:error, Error.new(:validation, "invalid Codex tool exposure")}
     end
   end
 

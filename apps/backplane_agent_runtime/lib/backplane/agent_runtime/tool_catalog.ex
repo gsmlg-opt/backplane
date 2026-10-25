@@ -263,7 +263,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
   defp validate_supplied_tools(tools, accepted) when is_list(tools) do
     accepted_names =
       accepted
-      |> Enum.filter(&provider_visible?/1)
+      |> Enum.filter(&provider_entry_visible?/1)
       |> MapSet.new(& &1.name)
 
     supplied_names = Enum.map(tools, &candidate_name(&1, :name))
@@ -273,7 +273,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
           MapSet.new(supplied_names) != accepted_names ->
         {:error, validation_error("provider tools must match the admitted registry")}
 
-      Enum.any?(Enum.filter(accepted, &provider_visible?/1), fn entry ->
+      Enum.any?(Enum.filter(accepted, &provider_entry_visible?/1), fn entry ->
         tool = Enum.find(tools, &(candidate_name(&1, :name) == entry.name))
 
         not is_map(tool) or not provider_definition_matches?(tool, entry.descriptor)
@@ -302,7 +302,9 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
   end
 
   defp provider_definitions(entries, nil),
-    do: {:ok, entries |> Enum.filter(&provider_visible?/1) |> Enum.map(&provider_definition/1)}
+    do:
+      {:ok,
+       entries |> Enum.filter(&provider_entry_visible?/1) |> Enum.map(&provider_definition/1)}
 
   defp provider_definitions(entries, supplied) do
     by_name =
@@ -310,14 +312,20 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
     {:ok,
      entries
-     |> Enum.filter(&provider_visible?/1)
+     |> Enum.filter(&provider_entry_visible?/1)
      |> Enum.map(fn entry ->
        Map.fetch!(by_name, entry.name) |> normalize_provider_definition(entry)
      end)}
   end
 
-  defp provider_visible?(%{descriptor: descriptor}),
-    do: Map.get(descriptor, :codex_exposure, :direct) == :direct
+  @doc "Whether an admitted descriptor appears in direct provider tool definitions."
+  @spec provider_visible?(map()) :: boolean()
+  def provider_visible?(descriptor) when is_map(descriptor),
+    do: Map.get(descriptor, :codex_exposure, :direct) in [:direct, :direct_model_only]
+
+  def provider_visible?(_), do: false
+
+  defp provider_entry_visible?(%{descriptor: descriptor}), do: provider_visible?(descriptor)
 
   defp normalize_provider_definition(tool, entry) do
     if custom_descriptor?(entry.descriptor) do
@@ -557,6 +565,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
 
   defp definitions(%ToolRegistry{tools: tools}) when is_map(tools) do
     tools
+    |> Enum.filter(fn {_name, descriptor} -> provider_visible?(descriptor) end)
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(fn {name, descriptor} ->
       provider_definition(%{name: name, descriptor: descriptor})
@@ -572,15 +581,26 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
       tool_names = Enum.map(tools, & &1.name)
       registry_names = Map.keys(descriptors)
 
-      with :ok <- exact_names(tool_names, registry_names),
+      visible_names =
+        descriptors
+        |> Enum.filter(fn {_name, descriptor} -> provider_visible?(descriptor) end)
+        |> Enum.map(&elem(&1, 0))
+
+      with :ok <- exact_names(tool_names, visible_names),
            :ok <- exact_grants(Map.get(authority, :grants), registry_names),
            :ok <- authority_run(authority, run_id) do
-        Enum.reduce_while(tools, :ok, fn tool, :ok ->
-          descriptor = Map.fetch!(descriptors, tool.name)
+        Enum.reduce_while(descriptors, :ok, fn {name, descriptor}, :ok ->
+          if is_map(descriptor) do
+            tool =
+              Enum.find(tools, &(&1.name == name)) ||
+                provider_definition(%{name: name, descriptor: descriptor})
 
-          case validate_tool(tool, descriptor, authority, run_id) do
-            :ok -> {:cont, :ok}
-            {:error, %Error{} = error} -> {:halt, {:error, error}}
+            case validate_tool(tool, descriptor, authority, run_id) do
+              :ok -> {:cont, :ok}
+              {:error, %Error{} = error} -> {:halt, {:error, error}}
+            end
+          else
+            {:halt, validation("registered tool descriptor must be a map")}
           end
         end)
       end

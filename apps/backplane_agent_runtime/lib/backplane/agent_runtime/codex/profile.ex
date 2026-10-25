@@ -205,7 +205,15 @@ defmodule Backplane.AgentRuntime.Codex.Profile do
         {:error, Error.new(:validation, "Code Mode contracts must be a list")}
 
       true ->
-        targets = Enum.map(targets, &Map.put(&1, :exposure, target_exposure))
+        targets =
+          Enum.map(targets, fn contract ->
+            exposure = Map.get(contract, :exposure, Map.get(contract, "exposure"))
+
+            if exposure in [:direct_model_only, "direct_model_only"],
+              do: contract,
+              else: Map.put(contract, :exposure, target_exposure)
+          end)
+
         admit_selected(exec ++ targets, authority, opts)
     end
   end

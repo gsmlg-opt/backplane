@@ -4,6 +4,12 @@ defmodule Backplane.AiProtocol.ContentBlock do
 
   Opaque reasoning and provider state are preserved as provenance-tagged values; they are never
   converted into display text.
+
+  Audio, embedded resources and resource links use bounded, string-keyed `data`
+  objects. Audio carries MIME plus base64 data or a URI; resources retain URI,
+  MIME and optional text/base64 content; links retain URI and name. Portable
+  annotations and provenance belong in namespaced `extensions`. Known JSON type
+  tags decode through a fixed whitelist without creating atoms.
   """
 
   alias Backplane.AiProtocol.Error
@@ -11,7 +17,28 @@ defmodule Backplane.AiProtocol.ContentBlock do
   @enforce_keys [:type]
   defstruct [:type, :text, :data, :tool_call, :reason, :state, extensions: %{}]
 
-  @type kind :: :text | :image | :reasoning | :tool_call | :refusal | :provider_state
+  @types [
+    :text,
+    :image,
+    :audio,
+    :resource,
+    :resource_link,
+    :reasoning,
+    :tool_call,
+    :refusal,
+    :provider_state
+  ]
+
+  @type kind ::
+          :text
+          | :image
+          | :audio
+          | :resource
+          | :resource_link
+          | :reasoning
+          | :tool_call
+          | :refusal
+          | :provider_state
 
   @type t :: %__MODULE__{
           type: kind(),
@@ -53,9 +80,14 @@ defmodule Backplane.AiProtocol.ContentBlock do
     end
   end
 
-  defp type(value)
-       when value in [:text, :image, :reasoning, :tool_call, :refusal, :provider_state],
-       do: {:ok, value}
+  defp type(value) when value in @types, do: {:ok, value}
+
+  defp type(value) when is_binary(value) do
+    case Enum.find(@types, &(Atom.to_string(&1) == value)) do
+      nil -> {:error, Error.invalid!("Content type must be a known atom or tag")}
+      type -> {:ok, type}
+    end
+  end
 
   defp type(_value), do: {:error, Error.invalid!("Content type must be a known atom")}
 
@@ -109,6 +141,13 @@ defmodule Backplane.AiProtocol.ContentBlock do
     end
   end
 
+  defp build(type, attrs, opts) when type in [:audio, :resource, :resource_link] do
+    with :ok <- media_fields(attrs),
+         {:ok, data} <- Backplane.AiProtocol.Media.validate(type, Map.get(attrs, :data), opts) do
+      {:ok, %__MODULE__{type: type, data: data}}
+    end
+  end
+
   defp build(:tool_call, attrs, opts) do
     with {:ok, tool_call} <-
            Backplane.AiProtocol.ToolCall.new(Map.get(attrs, :tool_call, %{}), opts) do
@@ -126,6 +165,12 @@ defmodule Backplane.AiProtocol.ContentBlock do
       {:error, %Error{message: message}} ->
         {:error, Error.invalid!("Provider state content: " <> message)}
     end
+  end
+
+  defp media_fields(attrs) do
+    if Enum.any?([:text, :tool_call, :reason, :state], &(not is_nil(Map.get(attrs, &1)))),
+      do: {:error, Error.invalid!("Media content must use only its typed data and extensions")},
+      else: :ok
   end
 
   defp required_string(attrs, key, type, opts) do

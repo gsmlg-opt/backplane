@@ -189,6 +189,20 @@ defmodule Backplane.AgentRuntime.Goal.State do
       else: response
   end
 
+  @doc false
+  def cancel_admission(%{goal: goal} = state, admission) when is_map(goal) do
+    {:ok,
+     %{
+       state
+       | continuation_deferral:
+           admission
+           |> Map.take([:run_id, :turn_id, :incarnation, :host_generation, :reservation_token])
+           |> Map.put(:reason, :cancelled)
+     }}
+  end
+
+  def cancel_admission(_, _), do: error(:resource_conflict, "goal identity changed")
+
   def continuable?(state),
     do:
       state.goal != nil and state.goal.status == :active and state.continuation_deferral == nil and

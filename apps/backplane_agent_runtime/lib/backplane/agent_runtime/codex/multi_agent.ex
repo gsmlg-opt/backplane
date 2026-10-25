@@ -23,8 +23,21 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def start_link(opts) when is_list(opts),
     do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
-  def rebind_parent(runtime, binding, authority),
-    do: GenServer.call(runtime, {:rebind_parent, binding, authority})
+  def rebind_parent(runtime, binding, authority, catalog_revision \\ 1),
+    do: GenServer.call(runtime, {:rebind_parent, binding, authority, catalog_revision})
+
+  @doc false
+  def authorize_managed_tool(runtime, identity, descriptor, invocation),
+    do:
+      GenServer.call(
+        runtime,
+        {:authorize_managed_tool, identity, descriptor, invocation},
+        :infinity
+      )
+
+  @doc false
+  def adopt_catalog(runtime, binding, expected, catalog),
+    do: GenServer.call(runtime, {:adopt_catalog, binding, expected, catalog}, :infinity)
 
   def detach_parent(runtime, binding), do: GenServer.call(runtime, {:detach_parent, binding})
   def transfer_ready(runtime), do: GenServer.call(runtime, :transfer_ready)
@@ -51,6 +64,18 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   """
   def cancel_interaction(runtime, correlation, reason),
     do: GenServer.call(runtime, {:cancel_interaction, correlation, reason}, :infinity)
+
+  @doc """
+  Sends a bounded notification only to an expected live recipient turn.
+
+  `sender` is the trusted Runtime operation (including incarnation and Session
+  resource owner). `recipient` is an identity from this manager's snapshot and
+  includes manager_id, agent_id, run_id and incarnation. `notification` contains
+  stable id, text and optional serializable metadata. Skips never enter mailboxes;
+  ambiguous delivery is an error and must be reconciled rather than retried.
+  """
+  def notify_active(runtime, sender, recipient, notification),
+    do: GenServer.call(runtime, {:notify_active, sender, recipient, notification}, :infinity)
 
   def snapshot(runtime), do: GenServer.call(runtime, :snapshot)
   def subscribe(runtime, observer \\ self()), do: GenServer.call(runtime, {:subscribe, observer})
@@ -159,6 +184,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          parent_authority: authority,
          root_goal_context: %{},
          session_authority: nil,
+         catalog_revisions: %{},
          parent_binding: nil,
          parent_pid: nil,
          parent_incarnation: 1,
@@ -233,6 +259,30 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
+  def handle_call({:notify_active, operation, recipient, notification}, from, state) do
+    with {:ok, sender} <- authenticate(operation, state),
+         true <-
+           operation[:incarnation] == sender.incarnation or
+             validation("notification sender incarnation differs"),
+         :ok <- notification_sender_owner(state, sender, operation),
+         :ok <- notification_payload(notification),
+         true <- is_map(recipient) or validation("notification recipient must be an identity") do
+      case notification_destination(state, recipient) do
+        {:skip, status} ->
+          {:reply, {:ok, %{status: status}}, state}
+
+        {:ok, name, destination} ->
+          envelope =
+            communication(sender, :notification, notification.id)
+            |> Map.put(:metadata, Map.get(notification, :metadata, %{}))
+
+          queue_message(state, name, destination, notification.text, envelope, from, nil)
+      end
+    else
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
   def handle_call(:snapshot, _from, state), do: {:reply, {:ok, public_snapshot(state)}, state}
 
   def handle_call({:subscribe, pid}, _from, state) when is_pid(pid) do
@@ -255,10 +305,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
      }}
   end
 
-  def handle_call({:rebind_parent, binding, authority}, _from, state) do
+  def handle_call({:rebind_parent, binding, authority, catalog_revision}, _from, state) do
     owner = {binding.owner_id, binding.incarnation}
 
     cond do
+      not is_integer(catalog_revision) or catalog_revision < 1 ->
+        {:reply, validation("invalid parent catalog revision"), state}
+
       state.session_closed ->
         {:reply, {:error, Error.new(:forbidden, "collaboration session is closed")}, state}
 
@@ -285,9 +338,107 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
                ),
              parent_authority: authority,
              session_authority: authority,
+             catalog_revisions:
+               Map.put(
+                 state.catalog_revisions,
+                 {binding.run_id, Map.get(binding, :run_incarnation, 1)},
+                 catalog_revision
+               ),
              parent_binding: binding,
              session_owner: owner
          }}
+    end
+  end
+
+  def handle_call({:authorize_managed_tool, expected, descriptor, invocation}, from, state) do
+    name = state.run_index[invocation.run_id]
+    agent = state.agents[name]
+
+    result =
+      with true <-
+             (not state.session_closed and expected.manager_id == state.manager_id and
+                agent != nil and agent.id == expected.agent_id and agent.run_id == expected.run_id and
+                agent.incarnation == expected.incarnation and
+                invocation.incarnation == agent.incarnation and
+                agent.pid == elem(from, 0) and agent.status == :running and agent.closure == :open and
+                not settling?(state, name)) or
+               {:error, Error.new(:forbidden, "stale managed tool admission")},
+           {:ok, _} <-
+             Policy.authorize_tool(current_child_authority(state, agent), descriptor, invocation),
+           :ok <- bound_parent_authority(state, descriptor, invocation),
+           do: :ok
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:adopt_catalog, binding, expected, catalog}, from, state) do
+    key = {binding.run_id, binding.run_incarnation}
+    current = Map.get(state.catalog_revisions, key)
+
+    cond do
+      elem(from, 0) != binding.session or state.session_closed or current != expected or
+        catalog.revision != expected + 1 or catalog.authority.run_id != binding.run_id ->
+        {:reply, {:error, Error.new(:forbidden, "stale catalog adoption")}, state}
+
+      state.parent_binding == binding ->
+        if catalog.authority.caller == state.parent_authority.caller do
+          next = %{
+            state
+            | parent_authority: catalog.authority,
+              session_authority: catalog.authority,
+              catalog_revisions: Map.put(state.catalog_revisions, key, catalog.revision)
+          }
+
+          {:reply, :ok, next}
+        else
+          {:reply, {:error, Error.new(:forbidden, "catalog caller differs")}, state}
+        end
+
+      true ->
+        case Enum.find(state.child_sessions, fn {_id, entry} ->
+               entry.binding == binding and entry.status == :accepted
+             end) do
+          {id, entry} ->
+            name = state.run_index[binding.run_id]
+            agent = state.agents[name]
+
+            allowed =
+              if agent,
+                do: publication_within_ancestors?(state, agent, catalog.authority),
+                else: false
+
+            if (agent && agent.incarnation == binding.run_incarnation) and allowed do
+              opts =
+                agent.opts
+                |> Keyword.put(:authority, catalog.authority)
+                |> Keyword.put(:registry, catalog.registry)
+                |> Keyword.put(:tools, catalog.tools)
+
+              next = %{
+                state
+                | agents:
+                    Map.put(state.agents, name, %{
+                      agent
+                      | authority: catalog.authority,
+                        opts: opts
+                    }),
+                  child_sessions:
+                    Map.put(state.child_sessions, id, %{entry | authority: catalog.authority}),
+                  catalog_revisions: Map.put(state.catalog_revisions, key, catalog.revision)
+              }
+
+              {:reply, :ok, next}
+            else
+              {:reply,
+               {:error,
+                Error.new(:forbidden, "child catalog exceeds committed ancestor authority")},
+               state}
+            end
+
+          nil ->
+            {:reply, {:error, Error.new(:forbidden, "catalog binding is not in this tree")},
+             state}
+        end
     end
   end
 
@@ -309,8 +460,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         Enum.all?(state.agents, fn {_name, agent} ->
           case transfer_snapshot(agent) do
             {:ok, snapshot} ->
-              snapshot.run.state != :unknown_outcome and
+              if snapshot.run.state == :unknown_outcome do
+                safe_replacement(snapshot) == :ok
+              else
                 not match?({:uncertain, _}, snapshot.resource_cleanup)
+              end
 
             {:error, _} ->
               false
@@ -2092,6 +2246,31 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp activate_child(state, name, opts, message) do
     opts = Keyword.put(opts, :collaboration_input, %{runtime: self(), name: name})
+    agent = state.agents[name]
+
+    state = %{
+      state
+      | catalog_revisions:
+          Map.put(
+            state.catalog_revisions,
+            {agent.run_id, agent.incarnation},
+            Keyword.get(opts, :catalog_revision, 1)
+          )
+    }
+
+    opts =
+      if state.session_owner do
+        Keyword.put(opts, :managed_authorization, %{
+          runtime: self(),
+          manager_id: state.manager_id,
+          agent_id: agent.id,
+          run_id: agent.run_id,
+          incarnation: agent.incarnation
+        })
+      else
+        Keyword.delete(opts, :managed_authorization)
+      end
+
     attempt = state.admissions[state.agents[name].attempt_id]
 
     {adoption, state} = adopt_child_session(state, name, opts, attempt)
@@ -2996,6 +3175,108 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     )
   end
 
+  defp notification_sender_owner(%{session_owner: nil}, _sender, _operation), do: :ok
+
+  defp notification_sender_owner(state, sender, operation),
+    do:
+      bound_session_owner(
+        state,
+        sender,
+        get_in(operation, [:backend_context, :resource_owner]),
+        operation
+      )
+
+  defp notification_payload(%{id: id, text: text} = value)
+       when is_binary(id) and byte_size(id) in 1..256 and is_binary(text) and
+              byte_size(text) in 1..8192 do
+    try do
+      if byte_size(JSON.encode!(Map.get(value, :metadata, %{}))) <= 4096,
+        do: :ok,
+        else: validation("notification metadata exceeds bound")
+    rescue
+      _ -> validation("notification metadata must be serializable")
+    end
+  end
+
+  defp notification_payload(_), do: validation("invalid bounded notification payload")
+
+  defp notification_destination(state, expected) do
+    identity = fn id, run, incarnation ->
+      expected[:manager_id] == state.manager_id and expected[:agent_id] == id and
+        expected[:run_id] == run and expected[:incarnation] == incarnation
+    end
+
+    cond do
+      expected[:manager_id] != state.manager_id ->
+        {:skip, :skipped_stale}
+
+      expected[:agent_id] == state.root_id ->
+        cond do
+          not identity.(state.root_id, state.parent_run_id, state.parent_incarnation) ->
+            {:skip, :skipped_stale}
+
+          not is_pid(state.parent_pid) or state.parent_recovery ->
+            {:skip, :skipped_inactive}
+
+          true ->
+            {:ok, state.parent_name,
+             %{
+               pid: state.parent_pid,
+               identity: %{
+                 run_id: state.parent_run_id,
+                 incarnation: state.parent_incarnation,
+                 session_binding: state.parent_binding
+               }
+             }}
+        end
+
+      true ->
+        case Enum.find(state.agents, fn {_name, agent} -> agent.id == expected[:agent_id] end) do
+          {name, agent} ->
+            cond do
+              not identity.(agent.id, agent.run_id, agent.incarnation) ->
+                {:skip, :skipped_stale}
+
+              agent.status != :running or agent.closure != :open or settling?(state, name) or
+                  not is_pid(agent.pid) ->
+                {:skip, :skipped_inactive}
+
+              true ->
+                {:ok, name,
+                 %{
+                   pid: agent.pid,
+                   identity: %{
+                     run_id: agent.run_id,
+                     incarnation: agent.incarnation,
+                     session_binding: Keyword.get(agent.opts, :session_binding)
+                   }
+                 }}
+            end
+
+          nil ->
+            {:skip, :skipped_stale}
+        end
+    end
+  end
+
+  defp publication_within_ancestors?(state, agent, authority) do
+    authorities =
+      [
+        state.parent_authority,
+        state.session_authority | bound_ancestor_authorities(state, state.run_index[agent.run_id])
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    authority.caller == agent.authority.caller and
+      Enum.all?(authorities, fn ceiling ->
+        Enum.all?(authority.grants, fn name ->
+          name in ceiling.grants and
+            tool_revision(authority, name) == tool_revision(ceiling, name) and
+            get_in(authority, [:tool_bindings, name]) == get_in(ceiling, [:tool_bindings, name])
+        end)
+      end)
+  end
+
   defp authenticate(%{run_id: run_id} = operation, state) do
     cond do
       state.session_closed ->
@@ -3540,7 +3821,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       spawn(fn ->
         result =
           try do
-            Conversation.queue_only(
+            deliver =
+              if envelope.kind == :notification,
+                do: &Conversation.notify_active/4,
+                else: &Conversation.queue_only/4
+
+            deliver.(
               destination.pid,
               communication_text(name, content, envelope),
               envelope,
@@ -3582,8 +3868,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         if entry.from do
           response =
             case result do
-              {:ok, receipt} -> {:ok, Map.put(receipt, :accepted, true)}
-              {:error, error} -> {:error, error}
+              {:ok, receipt} ->
+                {:ok,
+                 Map.put(
+                   receipt,
+                   :accepted,
+                   Map.get(receipt, :status) not in [:skipped_inactive, :skipped_stale]
+                 )}
+
+              {:error, error} ->
+                {:error, error}
             end
 
           GenServer.reply(entry.from, response)
@@ -3905,6 +4199,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       manager_id: state.manager_id,
       revision: state.revision,
       root_name: state.parent_name,
+      root: %{agent_id: state.root_id},
       admissions: state.admissions |> Map.values() |> Enum.sort_by(& &1.sequence),
       agents:
         state.agents

@@ -14,6 +14,60 @@ defmodule Backplane.AgentRuntime.Codex.ApplyPatch do
 
   def apply(_root, _patch), do: {:error, Error.new(:validation, "patch must be a string")}
 
+  @doc """
+  Inspects all ordered targets using the same parser as `apply/2`, without effects.
+
+  The digest binds the inspection to the exact raw patch. Paths reflect current
+  filesystem containment and write safety; no file contents are read, and missing
+  update/delete sources are allowed. Execution remains sequential and may be
+  partial. A later filesystem change requires fresh authorization or OS isolation.
+  """
+  @spec preflight(String.t(), String.t()) :: {:ok, map()} | {:error, Error.t()}
+  def preflight(root, patch) when is_binary(root) and is_binary(patch) do
+    with {:ok, operations} <- parse(patch),
+         {:ok, physical_root} <- PathGuard.authorize(root, "."),
+         {:ok, inspected} <- inspect_operations(root, operations) do
+      {:ok,
+       %{
+         root: physical_root,
+         patch_sha256: Base.encode16(:crypto.hash(:sha256, patch), case: :lower),
+         operations: inspected
+       }}
+    end
+  end
+
+  def preflight(_root, _patch), do: invalid("patch must be a string")
+
+  defp inspect_operations(root, operations) do
+    Enum.reduce_while(operations, {:ok, []}, fn op, {:ok, done} ->
+      case inspect_operation(root, op) do
+        {:ok, target} -> {:cont, {:ok, [target | done]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, done} -> {:ok, Enum.reverse(done)}
+      error -> error
+    end
+  end
+
+  defp inspect_operation(root, %{kind: :add, path: path}) do
+    with {:ok, path} <- PathGuard.authorize_write(root, path),
+         do: {:ok, %{kind: :add, path: path}}
+  end
+
+  defp inspect_operation(root, %{kind: :delete, path: path}) do
+    with {:ok, path} <- confined(root, path), do: {:ok, %{kind: :delete, path: path}}
+  end
+
+  defp inspect_operation(root, %{kind: kind, path: path, destination: destination}) do
+    with {:ok, source} <- confined(root, path),
+         {:ok, target} <- maybe_target(root, destination, source) do
+      {:ok,
+       %{kind: kind, path: source, destination: if(is_nil(destination), do: nil, else: target)}}
+    end
+  end
+
   defp parse(patch) do
     lines = patch |> String.split("\n", trim: false) |> drop_final_empty()
 
@@ -178,7 +232,7 @@ defmodule Backplane.AgentRuntime.Codex.ApplyPatch do
   end
 
   defp execute_one(root, %{kind: :add, path: path, lines: lines}) do
-    with {:ok, full} <- confined(root, path),
+    with {:ok, full} <- PathGuard.authorize_write(root, path),
          :ok <- File.mkdir_p(Path.dirname(full)) do
       write_content(full, Enum.join(lines, "\n") <> "\n", :added)
     else
@@ -197,7 +251,7 @@ defmodule Backplane.AgentRuntime.Codex.ApplyPatch do
 
   defp execute_one(root, %{kind: :move, path: path, destination: destination}) do
     with {:ok, source} <- confined(root, path),
-         {:ok, target} <- confined(root, destination),
+         {:ok, target} <- PathGuard.authorize_write(root, destination),
          :ok <- File.mkdir_p(Path.dirname(target)),
          :ok <- File.rename(source, target) do
       {:ok, %{from: source, path: target, action: :moved}}
@@ -236,8 +290,8 @@ defmodule Backplane.AgentRuntime.Codex.ApplyPatch do
     end
   end
 
-  defp maybe_target(_root, nil, source), do: {:ok, source}
-  defp maybe_target(root, destination, _source), do: confined(root, destination)
+  defp maybe_target(root, nil, source), do: PathGuard.authorize_write(root, source)
+  defp maybe_target(root, destination, _source), do: PathGuard.authorize_write(root, destination)
 
   defp write_content(path, content, action) do
     case File.write(path, content) do

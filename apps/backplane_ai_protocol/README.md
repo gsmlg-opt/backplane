@@ -97,6 +97,61 @@ unsupported events. This subset does not establish complete provider parity or
 enable cross-protocol gateway routes. All credentials, approvals and execution
 authority remain host-owned.
 
+## Typed audio and resources
+
+`ContentBlock` supports `:audio`, `:resource` and `:resource_link` as primary
+content kinds. Their `data` maps have string keys:
+
+```elixir
+%{type: :audio, data: %{"mime_type" => "audio/wav", "data" => "UklGRg=="}}
+%{type: :resource, data: %{"uri" => "fixture://document", "mime_type" => "text/plain", "text" => "Fixture"}}
+%{type: :resource_link, data: %{"uri" => "fixture://document", "name" => "Fixture"}}
+```
+
+Audio requires an audio MIME type and exactly one base64 `data` or absolute
+`uri`. Resources require `uri` and `mime_type`; they can carry one inline `text`
+or base64 `data` body, or retain only the URI reference. Resource links require
+`uri` and nonempty `name`, with optional `mime_type`, `title`, `description` and
+nonnegative byte `size`. Unknown data fields, ambiguous bodies, malformed base64,
+invalid MIME/URI identity and nonportable values fail validation. Existing
+configurable structural limits apply before base64 decoding. No URI is fetched
+by this library.
+
+Namespaced block extensions retain portable annotations and provenance, for
+example `"mcp::annotations"` and `"host::provenance"`. Ordered `Message.content`
+retains mixed text/image/audio/resource/link tool results, their call identity
+and result status. `Serialization.to_json/1` preserves that public projection;
+`decode_and_validate/3` bounds decoded values before constructor validation.
+`ContentBlock.new/2` also recognizes its fixed known string type tags, so media
+blocks can be reconstructed from JSON without converting arbitrary strings to
+atoms. Message roles and statuses retain the existing atom-based constructor API.
+
+Codec support is explicit:
+
+| Codec | New supported request forms |
+| --- | --- |
+| OpenAI Chat | User input with inline `audio/wav` or `audio/mpeg`, encoded as `input_audio` WAV/MP3 |
+| Google | User inline WAV, MPEG/MP3, AIFF, AAC, OGG or FLAC audio; URI-only resources with HTTP, HTTPS or GS identities, encoded as `inlineData`/`fileData` |
+| Anthropic | New audio/resource/link forms return incompatibility |
+| OpenAI Responses | New audio/resource/link forms return incompatibility |
+
+All four codecs reject these new kinds in tool results and other message roles.
+Inline resources and named resource links remain canonical portable content, but
+currently have no lossless provider mapping. Unsupported forms or media with
+extensions return `:incompatible` and `upstream_outcome: :not_submitted` during
+encoding, including Google tool results with a native function-response override.
+Hosts must only submit successfully encoded requests. The codecs never flatten
+media into explanatory text or discard URI/metadata to obtain a supported form.
+
+Google response and stream decoding preserve audio as `:audio` and file parts as
+URI-only `:resource`, retaining additional media metadata under
+`"google::media_metadata"`. Such metadata is preserved locally; automatic replay
+is rejected until an explicit lossless encoding is supported. Other inline MIME
+types are rejected instead of being labeled as images. Translation planning
+requires explicit `audio`, `resource` and `resource_link` capabilities, independently
+of text support. These fixtures establish codec contracts, not live-provider or
+model capability support.
+
 ## Opaque provider state
 
 Signed Anthropic thinking and Google thought signatures are represented as

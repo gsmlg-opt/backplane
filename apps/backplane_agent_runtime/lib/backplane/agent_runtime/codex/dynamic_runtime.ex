@@ -8,7 +8,8 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     Codex.Dynamic,
     Codex.ToolSearch,
     Error,
-    ToolRegistry
+    ToolRegistry,
+    ToolCatalog
   }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -65,6 +66,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
          dynamic: dynamic,
          candidates: candidates,
          discovery_owners: %{},
+         pending_publications: %{},
          mcp_adapter: Keyword.get(opts, :mcp_adapter),
          plugin_adapter: Keyword.get(opts, :plugin_adapter),
          plugin_context: Keyword.get(opts, :plugin_context, %{})
@@ -93,6 +95,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     with {:ok, owner_key} <- discovery_owner(operation),
          {:ok, query, limit} <- search_arguments(arguments),
          {:ok, state, dynamic} <- discover_owner(state, owner_key),
+         {:ok, state, dynamic} <- reconcile_publication(state, operation, owner_key, dynamic),
          :ok <- positive_limit(limit),
          {:ok, results} <- Dynamic.search(dynamic, operation.run_id, query, limit: limit),
          {:ok, state, publication} <-
@@ -179,7 +182,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     do: {:ok, state, %{status: :no_matches}}
 
   defp publish_results(state, operation, owner_key, dynamic, results) do
-    with {:ok, dynamic} <- publish_dynamic(dynamic, operation.run_id, results),
+    with {:ok, _validated} <- publish_dynamic(dynamic, operation.run_id, results),
          %{stage_catalog: stage, catalog_snapshot: current} <- operation.backend_context,
          :ok <- publication_callback(stage),
          {:ok, registry, authority, tools} <- extend_catalog(state, current, operation, results),
@@ -197,11 +200,49 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
            }
          },
          {:ok, receipt} <- stage.(update) do
-      {:ok, put_owner(state, owner_key, dynamic), receipt}
+      pending = %{
+        revision: update.catalog.revision,
+        publication_id: update.publication_id,
+        results: results
+      }
+
+      next = put_owner(state, owner_key, dynamic)
+
+      {:ok,
+       %{next | pending_publications: Map.put(next.pending_publications, owner_key, pending)},
+       receipt}
     else
       {:error, %Error{} = error} -> {:error, error}
       _ -> {:error, unsupported("catalog publication context is unavailable")}
     end
+  end
+
+  # A staged receipt is not publication. Only the next trusted committed catalog
+  # snapshot can consume these candidates; discarded stages remain discoverable.
+  defp reconcile_publication(state, operation, owner_key, dynamic) do
+    pending = state.pending_publications[owner_key]
+    current = get_in(operation, [:backend_context, :catalog_snapshot])
+
+    if pending && is_map(current) && current[:revision] >= pending.revision &&
+         pending_registered?(current.registry, pending.results) do
+      with {:ok, next} <- publish_dynamic(dynamic, operation.run_id, pending.results) do
+        state = put_owner(state, owner_key, next)
+
+        {:ok, %{state | pending_publications: Map.delete(state.pending_publications, owner_key)},
+         next}
+      end
+    else
+      {:ok, state, dynamic}
+    end
+  end
+
+  defp pending_registered?(registry, results) do
+    Enum.all?(results, fn result ->
+      case ToolRegistry.lookup(registry, result.name) do
+        {:ok, %{tool_revision: revision}} -> revision == result.revision
+        _ -> false
+      end
+    end)
   end
 
   defp publish_dynamic(dynamic, owner, results) do
@@ -228,7 +269,12 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
         |> Map.update(:tool_revisions, revisions, &Map.merge(&1, revisions))
         |> Map.put(:run_id, operation.run_id)
 
-      tools = current.tools ++ Enum.map(contracts, &Contract.provider_definition/1)
+      tools =
+        current.tools ++
+          (contracts
+           |> Enum.filter(&ToolCatalog.provider_visible?(Contract.descriptor(&1)))
+           |> Enum.map(&Contract.provider_definition/1))
+
       {:ok, registry, authority, tools}
     end
   end

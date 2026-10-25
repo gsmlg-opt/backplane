@@ -143,7 +143,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     invocation = %{owner_run_id: caller_run_id, incarnation: incarnation}
 
     with {:ok, session} <-
-           ResourceRegistry.fetch_session(registry, session_id, caller_run_id, incarnation),
+           fetch_command_session(context, registry, session_id, caller_run_id, incarnation),
          :ok <- write_chars(command, invocation, session.job, Map.get(args, "chars", "")),
          {:ok, result} <-
            poll(
@@ -171,6 +171,27 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
   defp write_stdin(_context, _args),
     do: {:error, Error.new(:unsupported_capability, "command and caller are not configured")}
+
+  # Only this lookup is proven to precede every write/poll. Errors after it retain
+  # normal effect uncertainty, even when they happen to have the same class.
+  defp fetch_command_session(context, registry, session_id, owner, incarnation) do
+    case ResourceRegistry.fetch_session(registry, session_id, owner, incarnation) do
+      {:error, %Error{} = error} = result ->
+        case Map.get(context, :runtime_operation) do
+          operation when is_map(operation) ->
+            case Backplane.AgentRuntime.ToolEffects.reject(operation, error) do
+              {:rejected, _} = rejection -> rejection
+              _ -> result
+            end
+
+          _ ->
+            result
+        end
+
+      result ->
+        result
+    end
+  end
 
   defp apply_patch(%{workspace: root}, patch) when is_binary(root) and is_binary(patch),
     do: ApplyPatch.apply(root, patch)

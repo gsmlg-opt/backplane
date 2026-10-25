@@ -328,7 +328,7 @@ defmodule Backplane.AgentRuntime.CodexCt07Test do
              DynamicRuntime.call(%{base | arguments: %{"query" => "echo", "limit" => 1}})
   end
 
-  test "publication consumes only the current caller run and incarnation" do
+  test "only committed publication consumes the current caller run and incarnation" do
     runtime = start_supervised!({DynamicRuntime, candidates: [attrs("echo")]})
     base = search_operation(runtime)
 
@@ -339,8 +339,26 @@ defmodule Backplane.AgentRuntime.CodexCt07Test do
           %{base | incarnation: 2},
           Map.delete(base, :caller)
         ] do
+      test = self()
+
+      operation =
+        put_in(operation.backend_context.stage_catalog, fn update ->
+          send(test, {:staged_update, update})
+          {:ok, %{status: :staged, catalog_revision: update.catalog.revision}}
+        end)
+
       assert {:ok, %{tools: [%{name: "mcp::echo"}], publication: %{status: :staged}}} =
                DynamicRuntime.call(operation)
+
+      assert_receive {:staged_update, _discarded}
+
+      # The unchanged committed snapshot proves no publication; retry is safe.
+      assert {:ok, %{tools: [_], publication: %{status: :staged}}} =
+               DynamicRuntime.call(operation)
+
+      assert_receive {:staged_update, update}
+      committed = Map.put(update.catalog, :publication_id, update.publication_id)
+      operation = put_in(operation.backend_context.catalog_snapshot, committed)
 
       assert {:ok, %{tools: [], publication: %{status: :no_matches}}} =
                DynamicRuntime.call(operation)

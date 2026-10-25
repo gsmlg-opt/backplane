@@ -15,7 +15,25 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     @type t :: %__MODULE__{identity: map(), error: Backplane.AgentRuntime.Error.t()}
   end
 
-  @type result :: {:ok, map()} | {:error, Error.t()} | {:rejected, Rejection.t()}
+  defmodule Presentation do
+    @moduledoc "A trusted backend's invocation-bound result and consumer presentation."
+    @enforce_keys [:identity, :result, :decision]
+    defstruct [:identity, :result, :decision]
+    @type t :: %__MODULE__{identity: map(), result: map(), decision: map()}
+  end
+
+  defmodule PresentedResult do
+    @moduledoc false
+    @enforce_keys [:result, :presentation]
+    defstruct [:result, :presentation]
+    @type t :: %__MODULE__{result: map(), presentation: map()}
+  end
+
+  @type result ::
+          {:ok, map()}
+          | {:error, Error.t()}
+          | {:rejected, Rejection.t()}
+          | {:presented, Presentation.t()}
 
   @callback execute(map()) :: result()
 
@@ -46,6 +64,86 @@ defmodule Backplane.AgentRuntime.ToolEffects do
       unverified_rejection()
     end
   end
+
+  @doc """
+  Preserves an actual native result while selecting durable consumer presentation.
+
+  A trusted backend calls this after native completion. `%{type: :block, text: ...}`
+  returns a consumer error (including to Code Mode); `:stopped` replaces model
+  output while nested Code Mode retains the original value. Additional context is
+  independently delivered through `append_feedback`. This is never non-dispatch
+  evidence. The Runtime validates exact identity and persists both values before
+  replying. Unacknowledged Store settlement remains uncertain and is not replayed.
+  """
+  def present(operation, result, decision) when is_map(operation) and is_map(result) do
+    presentation = %Presentation{
+      identity: presentation_identity(operation),
+      result: result,
+      decision: decision
+    }
+
+    case validate_presentation(presentation, operation) do
+      {:ok, _} -> {:presented, presentation}
+      error -> error
+    end
+  end
+
+  def present(_, _, _), do: invalid_presentation()
+
+  @doc false
+  def validate_presentation(
+        %Presentation{identity: identity, result: result, decision: decision},
+        operation
+      ) do
+    if valid_identity?(identity) and identity == presentation_identity(operation) and
+         is_binary(identity[:tool_call_id]) and is_binary(identity[:turn_id]) and
+         is_binary(identity[:enclosing_invocation_id]) and is_integer(identity[:catalog_revision]) and
+         is_map(result) and valid_decision?(decision) do
+      {:ok,
+       %PresentedResult{
+         result: result,
+         presentation: %{identity: identity, decision: decision, state: :accepted}
+       }}
+    else
+      invalid_presentation()
+    end
+  end
+
+  def validate_presentation(_, _), do: invalid_presentation()
+
+  @doc false
+  def validate_presentation_record(
+        %{identity: identity, decision: decision, state: :accepted} = record,
+        operation,
+        result
+      )
+      when map_size(record) == 3 and is_map(operation) and is_map(result) do
+    case validate_presentation(
+           %Presentation{identity: identity, decision: decision, result: result},
+           operation
+         ) do
+      {:ok, _} -> :ok
+      error -> error
+    end
+  end
+
+  def validate_presentation_record(_, _, _), do: invalid_presentation()
+
+  defp valid_decision?(%{type: type, text: text} = decision),
+    do:
+      type in [:block, :stopped] and is_binary(text) and String.valid?(text) and
+        byte_size(text) in 1..65_536 and map_size(decision) == 2
+
+  defp valid_decision?(_), do: false
+
+  @doc false
+  def presentation_identity(operation),
+    do: Map.take(operation, [:enclosing_invocation_id | @identity_fields])
+
+  defp invalid_presentation,
+    do:
+      {:error,
+       Error.new(:unknown_outcome, "result presentation does not match the completed invocation")}
 
   @doc false
   @spec validate_rejection(Rejection.t(), map()) :: {:ok, map()} | {:error, Error.t()}
@@ -89,9 +187,16 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   def execute(adapter, invocation, context)
       when is_atom(adapter) and is_map(invocation) and is_map(context) do
     with {:ok, invocation} <- validate_invocation(invocation),
-         {:ok, result} <- adapter.execute(invocation) do
+         {:ok, result} when not is_struct(result, PresentedResult) <- adapter.execute(invocation) do
       {:ok, Map.put(invocation, :result, result)}
     else
+      {:ok, %PresentedResult{}} ->
+        invalid_presentation()
+
+      {:presented, presentation} ->
+        with {:ok, result} <- validate_presentation(presentation, invocation),
+             do: {:ok, Map.put(invocation, :result, result)}
+
       {:rejected, rejection} ->
         with {:ok, result} <- validate_rejection(rejection, invocation),
              do: {:ok, Map.put(invocation, :result, result)}

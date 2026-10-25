@@ -26,7 +26,8 @@ defmodule Backplane.AiProtocol.Codec.Google do
   def encode_rest_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Common.reject_custom_tools(request),
+    with :ok <- Backplane.AiProtocol.Media.preflight(request, :google),
+         :ok <- Common.reject_custom_tools(request),
          :ok <- Common.reject_state_references(request),
          :ok <- validate_provider_states(request.input, destination),
          {:ok, contents} <- encode_contents(request.input),
@@ -167,6 +168,10 @@ defmodule Backplane.AiProtocol.Codec.Google do
          do: {:ok, %{"inlineData" => %{"mimeType" => media_type, "data" => data}}}
   end
 
+  defp encode_part(%ContentBlock{type: type} = block)
+       when type in [:audio, :resource, :resource_link],
+       do: Backplane.AiProtocol.Media.encode(block, :google)
+
   defp encode_part(%ContentBlock{type: :tool_call, tool_call: call}) do
     with {:ok, args} <- Common.json_arguments(call.raw_arguments) do
       function_call = %{"name" => call.name, "args" => args}
@@ -287,16 +292,11 @@ defmodule Backplane.AiProtocol.Codec.Google do
   defp decode_unsigned_part(%{"text" => text}, _candidate, _part),
     do: ContentBlock.new(%{type: :text, text: text})
 
-  defp decode_unsigned_part(
-         %{"inlineData" => %{"mimeType" => media_type, "data" => data}},
-         _candidate,
-         _part
-       ),
-       do:
-         ContentBlock.new(%{
-           type: :image,
-           data: %{"source" => "base64", "media_type" => media_type, "data" => data}
-         })
+  defp decode_unsigned_part(%{"inlineData" => inline}, _candidate, _part),
+    do: inline_content(inline)
+
+  defp decode_unsigned_part(%{"fileData" => file}, _candidate, _part),
+    do: file_content(file)
 
   defp decode_unsigned_part(%{"functionCall" => call}, candidate, part) when is_map(call),
     do:
@@ -312,6 +312,42 @@ defmodule Backplane.AiProtocol.Codec.Google do
 
   defp decode_unsigned_part(_, _, _),
     do: {:error, Error.incompatible!("Unsupported Google response content")}
+
+  defp inline_content(%{"mimeType" => mime, "data" => data} = inline) when is_binary(mime) do
+    cond do
+      String.starts_with?(String.downcase(mime), "audio/") ->
+        ContentBlock.new(%{
+          type: :audio,
+          data: %{"mime_type" => mime, "data" => data},
+          extensions: media_extensions(Map.drop(inline, ["mimeType", "data"]))
+        })
+
+      String.starts_with?(String.downcase(mime), "image/") ->
+        ContentBlock.new(%{
+          type: :image,
+          data: %{"source" => "base64", "media_type" => mime, "data" => data}
+        })
+
+      true ->
+        {:error, Error.incompatible!("Unsupported Google inline media MIME type")}
+    end
+  end
+
+  defp inline_content(_),
+    do: {:error, Error.invalid!("Google inline media requires MIME and data")}
+
+  defp file_content(%{"mimeType" => mime, "fileUri" => uri} = file) do
+    ContentBlock.new(%{
+      type: :resource,
+      data: %{"mime_type" => mime, "uri" => uri},
+      extensions: media_extensions(Map.drop(file, ["mimeType", "fileUri"]))
+    })
+  end
+
+  defp file_content(_), do: {:error, Error.invalid!("Google file media requires MIME and URI")}
+
+  defp media_extensions(metadata) when map_size(metadata) == 0, do: %{}
+  defp media_extensions(metadata), do: %{"google::media_metadata" => metadata}
 
   defp signed_part(part, opts, candidate, part_index) do
     affinity = Common.affinity(opts, "google")
@@ -441,17 +477,25 @@ defmodule Backplane.AiProtocol.Codec.Google do
   defp stream_parts(
          state,
          [
-           {%{"inlineData" => %{"mimeType" => media_type, "data" => data}} = part, position}
+           {%{"inlineData" => inline} = part, position}
            | rest
          ],
          index,
          events
        ) do
-    with {:ok, block} <-
-           ContentBlock.new(%{
-             type: :image,
-             data: %{"source" => "base64", "media_type" => media_type, "data" => data}
-           }),
+    with {:ok, block} <- inline_content(inline),
+         {:ok, signature_events} <- signature_events(part, index, position, state.opts) do
+      stream_parts(
+        state,
+        rest,
+        index,
+        events ++ [%StreamEvent{type: :content, index: index, content: block}] ++ signature_events
+      )
+    end
+  end
+
+  defp stream_parts(state, [{%{"fileData" => file} = part, position} | rest], index, events) do
+    with {:ok, block} <- file_content(file),
          {:ok, signature_events} <- signature_events(part, index, position, state.opts) do
       stream_parts(
         state,

@@ -185,32 +185,48 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
 
   defp reference_execute(reference, "memories::search", arguments, _state) do
     queries = Map.get(arguments, "queries", [])
-    mode = Map.get(arguments, "match_mode", "any")
+    mode = Map.get(arguments, "match_mode", %{"type" => "any"})
     sensitive? = Map.get(arguments, "case_sensitive", true)
+    normalized? = Map.get(arguments, "normalized", false)
+    context_lines = Map.get(arguments, "context_lines", 0)
     prefix = Map.get(arguments, "path", "")
     limit = bounded_limit(arguments["max_results"], 200)
     offset = cursor_offset(arguments["cursor"])
 
     with :ok <- nonempty_strings(queries, "queries are required"),
-         :ok <- allowed(mode, ~w(any all), "invalid match mode") do
+         :ok <- search_match_mode(mode),
+         :ok <- search_context_lines(context_lines),
+         queries = Enum.map(queries, &String.trim/1),
+         prepared = Enum.map(queries, &search_comparison(&1, sensitive?, normalized?)),
+         :ok <- nonempty_strings(prepared, "queries must contain searchable characters") do
+      matcher = %{
+        queries: queries,
+        prepared: prepared,
+        mode: mode,
+        sensitive?: sensitive?,
+        normalized?: normalized?,
+        context_lines: context_lines
+      }
+
       matches =
         reference.memories
         |> Enum.filter(fn {path, _} -> String.starts_with?(path, prefix) end)
         |> Enum.flat_map(fn {path, contents} ->
-          contents
-          |> String.split("\n", trim: false)
-          |> Enum.with_index(1)
-          |> Enum.filter(fn {line, _line_number} -> matches?(line, queries, mode, sensitive?) end)
-          |> Enum.map(fn {line, line_number} ->
-            %{path: path, line_number: line_number, line: line}
-          end)
+          memory_matches(path, contents, matcher)
         end)
-        |> Enum.sort_by(&{&1.path, &1.line_number})
+        |> Enum.sort_by(&{&1.path, &1.match_line_number})
 
       {page, next_cursor} = page(matches, offset, limit)
 
-      {:ok, %{matches: page, next_cursor: next_cursor, truncated: not is_nil(next_cursor)},
-       reference}
+      {:ok,
+       %{
+         queries: queries,
+         match_mode: mode,
+         path: Map.get(arguments, "path"),
+         matches: page,
+         next_cursor: next_cursor,
+         truncated: not is_nil(next_cursor)
+       }, reference}
     end
   end
 
@@ -521,6 +537,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     %{
       namespace: namespace,
       name: name,
+      exposure: if(namespace in ["history", "notes"], do: :direct_model_only, else: :direct),
       description: description(schema_name),
       schema: schema(schema_name),
       backend: Backplane.AgentRuntime.Codex.Backend,
@@ -571,7 +588,16 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
       object(
         %{
           "queries" => Map.put(array(string()), "minItems", 1),
-          "match_mode" => enum(~w(any all)),
+          "match_mode" => %{
+            "oneOf" => [
+              object(%{"type" => enum(["any"])}, ["type"]),
+              object(%{"type" => enum(["all_on_same_line"])}, ["type"]),
+              object(
+                %{"type" => enum(["all_within_lines"]), "line_count" => integer(1)},
+                ["type", "line_count"]
+              )
+            ]
+          },
           "path" => string(),
           "cursor" => string(),
           "context_lines" => integer(0),
@@ -1156,15 +1182,100 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     {page, next}
   end
 
-  defp matches?(line, queries, mode, sensitive?) do
-    source = if sensitive?, do: line, else: String.downcase(line)
+  defp search_match_mode(%{"type" => type} = mode)
+       when type in ["any", "all_on_same_line"] and map_size(mode) == 1,
+       do: :ok
 
-    checks =
-      Enum.map(queries, fn query ->
-        String.contains?(source, if(sensitive?, do: query, else: String.downcase(query)))
+  defp search_match_mode(%{"type" => "all_within_lines", "line_count" => count} = mode)
+       when is_integer(count) and count >= 1 and map_size(mode) == 2,
+       do: :ok
+
+  defp search_match_mode(_), do: {:error, validation("invalid match mode")}
+
+  defp search_context_lines(count) when is_integer(count) and count >= 0, do: :ok
+  defp search_context_lines(_), do: {:error, validation("context_lines must be nonnegative")}
+
+  defp search_comparison(value, sensitive?, normalized?) do
+    value = if sensitive?, do: value, else: String.downcase(value)
+    if normalized?, do: String.replace(value, ~r/[^\p{L}\p{N}]/u, ""), else: value
+  end
+
+  defp memory_matches(path, contents, matcher) do
+    lines = String.split(contents, ~r/\r?\n/, trim: false)
+    lines = if List.last(lines) == "", do: Enum.drop(lines, -1), else: lines
+
+    flags =
+      Enum.map(lines, fn line ->
+        source = search_comparison(line, matcher.sensitive?, matcher.normalized?)
+        Enum.map(matcher.prepared, &String.contains?(source, &1))
       end)
 
-    if mode == "all", do: Enum.all?(checks), else: Enum.any?(checks)
+    flags
+    |> search_windows(matcher.mode)
+    |> Enum.map(fn {first, last, matched} ->
+      start = max(first - matcher.context_lines, 0)
+      stop = min(last + matcher.context_lines + 1, length(lines))
+
+      %{
+        path: path,
+        match_line_number: first + 1,
+        content_start_line_number: start + 1,
+        content: lines |> Enum.slice(start, stop - start) |> Enum.join("\n"),
+        matched_queries:
+          matcher.queries
+          |> Enum.zip(matched)
+          |> Enum.flat_map(fn
+            {query, true} -> [query]
+            {_query, false} -> []
+          end)
+      }
+    end)
+  end
+
+  defp search_windows(flags, %{"type" => type}) when type in ["any", "all_on_same_line"] do
+    predicate = if type == "any", do: &Enum.any?/1, else: &Enum.all?/1
+
+    flags
+    |> Enum.with_index()
+    |> Enum.filter(fn {matched, _index} -> predicate.(matched) end)
+    |> Enum.map(fn {matched, index} -> {index, index, matched} end)
+  end
+
+  defp search_windows(flags, %{"type" => "all_within_lines", "line_count" => count}) do
+    windows =
+      flags
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {matched, first} ->
+        if Enum.any?(matched), do: matching_window(flags, first, count), else: []
+      end)
+
+    Enum.reject(windows, fn {first, last, _matched} ->
+      Enum.any?(windows, fn {other_first, other_last, _matched} ->
+        first <= other_first and last >= other_last and
+          (first != other_first or last != other_last)
+      end)
+    end)
+  end
+
+  defp matching_window(flags, first, count) do
+    flags
+    |> Enum.drop(first)
+    |> Enum.take(count)
+    |> Enum.with_index(first)
+    |> Enum.reduce_while(nil, fn {matched, last}, accumulated ->
+      combined =
+        if is_nil(accumulated),
+          do: matched,
+          else: Enum.zip_with(accumulated, matched, fn left, right -> left or right end)
+
+      if Enum.all?(combined),
+        do: {:halt, {first, last, combined}},
+        else: {:cont, combined}
+    end)
+    |> case do
+      {_first, _last, _matched} = window -> [window]
+      _incomplete -> []
+    end
   end
 
   defp maybe_reverse(items, true), do: Enum.reverse(items)

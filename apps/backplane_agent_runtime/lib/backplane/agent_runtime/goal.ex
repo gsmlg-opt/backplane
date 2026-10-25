@@ -22,6 +22,29 @@ defmodule Backplane.AgentRuntime.Goal do
   def committed(goal, event), do: GenServer.call(goal, {:committed, event})
   def idle(goal, generation), do: GenServer.call(goal, {:idle, generation})
 
+  @doc """
+  Withdraws an exact admission after its owner atomically prevents its release.
+
+  Pass the admission returned by `idle/2`, including `:host_generation` and the
+  runtime-minted `:reservation_token`. `:superseded` clears only that reservation;
+  `:cancelled` also durably defers automatic continuation without pausing the Goal.
+
+  Returns `{:ok, {:withdrawn, reason}}` or
+  `{:ok, {:not_withdrawn, :stale | :started}}`. A matching committed start for
+  the admitted run/incarnation prevents withdrawal even when the host's logical
+  turn ID differs from the Runtime's minted turn ID. Once host release wins,
+  ordinary Runtime cancellation is required, even before Goal sees that receipt.
+
+  This owner-only call cannot fence the host's execution queue. Before calling,
+  the host must atomically invalidate the exact token/generation against release
+  and must never execute a successfully withdrawn reservation. Unknown storage
+  acknowledgement is not withdrawal confirmation; reconcile before proceeding.
+  """
+  def withdraw_admission(goal, expected_admission, reason),
+    do: GenServer.call(goal, {:withdraw_admission, expected_admission, reason})
+
+  @admission_identity ~w(run_id turn_id incarnation host_generation reservation_token)a
+
   @impl true
   def init(opts) do
     thread = Keyword.fetch!(opts, :thread_id)
@@ -47,6 +70,7 @@ defmodule Backplane.AgentRuntime.Goal do
          host_context: Keyword.fetch!(opts, :host_context),
          bindings: %{},
          reserved: nil,
+         reserved_start: nil,
          pending_receipts: MapSet.new(),
          monotonic: System.monotonic_time(:millisecond),
          elapsed_ms: 0
@@ -118,6 +142,7 @@ defmodule Backplane.AgentRuntime.Goal do
              | record: merge_record(state, record),
                bindings: %{},
                reserved: nil,
+               reserved_start: nil,
                pending_receipts: MapSet.new(),
                monotonic: System.monotonic_time(:millisecond),
                elapsed_ms: 0
@@ -323,9 +348,11 @@ defmodule Backplane.AgentRuntime.Goal do
 
       event = %{event | payload: Map.put(event.payload, :mode, binding.mode)}
 
+      fresh_receipt? = not Map.has_key?(state.record.receipts, event.receipt_id)
+      state = observe_reserved_start(state, event, fresh_receipt?)
+
       event =
-        if event.type == :turn_started and state.reserved != nil and
-             event.run_id == state.reserved[:run_id] and
+        if event.type == :turn_started and reserved_run?(state, event) and
              event.turn_id == state.reserved[:turn_id],
            do: %{event | payload: Map.put(event.payload, :trigger, :goal)},
            else: event
@@ -354,8 +381,8 @@ defmodule Backplane.AgentRuntime.Goal do
       case transact(state, fun) do
         {:ok, next, result} ->
           next =
-            if event.type in [:turn_stopped, :turn_aborted, :turn_error],
-              do: %{next | reserved: nil},
+            if reserved_terminal?(next, event, fresh_receipt?),
+              do: %{next | reserved: nil, reserved_start: nil},
               else: next
 
           next = %{
@@ -375,6 +402,43 @@ defmodule Backplane.AgentRuntime.Goal do
       end
     else
       denied(state)
+    end
+  end
+
+  def handle_call({:withdraw_admission, expected, reason}, {caller, _}, state) do
+    cond do
+      caller != state.owner ->
+        denied(state)
+
+      reason not in [:cancelled, :superseded] or not valid_admission_identity?(expected) ->
+        {:reply, {:error, Error.new(:validation, "invalid admission withdrawal")}, state}
+
+      state.reserved == nil or
+          Map.take(expected, @admission_identity) !=
+            Map.take(state.reserved, @admission_identity) ->
+        {:reply, {:ok, {:not_withdrawn, :stale}}, state}
+
+      state.reserved_start != nil ->
+        {:reply, {:ok, {:not_withdrawn, :started}}, state}
+
+      reason == :superseded ->
+        {:reply, {:ok, {:withdrawn, :superseded}}, %{state | reserved: nil}}
+
+      true ->
+        expected_goal_id = goal_id(state.record)
+
+        case transact(state, fn record ->
+               with :ok <- fence_goal(record, expected_goal_id),
+                    {:ok, next} <- State.cancel_admission(record, state.reserved) do
+                 {:ok, next, {:withdrawn, :cancelled}}
+               end
+             end) do
+          {:ok, next, outcome} ->
+            {:reply, {:ok, outcome}, %{next | reserved: nil, reserved_start: nil}}
+
+          {:error, error, next} ->
+            {:reply, {:error, error}, next}
+        end
     end
   end
 
@@ -411,6 +475,7 @@ defmodule Backplane.AgentRuntime.Goal do
           expected_goal_id: goal_id(state.record),
           goal_revision: state.record.revision,
           host_generation: generation,
+          reservation_token: Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false),
           usage_required: state.record.goal.token_budget != nil,
           trigger: :goal,
           root_thread_id: state.thread_id,
@@ -419,11 +484,17 @@ defmodule Backplane.AgentRuntime.Goal do
         }
 
         case host_call(state, :start_turn_if_idle, request) do
-          {:ok, {:started, %{run_id: run, turn_id: turn, incarnation: incarnation} = admission}} =
-              reply
+          {:ok, {:started, %{run_id: run, turn_id: turn, incarnation: incarnation} = admission}}
           when is_binary(run) and run != "" and is_binary(turn) and turn != "" and
                  is_integer(incarnation) and incarnation > 0 ->
-            {:reply, reply, %{state | reserved: admission}}
+            case admission_identity(admission, request) do
+              {:ok, admission} ->
+                {:reply, {:ok, {:started, admission}},
+                 %{state | reserved: admission, reserved_start: nil}}
+
+              {:error, error} ->
+                {:reply, {:error, error}, state}
+            end
 
           {:ok, {:not_submitted, _}} = reply ->
             {:reply, reply, state}
@@ -448,12 +519,56 @@ defmodule Backplane.AgentRuntime.Goal do
            with {:ok, next} <- fun.(record), do: {:ok, next, State.response(next)}
          end) do
       {:ok, next, response} ->
-        {:reply, {:ok, response}, %{next | reserved: nil}}
+        {:reply, {:ok, response}, %{next | reserved: nil, reserved_start: nil}}
 
       {:error, error, next} ->
         {:reply, {:error, error}, next}
     end
   end
+
+  defp admission_identity(admission, request) do
+    identity = Map.take(request, [:host_generation, :reservation_token])
+
+    if Enum.all?(identity, fn {key, value} ->
+         not Map.has_key?(admission, key) or admission[key] == value
+       end),
+       do: {:ok, Map.merge(admission, identity)},
+       else: {:error, Error.new(:malformed_result, "host admission identity differs")}
+  end
+
+  defp valid_admission_identity?(admission) when is_map(admission) do
+    Enum.all?(@admission_identity, &Map.has_key?(admission, &1)) and
+      Enum.all?([:run_id, :turn_id, :reservation_token], fn key ->
+        is_binary(admission[key]) and admission[key] != ""
+      end) and is_integer(admission[:incarnation]) and admission.incarnation > 0
+  end
+
+  defp valid_admission_identity?(_), do: false
+
+  defp reserved_run?(%{reserved: admission}, event) when is_map(admission),
+    do: event.run_id == admission.run_id and event.incarnation == admission.incarnation
+
+  defp reserved_run?(_, _), do: false
+
+  defp observe_reserved_start(state, %{type: :turn_started} = event, true) do
+    if reserved_run?(state, event) and state.reserved_start == nil and
+         event.revision >
+           Map.get(state.record.event_revisions, {event.run_id, event.incarnation}, 0) and
+         match?({:ok, _}, State.account(state.record, event)) do
+      %{state | reserved_start: %{turn_id: event.turn_id, revision: event.revision}}
+    else
+      state
+    end
+  end
+
+  defp observe_reserved_start(state, _event, _fresh?), do: state
+
+  defp reserved_terminal?(%{reserved_start: start} = state, event, true) when is_map(start),
+    do:
+      event.type in [:turn_stopped, :turn_aborted, :turn_error] and reserved_run?(state, event) and
+        event.turn_id == start.turn_id and event.revision >= start.revision
+
+  defp reserved_terminal?(_, _, _), do: false
 
   defp transact(state, fun, retries \\ 2) do
     state = elapsed(state)

@@ -163,13 +163,29 @@ defmodule Backplane.AgentRuntime.Kernel do
          {:ok, invocation} <- active_invocation(run, identity.invocation_id),
          :ok <- match_identity(Map.take(invocation, @tool_identity), identity, "tool invocation"),
          {:ok, result} <- required(input, :result, "tool result"),
+         :ok <- validate_presentation(input, invocation, result),
          {:ok, context} <- optional_map(input, :context, Map.get(run, :context, %{})) do
       active_tools = Map.delete(Map.get(run, :active_tools, %{}), identity.invocation_id)
       tool_results = Map.put(Map.get(run, :tool_results, %{}), identity.invocation_id, result)
+      presentations = Map.get(run, :tool_presentations, %{})
+
+      presentations =
+        case fetch_field(input, :presentation) do
+          {:ok, value} when is_map(value) ->
+            Map.put(
+              presentations,
+              identity.invocation_id,
+              Map.put(value, :revision, run.expected_revision + 1)
+            )
+
+          _ ->
+            presentations
+        end
 
       run
       |> Map.put(:active_tools, active_tools)
       |> Map.put(:tool_results, tool_results)
+      |> Map.put(:tool_presentations, presentations)
       |> Map.put(:context, context)
       |> settle_execution_intent("tool:#{identity.invocation_id}", :consumed)
       |> commit(:running, :tool_completed, at, input)
@@ -364,6 +380,20 @@ defmodule Backplane.AgentRuntime.Kernel do
     run = run |> Map.put(:state, state) |> Map.put(:expected_revision, revision)
     event = event(at, "run.#{event_kind}", state, payload)
     {:ok, run, %{expected_revision: revision, state: state, events: [event]}, []}
+  end
+
+  defp validate_presentation(input, invocation, result) do
+    case fetch_field(input, :presentation) do
+      :error ->
+        :ok
+
+      {:ok, record} ->
+        Backplane.AgentRuntime.ToolEffects.validate_presentation_record(
+          record,
+          invocation,
+          result
+        )
+    end
   end
 
   # -- fencing -----------------------------------------------------------------
