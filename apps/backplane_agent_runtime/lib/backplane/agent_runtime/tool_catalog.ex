@@ -609,7 +609,7 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
     end
   end
 
-  defp validate_tool(tool, descriptor, authority, run_id) when is_map(descriptor) do
+  defp validate_tool(tool, descriptor, authority, run_id) do
     with :ok <- descriptor_metadata(descriptor),
          :ok <- exact_schema(tool, descriptor),
          :ok <- validate_descriptor_input(descriptor),
@@ -622,9 +622,6 @@ defmodule Backplane.AgentRuntime.ToolCatalog do
       :ok
     end
   end
-
-  defp validate_tool(_tool, _descriptor, _authority, _run_id),
-    do: validation("registered tool descriptor must be a map")
 
   defp descriptor_metadata(descriptor) do
     safety = Map.get(descriptor, :safety)
