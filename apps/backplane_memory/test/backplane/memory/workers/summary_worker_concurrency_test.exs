@@ -21,13 +21,13 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
 
   alias Backplane.Memory.Events.Stream, as: EventStream
   alias Backplane.Memory.Ingest
-  alias Backplane.Memory.Projections.{Rebuild, Source}
+  alias Backplane.Memory.Projections.{ActivityContribution, ActivityDaily, Rebuild, Source}
   alias Backplane.Memory.Summaries.Summary
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
   alias Ecto.Adapters.SQL.Sandbox
 
   test "a captured append queued ahead of summary persistence prevents stale commit and fanout" do
-    host_id = "host-summary-append-race"
+    host_id = unique("host-summary-append-race")
     session_id = unique("append-race")
     stream_id = "capture:#{host_id}:#{session_id}"
     subject_id = Source.subject_id!(host_id, session_id)
@@ -214,6 +214,12 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
           ])
 
           repo().query!("DELETE FROM bpm_projected_sessions WHERE subject_id = $1", [subject_id])
+
+          repo().delete_all(
+            from(row in ActivityContribution, where: row.subject_id == ^subject_id)
+          )
+
+          repo().delete_all(from(row in ActivityDaily, where: row.host_id == ^host_id))
 
           repo().query!("DELETE FROM bpm_projection_snapshots WHERE subject_id = $1", [subject_id])
 

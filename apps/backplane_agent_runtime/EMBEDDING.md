@@ -140,10 +140,13 @@ is not durable acknowledgement.
 error to a nested dispatcher only after settlement acknowledgement, so real Deno
 can enter its catch branch without repeating the completed mutation. `stopped`
 projects feedback text to the model while nested Code Mode receives the original
-value. A stopped nested result suppresses the enclosing tool's model output when
-that enclosing invocation settles. Multiple nested stops select the latest
-accepted decision in that boundary. Separate batches, resumed wait invocations,
-reused provider call IDs and child runs retain distinct Runtime identities.
+value. Explicit empty `stopped` text stays empty in accepted records, restored
+history and model output; `block` feedback remains nonempty. Both accept valid
+UTF-8 strings of at most 65,536 bytes. A stopped nested result suppresses the
+enclosing tool's model output when that enclosing invocation settles. Multiple
+nested stops select the latest accepted decision in that boundary. Separate
+batches, resumed wait invocations, reused provider call IDs and child runs retain
+distinct Runtime identities.
 
 A projection checkpoint can fail after native settlement is durable. Restoring
 the selected run validates its records against journaled execution intents and
