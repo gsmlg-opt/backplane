@@ -1,7 +1,7 @@
 defmodule Backplane.AiProtocolTestkit.MixProject do
   use Mix.Project
 
-  @version "1.10.37"
+  @version "1.10.38"
   @source_url "https://github.com/gsmlg-opt/backplane/tree/main/apps/backplane_ai_protocol_testkit"
 
   def project do
