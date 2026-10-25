@@ -111,6 +111,34 @@ defmodule Backplane.AgentRuntime.ToolPresentationTest do
     finish(ctx, provider)
   end
 
+  test "explicit empty stopped text reaches the model while Code Mode retains the native value" do
+    ctx = start(:stopped, text: "")
+    provider = prompt(ctx)
+
+    code =
+      "const result = await tools.update_plan({plan:[{step:'kept',status:'completed'}]}); return {original:result.revision};"
+
+    {request, provider} = call(provider, "exec", code)
+
+    assert List.last(request.messages).result == %{
+             is_error: false,
+             stopped: true,
+             content: [%{type: :text, text: ""}]
+           }
+
+    assert_receive {:actual_effect, operation, %{revision: 2}}
+    assert {:ok, %{revision: 2}} = Plan.read(ctx.plan)
+    assert {:ok, %{run: stored}} = EphemeralStore.load(ctx.table, ctx.run)
+    assert stored.tool_results[operation.invocation_id].revision == 2
+    refute stored.tool_results[operation.invocation_id].is_error
+    presentation = stored.tool_presentations[operation.invocation_id]
+    assert presentation.decision == %{type: :stopped, text: ""}
+    enclosing = presentation.identity.enclosing_invocation_id
+    assert stored.tool_results[enclosing].value["original"] == 2
+    assert stored.tool_presentations[enclosing].decision == %{type: :stopped, text: ""}
+    finish(ctx, provider)
+  end
+
   test "direct repeated calls and reused call IDs retain separate actual results and projections" do
     ctx = start(:block)
     provider = prompt(ctx)
@@ -148,6 +176,36 @@ defmodule Backplane.AgentRuntime.ToolPresentationTest do
 
     on_exit(fn -> if Process.alive?(restored), do: GenServer.stop(restored) end)
     assert List.last(Conversation.status(restored).messages).result.stopped
+    assert {:ok, %{revision: 2}} = Plan.read(ctx.plan)
+    refute_receive {:actual_effect, _, _}
+  end
+
+  test "selected settlement restores explicit empty stopped text without replaying the native effect" do
+    ctx = start(:stopped, text: "", lost_ack: true)
+    provider = prompt(ctx)
+    send_call(provider, "update_plan", %{"plan" => []}, "empty-stopped")
+    assert_receive :presentation_committed_without_ack, 5000
+    assert_receive {:actual_effect, operation, %{revision: 2}}
+    eventually(fn -> Conversation.status(ctx.pid).phase == :storage_failed end)
+    assert {:ok, %{run: run}} = EphemeralStore.load(ctx.table, ctx.run)
+    assert run.tool_presentations[operation.invocation_id].decision == %{type: :stopped, text: ""}
+    refute run.tool_results[operation.invocation_id].is_error
+    refute Enum.any?(run.context.conversation.messages, &(&1[:role] == :tool))
+
+    restored =
+      start_supervised!(
+        {Conversation,
+         Keyword.merge(ctx.opts, run: run, store: EphemeralStore, context: ctx.table)
+         |> Keyword.delete(:session_binding)},
+        id: :empty_stopped_restored
+      )
+
+    assert List.last(Conversation.status(restored).messages).result == %{
+             is_error: false,
+             stopped: true,
+             content: [%{type: :text, text: ""}]
+           }
+
     assert {:ok, %{revision: 2}} = Plan.read(ctx.plan)
     refute_receive {:actual_effect, _, _}
   end
@@ -338,7 +396,10 @@ defmodule Backplane.AgentRuntime.ToolPresentationTest do
         backend_context:
           Map.merge(
             descriptor.backend_context,
-            %{test: self(), presentation: %{type: type, text: "host presentation"}}
+            %{
+              test: self(),
+              presentation: %{type: type, text: Keyword.get(extra, :text, "host presentation")}
+            }
           )
     }
 

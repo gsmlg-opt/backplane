@@ -94,6 +94,46 @@ defmodule Backplane.AgentRuntime.ToolPresentationJournalTest do
              completed.expected_revision
   end
 
+  test "explicit empty stopped text is accepted through public presentation and journal validation" do
+    operation = operation()
+    actual = %{revision: 2, is_error: false}
+    decision = %{type: :stopped, text: ""}
+
+    assert {:presented, envelope} = ToolEffects.present(operation, actual, decision)
+    assert {:ok, validated} = ToolEffects.validate_presentation(envelope, operation)
+    assert validated.result == actual
+    assert validated.presentation.decision == decision
+
+    assert :ok =
+             ToolEffects.validate_presentation_record(validated.presentation, operation, actual)
+
+    {:ok, active, _, []} = Kernel.execute(run(operation), {:tool_invoked, 10, operation})
+
+    assert {:ok, completed, _, []} =
+             Kernel.execute(
+               active,
+               {:tool_completed, 11,
+                operation
+                |> Map.put(:result, actual)
+                |> Map.put(:presentation, validated.presentation)}
+             )
+
+    assert completed.tool_results[operation.invocation_id] == actual
+    assert completed.tool_presentations[operation.invocation_id].decision == decision
+
+    for invalid <- [
+          %{type: :block, text: ""},
+          %{type: :stopped},
+          %{type: :stopped, text: nil},
+          %{type: :stopped, text: <<255>>},
+          %{type: :stopped, text: String.duplicate("x", 65_537)},
+          %{type: :stopped, text: "", extra: true}
+        ] do
+      assert {:error, %Error{class: :unknown_outcome}} =
+               ToolEffects.present(operation, actual, invalid)
+    end
+  end
+
   test "malformed selected-branch presentation records return typed restore errors without effect replay" do
     ctx = start(:stopped)
     provider = prompt(ctx)

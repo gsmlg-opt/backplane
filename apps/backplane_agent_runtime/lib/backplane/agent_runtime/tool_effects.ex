@@ -132,7 +132,8 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   defp valid_decision?(%{type: type, text: text} = decision),
     do:
       type in [:block, :stopped] and is_binary(text) and String.valid?(text) and
-        byte_size(text) in 1..65_536 and map_size(decision) == 2
+        byte_size(text) <= 65_536 and (type == :stopped or text != "") and
+        map_size(decision) == 2
 
   defp valid_decision?(_), do: false
 
