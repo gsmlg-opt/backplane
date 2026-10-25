@@ -202,7 +202,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert verify["run"] =~ "_build/prod/rel/backplane/bin/backplane eval"
 
     ordered_steps = [
-      "Build web assets",
+      "Import qualified web assets",
       "Refresh compiled admin build metadata",
       "Build OTP release",
       "Verify compiled release metadata",
@@ -759,8 +759,6 @@ defmodule Backplane.ReleaseConfigTest do
     for path <- [".github/workflows/build.yml", ".github/workflows/release.yml"] do
       workflow = File.read!(path)
 
-      assert workflow =~ "run: mix assets.deploy"
-
       assert workflow =~
                "elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane"
 
@@ -775,6 +773,75 @@ defmodule Backplane.ReleaseConfigTest do
     assert release_workflow =~ "installed/backplane/bin/backplane daemon"
     assert release_workflow =~ "http://127.0.0.1:14100/docs"
     assert release_workflow =~ "http://127.0.0.1:14101/dashboard/overview"
+  end
+
+  test "qualified assets are built on Ubuntu 26 and imported by the original release targets" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    qualification = workflow["jobs"]["qualify-memory-v2"]
+    build = workflow["jobs"]["build"]
+
+    producer =
+      Enum.find(
+        qualification["steps"],
+        &(&1["name"] == "Build web assets on the supported native build platform")
+      )
+
+    upload =
+      Enum.find(qualification["steps"], &(&1["name"] == "Upload qualified static web assets"))
+
+    download = Enum.find(build["steps"], &(&1["name"] == "Download qualified static web assets"))
+    consume = Enum.find(build["steps"], &(&1["name"] == "Import qualified web assets"))
+
+    assert qualification["runs-on"] == "ubuntu-26.04"
+    assert producer["env"]["MIX_ENV"] == "prod"
+    assert producer["env"]["DUSKMOON_NATIVE_MODE"] == "precompiled"
+    assert producer["run"] =~ "mix assets.deploy"
+    assert producer["run"] =~ ~s(--export . artifacts/web-assets "$GATED_SHA" "$RELEASE_VERSION")
+    assert upload["with"]["path"] == "artifacts/web-assets/"
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert download["with"]["name"] == upload["with"]["name"]
+    assert download["if"] == "matrix.release == 'backplane'"
+
+    publish_download =
+      Enum.find(
+        workflow["jobs"]["publish"]["steps"],
+        &(&1["name"] == "Download release artifacts")
+      )
+
+    assert publish_download["with"] == %{
+             "pattern" => "{backplane-*,host_agent-*,memory-v2-qualification}",
+             "path" => "dist",
+             "merge-multiple" => true
+           }
+
+    refute publish_download["with"]["pattern"] =~ upload["with"]["name"]
+    assert consume["run"] =~ ~s(--import artifacts/web-assets . "$GATED_SHA" "$RELEASE_VERSION")
+    assert build["needs"] == "qualify-memory-v2"
+    refute Enum.any?(build["steps"], &String.contains?(&1["run"] || "", "mix assets.deploy"))
+
+    assert Enum.map(build["strategy"]["matrix"]["include"], & &1["target"]["runner"]) ==
+             [
+               "ubuntu-24.04",
+               "ubuntu-24.04-arm",
+               "ubuntu-22.04",
+               "ubuntu-22.04-arm",
+               "macos-15-intel",
+               "macos-latest"
+             ]
+
+    build_workflow = YamlElixir.read_from_file!(".github/workflows/build.yml")
+    steps = build_workflow["jobs"]["otp-release"]["steps"]
+    isolated = Enum.find(steps, &(&1["name"] == "Build isolated web assets"))
+    assert isolated["if"] == "matrix.release == 'backplane'"
+    assert isolated["run"] =~ "docker buildx build --target web-assets"
+    assert isolated["run"] =~ "--import artifacts/web-assets"
+
+    docker = Enum.find(steps, &(&1["name"] == "Verify retained Bookworm Docker release builder"))
+    assert docker["if"] == "matrix.release == 'backplane' && matrix.target.name == 'linux-x64'"
+    assert docker["run"] =~ "docker buildx build --target builder"
+    assert docker["run"] =~ "--output type=cacheonly"
+    assert Enum.find_index(steps, &(&1 == docker)) < Enum.find_index(steps, &(&1 == isolated))
+    refute Enum.any?(steps, &String.contains?(&1["run"] || "", "mix assets.deploy"))
   end
 
   test "host agent release step copies integrations with the release version and preserves sources" do
@@ -967,7 +1034,8 @@ defmodule Backplane.ReleaseConfigTest do
 
     [qualification_job, _rest] = String.split(workflow, "  build:", parts: 2)
     refute qualification_job =~ "_build/test"
-    assert qualification_job =~ "release-memory-v2-qualification-v2-"
+    assert qualification_job =~ "release-memory-v2-qualification-ubuntu26-v3-"
+    refute qualification_job =~ "release-memory-v2-qualification-v2-"
 
     assert Backplane.Repo.config()[:pool_size] >= 10
 

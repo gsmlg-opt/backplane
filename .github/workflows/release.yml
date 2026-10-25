@@ -29,7 +29,7 @@ env:
 jobs:
   qualify-memory-v2:
     name: Qualify Memory V2
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     outputs:
       gated_sha: ${{ steps.gate.outputs.sha }}
@@ -117,9 +117,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: deps
-          key: release-memory-v2-qualification-v2-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
+          key: release-memory-v2-qualification-ubuntu26-v3-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
           restore-keys: |
-            release-memory-v2-qualification-v2-
+            release-memory-v2-qualification-ubuntu26-v3-
 
       - name: Install dependencies
         run: mix deps.get
@@ -229,11 +229,26 @@ jobs:
       - name: Verify revisioned edge cutover readiness
         run: mix backplane.memory.edge_cutover_check
 
-      - name: Build admin assets for browser qualification
+      - name: Build web assets on the supported native build platform
+        env:
+          MIX_ENV: prod
+          DUSKMOON_NATIVE_MODE: precompiled
+          GATED_SHA: ${{ steps.gate.outputs.sha }}
+          RELEASE_VERSION: ${{ steps.gate.outputs.version }}
         run: |
           mix deps.compile
           mix npm.install --frozen
-          mix "do" --app backplane_admin assets.build
+          mix assets.deploy
+          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
+            --export . artifacts/web-assets "$GATED_SHA" "$RELEASE_VERSION"
+
+      - name: Upload qualified static web assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: qualified-web-assets
+          path: artifacts/web-assets/
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Verify Memory V2 migration, upgrade, and projection repair contracts
         run: |
@@ -412,13 +427,22 @@ jobs:
             mix deps.get --only prod
           fi
 
-      - name: Install asset tools
+      - name: Compile gateway dependencies
         if: matrix.release == 'backplane'
-        run: mix deps.compile && mix npm.install --frozen
+        run: mix deps.compile
 
-      - name: Build web assets
+      - name: Download qualified static web assets
         if: matrix.release == 'backplane'
-        run: mix assets.deploy
+        uses: actions/download-artifact@v8
+        with:
+          name: qualified-web-assets
+          path: artifacts/web-assets
+
+      - name: Import qualified web assets
+        if: matrix.release == 'backplane'
+        run: >-
+          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs
+          --import artifacts/web-assets . "$GATED_SHA" "$RELEASE_VERSION"
 
       - name: Refresh compiled admin build metadata
         if: matrix.release == 'backplane'
@@ -727,6 +751,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: '{backplane-*,host_agent-*,memory-v2-qualification}'
           path: dist
           merge-multiple: true
 

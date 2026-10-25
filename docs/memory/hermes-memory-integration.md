@@ -550,6 +550,43 @@ immutable SHA selected by the existing release workflow. Published artifacts,
 package registries and operator installation require their own receipts; local
 checks do not establish them.
 
+### Native asset build platform and runtime boundary
+
+The `1.10.39` release attempt at
+[run 40217174523](https://github.com/gsmlg-opt/backplane/actions/runs/40217174523)
+failed during qualification asset generation on Ubuntu 24.04: the published
+Vize NIF required `GLIBC_2.43`, followed by unavailable
+`Vize.Native.compile_css_nif/9`. The upstream
+[platform decision](https://github.com/duskmoon-dev/duskmoon-bundler/issues/9)
+requires Ubuntu 26.04 for GNU native asset builds. Earlier source, Memory and
+live-scenario passes do not establish that release attempt as successful.
+
+The release workflow now generates both production web profiles, minified
+bundler manifests and Phoenix digests during Ubuntu 26.04 qualification.
+`DUSKMOON_NATIVE_MODE=precompiled` forbids a DuskMoon source fallback there.
+The artifact contains only the API and Admin `priv/static` trees plus a manifest
+binding their file hashes to the gated source SHA, release version and lockfile.
+The original platform release jobs validate this provenance and the consumed
+assets before assembling releases. Ubuntu 26.04 BEAM output, ERTS, dependencies
+and native libraries are never imported.
+
+Docker uses the pinned existing OTP 28/Elixir 1.18 Bookworm image as a one-way
+`/usr/local` toolchain donor into a pinned official Ubuntu 26.04 asset stage.
+That stage checks the BEAM versions and actually runs the guarded asset task.
+Only its two validated static directories enter the original Bookworm backend
+builder. The `web-assets` export target also supports the standalone Build
+workflow. Source-bound Docker builds supply the existing `VCS_REF` and `VERSION`
+build arguments. Gateway Linux tarballs remain built on Ubuntu 24.04; host-agent
+Linux tarballs retain Ubuntu 22.04/glibc 2.35, and the Docker runtime remains
+Bookworm. This is a build-platform change, not an operator runtime upgrade.
+
+Local contract and artifact-fixture checks cannot prove Ubuntu 26.04 NIF loading,
+the copied donor toolchain's execution, or the resulting Linux image/runtime.
+Hosted qualification, all platform builds, packaged-asset checks, installed
+migration/HTTP smoke and a clean Docker build must pass on the resulting commit
+before the release-platform repair is accepted. Publication and production
+installation remain separate evidence surfaces.
+
 ### Reproducing the checks
 
 Run the standalone scenario with an already available PostgreSQL/pgvector service

@@ -117,9 +117,13 @@ jobs:
             mix deps.get --only prod
           fi
 
-      - name: Install asset tools
+      - name: Compile gateway dependencies
         if: matrix.release == 'backplane'
-        run: mix deps.compile && mix npm.install --frozen
+        run: mix deps.compile
+
+      - name: Set up isolated web asset builder
+        if: matrix.release == 'backplane'
+        uses: docker/setup-buildx-action@v4
 
       - name: Verify web asset build orchestration
         if: matrix.release == 'backplane'
@@ -127,9 +131,27 @@ jobs:
           elixir test/build_web_assets_script_test.exs
           elixir -pa _build/prod/lib/jason/ebin test/web_assets_test.exs
 
-      - name: Build web assets
+      - name: Verify retained Bookworm Docker release builder
+        if: matrix.release == 'backplane' && matrix.target.name == 'linux-x64'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          revision="$(git rev-parse HEAD)"
+          docker buildx build --target builder \
+            --build-arg VCS_REF="$revision" --build-arg VERSION="$RELEASE_VERSION" \
+            --output type=cacheonly .
+
+      - name: Build isolated web assets
         if: matrix.release == 'backplane'
-        run: mix assets.deploy
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          revision="$(git rev-parse HEAD)"
+          docker buildx build --target web-assets \
+            --build-arg VCS_REF="$revision" --build-arg VERSION="$RELEASE_VERSION" \
+            --output type=local,dest=artifacts/web-assets .
+          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
+            --import artifacts/web-assets . "$revision" "$RELEASE_VERSION"
 
       - name: Build OTP release
         env:
