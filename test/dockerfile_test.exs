@@ -79,6 +79,121 @@ defmodule Backplane.DockerfileTest do
              "elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs"
   end
 
+  test "normalizes source and plugin versions before compiling either Docker stage" do
+    dockerfile = File.read!(Path.expand("../Dockerfile", __DIR__))
+    normalize = ~s(RUN bash scripts/set-version.sh "${VERSION}" all)
+
+    for {name, compile} <- [
+          {"web-assets-builder", "RUN mix assets.deploy"},
+          {"builder", "RUN mix release backplane"}
+        ] do
+      body = stage(dockerfile, name)
+      assert body =~ normalize
+      {copy_at, _} = :binary.match(body, "COPY . .")
+      {normalize_at, _} = :binary.match(body, normalize)
+      {compile_at, _} = :binary.match(body, compile)
+      assert copy_at < normalize_at and normalize_at < compile_at
+
+      directory = docker_version_fixture()
+
+      {output, status} =
+        System.cmd("sh", ["-c", String.replace_prefix(normalize, "RUN ", "")],
+          cd: directory,
+          env: [{"VERSION", "9.8.7"}],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, output
+      refute File.exists?(Path.join(directory, "apps/backplane_host_agent"))
+
+      for path <- ["mix.exs" | Path.wildcard("apps/*/mix.exs", match_dot: true)] do
+        unless ignored_app_manifest?(path) do
+          assert File.read!(Path.join(directory, path)) =~
+                   ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+        end
+      end
+
+      for path <- Path.wildcard(Path.join(directory, "integrations/memory/**/*.{yaml,json}")) do
+        assert File.read!(path) =~ ~r/version[" :]++"?9\.8\.7/
+      end
+    end
+  end
+
+  test "Docker verifies assembled app versions without starting the release" do
+    dockerfile = File.read!(Path.expand("../Dockerfile", __DIR__))
+    builder = stage(dockerfile, "builder")
+
+    assert [_, verify] =
+             Regex.run(
+               ~r/^RUN <<'VERIFY_RELEASE_VERSION'\n(.*?)\nVERIFY_RELEASE_VERSION$/ms,
+               builder
+             )
+
+    refute verify =~ "bin/backplane"
+    directory = docker_version_fixture()
+
+    for {app, version} <- [{:backplane, "9.8.7"}, {:backplane_admin, "9.8.7"}] do
+      write_app_spec(directory, app, version)
+    end
+
+    {output, status} = verify_docker_versions(verify, directory)
+    assert status == 0, output
+
+    write_app_spec(directory, :backplane_admin, "1.10.38")
+    {output, status} = verify_docker_versions(verify, directory)
+    assert status != 0
+    assert output =~ "assembled application version mismatch"
+
+    File.rm_rf!(Path.join(directory, "_build/prod/rel/backplane/lib"))
+    {output, status} = verify_docker_versions(verify, directory)
+    assert status != 0
+    assert output =~ "assembled Backplane applications are missing"
+  end
+
+  defp docker_version_fixture do
+    directory =
+      Path.join(
+        System.tmp_dir!(),
+        "backplane-docker-version-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn -> File.rm_rf!(directory) end)
+
+    files =
+      ["mix.exs", "scripts/set-version.sh"] ++
+        Path.wildcard("apps/*/mix.exs") ++
+        ~w(apps/backplane_mcp_protocol/README.md apps/backplane_mcp_protocol/pages/introduction.md apps/backplane_mcp_protocol/pages/building-a-server.md) ++
+        ~w(integrations/memory/hermes/plugin.yaml integrations/memory/openclaw/plugin.yaml integrations/memory/openclaw/package.json integrations/memory/openclaw/openclaw.plugin.json)
+
+    for path <- files, not ignored_app_manifest?(path) do
+      destination = Path.join(directory, path)
+      File.mkdir_p!(Path.dirname(destination))
+      File.cp!(path, destination)
+    end
+
+    directory
+  end
+
+  defp write_app_spec(root, app, version) do
+    path =
+      Path.join([root, "_build/prod/rel/backplane/lib", "#{app}-9.8.7", "ebin", "#{app}.app"])
+
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(
+      path,
+      :io_lib.format(~c"~p.~n", [{:application, app, [vsn: String.to_charlist(version)]}])
+    )
+  end
+
+  defp verify_docker_versions(script, directory) do
+    System.cmd("sh", ["-c", script],
+      cd: directory,
+      env: [{"VERSION", "9.8.7"}],
+      stderr_to_stdout: true
+    )
+  end
+
   defp ignored_app_manifest?(manifest) do
     ignored_paths =
       Path.expand("../.dockerignore", __DIR__)

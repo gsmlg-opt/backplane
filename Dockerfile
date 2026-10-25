@@ -54,6 +54,7 @@ RUN mix deps.get
 RUN mix deps.compile
 RUN mix npm.install --frozen
 COPY . .
+RUN bash scripts/set-version.sh "${VERSION}" all
 RUN mix assets.deploy
 RUN elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
     --export . /web-assets "${VCS_REF}" "${VERSION}"
@@ -111,12 +112,31 @@ RUN mix deps.get
 RUN mix deps.compile
 
 COPY . .
+RUN bash scripts/set-version.sh "${VERSION}" all
 
 COPY --from=web-assets-builder /web-assets/apps/backplane_api/priv/static ./apps/backplane_api/priv/static
 COPY --from=web-assets-builder /web-assets/apps/backplane_admin/priv/static ./apps/backplane_admin/priv/static
 RUN mix release backplane --overwrite --version "${VERSION}" \
   && elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
     --release _build/prod/rel/backplane
+
+RUN <<'VERIFY_RELEASE_VERSION'
+elixir -e '
+expected = hd(System.argv())
+applications =
+  for path <- Path.wildcard("_build/prod/rel/backplane/lib/backplane*-*/ebin/*.app") do
+    {:ok, [{:application, app, metadata}]} = :file.consult(String.to_charlist(path))
+    actual = to_string(Keyword.fetch!(metadata, :vsn))
+    unless actual == expected do
+      raise "assembled application version mismatch for #{app}: #{actual}, expected #{expected}"
+    end
+    app
+  end
+unless :backplane in applications and :backplane_admin in applications do
+  raise "assembled Backplane applications are missing"
+end
+' "${VERSION}"
+VERIFY_RELEASE_VERSION
 
 FROM ${DEBIAN_IMAGE} AS runtime
 
