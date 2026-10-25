@@ -469,6 +469,13 @@ jobs:
             GenServer.stop(pid)
           '
 
+      # The pinned Hermes source requires Python >=3.11; Ubuntu 22.04 ships 3.10.
+      - name: Set up Python for Hermes contract tests
+        if: matrix.release == 'host_agent'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Verify packaged Hermes provider
         if: matrix.release == 'host_agent'
         run: |
