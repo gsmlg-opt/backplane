@@ -2,7 +2,8 @@
 
 Date: 2026-10-26
 
-Status: proposed; implementation requires user approval.
+Status: approved by the user on 2026-10-26; implemented. Final integration and
+published-package acceptance remain release gates.
 
 Baseline: `main` at `77721c0e674996c81b7f0a0b824a748a641420a6`, published as
 1.10.39. Release scope is the fixed internal-request snapshot
@@ -231,8 +232,9 @@ gain no new media routes or cross-protocol capability claims.
 Add independently authored native fixtures for both output kinds, all detail
 values/default, both data forms, mixed order and explicit unsupported cases.
 Round-trip canonical JSON, restore through public constructors, send through
-the actual public HTTP client to a loopback server and assert the exact captured
-JSON. Preserve status, call identity and detail before/after reload. Include
+the public codec with an OTP HTTP host client to a loopback server and assert the exact captured
+JSON. The protocol package owns pure codecs and has no HTTP client; transport
+remains host-owned. Preserve status, call identity and detail before/after reload. Include
 legacy image-codec compatibility coverage. No real-provider acceptance is claimed.
 
 Official source evidence retrieved on 2026-10-26:
@@ -298,6 +300,13 @@ the released immutable source contains only the approved scope on top of the
 already-published baseline. If concurrent unpublished commits enter `main`,
 reconcile the authorized release boundary before publishing them.
 
-Current evidence is source diagnosis plus reporter reproductions and fetched
-official schemas. Implementation, new runtime regression checks, package
-consumer acceptance and 1.10.40 publication have not yet happened.
+Implementation and independent spec/code-quality reviews cover all five requests.
+Focused Conversation coverage passes 93 tests and the AI protocol suite passes 178.
+The original full runtime suite passes 1044 tests; the earlier two native cleanup
+failures and diagnostic rerun are retained as verification evidence. Scoped
+formatting, strict compilation and Credo pass. Local Elixir 1.18 Dialyzer has no
+new Kernel warnings after using a private ID map; eight warnings in unchanged
+files and one unchanged root formatting difference remain for the required
+Elixir 1.19.5 CI. Release/CI/Hex contracts pass 34/8/8 tests; the Hermes oracle
+passes 74. Exact-source CI, published-package acceptance and 1.10.40 publication
+remain release gates; no real-provider acceptance or deployment is claimed.

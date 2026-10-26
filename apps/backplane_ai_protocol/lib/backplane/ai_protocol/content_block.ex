@@ -5,6 +5,17 @@ defmodule Backplane.AiProtocol.ContentBlock do
   Opaque reasoning and provider state are preserved as provenance-tagged values; they are never
   converted into display text.
 
+  Responses tool-result images use `%{type: :image, data: %{"data" => bytes,
+  "mime_type" => mime, "detail" => detail}}`. String-keyed `data` and `mime_type`
+  are required: PNG, JPEG, WebP or GIF MIME and valid nonempty base64, either
+  bare or a complete `data:<matching MIME>;base64,<payload>` URI. The URI is
+  preserved exactly. Optional `detail` is `"auto"`, `"low"`, `"high"` or
+  `"original"`; omission encodes explicit `"auto"`. The Responses codec rejects
+  extra fields, extensions and image reason metadata. Model image/detail support
+  remains provider-owned. Image construction stays bounded and opaque for
+  compatibility with other providers' existing representations; this subset is
+  validated when encoding Responses.
+
   Audio, embedded resources and resource links use bounded, string-keyed `data`
   objects. Audio carries MIME plus base64 data or a URI; resources retain URI,
   MIME and optional text/base64 content; links retain URI and name. Portable

@@ -1,0 +1,18 @@
+{
+  "model": "fixture",
+  "stream": false,
+  "input": [
+    {"type": "function_call", "name": "read_image", "call_id": "image_function", "arguments": "{}"},
+    {"type": "function_call_output", "call_id": "image_function", "output": [
+      {"type": "input_text", "text": "before"},
+      {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==", "detail": "original"},
+      {"type": "input_text", "text": "after"}
+    ]},
+    {"type": "custom_tool_call", "name": "read_image", "call_id": "image_custom", "input": "image.png"},
+    {"type": "custom_tool_call_output", "call_id": "image_custom", "output": [
+      {"type": "input_text", "text": "before"},
+      {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==", "detail": "original"},
+      {"type": "input_text", "text": "after"}
+    ]}
+  ]
+}

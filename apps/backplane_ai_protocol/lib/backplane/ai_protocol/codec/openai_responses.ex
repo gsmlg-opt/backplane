@@ -1,6 +1,12 @@
 defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   @moduledoc """
-  Pure Responses codec for text, JSON function and raw custom tools.
+  Pure Responses codec for text, JSON function and raw custom tools, including
+  ordered text/image tool outputs. Images use string-keyed `data`, `mime_type`
+  and optional `detail` fields; see `Backplane.AiProtocol.ContentBlock`.
+
+  Tool result status `nil` or `:success` encodes as an ordinary completed output.
+  Status `:error` is incompatible: Responses has no semantic `is_error` field,
+  and a function item's lifecycle status cannot represent a tool error.
 
   Canonical `namespace::name` identities use native namespace declarations and call fields.
   Unsupported content and unresolved state fail before transport. This codec does not execute
@@ -52,22 +58,35 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
           %{type: :tool_call, tool_call: call} <- blocks,
           do: call
 
-    with :ok <- unique_ids(calls) do
-      kinds = Map.new(calls, fn call -> {call.id, argument_kind(call.raw_arguments)} end)
+    with :ok <- unique_ids(calls), do: encode_messages(request.input, %{}, [])
+  end
 
-      collect(request.input, &encode_message(&1, kinds))
-      |> case do
-        {:ok, messages} -> {:ok, List.flatten(messages)}
-        error -> error
-      end
+  defp encode_messages([], _kinds, acc), do: {:ok, acc |> Enum.reverse() |> List.flatten()}
+
+  defp encode_messages([message | rest], kinds, acc) do
+    with {:ok, items} <- encode_message(message, kinds) do
+      encode_messages(rest, record_call_kinds(message, kinds), [items | acc])
     end
   end
 
+  defp record_call_kinds(%{role: :assistant, content: blocks}, kinds) do
+    Enum.reduce(blocks, kinds, fn
+      %{type: :tool_call, tool_call: call}, kinds ->
+        Map.put(kinds, call.id, argument_kind(call.raw_arguments))
+
+      _, kinds ->
+        kinds
+    end)
+  end
+
+  defp record_call_kinds(_message, kinds), do: kinds
+
   defp encode_message(%{role: :tool} = message, kinds) do
-    with {:ok, kind} <- fetch_kind(kinds, message.tool_call_id),
-         {:ok, text} <- Common.tool_result_text(message.content) do
+    with :ok <- tool_result_status(message.status),
+         {:ok, kind} <- fetch_kind(kinds, message.tool_call_id),
+         {:ok, output} <- encode_tool_output(message) do
       type = if kind == :custom, do: "custom_tool_call_output", else: "function_call_output"
-      {:ok, [%{"type" => type, "call_id" => message.tool_call_id, "output" => text}]}
+      {:ok, [%{"type" => type, "call_id" => message.tool_call_id, "output" => output}]}
     end
   end
 
@@ -92,6 +111,55 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   end
 
   defp encode_message(_state, _kinds), do: Common.unsupported("provider_state")
+
+  defp tool_result_status(status) when status in [nil, :success], do: :ok
+  defp tool_result_status(_status), do: Common.unsupported("responses_tool_error_status")
+
+  defp encode_tool_output(message) do
+    if Enum.any?(message.content, &(&1.type == :image)) do
+      if message.extensions == %{},
+        do: collect(message.content, &encode_tool_output_block/1),
+        else: Common.unsupported("responses_tool_message_metadata")
+    else
+      Common.tool_result_text(message.content)
+    end
+  end
+
+  defp encode_tool_output_block(%ContentBlock{extensions: extensions, reason: reason})
+       when extensions != %{} or not is_nil(reason),
+       do: Common.unsupported("responses_tool_content_metadata")
+
+  defp encode_tool_output_block(%ContentBlock{type: :text, text: text}),
+    do: {:ok, %{"type" => "input_text", "text" => text}}
+
+  defp encode_tool_output_block(%ContentBlock{type: :image, data: data}) when is_map(data) do
+    with true <- Enum.all?(Map.keys(data), &(&1 in ~w(data mime_type detail))),
+         mime when mime in ~w(image/png image/jpeg image/webp image/gif) <- data["mime_type"],
+         detail when detail in ~w(auto low high original) <- Map.get(data, "detail", "auto"),
+         {:ok, uri} <- image_uri(data["data"], mime) do
+      {:ok, %{"type" => "input_image", "image_url" => uri, "detail" => detail}}
+    else
+      _ -> Common.unsupported("responses_image_form")
+    end
+  end
+
+  defp encode_tool_output_block(_block), do: Common.unsupported("responses_tool_content")
+
+  defp image_uri(data, mime) when is_binary(data) do
+    prefix = "data:#{mime};base64,"
+
+    {payload, uri} =
+      if String.starts_with?(data, prefix),
+        do: {binary_part(data, byte_size(prefix), byte_size(data) - byte_size(prefix)), data},
+        else: {data, prefix <> data}
+
+    case Base.decode64(payload) do
+      {:ok, bytes} when byte_size(bytes) > 0 -> {:ok, uri}
+      _ -> Common.unsupported("responses_image_data")
+    end
+  end
+
+  defp image_uri(_data, _mime), do: Common.unsupported("responses_image_data")
 
   defp fetch_kind(kinds, id) do
     case Map.fetch(kinds, id) do

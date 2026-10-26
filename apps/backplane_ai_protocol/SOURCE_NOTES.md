@@ -54,3 +54,34 @@ The fixture is hand-authored schema evidence, not captured codec output, an SDK
 execution, or a provider/model response. The tested round trip is canonical
 message JSON serialization and reload followed by native request encoding;
 there is no provider request-decoding API or remote model-capability assertion.
+
+## OpenAI Responses image tool-result evidence
+
+The Responses image mapping and fixtures under `test/fixtures/openai_responses`
+were independently authored on 2026-10-26 from these official sources:
+
+- https://developers.openai.com/api/reference/resources/responses/methods/create
+- https://developers.openai.com/api/docs/guides/function-calling
+- https://developers.openai.com/api/docs/guides/images-vision
+
+The rendered create reference defines both `FunctionCallOutput.output` and
+`CustomToolCallOutput.output` as strings or arrays admitting native input
+text/image/file content. `ResponseInputImageContent` / `ResponseInputImage`
+defines `image_url` and the `auto`, `low`, `high`, `original` detail values.
+The function-calling guide confirms image arrays in function output; the image
+guide defines the default `auto` and model-dependent detail restrictions. The
+complete rendered reference was used because the documentation MCP Markdown
+result exposes only a schema stub.
+
+The public subset is restricted to inline base64/data-URI image tool results,
+with exact order, call identity and detail retention. Canonical success/nil
+status encodes an ordinary completed output; semantic error status is rejected
+because neither output kind provides an equivalent `is_error` marker. Native
+function lifecycle status is not an error substitute.
+
+Fixtures are schema-based examples, not captured codec output, SDK executions
+or real provider responses. Tests compare the codec to independently authored
+native JSON, preserve canonical messages across JSON reload, and capture the
+actual JSON sent by OTP's HTTP host client to a task-owned loopback listener.
+The protocol package remains transport-free. This establishes local functional
+encoding and legacy-codec compatibility, without provider/model acceptance.

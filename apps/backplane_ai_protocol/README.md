@@ -18,7 +18,7 @@ provider presets, and durable observation.
 - `:anthropic` for Anthropic Messages
 - `:openai` for OpenAI Chat Completions and compatible APIs
 - `:google` for Google Gemini GenerateContent
-- `:openai_responses` for Responses text, JSON functions and raw custom tools
+- `:openai_responses` for Responses text, JSON functions, raw custom tools and image tool results
 
 The facade exposes:
 
@@ -91,11 +91,63 @@ bound. Retained streams default to 128 calls and 1,048,576 total tool-input byte
 `max_tool_calls` and `max_total_tool_input_bytes` can tighten these limits. SSE
 framing limits also apply.
 
-The Responses codec supports text, function/custom calls, text results, usage
-and terminal events. It rejects images, reasoning, opaque provider state and
-unsupported events. This subset does not establish complete provider parity or
+The Responses codec supports text, function/custom calls, text results, ordered
+text/image tool results, usage and terminal events. It rejects images outside
+tool results, reasoning, opaque provider state and unsupported events. This
+subset does not establish complete provider parity or
 enable cross-protocol gateway routes. All credentials, approvals and execution
 authority remain host-owned.
+
+## Responses image tool results
+
+The supported canonical image block is:
+
+```elixir
+%{type: :image, data: %{
+  "data" => bare_base64_or_complete_data_uri,
+  "mime_type" => "image/png",
+  "detail" => "original"
+}}
+```
+
+`data` and `mime_type` are required string fields. Supported MIME values are
+`image/png`, `image/jpeg`, `image/webp` and `image/gif`. Data must be valid,
+nonempty base64, either bare or a complete
+`data:<matching MIME>;base64,<payload>` URI. Bare data receives exactly one
+prefix; an existing URI is retained byte for byte. Remote URLs, file IDs,
+other URI forms, mismatched MIME, additional data fields, message/block
+extensions and image `reason` metadata are explicitly incompatible.
+
+Optional `detail` accepts exactly `auto`, `low`, `high` and `original`.
+Omission encodes explicit `auto`, matching the API default. Consumers requiring
+Codex's `high` preference must specify it. Detail/model support varies; the
+selected provider/model owns decoding, animation and other image restrictions.
+Encoding does not inspect the image format or establish remote acceptance,
+and never silently downgrades a supplied detail value.
+
+Image-bearing tool results encode an ordered array of native `input_text` and
+`input_image` blocks inside `function_call_output.output` or
+`custom_tool_call_output.output`. The preceding typed call selects the output
+kind and retains its `call_id`. Images remain tool results; text-only results
+keep their existing string output. Other image roles and other multimodal
+tool-output kinds remain unsupported. Existing opaque image construction and
+the three legacy codecs' image representations remain compatible; Responses
+validates its supported subset during encoding.
+
+Canonical `Message.status` survives `Serialization` JSON persistence and public
+constructor reload. Status `nil` or `:success` represents ordinary completed
+outputs. Responses has no semantic `is_error` marker: function lifecycle status
+does not mean failure, and custom outputs have no such status field. Both
+image-bearing and text-only `:error` results are therefore rejected with
+`:incompatible` and `upstream_outcome: :not_submitted`. No status is invented or
+silently erased. Hosts restoring JSON must map known role/status and argument
+encoding tags to their public constructor atom/tuple forms, as with other
+canonical messages.
+
+The independent fixtures and tests verify canonical reload followed by exact
+JSON transmission through the public codec and an OTP HTTP host client to a
+loopback server. This pure package does not own an HTTP client. No remote
+provider or model acceptance is claimed.
 
 ## Typed audio and resources
 
