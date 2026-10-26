@@ -29,8 +29,6 @@ defmodule Backplane.Memory.Summaries.Summary do
   end
 
   def changeset(summary, attrs) do
-    attrs = canonical_or_legacy_attrs(attrs)
-
     summary
     |> cast(attrs, [
       :session_id,
@@ -71,44 +69,4 @@ defmodule Backplane.Memory.Summaries.Summary do
       name: :memory_summaries_subject_version_uniq
     )
   end
-
-  defp canonical_or_legacy_attrs(attrs) when is_map(attrs) do
-    if present?(attrs, :subject_id) do
-      attrs
-    else
-      session_id = value(attrs, :session_id)
-      content = value(attrs, :content)
-
-      if non_empty?(session_id) and is_binary(content) do
-        attrs
-        |> put_default(:subject_id, "legacy:#{session_id}")
-        |> put_default(:host_id, "legacy")
-        |> put_default(:processing_version, "legacy-v0")
-        |> put_default(:input_revision, legacy_input_revision(session_id))
-        |> put_default(:output_revision, legacy_output_revision(content))
-      else
-        attrs
-      end
-    end
-  end
-
-  defp value(attrs, key), do: Map.get(attrs, key, Map.get(attrs, Atom.to_string(key)))
-
-  defp put_default(attrs, key, value) when is_map_key(attrs, "session_id"),
-    do: Map.put_new(attrs, Atom.to_string(key), value)
-
-  defp put_default(attrs, key, value), do: Map.put_new(attrs, key, value)
-  defp present?(attrs, key), do: non_empty?(value(attrs, key))
-  defp non_empty?(value), do: is_binary(value) and String.trim(value) != ""
-  @doc false
-  def legacy_input_revision(session_id) do
-    md5("legacy-input:#{session_id}") <> md5("legacy-input-2:#{session_id}")
-  end
-
-  @doc false
-  def legacy_output_revision(content) do
-    md5(content) <> md5("legacy-output-2:#{content}")
-  end
-
-  defp md5(value), do: :crypto.hash(:md5, value) |> Base.encode16(case: :lower)
 end

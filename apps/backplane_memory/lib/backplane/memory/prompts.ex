@@ -6,10 +6,11 @@ defmodule Backplane.Memory.Prompts do
   alias Backplane.Memory.Coordination.Action
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Lessons
-  alias Backplane.Memory.Memories.{Evidence, Memory, Search}
+  alias Backplane.Memory.Memories.{Evidence, Memory}
   alias Backplane.Memory.Partition
   alias Backplane.Memory.Privacy.Filter
-  alias Backplane.Memory.Projections.ProjectedSession
+  alias Backplane.Memory.Projections.{ProjectedObservation, ProjectedSession}
+  alias Backplane.Memory.Recall.Pipeline
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
 
   @max_arg_chars 500
@@ -84,21 +85,35 @@ defmodule Backplane.Memory.Prompts do
          :ok <- validate_entitled_scope(scope, partition.scope),
          {:ok, session} <- optional_string(args, "session"),
          {:ok, budget} <- token_budget(args["token_budget"]) do
-      opts =
-        [
-          limit: @max_recall_candidates,
-          memory_space_id: partition.memory_space_id,
-          namespace: partition.namespace,
-          scope: partition.scope,
-          embed_fn: fn _texts, _mode, _opts -> {:error, :fts_only} end,
-          writeback_fn: fn _ids -> :ok end
-        ]
-        |> maybe_put(:project, project)
-        |> maybe_put(:session, session)
+      attrs =
+        partition
+        |> Map.take([
+          :memory_space_id,
+          :host_id,
+          :client_id,
+          :source_client_id,
+          :scope,
+          :namespace
+        ])
+        |> Map.merge(%{
+          query: query,
+          project: project,
+          session_id: session,
+          # Retrieval selects canonical entries; the prompt renderer below owns
+          # its smaller output budget and can cite a bounded excerpt.
+          token_budget: 100_000,
+          channel_weights: %{fts: 1.0, vector: 0.0, graph: 0.0}
+        })
 
-      {:ok, rows} = Search.hybrid_recall(query, opts)
-      text = format_recall(Enum.take(rows, @max_recall_results), budget)
-      {:ok, prompt_result("Authorized memory context", text)}
+      with {:ok, %{results: rows}} <-
+             Pipeline.run(attrs,
+               trace?: false,
+               post_fusion_opts: [limit: @max_recall_candidates],
+               reranker_opts: [enabled: false]
+             ) do
+        text = format_recall(Enum.take(rows, @max_recall_results), budget)
+        {:ok, prompt_result("Authorized memory context", text)}
+      end
     end
   end
 
@@ -117,11 +132,11 @@ defmodule Backplane.Memory.Prompts do
     rows
     |> Enum.map(fn row ->
       %{
-        "record_type" => "memory",
-        "memory_id" => row.id,
+        "record_type" => to_string(row.kind),
+        if(row.kind == :summary, do: "summary_id", else: "memory_id") => row.id,
         "content" =>
           filtered_string(row.content, min(@max_item_chars, max(div(max_bytes - 350, 4), 0))),
-        "citations" => Enum.map(evidence_citations(row.id), &filtered_string(&1, 100))
+        "citations" => row.evidence_refs |> Enum.take(3) |> Enum.map(&filtered_string(&1.id, 100))
       }
     end)
     |> jsonl(max_bytes)
@@ -622,7 +637,9 @@ defmodule Backplane.Memory.Prompts do
   end
 
   defp project_event_fields(query) do
-    select(query, [e], %{
+    query
+    |> join(:left, [e], o in ProjectedObservation, on: o.event_id == e.id)
+    |> select([e, o], %{
       id: e.id,
       host_id: e.host_id,
       project: e.project,
@@ -702,14 +719,7 @@ defmodule Backplane.Memory.Prompts do
           e.payload,
           ^@projected_string_chars
         ),
-      observation_id:
-        fragment(
-          "CASE WHEN jsonb_typeof(?->'_backplane') = 'object' AND jsonb_typeof(?->'_backplane'->'legacy_observation_id') = 'string' THEN left(?->'_backplane'->>'legacy_observation_id', ?) END",
-          e.payload,
-          e.payload,
-          e.payload,
-          ^@projected_string_chars
-        )
+      observation_id: o.event_id
     })
   end
 
@@ -799,20 +809,6 @@ defmodule Backplane.Memory.Prompts do
     if observations == [],
       do: events |> Enum.map(&citation(&1.id)) |> Enum.uniq() |> Enum.take(3),
       else: observations
-  end
-
-  defp evidence_citations(memory_id) do
-    Evidence
-    |> where([e], e.memory_id == ^memory_id)
-    |> order_by([e], asc: e.created_at, asc: e.id)
-    |> limit(3)
-    |> repo().all()
-    |> Enum.map(fn evidence ->
-      evidence.source_event_id || evidence.source_observation_id || evidence.source_summary_id ||
-        evidence.source_request_id || evidence.source_session_id || evidence.session_id
-    end)
-    |> Enum.filter(&present?/1)
-    |> Enum.uniq()
   end
 
   defp handoff_evidence_citations([]), do: %{}
@@ -1168,9 +1164,6 @@ defmodule Backplane.Memory.Prompts do
 
   defp maybe_summary_project(query, project), do: where(query, [s], s.project == ^project)
   defp maybe_action_project(query, project), do: where(query, [a], a.project == ^project)
-
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp take_byte_records(lines, max_bytes) do
     lines

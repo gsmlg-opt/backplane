@@ -27,8 +27,6 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
 
   test "renders the authoritative V2 operations instrument panel", %{conn: conn} do
     assert :ok = Operations.set_gate(:pipeline, true)
-    assert :ok = Operations.set_gate(:events, true)
-    assert :ok = Operations.set_gate(:dual_write, true)
 
     event =
       event_fixture(
@@ -46,12 +44,11 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
     assert has_element?(view, "h1", "Memory")
     assert html =~ "Capture health, stored knowledge, and memory processing at a glance"
 
-    for label <- ["Pipeline", "Events", "Dual Write"] do
-      assert html =~ label
-    end
+    assert html =~ "Background processing"
+    refute html =~ "Dual Write"
 
-    assert length(Regex.scan(~r/Configured on/, html)) == 3
-    assert length(Regex.scan(~r/Effective/, html)) == 3
+    assert length(Regex.scan(~r/Configured on/, html)) == 1
+    assert length(Regex.scan(~r/Effective/, html)) == 1
 
     assert has_element?(view, "section[aria-label='Persisted activity'] dt", "Open streams")
 

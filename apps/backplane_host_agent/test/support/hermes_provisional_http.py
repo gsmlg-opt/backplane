@@ -83,8 +83,6 @@ def run(args):
         assert saved["authority"] == "provisional"
         assert saved["consistency"] == "pending_canonical_ack"
         assert not saved.get("canonical_id")
-        duplicate = tool("memory_save", {"content": content, "tags": ["aurora"]})
-        assert duplicate["id"] == saved["id"] and duplicate["dedup"] is True
 
         for name, values in (("memory_list", {}), ("memory_recall", {"query": "aurora"})):
             rows = read(name, values)

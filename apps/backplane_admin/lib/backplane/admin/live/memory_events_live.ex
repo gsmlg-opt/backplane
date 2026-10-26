@@ -10,9 +10,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
   @selection_keys ~w(memory_space_id host client scope namespace repository)
 
   @memory_setting_keys [
-    "memory.pipeline.enabled",
-    "memory.events.enabled",
-    "memory.events.dual_write"
+    "memory.pipeline.enabled"
   ]
 
   @impl true
@@ -158,7 +156,7 @@ defmodule Backplane.Admin.MemoryEventsLive do
     <div id="memory-events">
       <.memory_page_header
         title="Events"
-        subtitle="Authoritative Memory V2 event explorer"
+        subtitle="Canonical memory event explorer"
       />
 
       <.dm_alert :if={@selection_error} id="event-selection-unavailable" variant="warning" title="Event unavailable" compact>

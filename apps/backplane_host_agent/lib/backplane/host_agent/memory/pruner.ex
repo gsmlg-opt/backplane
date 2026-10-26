@@ -52,6 +52,8 @@ defmodule Backplane.HostAgent.Memory.Pruner do
     sql = """
     DELETE FROM memories
     WHERE sync_state = 'synced'
+      AND NOT EXISTS (SELECT 1 FROM memory_outbox historical
+        WHERE historical.memory_id=memories.id AND historical.migration_reason IS NOT NULL)
       AND (
         (deleted_at IS NULL AND inserted_at < ?)
         OR (
@@ -168,7 +170,7 @@ defmodule Backplane.HostAgent.Memory.Pruner do
 
     Store.execute(
       store,
-      "DELETE FROM memory_outbox WHERE (state = 'done' AND completed_at IS NOT NULL AND completed_at < ?) OR (state = 'dead_letter' AND dead_lettered_at IS NOT NULL AND dead_lettered_at < ?)",
+      "DELETE FROM memory_outbox WHERE migration_reason IS NULL AND ((state = 'done' AND completed_at IS NOT NULL AND completed_at < ?) OR (state = 'dead_letter' AND dead_lettered_at IS NOT NULL AND dead_lettered_at < ?))",
       [cutoff, cutoff]
     )
   end

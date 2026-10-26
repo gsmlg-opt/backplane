@@ -1,5 +1,31 @@
 # Local Memory implementation and verification boundaries
 
+The current source uses one canonical Memory implementation. Observation and
+session commands append canonical events; file history reads their projections.
+Every recall entry point uses `Recall.Pipeline`. The processing switch pauses
+derived work, without selecting a different storage or retrieval implementation.
+The dual-write, event rollout, recall-version and host-V1 selectors are retired.
+Canonical observation/session commands share the captured-event subject lock;
+one host/session cannot change its owner tuple through a different stream.
+Request identities include the host, so hosts sharing a partition do not collide.
+
+The retirement migrations preserve historical tables as migration evidence,
+convert provable observation references to event identities and rewrite pending
+worker names. Unresolvable job authority is recorded as cancellation metadata;
+ambiguous host outbox rows remain preserved and explicitly quarantined rather
+than replayed under a new identity. Existing historical migrations and independent
+wire/schema version numbers do not represent alternate Memory implementations.
+Default private and selected shared host operations resolve authenticated Access
+and use the same immutable command outbox. Mirror delivery is a separate optional
+capability; disabling it does not select an older writer. Offline reads require
+valid authority and an available protected mirror. No retired facts cache supplies
+canonical authority. Device-local slots keep their explicit local contract.
+
+See [the host protocol](host-memory-v2-protocol.md) and its linked recovery runbook
+for command settlement, mirror delivery and quarantined-history boundaries. These
+source changes require the database/host migrations; the historical release
+acceptance below does not verify this retirement or its deployment.
+
 Local L01–L18 acceptance and full1.10.28 delivery are complete at the evidence
 levels in [the acceptance report](local-e2e-acceptance.md). Gated source
 `4bd3011c461f6a68c6de4ae7330578048205d71a` passed CI/Test and all15 release jobs

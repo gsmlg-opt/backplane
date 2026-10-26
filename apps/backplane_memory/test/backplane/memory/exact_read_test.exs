@@ -390,61 +390,87 @@ defmodule Backplane.Memory.ExactReadTest do
     assert current.authority_version == access.authority_version
   end
 
-  test "legacy recall accepts a final rendered budget and skips oversized whole memories", c do
-    previous = :ets.lookup(:backplane_settings, "memory.recall_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", false})
+  test "canonical recall accepts a final rendered budget and skips oversized whole memories", c do
+    memory = remember!(c, "budgetneedle user preference")
 
-    on_exit(fn ->
-      :ets.delete(:backplane_settings, "memory.recall_v2.enabled")
-      :ets.insert(:backplane_settings, previous)
-    end)
+    args = %{
+      "query" => "budgetneedle",
+      "token_budget" => 1000,
+      "channel_weights" => %{"fts" => 1}
+    }
 
-    memory = seed!(c, %{content: "budgetneedle user preference"})
-
-    assert {:ok, full} =
-             Service.call(
-               "memory::recall",
-               %{"query" => "budgetneedle", "token_budget" => 1000},
-               c.auth
-             )
-
-    assert [%{id: id}] = full.results
+    assert {:ok, full} = Service.call("memory::recall", args, c.auth)
+    assert [%{id: id, kind: :memory}] = full.results
     assert id == memory.id
+    assert full.channels.fts.status == :ok
+    assert full.channels.fts.count == 1
     assert full.used_tokens == byte_size(full.rendered_context)
     assert full.used_tokens > byte_size(memory.content)
+    assert full.rendered_context =~ memory.content
 
     assert {:ok, %{results: [], used_tokens: 0, rendered_context: ""}} =
              Service.call(
                "memory::recall",
-               %{"query" => "budgetneedle", "token_budget" => byte_size(memory.content)},
+               Map.put(args, "token_budget", byte_size(memory.content)),
                c.auth
              )
   end
 
-  test "legacy recall rejects unsupported constraints by stable sorted field names", c do
-    previous = :ets.lookup(:backplane_settings, "memory.recall_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", false})
+  test "canonical recall applies supported constraints and rejects malformed values", c do
+    memory =
+      remember!(c, "constraintneedle user preference", metadata: %{"project" => "project-a"})
 
-    on_exit(fn ->
-      :ets.delete(:backplane_settings, "memory.recall_v2.enabled")
-      Enum.each(previous, &:ets.insert(:backplane_settings, &1))
-    end)
+    facet = %{"dimension" => "exact_read_topic", "value" => "x"}
+
+    Repo.insert!(
+      Backplane.Memory.Facets.Dimension.changeset(
+        %Backplane.Memory.Facets.Dimension{},
+        %{name: facet["dimension"]}
+      )
+    )
+
+    assert {:ok, 1} = Backplane.Memory.Facets.tag(memory.id, [facet])
 
     args = %{
-      "query" => "same",
+      "query" => "constraintneedle",
       "project" => "project-a",
-      "facets" => [%{"dimension" => "topic", "value" => "x"}],
+      "facets" => [facet],
       "temporal_hints" => %{"after" => "2026-01-01T00:00:00Z"},
       "entity_hints" => ["entity"],
       "include_working" => false,
-      "token_budget" => 100,
+      "token_budget" => 1000,
       "channel_weights" => %{"fts" => 1}
     }
 
-    assert {:error, {:unsupported_filter, fields}} = Service.call("memory::recall", args, c.auth)
+    assert {:ok, %{results: [%{id: id}]}} = Service.call("memory::recall", args, c.auth)
+    assert id == memory.id
 
-    assert fields ==
-             ~w(channel_weights entity_hints facets include_working project temporal_hints)
+    for filters <- [
+          %{"project" => "project-b"},
+          %{"facets" => [Map.put(facet, "value", "other")]},
+          %{
+            "temporal_hints" => %{
+              "after" =>
+                DateTime.utc_now() |> DateTime.add(3600, :second) |> DateTime.to_iso8601()
+            }
+          }
+        ] do
+      assert {:ok, %{results: []}} =
+               Service.call("memory::recall", Map.merge(args, filters), c.auth)
+    end
+
+    for {key, invalid} <- [
+          {"project", %{}},
+          {"facets", [%{"dimension" => "", "value" => "x"}]},
+          {"temporal_hints", %{"after" => "not-a-date"}},
+          {"entity_hints", [1]},
+          {"include_working", "false"},
+          {"token_budget", 0},
+          {"channel_weights", %{"fts" => 0}}
+        ] do
+      assert {:error, :invalid_arguments} =
+               Service.call("memory::recall", Map.put(args, key, invalid), c.auth)
+    end
 
     assert {:error, :unauthorized} = Service.call("memory::recall", args, %{c.auth | scopes: []})
 
@@ -452,6 +478,20 @@ defmodule Backplane.Memory.ExactReadTest do
              Service.call("memory::list", %{"project" => "x"}, c.auth)
 
     assert {:error, :unauthorized} = Service.call("memory::list", %{scope: "foreign"}, c.auth)
+  end
+
+  defp remember!(c, content, opts \\ []) do
+    partition =
+      Map.merge(c.partition, %{
+        host_id: c.owner,
+        client_id: "host:" <> c.owner,
+        agent_id: "source-agent"
+      })
+
+    assert {:ok, memory} =
+             Memories.remember(content, Keyword.merge(Map.to_list(partition), opts))
+
+    memory
   end
 
   defp seed!(c, attrs \\ %{}) do

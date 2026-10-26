@@ -1,7 +1,7 @@
 defmodule Backplane.Memory.Events.Types do
   @min_importance -2_147_483_648
   @max_importance 2_147_483_647
-  @types ~w(session.started session.ended conversation.user_message conversation.agent_message agent.run.started agent.run.completed agent.run.failed tool.call.started tool.call.completed tool.call.failed task.created task.updated task.completed memory.recalled heartbeat.triggered dream.started dream.completed schedule.triggered legacy.observation agent.session.started agent.prompt.submitted agent.tool.completed agent.tool.failed agent.context.pre_compact agent.subagent.started agent.subagent.stopped agent.session.stopped agent.session.ended agent.session.abandoned git.commit.created)
+  @types ~w(session.started session.ended observation.recorded conversation.user_message conversation.agent_message agent.run.started agent.run.completed agent.run.failed tool.call.started tool.call.completed tool.call.failed task.created task.updated task.completed memory.recalled heartbeat.triggered dream.started dream.completed schedule.triggered legacy.observation agent.session.started agent.prompt.submitted agent.tool.completed agent.tool.failed agent.context.pre_compact agent.subagent.started agent.subagent.stopped agent.session.stopped agent.session.ended agent.session.abandoned git.commit.created)
   @aliases %{
     "type" => :event_type,
     "event_type" => :event_type,

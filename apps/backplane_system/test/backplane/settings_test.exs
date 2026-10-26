@@ -33,15 +33,23 @@ defmodule Backplane.SettingsTest do
       assert Settings.get(key) == true
     end
 
-    test "host delivery defaults preserve v1 and require explicit v2 opt-in" do
+    test "optional host mirror delivery is disabled by default" do
       for {key, expected} <- [
-            {"memory.host_sync_v1.enabled", true},
             {"memory.host_sync_v2.enabled", false},
             {"memory.host_sync_max_item_bytes", 262_144}
           ] do
         Repo.delete_all(from(s in Setting, where: s.key == ^key))
         :ets.delete(:backplane_settings, key)
         assert Settings.get(key) == expected
+      end
+    end
+
+    test "retired memory runtime selectors have no defaults" do
+      for key <-
+            ~w(memory.host_sync_v1.enabled memory.events.enabled memory.events.dual_write memory.recall_v2.enabled) do
+        Repo.delete_all(from(s in Setting, where: s.key == ^key))
+        :ets.delete(:backplane_settings, key)
+        assert Settings.get(key) == nil
       end
     end
 

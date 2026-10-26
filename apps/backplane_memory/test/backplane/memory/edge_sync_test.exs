@@ -36,7 +36,7 @@ defmodule Backplane.Memory.EdgeSyncTest do
     assert {:error, %{code: :protocol_disabled}} =
              EdgeSync.negotiate(c.host, Map.put(offer(), "selected", "host_memory.v2"))
 
-    assert {:ok, %{selected: "host_memory.v1"}} =
+    assert {:error, %{code: :unsupported_protocol}} =
              EdgeSync.negotiate(c.host, %{"memory" => %{"protocol" => "host_memory.v1"}})
   end
 

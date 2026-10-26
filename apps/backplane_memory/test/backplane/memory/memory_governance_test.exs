@@ -4,16 +4,6 @@ defmodule Backplane.Memory.MemoryGovernanceTest do
   alias Backplane.Memory.{Audit, Memories}
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
 
-  test "legacy contradiction heuristic is an unconditional no-op" do
-    first = remember!("same tags one", tags: ["x"])
-    second = remember!("same tags two", tags: ["x"])
-
-    assert {:ok, :no_change} = Memories.maybe_detect_contradiction(first.id, second.id)
-    assert Memories.get(first.id) == {:error, :unauthorized}
-    assert Memories.trusted_get(first.id) == {:ok, first}
-    assert Memories.trusted_get(second.id) == {:ok, second}
-  end
-
   test "forget/1 writes an audit entry" do
     mem = remember!("test governance")
     assert {:error, :unauthorized} = Memories.forget(mem.id)

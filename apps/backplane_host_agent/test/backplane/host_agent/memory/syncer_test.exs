@@ -1,1056 +1,204 @@
 defmodule Backplane.HostAgent.Memory.SyncerTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory
-  alias Backplane.HostAgent.Memory.{Migrator, Reducer, Store, Syncer}
-  alias Turso.Result
+  alias Backplane.HostAgent.{Memory, MemoryProxy}
+  alias Backplane.HostAgent.Memory.{Access, Migrator, Store, Syncer}
 
   @moduletag :tmp_dir
+  @id "11111111-1111-4111-8111-111111111111"
+  @canonical "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  @partition %{
+    "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "scope" => "private",
+    "namespace" => "private"
+  }
 
-  defmodule FakeChannel do
-    @moduledoc false
+  defmodule Channel do
+    def push(observer, "memory_sync", payload) do
+      send(observer, {:batch, payload})
 
-    def push(channel, event, payload, _timeout \\ 5_000) do
-      send(channel, {:memory_push, event, payload})
+      case Process.get({__MODULE__, :mode}) do
+        :timeout ->
+          {:error, :timeout}
 
-      case Process.get({__MODULE__, :reply}) do
-        nil ->
+        mode ->
           {:ok,
            %{
+             "protocol" => "memory_commands.v2",
              "items" =>
                Enum.map(payload["items"], fn item ->
-                 %{
-                   "id" => item["id"],
-                   "status" => "ok",
-                   "canonical_id" => "remote_#{item["id"]}",
-                   "error" => nil
-                 }
+                 Map.take(item, ~w(command_id access partition))
+                 |> Map.merge(%{
+                   "status" => "committed",
+                   "canonical_id" => "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                   "revision" => if(mode == :not_eligible, do: nil, else: 7)
+                 })
+                 |> then(fn ack ->
+                   if mode == :not_eligible,
+                     do: Map.put(ack, "mirror_status", "not_eligible"),
+                     else: ack
+                 end)
+                 |> then(fn ack ->
+                   if mode == :invalid_ack, do: Map.delete(ack, "revision"), else: ack
+                 end)
                end)
            }}
-
-        reply when is_function(reply, 1) ->
-          reply.(payload)
-
-        reply ->
-          reply
       end
     end
   end
 
-  defmodule OutageChannel do
-    def push(owner, "memory_sync", payload) do
-      send(owner, {:outage_push, self(), payload})
-
-      receive do
-        {:outage_reply, reply} -> reply
-        {:outage_exit, reason} -> exit(reason)
-      end
-    end
-  end
-
-  defmodule DiesOnPush do
-    def push(channel, event, payload) do
-      GenServer.stop(channel)
-      Backplane.HostAgent.Channel.push(channel, event, payload)
-    end
-  end
-
-  setup %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    {:ok, store: store, opts: memory_opts(store)}
-  end
-
-  test "drains pending outbox FIFO and marks ok acks done", %{store: store, opts: opts} do
-    {:ok, %{"id" => first_id}} = Memory.remember(%{"content" => "first"}, opts)
-    {:ok, %{"id" => second_id}} = Memory.remember(%{"content" => "second"}, opts)
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               batch_size: 1
-             )
-
-    assert_receive {:memory_push, "memory_sync", %{"items" => [item]}}
-    assert item["op"] == "remember"
-    assert item["id"] == first_id
-    assert item["content"] == "first"
-
-    assert_outbox(store, first_id, "done", 0)
-    assert_outbox(store, second_id, "pending", 0)
-
-    assert {:ok, %Result{rows: [%{"sync_state" => "synced", "remote_id" => remote_id}]}} =
-             Store.query(store, "SELECT sync_state, remote_id FROM memories WHERE id = ?", [
-               first_id
-             ])
-
-    assert remote_id == "remote_#{first_id}"
-  end
-
-  test "scope mismatch preserves queued private commands without attempting upload", %{
-    store: store,
-    opts: opts
-  } do
-    alias Backplane.HostAgent.MemoryProxy
+  setup %{tmp_dir: dir} do
     MemoryProxy.set_channel(nil)
+    store = start_supervised!({Store, database: Path.join(dir, "memory.db"), pool_size: 1})
+    :ok = Migrator.migrate(store)
+    owner = start_supervised!({Access, name: nil, store: store, now_fun: fn -> 10_000 end})
+
+    inventory = %{
+      "extensions" => ~w(memory_access.v1 memory_commands.v2),
+      "default_access_id" => @id,
+      "accesses" => [
+        %{
+          "access_id" => @id,
+          "authority_version" => 1,
+          "status" => "active",
+          "partition" => @partition,
+          "capabilities" => ~w(read remember forget),
+          "offline_read_lease_seconds" => 0
+        }
+      ]
+    }
+
     on_exit(fn -> MemoryProxy.set_channel(nil) end)
 
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "offline before join"}, opts)
+    opts = [
+      store: store,
+      access_server: owner,
+      channel: self(),
+      channel_module: Channel,
+      now_fun: fn -> "2026-10-26T00:00:00Z" end
+    ]
 
-    assert :ok =
-             MemoryProxy.set_connection(
-               %{
-                 channel: self(),
-                 memory: %{
-                   "selected" => "host_memory.v1",
-                   "memory_partition" => %{"scope" => "mac-mini", "namespace" => "private"}
-                 }
-               },
-               %{memory: %{enabled: true, bound_scope: "proj_local"}}
-             )
-
-    assert {:error, :memory_scope_mismatch} =
-             Syncer.drain_once(store: store, channel_module: FakeChannel)
-
-    refute_received {:memory_push, _, _}
-    assert_outbox(store, id, "pending", 0)
-
-    assert {:ok, %Result{rows: [%{"scope" => "proj_local", "sync_state" => "pending"}]}} =
-             Store.query(store, "SELECT scope, sync_state FROM memories WHERE id = ?", [id])
+    %{store: store, owner: owner, inventory: inventory, opts: opts}
   end
 
-  test "persists canonical ID and positive revision with remember settlement", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "revisioned"}, opts)
+  test "unavailable access cannot select the retired uploader", c do
+    assert {:ok, _} =
+             Store.execute(
+               c.store,
+               "INSERT INTO memory_outbox(op,memory_id,state,inserted_at,updated_at,migration_reason) VALUES ('remember','old-id','dead_letter','old','old','needs_authority_mapping')"
+             )
 
-    Process.put({FakeChannel, :reply}, fn payload ->
-      {:ok,
-       %{
-         "items" => [
-           %{
-             "id" => hd(payload["items"])["id"],
-             "status" => "ok",
-             "canonical_id" => "hub_revisioned",
-             "revision" => 42
-           }
-         ]
-       }}
-    end)
+    assert {:ok, %{"drained" => 0, "status" => "awaiting_authority"}} = Syncer.drain_once(c.opts)
+    refute_receive {:batch, _}
 
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+    assert {:ok, %{rows: [%{"state" => "dead_letter", "attempts" => 0}]}} =
+             Store.query(c.store, "SELECT state,attempts FROM memory_outbox")
+  end
 
-    assert_outbox(store, id, "done", 0)
+  test "edge-ineligible success settles once with its canonical ID and explicit no-mirror ACK",
+       c do
+    install(c)
+    receipt = enqueue(c, "remember", %{"content" => "working note", "type" => "working"})
+    Process.put({Channel, :mode}, :not_eligible)
 
-    assert {:ok,
-            %Result{
-              rows: [
-                %{
-                  "remote_id" => "hub_revisioned",
-                  "remote_revision" => 42,
-                  "sync_state" => "synced"
-                }
-              ]
-            }} =
+    assert {:ok, %{"drained" => 1, "protocol" => "memory_commands.v2"}} =
+             Syncer.drain_once(c.opts)
+
+    assert {:ok, %{"status" => "committed", "canonical_id" => @canonical, "revision" => nil}} =
+             receipt(c, receipt["command_id"])
+
+    assert {:ok, %{"drained" => 0}} = Syncer.drain_once(c.opts)
+  end
+
+  test "missing revision without an explicit ineligible ACK fails closed", c do
+    install(c)
+    queued = enqueue(c, "remember", %{"content" => "invalid ack"})
+    Process.put({Channel, :mode}, :invalid_ack)
+    assert {:error, :invalid_ack} = Syncer.drain_once(c.opts)
+
+    assert {:ok, %{rows: [%{"state" => "dead_letter", "ack_canonical_id" => nil}]}} =
              Store.query(
-               store,
-               "SELECT remote_id, remote_revision, sync_state FROM memories WHERE id = ?",
-               [id]
+               c.store,
+               "SELECT state,ack_canonical_id FROM memory_outbox WHERE command_id=?",
+               [queued["command_id"]]
              )
   end
 
-  test "rejects malformed ACK revision without settling the outbox", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "bad revision"}, opts)
+  test "a pending forget follows the exact remembered command without cancelling a possibly committed write",
+       c do
+    install(c)
+    first = enqueue(c, "remember", %{"content" => "ordered note"})
+    forget = enqueue(c, "forget", %{"id" => first["command_id"]})
+    assert {:ok, %{"drained" => 2}} = Syncer.drain_once(c.opts)
+    assert_receive {:batch, %{"items" => [remember, forgotten]}}
+    assert remember["command_id"] == first["command_id"]
+    assert forgotten["command_id"] == forget["command_id"]
 
-    for revision <- [0, -1, "42", 1.5, nil] do
-      Process.put({FakeChannel, :reply}, fn payload ->
-        {:ok,
-         %{
-           "items" => [
-             %{
-               "id" => hd(payload["items"])["id"],
-               "status" => "ok",
-               "canonical_id" => "hub_invalid",
-               "revision" => revision
-             }
-           ]
-         }}
-      end)
-
-      assert {:error, :invalid_ack} =
-               Syncer.drain_once(
-                 store: store,
-                 channel: self(),
-                 channel_module: FakeChannel,
-                 max_attempts: 10
-               )
-
-      assert {:ok, %Result{rows: [%{"state" => "retry_wait"}]}} =
-               Store.query(store, "SELECT state FROM memory_outbox WHERE memory_id = ?", [id])
-
-      assert {:ok, _} =
-               Store.execute(
-                 store,
-                 "UPDATE memory_outbox SET state = 'pending' WHERE memory_id = ?",
-                 [id]
-               )
-    end
-
-    assert {:ok, %Result{rows: [%{"remote_id" => nil, "remote_revision" => nil}]}} =
-             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
-               id
-             ])
-  end
-
-  test "rejects remember ACK without a canonical ID even when revision is valid", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "missing canonical ID"}, opts)
-
-    for canonical_id <- [nil, "", 42] do
-      Process.put({FakeChannel, :reply}, fn payload ->
-        {:ok,
-         %{
-           "items" => [
-             %{
-               "id" => hd(payload["items"])["id"],
-               "status" => "ok",
-               "canonical_id" => canonical_id,
-               "revision" => 42
-             }
-           ]
-         }}
-      end)
-
-      assert {:error, :invalid_ack} =
-               Syncer.drain_once(
-                 store: store,
-                 channel: self(),
-                 channel_module: FakeChannel,
-                 max_attempts: 10
-               )
-
-      assert {:ok, %Result{rows: [%{"state" => "retry_wait"}]}} =
-               Store.query(store, "SELECT state FROM memory_outbox WHERE memory_id = ?", [id])
-
-      assert {:ok, _} =
-               Store.execute(
-                 store,
-                 "UPDATE memory_outbox SET state = 'pending' WHERE memory_id = ?",
-                 [id]
-               )
-    end
-
-    assert {:ok, %Result{rows: [%{"remote_id" => nil, "remote_revision" => nil}]}} =
-             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
-               id
-             ])
-  end
-
-  test "duplicate ACK preserves exact revision and forget ACK does not clobber it", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "duplicate revision"}, opts)
-
-    Process.put({FakeChannel, :reply}, fn payload ->
-      {:ok,
-       %{
-         "items" => [
-           %{
-             "id" => hd(payload["items"])["id"],
-             "status" => "duplicate",
-             "canonical_id" => "hub_duplicate",
-             "revision" => 81
+    assert forgotten["arguments"] == %{
+             "id" => first["command_id"],
+             "remember_command_id" => first["command_id"]
            }
-         ]
-       }}
-    end)
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
-    Process.delete({FakeChannel, :reply})
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert {:ok,
-            %Result{
-              rows: [
-                %{
-                  "remote_id" => "hub_duplicate",
-                  "remote_revision" => 81,
-                  "deleted_at" => deleted_at
-                }
-              ]
-            }} =
-             Store.query(
-               store,
-               "SELECT remote_id, remote_revision, deleted_at FROM memories WHERE id = ?",
-               [id]
-             )
-
-    assert is_binary(deleted_at)
   end
 
-  test "reopening the command store retains the settled canonical revision", %{
-    tmp_dir: tmp_dir,
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "durable revision"}, opts)
-
-    Process.put({FakeChannel, :reply}, fn payload ->
-      {:ok,
-       %{
-         "items" => [
-           %{
-             "id" => hd(payload["items"])["id"],
-             "status" => "duplicate",
-             "canonical_id" => "hub_durable",
-             "revision" => 118
-           }
-         ]
-       }}
-    end)
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert :ok = stop_supervised(Store)
-
-    start_supervised!(
-      {Store,
-       database: Path.join(tmp_dir, "#{store}.db"),
-       name: store,
-       pool_size: 1,
-       busy_timeout_ms: 5_000}
-    )
-
-    assert :ok = Migrator.migrate(store)
-    assert_outbox(store, id, "done", 0)
-
-    assert {:ok, %Result{rows: [%{"remote_id" => "hub_durable", "remote_revision" => 118}]}} =
-             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
-               id
-             ])
-  end
-
-  test "keeps the accepted remember payload immutable when local metadata changes", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "tag me", "tags" => ["old"]}, opts)
+  test "a forget cannot overtake a still inflight remember", c do
+    install(c)
+    first = enqueue(c, "remember", %{"content" => "inflight note"})
 
     assert {:ok, _} =
-             Memory.facet_tag(
-               %{"id" => id, "tags" => ["new"], "metadata" => %{"topic" => "sync"}},
-               opts
+             Store.execute(
+               c.store,
+               "UPDATE memory_outbox SET state='inflight',updated_at='2026-10-26T00:00:00Z' WHERE command_id=?",
+               [first["command_id"]]
              )
 
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_receive {:memory_push, "memory_sync", %{"items" => [item]}}
-    assert item["id"] == id
-    assert item["tags"] == ["old"]
-    assert item["metadata"] == %{}
+    enqueue(c, "forget", %{"id" => first["command_id"]})
+    assert {:ok, %{"drained" => 0}} = Syncer.drain_once(c.opts)
+    refute_receive {:batch, _}
   end
 
-  test "transient channel errors move rows to retry wait with an attempt", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "retry later"}, opts)
-    Process.put({FakeChannel, :reply}, {:error, :disconnected})
+  test "command identity is immutable while settlement metadata remains writable", c do
+    install(c)
 
-    assert {:error, :disconnected} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
+    first =
+      enqueue(c, "remember", %{"content" => "immutable note", "idempotency_key" => "request"})
 
-    assert_outbox(store, id, "retry_wait", 1)
+    assert {:error, _} =
+             Store.execute(
+               c.store,
+               "UPDATE memory_outbox SET authority_version=2 WHERE command_id=?",
+               [first["command_id"]]
+             )
+
+    assert {:error, _} =
+             Store.execute(
+               c.store,
+               "UPDATE memory_outbox SET request_key='other' WHERE command_id=?",
+               [first["command_id"]]
+             )
+
+    assert {:ok, %{"drained" => 1}} = Syncer.drain_once(c.opts)
   end
 
-  test "structured outage errors keep the scheduled syncer alive and automatically settle retries",
-       %{store: store, opts: opts} do
-    for failure <- [
-          {:outage_reply, {:error, {:reconnect_failed, :socket_timeout}}},
-          {:outage_exit,
-           {:noproc, {GenServer, :call, [self(), "private-payload-must-not-persist"]}}}
-        ] do
-      assert {:ok, %{"id" => id}} =
-               Memory.remember(%{"content" => "outage #{inspect(elem(failure, 0))}"}, opts)
+  defp install(c),
+    do: Access.install_inventory(%{id: 1, sent_at_ms: 10_000}, c.inventory, c.owner)
 
-      syncer =
-        start_supervised!(
-          {Syncer,
-           store: store,
-           channel: self(),
-           channel_module: OutageChannel,
-           interval_ms: 10,
-           jitter_fun: fn -> 0.0 end}
-        )
+  defp enqueue(c, operation, args) do
+    {:ok, target, _ticket} =
+      Access.begin_request(:default, String.to_existing_atom(operation), c.owner)
 
-      assert_receive {:outage_push, ^syncer, _}, 1_000
-      send(syncer, failure)
-      _ = :sys.get_state(syncer)
-      assert Process.alive?(syncer)
-      assert_outbox(store, id, "retry_wait", 1)
-
-      assert {:ok, %Result{rows: [%{"last_error" => error}]}} =
-               Store.query(store, "SELECT last_error FROM memory_outbox WHERE memory_id = ?", [id])
-
-      assert is_binary(error)
-      refute error =~ "private-payload-must-not-persist"
-
-      assert_receive {:outage_push, ^syncer, %{"items" => [%{"id" => ^id}]}}, 2_000
-
-      send(
-        syncer,
-        {:outage_reply,
-         {:ok, %{"items" => [%{"id" => id, "status" => "ok", "canonical_id" => "hub_#{id}"}]}}}
+    {:ok, receipt} =
+      Access.run_local(
+        target,
+        String.to_existing_atom(operation),
+        &Memory.shared_enqueue(&1, operation, args, "author"),
+        c.owner
       )
 
-      _ = :sys.get_state(syncer)
-      assert Process.alive?(syncer)
-      assert_outbox(store, id, "done", 1)
-      stop_supervised(Syncer)
-    end
+    receipt
   end
 
-  test "structured errors can exhaust retry budgets and permanently reject commands", %{
-    store: store,
-    opts: opts
-  } do
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "exhausted outage"}, opts)
-    Process.put({FakeChannel, :reply}, {:error, {:reconnect_failed, :socket_timeout}})
-
-    assert {:error, {:reconnect_failed, :socket_timeout}} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               max_attempts: 1
-             )
-
-    assert_outbox(store, id, "dead_letter", 1)
-
-    assert {:ok, %{"id" => rejected}} = Memory.remember(%{"content" => "rejected command"}, opts)
-
-    Process.put(
-      {FakeChannel, :reply},
-      {:ok,
-       %{"items" => [%{"id" => rejected, "status" => "error", "error" => %{"code" => "invalid"}}]}}
-    )
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_outbox(store, rejected, "dead_letter", 1)
-  end
-
-  test "retries only due rows with bounded deterministic backoff and dead-letters at max attempts",
-       %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "retry"}, opts)
-    now = "2026-06-17T00:00:00Z"
-    Process.put({FakeChannel, :reply}, {:error, :disconnected})
-
-    assert {:error, :disconnected} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               now_fun: fn -> now end,
-               jitter_fun: fn -> 0.5 end,
-               max_attempts: 2
-             )
-
-    assert {:ok,
-            %Result{
-              rows: [%{"state" => "retry_wait", "next_attempt_at" => "2026-06-17T00:00:01.000Z"}]
-            }} =
-             Store.query(
-               store,
-               "SELECT state, next_attempt_at FROM memory_outbox WHERE memory_id = ?",
-               [id]
-             )
-
-    assert {:ok, %{"drained" => 0}} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               now_fun: fn -> now end,
-               jitter_fun: fn -> 0.5 end,
-               max_attempts: 2
-             )
-
-    due = "2026-06-17T00:00:01Z"
-
-    assert {:error, :disconnected} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               now_fun: fn -> due end,
-               jitter_fun: fn -> 0.5 end,
-               max_attempts: 2
-             )
-
-    assert_outbox(store, id, "dead_letter", 2)
-  end
-
-  test "channel dying during push retries the same durable row without retaining request payload",
-       %{
-         store: store,
-         opts: opts
-       } do
-    marker = "private-closed-channel-content"
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => marker}, opts)
-
-    assert {:ok, %Result{rows: [%{"seq" => seq}]}} =
-             Store.query(store, "SELECT seq FROM memory_outbox WHERE memory_id = ?", [id])
-
-    {:ok, channel} = Agent.start_link(fn -> nil end)
-
-    assert {:error, {:channel_exit, {:noproc, _}}} =
-             Syncer.drain_once(
-               store: store,
-               channel: channel,
-               channel_module: DiesOnPush,
-               now_fun: fn -> "2026-06-17T00:00:00Z" end,
-               jitter_fun: fn -> 0.5 end
-             )
-
-    assert_outbox(store, id, "retry_wait", 1)
-
-    assert {:ok,
-            %Result{
-              rows: [
-                %{
-                  "seq" => ^seq,
-                  "last_error" => error,
-                  "next_attempt_at" => due,
-                  "dead_lettered_at" => nil
-                }
-              ]
-            }} =
-             Store.query(store, "SELECT * FROM memory_outbox WHERE memory_id = ?", [id])
-
-    assert is_binary(error) and byte_size(error) <= 512
-    refute error =~ marker
-    refute error =~ id
-    refute error =~ "memory_sync"
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               now_fun: fn -> due end
-             )
-
-    assert_receive {:memory_push, "memory_sync", %{"items" => [%{"id" => ^id, "seq" => ^seq}]}}
-    assert_outbox(store, id, "done", 1)
-
-    assert {:ok, %Result{rows: [%{"seq" => ^seq, "memory_id" => ^id}]}} =
-             Store.query(store, "SELECT seq,memory_id FROM memory_outbox", [])
-  end
-
-  test "channel dying during final push dead-letters without tuple serialization failure", %{
-    store: store,
-    opts: opts
-  } do
-    marker = "private-final-attempt-content"
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => marker}, opts)
-    {:ok, channel} = Agent.start_link(fn -> nil end)
-
-    assert {:error, {:channel_exit, {:noproc, _}}} =
-             Syncer.drain_once(
-               store: store,
-               channel: channel,
-               channel_module: DiesOnPush,
-               max_attempts: 1
-             )
-
-    assert_outbox(store, id, "dead_letter", 1)
-
-    assert {:ok, %Result{rows: [%{"last_error" => error, "next_attempt_at" => nil}]}} =
-             Store.query(store, "SELECT * FROM memory_outbox WHERE memory_id = ?", [id])
-
-    assert is_binary(error) and byte_size(error) <= 512
-    refute error =~ marker
-    refute error =~ id
-    refute error =~ "memory_sync"
-  end
-
-  test "caught atom exits are tagged but returned errors retain their original shape", %{
-    store: store,
-    opts: opts
-  } do
-    for {reply, expected} <- [
-          {fn _ -> exit(:disconnected) end, {:channel_exit, :disconnected}},
-          {{:error, :disconnected}, :disconnected},
-          {{:error, {:reconnect_failed, :socket_timeout}}, {:reconnect_failed, :socket_timeout}}
-        ] do
-      {:ok, %{"id" => id}} =
-        Memory.remember(%{"content" => "transport shape #{inspect(expected)}"}, opts)
-
-      Process.put({FakeChannel, :reply}, reply)
-
-      assert {:error, ^expected} =
-               Syncer.drain_once(
-                 store: store,
-                 channel: self(),
-                 channel_module: FakeChannel,
-                 max_attempts: 1
-               )
-
-      assert_outbox(store, id, "dead_letter", 1)
-    end
-  end
-
-  test "v1 authorization partition and protocol item errors remain permanent", %{
-    store: store,
-    opts: opts
-  } do
-    for reason <- ["unauthorized", "partition_mismatch", "invalid_protocol"] do
-      {:ok, %{"id" => id}} = Memory.remember(%{"content" => reason}, opts)
-
-      Process.put({FakeChannel, :reply}, fn _ ->
-        {:ok, %{"items" => [%{"id" => id, "status" => "error", "error" => reason}]}}
-      end)
-
-      assert {:ok, %{"drained" => 1}} =
-               Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-      assert_outbox(store, id, "dead_letter", 1)
-
-      assert {:ok, %Result{rows: [%{"last_error" => ^reason, "next_attempt_at" => nil}]}} =
-               Store.query(store, "SELECT * FROM memory_outbox WHERE memory_id = ?", [id])
-    end
-  end
-
-  test "clamps configured sync batches to 50 items", %{store: store, opts: opts} do
-    Enum.each(1..51, fn index ->
-      assert {:ok, _} = Memory.remember(%{"content" => "item #{index}"}, opts)
-    end)
-
-    assert {:ok, %{"drained" => 50}} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               batch_size: 10_000
-             )
-
-    assert_receive {:memory_push, "memory_sync", %{"items" => items}}
-    assert length(items) == 50
-  end
-
-  test "does not send a memory_sync payload over 512 KiB", %{store: store, opts: opts} do
-    assert {:ok, %{"id" => id}} =
-             Memory.remember(%{"content" => String.duplicate("x", 512 * 1024)}, opts)
-
-    assert {:ok, %{"drained" => 0}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    refute_receive {:memory_push, "memory_sync", _payload}
-    assert_outbox(store, id, "pending", 0)
-  end
-
-  test "start schedules stranded inflight rows for retry", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "claimed before crash"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memory_outbox SET state = 'inflight' WHERE memory_id = ?",
-               [
-                 id
-               ]
-             )
-
-    {:ok, pid} = Syncer.start_link(store: store, channel: self(), interval_ms: 0)
-    ref = Process.monitor(pid)
-    GenServer.stop(pid)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
-
-    assert_outbox(store, id, "retry_wait", 1)
-  end
-
-  test "start dead-letters stranded rows at their final attempt", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "final retry"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memory_outbox SET state = 'inflight', attempts = 1 WHERE memory_id = ?",
-               [id]
-             )
-
-    {:ok, pid} = Syncer.start_link(store: store, channel: self(), interval_ms: 0, max_attempts: 2)
-    GenServer.stop(pid)
-
-    assert_outbox(store, id, "dead_letter", 2)
-  end
-
-  test "start fails closed when inflight recovery cannot persist", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "recovery failure"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memory_outbox SET state = 'inflight' WHERE memory_id = ?",
-               [id]
-             )
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "CREATE TRIGGER reject_recovery BEFORE UPDATE OF state ON memory_outbox WHEN NEW.state = 'retry_wait' BEGIN SELECT RAISE(ABORT, 'recovery blocked'); END"
-             )
-
-    previous = Process.flag(:trap_exit, true)
-    assert {:error, _reason} = Syncer.start_link(store: store, channel: self(), interval_ms: 0)
-    Process.flag(:trap_exit, previous)
-  end
-
-  test "malformed acknowledgement retries claimed rows without crashing", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "malformed"}, opts)
-    Process.put({FakeChannel, :reply}, {:ok, %{"items" => ["not an ack"]}})
-
-    assert {:error, :invalid_ack} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_outbox(store, id, "retry_wait", 1)
-  end
-
-  test "returns a storage error when a claimed retry transition is rejected", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "trigger"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "CREATE TRIGGER reject_retry BEFORE UPDATE OF state ON memory_outbox WHEN NEW.state = 'retry_wait' BEGIN SELECT RAISE(ABORT, 'retry blocked'); END"
-             )
-
-    Process.put({FakeChannel, :reply}, {:error, :disconnected})
-
-    assert {:error, {:storage_error, _reason}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_outbox(store, id, "inflight", 0)
-  end
-
-  test "rolls back all acknowledgement transitions when a later row fails", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => first}} = Memory.remember(%{"content" => "first atomic"}, opts)
-    {:ok, %{"id" => second}} = Memory.remember(%{"content" => "second atomic"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "CREATE TRIGGER reject_second_done BEFORE UPDATE OF state ON memory_outbox WHEN NEW.seq = 2 AND NEW.state = 'done' BEGIN SELECT RAISE(ABORT, 'second blocked'); END"
-             )
-
-    Process.put({FakeChannel, :reply}, fn payload ->
-      {:ok,
-       %{
-         "items" =>
-           Enum.map(payload["items"], fn item ->
-             %{
-               "id" => item["id"],
-               "status" => "ok",
-               "canonical_id" => "remote_#{item["id"]}",
-               "revision" => 19
-             }
-           end)
-       }}
-    end)
-
-    assert {:error, _reason} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_outbox(store, first, "inflight", 0)
-    assert_outbox(store, second, "inflight", 0)
-
-    assert {:ok, %Result{rows: [%{"remote_id" => nil, "remote_revision" => nil}]}} =
-             Store.query(store, "SELECT remote_id, remote_revision FROM memories WHERE id = ?", [
-               first
-             ])
-
-    assert {:ok, %{"drained" => 0}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_outbox(store, first, "retry_wait", 1)
-    assert_outbox(store, second, "retry_wait", 1)
-  end
-
-  test "missing memory rows are dead-lettered while the rest of the batch drains", %{
-    store: store,
-    opts: opts
-  } do
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               """
-               INSERT INTO memory_outbox(op, memory_id, state, inserted_at, updated_at)
-               VALUES ('remember', 'missing_memory', 'pending', ?, ?)
-               """,
-               [now, now]
-             )
-
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "still syncs"}, opts)
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_receive {:memory_push, "memory_sync", %{"items" => [%{"id" => ^id}]}}
-
-    assert {:ok,
-            %Result{rows: [%{"state" => "dead_letter", "attempts" => 1, "last_error" => error}]}} =
-             Store.query(
-               store,
-               "SELECT state, attempts, last_error FROM memory_outbox WHERE memory_id = 'missing_memory'"
-             )
-
-    assert error =~ "memory row not found"
-    assert_outbox(store, id, "done", 0)
-  end
-
-  test "validation errors dead-letter rows", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "bad payload"}, opts)
-
-    Process.put({FakeChannel, :reply}, {
-      :ok,
-      %{"items" => [%{"id" => id, "status" => "error", "error" => "invalid scope"}]}
-    })
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_outbox(store, id, "dead_letter", 1)
-
-    assert {:ok, %Result{rows: [%{"last_error" => "invalid scope"}]}} =
-             Store.query(store, "SELECT last_error FROM memory_outbox WHERE memory_id = ?", [id])
-  end
-
-  test "every item error is permanent under the v1 wire", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "bad content"}, opts)
-
-    Process.put(
-      {FakeChannel, :reply},
-      {:ok,
-       %{
-         "items" => [
-           %{
-             "id" => id,
-             "status" => "error",
-             "error" => "content is required and must be a string"
-           }
-         ]
-       }}
-    )
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_outbox(store, id, "dead_letter", 1)
-  end
-
-  test "matches acknowledgements in order when remember and forget share an id", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "ordered"}, opts)
-    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
-
-    assert {:ok, %{"drained" => 2}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_receive {:memory_push, "memory_sync",
-                    %{
-                      "items" => [
-                        %{"op" => "remember", "id" => ^id},
-                        %{"op" => "forget", "id" => ^id}
-                      ]
-                    }}
-
-    assert {:ok, %Result{rows: [%{"count" => 2}]}} =
-             Store.query(
-               store,
-               "SELECT COUNT(*) AS count FROM memory_outbox WHERE state = 'done'"
-             )
-  end
-
-  test "does not resurrect a wiped row after delayed acknowledgement", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "wiped before ack"}, opts)
-
-    Process.put({FakeChannel, :reply}, fn payload ->
-      assert {:ok, _} =
-               Store.execute(
-                 store,
-                 "UPDATE memory_outbox SET state = 'done', last_error = 'wiped' WHERE memory_id = ?",
-                 [id]
-               )
-
-      {:ok,
-       %{
-         "items" => [
-           %{"id" => hd(payload["items"])["id"], "status" => "ok", "canonical_id" => "hub"}
-         ]
-       }}
-    end)
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert {:ok, %Result{rows: [%{"sync_state" => "pending"}]}} =
-             Store.query(store, "SELECT sync_state FROM memories WHERE id = ?", [id])
-  end
-
-  test "caps high-attempt jittered retry delay", %{store: store, opts: opts} do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "cap"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memory_outbox SET attempts = 20 WHERE memory_id = ?", [
-               id
-             ])
-
-    now = "2026-06-17T00:00:00Z"
-    Process.put({FakeChannel, :reply}, {:error, :disconnected})
-
-    assert {:error, :disconnected} =
-             Syncer.drain_once(
-               store: store,
-               channel: self(),
-               channel_module: FakeChannel,
-               now_fun: fn -> now end,
-               jitter_fun: fn -> 1.0 end,
-               max_attempts: 50
-             )
-
-    assert {:ok, %Result{rows: [%{"next_attempt_at" => "2026-06-17T00:05:00.000Z"}]}} =
-             Store.query(store, "SELECT next_attempt_at FROM memory_outbox WHERE memory_id = ?", [
-               id
-             ])
-  end
-
-  test "forget payload includes remote_id and leaves deleted rows synced after ack", %{
-    store: store,
-    opts: opts
-  } do
-    {:ok, %{"id" => id}} = Memory.remember(%{"content" => "forget sync"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memory_outbox SET state = 'done' WHERE memory_id = ?", [
-               id
-             ])
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memories SET sync_state = 'synced', remote_id = ? WHERE id = ?",
-               ["hub_1", id]
-             )
-
-    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
-
-    assert {:ok, %{"drained" => 1}} =
-             Syncer.drain_once(store: store, channel: self(), channel_module: FakeChannel)
-
-    assert_receive {:memory_push, "memory_sync", %{"items" => [item]}}
-    assert item["op"] == "forget"
-    assert item["id"] == id
-    assert item["remote_id"] == "hub_1"
-    assert item["content_hash"] == Reducer.content_hash("forget sync")
-    assert is_binary(item["deleted_at"])
-
-    assert {:ok, %Result{rows: [%{"sync_state" => "synced", "deleted_at" => deleted_at}]}} =
-             Store.query(store, "SELECT sync_state, deleted_at FROM memories WHERE id = ?", [id])
-
-    assert is_binary(deleted_at)
-  end
-
-  test "join payload announces bound scope with fact set hash", %{store: store} do
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               """
-               INSERT INTO facts(id, content, content_hash, scope, tags, metadata, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               """,
-               [
-                 "fact_1",
-                 "fact content",
-                 Reducer.content_hash("fact content"),
-                 "proj_local",
-                 Jason.encode!(["ops"]),
-                 Jason.encode!(%{"topic" => "memory"}),
-                 "2026-06-17T00:00:00Z"
-               ]
-             )
-
-    assert %{
-             "memory" => %{
-               "protocol" => "host_memory.v1",
-               "scopes" => [%{"scope" => "proj_local", "fact_set_hash" => hash}]
-             }
-           } = Syncer.join_payload(store: store, config: %{bound_scope: "proj_local"})
-
-    assert hash == Syncer.fact_set_hash(store, "proj_local")
-    assert hash != empty_hash()
-  end
-
-  test "empty fact set hash is sha256 of canonical empty list", %{store: store} do
-    assert Syncer.fact_set_hash(store, "proj_local") == empty_hash()
-  end
-
-  defp start_memory!(tmp_dir) do
-    name = :"host_agent_memory_syncer_#{System.unique_integer([:positive])}"
-    db_path = Path.join(tmp_dir, "#{name}.db")
-
-    start_supervised!(
-      {Store, database: db_path, name: name, pool_size: 1, busy_timeout_ms: 5_000}
-    )
-
-    assert :ok = Migrator.migrate(name)
-    name
-  end
-
-  defp memory_opts(store) do
-    [
-      store: store,
-      agent_id: "agent_1",
-      config: %{bound_scope: "proj_local", tombstone_relearn: "block"}
-    ]
-  end
-
-  defp assert_outbox(store, memory_id, state, attempts) do
-    assert {:ok, %Result{rows: [%{"state" => ^state, "attempts" => ^attempts}]}} =
-             Store.query(store, "SELECT state, attempts FROM memory_outbox WHERE memory_id = ?", [
-               memory_id
-             ])
-  end
-
-  defp empty_hash do
-    :crypto.hash(:sha256, "[]")
-    |> Base.encode16(case: :lower)
+  defp receipt(c, id) do
+    {:ok, target, _ticket} = Access.begin_request(:default, :remember, c.owner)
+    Access.run_local(target, :remember, &Memory.shared_receipt(&1, id), c.owner)
   end
 end

@@ -11,20 +11,15 @@ defmodule Backplane.Admin.MemoryPipelineLive do
 
   @memory_setting_keys [
     "memory.pipeline.enabled",
-    "memory.events.enabled",
-    "memory.events.dual_write",
     "memory.window_summaries.enabled",
     "memory.session_summary_v2.enabled",
     "memory.fact_extraction_v2.enabled",
     "memory.procedure_extraction_v2.enabled",
-    "memory.recall_v2.enabled",
     "memory.llm_model"
   ]
 
   @gate_names %{
-    "pipeline" => :pipeline,
-    "events" => :events,
-    "dual_write" => :dual_write
+    "pipeline" => :pipeline
   }
 
   @impl true
@@ -36,7 +31,6 @@ defmodule Backplane.Admin.MemoryPipelineLive do
        current_path: "/memory/pipeline",
        rollout: Operations.rollout_state(),
        mutation_error: nil,
-       pending_dual_write: false,
        partition: nil,
        stage_rows: [],
        stage_total: 0,
@@ -87,30 +81,6 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   @impl true
   def handle_event(
         "set-gate",
-        %{"gate" => %{"name" => "dual_write", "value" => "true"}},
-        socket
-      ) do
-    {:noreply, assign(socket, pending_dual_write: true, mutation_error: nil)}
-  end
-
-  def handle_event(
-        "confirm-dual-write",
-        _params,
-        %{assigns: %{pending_dual_write: true}} = socket
-      ) do
-    mutate_gate(socket, :dual_write, true)
-  end
-
-  def handle_event("confirm-dual-write", _params, socket) do
-    {:noreply, assign(socket, mutation_error: "The submitted gate value is invalid.")}
-  end
-
-  def handle_event("cancel-dual-write", _params, socket) do
-    {:noreply, assign(socket, pending_dual_write: false)}
-  end
-
-  def handle_event(
-        "set-gate",
         %{"gate" => %{"name" => name, "value" => value}},
         socket
       )
@@ -130,7 +100,7 @@ defmodule Backplane.Admin.MemoryPipelineLive do
         {:noreply, assign(socket, rollout: rollout)}
 
       {:error, _reason} ->
-        {:noreply, assign(socket, mutation_error: "The rollout setting could not be saved.")}
+        {:noreply, assign(socket, mutation_error: "The processing setting could not be saved.")}
     end
   end
 
@@ -144,102 +114,32 @@ defmodule Backplane.Admin.MemoryPipelineLive do
     <div id="memory-pipeline">
       <.memory_page_header
         title="Pipeline"
-        subtitle="Memory stage capability, rollout controls, and partitioned processing"
+        subtitle="Background processing and canonical memory state"
       />
 
       <.dm_alert
         :if={@mutation_error}
         id="pipeline-mutation-error"
         variant="error"
-        title="Rollout change not saved"
+        title="Processing change not saved"
         compact
       >
         {@mutation_error}
       </.dm_alert>
 
-      <section aria-labelledby="implemented-gates-heading">
-        <h2 id="implemented-gates-heading" class="mb-3 text-lg font-semibold">
-          Implemented gates
+      <section aria-labelledby="processing-controls-heading">
+        <h2 id="processing-controls-heading" class="mb-3 text-lg font-semibold">
+          Background processing
         </h2>
-
-        <div class="grid gap-4 lg:grid-cols-3">
-          <.gate_control
-            form_id="pipeline-gate-form"
-            input_id="pipeline-gate"
-            name="pipeline"
-            gate={@rollout.pipeline}
-            disabled={pipeline_disabled?(@rollout)}
-            helper="Master gate for Memory V2. Disable Events and Dual Write before turning it off."
-          />
-
-          <.gate_control
-            form_id="events-gate-form"
-            input_id="events-gate"
-            name="events"
-            gate={@rollout.events}
-            disabled={events_disabled?(@rollout)}
-            helper="Requires effective Pipeline. Disable Dual Write before turning Events off."
-          />
-
-          <.gate_control
-            form_id="dual-write-gate-form"
-            input_id="dual-write-gate"
-            name="dual_write"
-            gate={@rollout.dual_write}
-            disabled={dual_write_disabled?(@rollout)}
-            helper="Requires effective Events. Enabling requires confirmation."
-          />
-        </div>
+        <.gate_control
+          form_id="pipeline-gate-form"
+          input_id="pipeline-gate"
+          name="pipeline"
+          gate={@rollout.pipeline}
+          disabled={false}
+          helper="Pause or resume derived summaries and extraction. Memory capture and recall remain available."
+        />
       </section>
-
-      <.dm_alert
-        :if={@pending_dual_write}
-        id="dual-write-confirmation"
-        variant="warning"
-        title="Enable Dual Write?"
-        class="mt-4"
-        phx-mounted={JS.dispatch("click", to: "#reset-dual-write-gate")}
-      >
-        <.dm_btn
-          id="reset-dual-write-gate"
-          type="reset"
-          form="dual-write-gate-form"
-          hidden
-          tabindex="-1"
-          aria-hidden="true"
-        >
-          Reset Dual Write switch
-        </.dm_btn>
-
-        New writes will also enter the Memory V2 event pipeline.
-
-        <div class="mt-3 flex flex-wrap gap-2">
-          <.dm_btn
-            id="confirm-dual-write"
-            variant="warning"
-            phx-click={
-              JS.push("confirm-dual-write")
-              |> JS.focus(to: "#dual-write-gate")
-            }
-            type="reset"
-            form="dual-write-gate-form"
-          >
-            Confirm
-          </.dm_btn>
-          <.dm_btn
-            id="cancel-dual-write"
-            variant="ghost"
-            phx-click={
-              JS.push("cancel-dual-write")
-              |> JS.focus(to: "#dual-write-gate")
-            }
-            type="reset"
-            form="dual-write-gate-form"
-          >
-            Cancel
-          </.dm_btn>
-        </div>
-      </.dm_alert>
 
       <section
         id="later-stages"
@@ -250,7 +150,7 @@ defmodule Backplane.Admin.MemoryPipelineLive do
           Processing stages
         </h2>
 
-        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <.dm_card
             :for={stage <- @rollout.later}
             id={"stage-#{stage.gate}"}
@@ -362,41 +262,18 @@ defmodule Backplane.Admin.MemoryPipelineLive do
         {:noreply,
          assign(socket,
            rollout: rollout,
-           mutation_error: mutation_error,
-           pending_dual_write: false
+           mutation_error: mutation_error
          )}
 
       {:error, _reason} ->
         {:noreply,
          assign(socket,
-           mutation_error: mutation_error || "The rollout setting could not be saved.",
-           pending_dual_write: false
+           mutation_error: mutation_error || "The processing setting could not be saved."
          )}
     end
   end
 
-  defp pipeline_disabled?(rollout) do
-    rollout.events.configured or rollout.dual_write.configured
-  end
-
-  defp events_disabled?(rollout) do
-    if rollout.events.configured do
-      rollout.dual_write.configured
-    else
-      not rollout.pipeline.effective or rollout.dual_write.configured
-    end
-  end
-
-  defp dual_write_disabled?(rollout) do
-    not rollout.dual_write.configured and not rollout.events.effective
-  end
-
-  defp gate_error({:dependency, :pipeline, true}), do: "Enable Pipeline first."
-  defp gate_error({:dependency, :events, true}), do: "Enable Events first."
-  defp gate_error({:dependency, :dual_write, false}), do: "Disable Dual Write first."
-  defp gate_error({:blocked_descendant, :events}), do: "Disable Events first."
-  defp gate_error({:blocked_descendant, :dual_write}), do: "Disable Dual Write first."
   defp gate_error(:invalid_gate), do: "The submitted gate is invalid."
   defp gate_error(:invalid_boolean), do: "The submitted gate value is invalid."
-  defp gate_error(_reason), do: "The rollout setting could not be saved."
+  defp gate_error(_reason), do: "The processing setting could not be saved."
 end

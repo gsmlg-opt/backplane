@@ -8,8 +8,8 @@ is a second canonical memory database.
 
 | Operation | Connected route and authority | Disconnected behavior |
 |---|---|---|
-| `memory::remember` / `memory::forget` | Host provisional write and `host_memory.v1` command upload; Backplane resolves the canonical partition and ID, and applies canonical forget | Queue the command in Turso; report provisional identity and pending canonical ACK |
-| `memory::recall`, `list`, `stats` | Authenticated `memory_call` to Backplane and canonical partition; recall uses Recall V2 | Only allowlisted transport failures may read the active V2 mirror plus provisional overlay; report `bounded_stale` or `provisional_only` |
+| `memory::remember` / `memory::forget` | Authenticated default or selected Access authority and immutable `memory_commands.v2` upload; Backplane resolves the canonical ID and applies canonical forget | Queue under the authenticated access/version/partition; report command identity and pending canonical ACK |
+| `memory::recall`, `list`, `stats` | Authenticated `memory_call` to Backplane and canonical partition; recall uses Recall V2 | Only allowlisted transport failures may read the authorized active V2 mirror plus command overlay; cold authority and unavailable mirror fail closed |
 | `lifecycle_context` | Bounded `MemoryProxy` call to Backplane | The injection path uses its separate `RecallCache` fallback/fail-open policy; it does not read the V2 mirror |
 | `facet_tag` / `facet_query` | Canonical-only authenticated HubProxy operations; no provisional local facet store | Return connection error; no local fallback |
 | Slots | Explicitly device-local `memory::*` operations | Device-local; no claim of canonical authority |
@@ -18,19 +18,27 @@ is a second canonical memory database.
 Authorization, partition, validation, governance, and protocol errors never
 trigger an offline read. The server derives `{memory_space_id, scope, namespace}`
 from registered host entitlement; source project/runtime IDs remain provenance.
-Host command ACKs include `canonical_id` and an optional positive `revision`.
-Eligible host-origin episodic memories get a durable revision/receipt;
-edge-ineligible canonical memories, including oversized items, remain valid and
-receive an ID-only ACK. Duplicate source requests reuse the receipt. Host
-command-store V3 persists `remote_revision` atomically with outbox settlement;
-an invalid revision cannot settle the row.
+Host command ACKs bind the command ID, access ID, authority version and partition.
+A committed ACK includes a canonical UUID and either a positive causal revision
+with `mirror_status: "revisioned"`, or null revision with the explicit
+`mirror_status: "not_eligible"`. The latter is a successful canonical mutation,
+not a retryable transport failure. Exact retries return the saved receipt.
+Deduplicated remembers receive a causal change for that command only when the
+proposed row remains mirror eligible; no stale revision is substituted.
 
-## Shared-access extension status
+Default API responses keep `id`, bound `scope`, `sync_state` and `dedup` as
+projections of this same command receipt. A pending remember's `id` is the command
+UUID; after settlement it is the canonical ID. `dedup` reports reuse of the same
+caller request key, not an inferred canonical success. Repeated saves without a
+request key can create distinct commands that canonical settlement later deduplicates.
+A forget of a pending command UUID retains an immutable remember dependency and
+waits for that exact command's outcome; it never cancels an unacknowledged write.
 
-The approved [shared-access design](shared-host-access-design.md) extends V2 with
-`memory_access.v1` and `memory_commands.v2`. Integration and local live acceptance
-are pending; the base protocol below does not by itself grant cross-host access.
-An extended host selects a registered entitlement with optional `memory_access_id`
+## Access and commands
+
+The [shared-access design](shared-host-access-design.md) supplies
+`memory_access.v1` and `memory_commands.v2`. Both default private and explicitly
+selected mutations use this single path. A host selects a registered entitlement with optional `memory_access_id`
 on recall/list/stats/remember/forget. The server derives its exact canonical
 partition and requires the matching independent capability; `deliver` additionally
 requires `read`. Remember-only and forget-only grants disclose no existing content.
@@ -48,15 +56,15 @@ until negotiation. See the design for complete envelopes, persistence and races.
 ## Negotiation and wire events
 
 The host offers `memory_v2: {offers: ["host_memory.v2"],
-max_frame_bytes: 524288, partitions: [...]}` on join, separately from the V1
-`memory` block. Each partition claim carries exact space/scope/namespace,
+max_frame_bytes: 524288, partitions: [...],
+extensions: ["memory_access.v1", "memory_commands.v2"]}` on join.
+The retired V1 `memory` offer is rejected. Each partition claim carries exact space/scope/namespace,
 `applied_revision`, and optional snapshot continuation. A new host may offer
 none. The server selects exactly one protocol and returns its canonical
 entitlement inventory, current revisions, status, and negotiated limits
 (`max_changes <= 100`, `max_frame_bytes <= 524288`). A missing space ID is
 resolved only when the other fields identify one active entitlement; ambiguous,
-revoked, foreign, or conflicting claims are rejected. A selected V2 connection
-never silently falls back to V1.
+revoked, foreign, or conflicting claims are rejected. The runtime has no V1 fallback.
 
 `memory_next` requests a partition and host `applied_revision` and returns
 `current`, `delta`, or `snapshot_chunk`. Each materialized delivery has a
@@ -125,12 +133,21 @@ bounded identifiers, never memory content or secrets.
 
 ## Compatibility and protection
 
-`memory.host_sync_v1.enabled` defaults true for legacy fact/wipe reconciliation;
-`memory.host_sync_v2.enabled` defaults false. V1 fact/wipe receipt hashes bind
-issued payloads and never act as V2 cursors. V1 command upload remains the
-provisional write path. The V2 mirror is a separate Turso database from both
-the command store and capture spool, with item/byte/type quotas, priority and
-expiry eviction, and active-generation reads.
+`memory.host_sync_v2.enabled` controls mirror delivery only and defaults false.
+Authenticated Access and commands negotiate independently of that switch. With
+mirror delivery disabled, the inventory exposes no `deliver` capability, no
+delivery partitions and zero offline read lease; `memory_next` and `memory_ack`
+return `protocol_disabled`. Enabling commands never enables an unprotected mirror.
+V1 uploader, facts, wipes, receipts and reconciliation are retired runtime paths.
+The V2 mirror remains a separate protected Turso database with item/byte/type
+quotas, priority and expiry eviction, and active-generation reads.
+
+Command-store migration V7 preserves unbound historical rows and quarantines
+unsettled rows instead of guessing their original authority. See the
+[operator recovery boundary](../operations/host-memory-edge-runbook.md#retired-command-quarantine).
+Old canonical `RememberRequest` records remain intact for verified historical
+receipt lookup. Numeric migration versions and independent `memory_access.v1`,
+source and capture protocol versions are not retired by this change.
 
 Host edge persistence is default-disabled. Explicit plaintext opt-in works
 only in dev/test and reports `plaintext_development`; production rejects it

@@ -96,8 +96,8 @@ host is running or claim it is active before the final ACK.
 ## Dead-letter command and retention recovery
 
 Inspect a command failure and correct its cause before requeue. The existing
-source task requeues all dead-lettered command outbox rows by default or one
-specific sequence; it does **not** requeue capture-spool dead letters:
+source task requeues authority-bound V2 dead-lettered command outbox rows by
+default or one specific sequence; quarantined legacy rows are excluded. It does **not** requeue capture-spool dead letters:
 
 ```sh
 devenv shell -- mix do --app backplane_host_agent cmd mix agent.memory.resync --seq SEQ
@@ -112,6 +112,33 @@ and `bpm_memory_snapshot_chunks` before deleting anything; active/issued
 snapshots are not repair trash. Capture-spool dead letters require source
 correction and approved replay, not this command.
 
+## Retired command quarantine
+
+The host command-store V7 migration preserves original row payload, sequence,
+attempts, request keys, timestamps and ACK/canonical fields. Retention excludes
+these rows and their referenced historical local payload records. Existing bound V2
+commands are unchanged. Unbound acknowledged rows remain historical `done` rows;
+unsettled unbound rows become `dead_letter` with original state recorded in
+`migration_state`. Diagnostics expose grouped `command_migration` counts and a
+bounded `failed_outbox` list containing the migration reason:
+
+- `needs_authority_mapping`: no upload attempt is recorded; the exact historical
+  access, authority version and partition still need proof.
+- `needs_verified_receipt_and_authority_mapping`: an attempt or inflight state
+  may already have committed. Verify the old server receipt before any replay.
+- `historical_acknowledged`: retained acknowledged history, never re-uploaded.
+
+`agent.memory.resync` deliberately cannot release these rows. Preserve a backup
+and identify the original authenticated host, partition, request key/hash and
+canonical outcome. For possibly committed remembers, compare the retained
+server `RememberRequest` under `host-memory.v1:<host>` with the original durable
+payload. Do not assign the host's current default, invent missing authority, or
+retry a lost-ACK remember under a new idempotency scope. There is no automatic
+release API: unresolved rows remain quarantined until a separately reviewed
+migration can prove both historical authority and receipt identity. New commands
+continue through authenticated `memory_commands.v2` while that reconciliation
+is pending. No V1 runtime fallback exists.
+
 ## Protection incident and rollback
 
 If diagnostics show `protection_unavailable`, leave edge sync disabled. Check
@@ -124,8 +151,10 @@ Server migrations through `20260905000010` and host command V3 are additive.
 Migration `20260905000011` replaces the action-edge partition guard with the
 same rejection contract and has no down path; do not infer that an older binary
 understands every new ACK or edge record.
-For rollback, disable `memory.host_sync_v2.enabled`, keep V1 command upload,
-and disable host edge config; stop/restart hosts under the compatible binary
+To disable mirror delivery, set `memory.host_sync_v2.enabled` false and disable
+host edge config. Commands continue through authenticated `memory_commands.v2`.
+Do not restore V1 upload or replay quarantined rows. Stop/restart hosts under a
+schema-compatible binary
 after backing up all three stores. Preserve canonical accepted events and
 issued delivery evidence. Follow the [release rollback procedure](../deploy/memory-v2-release.md)
 for a schema boundary; migrations 00007 and 00011 have no down path. Do not run

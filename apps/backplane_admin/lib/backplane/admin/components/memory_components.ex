@@ -70,8 +70,8 @@ defmodule Backplane.Admin.MemoryComponents do
     <.dm_card variant="bordered" padding="lg" class="text-center">
       <h2 class="text-lg font-semibold">{@title}</h2>
       <p class="mt-2 text-sm text-on-surface-variant">
-        Pipeline is {if @rollout.pipeline.effective, do: "effective", else: "disabled"};
-        Events is {if @rollout.events.effective, do: "effective", else: "disabled"}.
+        Background processing is {if @rollout.pipeline.effective, do: "enabled", else: "paused"}.
+        Captured events appear here after the first memory activity.
       </p>
       <div class="mt-4">
         <.memory_link_button

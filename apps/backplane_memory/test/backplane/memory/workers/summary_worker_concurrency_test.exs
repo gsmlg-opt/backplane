@@ -62,24 +62,24 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
     append =
       Task.async(fn ->
         unboxed(fn ->
-          send(parent, :append_waiting)
+          send(parent, {:append_waiting, backend_pid()})
           ingest!(event(host_id, session_id, 4, "agent.tool.completed", "late"))
         end)
       end)
 
-    assert_receive :append_waiting
-    assert :ok = wait_for_stream_lock_waiters(1)
+    assert_receive {:append_waiting, append_backend}
+    assert :ok = wait_for_lock_waiter(append_backend, "%bpm_streams%")
 
     summarize =
       Task.async(fn ->
         unboxed(fn ->
-          send(parent, :summary_waiting)
+          send(parent, {:summary_waiting, backend_pid()})
           perform(host_id, session_id, initial)
         end)
       end)
 
-    assert_receive :summary_waiting
-    assert :ok = wait_for_stream_lock_waiters(2)
+    assert_receive {:summary_waiting, summary_backend}
+    assert :ok = wait_for_lock_waiter(summary_backend, "%pg_advisory_xact_lock%")
     send(locker.pid, :release_stream)
 
     assert {:ok, _result} = Task.await(append, 5_000)
@@ -155,30 +155,39 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
     )
   end
 
-  defp wait_for_stream_lock_waiters(expected, attempts \\ 100)
+  defp backend_pid do
+    %{rows: [[pid]]} = repo().query!("SELECT pg_backend_pid()")
+    pid
+  end
 
-  defp wait_for_stream_lock_waiters(_expected, 0), do: {:error, :lock_wait_timeout}
+  defp wait_for_lock_waiter(backend, query_pattern, attempts \\ 100)
 
-  defp wait_for_stream_lock_waiters(expected, attempts) do
+  defp wait_for_lock_waiter(_backend, _query_pattern, 0), do: {:error, :lock_wait_timeout}
+
+  defp wait_for_lock_waiter(backend, query_pattern, attempts) do
     waiting =
       unboxed(fn ->
         [[count]] =
-          repo().query!("""
-          SELECT count(*)
-          FROM pg_stat_activity
-          WHERE datname = current_database()
-            AND wait_event_type = 'Lock'
-            AND query LIKE '%bpm_streams%'
-          """).rows
+          repo().query!(
+            """
+            SELECT count(*)
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND pid = $1
+              AND wait_event_type = 'Lock'
+              AND query LIKE $2
+            """,
+            [backend, query_pattern]
+          ).rows
 
         count
       end)
 
-    if waiting >= expected do
+    if waiting == 1 do
       :ok
     else
       Process.sleep(10)
-      wait_for_stream_lock_waiters(expected, attempts - 1)
+      wait_for_lock_waiter(backend, query_pattern, attempts - 1)
     end
   end
 

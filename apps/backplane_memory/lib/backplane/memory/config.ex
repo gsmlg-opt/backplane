@@ -5,14 +5,11 @@ defmodule Backplane.Memory.Config do
   alias Backplane.Settings
 
   @pipeline "memory.pipeline.enabled"
-  @events "memory.events.enabled"
-  @dual_write "memory.events.dual_write"
   @window_summaries "memory.window_summaries.enabled"
   @session_summary_v2 "memory.session_summary_v2.enabled"
   @fact_extraction_v2 "memory.fact_extraction_v2.enabled"
   @procedure_extraction_v2 "memory.procedure_extraction_v2.enabled"
   @relation_classifier "memory.relation_classifier.enabled"
-  @recall_v2 "memory.recall_v2.enabled"
 
   @event_gap_grace_seconds "memory.event_gap_grace_seconds"
   @host_batch_max_events "memory.host_batch_max_events"
@@ -62,17 +59,14 @@ defmodule Backplane.Memory.Config do
   @editable_settings [
     {"services.memory.enabled", "Memory service", :boolean, nil, nil, :service_enabled?},
     {@pipeline, "Processing pipeline", :boolean, nil, nil, :pipeline_enabled?},
-    {@events, "Canonical event capture", :boolean, nil, nil, :events_enabled?},
-    {@dual_write, "Event observation dual write", :boolean, nil, nil, :dual_write?},
     {@window_summaries, "Window summaries", :boolean, nil, nil, :window_summaries_enabled?},
     {@session_summary_v2, "Session summaries", :boolean, nil, nil, :session_summary_v2_enabled?},
     {@fact_extraction_v2, "Fact extraction", :boolean, nil, nil, :fact_extraction_v2_enabled?},
     {@procedure_extraction_v2, "Procedure extraction", :boolean, nil, nil,
      :procedure_extraction_v2_enabled?},
     {@relation_classifier, "Graph generation", :boolean, nil, nil, :relation_classifier_enabled?},
-    {@recall_v2, "Recall V2", :boolean, nil, nil, :recall_v2_enabled?},
-    {"memory.host_sync_v1.enabled", "Host sync V1", :boolean, nil, nil, :host_sync_v1_enabled?},
-    {"memory.host_sync_v2.enabled", "Host sync V2", :boolean, nil, nil, :host_sync_v2_enabled?},
+    {"memory.host_sync_v2.enabled", "Host mirror delivery", :boolean, nil, nil,
+     :host_sync_v2_enabled?},
     {"memory.llm_model", "Processing model", :model, nil, nil, :llm_model},
     {"memory.embed_model", "Embedding model (2560 dimensions)", :model, nil, nil, :embed_model},
     {"memory.proxy_credential", "Gateway resource credential", :credential, nil, nil,
@@ -179,17 +173,9 @@ defmodule Backplane.Memory.Config do
 
   def update_setting(_key, _raw_value, _context), do: {:error, :unauthorized}
 
-  # Preserve the guarded rollout transitions and explicit dual-write confirmation
-  # already owned by Pipeline controls.
-  defp persist_setting(@dual_write, true), do: {:error, :requires_pipeline_controls}
-
-  defp persist_setting(@dual_write, false),
-    do: Backplane.Memory.Operations.set_gate(:dual_write, false)
-
   defp persist_setting(@pipeline, value),
     do: Backplane.Memory.Operations.set_gate(:pipeline, value)
 
-  defp persist_setting(@events, value), do: Backplane.Memory.Operations.set_gate(:events, value)
   defp persist_setting(key, value), do: Settings.set(key, value)
 
   defp fetch_setting_spec(key) do
@@ -321,14 +307,11 @@ defmodule Backplane.Memory.Config do
         "Blocked: no processing model selected"
 
       key in [
-        @events,
-        @dual_write,
         @window_summaries,
         @session_summary_v2,
         @fact_extraction_v2,
         @procedure_extraction_v2,
-        @relation_classifier,
-        @recall_v2
+        @relation_classifier
       ] and not pipeline_enabled?() ->
         "Blocked: processing pipeline disabled"
 
@@ -361,8 +344,6 @@ defmodule Backplane.Memory.Config do
   end
 
   def pipeline_enabled?, do: enabled?(@pipeline)
-  def events_enabled?, do: pipeline_enabled?() and enabled?(@events)
-  def dual_write?, do: events_enabled?() and enabled?(@dual_write)
 
   def window_summaries_enabled?,
     do: pipeline_enabled?() and enabled?(@window_summaries)
@@ -379,15 +360,12 @@ defmodule Backplane.Memory.Config do
   def relation_classifier_enabled?,
     do: pipeline_enabled?() and enabled?(@relation_classifier)
 
-  def recall_v2_enabled?, do: pipeline_enabled?() and enabled?(@recall_v2)
-
   @doc "Returns the final-processing gap grace in seconds (inclusive range 1..3600; default 60)."
   def event_gap_grace_seconds do
     bounded_integer(@event_gap_grace_seconds, @default_event_gap_grace_seconds, 1, 3_600)
   end
 
   def host_batch_max_events, do: bounded_integer(@host_batch_max_events, 100, 1, 100)
-  def host_sync_v1_enabled?, do: strict_boolean("memory.host_sync_v1.enabled", true)
   def host_sync_v2_enabled?, do: strict_boolean("memory.host_sync_v2.enabled", false)
 
   def host_sync_max_item_bytes,

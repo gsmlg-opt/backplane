@@ -1,875 +1,144 @@
 defmodule Backplane.HostAgent.MemoryTest do
   use ExUnit.Case, async: false
-
-  alias Backplane.HostAgent.{Memory, MemoryFacade}
-  alias Backplane.HostAgent.Memory.{Migrator, Reducer, Store}
-  alias Turso.Result
-
+  alias Backplane.HostAgent.Memory
+  alias Backplane.HostAgent.Memory.{Access, Migrator, Store}
   @moduletag :tmp_dir
+  @id "11111111-1111-4111-8111-111111111111"
+  @partition %{
+    "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "scope" => "private",
+    "namespace" => "private"
+  }
 
-  defmodule RemoteDisconnected do
-    def call(_method, _args, _opts), do: {:error, :not_connected}
+  setup %{tmp_dir: dir} do
+    store = start_supervised!({Store, database: Path.join(dir, "commands.db"), pool_size: 1})
+    :ok = Migrator.migrate(store)
+    owner = start_supervised!({Access, name: nil, store: store, now_fun: fn -> 10_000 end})
+
+    inventory = %{
+      "extensions" => ~w(memory_access.v1 memory_commands.v2),
+      "default_access_id" => @id,
+      "accesses" => [
+        %{
+          "access_id" => @id,
+          "authority_version" => 1,
+          "status" => "active",
+          "partition" => @partition,
+          "capabilities" => ~w(read remember forget),
+          "offline_read_lease_seconds" => 0
+        }
+      ]
+    }
+
+    :ok = Access.install_inventory(%{id: 1, sent_at_ms: 10_000}, inventory, owner)
+    {:ok, target, _} = Access.begin_request(:default, :remember, owner)
+    %{store: store, owner: owner, target: target, inventory: inventory}
   end
 
-  test "request fingerprints survive fresh VMs with reversed atom creation order", %{tmp_dir: dir} do
-    script = """
-    {:ok, _} = Application.ensure_all_started(:ex_turso)
-    {:ok, store} = Backplane.HostAgent.Memory.Store.start_link(
-      database: System.fetch_env!("COMMAND_DB"), pool_size: 1)
-    :ok = Backplane.HostAgent.Memory.Migrator.migrate(store)
-    args = %{"content" => "stable across VM boots", "idempotency_key" => "stable-boot",
-      "metadata" => %{"outer" => %{"z" => 1, "a" => [true, nil]}}}
-    {:ok, result} = Backplane.HostAgent.Memory.remember(args,
-      store: store, agent_id: "agent_1", config: %{bound_scope: "proj_local"})
-    {:ok, %{rows: [row]}} = Backplane.HostAgent.Memory.Store.query(store,
-      "SELECT request_hash FROM memory_request_keys")
-    IO.puts("RESULT=" <> Jason.encode!(Map.put(result, "request_hash", row["request_hash"])))
-    GenServer.stop(store)
-    """
-
-    bootstrap = """
-    Enum.each(String.split(System.fetch_env!("ATOM_ORDER")), &String.to_atom/1)
-    Code.eval_string(Base.decode64!(System.fetch_env!("COMMAND_SCRIPT")))
-    """
-
-    keys = ~w(content scope agent_id session_id tags_json metadata_json confidence command)
-    paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
-
-    [first, second] =
-      for order <- [keys, Enum.reverse(keys)] do
-        {output, status} =
-          System.cmd(System.find_executable("elixir"), paths ++ ["-e", bootstrap],
-            env: [
-              {"COMMAND_DB", Path.join(dir, "fresh-vm.db")},
-              {"COMMAND_SCRIPT", Base.encode64(script)},
-              {"ATOM_ORDER", Enum.join(order, " ")}
-            ],
-            stderr_to_stdout: true
-          )
-
-        assert status == 0, output
-        [_, result] = Regex.run(~r/RESULT=(.+)/, output)
-        Jason.decode!(result)
-      end
-
-    assert first["id"] == second["id"]
-    assert first["dedup"] == false
-    assert second["dedup"] == true
-    assert "v2:" <> hash = first["request_hash"]
-    assert byte_size(hash) == 64
-    assert second["request_hash"] == first["request_hash"]
-  end
-
-  test "legacy fingerprints upgrade only from the unchanged durable command", %{tmp_dir: dir} do
-    store = start_memory!(dir)
-    opts = memory_opts(store)
-
+  test "exact caller request deduplicates while changed content cannot reuse its identity", c do
     args = %{
-      "content" => "original request",
-      "idempotency_key" => "legacy-key",
-      "type" => "semantic",
-      "facets" => [%{"dimension" => "kind", "value" => "plan"}],
-      "tags" => ["ops"],
-      "metadata" => %{"nested" => %{"a" => 1}},
-      "session_id" => "session",
-      "confidence" => 0.7
+      "content" => "durable note",
+      "idempotency_key" => "one",
+      "metadata" => %{"nested" => %{"b" => 2, "a" => 1}}
     }
 
-    assert {:ok, %{"id" => id}} = Memory.remember(args, opts)
-    legacy = String.duplicate("a", 64)
+    assert {:ok, first} = enqueue(c, args)
+    assert {:ok, reused} = enqueue(c, args)
+    assert reused["dedup"]
+    assert Map.delete(reused, "dedup") == Map.delete(first, "dedup")
+    assert {:error, :idempotency_conflict} = enqueue(c, Map.put(args, "content", "changed"))
 
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memory_request_keys SET request_hash = ?", [legacy])
+    assert {:ok, %{rows: [%{"count" => 1}]}} =
+             Store.query(c.store, "SELECT count(*) AS count FROM memory_outbox")
 
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memories SET metadata = '{}' WHERE id = ?", [id])
-
-    for {key, value} <- [
-          {"content", "different"},
-          {"type", "episodic"},
-          {"facets", []},
-          {"tags", []},
-          {"metadata", %{}},
-          {"session_id", "other"},
-          {"confidence", 0.4}
-        ] do
-      assert {:error, :idempotency_conflict} = Memory.remember(Map.put(args, key, value), opts)
-
-      assert {:ok, %Result{rows: [%{"request_hash" => ^legacy}]}} =
-               Store.query(store, "SELECT request_hash FROM memory_request_keys")
-    end
-
-    assert {:ok, %{"id" => ^id, "dedup" => true}} = Memory.remember(args, opts)
-
-    assert {:ok, %Result{rows: [%{"request_hash" => "v2:" <> _}]}} =
-             Store.query(store, "SELECT request_hash FROM memory_request_keys")
-
-    assert_count(store, "memories", 1)
-    assert_count(store, "memory_outbox", 1)
+    assert {:ok, %{rows: [%{"count" => 0}]}} =
+             Store.query(c.store, "SELECT count(*) AS count FROM memories")
   end
 
-  test "legacy recovery refuses absent malformed or differently bound original payloads", %{
-    tmp_dir: dir
-  } do
-    store = start_memory!(dir)
-    opts = memory_opts(store)
-    args = %{"content" => "legacy guarded", "idempotency_key" => "legacy-guard"}
-    assert {:ok, %{"id" => id}} = Memory.remember(args, opts)
+  test "concurrent identical requests create one authority-bound durable command", c do
+    tasks =
+      for _ <- 1..8,
+          do:
+            Task.async(fn ->
+              enqueue(c, %{"content" => "concurrent", "idempotency_key" => "one"})
+            end)
 
-    assert {:ok, %Result{rows: [%{"payload" => original}]}} =
-             Store.query(store, "SELECT payload FROM memory_outbox")
-
-    payload = Jason.decode!(original)
-    legacy = String.duplicate("b", 64)
-
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memory_request_keys SET request_hash = ?", [legacy])
-
-    invalid =
-      [nil, "{", "[]"] ++
-        Enum.map(
-          [
-            Map.put(payload, "id", "another-id"),
-            Map.put(payload, "op", "forget"),
-            Map.put(payload, "idempotency_key", "another-key"),
-            Map.put(payload, "agent_id", "another-agent"),
-            Map.put(payload, "scope", "another-scope"),
-            Map.delete(payload, "confidence")
-          ],
-          &Jason.encode!/1
-        )
-
-    for encoded <- invalid do
-      assert {:ok, _} = Store.execute(store, "UPDATE memory_outbox SET payload = ?", [encoded])
-      assert {:error, :idempotency_conflict} = Memory.remember(args, opts)
-    end
-
-    assert {:ok, _} = Store.execute(store, "UPDATE memory_outbox SET payload = ?", [original])
-
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memory_request_keys SET request_hash = 'v9:unknown'")
-
-    assert {:error, :idempotency_conflict} = Memory.remember(args, opts)
-
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memory_request_keys SET request_hash = ?", [legacy])
-
-    assert {:ok, %{"id" => ^id, "dedup" => true}} = Memory.remember(args, opts)
-  end
-
-  test "remember inserts one local row and one outbox row, then deduplicates", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-    args = %{"content" => "local observation", "tags" => ["ops"], "metadata" => %{"k" => "v"}}
+    results = Enum.map(tasks, &Task.await/1)
+    assert Enum.all?(results, &match?({:ok, _}, &1))
+    assert length(Enum.uniq(Enum.map(results, fn {:ok, result} -> result["command_id"] end))) == 1
 
     assert {:ok,
             %{
-              "id" => id,
-              "scope" => "proj_local",
-              "dedup" => false,
-              "sync_state" => "pending"
-            }} = Memory.remember(args, opts)
-
-    assert {:ok,
-            %{
-              "id" => ^id,
-              "scope" => "proj_local",
-              "dedup" => true,
-              "sync_state" => "pending"
-            }} = Memory.remember(args, opts)
-
-    assert_count(store, "memories", 1)
-    assert_count(store, "memory_outbox", 1)
-
-    assert {:ok, %Result{rows: [%{"tags" => tags, "metadata" => metadata}]}} =
-             Store.query(store, "SELECT tags, metadata FROM memories WHERE id = ?", [id])
-
-    assert Jason.decode!(tags) == ["ops"]
-    assert Jason.decode!(metadata) == %{"k" => "v"}
-  end
-
-  test "concurrent identical remembers produce one memory and one outbox item", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    results =
-      1..10
-      |> Enum.map(fn _ ->
-        Task.async(fn -> Memory.remember(%{"content" => "concurrent observation"}, opts) end)
-      end)
-      |> Task.await_many(10_000)
-
-    assert Enum.all?(results, &match?({:ok, %{"id" => _}}, &1))
-    assert Enum.count(results, &match?({:ok, %{"dedup" => false}}, &1)) == 1
-    assert Enum.count(results, &match?({:ok, %{"dedup" => true}}, &1)) == 9
-    assert_count(store, "memories", 1)
-    assert_count(store, "memory_outbox", 1)
-  end
-
-  test "forced outbox failure rolls back the memory row", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-
-    assert {:ok, _} = Store.execute(store, "DROP TABLE memory_outbox")
-
-    assert {:ok, _} =
-             Store.execute(store, """
-             CREATE TABLE memory_outbox (
-               seq INTEGER PRIMARY KEY AUTOINCREMENT,
-               op TEXT NOT NULL CHECK (op = 'never'),
-               memory_id TEXT NOT NULL,
-               state TEXT NOT NULL DEFAULT 'pending',
-               attempts INTEGER NOT NULL DEFAULT 0,
-               last_error TEXT,
-               inserted_at TEXT NOT NULL,
-               updated_at TEXT NOT NULL
-             )
-             """)
-
-    assert {:error, {:storage_error, _}} =
-             Memory.remember(%{"content" => "rolled back observation"}, memory_opts(store))
-
-    assert_count(store, "memories", 0)
-    assert_count(store, "memory_outbox", 0)
-  end
-
-  test "tombstone blocks exact re-remember without writing outbox", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    content = "globally wiped observation"
-    now = "2026-06-17T00:00:00Z"
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               """
-               INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id)
-               VALUES (?, ?, ?, ?)
-               """,
-               [Reducer.content_hash(content), "proj_local", now, "wipe_1"]
-             )
-
-    assert {:error, :wiped} = Memory.remember(%{"content" => content}, memory_opts(store))
-    assert_count(store, "memories", 0)
-    assert_count(store, "memory_outbox", 0)
-  end
-
-  test "a tombstone is limited to its own scope when hashes match", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    content = "same hash, different scope"
-    hash = Reducer.content_hash(content)
-    now = "2026-06-17T00:00:00Z"
-    local_opts = memory_opts(store)
-    other_opts = Keyword.put(local_opts, :config, %{bound_scope: "other_scope"})
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id) VALUES (?, ?, ?, ?)",
-               [hash, "proj_local", now, "wipe-local"]
-             )
-
-    assert {:error, :wiped} = Memory.remember(%{"content" => content}, local_opts)
-
-    assert {:ok, %{"scope" => "other_scope"}} =
-             Memory.remember(%{"content" => content}, other_opts)
-  end
-
-  test "forget soft-deletes local memories, enqueues forget, and rejects facts", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-    fact_id = "fact_1"
-
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "forget me"}, opts)
-    insert_fact!(store, fact_id, "read only fact")
-
-    assert {:ok, %{"id" => ^id, "sync_state" => "pending"}} = Memory.forget(%{"id" => id}, opts)
-    assert {:error, :read_only_fact} = Memory.forget(%{"id" => fact_id}, opts)
-
-    assert {:ok, %{"hits" => []}} = Memory.recall(%{"query" => "forget me"}, opts)
-
-    assert {:ok, %Result{rows: [%{"count" => 1}]}} =
-             Store.query(store, "SELECT COUNT(*) AS count FROM memory_outbox WHERE op = 'forget'")
-  end
-
-  test "pending overlay exposes the latest pending remember as provisional", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => provisional_id}} =
-             Memory.remember(%{"content" => "pending insight"}, opts)
-
-    assert {:ok,
-            %{
-              "upserts" => [
+              rows: [
                 %{
-                  "id" => ^provisional_id,
-                  "canonical_id" => nil,
-                  "content" => "pending insight",
-                  "origin" => "host_command",
-                  "authority" => "provisional",
-                  "provisional" => true
+                  "access_id" => @id,
+                  "authority_version" => 1,
+                  "target_partition" => target,
+                  "request_agent_id" => "actor"
                 }
-              ],
-              "delete_ids" => [],
-              "pending_operations" => 1
-            }} = Memory.pending_overlay(%{"query" => "pending"}, opts)
-  end
-
-  test "pending overlay continues to expose an inflight remember", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "inflight insight"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memory_outbox SET state = 'inflight' WHERE memory_id = ?",
-               [id]
-             )
-
-    assert {:ok, %{"upserts" => [%{"id" => ^id}], "pending_operations" => 1}} =
-             Memory.pending_overlay(%{"query" => "inflight"}, opts)
-  end
-
-  test "pending overlay continues to expose a retry-wait remember", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "retry waiting insight"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memory_outbox SET state = 'retry_wait' WHERE memory_id = ?",
-               [id]
-             )
-
-    assert {:ok, %{"upserts" => [%{"id" => ^id}], "pending_operations" => 1}} =
-             Memory.pending_overlay(%{"query" => "retry waiting"}, opts)
-  end
-
-  test "forget of a settled canonical id retains local identity and exposes its known mapping", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "settled forget receipt"}, opts)
-    canonical = "22222222-2222-4222-8222-222222222222"
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memories SET remote_id=?, remote_revision=7, sync_state='synced' WHERE id=?",
-               [canonical, id]
-             )
-
-    assert {:ok, receipt} = Memory.forget(%{"id" => canonical}, opts)
-    assert %{"id" => ^id, "canonical_id" => ^canonical, "sync_state" => "pending"} = receipt
-    assert is_nil(receipt["revision"])
-
-    assert {:ok, %Result{rows: [%{"memory_id" => ^id, "state" => "pending"}]}} =
-             Store.query(store, "SELECT memory_id,state FROM memory_outbox WHERE op='forget'")
-  end
-
-  test "pending overlay uses only the latest operation and prefers remote forget ids", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "forget pending"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memories SET remote_id = ? WHERE id = ?", [
-               "remote-1",
-               id
-             ])
-
-    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
-
-    assert {:ok,
-            %{
-              "upserts" => [],
-              "delete_ids" => ["remote-1"],
-              "pending_operations" => 1
-            }} = Memory.pending_overlay(%{"query" => "forget"}, opts)
-  end
-
-  test "pending overlay keeps in-scope forgets regardless of canonical list filters", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "deleted wording"}, opts)
-    assert {:ok, _} = Memory.forget(%{"id" => id}, opts)
-
-    assert {:ok, %{"upserts" => [], "delete_ids" => [^id], "pending_operations" => 1}} =
-             Memory.pending_overlay(
-               %{
-                 "q" => "semantic recall hit",
-                 "type" => "semantic",
-                 "agent_id" => "other-agent",
-                 "tag" => "other-tag"
-               },
-               opts
-             )
-  end
-
-  test "pending overlay excludes synced memories even with an unresolved outbox row", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "already canonical"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(store, "UPDATE memories SET sync_state = 'synced' WHERE id = ?", [id])
-
-    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
-             Memory.pending_overlay(%{}, opts)
-  end
-
-  test "pending overlay excludes a memory whose latest operation is done", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => done_id}} = Memory.remember(%{"content" => "done insight"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memory_outbox SET state = 'done' WHERE memory_id = ?",
-               [done_id]
-             )
-
-    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
-             Memory.pending_overlay(%{}, opts)
-  end
-
-  test "pending overlay does not present a dead-letter operation as pending", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => failed_id}} = Memory.remember(%{"content" => "failed insight"}, opts)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memory_outbox SET state = 'dead_letter' WHERE memory_id = ?",
-               [failed_id]
-             )
-
-    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
-             Memory.pending_overlay(%{}, opts)
-  end
-
-  test "pending overlay enforces scope and query filters", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-    other_opts = Keyword.put(opts, :config, %{bound_scope: "other_scope"})
-
-    assert {:ok, %{"id" => expected_id}} =
-             Memory.remember(%{"content" => "matching pending"}, opts)
-
-    assert {:ok, _} = Memory.remember(%{"content" => "unmatched pending"}, opts)
-    assert {:ok, _} = Memory.remember(%{"content" => "matching other scope"}, other_opts)
-
-    assert {:ok, %{"upserts" => [%{"id" => ^expected_id}], "pending_operations" => 1}} =
-             Memory.pending_overlay(
-               %{"scope" => "proj_local", "query" => "matching pending"},
-               opts
-             )
-
-    assert {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}} =
-             Memory.pending_overlay(%{"scope" => "proj_local", "query" => "absent"}, opts)
-  end
-
-  test "pending overlay applies canonical list filters to remember upserts", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-    agent_2_opts = Keyword.put(opts, :agent_id, "agent_2")
-
-    assert {:ok, %{"id" => expected_id}} =
-             Memory.remember(
-               %{"type" => "episodic", "content" => "alpha target", "tags" => ["ops"]},
-               opts
-             )
-
-    assert {:ok, _} =
-             Memory.remember(
-               %{"type" => "episodic", "content" => "beta target", "tags" => ["ops"]},
-               opts
-             )
-
-    assert {:ok, _} =
-             Memory.remember(
-               %{"type" => "episodic", "content" => "alpha ui", "tags" => ["ui"]},
-               opts
-             )
-
-    assert {:ok, _} =
-             Memory.remember(
-               %{"type" => "episodic", "content" => "alpha other agent", "tags" => ["ops"]},
-               agent_2_opts
-             )
-
-    for args <- [
-          %{"q" => "alpha", "type" => "episodic", "agent_id" => "agent_1", "tag" => "ops"},
-          %{q: "alpha", type: "episodic", agent_id: "agent_1", tag: "ops"}
-        ] do
-      assert {:ok,
-              %{
-                "upserts" => [
-                  %{
-                    "id" => ^expected_id,
-                    "memory_type" => "episodic",
-                    "agent_id" => "agent_1"
-                  }
-                ],
-                "pending_operations" => 1
-              }} = Memory.pending_overlay(args, opts)
-    end
-
-    assert {:ok, %{"upserts" => [], "pending_operations" => 0}} =
-             Memory.pending_overlay(%{"type" => "semantic"}, opts)
-  end
-
-  test "pending overlay rejects unsupported recall facets when eligible upserts exist", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, _} = Memory.remember(%{"content" => "facet candidate"}, opts)
-    assert {:ok, %{"id" => deleted_id}} = Memory.remember(%{"content" => "facet deletion"}, opts)
-    assert {:ok, _} = Memory.forget(%{"id" => deleted_id}, opts)
-
-    assert {:error, {:unsupported_filter, ["facets"]}} =
-             Memory.pending_overlay(
-               %{"query" => "facet", "facets" => %{"kind" => ["decision"]}},
-               opts
-             )
-  end
-
-  test "pending overlay bounds real outbox content independently of caller limits", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    for index <- 1..102 do
-      assert {:ok, _result} =
-               Memory.remember(%{"content" => "bounded pending #{index}"}, opts)
-    end
-
-    assert {:ok,
-            %{
-              "upserts" => upserts,
-              "delete_ids" => [],
-              "pending_operations" => 100,
-              "overlay_truncated" => true
+              ]
             }} =
-             Memory.pending_overlay(
-               %{"limit" => 200},
-               Keyword.put(opts, :method, "list")
+             Store.query(
+               c.store,
+               "SELECT access_id,authority_version,target_partition,request_agent_id FROM memory_outbox"
              )
 
-    assert length(upserts) == 100
-    assert List.first(upserts)["content"] == "bounded pending 102"
-    assert List.last(upserts)["content"] == "bounded pending 3"
+    assert Jason.decode!(target) == @partition
   end
 
-  test "pending overlay filters remembers before applying the hard cap", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => expected_id}} =
-             Memory.remember(
-               %{"content" => "older needle", "type" => "episodic", "tags" => ["ops"]},
-               opts
-             )
-
-    for index <- 1..101 do
-      assert {:ok, _result} =
-               Memory.remember(
-                 %{"content" => "newer unrelated #{index}", "tags" => ["ui"]},
-                 opts
-               )
-    end
-
-    assert {:ok,
-            %{
-              "upserts" => [%{"id" => ^expected_id}],
-              "delete_ids" => [],
-              "pending_operations" => 1,
-              "overlay_truncated" => false
-            }} =
-             Memory.pending_overlay(
-               %{
-                 "q" => "needle",
-                 "type" => "episodic",
-                 "agent_id" => "agent_1",
-                 "tag" => "ops"
-               },
-               Keyword.put(opts, :method, "list")
-             )
-  end
-
-  test "offline list pages the filtered provisional set beyond offset 100 exactly once", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    for index <- 1..105 do
-      assert {:ok, _result} =
-               Memory.remember(
-                 %{"content" => "paged match #{index}", "tags" => ["ops"]},
-                 opts
-               )
-    end
-
-    assert {:ok,
-            %{
-              "items" => [
-                %{"content" => "paged match 5"},
-                %{"content" => "paged match 4"}
-              ],
-              "pending_operations" => 5,
-              "overlay_truncated" => false
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{"q" => "paged match", "tag" => "ops", "offset" => 100, "limit" => 2},
-               %{
-                 agent_id: "agent_1",
-                 remote_adapter: RemoteDisconnected,
-                 local_adapter: Memory,
-                 store: store,
-                 config: %{bound_scope: "proj_local", tombstone_relearn: "block"}
-               }
-             )
-  end
-
-  test "offline list forget metadata does not consume provisional item offsets", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => forgotten_id}} =
-             Memory.remember(%{"content" => "pending A"}, opts)
-
-    assert {:ok, %{"id" => remaining_id}} =
-             Memory.remember(%{"content" => "pending B"}, opts)
-
-    assert {:ok, _result} = Memory.forget(%{"id" => forgotten_id}, opts)
-
-    context = %{
-      agent_id: "agent_1",
-      remote_adapter: RemoteDisconnected,
-      local_adapter: Memory,
-      store: store,
-      config: %{bound_scope: "proj_local", tombstone_relearn: "block"}
-    }
-
-    assert {:ok,
-            %{
-              "items" => [%{"id" => ^remaining_id}],
-              "delete_ids" => [^forgotten_id],
-              "overlay_truncated" => false
-            }} = MemoryFacade.call("list", %{"offset" => 0, "limit" => 1}, context)
-
-    assert {:ok,
-            %{
-              "items" => [],
-              "delete_ids" => [^forgotten_id],
-              "overlay_truncated" => false
-            }} = MemoryFacade.call("list", %{"offset" => 1, "limit" => 1}, context)
-  end
-
-  test "stats overlay counts pending operations without loading pending content", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    for index <- 1..102 do
-      assert {:ok, _result} =
-               Memory.remember(%{"content" => "private pending #{index}"}, opts)
-    end
-
-    assert {:ok,
-            %{
-              "pending_operations" => 102,
-              "overlay_truncated" => true
-            } = overlay} = Memory.pending_overlay(%{}, Keyword.put(opts, :method, "stats"))
-
-    refute Map.has_key?(overlay, "upserts")
-    refute Map.has_key?(overlay, "delete_ids")
-    refute inspect(overlay) =~ "private pending"
-  end
-
-  test "recall merges local memories and facts with source and degraded quality", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => local_id}} =
-             Memory.remember(%{"content" => "alpha beta local note", "tags" => ["local"]}, opts)
-
-    insert_fact!(store, "fact_1", "alpha beta fact", tags: ["fact"])
-
-    assert {:ok, %{"hits" => hits}} =
-             Memory.recall(%{"query" => "alpha beta", "limit" => 10}, opts)
-
-    assert Enum.map(hits, & &1["id"]) == ["fact_1", local_id]
-    assert Enum.map(hits, & &1["source"]) == ["hub_fact", "local"]
-    assert Enum.all?(hits, &(&1["quality"] == "degraded"))
-    assert Enum.map(hits, & &1["tags"]) == [["fact"], ["local"]]
-  end
-
-  test "list filters local memories and optionally includes facts", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => local_id}} =
-             Memory.remember(%{"content" => "ops local memory", "tags" => ["ops"]}, opts)
-
-    assert {:ok, _} =
-             Memory.remember(%{"content" => "ui local memory", "tags" => ["ui"]}, opts)
-
-    insert_fact!(store, "fact_1", "ops fact", tags: ["ops"])
-
-    assert {:ok, %{"items" => items}} = Memory.list(%{"tag" => "ops"}, opts)
-    assert Enum.map(items, & &1["id"]) == [local_id]
-
-    assert {:ok, %{"items" => with_facts}} =
-             Memory.list(%{"tag" => "ops", "include_facts" => true}, opts)
-
-    assert Enum.map(with_facts, & &1["source"]) == ["hub_fact", "local"]
-  end
-
-  test "stats returns local sync, outbox, facts, tombstones, and known scopes", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, _} = Memory.remember(%{"content" => "stats local"}, opts)
-    insert_fact!(store, "fact_1", "stats fact")
-
+  test "failed durable insert releases no provisional receipt or partial command", c do
     assert {:ok, _} =
              Store.execute(
-               store,
-               """
-               INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id)
-               VALUES (?, ?, ?, ?)
-               """,
-               [Reducer.content_hash("wiped"), "proj_local", "2026-06-17T00:00:00Z", "wipe_1"]
+               c.store,
+               "CREATE TRIGGER reject_command BEFORE INSERT ON memory_outbox BEGIN SELECT RAISE(ABORT,'forced insertion failure'); END"
              )
 
-    assert {:ok,
-            %{
-              "memories" => %{"pending" => 1},
-              "outbox" => %{"pending" => 1},
-              "facts" => 1,
-              "tombstones" => 1,
-              "known_scopes" => ["proj_local"]
-            }} = Memory.stats(%{}, opts)
+    assert {:error, _} = enqueue(c, %{"content" => "must roll back", "idempotency_key" => "one"})
+
+    assert {:ok, %{rows: [%{"count" => 0}]}} =
+             Store.query(c.store, "SELECT count(*) AS count FROM memory_outbox")
+
+    assert {:ok, _} = Store.execute(c.store, "DROP TRIGGER reject_command")
+
+    assert {:ok, %{"status" => "pending"}} =
+             enqueue(c, %{"content" => "must roll back", "idempotency_key" => "one"})
   end
 
-  test "slots are device-local JSON values", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
+  test "owner restart reuses durable identity and exact payload instead of a new command", c do
+    args = %{"content" => "survive restart", "idempotency_key" => "restart"}
+    assert {:ok, first} = enqueue(c, args)
+    assert {:ok, %{rows: [before]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
+    GenServer.stop(c.owner)
 
-    assert {:ok, %{"key" => "goal", "value" => %{"step" => "PR2"}}} =
-             Memory.slot_write(%{"key" => "goal", "value" => %{"step" => "PR2"}}, opts)
+    owner =
+      start_supervised!({Access, name: nil, store: c.store, now_fun: fn -> 10_000 end},
+        id: :replacement_access
+      )
 
-    assert {:ok, %{"key" => "goal", "value" => %{"step" => "PR2"}}} =
-             Memory.slot_read(%{"key" => "goal"}, opts)
-
-    assert {:ok, %{"slots" => [%{"key" => "goal", "value" => %{"step" => "PR2"}}]}} =
-             Memory.slot_list(%{}, opts)
+    :ok = Access.install_inventory(%{id: 2, sent_at_ms: 10_000}, c.inventory, owner)
+    {:ok, target, _} = Access.begin_request(:default, :remember, owner)
+    assert {:ok, reused} = enqueue(%{c | owner: owner, target: target}, args)
+    assert reused["command_id"] == first["command_id"]
+    assert reused["dedup"]
+    assert {:ok, %{rows: [^before]}} = Store.query(c.store, "SELECT * FROM memory_outbox")
   end
 
-  test "facets update local memory tags and query local JSON facets", %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    opts = memory_opts(store)
-
-    assert {:ok, %{"id" => id}} = Memory.remember(%{"content" => "facet local"}, opts)
-
-    assert {:ok, %{"id" => ^id, "tags" => ["important"], "metadata" => %{"topic" => "memory"}}} =
-             Memory.facet_tag(
-               %{"id" => id, "tags" => ["important"], "metadata" => %{"topic" => "memory"}},
-               opts
-             )
-
-    assert {:ok, %{"items" => [%{"id" => ^id}]}} =
-             Memory.facet_query(%{"tag" => "important", "facet" => %{"topic" => "memory"}}, opts)
-  end
-
-  defp memory_opts(store) do
-    [
-      store: store,
-      agent_id: "agent_1",
-      config: %{bound_scope: "proj_local", tombstone_relearn: "block"}
-    ]
-  end
-
-  defp start_memory!(tmp_dir, opts \\ []) do
-    name = :"host_agent_memory_#{System.unique_integer([:positive])}"
-    db_path = Path.join(tmp_dir, "#{name}.db")
-
-    start_supervised!(
-      {Store,
-       database: db_path,
-       name: name,
-       pool_size: Keyword.get(opts, :pool_size, 1),
-       busy_timeout_ms: 5_000}
-    )
-
-    assert :ok = Migrator.migrate(name)
-    name
-  end
-
-  defp insert_fact!(store, id, content, opts \\ []) do
-    now = Keyword.get(opts, :updated_at, "2026-06-17T00:00:00Z")
-    tags = Keyword.get(opts, :tags, [])
-    metadata = Keyword.get(opts, :metadata, %{})
+  test "slots remain device-local JSON data", c do
+    opts = [store: c.store, agent_id: "actor"]
 
     assert {:ok, _} =
-             Store.execute(
-               store,
-               """
-               INSERT INTO facts(id, content, content_hash, scope, tags, metadata, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               """,
-               [
-                 id,
-                 content,
-                 Reducer.content_hash(content),
-                 "proj_local",
-                 Jason.encode!(tags),
-                 Jason.encode!(metadata),
-                 now
-               ]
-             )
+             Memory.slot_write(%{"key" => "session", "value" => %{"key" => [1, true]}}, opts)
+
+    assert {:ok, result} = Memory.slot_read(%{"key" => "session"}, opts)
+    assert result["value"] == %{"key" => [1, true]}
   end
 
-  defp assert_count(store, table, expected) do
-    assert {:ok, %Result{rows: [%{"count" => ^expected}]}} =
-             Store.query(store, "SELECT COUNT(*) AS count FROM #{table}")
-  end
+  defp enqueue(c, args),
+    do:
+      Access.run_local(
+        c.target,
+        :remember,
+        &Memory.shared_enqueue(&1, "remember", args, "actor"),
+        c.owner
+      )
 end

@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
   Read-only diagnostics and operator recovery helpers for host-agent memory.
   """
 
-  alias Backplane.HostAgent.Memory.{Access, Edge.Protection, Store, Syncer}
+  alias Backplane.HostAgent.Memory.{Access, Edge.Protection, Store}
   alias Backplane.HostAgent.Memory.Edge.{Eviction, Telemetry}
   alias Turso.Result
 
@@ -13,6 +13,13 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
 
     with {:ok, memories} <- grouped_counts(opts.store, "memories", "sync_state", "1 = 1"),
          {:ok, outbox} <- grouped_counts(opts.store, "memory_outbox", "state", "1 = 1"),
+         {:ok, migration} <-
+           grouped_counts(
+             opts.store,
+             "memory_outbox",
+             "migration_reason",
+             "migration_reason IS NOT NULL"
+           ),
          {:ok, oldest_pending_seq} <- oldest_pending_seq(opts.store),
          {:ok, failed_outbox} <- failed_outbox(opts.store, opts.metadata_limit),
          {:ok, facts} <- fact_summary(opts.store),
@@ -27,6 +34,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
          "store" => %{"status" => "ok", "db_path" => opts.db_path},
          "memories" => memories,
          "outbox" => outbox,
+         "command_migration" => migration,
          "oldest_pending_seq" => oldest_pending_seq,
          "failed_outbox" => failed_outbox,
          "facts" => facts,
@@ -325,7 +333,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
     end
   end
 
-  @doc "Requeues selected or all dead-lettered outbox rows for another sync attempt."
+  @doc "Requeues authority-bound commands only; quarantined migration rows require verified reconciliation."
   def requeue_failed_outbox(opts \\ []) do
     opts = normalize_opts(opts)
     now = timestamp()
@@ -349,7 +357,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
            UPDATE memory_outbox
            SET state = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL,
                dead_lettered_at = NULL, updated_at = ?
-           WHERE access_id IS NULL AND #{where}
+           WHERE access_id IS NOT NULL AND migration_reason IS NULL AND #{where}
            """,
            [now | params]
          ) do
@@ -485,7 +493,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
 
   defp failed_outbox(store, limit) do
     sql = """
-    SELECT seq, op, memory_id, attempts, last_error, updated_at
+    SELECT seq, op, memory_id, command_id, attempts, last_error, updated_at, migration_state, migration_reason
     FROM memory_outbox
     WHERE state = 'dead_letter'
     ORDER BY seq LIMIT ?
@@ -514,16 +522,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
 
     case Store.query(store, sql) do
       {:ok, %Result{rows: rows}} ->
-        scopes =
-          Enum.map(rows, fn row ->
-            %{
-              "scope" => row["scope"],
-              "count" => row["count"],
-              "fact_set_hash" => Syncer.fact_set_hash(store, row["scope"])
-            }
-          end)
-
-        {:ok, scopes}
+        {:ok, rows}
 
       {:error, reason} ->
         {:error, {:storage_error, reason}}

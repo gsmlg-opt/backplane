@@ -72,8 +72,7 @@ defmodule Backplane.Memory.EdgeSync.MigrationTest do
           {Backplane.Memory.EdgeSync.Cursor, [:host_id, :memory_space_id, :scope, :namespace]},
           {Backplane.Memory.EdgeSync.Delivery, [:id]},
           {Backplane.Memory.EdgeSync.Snapshot, [:id]},
-          {Backplane.Memory.EdgeSync.SnapshotChunk, [:snapshot_id, :chunk_index]},
-          {Backplane.Memory.EdgeSync.CompatReceipt, [:id]}
+          {Backplane.Memory.EdgeSync.SnapshotChunk, [:snapshot_id, :chunk_index]}
         ] do
       assert module.__schema__(:primary_key) == keys
     end

@@ -19,8 +19,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Ingest
-  alias Backplane.Memory.Observations
-  alias Backplane.Memory.Observations.Observation
+  alias Backplane.Memory.LegacyFixtures.Observation
   alias Backplane.Memory.Projections.{ProjectedSession, ReadModels, Rebuild, Source, State}
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
   alias Backplane.Memory.Workers.{EpisodicWorker, SummaryWorker}
@@ -280,18 +279,11 @@ defmodule Backplane.Memory.Workers.SummaryWorkerTest do
     assert verified < pending
   end
 
-  test "legacy session-only jobs remain explicitly compatible" do
-    partition = canonical_partition("legacy", scope: "legacy-project")
-    opts = Map.to_list(partition)
+  test "session-only jobs cannot execute an obsolete summary implementation" do
+    assert {:cancel, :invalid_arguments} =
+             SummaryWorker.perform(%Styx.Job{args: %{"session_id" => "legacy-summary"}})
 
-    Observations.register_session("legacy-summary", "legacy-project", opts)
-    {:ok, _} = Observations.record("legacy-summary", "legacy observation", opts)
-
-    assert :ok = SummaryWorker.perform(%Styx.Job{args: %{"session_id" => "legacy-summary"}})
-    summary = repo().one!(from(s in Summary, where: s.session_id == "legacy-summary"))
-    assert summary.subject_id == "legacy:legacy-summary"
-    assert summary.host_id == "legacy"
-    assert summary.processing_version == "legacy-v0"
+    refute function_exported?(SummaryWorker, :enqueue, 1)
   end
 
   test "canonical argument contract is exact" do

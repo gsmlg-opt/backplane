@@ -28,11 +28,6 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable API account credit and usage fetching"
     },
-    "memory.host_sync_v1.enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable host memory v1 delivery"
-    },
     "memory.host_sync_v2.enabled" => %{
       value: false,
       type: "boolean",
@@ -101,21 +96,11 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable the managed Skills MCP service"
     },
-    # Memory V2 rollout controls
+    # Memory background processing controls
     "memory.pipeline.enabled" => %{
       value: false,
       type: "boolean",
-      desc: "Enable the Memory V2 pipeline master gate"
-    },
-    "memory.events.enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable authoritative Memory V2 event ingestion"
-    },
-    "memory.events.dual_write" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable atomic Memory V2 event and observation dual-write"
+      desc: "Enable background memory summaries and extraction"
     },
     "memory.window_summaries.enabled" => %{
       value: false,
@@ -141,11 +126,6 @@ defmodule Backplane.Settings do
       value: false,
       type: "boolean",
       desc: "Enable automatic Memory V2 relation classification"
-    },
-    "memory.recall_v2.enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable Memory V2 recall"
     },
     "memory.recall_trace_enabled" => %{
       value: true,

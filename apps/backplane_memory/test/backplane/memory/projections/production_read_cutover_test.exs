@@ -2,7 +2,7 @@ defmodule Backplane.Memory.Projections.ProductionReadCutoverTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.Ingest
-  alias Backplane.Memory.Observations.{Observation, Session}
+  alias Backplane.Memory.LegacyFixtures.{Observation, Session}
 
   alias Backplane.Memory.Projections.{
     ProjectedObservation,

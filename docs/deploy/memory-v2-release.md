@@ -57,15 +57,18 @@ may keep capturing into their local spools during this interval.
 
 ## Forward cutover
 
-For a release including host memory V2, require the server migration ceiling
-`20260905000011` and a populated host command-store V1→V2→V3 upgrade check.
+For the current single Memory implementation, require server migrations through
+`20261026000002` and a populated host command-store upgrade through V7. Stop old
+Memory workers before migration. The forward-only retirement migrates provable
+observation references to canonical event identities, rewrites pending jobs, and
+quarantines host commands whose historical authority or outcome cannot be proved.
 Keep `memory.host_sync_v2.enabled` false and host edge disabled until exact
 partition entitlement, issue dispositions, recoverable snapshot frontier,
 host protection, and A–J qualification pass. Enable V2 only for approved
 dev/test plaintext hosts while [concord#91](https://github.com/gsmlg-dev/concord/issues/91)
-remains open; production edge persistence must remain disabled. V1 command
-uploads continue, and V1 fact/wipe compatibility remains controlled by
-`memory.host_sync_v1.enabled`. Use the
+remains open; production edge persistence must remain disabled. Commands use
+authenticated `memory_commands.v2` independently of optional mirror delivery.
+No V1 writer, fact cache, wipe compatibility or runtime selector remains. Use the
 [edge runbook](../operations/host-memory-edge-runbook.md) for cursor recovery.
 
 1. Record the pre-upgrade event watermark and restore-tested backup.
@@ -85,7 +88,8 @@ uploads continue, and V1 fact/wipe compatibility remains controlled by
 Before a host-edge binary rollback, disable `memory.host_sync_v2.enabled` and
 host edge config. Preserve the capture spool, command outbox (including V3
 `remote_revision`), edge DB, server cursors, and issued deliveries as evidence;
-do not translate a V1 fact hash into a V2 revision. If schema rollback crosses
+do not translate historical fact hashes into canonical revisions or requeue
+quarantined commands under new identities. Do not restore a V1 runtime. If schema rollback crosses
 the irreversible migration chain, use the restore/replay sequence below.
 
 A binary rollback is safe only while its schema compatibility has been

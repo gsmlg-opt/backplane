@@ -144,7 +144,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
   def render(assigns) do
     ~H"""
     <div id="memory-recall-inspector">
-      <.memory_page_header title="Recall Inspector" subtitle="Partition-safe Recall V2 execution traces" />
+      <.memory_page_header title="Recall Inspector" subtitle="Partition-safe memory recall traces" />
 
       <.dm_alert :if={@query_error} id="recall-query-error" variant="error" title="Recall unavailable" compact>
         Memory data is unavailable. Retry after checking the database connection.

@@ -51,31 +51,53 @@ defmodule Backplane.HostAgent.Memory.GitContextTest do
       "idempotency_key" => "explicit"
     }
 
-    opts = [store: store, config: %{bound_scope: "proj_local"}, agent_id: "test"]
-    assert {:ok, %{"id" => memory_id}} = Backplane.HostAgent.Memory.remember(args, opts)
+    owner =
+      start_supervised!(
+        {Backplane.HostAgent.Memory.Access, name: nil, store: store, now_fun: fn -> 10_000 end}
+      )
 
-    assert {:ok, %{"id" => ^memory_id, "dedup" => true}} =
-             Backplane.HostAgent.Memory.remember(args, opts)
+    access = "11111111-1111-4111-8111-111111111111"
 
-    assert {:ok, %{rows: [row]}} =
-             Backplane.HostAgent.Memory.Store.query(
-               store,
-               "SELECT metadata FROM memories WHERE id = ?",
-               [memory_id]
+    partition = %{
+      "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "scope" => "private",
+      "namespace" => "private"
+    }
+
+    assert :ok =
+             Backplane.HostAgent.Memory.Access.install_inventory(
+               %{id: 1, sent_at_ms: 10_000},
+               %{
+                 "extensions" => ~w(memory_access.v1 memory_commands.v2),
+                 "default_access_id" => access,
+                 "accesses" => [
+                   %{
+                     "access_id" => access,
+                     "authority_version" => 1,
+                     "status" => "active",
+                     "partition" => partition,
+                     "capabilities" => ~w(read remember forget),
+                     "offline_read_lease_seconds" => 0
+                   }
+                 ]
+               },
+               owner
              )
 
-    metadata = Jason.decode!(row["metadata"])
-    assert metadata["repository_sources"] == [first]
-    assert metadata["project"] == repo
+    opts = [store: store, access_server: owner, agent_id: "test", sync_opts: [channel: nil]]
+    assert {:ok, %{"command_id" => command}} = Backplane.HostAgent.Memory.remember(args, opts)
+    assert {:ok, %{"command_id" => ^command}} = Backplane.HostAgent.Memory.remember(args, opts)
 
     assert {:ok, %{rows: [outbox]}} =
              Backplane.HostAgent.Memory.Store.query(
                store,
-               "SELECT payload FROM memory_outbox WHERE memory_id = ?",
-               [memory_id]
+               "SELECT payload FROM memory_outbox WHERE command_id=?",
+               [command]
              )
 
-    assert Jason.decode!(outbox["payload"])["metadata"]["repository_sources"] == [first]
+    metadata = Jason.decode!(outbox["payload"])["arguments"]["metadata"]
+    assert metadata["repository_sources"] == [first]
+    assert metadata["project"] == repo
   end
 
   test "non-Git, missing Git, failed discovery and missing remote retain paths without rejecting writes" do

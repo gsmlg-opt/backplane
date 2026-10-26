@@ -46,6 +46,29 @@ defmodule Backplane.Memory.Recall.QueryPlanTest do
            }
   end
 
+  test "normalizes typed session, agent, and tag restrictions and includes them in traces" do
+    attrs =
+      Map.merge(@partition, %{
+        query: "query",
+        session_id: " session ",
+        agent_id: " agent ",
+        tag: " tag "
+      })
+
+    assert {:ok, plan} = QueryPlan.new(attrs)
+    assert {plan.session_id, plan.agent_id, plan.tag} == {"session", "agent", "tag"}
+
+    assert %{"session_id" => "session", "agent_id" => "agent", "tag" => "tag"} =
+             QueryPlan.trace(plan)
+
+    for key <- [:session_id, :agent_id, :tag] do
+      assert {:error, {:invalid, ^key}} = QueryPlan.new(Map.put(attrs, key, 42))
+
+      assert {:error, {:invalid, ^key}} =
+               QueryPlan.new(Map.put(attrs, key, String.duplicate("x", 1_025)))
+    end
+  end
+
   test "requires an exact non-empty partition and rejects malformed or unknown input" do
     valid = Map.put(@partition, :query, "query")
 

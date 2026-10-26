@@ -1,5 +1,5 @@
 defmodule Backplane.Admin.MemoryOverviewLive do
-  @moduledoc "Memory V2 operational overview."
+  @moduledoc "Memory operational overview."
 
   use Backplane.Admin, :live_view
 
@@ -11,9 +11,7 @@ defmodule Backplane.Admin.MemoryOverviewLive do
   alias Backplane.Skills.AgentManage
 
   @memory_gate_keys [
-    "memory.pipeline.enabled",
-    "memory.events.enabled",
-    "memory.events.dual_write"
+    "memory.pipeline.enabled"
   ]
 
   @impl true
@@ -101,24 +99,16 @@ defmodule Backplane.Admin.MemoryOverviewLive do
 
       <div :if={@regions} class="space-y-6">
         <.memory_region
-          title="Rollout state"
+          title="Processing"
           result={@regions.pipeline}
           :let={rollout}
         >
-          <div class="grid gap-3 md:grid-cols-3">
-            <.dm_card
-              :for={gate <- [
-                rollout.pipeline,
-                rollout.events,
-                rollout.dual_write
-              ]}
-              variant="bordered"
-              padding="sm"
-            >
-              <h2 class="mb-3 font-semibold">{gate.label}</h2>
-              <.gate_state_badges gate={gate} />
-            </.dm_card>
-          </div>
+          <.dm_card variant="bordered" padding="sm">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <h2 class="font-semibold">{rollout.pipeline.label}</h2>
+              <.gate_state_badges gate={rollout.pipeline} />
+            </div>
+          </.dm_card>
 
           <section class="mt-4" aria-label="Processing stages">
             <h2 class="mb-2 font-semibold">Processing stages</h2>

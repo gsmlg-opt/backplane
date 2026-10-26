@@ -2,7 +2,8 @@ defmodule Mix.Tasks.Agent.Memory.Resync do
   @shortdoc "Requeues dead-lettered host-agent memory outbox rows"
 
   @moduledoc """
-  Requeues all dead-lettered rows, or selected rows passed as `--seq N`, to `pending`.
+  Requeues authority-bound dead-lettered commands, or selected commands passed as
+  `--seq N`, to `pending`. Quarantined historical commands are preserved and excluded.
   """
 
   use Mix.Task

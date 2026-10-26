@@ -72,7 +72,7 @@ defmodule Backplane.HostAgent.Memory.V1ToV2UpgradeTest do
     assert {:ok, _} = Store.execute(store, "DELETE FROM memory_outbox WHERE seq=20")
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 6} = Migrator.current_version(store)
+    assert {:ok, 7} = Migrator.current_version(store)
 
     assert {:ok,
             %{
@@ -115,10 +115,19 @@ defmodule Backplane.HostAgent.Memory.V1ToV2UpgradeTest do
     assert {:ok, %{rows: rows}} =
              Store.query(
                store,
-               "SELECT seq,op,memory_id,state,attempts,last_error,completed_at,dead_lettered_at,inserted_at,updated_at FROM memory_outbox ORDER BY seq"
+               "SELECT seq,op,memory_id,state,attempts,last_error,completed_at,dead_lettered_at,inserted_at,updated_at,migration_state,migration_reason FROM memory_outbox ORDER BY seq"
              )
 
-    assert Enum.map(rows, & &1["state"]) == ~w(pending inflight done dead_letter)
+    assert Enum.map(rows, & &1["state"]) == ~w(dead_letter dead_letter done dead_letter)
+    assert Enum.map(rows, & &1["migration_state"]) == ~w(pending inflight done dead_letter)
+
+    assert Enum.map(rows, & &1["migration_reason"]) == [
+             "needs_verified_receipt_and_authority_mapping",
+             "needs_verified_receipt_and_authority_mapping",
+             "historical_acknowledged",
+             "needs_verified_receipt_and_authority_mapping"
+           ]
+
     assert Enum.map(rows, & &1["seq"]) == [1, 2, 3, 4]
     assert Enum.map(rows, & &1["attempts"]) == [1, 2, 3, 4]
     assert Enum.map(rows, & &1["last_error"]) == Enum.map(1..4, &"error-#{&1}")
@@ -147,6 +156,73 @@ defmodule Backplane.HostAgent.Memory.V1ToV2UpgradeTest do
                store,
                "SELECT count(*) AS count FROM memory_outbox"
              )
+  end
+
+  test "retirement quarantines never-attempted legacy rows without changing bound v2 identities",
+       %{tmp_dir: dir} do
+    store =
+      start_supervised!(
+        {Store, database: Path.join(dir, "v6.db"), name: unique_name(:v6), pool_size: 1}
+      )
+
+    for migration <- [
+          V1,
+          Backplane.HostAgent.Memory.Migrations.V2,
+          Backplane.HostAgent.Memory.Migrations.V3,
+          Backplane.HostAgent.Memory.Migrations.V4,
+          Backplane.HostAgent.Memory.Migrations.V5,
+          Backplane.HostAgent.Memory.Migrations.V6
+        ],
+        sql <- migration.up() do
+      assert {:ok, _} = Store.execute(store, sql)
+    end
+
+    assert {:ok, _} = Store.execute(store, "PRAGMA user_version=6")
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO memory_outbox(op,memory_id,payload,state,inserted_at,updated_at) VALUES ('remember','legacy','{}','pending',?,?)",
+               [@now, @now]
+             )
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO memory_outbox(op,memory_id,payload,state,attempts,inserted_at,updated_at,command_id,access_id,authority_version,target_partition,payload_digest,request_key,request_agent_id,ack_partition,ack_canonical_id,ack_revision) VALUES ('remember','bound','bound-payload','retry_wait',3,?,?,'command','access',4,'partition','digest','request','actor','ack-partition','canonical',9)",
+               [@now, @now]
+             )
+
+    assert {:ok, %{rows: [before]}} =
+             Store.query(store, "SELECT * FROM memory_outbox WHERE access_id IS NOT NULL")
+
+    assert :ok = Migrator.migrate(store)
+
+    assert {:ok, %{rows: [after_row]}} =
+             Store.query(store, "SELECT * FROM memory_outbox WHERE access_id IS NOT NULL")
+
+    assert Map.drop(after_row, ~w(migration_state migration_reason)) == before
+    assert after_row["migration_state"] == nil
+    assert after_row["migration_reason"] == nil
+
+    assert {:ok,
+            %{
+              rows: [
+                %{
+                  "state" => "dead_letter",
+                  "migration_state" => "pending",
+                  "migration_reason" => "needs_authority_mapping",
+                  "attempts" => 0,
+                  "payload" => payload
+                }
+              ]
+            }} =
+             Store.query(
+               store,
+               "SELECT state,migration_state,migration_reason,attempts,payload FROM memory_outbox WHERE access_id IS NULL"
+             )
+
+    assert Jason.decode!(payload) == %{}
   end
 
   test "separate populated edge V1 preserves active canonical rows and resets interrupted snapshot at V3",

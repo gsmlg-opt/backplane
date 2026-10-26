@@ -2,8 +2,8 @@ defmodule Backplane.Memory.Context do
   @moduledoc "Builds the session context block injected into Claude Code on SessionStart."
 
   alias Backplane.Memory.Lessons
-  alias Backplane.Memory.Memories.Search
   alias Backplane.Memory.Profiles
+  alias Backplane.Memory.Recall.Pipeline
 
   @token_budget 2000
 
@@ -28,11 +28,12 @@ defmodule Backplane.Memory.Context do
         end
 
       parts =
-        case Search.hybrid_recall(
-               recall_query(kind, project),
-               recall_opts(kind, project, session_id, opts)
+        case Pipeline.run(
+               recall_attrs(kind, project, session_id, partition),
+               trace?: false,
+               post_fusion_opts: [limit: 5]
              ) do
-          {:ok, [_ | _] = memories} ->
+          {:ok, %{results: [_ | _] = memories}} ->
             case format_memories(kind, memories) do
               "" -> parts
               section -> parts ++ [section]
@@ -66,17 +67,17 @@ defmodule Backplane.Memory.Context do
     |> Backplane.Memory.PartitionIdentity.validate()
   end
 
-  defp recall_opts(kind, project, session_id, opts) do
-    recall_opts =
-      opts
-      |> Keyword.take([:memory_space_id, :scope, :namespace])
-      |> Keyword.put(:project, project)
-      |> Keyword.put(:writeback_fn, fn _ids -> :ok end)
-      |> Keyword.put(:limit, 5)
+  defp recall_attrs(kind, project, session_id, partition) do
+    attrs =
+      partition
+      |> Map.take([:memory_space_id, :host_id, :client_id, :source_client_id, :scope, :namespace])
+      |> Map.put(:query, recall_query(kind, project))
+      |> Map.put(:project, project)
+      |> Map.put(:token_budget, @token_budget)
 
     if kind == :pre_compact and is_binary(session_id) and session_id != "",
-      do: Keyword.put(recall_opts, :session, session_id),
-      else: recall_opts
+      do: Map.put(attrs, :session_id, session_id),
+      else: attrs
   end
 
   defp recall_query(:pre_compact, project),
@@ -111,8 +112,10 @@ defmodule Backplane.Memory.Context do
   defp format_memories(kind, memories) do
     items =
       memories
-      |> Enum.reject(&(&1.memory_type == "procedural"))
-      |> Enum.map(fn memory -> "- #{memory.content} [memory:#{compact_id(memory.id)}]" end)
+      |> Enum.reject(&(&1.memory_type == :procedural))
+      |> Enum.map(fn memory ->
+        "- #{memory.content} [#{memory.kind}:#{compact_id(memory.id)}]"
+      end)
       |> Enum.join("\n")
 
     heading = if kind == :pre_compact, do: "Current Session Sources", else: "Relevant Memories"

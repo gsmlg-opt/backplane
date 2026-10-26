@@ -29,7 +29,6 @@ defmodule Backplane.Memory.ConfigTest do
   ]
 
   @recall_flags [
-    {:host_sync_v1_enabled?, "memory.host_sync_v1.enabled", true},
     {:host_sync_v2_enabled?, "memory.host_sync_v2.enabled", false},
     {:recall_trace_enabled?, "memory.recall_trace_enabled", true},
     {:recall_reranker_enabled?, "memory.recall_reranker_enabled", false}
@@ -42,18 +41,15 @@ defmodule Backplane.Memory.ConfigTest do
 
   @flags [
     {:pipeline_enabled?, "memory.pipeline.enabled"},
-    {:events_enabled?, "memory.events.enabled"},
-    {:dual_write?, "memory.events.dual_write"},
     {:window_summaries_enabled?, "memory.window_summaries.enabled"},
     {:session_summary_v2_enabled?, "memory.session_summary_v2.enabled"},
     {:fact_extraction_v2_enabled?, "memory.fact_extraction_v2.enabled"},
     {:procedure_extraction_v2_enabled?, "memory.procedure_extraction_v2.enabled"},
-    {:relation_classifier_enabled?, "memory.relation_classifier.enabled"},
-    {:recall_v2_enabled?, "memory.recall_v2.enabled"}
+    {:relation_classifier_enabled?, "memory.relation_classifier.enabled"}
   ]
 
   @children tl(@flags)
-  @independent_children Enum.drop(@flags, 3)
+  @independent_children tl(@flags)
 
   setup do
     send(Settings, :seed_and_load)
@@ -291,28 +287,7 @@ defmodule Backplane.Memory.ConfigTest do
     assert Config.pipeline_enabled?()
   end
 
-  test "events require their flag and dual-write requires both event flags" do
-    put_setting("memory.pipeline.enabled", true)
-
-    put_setting("memory.events.enabled", "true")
-    refute Config.events_enabled?()
-
-    put_setting("memory.events.enabled", true)
-    assert Config.events_enabled?()
-    refute Config.dual_write?()
-
-    put_setting("memory.events.dual_write", "true")
-    refute Config.dual_write?()
-
-    put_setting("memory.events.dual_write", true)
-    assert Config.dual_write?()
-
-    put_setting("memory.events.enabled", false)
-    refute Config.events_enabled?()
-    refute Config.dual_write?()
-  end
-
-  test "non-event children depend only on the master and their own strict boolean flag" do
+  test "background stages depend only on the master and their own strict boolean flag" do
     put_setting("memory.pipeline.enabled", true)
 
     for {accessor, key} <- @independent_children do
@@ -329,9 +304,6 @@ defmodule Backplane.Memory.ConfigTest do
       for {other_accessor, other_key} <- @independent_children, other_key != key do
         refute apply(Config, other_accessor, [])
       end
-
-      refute Config.events_enabled?()
-      refute Config.dual_write?()
     end
   end
 

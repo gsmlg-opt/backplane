@@ -18,27 +18,16 @@ defmodule Backplane.Memory.EdgeSync do
   defp do_negotiate(host, offer) when is_map(offer) do
     with {:ok, _} <- subject_host(host), :ok <- valid_offer(offer) do
       v2 = offer["memory_v2"]
-      selected = offer["selected"]
 
       cond do
-        selected == "host_memory.v2" and not Config.host_sync_v2_enabled?() ->
-          {:error, :protocol_disabled}
+        not is_map(v2) or "host_memory.v2" not in v2["offers"] ->
+          {:error, :unsupported_protocol}
 
-        is_map(v2) and "host_memory.v2" in v2["offers"] and Config.host_sync_v2_enabled?() ->
+        Config.host_sync_v2_enabled?() or "memory_access.v1" in Map.get(v2, "extensions", []) ->
           store().negotiate(host, v2)
 
-        selected == "host_memory.v2" ->
-          {:error, :unsupported_protocol}
-
-        get_in(offer, ["memory", "protocol"]) == "host_memory.v1" and
-            Config.host_sync_v1_enabled?() ->
-          {:ok, %{selected: "host_memory.v1"}}
-
-        is_map(v2) and "host_memory.v2" in v2["offers"] ->
-          {:error, :protocol_disabled}
-
         true ->
-          {:error, :unsupported_protocol}
+          {:error, :protocol_disabled}
       end
     end
   end
@@ -115,15 +104,14 @@ defmodule Backplane.Memory.EdgeSync do
   end
 
   defp valid_offer(offer) do
-    v1 = offer["memory"]
     v2 = offer["memory_v2"]
 
     cond do
-      not is_nil(v1) and not is_map(v1) ->
-        {:error, :invalid_request}
+      Map.has_key?(offer, "memory") ->
+        {:error, :unsupported_protocol}
 
       is_nil(v2) ->
-        :ok
+        {:error, :unsupported_protocol}
 
       not is_map(v2) ->
         {:error, :invalid_request}

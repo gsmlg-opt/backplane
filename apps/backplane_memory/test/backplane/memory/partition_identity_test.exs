@@ -9,8 +9,6 @@ defmodule Backplane.Memory.PartitionIdentityTest do
     Backplane.Memory.Events.Event,
     Backplane.Memory.Events.Stream,
     Backplane.Memory.Memories.Memory,
-    Backplane.Memory.Observations.Observation,
-    Backplane.Memory.Observations.Session,
     Backplane.Memory.Projections.ProjectedObservation,
     Backplane.Memory.Projections.ProjectedSession,
     Backplane.Memory.Summaries.Summary,

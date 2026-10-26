@@ -194,7 +194,6 @@ defmodule Backplane.HostAgent.Reporter do
       memory,
       ~w(enabled db_path bound_scope local_ttl_days sync_interval_ms sync_batch_size max_attempts tombstone_relearn)
     )
-    |> Map.put("host_sync_v1", safe_settings(field(memory, :host_sync_v1), ~w(enabled)))
     |> Map.put(
       "host_sync_v2",
       safe_settings(

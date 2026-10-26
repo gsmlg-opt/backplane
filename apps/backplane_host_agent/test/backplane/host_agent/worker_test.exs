@@ -1,7 +1,7 @@
 defmodule Backplane.HostAgent.WorkerTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.{Config, Manifest, Worker}
+  alias Backplane.HostAgent.{Config, Manifest, MemoryTestFixtures, Worker}
 
   defmodule FakeChannel do
     def push(_channel, event, payload) do
@@ -318,12 +318,14 @@ defmodule Backplane.HostAgent.WorkerTest do
        %{
          channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
          memory: %{
-           "selected" => "host_memory.v1",
-           "memory_partition" => %{
-             "memory_space_id" => "30000000-0000-0000-0000-000000000013",
-             "scope" => "private",
-             "namespace" => "private"
-           }
+           "selected" => "host_memory.v2",
+           "partitions" => [
+             %{
+               "memory_space_id" => "30000000-0000-0000-0000-000000000013",
+               "scope" => "private",
+               "namespace" => "private"
+             }
+           ]
          }
        }}
     )
@@ -347,7 +349,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     state = GenServer.call(pid, :status)
     assert {:ok, _, _} = DateTime.from_iso8601(state.local_settings_applied_at)
 
-    assert %{"selected" => "host_memory.v1", "applied_at" => timestamp, "partitions" => [_]} =
+    assert %{"selected" => "host_memory.v2", "applied_at" => timestamp, "partitions" => [_]} =
              state.memory_negotiation_report
 
     assert {:ok, _, _} = DateTime.from_iso8601(timestamp)
@@ -358,27 +360,13 @@ defmodule Backplane.HostAgent.WorkerTest do
     GenServer.stop(pid)
   end
 
-  defmodule ProtectedFallback do
-    def pending_overlay(_, _) do
-      send(self(), :protected_overlay_read)
-
-      {:ok,
-       %{
-         "upserts" => [%{"id" => "pending", "content" => "protected pending"}],
-         "delete_ids" => [],
-         "pending_operations" => 1
-       }}
-    end
-
-    def offline_read(_, _, _) do
-      send(self(), :protected_mirror_read)
-      {:ok, %{"results" => [%{"id" => "canonical", "content" => "protected mirror"}]}}
-    end
-  end
-
-  test "worker preserves authentication rejection through transient retries until authenticated recovery" do
+  @tag :tmp_dir
+  test "worker preserves authentication rejection through transient retries until authenticated recovery",
+       %{tmp_dir: dir} do
     alias Backplane.HostAgent.{MemoryFacade, MemoryProxy}
+    alias Backplane.HostAgent.Memory.Access
     MemoryProxy.set_channel(nil)
+    fixture = MemoryTestFixtures.start!(dir, owner_name: Access, install?: false)
     :persistent_term.put({FakeConnector, :owner}, self())
     :persistent_term.put({FakeConnector, :connection}, {:error, :unauthorized})
 
@@ -400,16 +388,9 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert %{last_error: :unauthorized} = GenServer.call(pid, :status)
 
-    context = %{
-      agent_id: "codex",
-      remote_adapter: MemoryProxy,
-      local_adapter: ProtectedFallback,
-      edge_adapter: ProtectedFallback
-    }
-
+    context = MemoryTestFixtures.context(fixture)
     assert {:error, :unauthorized} = MemoryFacade.call("recall", %{}, context)
-    refute_received :protected_overlay_read
-    refute_received :protected_mirror_read
+    refute Access.status(fixture.owner).negotiated
 
     :persistent_term.put({FakeConnector, :connection}, {:error, :socket_timeout})
     send(pid, :connect_retry)
@@ -417,17 +398,37 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert {:error, :unauthorized} = MemoryFacade.call("recall", %{}, context)
 
     channel = start_supervised!({Agent, fn -> nil end})
-    :persistent_term.put({FakeConnector, :connection}, {:ok, %{channel: channel, memory: %{}}})
+
+    :persistent_term.put(
+      {FakeConnector, :connection},
+      {:ok, %{channel: channel, memory: fixture.inventory}}
+    )
+
     send(pid, :connect_retry)
     assert %{channel: ^channel, last_error: nil} = GenServer.call(pid, :status)
     assert MemoryProxy.channel() == channel
+
+    assert %{negotiated: true, global_fenced: false, generation: generation} =
+             Access.status(fixture.owner)
+
+    assert is_integer(generation) and generation > 0
+    fixture = MemoryTestFixtures.populate!(fixture)
     Agent.stop(channel)
-    # After a successful new authentication, a later outage may use the populated cache again.
-    assert {:ok, %{"mode" => "offline"}} =
+    assert await_channel_loss(pid)
+
+    # Fresh authenticated inventory and a completed protected snapshot permit bounded offline reads.
+    assert {:ok, %{"mode" => "offline", "consistency" => "bounded_stale", "results" => results}} =
              MemoryFacade.call("recall", %{"query" => "memory"}, context)
 
-    assert_received :protected_overlay_read
-    assert_received :protected_mirror_read
+    assert Enum.sort(Enum.map(results, &(&1["canonical_id"] || &1["id"]))) ==
+             Enum.sort([fixture.canonical_id, fixture.pending_id])
+
+    assert Enum.any?(results, &(&1["content"] == "protected mirror memory"))
+
+    assert Enum.any?(
+             results,
+             &(&1["content"] == "protected pending memory" and &1["provisional"] == true)
+           )
   end
 
   test "survives startup connect failure and retries" do
@@ -745,7 +746,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert MemoryProxy.channel() == nil
   end
 
-  test "v2 selection starts an edge syncer at the configured interval and v1 reconnect stops it" do
+  test "v2 selection starts an edge syncer at the configured interval and disabled reconnect stops it" do
     :persistent_term.put({FakeConnector, :owner}, self())
     :persistent_term.put({FakeMemoryProxy, :owner}, self())
     first_channel = start_supervised!({Agent, fn -> nil end})
@@ -796,8 +797,8 @@ defmodule Backplane.HostAgent.WorkerTest do
          channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
          host_id: "host-1",
          host_name: "t430",
-         socket: socket_supervisor(:v1_socket),
-         memory: %{"selected" => "host_memory.v1"}
+         socket: socket_supervisor(:disabled_memory_socket),
+         memory: %{"selected" => "disabled"}
        }}
     )
 
@@ -1480,5 +1481,17 @@ defmodule Backplane.HostAgent.WorkerTest do
 
   defp stop_pid(pid) do
     if Process.alive?(pid), do: send(pid, :stop)
+  end
+
+  defp await_channel_loss(worker, attempts \\ 100)
+  defp await_channel_loss(_worker, 0), do: false
+
+  defp await_channel_loss(worker, attempts) do
+    if GenServer.call(worker, :status).channel == nil do
+      true
+    else
+      Process.sleep(10)
+      await_channel_loss(worker, attempts - 1)
+    end
   end
 end

@@ -161,7 +161,7 @@ defmodule Backplane.Memory.Readiness do
         joins = """
         #{owner_join}
         LEFT JOIN bpm_events source_event ON source_event.id=child.source_event_id
-        LEFT JOIN bpm_observations source_observation ON source_observation.id=child.source_observation_id
+        LEFT JOIN bpm_events source_observation ON source_observation.id=child.source_observation_id
         LEFT JOIN memory_summaries source_summary ON source_summary.id=child.source_summary_id
         LEFT JOIN bpm_memory_remember_requests source_request ON source_request.id=child.source_request_id
         LEFT JOIN bpm_memories request_owner ON request_owner.id=source_request.memory_id
@@ -221,7 +221,7 @@ defmodule Backplane.Memory.Readiness do
         #{owner_join}
         LEFT JOIN bpm_memories source_memory ON child.candidate_kind IN ('memory','lesson') AND source_memory.id=child.candidate_id
         LEFT JOIN bpm_events source_event ON child.candidate_kind='event' AND source_event.id=child.candidate_id
-        LEFT JOIN bpm_observations source_observation ON child.candidate_kind='observation' AND source_observation.id=child.candidate_id
+        LEFT JOIN bpm_events source_observation ON child.candidate_kind='observation' AND source_observation.id=child.candidate_id
         LEFT JOIN memory_summaries source_summary ON child.candidate_kind='summary' AND source_summary.id=child.candidate_id
         LEFT JOIN bpm_memory_remember_requests source_request ON child.candidate_kind='request' AND source_request.id=child.candidate_id
         LEFT JOIN bpm_memories request_owner ON request_owner.id=source_request.memory_id

@@ -101,7 +101,7 @@ defmodule Backplane.Memory.SharedCommands do
                     save(
                       actor,
                       command,
-                      {:committed, canonical_id, revision(command.partition, canonical_id)}
+                      {:committed, canonical_id, command_revision(command, canonical_id)}
                     )
 
                   {:error, :not_found} ->
@@ -162,8 +162,11 @@ defmodule Backplane.Memory.SharedCommands do
     end
   end
 
-  defp effect(actor, %{operation: :forget} = command),
-    do: Memories.tombstone_shared(command.arguments["id"], command.partition, identity(actor))
+  defp effect(actor, %{operation: :forget} = command) do
+    with {:ok, id} <- forget_identity(actor, command) do
+      Memories.tombstone_shared(id, command.partition, identity(actor))
+    end
+  end
 
   defp effect(actor, %{operation: operation} = command)
        when operation in [:source_mutate, :source_reconcile] do
@@ -181,6 +184,23 @@ defmodule Backplane.Memory.SharedCommands do
       do: Backplane.Memory.Sources.mutate(args, authority),
       else: Backplane.Memory.Sources.reconcile(args, authority)
   end
+
+  defp forget_identity(actor, %{arguments: %{"remember_command_id" => dependency}} = command) do
+    case repo().one(
+           from receipt in Receipt,
+             where:
+               receipt.host_id == ^actor.host_id and receipt.access_id == ^command.access_id and
+                 receipt.authority_version == ^command.version and
+                 receipt.command_id == ^dependency and
+                 receipt.operation == "remember" and receipt.status == "committed",
+             select: receipt.canonical_id
+         ) do
+      nil -> {:error, :not_found}
+      id -> {:ok, id}
+    end
+  end
+
+  defp forget_identity(_actor, command), do: {:ok, command.arguments["id"]}
 
   defp permission_operation(operation) when operation in [:source_mutate, :source_reconcile],
     do: :remember
@@ -241,7 +261,8 @@ defmodule Backplane.Memory.SharedCommands do
         Map.merge(base, %{
           status: if(duplicate?, do: :duplicate, else: :committed),
           canonical_id: receipt.canonical_id,
-          revision: receipt.revision
+          revision: receipt.revision,
+          mirror_status: if(is_integer(receipt.revision), do: "revisioned", else: "not_eligible")
         })
 
       if receipt.operation in ~w(source_mutate source_reconcile),
@@ -265,6 +286,32 @@ defmodule Backplane.Memory.SharedCommands do
     <<key::signed-64, _::binary>> = :crypto.hash(:sha256, Enum.join([host, access, command], ":"))
     repo().query!("SELECT pg_advisory_xact_lock($1::bigint)", [key])
   end
+
+  defp command_revision(%{operation: :remember} = command, id) do
+    # Deduplication can return an existing row without emitting a new change.
+    # A unique command marker produces the causal revision for this exact write.
+    result =
+      repo().query!(
+        """
+        WITH prepared AS (
+          SELECT id,
+            jsonb_set(metadata, '{host_memory_command_revision}', to_jsonb($2::text), true) AS metadata,
+            timezone('UTC', clock_timestamp()) AS updated_at
+          FROM bpm_memories WHERE id=$1
+        )
+        UPDATE bpm_memories m
+        SET metadata=prepared.metadata, updated_at=prepared.updated_at
+        FROM prepared
+        WHERE m.id=prepared.id AND bpm_memory_edge_eligible(jsonb_populate_record(m,
+          jsonb_build_object('metadata', prepared.metadata, 'updated_at', prepared.updated_at)))
+        """,
+        [Ecto.UUID.dump!(id), command.command_id]
+      )
+
+    if result.num_rows == 1, do: revision(command.partition, id), else: nil
+  end
+
+  defp command_revision(command, id), do: revision(command.partition, id)
 
   defp revision(partition, id) do
     repo().one(
@@ -357,11 +404,14 @@ defmodule Backplane.Memory.SharedCommands do
     if valid?, do: :ok, else: {:error, :invalid_request}
   end
 
-  defp validate_arguments(:forget, %{"id" => id} = args) when map_size(args) == 1 do
-    case Ecto.UUID.cast(id) do
-      {:ok, _} -> :ok
-      _ -> {:error, :invalid_request}
-    end
+  defp validate_arguments(:forget, %{"id" => id} = args) do
+    dependency = args["remember_command_id"]
+
+    if Map.keys(args) -- ~w(id remember_command_id) == [] and
+         Ecto.UUID.cast(id) != :error and
+         (is_nil(dependency) or (dependency == id and Ecto.UUID.cast(dependency) != :error)),
+       do: :ok,
+       else: {:error, :invalid_request}
   end
 
   defp validate_arguments(:forget, _), do: {:error, :invalid_request}

@@ -76,6 +76,53 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     assert repo().get!(Memory, wanted.id).access_count == 0
   end
 
+  test "session, agent, and tag restrictions apply before each memory channel candidate limit" do
+    wanted =
+      memory("filtered recall needle", @partition,
+        session_id: "wanted-session",
+        agent_id: "wanted-agent",
+        tags: ["wanted-tag"]
+      )
+
+    for {opts, index} <-
+          Enum.with_index([
+            [session_id: "other-session", agent_id: "wanted-agent", tags: ["wanted-tag"]],
+            [session_id: "wanted-session", agent_id: "other-agent", tags: ["wanted-tag"]],
+            [session_id: "wanted-session", agent_id: "wanted-agent", tags: ["other-tag"]]
+          ]) do
+      memory(
+        "filtered recall needle filtered recall needle filtered recall needle variant #{index}",
+        @partition,
+        opts
+      )
+    end
+
+    assert {:ok, plan} =
+             QueryPlan.new(
+               Map.merge(@partition, %{
+                 query: "filtered recall needle",
+                 session_id: "wanted-session",
+                 agent_id: "wanted-agent",
+                 tag: "wanted-tag"
+               })
+             )
+
+    assert {:ok, [{candidate, _score}]} = Channels.fts(plan, 1)
+    assert candidate.id == wanted.id
+
+    embed(wanted, vec(%{0 => 1.0}))
+
+    assert {:ok, [{vector_candidate, _score}]} =
+             Channels.vector(
+               plan,
+               1,
+               fn _, _, _ -> {:ok, [vec(%{0 => 1.0})]} end,
+               @embedding_model
+             )
+
+    assert vector_candidate.id == wanted.id
+  end
+
   test "FTS rejects forged cross-partition event evidence before candidate provenance" do
     wanted = memory("partition-safe evidence canary", @partition)
     foreign_event = Ecto.UUID.generate()
@@ -103,6 +150,40 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
 
     assert {:ok, [{candidate, _score}]} = Channels.fts(plan, 10)
     refute foreign_event in candidate.source_ids
+    assert candidate.evidence_count == 1
+  end
+
+  test "canonical observation evidence resolves its event UUID through the production projection" do
+    event_id = Ecto.UUID.generate()
+    insert_event(event_id, @partition, "canonical-observation-session")
+
+    observation(
+      event_id,
+      @partition,
+      "canonical captured source",
+      "canonical-observation-session"
+    )
+
+    wanted = memory("canonical observation evidence needle", @partition, provenance: false)
+
+    repo().insert!(
+      Evidence.changeset(%Evidence{}, %{
+        memory_id: wanted.id,
+        source_observation_id: event_id,
+        host_id: @partition.host_id,
+        evidence_kind: "supports",
+        support_score: 1.0
+      })
+    )
+
+    assert {:ok, plan} =
+             QueryPlan.new(
+               Map.merge(@partition, %{query: "canonical observation evidence needle"})
+             )
+
+    assert {:ok, [{candidate, _score}]} = Channels.fts(plan, 10)
+    assert candidate.id == wanted.id
+    assert candidate.source_refs == [%{type: :observation, id: event_id}]
     assert candidate.evidence_count == 1
   end
 
@@ -226,6 +307,19 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
                candidate.source_ids == [event_id] and
                candidate.source_refs == [%{type: :event, id: event_id}]
            end)
+
+    for restriction <- [
+          %{session_id: "other-session"},
+          %{agent_id: "absent-agent"},
+          %{tag: "absent-tag"}
+        ] do
+      attrs =
+        Map.merge(@partition, %{query: "weighted fusion", project: "backplane"})
+        |> Map.merge(restriction)
+
+      assert {:ok, restricted} = QueryPlan.new(attrs)
+      assert {:ok, []} = Channels.fts(restricted, 1)
+    end
   end
 
   test "FTS cannot launder a same-host summary through a colliding cross-partition session" do
@@ -430,6 +524,23 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
     assert candidate.kind == :observation
     assert candidate.source_refs == [%{type: :event, id: wanted_event}]
     assert score == 1.0
+
+    for restriction <- [
+          %{session_id: "other-session"},
+          %{agent_id: "absent-agent"},
+          %{tag: "absent-tag"}
+        ] do
+      attrs =
+        Map.merge(@partition, %{
+          query: "graph",
+          entity_hints: ["Backplane"],
+          include_working: true
+        })
+        |> Map.merge(restriction)
+
+      assert {:ok, restricted} = QueryPlan.new(attrs)
+      assert {:ok, []} = Channels.graph(restricted, 1)
+    end
   end
 
   test "graph worker writes truthful projected event provenance consumed by recall" do
@@ -588,7 +699,8 @@ defmodule Backplane.Memory.Recall.ChannelsTest do
           content: content,
           memory_space_id: partition.memory_space_id,
           memory_type: Keyword.get(opts, :type, "semantic"),
-          agent_id: "agent",
+          agent_id: Keyword.get(opts, :agent_id, "agent"),
+          tags: Keyword.get(opts, :tags, []),
           host_id: partition.host_id,
           client_id: partition.client_id,
           scope: partition.scope,

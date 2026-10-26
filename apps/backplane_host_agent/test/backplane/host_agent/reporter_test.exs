@@ -204,7 +204,7 @@ defmodule Backplane.HostAgent.ReporterTest do
         %{
           local_settings_applied_at: "2026-10-20T01:00:00Z",
           memory_negotiation_report: %{
-            "selected" => "host_memory.v1",
+            "selected" => "host_memory.v2",
             "applied_at" => "2026-10-20T01:00:01Z",
             "partitions" => [
               %{
@@ -219,7 +219,7 @@ defmodule Backplane.HostAgent.ReporterTest do
       )
 
     assert report["local_settings_applied_at"] == "2026-10-20T01:00:00Z"
-    assert report["memory_negotiation"]["selected"] == "host_memory.v1"
+    assert report["memory_negotiation"]["selected"] == "host_memory.v2"
     assert report["agent"]["token"] == "REDACTED"
     refute inspect(report) =~ "hidden-"
     refute inspect(report) =~ "diagnostics_module"

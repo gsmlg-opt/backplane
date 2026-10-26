@@ -1,14 +1,27 @@
 defmodule Backplane.HostAgent.Memory.SupervisorTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.Migrator
+  alias Backplane.HostAgent.Memory.{Access, Migrator}
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
 
   @moduletag :tmp_dir
 
   defmodule CanonicalRemote do
-    def call("recall", _args, _opts),
-      do: {:ok, %{"results" => [%{"id" => "canonical", "content" => "online"}]}}
+    def call("recall", _args, opts),
+      do:
+        {:ok,
+         %{
+           "access" => opts[:access],
+           "partition" => partition(),
+           "result" => %{"results" => [%{"id" => "canonical", "content" => "online"}]}
+         }}
+
+    def partition,
+      do: %{
+        "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "scope" => "proj_local",
+        "namespace" => "private"
+      }
   end
 
   test "edge cannot reuse the command database", %{tmp_dir: dir} do
@@ -80,7 +93,33 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
     assert %{pending_depth: 0} =
              Backplane.HostAgent.Memory.Spool.Turso.stats(:edge_failure_capture_spool)
 
-    assert {:ok, %{"results" => [%{"id" => "canonical"}]}} =
+    access_id = "11111111-1111-4111-8111-111111111111"
+
+    assert :ok =
+             Access.install_inventory(
+               %{id: 1, sent_at_ms: System.monotonic_time(:millisecond)},
+               %{
+                 "extensions" => ~w(memory_access.v1 memory_commands.v2),
+                 "default_access_id" => access_id,
+                 "accesses" => [
+                   %{
+                     "access_id" => access_id,
+                     "authority_version" => 1,
+                     "status" => "active",
+                     "partition" => CanonicalRemote.partition(),
+                     "capabilities" => ~w(read remember forget),
+                     "offline_read_lease_seconds" => 0
+                   }
+                 ]
+               }
+             )
+
+    assert {:ok,
+            %{
+              "results" => [%{"id" => "canonical"}],
+              "authority" => "canonical",
+              "history_available" => true
+            }} =
              Backplane.HostAgent.MemoryFacade.call("recall", %{"query" => "memory"}, %{
                agent_id: "agent",
                store: :failure_command_store,
@@ -120,7 +159,6 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
     path = Path.join(dir, "config.yaml")
     File.write!(path, "agent:\n  work_dir: #{dir}\n")
     {:ok, config} = Backplane.HostAgent.Config.load(path)
-    assert config.memory.host_sync_v1 == %{enabled: false}
     assert config.memory.host_sync_v2.enabled == false
     assert config.memory.host_sync_v2.development_plaintext == false
 
@@ -128,8 +166,6 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
     agent:
       work_dir: #{dir}
     memory:
-      host_sync_v1:
-        enabled: true
       host_sync_v2:
         enabled: true
         development_plaintext: true
@@ -140,7 +176,6 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
     """)
 
     {:ok, config} = Backplane.HostAgent.Config.load(path)
-    assert config.memory.host_sync_v1.enabled
 
     assert config.memory.host_sync_v2 == %{
              enabled: true,

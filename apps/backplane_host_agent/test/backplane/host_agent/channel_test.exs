@@ -190,30 +190,19 @@ defmodule Backplane.HostAgent.ChannelTest do
     refute Process.alive?(channel)
   end
 
-  test "join preserves the v1 offer when v2 persistence is unavailable" do
+  test "join offers only commands and access when mirror persistence is unavailable" do
     Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
-    Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
-    Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
-
-    assert {:ok, %{}, channel} = Channel.join(self(), "host-1")
-    assert channel == self()
-
-    assert_receive {:join, socket, "host_agent:host-1",
-                    %{
-                      "memory" => %{
-                        "protocol" => "host_memory.v1",
-                        "scopes" => [%{"scope" => "proj_local", "fact_set_hash" => hash}]
-                      }
-                    }}
-
-    assert socket == self()
-    assert hash == :crypto.hash(:sha256, "[]") |> Base.encode16(case: :lower)
+    Application.put_env(:backplane_host_agent, :memory_host_sync_v2, %{enabled: false})
+    assert {:ok, %{}, _channel} = Channel.join(self(), "host-1")
+    assert_receive {:join, _, "host_agent:host-1", payload}
+    refute Map.has_key?(payload, "memory")
+    assert payload["memory_v2"]["offers"] == ["host_memory.v2"]
+    assert payload["memory_v2"]["partitions"] == []
+    assert "memory_commands.v2" in payload["memory_v2"]["extensions"]
   end
 
-  test "join adds the protected v2 offer without dropping the v1 block" do
+  test "protected mirror adds its v2 offer without a retired uploader offer" do
     Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
-    Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
-    Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
 
     Application.put_env(:backplane_host_agent, :memory_host_sync_v2, %{
       enabled: true,
@@ -221,18 +210,10 @@ defmodule Backplane.HostAgent.ChannelTest do
     })
 
     Application.put_env(:backplane_host_agent, :edge_mirror_module, FakeMirror)
-
     assert {:ok, %{}, _channel} = Channel.join(self(), "host-1")
-
-    assert_receive {:join, _socket, "host_agent:host-1",
-                    %{
-                      "memory" => %{"protocol" => "host_memory.v1"},
-                      "memory_v2" => %{
-                        "offers" => ["host_memory.v2"],
-                        "max_frame_bytes" => 123_456,
-                        "partitions" => []
-                      }
-                    }}
+    assert_receive {:join, _, "host_agent:host-1", payload}
+    refute Map.has_key?(payload, "memory")
+    assert payload["memory_v2"]["max_frame_bytes"] == 123_456
   end
 
   test "shared extensions remain negotiable when protected mirror is disabled" do

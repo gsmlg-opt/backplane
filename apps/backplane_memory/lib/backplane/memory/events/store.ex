@@ -20,11 +20,33 @@ defmodule Backplane.Memory.Events.Store do
     :session_id,
     :run_id
   ]
+  @subject_owner_fields [:memory_space_id, :client_id, :source_client_id, :scope, :namespace]
   @idempotency_constraint "bpm_events_idempotency_key_uniq"
 
   def append(attrs, opts \\ []) do
     append_tagged(attrs, opts)
     |> unwrap_public()
+  end
+
+  @doc "Runs a canonical write decision under the event subject and stream locks."
+  def with_stream_lock(attrs, callback) when is_function(callback, 2) do
+    with {:ok, event} <- Preparation.prepare(attrs) do
+      repo().transaction(fn ->
+        lock_subjects(repo(), [event])
+
+        case ensure_subject_metadata_consistent(repo(), event) do
+          :ok -> :ok
+          {:error, reason} -> repo().rollback(reason)
+        end
+
+        stream = create_and_lock_stream(repo(), event.stream_id, event)
+
+        case ensure_stream_metadata_consistent(stream, event) do
+          :ok -> callback.(repo(), stream)
+          {:error, reason} -> repo().rollback(reason)
+        end
+      end)
+    end
   end
 
   @doc false
@@ -182,6 +204,8 @@ defmodule Backplane.Memory.Events.Store do
   end
 
   defp append_locked(repo, %Event{} = event) do
+    lock_subjects(repo, [event])
+
     case find_event_id_collision(repo, event) do
       nil -> append_by_idempotency(repo, event)
       existing -> append_duplicate_result(validate_duplicate(existing, event))
@@ -213,6 +237,7 @@ defmodule Backplane.Memory.Events.Store do
   defp append_duplicate_result({:error, reason}), do: {:error, reason}
 
   defp batch_locked(repo, events) do
+    lock_subjects(repo, events)
     streams = create_and_lock_streams(repo, events)
     duplicates = load_batch_duplicates(repo, events)
 
@@ -584,7 +609,60 @@ defmodule Backplane.Memory.Events.Store do
               not is_nil(event_project) and stream_project != event_project,
        do: {:error, :stream_metadata_conflict}
 
+  defp ensure_stream_metadata_consistent(stream, %Event{schema_version: version} = event)
+       when not is_nil(version) do
+    if Enum.any?(
+         [:memory_space_id, :host_id, :client_id, :scope, :namespace, :session_id],
+         fn key ->
+           left = Map.get(stream, key)
+           right = Map.get(event, key)
+           not is_nil(left) and not is_nil(right) and left != right
+         end
+       ),
+       do: {:error, :stream_metadata_conflict},
+       else: :ok
+  end
+
   defp ensure_stream_metadata_consistent(_stream, _event), do: :ok
+
+  defp ensure_subject_metadata_consistent(repo, event) do
+    mismatch =
+      Enum.reduce(@subject_owner_fields, dynamic(false), fn key, mismatch ->
+        case Map.get(event, key) do
+          nil ->
+            dynamic([existing], ^mismatch or not is_nil(field(existing, ^key)))
+
+          value ->
+            dynamic(
+              [existing],
+              ^mismatch or is_nil(field(existing, ^key)) or field(existing, ^key) != ^value
+            )
+        end
+      end)
+
+    conflict? =
+      repo.exists?(
+        from(existing in Event,
+          where:
+            not is_nil(existing.schema_version) and existing.host_id == ^event.host_id and
+              existing.session_id == ^event.session_id,
+          where: ^mismatch
+        )
+      )
+
+    if conflict?, do: {:error, :stream_metadata_conflict}, else: :ok
+  end
+
+  defp lock_subjects(repo, events) do
+    events
+    |> Enum.filter(&canonical_subject?/1)
+    |> Enum.map(&Source.subject_id!(&1.host_id, &1.session_id))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.each(fn subject ->
+      repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [subject])
+    end)
+  end
 
   defp enqueue_projection_repair(%Event{} = event) do
     if projection_repair_enabled?() and canonical_subject?(event) do

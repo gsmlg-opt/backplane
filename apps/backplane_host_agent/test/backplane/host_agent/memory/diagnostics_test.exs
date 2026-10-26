@@ -1,7 +1,7 @@
 defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.{Diagnostics, Migrator, Reducer, Store, Syncer}
+  alias Backplane.HostAgent.Memory.{Diagnostics, Migrator, Reducer, Store}
   alias Turso.Result
 
   @moduletag :tmp_dir
@@ -85,10 +85,8 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
 
     assert [
              %{"scope" => "other_scope", "count" => 1},
-             %{"scope" => "proj_local", "count" => 1, "fact_set_hash" => fact_hash}
+             %{"scope" => "proj_local", "count" => 1}
            ] = fact_scopes
-
-    assert fact_hash == Syncer.fact_set_hash(store, "proj_local")
   end
 
   test "snapshot reports the edge protection decision without opening edge storage", %{
@@ -265,6 +263,24 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
 
     assert {:ok, %{"purged" => 1}} = Diagnostics.purge_tombstones(store: store)
     assert_count(store, "tombstones", 0)
+  end
+
+  test "migration diagnostics preserve quarantine and ordinary recovery cannot replay it", %{
+    store: store
+  } do
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO memory_outbox(op,memory_id,state,attempts,inserted_at,updated_at,migration_state,migration_reason) VALUES ('remember','historical','dead_letter',2,'old','old','inflight','needs_verified_receipt_and_authority_mapping')"
+             )
+
+    assert {:ok, snapshot} = Diagnostics.snapshot(store: store)
+    assert snapshot["command_migration"] == %{"needs_verified_receipt_and_authority_mapping" => 1}
+    assert [%{"migration_state" => "inflight", "attempts" => 2}] = snapshot["failed_outbox"]
+    assert {:ok, %{"requeued" => 0}} = Diagnostics.requeue_failed_outbox(store: store)
+
+    assert {:ok, %{rows: [%{"state" => "dead_letter", "attempts" => 2, "updated_at" => "old"}]}} =
+             Store.query(store, "SELECT state,attempts,updated_at FROM memory_outbox")
   end
 
   test "requeues only selected dead-letter rows and resets retry state", %{store: store} do
@@ -521,8 +537,8 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
              Store.execute(
                store,
                """
-               INSERT INTO memory_outbox(op, memory_id, state, last_error, inserted_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
+               INSERT INTO memory_outbox(op, memory_id, state, last_error, inserted_at, updated_at, access_id)
+               VALUES (?, ?, ?, ?, ?, ?, '11111111-1111-4111-8111-111111111111')
                """,
                [op, memory_id, state, last_error, now, now]
              )

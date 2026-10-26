@@ -599,10 +599,6 @@ defmodule Backplane.Skills.AgentManage do
       ~w(enabled db_path bound_scope local_ttl_days sync_interval_ms sync_batch_size max_attempts tombstone_relearn)
     )
     |> Map.put(
-      "host_sync_v1",
-      safe_config_section(map_section(memory["host_sync_v1"]), ~w(enabled))
-    )
-    |> Map.put(
       "host_sync_v2",
       safe_config_section(
         map_section(memory["host_sync_v2"]),
@@ -625,7 +621,7 @@ defmodule Backplane.Skills.AgentManage do
   defp valid_negotiation?(nil), do: true
 
   defp valid_negotiation?(report) when is_map(report) do
-    report["selected"] in ~w(host_memory.v1 host_memory.v2) and timestamp?(report["applied_at"]) and
+    report["selected"] == "host_memory.v2" and timestamp?(report["applied_at"]) and
       partitions?(report["partitions"] || [])
   end
 

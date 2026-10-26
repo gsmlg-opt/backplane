@@ -26,9 +26,7 @@ defmodule Backplane.Admin.MemoryFixtures do
   alias Backplane.Settings
 
   @gate_keys [
-    "memory.pipeline.enabled",
-    "memory.events.enabled",
-    "memory.events.dual_write"
+    "memory.pipeline.enabled"
   ]
 
   def setup_memory_gates(_context) do

@@ -16,65 +16,31 @@ defmodule Backplane.HostAgent.Memory.ReducerTest do
     assert {:error, :invalid_scope} = Reducer.resolve_scope(%{"scope" => "other"}, config)
   end
 
-  test "normalizes tags and metadata for JSON storage" do
-    assert {:ok, facets} =
-             Reducer.normalize_facets(%{
-               "tags" => [" beta ", "alpha", "alpha", 42, ""],
-               "metadata" => %{"topic" => "memory", "count" => 2}
-             })
+  test "validates required and optional trimmed values without accepting non-strings" do
+    assert {:ok, "note"} = Reducer.required_string(%{"content" => "  note  "}, "content")
+    assert {:ok, "note"} = Reducer.required_string(%{content: "note"}, "content")
 
-    assert facets.tags == ["alpha", "beta"]
-    assert facets.metadata == %{"count" => 2, "topic" => "memory"}
-    assert Jason.decode!(facets.tags_json) == ["alpha", "beta"]
-    assert Jason.decode!(facets.metadata_json) == %{"count" => 2, "topic" => "memory"}
+    assert {:error, {:invalid_args, "content is required"}} =
+             Reducer.required_string(%{"content" => "   "}, "content")
+
+    assert {:error, {:invalid_args, "content is required"}} =
+             Reducer.required_string(%{"content" => 42}, "content")
+
+    assert Reducer.optional_string(%{"scope" => "  project  "}, "scope") == "project"
+    assert Reducer.optional_string(%{}, "scope") == nil
+    assert Reducer.value(%{offset: 2}, "offset", 0) == 2
+    assert Reducer.value(%{}, "offset", 0) == 0
   end
 
-  test "builds escaped case-folded LIKE patterns" do
-    assert Reducer.like_pattern("  100%_Match\\Path  ") == "%100\\%\\_match\\\\path%"
-  end
+  test "JSON helpers preserve slot values and contain malformed input" do
+    value = %{"items" => [1, true, nil, %{"nested" => "text"}]}
+    assert {:ok, json} = Reducer.encode_json(value)
+    assert Reducer.decode_json(json, :fallback) == value
+    assert Reducer.decode_json("{invalid", :fallback) == :fallback
+    assert Reducer.decode_json(nil, :fallback) == :fallback
+    assert Reducer.decode_json(42, :fallback) == :fallback
 
-  test "rank merge is deterministic and prefers exact facts before local token hits" do
-    rows = [
-      %{
-        "id" => "local-token",
-        "content" => "alpha unrelated beta",
-        "scope" => "proj_local",
-        "source" => "local",
-        "confidence" => 1.0,
-        "inserted_at" => "2026-06-17T00:02:00Z",
-        "tags" => "[]",
-        "metadata" => "{}"
-      },
-      %{
-        "id" => "fact-exact-old",
-        "content" => "alpha beta",
-        "scope" => "proj_local",
-        "source" => "hub_fact",
-        "confidence" => 0.5,
-        "inserted_at" => "2026-06-17T00:00:00Z",
-        "tags" => "[]",
-        "metadata" => "{}"
-      },
-      %{
-        "id" => "local-exact-new",
-        "content" => "alpha beta",
-        "scope" => "proj_local",
-        "source" => "local",
-        "confidence" => 1.0,
-        "inserted_at" => "2026-06-17T00:03:00Z",
-        "tags" => "[]",
-        "metadata" => "{}"
-      }
-    ]
-
-    hits = Reducer.rank_hits(rows, "alpha beta", 10)
-
-    assert Enum.map(hits, & &1["id"]) == [
-             "fact-exact-old",
-             "local-exact-new",
-             "local-token"
-           ]
-
-    assert Enum.all?(hits, &(&1["quality"] == "degraded"))
+    assert {:error, {:invalid_args, "value must be JSON encodable"}} =
+             Reducer.encode_json(self())
   end
 end

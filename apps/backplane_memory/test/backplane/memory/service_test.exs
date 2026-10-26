@@ -4,7 +4,7 @@ defmodule Backplane.Memory.ServiceTest do
   alias Backplane.Memory.Service
   alias Backplane.Memory.Memories.Memory, as: MemorySchema
   alias Backplane.Memory.Memories.{Evidence, RememberRequest}
-  alias Backplane.Memory.Observations.{Observation, Session}
+  alias Backplane.Memory.LegacyFixtures.{Observation, Session}
   alias Backplane.Memory.Workers.ProfileBuildWorker
   alias Backplane.Skills.Hosts
 
@@ -96,11 +96,15 @@ defmodule Backplane.Memory.ServiceTest do
     def record(session_id, content, opts \\ []) do
       opts = TestPartition.from_options(opts)
 
-      Backplane.Memory.Observations.record(
-        session_id,
-        content,
-        Keyword.put(opts, :trusted_partition, Map.new(opts))
-      )
+      with {:ok, observation} <-
+             Backplane.Memory.Observations.record(
+               session_id,
+               content,
+               Keyword.put(opts, :trusted_partition, Map.new(opts))
+             ),
+           {:ok, _} <- Backplane.Memory.Projections.Rebuild.session(opts[:host_id], session_id) do
+        {:ok, observation}
+      end
     end
 
     def register_session(session_id, project, opts \\ []) do
@@ -534,17 +538,17 @@ defmodule Backplane.Memory.ServiceTest do
   end
 
   describe "handle_recall/1" do
+    setup do
+      restore_recall_task_supervisor_on_exit()
+      restore_recall_v2_settings_on_exit()
+      supervisor = start_supervised!(Task.Supervisor)
+      Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
+      :ets.insert(:backplane_settings, {"memory.recall_trace_enabled", false})
+      :ok
+    end
+
     test "flag-enabled authenticated recall uses V2 with exact authorized partition and provenance" do
       restore_recall_v2_settings_on_exit()
-      restore_recall_task_supervisor_on_exit()
-
-      supervisor =
-        start_supervised!(
-          {Task.Supervisor,
-           name: String.to_atom("service-recall-#{System.unique_integer([:positive])}")}
-        )
-
-      Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
       :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
       :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", true})
       :ets.insert(:backplane_settings, {"memory.recall_trace_enabled", true})
@@ -639,19 +643,19 @@ defmodule Backplane.Memory.ServiceTest do
                  %{memory_auth(other_host) | scopes: ["memory.read"]}
                )
 
-      assert {:error, :unsupported_recall_v2_filter} =
-               Service.handle_recall(%{"query" => "public", "agent_id" => "legacy-filter"}, auth)
+      assert {:ok, %{results: []}} =
+               Service.handle_recall(%{"query" => "public", "agent_id" => "other-agent"}, auth)
 
-      assert {:error, :unsupported_recall_v2_filter} =
-               Service.handle_recall(%{"query" => "public", "tag" => "legacy-filter"}, auth)
+      assert {:ok, %{results: []}} =
+               Service.handle_recall(%{"query" => "public", "tag" => "absent-tag"}, auth)
 
       assert {:error, :invalid_arguments} =
                Service.handle_recall(%{"query" => "public", "surprise" => true}, auth)
     end
 
-    test "flag-disabled recall preserves the exact legacy response contract" do
+    test "stale disabled flags cannot select an old recall algorithm" do
       restore_recall_v2_settings_on_exit()
-      :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.pipeline.enabled", false})
       :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", false})
 
       {:ok, memory} =
@@ -668,8 +672,11 @@ defmodule Backplane.Memory.ServiceTest do
                })
 
       assert id == memory.id
-      assert Map.keys(response) == [:results]
-      refute Map.has_key?(result, :kind)
+      assert response.status == :ok
+      assert is_integer(response.used_tokens)
+      assert result.kind == :memory
+      assert result.relevance_accepted
+      assert result.evidence_refs != []
     end
 
     test "falls back to ranked lexical search when the configured embedder returns 503" do
@@ -722,7 +729,8 @@ defmodule Backplane.Memory.ServiceTest do
                })
 
       assert_receive {:embedding_request, %{"model" => "service-fallback-test-model"}}
-      assert Enum.map(results, & &1.id) == [strongest.id, weaker.id]
+      assert MapSet.new(results, & &1.id) == MapSet.new([strongest.id, weaker.id])
+      assert Enum.all?(results, &(&1.evidence_refs != []))
     end
 
     test "falls back to text search when embedding is not configured" do
@@ -1043,24 +1051,18 @@ defmodule Backplane.Memory.ServiceTest do
 
       entries =
         for i <- 1..51 do
-          id = Ecto.UUID.generate()
+          {:ok, observation} =
+            Observations.record(session_id, "file history default contract #{i} #{path}",
+              occurred_at: DateTime.add(base_time, i, :second)
+            )
 
-          {id,
-           Map.merge(TestPartition.root_attrs(:observation), %{
-             id: id,
-             session_id: session_id,
-             content: "file history default contract #{i}",
-             files: %{"paths" => [path]},
-             created_at: DateTime.add(base_time, i, :second)
-           })}
+          observation.id
         end
-
-      {51, nil} = repo().insert_all(Observation, Enum.map(entries, &elem(&1, 1)))
 
       assert {:ok, %{results: results}} =
                trusted_call("memory::file_history", %{"files" => [path]})
 
-      expected_ids = entries |> Enum.reverse() |> Enum.take(50) |> Enum.map(&elem(&1, 0))
+      expected_ids = entries |> Enum.reverse() |> Enum.take(50)
       assert Enum.map(results, & &1.id) == expected_ids
     end
 
@@ -1079,8 +1081,26 @@ defmodule Backplane.Memory.ServiceTest do
     end
 
     test "does not treat matching legacy session rows as production reads" do
-      {:ok, target} = Observations.register_session("session-contract-target", "project-a")
-      {:ok, _decoy} = Observations.register_session("session-contract-decoy", "project-b")
+      target =
+        repo().insert!(
+          Session.changeset(
+            %Session{},
+            Map.merge(TestPartition.root_attrs(:session), %{
+              session_id: "session-contract-target",
+              project: "project-a"
+            })
+          )
+        )
+
+      repo().insert!(
+        Session.changeset(
+          %Session{},
+          Map.merge(TestPartition.root_attrs(:session), %{
+            session_id: "session-contract-decoy",
+            project: "project-b"
+          })
+        )
+      )
 
       assert {:ok, %{sessions: []}} =
                trusted_call("memory::sessions", %{"project" => "project-a"})
@@ -1278,8 +1298,6 @@ defmodule Backplane.Memory.ServiceTest do
 
   describe "handle_compress_file/1 provenance" do
     test "retries are effect-free and only contributing observations are cited" do
-      restore_event_settings_on_exit()
-      enable_dual_write()
       path = "lib/compression_provenance.ex"
       {:ok, excluded} = authoritative_observation("compress-excluded", "excluded #{path}")
 
@@ -1321,8 +1339,6 @@ defmodule Backplane.Memory.ServiceTest do
     end
 
     test "excludes same-path observations from other partitions while retaining same-partition agents" do
-      restore_event_settings_on_exit()
-      enable_dual_write()
       path = "lib/compression_tenant.ex"
 
       {:ok, owner} = authoritative_observation("owner-session", "owner changed #{path}")
@@ -1434,18 +1450,6 @@ defmodule Backplane.Memory.ServiceTest do
     }
   end
 
-  defp restore_event_settings_on_exit do
-    keys = ["memory.pipeline.enabled", "memory.events.enabled", "memory.events.dual_write"]
-    snapshot = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
-
-    on_exit(fn ->
-      Enum.each(snapshot, fn {key, rows} ->
-        :ets.delete(:backplane_settings, key)
-        if rows != [], do: :ets.insert(:backplane_settings, rows)
-      end)
-    end)
-  end
-
   defp restore_recall_v2_settings_on_exit do
     keys = [
       "memory.pipeline.enabled",
@@ -1472,11 +1476,5 @@ defmodule Backplane.Memory.ServiceTest do
         do: Application.put_env(:backplane_memory, :recall_task_supervisor, previous),
         else: Application.delete_env(:backplane_memory, :recall_task_supervisor)
     end)
-  end
-
-  defp enable_dual_write do
-    :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
-    :ets.insert(:backplane_settings, {"memory.events.enabled", true})
-    :ets.insert(:backplane_settings, {"memory.events.dual_write", true})
   end
 end

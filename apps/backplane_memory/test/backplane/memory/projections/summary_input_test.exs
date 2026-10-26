@@ -4,7 +4,7 @@ defmodule Backplane.Memory.Projections.SummaryInputTest do
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.Ingest
-  alias Backplane.Memory.Observations.{Observation, Session}
+  alias Backplane.Memory.LegacyFixtures.{Observation, Session}
   alias Backplane.Memory.Projections.{ReadModels, Rebuild, Source, State}
 
   test "reads complete revision-aligned observations and errors in bounded importance order" do

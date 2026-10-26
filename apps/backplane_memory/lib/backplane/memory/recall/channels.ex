@@ -8,7 +8,6 @@ defmodule Backplane.Memory.Recall.Channels do
   alias Backplane.Memory.Graph.{Edge, Node}
   alias Backplane.Memory.Lessons.Lesson
   alias Backplane.Memory.Memories.{Evidence, Memory, RememberRequest}
-  alias Backplane.Memory.Observations.Observation
   alias Backplane.Memory.Projections.{ProjectedObservation, ProjectedSession}
   alias Backplane.Memory.Recall.{Adapters, QueryPlan}
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
@@ -21,7 +20,9 @@ defmodule Backplane.Memory.Recall.Channels do
 
   def fts(%QueryPlan{} = plan, limit) when limit in 1..@max_limit do
     memories = fts_memories(plan, limit)
-    summaries = if plan.facets == [], do: fts_summaries(plan, limit), else: []
+
+    summaries =
+      if plan.facets == [] and is_nil(plan.tag), do: fts_summaries(plan, limit), else: []
 
     rows =
       (memories ++ summaries)
@@ -208,9 +209,11 @@ defmodule Backplane.Memory.Recall.Channels do
         end
 
       working_rows =
-        if plan.include_working do
+        if plan.include_working and is_nil(plan.tag) do
           ProjectedObservation
           |> exact_partition(plan)
+          |> maybe_row_filters(plan)
+          |> maybe_observation_project(plan.project)
           |> where([observation], observation.event_id in ^ids)
           |> order_by([observation], asc: observation.event_id)
           |> limit(^@graph_node_cap)
@@ -308,6 +311,7 @@ defmodule Backplane.Memory.Recall.Channels do
            )}
       )
       |> maybe_summary_project(plan.project)
+      |> maybe_summary_filters(plan)
       |> temporal_summary(plan.temporal_hints)
 
     rows = repo().all(query)
@@ -359,6 +363,8 @@ defmodule Backplane.Memory.Recall.Channels do
     )
     |> maybe_exclude_working(plan.include_working)
     |> maybe_memory_project(plan.project)
+    |> maybe_row_filters(plan)
+    |> maybe_tag(plan.tag)
     |> apply_facets(plan.facets)
     |> temporal_memory(plan.temporal_hints)
   end
@@ -376,6 +382,33 @@ defmodule Backplane.Memory.Recall.Channels do
 
   defp maybe_memory_project(query, project),
     do: where(query, [memory], fragment("?->>'project'", memory.metadata) == ^project)
+
+  defp maybe_row_filters(query, plan) do
+    query
+    |> maybe_session(plan.session_id)
+    |> maybe_agent(plan.agent_id)
+  end
+
+  defp maybe_session(query, nil), do: query
+  defp maybe_session(query, session), do: where(query, [row], row.session_id == ^session)
+  defp maybe_agent(query, nil), do: query
+  defp maybe_agent(query, agent), do: where(query, [row], row.agent_id == ^agent)
+  defp maybe_tag(query, nil), do: query
+  defp maybe_tag(query, tag), do: where(query, [memory], ^tag in memory.tags)
+
+  defp maybe_summary_filters(query, plan) do
+    query =
+      if plan.session_id,
+        do: where(query, [summary, _session], summary.session_id == ^plan.session_id),
+        else: query
+
+    if plan.agent_id,
+      do: where(query, [_summary, session], session.agent_id == ^plan.agent_id),
+      else: query
+  end
+
+  defp maybe_observation_project(query, nil), do: query
+  defp maybe_observation_project(query, project), do: where(query, [row], row.project == ^project)
 
   defp maybe_exclude_working(query, true), do: query
 
@@ -588,10 +621,10 @@ defmodule Backplane.Memory.Recall.Channels do
       |> MapSet.new()
 
     valid_observations =
-      Observation
+      ProjectedObservation
       |> exact_partition(plan)
-      |> where([observation], observation.id in ^observation_ids)
-      |> select([observation], observation.id)
+      |> where([observation], observation.event_id in ^observation_ids)
+      |> select([observation], observation.event_id)
       |> repo().all()
       |> MapSet.new()
 

@@ -6,6 +6,7 @@ defmodule Backplane.Memory.Events.TypesTest do
   @accepted_types ~w(
     session.started
     session.ended
+    observation.recorded
     conversation.user_message
     conversation.agent_message
     agent.run.started

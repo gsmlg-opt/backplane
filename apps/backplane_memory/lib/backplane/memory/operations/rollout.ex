@@ -1,85 +1,47 @@
 defmodule Backplane.Memory.Operations.Rollout do
-  @moduledoc false
+  @moduledoc "Operational controls for the canonical Memory processing pipeline."
 
-  @gates %{
-    pipeline: %{key: "memory.pipeline.enabled", label: "Pipeline"},
-    events: %{key: "memory.events.enabled", label: "Events"},
-    dual_write: %{key: "memory.events.dual_write", label: "Dual Write"}
-  }
-
-  @later [
-    %{key: "memory.window_summaries.enabled", label: "Window Summaries", gate: :window_summaries},
+  @pipeline %{key: "memory.pipeline.enabled", label: "Background processing"}
+  @stages [
+    %{key: "memory.window_summaries.enabled", label: "Window summaries", gate: :window_summaries},
     %{
       key: "memory.session_summary_v2.enabled",
-      label: "Session Summary V2",
+      label: "Session summaries",
       gate: :session_summary_v2
     },
     %{
       key: "memory.fact_extraction_v2.enabled",
-      label: "Fact Extraction V2",
+      label: "Fact extraction",
       gate: :fact_extraction_v2
     },
     %{
       key: "memory.procedure_extraction_v2.enabled",
-      label: "Procedure Extraction V2",
+      label: "Procedure extraction",
       gate: :procedure_extraction_v2
-    },
-    %{key: "memory.recall_v2.enabled", label: "Recall V2", gate: :recall_v2}
+    }
   ]
-
-  @stage_gates Map.new(@later, &{&1.gate, &1.key})
+  @stage_gates Map.new(@stages, &{&1.gate, &1.key})
 
   def state do
-    gate_keys =
-      Map.new(@gates, fn {gate, metadata} ->
-        {gate, metadata.key}
-      end)
-
     values =
-      settings().get_many(
-        Map.values(gate_keys) ++ Enum.map(@later, & &1.key) ++ ["memory.llm_model"]
-      )
+      settings().get_many([@pipeline.key, "memory.llm_model" | Enum.map(@stages, & &1.key)])
 
-    configured =
-      Map.new(gate_keys, fn {gate, key} ->
-        {gate, Map.fetch!(values, key) == true}
-      end)
-
-    pipeline_effective = configured.pipeline
-    events_effective = pipeline_effective and configured.events
-    dual_write_effective = events_effective and configured.dual_write
+    enabled = values[@pipeline.key] == true
+    model = values["memory.llm_model"]
+    model_ready = is_binary(model) and String.trim(model) != ""
 
     %{
-      pipeline:
-        gate_state(
-          :pipeline,
-          configured.pipeline,
-          pipeline_effective
-        ),
-      events:
-        gate_state(
-          :events,
-          configured.events,
-          events_effective
-        ),
-      dual_write:
-        gate_state(
-          :dual_write,
-          configured.dual_write,
-          dual_write_effective
-        ),
+      pipeline: Map.merge(@pipeline, %{configured: enabled, effective: enabled, blocked: false}),
       later:
-        Enum.map(@later, fn stage ->
+        Enum.map(@stages, fn stage ->
           configured = values[stage.key] == true
           model_required = stage.gate in [:fact_extraction_v2, :procedure_extraction_v2]
-          model = values["memory.llm_model"]
-          model_ready = is_binary(model) and String.trim(model) != ""
-          effective = configured and pipeline_effective and (not model_required or model_ready)
+          effective = configured and enabled and (not model_required or model_ready)
 
           reason =
             cond do
               not configured -> "disabled"
-              not pipeline_effective -> "pipeline_disabled"
+              not enabled -> "pipeline_disabled"
               model_required and not model_ready -> "no_model"
               true -> nil
             end
@@ -98,106 +60,35 @@ defmodule Backplane.Memory.Operations.Rollout do
 
   def subscribe, do: settings().subscribe()
 
-  def set_gate(gate, value) when is_map_key(@stage_gates, gate) and is_boolean(value) do
-    expectations = if value, do: [{gate_key(:pipeline), true}], else: []
+  def set_gate(:pipeline, value) when is_boolean(value),
+    do: persist(@pipeline.key, value, [])
 
-    case settings().set_if(Map.fetch!(@stage_gates, gate), value, expectations) do
+  def set_gate(gate, value) when is_map_key(@stage_gates, gate) and is_boolean(value) do
+    expectations = if value, do: [{@pipeline.key, true}], else: []
+
+    case persist(Map.fetch!(@stage_gates, gate), value, expectations) do
+      {:error, {:condition_failed, _}} -> {:error, {:dependency, :pipeline, true}}
+      result -> result
+    end
+  end
+
+  def set_gate(gate, _value) when gate != :pipeline and not is_map_key(@stage_gates, gate),
+    do: {:error, :invalid_gate}
+
+  def set_gate(_gate, _value), do: {:error, :invalid_boolean}
+
+  defp persist(key, value, expectations) do
+    case settings().set_if(key, value, expectations) do
       :ok ->
         if value, do: Backplane.Memory.Workers.StageResumeWorker.enqueue()
         :ok
 
-      {:error, {:condition_failed, _}} ->
-        {:error, {:dependency, :pipeline, true}}
-
       result ->
         result
     end
-  end
-
-  def set_gate(gate, _value)
-      when not is_map_key(@gates, gate) and not is_map_key(@stage_gates, gate),
-      do: {:error, :invalid_gate}
-
-  def set_gate(_gate, value) when not is_boolean(value),
-    do: {:error, :invalid_boolean}
-
-  def set_gate(gate, value) do
-    requirements = transition_requirements(gate, value)
-
-    expectations =
-      Enum.map(requirements, fn {required_gate, expected, _error} ->
-        {gate_key(required_gate), expected}
-      end)
-
-    case settings().set_if(gate_key(gate), value, expectations) do
-      {:error, {:condition_failed, failed_key}} ->
-        {_gate, _expected, error} =
-          Enum.find(requirements, fn {required_gate, _expected, _error} ->
-            gate_key(required_gate) == failed_key
-          end)
-
-        {:error, error}
-
-      result ->
-        result
-    end
-  end
-
-  defp transition_requirements(:pipeline, true) do
-    [
-      {:events, false, {:blocked_descendant, :events}},
-      {:dual_write, false, {:blocked_descendant, :dual_write}}
-    ]
-  end
-
-  defp transition_requirements(:events, true) do
-    [
-      {:pipeline, true, {:dependency, :pipeline, true}},
-      {:dual_write, false, {:dependency, :dual_write, false}}
-    ]
-  end
-
-  defp transition_requirements(:dual_write, true) do
-    [
-      {:pipeline, true, {:dependency, :events, true}},
-      {:events, true, {:dependency, :events, true}}
-    ]
-  end
-
-  defp transition_requirements(:dual_write, false), do: []
-
-  defp transition_requirements(:events, false) do
-    [{:dual_write, false, {:dependency, :dual_write, false}}]
-  end
-
-  defp transition_requirements(:pipeline, false) do
-    [
-      {:events, false, {:blocked_descendant, :events}},
-      {:dual_write, false, {:blocked_descendant, :dual_write}}
-    ]
-  end
-
-  defp gate_state(gate, configured, effective) do
-    @gates
-    |> Map.fetch!(gate)
-    |> Map.merge(%{
-      configured: configured,
-      effective: effective,
-      blocked: configured and not effective
-    })
-  end
-
-  defp gate_key(gate) do
-    @gates
-    |> Map.fetch!(gate)
-    |> Map.fetch!(:key)
   end
 
   defp settings do
-    Application.get_env(
-      :backplane_memory,
-      :settings_adapter,
-      Backplane.Settings
-    )
+    Application.get_env(:backplane_memory, :settings_adapter, Backplane.Settings)
   end
 end

@@ -48,7 +48,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              ~w(
                seq op memory_id state attempts next_attempt_at last_error completed_at
                dead_lettered_at inserted_at updated_at payload ack_partition ack_canonical_id ack_revision
-               command_id access_id authority_version target_partition payload_digest request_key request_agent_id ack_result
+               command_id access_id authority_version target_partition payload_digest request_key request_agent_id ack_result migration_state migration_reason
              )
 
     assert index_columns(store, "memory_outbox_due_seq_idx") == ~w(state next_attempt_at seq)
@@ -59,7 +59,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
     assert index_columns(store, "memory_outbox_memory_id_idx") == ["memory_id"]
 
     assert table_sql(store, "memory_outbox") =~
-             "CHECK (state IN ('pending', 'inflight', 'retry_wait', 'done', 'dead_letter'))"
+             ~r/CHECK\s*\(state IN \('pending', 'inflight', 'retry_wait', 'done', 'dead_letter'\)\)/
 
     assert :ok = Migrator.migrate(store)
     assert {:ok, ^latest} = Migrator.current_version(store)
@@ -166,9 +166,10 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              )
   end
 
-  test "upgrades V1 tombstones and every historical outbox state to V2 without losing rows", %{
-    tmp_dir: tmp_dir
-  } do
+  test "upgrades historical tombstones and quarantines unbound outbox states without losing rows",
+       %{
+         tmp_dir: tmp_dir
+       } do
     store = start_store!(tmp_dir)
     now = "2026-06-17T00:00:00Z"
 
@@ -194,7 +195,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
     end
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 6} = Migrator.current_version(store)
+    assert Migrator.current_version(store) == {:ok, Migrator.latest_version()}
 
     assert MapSet.subset?(
              MapSet.new(
@@ -220,11 +221,27 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
     assert {:ok,
             %Result{
               rows: [
-                %{"state" => "pending", "attempts" => 1, "last_error" => "pending error"},
-                %{"state" => "inflight", "attempts" => 2, "last_error" => "inflight error"},
-                %{"state" => "done", "attempts" => 3, "completed_at" => ^now},
                 %{
                   "state" => "dead_letter",
+                  "migration_state" => "pending",
+                  "attempts" => 1,
+                  "last_error" => "pending error"
+                },
+                %{
+                  "state" => "dead_letter",
+                  "migration_state" => "inflight",
+                  "attempts" => 2,
+                  "last_error" => "inflight error"
+                },
+                %{
+                  "state" => "done",
+                  "migration_state" => "done",
+                  "attempts" => 3,
+                  "completed_at" => ^now
+                },
+                %{
+                  "state" => "dead_letter",
+                  "migration_state" => "dead_letter",
                   "attempts" => 4,
                   "last_error" => "failed error",
                   "dead_lettered_at" => ^now
@@ -233,11 +250,11 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
             }} =
              Store.query(
                store,
-               "SELECT state, attempts, last_error, completed_at, dead_lettered_at FROM memory_outbox ORDER BY seq"
+               "SELECT state, migration_state, attempts, last_error, completed_at, dead_lettered_at FROM memory_outbox ORDER BY seq"
              )
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 6} = Migrator.current_version(store)
+    assert Migrator.current_version(store) == {:ok, Migrator.latest_version()}
   end
 
   test "upgrades populated V2 command memories to V3 without changing data", %{tmp_dir: tmp_dir} do
@@ -272,7 +289,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              )
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 6} = Migrator.current_version(store)
+    assert Migrator.current_version(store) == {:ok, Migrator.latest_version()}
 
     assert {:ok,
             %Result{

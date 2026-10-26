@@ -6,13 +6,12 @@ defmodule Backplane.Memory.Memories.DerivationGovernance do
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Memories.Evidence
   alias Backplane.Memory.Projections.ProjectedSession
-  alias Backplane.Memory.Observations.Observation
   alias Backplane.Memory.Summaries.Summary
 
   @sources [
     source_summary_id: Summary,
     source_event_id: Event,
-    source_observation_id: Observation
+    source_observation_id: Event
   ]
 
   def find_tombstone(candidates, incoming, partition) do

@@ -3,7 +3,7 @@ defmodule Backplane.Memory.Projections.RebuildTest do
 
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Ingest
-  alias Backplane.Memory.Observations.{Observation, Session}
+  alias Backplane.Memory.LegacyFixtures.{Observation, Session}
   alias Backplane.Memory.Replay.Event, as: ReplayEvent
 
   alias Backplane.Memory.Projections.{

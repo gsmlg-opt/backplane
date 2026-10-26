@@ -2,7 +2,21 @@ defmodule Backplane.Memory.ApplicationCountTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.{Audit, Memories}
-  alias Backplane.Memory.Memories.Search
+  alias Backplane.Memory.Recall.Pipeline
+
+  setup do
+    previous = Application.get_env(:backplane_memory, :recall_task_supervisor)
+    supervisor = start_supervised!(Task.Supervisor)
+    Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:backplane_memory, :recall_task_supervisor, previous),
+        else: Application.delete_env(:backplane_memory, :recall_task_supervisor)
+    end)
+
+    :ok
+  end
 
   test "only an explicit successful procedural application increments and audits" do
     partition = partition("host-a")
@@ -77,15 +91,14 @@ defmodule Backplane.Memory.ApplicationCountTest do
                namespace: partition.namespace
              )
 
-    assert {:ok, [%{id: procedure_id}]} =
-             Search.hybrid_recall("verify exact served artifact",
-               memory_space_id: partition.memory_space_id,
-               host_id: partition.host_id,
-               client_id: partition.client_id,
-               scope: partition.scope,
-               namespace: partition.namespace,
-               writeback_fn: fn _ids -> :ok end,
-               embed_fn: fn _texts, _mode, _opts -> {:error, :not_configured} end
+    assert {:ok, %{results: [%{id: procedure_id}]}} =
+             Pipeline.run(
+               Map.merge(partition, %{
+                 query: "verify exact served artifact",
+                 channel_weights: %{fts: 1.0, vector: 0.0, graph: 0.0}
+               }),
+               trace?: false,
+               reranker_opts: [enabled: false]
              )
 
     assert procedure_id == procedure.id

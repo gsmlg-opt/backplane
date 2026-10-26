@@ -70,8 +70,6 @@ defmodule Backplane.HostAgent.Config do
       sync_batch_size: 50
       max_attempts: 5
       tombstone_relearn: block
-      host_sync_v1:
-        enabled: false
       host_sync_v2:
         enabled: false
         db_path: #{Path.join(work_dir, "memory/edge_memory.db")}
@@ -250,7 +248,6 @@ defmodule Backplane.HostAgent.Config do
       sync_batch_size: parse_positive_int(raw["sync_batch_size"], 50),
       max_attempts: parse_positive_int(raw["max_attempts"], 5),
       tombstone_relearn: parse_tombstone_relearn(raw["tombstone_relearn"]),
-      host_sync_v1: %{enabled: parse_bool(sync_config(raw, "host_sync_v1")["enabled"], false)},
       host_sync_v2: parse_edge(sync_config(raw, "host_sync_v2"), work_dir),
       import_profiles: parse_import_profiles(raw["import_profiles"])
     }

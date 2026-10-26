@@ -168,13 +168,18 @@ defmodule Backplane.HostAgent.Services.Memory do
       |> Map.put_new(:store, Application.get_env(:backplane_host_agent, :memory_store, Store))
       |> Map.put_new(:config, Application.get_env(:backplane_host_agent, :memory_config, %{}))
 
-    if method == "get" or Map.has_key?(args, "memory_access_id") do
+    if method in ~w(remember forget get) or Map.has_key?(args, "memory_access_id") do
       {:ok, context}
     else
       case EdgeSyncer.read_context(args) do
-        {:ok, edge} -> {:ok, Map.merge(edge, context)}
-        {:error, :mirror_unavailable} -> {:ok, context}
-        {:error, _reason} = error -> error
+        {:ok, edge} ->
+          {:ok, Map.merge(edge, context)}
+
+        {:error, reason} when reason in [:mirror_unavailable, :partition_mismatch] ->
+          {:ok, context}
+
+        {:error, _reason} = error ->
+          error
       end
     end
   end

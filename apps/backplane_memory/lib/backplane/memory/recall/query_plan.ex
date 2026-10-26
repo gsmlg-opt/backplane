@@ -16,6 +16,9 @@ defmodule Backplane.Memory.Recall.QueryPlan do
     :scope,
     :namespace,
     :project,
+    :session_id,
+    :agent_id,
+    :tag,
     :facets,
     :temporal_hints,
     :entity_hints,
@@ -39,7 +42,16 @@ defmodule Backplane.Memory.Recall.QueryPlan do
     :channel_weights,
     :token_budget
   ]
-  defstruct @enforce_keys ++ [:source_client_id, :project, :temporal_hints, :requesting_actor]
+  defstruct @enforce_keys ++
+              [
+                :source_client_id,
+                :project,
+                :session_id,
+                :agent_id,
+                :tag,
+                :temporal_hints,
+                :requesting_actor
+              ]
 
   @type channel :: :fts | :vector | :graph
   @type t :: %__MODULE__{
@@ -52,6 +64,9 @@ defmodule Backplane.Memory.Recall.QueryPlan do
           scope: String.t(),
           namespace: String.t(),
           project: String.t() | nil,
+          session_id: String.t() | nil,
+          agent_id: String.t() | nil,
+          tag: String.t() | nil,
           facets: [map()],
           temporal_hints: map() | nil,
           entity_hints: [String.t()],
@@ -73,6 +88,9 @@ defmodule Backplane.Memory.Recall.QueryPlan do
          {:ok, scope} <- normalized_required(attrs, :scope, 512),
          {:ok, namespace} <- normalized_required(attrs, :namespace, 512),
          {:ok, project} <- optional_string(attrs, :project, 1_024),
+         {:ok, session_id} <- optional_string(attrs, :session_id, 1_024),
+         {:ok, agent_id} <- optional_string(attrs, :agent_id, 512),
+         {:ok, tag} <- optional_string(attrs, :tag, 512),
          {:ok, facets} <- facets(Map.get(attrs, :facets, [])),
          {:ok, temporal_hints} <- temporal_hints(Map.get(attrs, :temporal_hints)),
          {:ok, entity_hints} <- entity_hints(Map.get(attrs, :entity_hints, [])),
@@ -93,6 +111,9 @@ defmodule Backplane.Memory.Recall.QueryPlan do
          scope: scope,
          namespace: namespace,
          project: project,
+         session_id: session_id,
+         agent_id: agent_id,
+         tag: tag,
          facets: facets,
          temporal_hints: temporal_hints,
          entity_hints: entity_hints,
@@ -123,6 +144,9 @@ defmodule Backplane.Memory.Recall.QueryPlan do
         "namespace" => plan.namespace
       },
       "project" => plan.project,
+      "session_id" => plan.session_id,
+      "agent_id" => plan.agent_id,
+      "tag" => plan.tag,
       "facets" => plan.facets,
       "temporal_hints" => plan.temporal_hints,
       "entity_hints" => plan.entity_hints,

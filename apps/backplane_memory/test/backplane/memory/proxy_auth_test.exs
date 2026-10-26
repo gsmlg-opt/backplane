@@ -2,7 +2,6 @@ defmodule Backplane.Memory.ProxyAuthTest do
   use Backplane.Memory.DataCase, async: false
 
   alias Backplane.Memory.{Embedding.Client, LLM}
-  alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
   setup do

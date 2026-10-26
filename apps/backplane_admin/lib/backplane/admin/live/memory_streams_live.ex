@@ -8,9 +8,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
   alias Backplane.Admin.MemoryOperatorComponents
 
   @memory_setting_keys [
-    "memory.pipeline.enabled",
-    "memory.events.enabled",
-    "memory.events.dual_write"
+    "memory.pipeline.enabled"
   ]
 
   @impl true
@@ -180,7 +178,7 @@ defmodule Backplane.Admin.MemoryStreamsLive do
     <div id="memory-streams">
       <.memory_page_header
         title="Streams"
-        subtitle="Authoritative Memory V2 stream inventory"
+        subtitle="Canonical memory stream inventory"
       />
 
       <.dm_alert

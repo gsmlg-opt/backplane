@@ -1,1188 +1,202 @@
 defmodule Backplane.HostAgent.MemoryFacadeTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.MemoryFacade
+  alias Backplane.HostAgent.{MemoryFacade, MemoryProxy}
+  alias Backplane.HostAgent.Memory.{Access, Migrator, Store}
 
-  defmodule RemoteOK do
-    def call("recall", args, opts) do
-      send(self(), {:remote_call, "recall", args, opts})
+  @moduletag :tmp_dir
+  @access "11111111-1111-4111-8111-111111111111"
+  @canonical "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  @partition %{
+    "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "scope" => "private",
+    "namespace" => "private"
+  }
 
-      {:ok,
-       %{
-         "status" => "ok",
-         "recall_run_id" => "run-1",
-         "token_count" => 42,
-         "provenance" => %{"strategy" => "rrf"},
-         "results" => [
-           %{
-             "id" => "canonical-1",
-             "content" => "canonical",
-             "score" => 0.9,
-             "source" => "vector"
-           }
-         ]
-       }}
-    end
+  defmodule Channel do
+    def push(observer, "memory_sync", payload) do
+      send(observer, {:canonical_batch, payload})
+      mode = Process.get({__MODULE__, :mode})
 
-    def call("list", args, opts) do
-      send(self(), {:remote_call, "list", args, opts})
-
-      {:ok,
-       %{
-         "status" => "ok",
-         "cursor" => "next-1",
-         "results" => [%{"id" => "canonical-1", "content" => "canonical"}]
-       }}
-    end
-
-    def call("stats", args, opts) do
-      send(self(), {:remote_call, "stats", args, opts})
-      {:ok, %{"status" => "ok", "total" => 7}}
-    end
-  end
-
-  defmodule RemoteManyList do
-    def call("list", _args, _opts) do
-      {:ok,
-       %{
-         "results" =>
-           Enum.map(1..12, fn index ->
-             %{"id" => "canonical-#{index}", "content" => "canonical #{index}"}
-           end)
-       }}
-    end
-  end
-
-  defmodule RemotePagedList do
-    def call("list", args, _opts) do
-      case Map.get(args, "offset", Map.get(args, :offset, 0)) do
-        0 -> {:ok, %{"results" => [%{"id" => "canonical-1"}], "cursor" => "page-2"}}
-        1 -> {:ok, %{"results" => [%{"id" => "canonical-2"}], "cursor" => nil}}
+      if mode == :timeout do
+        {:error, :timeout}
+      else
+        {:ok,
+         %{
+           "protocol" => "memory_commands.v2",
+           "items" =>
+             Enum.map(payload["items"], fn item ->
+               item
+               |> Map.take(~w(command_id access partition))
+               |> Map.merge(%{
+                 "status" => "committed",
+                 "canonical_id" => "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                 "revision" => nil,
+                 "mirror_status" => "not_eligible"
+               })
+             end)
+         }}
       end
     end
   end
 
-  defmodule EmptyOverlay do
-    def pending_overlay(args, opts) do
-      send(self(), {:pending_overlay, args, opts})
-      {:ok, %{"upserts" => [], "delete_ids" => [], "pending_operations" => 0}}
-    end
-
-    def recall(_args, _opts), do: send(self(), :unexpected_local_recall)
-    def facts(_args, _opts), do: send(self(), :unexpected_local_facts)
-  end
-
-  defmodule PendingOnly do
-    def pending_overlay(_args, opts) do
-      send(self(), :pending_overlay)
-      send(self(), {:pending_overlay_opts, opts})
+  defmodule Remote do
+    def call(method, args, opts) do
+      send(self(), {:canonical_read, method, args, opts})
 
       {:ok,
        %{
-         "upserts" => [
-           %{"id" => "local-1", "content" => "pending local command", "provisional" => true}
-         ],
-         "delete_ids" => [],
-         "pending_operations" => 1
-       }}
-    end
-
-    def recall(_args, _opts), do: send(self(), :unexpected_local_recall)
-    def facts(_args, _opts), do: send(self(), :unexpected_local_facts)
-  end
-
-  defmodule PendingRemember do
-    def pending_overlay(_args, _opts) do
-      {:ok,
-       %{
-         "upserts" => [
-           %{
-             "id" => "local-1",
-             "canonical_id" => nil,
-             "content" => "pending insight",
-             "origin" => "host_command",
-             "authority" => "provisional",
-             "provisional" => true
-           }
-         ],
-         "delete_ids" => [],
-         "pending_operations" => 1
+         "access" => opts[:access],
+         "partition" => %{
+           "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+           "scope" => "private",
+           "namespace" => "private"
+         },
+         "result" => %{
+           "results" => [%{"id" => "canonical", "content" => "canonical fact"}],
+           "cursor" => "page-2"
+         }
        }}
     end
   end
 
-  defmodule PendingForget do
-    def pending_overlay(_args, _opts) do
-      {:ok, %{"upserts" => [], "delete_ids" => ["canonical-1"], "pending_operations" => 1}}
-    end
-  end
-
-  defmodule AcknowledgedRemember do
-    def pending_overlay(_args, _opts) do
-      {:ok,
-       %{
-         "upserts" => [
-           %{
-             "id" => "local-1",
-             "canonical_id" => "canonical-1",
-             "content" => "provisional duplicate",
-             "provisional" => true
-           }
-         ],
-         "delete_ids" => [],
-         "pending_operations" => 1
-       }}
-    end
-  end
-
-  defmodule MultiplePending do
-    def pending_overlay(_args, _opts) do
-      {:ok,
-       %{
-         "upserts" => [
-           %{"id" => "local-1", "content" => "first pending", "provisional" => true},
-           %{"id" => "local-2", "content" => "second pending", "provisional" => true}
-         ],
-         "delete_ids" => [],
-         "pending_operations" => 2
-       }}
-    end
-  end
-
-  defmodule ManyPending do
-    def pending_overlay(_args, _opts) do
-      upserts =
-        Enum.map(1..60, fn index ->
-          %{"id" => "local-#{index}", "content" => "pending #{index}", "provisional" => true}
-        end)
-
-      {:ok, %{"upserts" => upserts, "delete_ids" => [], "pending_operations" => 60}}
-    end
-  end
-
-  defmodule OversizedPending do
-    def pending_overlay(_args, _opts) do
-      upserts =
-        Enum.map(1..150, fn index ->
-          %{"id" => "local-#{index}", "content" => "pending #{index}", "provisional" => true}
-        end)
-
-      {:ok, %{"upserts" => upserts, "delete_ids" => [], "pending_operations" => 150}}
-    end
-  end
-
-  defmodule OverlayFailure do
-    def pending_overlay(_args, _opts), do: {:error, {:storage_error, :overlay_unavailable}}
-  end
-
-  defmodule LocalCommands do
-    def remember(args, opts) do
-      send(self(), {:local_call, "remember", args, opts})
-      {:ok, %{"id" => "local-1", "status" => "pending"}}
-    end
-
-    def forget(args, opts) do
-      send(self(), {:local_call, "forget", args, opts})
-      {:ok, %{"id" => args["id"], "status" => "pending"}}
-    end
-  end
-
-  defmodule LocalMalformedSuccess do
-    def remember(_args, _opts), do: {:ok, nil}
-  end
-
-  defmodule LocalBareReply do
-    def remember(_args, _opts), do: :ok
-  end
-
-  defmodule RemoteNotConnected do
-    def call(_method, _args, _opts), do: {:error, :not_connected}
-  end
-
-  defmodule EdgeMirror do
-    def offline_read("recall", args, opts) do
-      send(self(), {:edge_read, "recall", args, opts})
-
-      {:ok,
-       %{
-         "results" => [%{"id" => "canonical-1", "content" => "committed edge"}],
-         "partition_revision" => 7,
-         "as_of" => "2026-09-20T00:00:00Z",
-         "last_sync_age_seconds" => 3
-       }}
-    end
-  end
-
-  defmodule EdgeMirrorItems do
-    def offline_read("recall", _args, _opts) do
-      {:ok,
-       %{
-         "items" => [%{"canonical_id" => "canonical-1", "content" => "committed edge"}],
-         "partition_revision" => 8
-       }}
-    end
-  end
-
-  defmodule RemoteTimeout do
-    def call(_method, _args, _opts), do: {:error, :timeout}
-  end
-
-  defmodule RemoteConnectionRefused do
-    def call(_method, _args, _opts), do: {:error, :econnrefused}
-  end
-
-  defmodule RemoteSocketClosed do
-    def call(_method, _args, _opts), do: {:error, {:socket_closed, :normal}}
-  end
-
-  defmodule RemoteNestedTransport do
-    def call(_method, _args, _opts), do: {:error, Process.get(:facade_transport_reason)}
-  end
-
-  defmodule RemoteUnauthorized do
-    def call(_method, _args, _opts), do: {:error, "unauthorized"}
-  end
-
-  defmodule RemotePartitionMismatch do
-    def call(_method, _args, _opts), do: {:error, "partition_mismatch"}
-  end
-
-  defmodule RemoteInvalid do
-    def call(_method, _args, _opts), do: {:error, "invalid_arguments"}
-  end
-
-  defmodule RemoteNotFound do
-    def call(_method, _args, _opts), do: {:error, "memory not found"}
-  end
-
-  defmodule RemoteUnknownError do
-    def call(_method, _args, _opts), do: {:error, :canonical_store_unavailable}
-  end
-
-  defmodule RemoteUnexpectedReply do
-    def call(_method, _args, _opts), do: {:error, {:unexpected_reply, %{"ok" => false}}}
-  end
-
-  defmodule RemoteMalformedSuccess do
-    def call(_method, _args, _opts), do: {:ok, nil}
-  end
-
-  defmodule RemoteBareReply do
-    def call(_method, _args, _opts), do: :ok
-  end
-
-  @tag :tmp_dir
-  test "cold command dispatch does not depend on Memory module atom loading", %{tmp_dir: dir} do
-    script = """
-    {:ok, _} = Application.ensure_all_started(:ex_turso)
-    {:ok, store} = Backplane.HostAgent.Memory.Store.start_link(
-      database: System.fetch_env!("BACKPLANE_COLD_COMMAND_DB"), pool_size: 1)
-    :ok = Backplane.HostAgent.Memory.Migrator.migrate(store)
-    false = :code.is_loaded(Backplane.HostAgent.Memory)
-    context = %{agent_id: "cold-test", store: store, config: %{bound_scope: "proj_local"}}
-    {:ok, result} = Backplane.HostAgent.MemoryFacade.call(
-      "remember", %{"content" => "cold fixture", "type" => "semantic"}, context)
-    "provisional" = result["authority"]
-    {:ok, forgotten} = Backplane.HostAgent.MemoryFacade.call(
-      "forget", %{"id" => result["id"]}, context)
-    "provisional" = forgotten["authority"]
-    GenServer.stop(store)
-    IO.puts("cold command dispatch ok")
-    """
-
-    paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
-
-    {output, status} =
-      System.cmd(System.find_executable("elixir"), paths ++ ["-e", script],
-        env: [{"BACKPLANE_COLD_COMMAND_DB", Path.join(dir, "commands.db")}],
-        stderr_to_stdout: true
-      )
-
-    assert status == 0, output
-    assert output =~ "cold command dispatch ok"
-  end
-
-  test "healthy recall preserves canonical metadata and adds the hits alias" do
-    assert {:ok,
-            %{
-              "mode" => "online",
-              "authority" => "canonical",
-              "consistency" => "canonical",
-              "stale" => false,
-              "as_of" => nil,
-              "partition_revision" => nil,
-              "last_sync_age_seconds" => nil,
-              "pending_operations" => 0,
-              "overlay_truncated" => false,
-              "history_available" => true,
-              "status" => "ok",
-              "recall_run_id" => "run-1",
-              "token_count" => 42,
-              "provenance" => %{"strategy" => "rrf"},
-              "results" => [%{"id" => "canonical-1", "score" => 0.9}],
-              "hits" => [%{"id" => "canonical-1", "score" => 0.9}]
-            }} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: EmptyOverlay}
-             )
-
-    assert_received {:remote_call, "recall", %{"query" => "canonical"}, remote_opts}
-    assert remote_opts[:agent_id] == "codex"
-    assert remote_opts[:inject_agent_id] == false
-    assert_received {:pending_overlay, %{"query" => "canonical"}, local_opts}
-    assert local_opts[:agent_id] == "codex"
-    assert local_opts[:method] == "recall"
-    assert local_opts[:overlay_mode] == :online
-    refute_received :unexpected_local_recall
-    refute_received :unexpected_local_facts
-  end
-
-  test "healthy canonical reads preserve revision metadata" do
-    defmodule RevisionRemote do
-      def call(_method, _args, _opts),
-        do: {:ok, %{"results" => [], "partition_revision" => 9, "last_sync_age_seconds" => 2}}
-    end
-
-    assert {:ok, %{"partition_revision" => 9, "last_sync_age_seconds" => 2}} =
-             MemoryFacade.call("recall", %{"query" => "canonical"}, %{
-               agent_id: "codex",
-               remote_adapter: RevisionRemote,
-               local_adapter: EmptyOverlay
-             })
-  end
-
-  test "healthy list preserves canonical fields and adds the items alias" do
-    assert {:ok,
-            %{
-              "mode" => "online",
-              "authority" => "canonical",
-              "consistency" => "canonical",
-              "cursor" => "next-1",
-              "results" => [%{"id" => "canonical-1"}],
-              "items" => [%{"id" => "canonical-1"}],
-              "provisional_results" => [],
-              "overlay_truncated" => false
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{"limit" => 10},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: EmptyOverlay}
-             )
-  end
-
-  test "list without an explicit limit preserves all canonical results" do
-    assert {:ok, %{"results" => results, "items" => items}} =
-             MemoryFacade.call(
-               "list",
-               %{},
-               %{agent_id: "codex", remote_adapter: RemoteManyList, local_adapter: EmptyOverlay}
-             )
-
-    assert length(results) == 12
-    assert items == results
-  end
-
-  test "online list preserves canonical results for explicit edge limits" do
-    for args <- [%{"limit" => 0}, %{limit: 200}] do
-      assert {:ok, %{"results" => results, "items" => items}} =
-               MemoryFacade.call(
-                 "list",
-                 args,
-                 %{agent_id: "codex", remote_adapter: RemoteManyList, local_adapter: EmptyOverlay}
-               )
-
-      assert length(results) == 12
-      assert items == results
-    end
-  end
-
-  test "online list exposes pending remembers as a sideband without changing canonical rows" do
-    assert {:ok,
-            %{
-              "results" => [%{"id" => "canonical-1"}],
-              "items" => [%{"id" => "canonical-1"}],
-              "provisional_results" => [%{"id" => "local-1"}],
-              "pending_operations" => 1
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{"limit" => 1},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
-             )
-  end
-
-  test "online list preserves a canonical page while hard-capping its provisional sideband" do
-    assert {:ok,
-            %{
-              "results" => canonical,
-              "items" => canonical,
-              "provisional_results" => provisional,
-              "pending_operations" => 150,
-              "overlay_truncated" => true
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{"limit" => 200},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteManyList,
-                 local_adapter: OversizedPending
-               }
-             )
-
-    assert length(canonical) == 12
-    assert length(provisional) == 100
-  end
-
-  test "online list removes a provisional duplicate after it maps to a canonical id" do
-    assert {:ok,
-            %{
-              "results" => [%{"id" => "canonical-1", "content" => "canonical"}],
-              "items" => [%{"id" => "canonical-1", "content" => "canonical"}],
-              "provisional_results" => []
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteOK,
-                 local_adapter: AcknowledgedRemember
-               }
-             )
-  end
-
-  test "online list suppresses pending forgets without filling the canonical page" do
-    assert {:ok,
-            %{
-              "results" => [],
-              "items" => [],
-              "provisional_results" => [],
-              "cursor" => "next-1"
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{"limit" => 1},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingForget}
-             )
-  end
-
-  test "consecutive online list pages preserve traversal and repeat the provisional sideband" do
-    assert {:ok,
-            %{
-              "results" => [%{"id" => "canonical-1"}],
-              "items" => [%{"id" => "canonical-1"}],
-              "provisional_results" => provisional,
-              "cursor" => "page-2"
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{"limit" => 1, "offset" => 0},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemotePagedList,
-                 local_adapter: PendingRemember
-               }
-             )
-
-    assert {:ok,
-            %{
-              "results" => [%{"id" => "canonical-2"}],
-              "items" => [%{"id" => "canonical-2"}],
-              "provisional_results" => ^provisional,
-              "cursor" => nil
-            }} =
-             MemoryFacade.call(
-               "list",
-               %{"limit" => 1, "offset" => 1},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemotePagedList,
-                 local_adapter: PendingRemember
-               }
-             )
-  end
-
-  test "healthy stats preserves canonical fields and receives consistency metadata" do
-    assert {:ok,
-            %{
-              "mode" => "online",
-              "authority" => "canonical",
-              "consistency" => "canonical",
-              "stale" => false,
-              "history_available" => true,
-              "pending_operations" => 0,
-              "overlay_truncated" => false,
-              "total" => 7
-            }} =
-             MemoryFacade.call(
-               "stats",
-               %{},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: EmptyOverlay}
-             )
-
-    assert_received {:pending_overlay, %{}, opts}
-    assert opts[:method] == "stats"
-    assert opts[:overlay_mode] == :online
-  end
-
-  test "non-empty pending state decorates an online result as read-your-writes" do
-    assert {:ok,
-            %{
-              "mode" => "online",
-              "authority" => "canonical_with_provisional",
-              "consistency" => "read_your_writes",
-              "pending_operations" => 1,
-              "history_available" => true
-            }} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingOnly}
-             )
-  end
-
-  test "online final budget applies after canonical and provisional merge including all rendered overhead" do
-    args = %{"query" => "insight"}
-    context = %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
-    assert {:ok, full} = MemoryFacade.call("recall", args, context)
-    assert length(full["results"]) == 2
-    [first | _] = full["results"]
-    packed = Backplane.HostAgent.Memory.ContextPacker.pack([first], 1000)
-
-    assert {:ok, bounded} =
-             MemoryFacade.call(
-               "recall",
-               Map.put(args, "token_budget", packed.used_tokens),
-               context
-             )
-
-    assert bounded["results"] == [first]
-    assert bounded["hits"] == bounded["results"]
-    assert bounded["used_tokens"] == byte_size(bounded["rendered_context"])
-    assert bounded["used_tokens"] <= bounded["token_budget"]
-    assert bounded["rendered_context"] =~ "pending local memory"
-    assert bounded["rendered_context"] =~ first["content"]
-  end
-
-  test "online recall includes an unmatched pending remember exactly once" do
-    assert {:ok, %{"results" => results, "hits" => hits}} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "insight"},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingRemember}
-             )
-
-    assert results == hits
-    assert Enum.count(results, &(&1["id"] == "local-1")) == 1
-    assert Enum.any?(results, &(&1["id"] == "canonical-1"))
-  end
-
-  test "pending forget suppresses the matching canonical result" do
-    assert {:ok,
-            %{
-              "results" => [],
-              "hits" => [],
-              "authority" => "canonical_with_provisional",
-              "consistency" => "read_your_writes"
-            }} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: PendingForget}
-             )
-  end
-
-  test "canonical result wins after the pending remember maps a remote id" do
-    assert {:ok, %{"results" => [result], "hits" => [result]}} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteOK,
-                 local_adapter: AcknowledgedRemember
-               }
-             )
-
-    assert result["id"] == "canonical-1"
-    assert result["content"] == "canonical"
-    refute result["provisional"]
-  end
-
-  test "recall reapplies the requested limit after merging the overlay" do
-    assert {:ok, %{"results" => results, "hits" => hits}} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "pending", "limit" => 2},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: MultiplePending}
-             )
-
-    assert results == hits
-    assert Enum.map(results, & &1["id"]) == ["local-1", "local-2"]
-  end
-
-  test "overlay read failure fails the canonical read" do
-    assert {:error, {:storage_error, :overlay_unavailable}} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{agent_id: "codex", remote_adapter: RemoteOK, local_adapter: OverlayFailure}
-             )
-  end
-
-  test "facade read options omit path-agent filtering and retain injected timeout" do
-    store = make_ref()
-    config = %{default_scope: "project"}
-
-    assert {:ok, _result} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteOK,
-                 local_adapter: EmptyOverlay,
-                 timeout: 321,
-                 store: store,
-                 config: config
-               }
-             )
-
-    assert_received {:remote_call, "recall", _args, remote_opts}
-    assert remote_opts[:agent_id] == "codex"
-    assert remote_opts[:timeout] == 321
-    assert remote_opts[:inject_agent_id] == false
-    assert_received {:pending_overlay, _args, local_opts}
-    assert local_opts[:agent_id] == "codex"
-    assert local_opts[:method] == "recall"
-    assert local_opts[:store] == store
-    assert local_opts[:config] == config
-  end
-
-  @tag :authoritative_connection
-  test "a known private binding mismatch blocks reads and commands before either adapter" do
-    alias Backplane.HostAgent.MemoryProxy
+  setup %{tmp_dir: dir} do
     MemoryProxy.set_channel(nil)
+    store = start_supervised!({Store, database: Path.join(dir, "memory.db"), pool_size: 1})
+    :ok = Migrator.migrate(store)
+    owner = start_supervised!({Access, name: nil, store: store, now_fun: fn -> 10_000 end})
     on_exit(fn -> MemoryProxy.set_channel(nil) end)
 
-    MemoryProxy.set_connection(
-      %{
-        channel: self(),
-        memory: %{
-          "selected" => "host_memory.v1",
-          "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+    inventory = %{
+      "extensions" => ~w(memory_access.v1 memory_commands.v2),
+      "default_access_id" => @access,
+      "accesses" => [
+        %{
+          "access_id" => @access,
+          "authority_version" => 1,
+          "status" => "active",
+          "partition" => @partition,
+          "capabilities" => ~w(read remember forget),
+          "offline_read_lease_seconds" => 0
         }
-      },
-      %{memory: %{bound_scope: "local"}}
-    )
-
-    for method <- ~w(remember forget recall list stats) do
-      context = %{
-        agent_id: "hermes",
-        remote_adapter: RemoteOK,
-        local_adapter: if(method in ~w(remember forget), do: LocalCommands, else: EmptyOverlay)
-      }
-
-      assert {:error, :memory_scope_mismatch} = MemoryFacade.call(method, %{}, context)
-      refute_received {:local_call, _, _, _}
-      refute_received {:remote_call, _, _, _}
-      refute_received {:pending_overlay, _, _}
-    end
-  end
-
-  @tag :authoritative_connection
-  test "known authentication denial prohibits provisional commands until a fresh authenticated connection" do
-    alias Backplane.HostAgent.MemoryProxy
-    MemoryProxy.set_channel(nil)
-    on_exit(fn -> MemoryProxy.set_channel(nil) end)
-    MemoryProxy.set_connection_owner(self())
-    MemoryProxy.set_connection_error(:unauthorized, self())
-    context = %{agent_id: "codex", local_adapter: LocalCommands}
-
-    for {method, args} <- [
-          {"remember", %{"content" => "must not persist"}},
-          {"forget", %{"id" => "sentinel"}}
-        ] do
-      assert {:error, :unauthorized} = MemoryFacade.call(method, args, context)
-      refute_received {:local_call, _, _, _}
-    end
-
-    MemoryProxy.set_connection_error(:econnrefused, self())
-    assert {:error, :unauthorized} = MemoryFacade.call("remember", %{}, context)
-    refute_received {:local_call, _, _, _}
-    MemoryProxy.set_connection(%{channel: self()}, %{})
-    assert {:ok, %{"authority" => "provisional"}} = MemoryFacade.call("remember", %{}, context)
-    assert_received {:local_call, "remember", _, _}
-
-    assert {:ok, %{"authority" => "provisional"}} =
-             MemoryFacade.call("forget", %{"id" => "sentinel"}, context)
-  end
-
-  @tag :authoritative_connection
-  test "a transport-only outage continues accepting provisional commands" do
-    alias Backplane.HostAgent.MemoryProxy
-    MemoryProxy.set_channel(nil)
-    on_exit(fn -> MemoryProxy.set_channel(nil) end)
-    MemoryProxy.set_connection_owner(self())
-    MemoryProxy.set_connection_error(:econnrefused, self())
-
-    for method <- ["remember", "forget"] do
-      assert {:ok, %{"authority" => "provisional"}} =
-               MemoryFacade.call(method, %{"id" => "local"}, %{
-                 agent_id: "codex",
-                 local_adapter: LocalCommands
-               })
-
-      assert_received {:local_call, ^method, _, _}
-    end
-  end
-
-  test "remember uses the local transaction and marks the result pending canonical acknowledgement" do
-    store = make_ref()
-    config = %{default_scope: "project"}
-
-    assert {:ok,
-            %{
-              "id" => "local-1",
-              "status" => "pending",
-              "authority" => "provisional",
-              "consistency" => "pending_canonical_ack"
-            } = result} =
-             MemoryFacade.call(
-               "remember",
-               %{"content" => "pending insight"},
-               %{agent_id: "codex", local_adapter: LocalCommands, store: store, config: config}
-             )
-
-    refute Map.has_key?(result, "mode")
-
-    assert_received {:local_call, "remember", %{"content" => "pending insight"}, opts}
-    assert opts[:agent_id] == "codex"
-    assert opts[:store] == store
-    assert opts[:config] == config
-  end
-
-  test "malformed local command successes fail closed with a local protocol error" do
-    assert {:error, {:local_protocol_error, {:unexpected_reply, nil}}} =
-             MemoryFacade.call(
-               "remember",
-               %{"content" => "pending insight"},
-               %{agent_id: "codex", local_adapter: LocalMalformedSuccess}
-             )
-  end
-
-  test "bare local command replies fail closed with a local protocol error" do
-    assert {:error, {:local_protocol_error, {:unexpected_reply, :ok}}} =
-             MemoryFacade.call(
-               "remember",
-               %{"content" => "pending insight"},
-               %{agent_id: "codex", local_adapter: LocalBareReply}
-             )
-  end
-
-  test "forget uses the local transaction and marks the result pending canonical acknowledgement" do
-    assert {:ok,
-            %{
-              "id" => "local-1",
-              "authority" => "provisional",
-              "consistency" => "pending_canonical_ack"
-            } = result} =
-             MemoryFacade.call(
-               "forget",
-               %{"id" => "local-1"},
-               %{agent_id: "codex", local_adapter: LocalCommands}
-             )
-
-    refute Map.has_key?(result, "mode")
-    assert_received {:local_call, "forget", %{"id" => "local-1"}, opts}
-    assert opts[:agent_id] == "codex"
-  end
-
-  test "not_connected returns pending commands only and reports canonical history unavailable" do
-    assert_offline_pending(RemoteNotConnected)
-  end
-
-  test "offline recall merges a committed edge mirror with the provisional overlay" do
-    partition = %{
-      "memory_space_id" => "space-1",
-      "scope" => "private",
-      "namespace" => "default"
+      ]
     }
 
+    context = %{
+      agent_id: "author",
+      access_server: owner,
+      remote_adapter: Remote,
+      sync_opts: [channel: self(), channel_module: Channel]
+    }
+
+    %{store: store, owner: owner, inventory: inventory, context: context}
+  end
+
+  test "cold default commands fail closed without creating an unbound outbox row", c do
+    assert {:error, :unauthorized} =
+             MemoryFacade.call("remember", %{"content" => "cold"}, c.context)
+
+    assert {:ok, %{rows: [%{"count" => 0}]}} =
+             Store.query(c.store, "SELECT count(*) AS count FROM memory_outbox")
+  end
+
+  test "default private and explicit writes use the same immutable canonical command path", c do
+    assert :ok = Access.install_inventory(%{id: 1, sent_at_ms: 10_000}, c.inventory, c.owner)
+
     assert {:ok,
             %{
-              "mode" => "offline",
-              "authority" => "canonical_with_provisional",
-              "source" => "edge_mirror",
-              "consistency" => "bounded_stale",
-              "history_available" => true,
-              "partition_revision" => 7,
-              "results" => [%{"id" => "local-1"}, %{"id" => "canonical-1"}]
+              "status" => "committed",
+              "canonical_id" => @canonical,
+              "id" => @canonical,
+              "scope" => "private",
+              "sync_state" => "synced",
+              "dedup" => false
             }} =
+             MemoryFacade.call("remember", %{"content" => "default note"}, c.context)
+
+    assert_receive {:canonical_batch, %{"protocol" => "memory_commands.v2", "items" => [first]}}
+    assert first["arguments"]["type"] == "episodic"
+    assert first["access"] == %{"access_id" => @access, "authority_version" => 1}
+    assert first["partition"] == @partition
+
+    assert {:ok, %{"status" => "committed"}} =
              MemoryFacade.call(
-               "recall",
-               %{"query" => "pending"},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteNotConnected,
-                 local_adapter: PendingOnly,
-                 edge_adapter: EdgeMirror,
-                 edge_partition: partition,
-                 edge_store: :edge_store,
-                 edge_config: %{enabled: true}
-               }
+               "remember",
+               %{"memory_access_id" => @access, "content" => "selected note"},
+               c.context
              )
 
-    assert_received {:edge_read, "recall",
-                     %{
-                       "memory_space_id" => "space-1",
-                       "scope" => "private",
-                       "namespace" => "default"
-                     }, edge_opts}
+    assert_receive {:canonical_batch, %{"items" => [second]}}
+    assert second["arguments"]["type"] == "semantic"
 
-    assert edge_opts[:agent_id] == "codex"
-    assert edge_opts[:store] == :edge_store
-    assert edge_opts[:config] == %{enabled: true}
-  end
-
-  test "offline recall accepts the real edge mirror's items payload" do
-    assert {:ok,
-            %{
-              "source" => "edge_mirror",
-              "authority" => "canonical",
-              "partition_revision" => 8,
-              "results" => [item],
-              "hits" => [item]
-            }} =
-             MemoryFacade.call("recall", %{"query" => "committed"}, %{
-               agent_id: "codex",
-               remote_adapter: RemoteNotConnected,
-               local_adapter: EmptyOverlay,
-               edge_adapter: EdgeMirrorItems
-             })
-
-    assert item["canonical_id"] == "canonical-1"
-    assert item["content"] == "committed edge"
-  end
-
-  test "offline pending forget removes a canonical item from every public result field" do
-    assert {:ok,
-            %{
-              "results" => [],
-              "hits" => [],
-              "items" => [],
-              "authority" => "canonical_with_provisional"
-            }} =
-             MemoryFacade.call("recall", %{"query" => "committed"}, %{
-               agent_id: "codex",
-               remote_adapter: RemoteNotConnected,
-               local_adapter: PendingForget,
-               edge_adapter: EdgeMirrorItems
-             })
-  end
-
-  test "timeout returns pending commands only and reports canonical history unavailable" do
-    assert_offline_pending(RemoteTimeout)
-  end
-
-  test "connection refused returns pending commands only and reports canonical history unavailable" do
-    assert_offline_pending(RemoteConnectionRefused)
-  end
-
-  test "a normal socket close returns pending commands only" do
-    assert_offline_pending(RemoteSocketClosed)
-  end
-
-  test "offline recall bounds public upserts to the same requested result limit" do
-    assert {:ok,
-            %{
-              "upserts" => [upsert],
-              "results" => [result],
-              "hits" => [hit],
-              "pending_operations" => 2
-            }} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "pending", "limit" => 1},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteNotConnected,
-                 local_adapter: MultiplePending
-               }
+    assert {:ok, %{rows: [%{"count" => 0}]}} =
+             Store.query(
+               c.store,
+               "SELECT count(*) AS count FROM memory_outbox WHERE access_id IS NULL"
              )
-
-    assert result == upsert
-    assert hit == upsert
   end
 
-  test "offline list paginates the complete provisional overlay with canonical list defaults" do
+  test "transport retry preserves command access version partition and request key", c do
+    assert :ok = Access.install_inventory(%{id: 1, sent_at_ms: 10_000}, c.inventory, c.owner)
+    Process.put({Channel, :mode}, :timeout)
+    args = %{"content" => "retry note", "idempotency_key" => "stable-request"}
+
     assert {:ok,
             %{
-              "upserts" => results,
-              "results" => results,
-              "items" => results,
-              "pending_operations" => 60
+              "status" => "pending",
+              "command_id" => command,
+              "id" => id,
+              "scope" => "private",
+              "sync_state" => "pending",
+              "dedup" => false
             }} =
-             MemoryFacade.call(
-               "list",
-               %{},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteNotConnected,
-                 local_adapter: ManyPending
-               }
+             MemoryFacade.call("remember", args, c.context)
+
+    assert id == command
+    assert_receive {:canonical_batch, %{"items" => [first]}}
+    Process.delete({Channel, :mode})
+
+    assert {:ok, %{"status" => "committed", "command_id" => ^command, "dedup" => true}} =
+             MemoryFacade.call("remember", args, c.context)
+
+    assert_receive {:canonical_batch, %{"items" => [^first]}}
+
+    assert {:ok, %{rows: [%{"request_key" => "stable-request", "attempts" => 1}]}} =
+             Store.query(
+               c.store,
+               "SELECT request_key,attempts FROM memory_outbox WHERE command_id=?",
+               [command]
              )
-
-    assert length(results) == 50
-    assert List.first(results)["id"] == "local-1"
-    assert List.last(results)["id"] == "local-50"
   end
 
-  test "offline list honors zero and uncapped explicit limits" do
-    for {args, expected_count} <- [
-          {%{"limit" => 0}, 0},
-          {%{limit: 200}, 60}
-        ] do
-      assert {:ok, %{"upserts" => results, "results" => results, "items" => results}} =
-               MemoryFacade.call(
-                 "list",
-                 args,
-                 %{
-                   agent_id: "codex",
-                   remote_adapter: RemoteNotConnected,
-                   local_adapter: ManyPending
-                 }
-               )
+  test "online default reads preserve canonical metadata with an authenticated command overlay",
+       c do
+    assert :ok = Access.install_inventory(%{id: 1, sent_at_ms: 10_000}, c.inventory, c.owner)
 
-      assert length(results) == expected_count
-    end
-  end
-
-  test "offline list never serializes more than the hard overlay cap" do
     assert {:ok,
             %{
-              "upserts" => results,
-              "results" => results,
-              "items" => results,
-              "pending_operations" => 150,
-              "overlay_truncated" => true
+              "cursor" => "page-2",
+              "items" => [%{"id" => "canonical"}],
+              "authority" => "canonical"
             }} =
-             MemoryFacade.call(
-               "list",
-               %{"limit" => 200},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteNotConnected,
-                 local_adapter: OversizedPending
-               }
-             )
+             MemoryFacade.call("list", %{}, c.context)
 
-    assert length(results) == 100
+    assert_received {:canonical_read, "list", %{}, opts}
+    assert opts[:access] == %{"access_id" => @access, "authority_version" => 1}
+    refute opts[:inject_agent_id]
   end
 
-  test "offline list supports string and atom offset pagination keys" do
-    for args <- [%{"limit" => 2, "offset" => 10}, %{limit: 2, offset: 10}] do
-      assert {:ok, %{"upserts" => results, "results" => results, "items" => results}} =
-               MemoryFacade.call(
-                 "list",
-                 args,
-                 %{
-                   agent_id: "codex",
-                   remote_adapter: RemoteNotConnected,
-                   local_adapter: ManyPending
-                 }
-               )
-
-      assert Enum.map(results, & &1["id"]) == ["local-11", "local-12"]
-    end
-  end
-
-  test "recognized nested transport, socket, reconnect, and channel exits enter offline mode" do
-    reasons = [
-      {:transport, :econnreset},
-      {:transport_error, :enetdown},
-      {:socket, :enetunreach},
-      {:socket_error, :nxdomain},
-      {:reconnect_failed, :hub_down},
-      {:reconnect_failed, :socket_timeout},
-      {:reconnect_failed, {:transport_error, :econnrefused}},
-      {:reconnect_lock_failed, {:timeout, :global_lock}},
-      {:socket, {:socket_closed, :econnreset}},
-      {:channel_exit, {:shutdown, :closed}},
-      {:channel_exit, {:closed, "socket"}},
-      {:channel_exit, {:noproc, {GenServer, :call, []}}}
-    ]
-
-    for reason <- reasons do
-      Process.put(:facade_transport_reason, reason)
-
-      assert {:ok,
-              %{
-                "mode" => "offline",
-                "authority" => "provisional",
-                "consistency" => "provisional_only",
-                "pending_operations" => 1
-              }} =
-               MemoryFacade.call(
-                 "recall",
-                 %{"query" => "pending"},
-                 %{
-                   agent_id: "codex",
-                   remote_adapter: RemoteNestedTransport,
-                   local_adapter: PendingOnly
-                 }
-               )
-
-      assert_received :pending_overlay
-    end
-  end
-
-  test "all direct transport atoms are explicitly allowlisted" do
+  test "known transport classifications do not accept authorization or arbitrary failures" do
     for reason <- [
-          :not_connected,
           :timeout,
-          :socket_timeout,
+          :not_connected,
           :econnrefused,
-          :econnreset,
-          :enetdown,
-          :enetunreach,
-          :nxdomain,
-          :hub_down,
-          :closed,
-          :disconnected
-        ] do
-      Process.put(:facade_transport_reason, reason)
+          {:socket_error, :closed},
+          {:channel_exit, :normal}
+        ],
+        do: assert(MemoryFacade.transport_error?(reason))
 
-      assert {:ok, %{"mode" => "offline"}} =
-               MemoryFacade.call(
-                 "recall",
-                 %{"query" => "pending"},
-                 %{
-                   agent_id: "codex",
-                   remote_adapter: RemoteNestedTransport,
-                   local_adapter: PendingOnly
-                 }
-               )
-
-      assert_received :pending_overlay
-    end
-  end
-
-  test "unauthorized is a canonical error and never reads the pending overlay" do
-    assert_canonical_error(RemoteUnauthorized, "unauthorized")
-  end
-
-  test "partition mismatch is a canonical error and never reads the pending overlay" do
-    assert_canonical_error(RemotePartitionMismatch, "partition_mismatch")
-  end
-
-  test "invalid arguments is a canonical error and never reads the pending overlay" do
-    assert_canonical_error(RemoteInvalid, "invalid_arguments")
-  end
-
-  test "not found is a canonical error and never reads the pending overlay" do
-    assert_canonical_error(RemoteNotFound, "memory not found")
-  end
-
-  test "an unknown error never enters offline mode or reads the pending overlay" do
-    assert_canonical_error(RemoteUnknownError, :canonical_store_unavailable)
-  end
-
-  test "an unexpected reply error never enters offline mode or reads the pending overlay" do
-    reason = {:unexpected_reply, %{"ok" => false}}
-    assert_canonical_error(RemoteUnexpectedReply, reason)
-  end
-
-  test "malformed canonical successes fail closed without reading the pending overlay" do
-    assert {:error, {:canonical_protocol_error, {:unexpected_reply, nil}}} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteMalformedSuccess,
-                 local_adapter: PendingOnly
-               }
-             )
-
-    refute_received :pending_overlay
-  end
-
-  test "bare canonical replies fail closed without reading the pending overlay" do
-    assert {:error, {:canonical_protocol_error, {:unexpected_reply, :ok}}} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{
-                 agent_id: "codex",
-                 remote_adapter: RemoteBareReply,
-                 local_adapter: PendingOnly
-               }
-             )
-
-    refute_received :pending_overlay
-  end
-
-  test "known methods require an agent identity in the context" do
-    assert_raise KeyError, fn ->
-      MemoryFacade.call(
-        "recall",
-        %{"query" => "canonical"},
-        %{remote_adapter: RemoteOK, local_adapter: EmptyOverlay}
-      )
-    end
-  end
-
-  test "unknown methods are rejected without invoking either adapter" do
-    assert {:error, {:unknown_method, "replay"}} = MemoryFacade.call("replay", %{}, %{})
-    refute_received {:remote_call, _, _, _}
-    refute_received {:local_call, _, _, _}
-  end
-
-  defp assert_offline_pending(remote_adapter) do
-    assert {:ok,
-            %{
-              "mode" => "offline",
-              "authority" => "provisional",
-              "consistency" => "provisional_only",
-              "stale" => true,
-              "as_of" => nil,
-              "partition_revision" => nil,
-              "last_sync_age_seconds" => nil,
-              "history_available" => false,
-              "pending_operations" => 1,
-              "overlay_truncated" => false,
-              "upserts" => [%{"id" => "local-1", "provisional" => true}],
-              "delete_ids" => [],
-              "results" => [%{"id" => "local-1", "provisional" => true}],
-              "hits" => [%{"id" => "local-1", "provisional" => true}]
-            }} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "pending"},
-               %{agent_id: "codex", remote_adapter: remote_adapter, local_adapter: PendingOnly}
-             )
-
-    assert_received :pending_overlay
-    assert_received {:pending_overlay_opts, opts}
-    assert opts[:overlay_mode] == :offline
-    refute_received :unexpected_local_recall
-    refute_received :unexpected_local_facts
-  end
-
-  defp assert_canonical_error(remote_adapter, reason) do
-    assert {:error, ^reason} =
-             MemoryFacade.call(
-               "recall",
-               %{"query" => "canonical"},
-               %{agent_id: "codex", remote_adapter: remote_adapter, local_adapter: PendingOnly}
-             )
-
-    refute_received :pending_overlay
-    refute_received :unexpected_local_recall
-    refute_received :unexpected_local_facts
+    for reason <- [:unauthorized, :partition_mismatch, :invalid_arguments, :not_found, :arbitrary],
+        do: refute(MemoryFacade.transport_error?(reason))
   end
 end

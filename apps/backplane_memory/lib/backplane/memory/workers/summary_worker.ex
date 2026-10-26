@@ -12,7 +12,6 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
 
   import Ecto.Query
 
-  alias Backplane.Memory.Observations.{Observation, Session}
   alias Backplane.Memory.Config
   alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Projections.{ProcessingState, ReadModels, Revision, Source, State}
@@ -52,24 +51,10 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     end)
   end
 
-  def perform(%Styx.Job{args: %{"session_id" => session_id} = args})
-      when is_binary(session_id) and map_size(args) == 1 do
-    Backplane.Memory.PipelineTelemetry.span("summary.legacy", args, fn ->
-      perform_legacy(session_id)
-    end)
-  end
-
   def perform(%Styx.Job{args: args}) do
     Backplane.Memory.PipelineTelemetry.span("summary", args, fn ->
       {:cancel, :invalid_arguments}
     end)
-  end
-
-  @doc "Enqueues the legacy session-only compatibility job."
-  def enqueue(session_id) when is_binary(session_id) do
-    %{session_id: session_id}
-    |> new(unique: [period: :infinity, states: :all, keys: [:session_id]])
-    |> Styx.insert()
   end
 
   @doc "Enqueues a canonical summary revision."
@@ -578,78 +563,6 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
     else
       _ -> {:error, :incomplete_partition}
     end
-  end
-
-  defp perform_legacy(session_id) do
-    case repo().one(from(s in Session, where: s.session_id == ^session_id)) do
-      nil ->
-        :ok
-
-      %Session{} = session ->
-        with {:ok, partition} <- PartitionIdentity.validate(Map.from_struct(session)) do
-          observations =
-            repo().all(
-              from(o in Observation,
-                where:
-                  o.session_id == ^session_id and
-                    o.memory_space_id == ^partition.memory_space_id and
-                    o.scope == ^partition.scope and o.namespace == ^partition.namespace and
-                    not o.is_error,
-                order_by: [desc: fragment("length(?)", o.content), asc: o.id],
-                limit: 20
-              )
-            )
-
-          if observations == [] do
-            mark_legacy_consolidated(session_id)
-            :ok
-          else
-            attrs = %{
-              memory_space_id: partition.memory_space_id,
-              host_id: session.host_id,
-              source_client_id: session.source_client_id,
-              scope: partition.scope,
-              namespace: partition.namespace,
-              session_id: session_id,
-              project: session.project || "",
-              content: build_legacy_summary(session, observations),
-              observation_count: length(observations)
-            }
-
-            changeset = Summary.changeset(%Summary{}, attrs)
-
-            case repo().insert(changeset,
-                   on_conflict: :nothing,
-                   conflict_target: [:subject_id, :processing_version]
-                 ) do
-              {:ok, _} ->
-                mark_legacy_consolidated(session_id)
-                EpisodicWorker.enqueue(session_id)
-                :ok
-
-              {:error, changeset} ->
-                {:error, changeset}
-            end
-          end
-        else
-          {:error, _reason} -> {:cancel, :incomplete_partition}
-        end
-    end
-  end
-
-  defp build_legacy_summary(session, observations) do
-    header =
-      "Session #{session.session_id} (project: #{session.project || "unknown"}) — #{length(observations)} observations"
-
-    lines = Enum.map(observations, &String.slice(&1.content, 0, 500))
-    Enum.join([header | lines], "\n---\n")
-  end
-
-  defp mark_legacy_consolidated(session_id) do
-    repo().update_all(
-      from(s in Session, where: s.session_id == ^session_id),
-      set: [consolidated_at: now()]
-    )
   end
 
   defp valid_identifier?(value), do: is_binary(value) and String.trim(value) != ""

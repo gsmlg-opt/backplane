@@ -23,8 +23,12 @@ defmodule Backplane.Memory.Projections.Source do
     end
   end
 
-  @doc "Locks the canonical session streams in the same deterministic order as event appends/rebuilds."
+  @doc "Locks the canonical subject before its streams, matching the event append lock order."
   def lock_streams(host_id, session_id) do
+    repo().query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      subject_id!(host_id, session_id)
+    ])
+
     repo().all(
       from(s in Stream,
         where: s.host_id == ^host_id and s.session_id == ^session_id,

@@ -7,7 +7,7 @@ defmodule Backplane.Api.MemoryRouterTest do
   alias Backplane.Memory.Graph
   alias Backplane.Memory.Profiles.Profile
   alias Backplane.Memory.Coordination.Lease
-  alias Backplane.Memory.Observations.{Observation, Session}
+  alias Backplane.Memory.Projections.{ProjectedObservation, Source}
   alias Backplane.Memory.Recall.QueryPlan
   alias Backplane.Memory.Recall.Store, as: RecallStore
   alias Backplane.MemorySpaces
@@ -20,8 +20,6 @@ defmodule Backplane.Api.MemoryRouterTest do
   @settings_table :backplane_settings
   @settings_keys [
     "memory.pipeline.enabled",
-    "memory.events.enabled",
-    "memory.events.dual_write",
     "memory.inject_context",
     "memory.replay_enabled",
     "memory.replay_import_enabled",
@@ -37,8 +35,6 @@ defmodule Backplane.Api.MemoryRouterTest do
     llm_module = Application.fetch_env(:backplane_memory, :llm_module)
 
     :ets.insert(@settings_table, {"memory.pipeline.enabled", true})
-    :ets.insert(@settings_table, {"memory.events.enabled", true})
-    :ets.insert(@settings_table, {"memory.events.dual_write", true})
     :ets.insert(@settings_table, {"memory.inject_context", false})
     :ets.insert(@settings_table, {"memory.replay_enabled", true})
     :ets.insert(@settings_table, {"memory.replay_import_enabled", false})
@@ -111,7 +107,7 @@ defmodule Backplane.Api.MemoryRouterTest do
     assert %{"id" => observation_id} = body = json_response(observation_conn, 201)
     assert Map.keys(body) == ["id"]
 
-    event = repo().get_by!(Event, idempotency_key: "http-explicit-key")
+    event = repo().get!(Event, observation_id)
 
     assert event.id != forbidden_id
     assert event.stream_id == "http-explicit-stream"
@@ -131,9 +127,11 @@ defmodule Backplane.Api.MemoryRouterTest do
     assert event.importance == 0
     assert event.actor_type == "system"
     assert event.role == "system"
-    assert event.status == "error"
+    assert event.status == "failed"
+    assert event.schema_version == 1
+    assert event.idempotency_key =~ "memory-api:"
     assert event.payload["input"] == %{"value" => 1}
-    assert event.payload["_backplane"]["legacy_observation_id"] == observation_id
+    refute Map.has_key?(event.payload["_backplane"], "legacy_observation_id")
   end
 
   test "REST rejects caller-supplied cross-partition ownership", %{conn: conn} do
@@ -346,10 +344,10 @@ defmodule Backplane.Api.MemoryRouterTest do
 
     assert json_response(explicit_null, 422) == %{"error" => ":invalid_payload"}
 
-    absent_event = repo().get_by!(Event, idempotency_key: "http-payload-absent")
+    absent_event = repo().get_by!(Event, session_id: "http-payload-absent")
 
     assert absent_event.payload["paths"] == ["lib/absent.ex"]
-    refute repo().get_by(Event, idempotency_key: "http-payload-null")
+    refute repo().get_by(Event, session_id: "http-payload-null")
   end
 
   test "invalid event keeps the existing 422 inspect response", %{conn: conn} do
@@ -361,7 +359,7 @@ defmodule Backplane.Api.MemoryRouterTest do
       })
 
     assert json_response(conn, 422) == %{"error" => ":invalid_event_type"}
-    refute repo().exists?(from(o in Observation, where: o.session_id == "http-invalid-event"))
+    refute repo().exists?(from(e in Event, where: e.session_id == "http-invalid-event"))
   end
 
   test "session start persistence conflict returns retryable 503 without a session", %{
@@ -375,7 +373,7 @@ defmodule Backplane.Api.MemoryRouterTest do
                Map.merge(partition, %{
                  stream_id: "other-start-stream",
                  event_type: "session.started",
-                 idempotency_key: "session.started:" <> session_id
+                 idempotency_key: api_key("session.started:" <> session_id, partition)
                }),
                telemetry: false
              )
@@ -387,7 +385,7 @@ defmodule Backplane.Api.MemoryRouterTest do
       })
 
     assert json_response(response, 503) == %{"error" => "memory persistence unavailable"}
-    refute repo().get(Session, session_id)
+    refute repo().get_by(Event, session_id: session_id)
   end
 
   test "session end persistence conflict returns retryable 503 and rolls back", %{
@@ -408,7 +406,7 @@ defmodule Backplane.Api.MemoryRouterTest do
                Map.merge(partition, %{
                  stream_id: "other-end-stream",
                  event_type: "session.ended",
-                 idempotency_key: "session.ended:" <> session_id
+                 idempotency_key: api_key("session.ended:" <> session_id, partition)
                }),
                telemetry: false
              )
@@ -419,8 +417,9 @@ defmodule Backplane.Api.MemoryRouterTest do
       end)
 
     assert json_response(response, 503) == %{"error" => "memory persistence unavailable"}
-    assert repo().get!(Session, session_id).ended_at == nil
-    assert repo().get!(Stream, "session:" <> session_id).closed_at == nil
+    started = repo().get_by!(Event, session_id: session_id, event_type: "session.started")
+    assert repo().get!(Stream, started.stream_id).closed_at == nil
+    refute repo().get_by(Event, session_id: session_id, event_type: "session.ended")
   end
 
   test "repeat session end is idempotent and unknown sessions are hidden", %{conn: conn} do
@@ -487,6 +486,8 @@ defmodule Backplane.Api.MemoryRouterTest do
                "updated lib/router.ex",
                Map.to_list(partition) ++ [trusted_partition: partition]
              )
+
+    project_observation!(file_observation.id)
 
     audit_id = "11111111-2222-4333-8444-555555555555"
     created_at = ~U[2026-07-16 05:30:00.000000Z]
@@ -645,11 +646,11 @@ defmodule Backplane.Api.MemoryRouterTest do
              "status" => "ended"
            }
 
-    assert %Session{project: "backplane", ended_at: %DateTime{}} =
-             repo().get!(Session, session_id)
+    assert %Event{id: ^observation_id, content: "updated lib/router.ex", schema_version: 1} =
+             repo().get!(Event, observation_id)
 
-    assert %Observation{id: ^observation_id, content: "updated lib/router.ex"} =
-             repo().get!(Observation, observation_id)
+    assert [[0]] = repo().query!("SELECT count(*) FROM memory_sessions").rows
+    assert [[0]] = repo().query!("SELECT count(*) FROM bpm_observations").rows
 
     events =
       repo().all(
@@ -665,12 +666,55 @@ defmodule Backplane.Api.MemoryRouterTest do
              {3, "session.ended"}
            ]
 
-    assert Enum.at(events, 1).payload["_backplane"]["legacy_observation_id"] ==
-             observation_id
+    assert Enum.at(events, 1).id == observation_id
 
     assert %Stream{closed_at: %DateTime{}, next_sequence: 4} =
-             repo().get!(Stream, "session:" <> session_id)
+             repo().get!(Stream, hd(events).stream_id)
   end
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
+
+  defp project_observation!(id) do
+    event = repo().get!(Event, id)
+
+    %ProjectedObservation{
+      event_id: event.id,
+      subject_id: Source.subject_id!(event.host_id, event.session_id),
+      memory_space_id: event.memory_space_id,
+      host_id: event.host_id,
+      client_id: event.client_id,
+      source_client_id: event.source_client_id,
+      scope: event.scope,
+      namespace: event.namespace,
+      session_id: event.session_id,
+      project: event.project,
+      agent_id: event.agent_id,
+      source_sequence: event.source_sequence,
+      event_type: event.event_type,
+      occurred_at: event.occurred_at,
+      tool_name: event.tool_name,
+      content: event.content,
+      message: event.content,
+      importance: event.importance,
+      is_error: false,
+      file_paths: event.payload["paths"],
+      processing_version: "observations-v1",
+      input_revision: "api-fixture"
+    }
+    |> repo().insert!()
+  end
+
+  defp api_key(key, partition) do
+    "memory-api:" <>
+      Base.url_encode64(
+        Jason.encode!([
+          partition.memory_space_id,
+          partition.scope,
+          partition.namespace,
+          partition.host_id,
+          key
+        ]),
+        padding: false
+      )
+  end
 end

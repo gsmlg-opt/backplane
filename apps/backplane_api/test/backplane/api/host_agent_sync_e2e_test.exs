@@ -4,47 +4,47 @@ defmodule Backplane.Api.HostAgentSyncE2ETest do
   alias Backplane.Api.Fixtures
   alias Backplane.Skills.{Assignments, DesiredState, Hosts}
 
-  test "v1 pushes issued receipts and acknowledges their exact application durably" do
-    {:ok, host, _, token} = Hosts.create_agent_with_token(%{"name" => "compat-channel"})
+  test "retired V1 offers and uploads cannot create receipts or reconcile facts and wipes" do
+    {:ok, host, _, token} = Hosts.create_agent_with_token(%{"name" => "retired-channel"})
 
     {:ok, socket} =
       connect(Backplane.Api.HostAgentSocket, %{"host_id" => host.id},
         connect_info: %{x_headers: [{"x-backplane-host-token", token}]}
       )
 
+    before_receipts = Backplane.Repo.aggregate("bpm_host_memory_compat_receipts", :count)
+    before_commands = Backplane.Repo.aggregate(Backplane.Memory.SharedCommands.Receipt, :count)
+
     offer = %{
       "memory" => %{"protocol" => "host_memory.v1", "scopes" => [%{"scope" => host.memory_scope}]}
     }
 
-    assert {:ok, %{"selected" => "host_memory.v1"}, socket} =
+    assert {:error, %{"code" => "invalid_request", "retryable" => false}} =
              subscribe_and_join(socket, "host_agent:#{host.id}", offer)
 
-    send(socket.channel_pid, {:memory_available, %{"current_revision" => 1}})
-    refute_push("memory_available", _)
-    assert_push("memory_facts", %{"receipt_key" => key, "payload_hash" => hash, "facts" => []})
-    receipt = Backplane.Repo.one!(Backplane.Memory.EdgeSync.CompatReceipt)
-    assert receipt.receipt_key == key
-    assert receipt.payload_hash == hash
-    assert is_nil(receipt.acknowledged_at)
+    assert {:ok, _, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 
-    ack = %{
-      "receipt_key" => key,
-      "payload_hash" => hash,
-      "scope" => host.memory_scope,
-      "status" => "applied"
-    }
+    ref =
+      push(socket, "memory_sync", %{
+        "protocol" => "host_memory.v1",
+        "items" => [
+          %{"id" => "retired-local", "op" => "remember", "content" => "must not become canonical"}
+        ]
+      })
 
-    ref = push(socket, "memory_facts_ack", Map.put(ack, "status", "failed"))
-    assert_reply(ref, :error, %{"code" => "invalid_ack"})
-    assert is_nil(Backplane.Repo.one!(Backplane.Memory.EdgeSync.CompatReceipt).acknowledged_at)
-    ref = push(socket, "memory_facts_ack", ack)
-    assert_reply(ref, :ok, %{"status" => "acknowledged"})
-    ref = push(socket, "memory_facts_ack", ack)
-    assert_reply(ref, :ok, %{"status" => "duplicate"})
-    ref = push(socket, "memory_facts_ack", Map.put(ack, "payload_hash", "conflict"))
-    assert_reply(ref, :error, %{"code" => "batch_conflict"})
-    assert Backplane.Repo.one!(Backplane.Memory.EdgeSync.CompatReceipt).acknowledged_at
+    assert_reply(ref, :error, %{"code" => "unsupported_protocol", "retryable" => false})
+    assert Backplane.Repo.aggregate("bpm_host_memory_compat_receipts", :count) == before_receipts
+
+    assert Backplane.Repo.aggregate(Backplane.Memory.SharedCommands.Receipt, :count) ==
+             before_commands
+
+    refute Backplane.Repo.get_by(Backplane.Memory.Memories.Memory,
+             content: "must not become canonical"
+           )
+
     assert Backplane.Repo.aggregate(Backplane.Memory.EdgeSync.Cursor, :count) == 0
+    refute_push("memory_facts", _)
+    refute_push("memory_wipe", _)
   end
 
   test "v2 join preserves the negotiated frame bound without extra legacy metadata" do
@@ -93,7 +93,6 @@ defmodule Backplane.Api.HostAgentSyncE2ETest do
       )
 
     offer = %{
-      "memory" => %{"protocol" => "host_memory.v1", "scopes" => [%{"scope" => "edge"}]},
       "memory_v2" => %{"offers" => ["host_memory.v2"], "partitions" => []}
     }
 
@@ -136,8 +135,12 @@ defmodule Backplane.Api.HostAgentSyncE2ETest do
     assert_reply(ref, :ok, %{"status" => "duplicate"})
     ref = push(socket, "memory_next", put_in(request, ["partition", "namespace"], "foreign"))
     assert_reply(ref, :error, %{"retryable" => false})
-    ref = push(socket, "memory_facts_ack", %{})
-    assert_reply(ref, :error, %{"code" => "unsupported_protocol"})
+
+    for event <- ~w(memory_facts_ack memory_wipe_ack memory_reconcile unknown_event) do
+      ref = push(socket, event, %{})
+      assert_reply(ref, :error, %{"code" => "unsupported_protocol", "retryable" => false})
+    end
+
     ref = push(socket, "memory_next", %{})
     assert_reply(ref, :error, %{"code" => "invalid_request"})
     Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.capture"])

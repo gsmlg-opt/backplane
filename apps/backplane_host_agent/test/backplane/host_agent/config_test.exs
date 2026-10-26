@@ -185,7 +185,6 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: Path.join(work_dir, "memory/host_agent_memory.db"),
-             host_sync_v1: %{enabled: false},
              host_sync_v2: %{
                enabled: false,
                development_plaintext: false,
@@ -426,7 +425,6 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: db_path,
-             host_sync_v1: %{enabled: false},
              host_sync_v2: %{
                enabled: false,
                development_plaintext: false,

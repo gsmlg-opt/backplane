@@ -19,8 +19,8 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
 
     assert has_element?(view, "#memory-streams-table[phx-mounted]")
     assert html =~ "No streams match these filters"
-    assert html =~ "Pipeline is disabled"
-    assert html =~ "Events is disabled"
+    assert html =~ "Captured events appear here after the first memory activity"
+    assert html =~ "Background processing is paused"
 
     assert has_element?(
              view,

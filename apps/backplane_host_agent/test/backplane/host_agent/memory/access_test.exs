@@ -1276,7 +1276,12 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     }
 
     assert {:ok, receipt} = enqueue(c, target, "remember", args)
-    assert {:ok, ^receipt} = enqueue(c, target, "remember", args)
+    refute receipt["dedup"]
+    assert {:ok, duplicate} = enqueue(c, target, "remember", args)
+    assert duplicate == Map.put(receipt, "dedup", true)
+
+    assert {:ok, %{rows: [%{"count" => 1}]}} =
+             Store.query(c.store, "SELECT COUNT(*) AS count FROM memory_outbox")
 
     assert {:error, :idempotency_conflict} =
              enqueue(c, target, "remember", Map.put(args, "content", "two"))
@@ -1452,7 +1457,7 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     assert Access.status(c.owner).global_fenced
   end
 
-  test "V2 drain retries lost ACK identity, keeps private rows V1, and rejects successful-transport denial",
+  test "sole V2 drain retries lost ACK identity and rejects successful-transport denial",
        c do
     assert :ok = install(c)
     {:ok, target, _} = Access.begin_request({:access_id, @id}, :remember, c.owner)
@@ -1462,13 +1467,6 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
         "content" => "shared command",
         "idempotency_key" => "retry"
       })
-
-    {:ok, _} =
-      Memory.remember(%{"content" => "private command"},
-        store: c.store,
-        config: %{bound_scope: "private"},
-        agent_id: "actor-b"
-      )
 
     opts = [
       store: c.store,
@@ -1484,9 +1482,8 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     assert {:ok, %{drained: 1}} = Backplane.HostAgent.Memory.Syncer.drain_shared(opts)
     assert_receive {:command_batch, %{"protocol" => "memory_commands.v2", "items" => [^first]}}
     assert first["command_id"] == receipt["command_id"]
-    assert {:ok, %{"drained" => 1}} = Backplane.HostAgent.Memory.Syncer.drain_once(opts)
-    assert_receive {:command_batch, %{"protocol" => "host_memory.v1", "items" => [private]}}
-    assert private["content"] == "private command"
+    assert {:ok, %{"drained" => 0}} = Backplane.HostAgent.Memory.Syncer.drain_once(opts)
+    refute_receive {:command_batch, _}
     {:ok, _} = enqueue(c, target, "remember", %{"content" => "rejected"})
     Process.put({SharedChannel, :mode}, :reject)
 

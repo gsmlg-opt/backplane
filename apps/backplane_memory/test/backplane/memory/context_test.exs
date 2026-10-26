@@ -6,6 +6,20 @@ defmodule Backplane.Memory.ContextTest do
   @settings_table :backplane_settings
   @key "memory.inject_context"
   setup do
+    previous = Application.get_env(:backplane_memory, :recall_task_supervisor)
+    supervisor = start_supervised!(Task.Supervisor)
+    Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:backplane_memory, :recall_task_supervisor, previous),
+        else: Application.delete_env(:backplane_memory, :recall_task_supervisor)
+    end)
+
+    :ok
+  end
+
+  setup do
     original =
       case :ets.lookup(@settings_table, @key) do
         [{_, v}] -> v

@@ -219,12 +219,18 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     refute_received {:push, _, "memory_call", _}
   end
 
-  test "a negotiated v1 scope mismatch blocks private memory without retiring the channel" do
+  test "a negotiated default-access scope mismatch blocks private memory without retiring the channel" do
     connection = %{
       channel: self(),
       memory: %{
-        "selected" => "host_memory.v1",
-        "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+        "selected" => "host_memory.v2",
+        "default_access_id" => "default",
+        "accesses" => [
+          %{
+            "access_id" => "default",
+            "partition" => %{"scope" => "registered", "namespace" => "private"}
+          }
+        ]
       }
     }
 
@@ -239,14 +245,22 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     refute_received {:push, _, _, _}
   end
 
-  test "v2 binding considers only nonempty private partition scopes" do
+  test "v2 binding uses default access even without delivery partitions" do
     connection = %{
       channel: self(),
       memory: %{
         "selected" => "host_memory.v2",
-        "partitions" => [
-          %{"scope" => "local", "namespace" => "public"},
-          %{"scope" => "registered", "namespace" => "private"}
+        "partitions" => [],
+        "default_access_id" => "default",
+        "accesses" => [
+          %{
+            "access_id" => "other",
+            "partition" => %{"scope" => "local", "namespace" => "public"}
+          },
+          %{
+            "access_id" => "default",
+            "partition" => %{"scope" => "registered", "namespace" => "private"}
+          }
         ]
       }
     }
@@ -285,8 +299,14 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     MemoryProxy.set_connection_owner(self())
 
     memory = %{
-      "selected" => "host_memory.v1",
-      "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+      "selected" => "host_memory.v2",
+      "default_access_id" => "default",
+      "accesses" => [
+        %{
+          "access_id" => "default",
+          "partition" => %{"scope" => "registered", "namespace" => "private"}
+        }
+      ]
     }
 
     :ok =
@@ -318,8 +338,14 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
         %{
           channel: self(),
           memory: %{
-            "selected" => "host_memory.v1",
-            "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+            "selected" => "host_memory.v2",
+            "default_access_id" => "default",
+            "accesses" => [
+              %{
+                "access_id" => "default",
+                "partition" => %{"scope" => "registered", "namespace" => "private"}
+              }
+            ]
           }
         },
         %{memory: %{bound_scope: "local"}}
@@ -336,8 +362,14 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
           channel: self(),
           memory_generation: %{id: 42},
           memory: %{
-            "selected" => "host_memory.v1",
-            "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+            "selected" => "host_memory.v2",
+            "default_access_id" => "default",
+            "accesses" => [
+              %{
+                "access_id" => "default",
+                "partition" => %{"scope" => "registered", "namespace" => "private"}
+              }
+            ]
           }
         },
         %{memory: %{bound_scope: "local"}}
@@ -358,8 +390,14 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     MemoryProxy.set_config(%{memory: %{bound_scope: "local"}})
 
     Process.put(:scope_negotiation, %{
-      "selected" => "host_memory.v1",
-      "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+      "selected" => "host_memory.v2",
+      "default_access_id" => "default",
+      "accesses" => [
+        %{
+          "access_id" => "default",
+          "partition" => %{"scope" => "registered", "namespace" => "private"}
+        }
+      ]
     })
 
     assert {:error, :memory_scope_mismatch} =
@@ -383,8 +421,14 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
       )
 
     Process.put(:scope_negotiation, %{
-      "selected" => "host_memory.v1",
-      "memory_partition" => %{"scope" => "registered", "namespace" => "private"}
+      "selected" => "host_memory.v2",
+      "default_access_id" => "default",
+      "accesses" => [
+        %{
+          "access_id" => "default",
+          "partition" => %{"scope" => "registered", "namespace" => "private"}
+        }
+      ]
     })
 
     assert {:error, :memory_scope_mismatch} =

@@ -3,357 +3,64 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
 
   import Backplane.Admin.MemoryFixtures
   import Backplane.Memory.IngestFixtures, only: [valid_event: 1, ingest_auth_context: 2]
-
   alias Backplane.Settings
-
   @pipeline "memory.pipeline.enabled"
-  @events "memory.events.enabled"
-  @dual_write "memory.events.dual_write"
-
   setup :setup_memory_gates
 
-  test "renders rollout switches and actual disabled stage capabilities",
-       %{conn: conn} do
+  test "offers one background processing switch without implementation selectors", %{conn: conn} do
     {:ok, view, html} = live(conn, "/memory/pipeline")
-
-    assert has_element?(view, "h1", "Pipeline")
-
-    switches =
-      html
-      |> Floki.parse_fragment!()
-      |> Floki.find(~s([role="switch"]))
-
-    assert length(switches) == 3
-
-    for {id, label} <- [
-          {"pipeline-gate", "Pipeline"},
-          {"events-gate", "Events"},
-          {"dual-write-gate", "Dual Write"}
-        ] do
-      assert has_element?(view, "##{id}[role=switch]")
-      assert has_element?(view, "label", label)
-      assert has_element?(view, "##{id}[aria-checked=false]")
-      refute has_element?(view, "##{id}[checked]")
-    end
-
-    refute has_element?(view, "#pipeline-gate[disabled]")
-    assert has_element?(view, "#events-gate[disabled]")
-    assert has_element?(view, "#dual-write-gate[disabled]")
-
-    for form_id <- [
-          "pipeline-gate-form",
-          "events-gate-form",
-          "dual-write-gate-form"
-        ] do
-      assert has_element?(view, "##{form_id}[phx-auto-recover=ignore]")
-    end
-
-    assert html =~
-             "Master gate for Memory V2. Disable Events and Dual Write before turning it off."
-
-    assert html =~ "Requires effective Pipeline. Disable Dual Write before turning Events off."
-    assert html =~ "Requires effective Events. Enabling requires confirmation."
-
-    assert length(Regex.scan(~r/Configured off/, html)) == 3
-    assert length(Regex.scan(~r/Inactive/, html)) == 3
-
-    tree = Floki.parse_fragment!(html)
-    assert length(Floki.find(tree, "#later-stages .later-stage")) == 5
-    assert has_element?(view, "#later-stages", "Disabled")
-    refute has_element?(view, "#later-stages", "Unavailable")
-    refute html =~ "no production consumer"
-
-    for label <- [
-          "Window Summaries",
-          "Session Summary V2",
-          "Fact Extraction V2",
-          "Procedure Extraction V2",
-          "Recall V2"
-        ] do
-      assert has_element?(view, "#later-stages .later-stage", label)
-    end
-
-    refute has_element?(view, "#later-stages input")
-    refute has_element?(view, "#later-stages form")
-    refute has_element?(view, "#later-stages [phx-click]")
-    refute has_element?(view, "#later-stages [phx-change]")
-
-    for key <- [
-          "window_summaries",
-          "session_summary_v2",
-          "fact_extraction_v2",
-          "procedure_extraction_v2",
-          "recall_v2"
-        ] do
-      refute has_element?(view, ~s|[name*="#{key}"]|)
-    end
+    assert has_element?(view, "#pipeline-gate[role=switch]")
+    assert length(Floki.find(Floki.parse_fragment!(html), "[role=switch]")) == 1
+    refute has_element?(view, "#events-gate")
+    refute has_element?(view, "#dual-write-gate")
+    refute html =~ "Recall V2"
+    assert html =~ "Memory capture and recall remain available"
+    assert length(Floki.find(Floki.parse_fragment!(html), "#later-stages .later-stage")) == 4
   end
 
-  test "shows configured, effective, and blocked state and permits deepest-first recovery",
-       %{conn: conn} do
-    set_configured!(false, true, true)
-    {:ok, view, html} = live(conn, "/memory/pipeline")
-
+  test "pauses processing even when derived stages remain configured", %{conn: conn} do
+    previous = Settings.get("memory.window_summaries.enabled")
+    on_exit(fn -> Settings.set("memory.window_summaries.enabled", previous) end)
+    Settings.set(@pipeline, true)
+    Settings.set("memory.window_summaries.enabled", true)
+    {:ok, view, _} = live(conn, "/memory/pipeline")
+    render_change(view, "set-gate", %{"gate" => %{"name" => "pipeline", "value" => "false"}})
+    assert Settings.get(@pipeline) == false
+    assert Settings.get("memory.window_summaries.enabled") == true
     refute has_element?(view, "#pipeline-gate[checked]")
-    assert has_element?(view, "#events-gate[checked][aria-checked=true]")
-    assert has_element?(view, "#dual-write-gate[checked][aria-checked=true]")
-    assert length(Regex.scan(~r/Configured, blocked/, html)) == 2
-    refute "Effective" in badge_texts(html)
-
-    assert has_element?(view, "#pipeline-gate[disabled]")
-    assert has_element?(view, "#events-gate[disabled]")
-    refute has_element?(view, "#dual-write-gate[disabled]")
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "dual_write", "value" => "false"}
-    })
-
-    refute has_element?(view, "#dual-write-gate[checked]")
-    assert has_element?(view, "#events-gate[checked]")
-    refute has_element?(view, "#events-gate[disabled]")
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "events", "value" => "false"}
-    })
-
-    refute has_element?(view, "#events-gate[checked]")
-    refute has_element?(view, "#pipeline-gate[checked]")
-    refute has_element?(view, "#pipeline-mutation-error")
+    assert has_element?(view, "#stage-window_summaries", "Blocked")
   end
 
-  test "accepts literal booleans in dependency order and rejects parent shutdown with a child",
-       %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/memory/pipeline")
+  test "rejects obsolete and malformed gate submissions", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/memory/pipeline")
 
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "events", "value" => "true"}
-    })
+    for {gate, value} <- [
+          {"events", "true"},
+          {"dual_write", "true"},
+          {"recall_v2", "true"},
+          {"pipeline", "1"}
+        ] do
+      render_change(view, "set-gate", %{"gate" => %{"name" => gate, "value" => value}})
+      assert has_element?(view, "#pipeline-mutation-error")
+      refute Settings.get(@pipeline)
+    end
 
-    assert has_element?(view, "#pipeline-mutation-error", "Enable Pipeline first.")
-    refute has_element?(view, "#events-gate[checked]")
     assert [] = Backplane.Admin.Audit.list()
+  end
 
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "pipeline", "value" => "true"}
-    })
-
-    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
-    assert has_element?(view, "#events-gate:not([disabled])")
-    assert [%{action: "memory_pipeline.update"}] = Backplane.Admin.Audit.list()
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "events", "value" => "true"}
-    })
-
-    assert has_element?(view, "#events-gate[checked][aria-checked=true]")
-    assert Enum.count(badge_texts(render(view)), &(&1 == "Effective")) == 2
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "pipeline", "value" => "false"}
-    })
-
-    assert has_element?(view, "#pipeline-mutation-error", "Disable Events first.")
+  test "reloads the persisted processing state on change notifications", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/memory/pipeline")
+    Settings.set(@pipeline, true)
+    send(view.pid, {:setting_changed, @pipeline, true})
     assert has_element?(view, "#pipeline-gate[checked]")
-    assert has_element?(view, "#events-gate[checked]")
+  end
 
-    assert [%{action: "memory_pipeline.update"}, %{action: "memory_pipeline.update"}] =
-             Backplane.Admin.Audit.list()
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "events", "value" => "false"}
-    })
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "pipeline", "value" => "false"}
-    })
-
+  test "adapter failure retains the last persisted processing state", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/memory/pipeline")
+    fail_memory_settings!()
+    render_change(view, "set-gate", %{"gate" => %{"name" => "pipeline", "value" => "true"}})
+    assert has_element?(view, "#pipeline-mutation-error", "could not be saved")
     refute has_element?(view, "#pipeline-gate[checked]")
-    refute has_element?(view, "#events-gate[checked]")
-    refute has_element?(view, "#pipeline-mutation-error")
-  end
-
-  test "rejects every nonliteral or unknown submitted gate without mutation", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/memory/pipeline")
-
-    for params <- [
-          %{"gate" => %{"name" => "pipeline", "value" => "TRUE"}},
-          %{"gate" => %{"name" => "pipeline", "value" => "1"}},
-          %{"gate" => %{"name" => "pipeline", "value" => "yes"}},
-          %{"gate" => %{"name" => "future_gate", "value" => "true"}},
-          %{"gate" => %{"name" => "pipeline"}},
-          %{}
-        ] do
-      render_change(view, "set-gate", params)
-
-      assert has_element?(
-               view,
-               "#pipeline-mutation-error",
-               "The submitted gate value is invalid."
-             )
-
-      refute has_element?(view, "#pipeline-gate[checked]")
-      refute has_element?(view, "#events-gate[checked]")
-      refute has_element?(view, "#dual-write-gate[checked]")
-      assert Settings.get(@pipeline) == false
-      assert Settings.get(@events) == false
-      assert Settings.get(@dual_write) == false
-    end
-
-    assert [] = Backplane.Admin.Audit.list()
-  end
-
-  test "requires confirmation only when enabling Dual Write and disables it immediately",
-       %{conn: conn} do
-    set_configured!(true, true, false)
-    {:ok, view, _html} = live(conn, "/memory/pipeline")
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "dual_write", "value" => "true"}
-    })
-
-    assert has_element?(view, "#dual-write-confirmation")
-    assert has_element?(view, "#dual-write-confirmation[phx-mounted]")
-
-    assert has_element?(
-             view,
-             "#reset-dual-write-gate[type=reset][form=dual-write-gate-form][hidden]"
-           )
-
-    assert has_element?(view, "#confirm-dual-write")
-    assert has_element?(view, "#cancel-dual-write")
-
-    assert has_element?(
-             view,
-             "#confirm-dual-write[type=reset][form=dual-write-gate-form]"
-           )
-
-    assert has_element?(
-             view,
-             "#cancel-dual-write[type=reset][form=dual-write-gate-form]"
-           )
-
-    refute has_element?(view, "#dual-write-gate[checked]")
-    assert Settings.get(@dual_write) == false
-
-    view |> element("#cancel-dual-write") |> render_click()
-
-    refute has_element?(view, "#dual-write-confirmation")
-    refute has_element?(view, "#dual-write-gate[checked]")
-    assert Settings.get(@dual_write) == false
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "dual_write", "value" => "true"}
-    })
-
-    view |> element("#confirm-dual-write") |> render_click()
-
-    refute has_element?(view, "#dual-write-confirmation")
-    assert has_element?(view, "#dual-write-gate[checked][aria-checked=true]")
-    assert Settings.get(@dual_write) == true
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "dual_write", "value" => "false"}
-    })
-
-    refute has_element?(view, "#dual-write-confirmation")
-    refute has_element?(view, "#dual-write-gate[checked]")
-    assert Settings.get(@dual_write) == false
-  end
-
-  test "rejects direct Dual Write confirmation without a pending request", %{conn: conn} do
-    set_configured!(true, true, false)
-    {:ok, view, _html} = live(conn, "/memory/pipeline")
-
-    render_click(view, "confirm-dual-write", %{})
-
-    assert Process.alive?(view.pid)
-    refute has_element?(view, "#dual-write-gate[checked]")
-    assert Settings.get(@dual_write) == false
-
-    assert has_element?(
-             view,
-             "#pipeline-mutation-error",
-             "The submitted gate value is invalid."
-           )
-  end
-
-  test "reloads persisted state for relevant setting messages and ignores unrelated settings", %{
-    conn: conn
-  } do
-    {:ok, view, _html} = live(conn, "/memory/pipeline")
-    refute has_element?(view, "#pipeline-gate[checked]")
-
-    assert :ok = Settings.set(@pipeline, true)
-    send(view.pid, {:setting_changed, @pipeline, true})
-
-    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
-
-    before = render(view)
-    send(view.pid, {:setting_changed, "services.day.enabled", false})
-
-    assert Process.alive?(view.pid)
-    assert render(view) == before
-  end
-
-  test "adapter failures show fixed copy and retain all persisted gate state", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/memory/pipeline")
-    refute has_element?(view, "#pipeline-gate[checked]")
-
-    :ok = fail_memory_settings!()
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "pipeline", "value" => "true"}
-    })
-
-    assert has_element?(
-             view,
-             "#pipeline-mutation-error",
-             "The rollout setting could not be saved."
-           )
-
-    refute has_element?(view, "#pipeline-gate[checked]")
-    refute has_element?(view, "#events-gate[checked]")
-    refute has_element?(view, "#dual-write-gate[checked]")
-    refute render(view) =~ "forced_setting_failure"
-
-    send(
-      view.pid,
-      {:setting_changed, "services.day.enabled", false}
-    )
-
-    assert Process.alive?(view.pid)
-  end
-
-  test "Settings exits and read exceptions retain the last good gate state", %{conn: conn} do
-    set_configured!(true, false, false)
-    {:ok, view, _html} = live(conn, "/memory/pipeline")
-
-    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
-    refute has_element?(view, "#events-gate[checked]")
-
-    :ok = crash_memory_settings!()
-
-    render_change(view, "set-gate", %{
-      "gate" => %{"name" => "events", "value" => "true"}
-    })
-
-    assert Process.alive?(view.pid)
-
-    assert has_element?(
-             view,
-             "#pipeline-mutation-error",
-             "The rollout setting could not be saved."
-           )
-
-    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
-    refute has_element?(view, "#events-gate[checked]")
-    refute render(view) =~ "forced settings"
-
-    send(view.pid, {:setting_changed, @pipeline, true})
-
-    assert Process.alive?(view.pid)
-    assert has_element?(view, "#pipeline-gate[checked][aria-checked=true]")
-    refute has_element?(view, "#events-gate[checked]")
   end
 
   @partition %{
@@ -712,18 +419,5 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
     %Backplane.Memory.Projections.State{}
     |> Ecto.Changeset.change(Map.merge(defaults, attrs))
     |> Backplane.Repo.insert!()
-  end
-
-  defp set_configured!(pipeline, events, dual_write) do
-    assert :ok = Settings.set(@pipeline, pipeline)
-    assert :ok = Settings.set(@events, events)
-    assert :ok = Settings.set(@dual_write, dual_write)
-  end
-
-  defp badge_texts(html) do
-    html
-    |> Floki.parse_fragment!()
-    |> Floki.find(".badge[role=status]")
-    |> Enum.map(&(Floki.text(&1) |> String.trim()))
   end
 end

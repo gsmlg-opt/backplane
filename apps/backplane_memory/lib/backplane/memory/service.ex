@@ -14,7 +14,6 @@ defmodule Backplane.Memory.Service do
   alias Backplane.Memory.Crystals
   alias Backplane.Memory.Lessons
   alias Backplane.Memory.Memories
-  alias Backplane.Memory.Memories.Search
   alias Backplane.Memory.Profiles
   alias Backplane.Memory.Projections.ReadModels
   alias Backplane.Memory.Recall.Pipeline
@@ -675,6 +674,7 @@ defmodule Backplane.Memory.Service do
             "limit" => %{"type" => "integer", "default" => 10},
             "scope" => %{"type" => "string"},
             "agent_id" => %{"type" => "string"},
+            "session_id" => %{"type" => "string"},
             "host_id" => %{"type" => "string"},
             "tag" => %{"type" => "string"},
             "project" => %{"type" => "string"},
@@ -1752,9 +1752,7 @@ defmodule Backplane.Memory.Service do
   defp validate_remember_scope(_scope, _allowed_scope), do: {:error, :unauthorized}
 
   defp do_handle_recall(%{"query" => query} = args) when is_binary(query) do
-    if Config.recall_v2_enabled?(),
-      do: do_handle_recall_v2(query, args),
-      else: do_handle_recall_legacy(query, args)
+    run_recall(query, args)
   end
 
   defp do_handle_recall(_), do: {:error, "query is required and must be a string"}
@@ -2118,86 +2116,49 @@ defmodule Backplane.Memory.Service do
 
   defp lesson_strengthen_result({:error, reason}), do: {:error, reason}
 
-  defp do_handle_recall_legacy(query, args) do
-    unsupported =
-      ~w(project facets temporal_hints entity_hints channel_weights include_working)
-      |> Enum.filter(fn key ->
-        Map.has_key?(args, key) and
-          (key in ~w(channel_weights include_working) or
-             args[key] not in [nil, "", [], %{}])
-      end)
-      |> Enum.sort()
-
-    if unsupported == [] do
-      do_handle_supported_legacy_recall(query, args)
-    else
-      {:error, {:unsupported_filter, unsupported}}
-    end
-  end
-
-  defp do_handle_supported_legacy_recall(query, args) do
-    opts =
-      [limit: args["limit"] || 10]
-      |> add_if(args, "memory_space_id", :memory_space_id)
-      |> add_if(args, "scope", :scope)
-      |> add_if(args, "namespace", :namespace)
-      |> add_if(args, "agent_id", :agent_id)
-      |> add_if(args, "tag", :tag)
-
-    with {:ok, results} <- Search.hybrid_recall(query, opts) do
-      packed =
-        Backplane.Memory.Recall.Packer.pack_results(
-          results,
-          args["token_budget"] || Config.recall_token_budget()
-        )
-
-      {:ok,
-       if(Map.has_key?(args, "token_budget"), do: packed, else: Map.take(packed, [:results]))}
-    end
-  end
-
-  defp do_handle_recall_v2(query, args) do
+  defp run_recall(query, args) do
     allowed =
-      ~w(query limit memory_space_id host_id client_id source_client_id scope namespace project facets token_budget temporal_hints entity_hints include_working channel_weights __trusted_internal__ requesting_actor)
+      ~w(query limit memory_space_id host_id client_id source_client_id scope namespace project session_id agent_id tag facets token_budget temporal_hints entity_hints include_working channel_weights __trusted_internal__ requesting_actor)
 
-    cond do
-      Map.has_key?(args, "agent_id") or Map.has_key?(args, "tag") ->
-        {:error, :unsupported_recall_v2_filter}
+    if Map.keys(args) -- allowed != [] do
+      {:error, :invalid_arguments}
+    else
+      plan = %{
+        query: query,
+        memory_space_id: args["memory_space_id"],
+        host_id: args["host_id"],
+        client_id: args["client_id"],
+        source_client_id: args["source_client_id"],
+        requesting_actor: args["requesting_actor"],
+        scope: args["scope"],
+        namespace: args["namespace"],
+        project: args["project"],
+        session_id: args["session_id"],
+        agent_id: args["agent_id"],
+        tag: args["tag"],
+        facets: args["facets"] || [],
+        temporal_hints: args["temporal_hints"],
+        entity_hints: args["entity_hints"] || [],
+        include_working: Map.get(args, "include_working", false),
+        channel_weights: args["channel_weights"] || Config.recall_channel_weights(),
+        token_budget: args["token_budget"] || Config.recall_token_budget()
+      }
 
-      Map.keys(args) -- allowed != [] ->
-        {:error, :invalid_arguments}
+      with {:ok, result} <-
+             Pipeline.run(plan,
+               request_id: Ecto.UUID.generate(),
+               correlation_id: Ecto.UUID.generate(),
+               post_fusion_opts: [limit: args["limit"] || 10],
+               packer_opts: [rendered?: true]
+             ) do
+        result.results
+        |> Enum.filter(&(&1.kind in [:memory, :crystal]))
+        |> Enum.map(& &1.id)
+        |> Backplane.Memory.Workers.AccessWritebackWorker.enqueue()
 
-      true ->
-        plan = %{
-          query: query,
-          memory_space_id: args["memory_space_id"],
-          host_id: args["host_id"],
-          client_id: args["client_id"],
-          source_client_id: args["source_client_id"],
-          requesting_actor: args["requesting_actor"],
-          scope: args["scope"],
-          namespace: args["namespace"],
-          project: args["project"],
-          facets: args["facets"] || [],
-          temporal_hints: args["temporal_hints"],
-          entity_hints: args["entity_hints"] || [],
-          include_working: args["include_working"] || false,
-          channel_weights: args["channel_weights"] || Config.recall_channel_weights(),
-          token_budget: args["token_budget"] || Config.recall_token_budget()
-        }
-
-        limit = args["limit"] || 10
-
-        with {:ok, result} <-
-               Pipeline.run(plan,
-                 request_id: Ecto.UUID.generate(),
-                 correlation_id: Ecto.UUID.generate(),
-                 post_fusion_opts: [limit: limit],
-                 packer_opts: [rendered?: true]
-               ) do
-          packed = Backplane.Memory.Recall.Packer.pack_results(result.results, plan.token_budget)
-          {:ok, Map.merge(result, packed)}
-        end
+        packed = Backplane.Memory.Recall.Packer.pack_results(result.results, plan.token_budget)
+        {:ok, Map.merge(result, packed)}
+      end
     end
   end
 
@@ -2386,11 +2347,11 @@ defmodule Backplane.Memory.Service do
     results =
       Enum.map(rows, fn o ->
         %{
-          id: o.id,
+          id: o.event_id,
           session_id: o.session_id,
           tool_name: o.tool_name,
           content: o.content,
-          created_at: o.created_at
+          created_at: o.occurred_at
         }
       end)
 
@@ -2645,32 +2606,7 @@ defmodule Backplane.Memory.Service do
   # ──────────────────────────────────────────────
 
   defp do_handle_smart_search(%{"query" => query} = args) when is_binary(query) do
-    limit = args["limit"] || 5
-
-    {:ok, results} =
-      Search.hybrid_recall(query,
-        limit: limit,
-        scope: args["scope"],
-        host_id: args["host_id"],
-        client_id: args["client_id"],
-        namespace: args["namespace"]
-      )
-
-    {:ok,
-     %{
-       results:
-         Enum.map(results, fn r ->
-           %{
-             id: r.id,
-             content: r.content,
-             scope: r.scope,
-             memory_type: r.memory_type,
-             tags: r.tags,
-             confidence: r.confidence,
-             inserted_at: r.inserted_at
-           }
-         end)
-     }}
+    run_recall(query, Map.put_new(args, "limit", 5))
   end
 
   defp do_handle_smart_search(_), do: {:error, "query is required"}
@@ -3028,7 +2964,7 @@ defmodule Backplane.Memory.Service do
   defp compression_idempotency_key(path, host_id, agent_id, inputs) do
     revision =
       inputs
-      |> Enum.map_join("\n", fn {observation, _contribution} -> observation.id end)
+      |> Enum.map_join("\n", fn {observation, _contribution} -> observation.event_id end)
       |> then(&:crypto.hash(:sha256, &1))
       |> Base.encode16(case: :lower)
 
@@ -3038,7 +2974,7 @@ defmodule Backplane.Memory.Service do
   defp compression_evidence(inputs, host_id, agent_id) do
     Enum.map(inputs, fn {observation, contribution} ->
       %{
-        source_observation_id: observation.id,
+        source_observation_id: observation.event_id,
         session_id: observation.session_id,
         agent_id: agent_id,
         host_id: host_id,

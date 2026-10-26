@@ -1,7 +1,7 @@
 defmodule Backplane.HostAgent.MemoryRouterTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.{Migrator, Store}
+  alias Backplane.HostAgent.Memory.{Access, Migrator, Store}
   alias Backplane.HostAgent.MemoryProxy
   alias Backplane.HostAgent.MemoryRouter
   alias Backplane.HostAgent.Trace
@@ -16,6 +16,28 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
   setup %{tmp_dir: tmp_dir} do
     store = start_memory!(tmp_dir)
     MemoryProxy.set_channel(nil)
+    owner = start_supervised!({Access, name: nil, store: store, now_fun: fn -> 10_000 end})
+    Process.put(:router_access_owner, owner)
+
+    :ok =
+      Access.install_inventory(
+        %{id: 1, sent_at_ms: 10_000},
+        %{
+          "extensions" => ~w(memory_access.v1 memory_commands.v2),
+          "default_access_id" => "11111111-1111-4111-8111-111111111111",
+          "accesses" => [
+            %{
+              "access_id" => "11111111-1111-4111-8111-111111111111",
+              "authority_version" => 1,
+              "status" => "active",
+              "partition" => __MODULE__.BoundFacade.partition(),
+              "capabilities" => ~w(read remember forget),
+              "offline_read_lease_seconds" => 0
+            }
+          ]
+        },
+        owner
+      )
 
     Application.put_env(:backplane_host_agent, :memory_store, store)
 
@@ -31,10 +53,36 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       Application.delete_env(:backplane_host_agent, :hub_proxy_module)
       Application.delete_env(:backplane_host_agent, :channel_module)
       MemoryProxy.set_channel(nil)
-      _ = :persistent_term.erase({StubHubProxy, :owner})
+      _ = :persistent_term.erase({__MODULE__.StubHubProxy, :owner})
     end)
 
     {:ok, store: store}
+  end
+
+  defmodule BoundFacade do
+    def partition,
+      do: %{
+        "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "scope" => "proj_local",
+        "namespace" => "private"
+      }
+
+    def call(method, args, ctx) when is_map(ctx),
+      do:
+        Backplane.HostAgent.MemoryFacade.call(
+          method,
+          args,
+          Map.merge(ctx, %{
+            access_server: Process.get(:router_access_owner),
+            remote_adapter: __MODULE__,
+            sync_opts: [channel: nil]
+          })
+        )
+
+    def call(_method, _args, opts) when is_list(opts),
+      do:
+        {:ok,
+         %{"access" => opts[:access], "partition" => partition(), "result" => %{"results" => []}}}
   end
 
   defmodule StubHubProxy do
@@ -240,7 +288,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                Jason.decode!(conn.resp_body)
     end
 
-    test "handles remember locally and stores the route agent_id", %{store: store} do
+    test "queues a bound command with the route agent_id", %{store: store} do
       conn =
         :post
         |> conn("/memory/agt_42/call/remember", Jason.encode!(%{"content" => "hello"}))
@@ -249,11 +297,15 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
 
-      assert %{"ok" => true, "result" => %{"id" => id, "scope" => "proj_local"}} =
+      assert %{"ok" => true, "result" => %{"command_id" => id, "status" => "pending"}} =
                Jason.decode!(conn.resp_body)
 
       assert {:ok, %Result{rows: [%{"agent_id" => "agt_42"}]}} =
-               Store.query(store, "SELECT agent_id FROM memories WHERE id = ?", [id])
+               Store.query(
+                 store,
+                 "SELECT json_extract(payload,'$.arguments.agent_id') AS agent_id FROM memory_outbox WHERE command_id=?",
+                 [id]
+               )
     end
 
     test "returns 404 for unknown memory methods" do
@@ -269,7 +321,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                Jason.decode!(conn.resp_body)
     end
 
-    test "does not expose historical local rows without a channel", %{store: store} do
+    test "does not expose historical local rows through canonical online reads", %{store: store} do
       assert {:ok, _} =
                Store.execute(
                  store,
@@ -299,17 +351,17 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{
                "ok" => true,
                "result" => %{
-                 "mode" => "offline",
-                 "authority" => "provisional",
-                 "consistency" => "provisional_only",
-                 "history_available" => false,
+                 "mode" => "online",
+                 "authority" => "canonical",
+                 "consistency" => "canonical",
+                 "history_available" => true,
                  "pending_operations" => 0,
                  "hits" => []
                }
              } = Jason.decode!(conn.resp_body)
     end
 
-    test "recall accepts query and limit and returns pending writes during an outage" do
+    test "recall accepts query and limit and overlays bound pending commands" do
       remember!("hello world")
 
       conn =
@@ -323,17 +375,17 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{
                "ok" => true,
                "result" => %{
-                 "mode" => "offline",
-                 "authority" => "provisional",
-                 "consistency" => "provisional_only",
-                 "history_available" => false,
+                 "mode" => "online",
+                 "authority" => "canonical_with_provisional",
+                 "consistency" => "read_your_writes",
+                 "history_available" => true,
                  "pending_operations" => 1,
-                 "hits" => [%{"content" => "hello world", "provisional" => true}]
+                 "hits" => [%{"content" => "hello world", "source" => "shared_command"}]
                }
              } = Jason.decode!(conn.resp_body)
     end
 
-    test "list returns local memory rows" do
+    test "list keeps provisional rows distinct from canonical items" do
       remember!("older", tags: ["ops"])
 
       conn =
@@ -344,11 +396,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
 
-      assert %{"ok" => true, "result" => %{"items" => [%{"content" => "older"}]}} =
+      assert %{"ok" => true, "result" => %{"provisional_results" => [%{"content" => "older"}]}} =
                Jason.decode!(conn.resp_body)
     end
 
-    test "forget soft-deletes locally" do
+    test "forget queues a dependency on the bound remember command" do
       id = remember!("delete me")
 
       conn =
@@ -359,8 +411,10 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
 
-      assert %{"ok" => true, "result" => %{"id" => ^id, "sync_state" => "pending"}} =
+      assert %{"ok" => true, "result" => %{"status" => "pending", "command_id" => forget_id}} =
                Jason.decode!(conn.resp_body)
+
+      refute forget_id == id
     end
 
     test "stats reports pending commands without claiming local history" do
@@ -378,10 +432,10 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                "ok" => true,
                "result" =>
                  %{
-                   "mode" => "offline",
-                   "authority" => "provisional",
-                   "consistency" => "provisional_only",
-                   "history_available" => false,
+                   "mode" => "online",
+                   "authority" => "canonical_with_provisional",
+                   "consistency" => "read_your_writes",
+                   "history_available" => true,
                    "pending_operations" => 1,
                    "overlay_truncated" => false
                  } = result
@@ -399,7 +453,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         |> call_router()
 
       assert conn.status == 400
-      assert %{"ok" => false, "error" => "content is required"} = Jason.decode!(conn.resp_body)
+      assert %{"ok" => false, "error" => "invalid_request"} = Jason.decode!(conn.resp_body)
     end
 
     test "accepts requests with no JSON body" do
@@ -414,8 +468,8 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{
                "ok" => true,
                "result" => %{
-                 "mode" => "offline",
-                 "consistency" => "provisional_only",
+                 "mode" => "online",
+                 "consistency" => "canonical",
                  "pending_operations" => 0
                }
              } = Jason.decode!(conn.resp_body)
@@ -433,8 +487,8 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{
                "ok" => true,
                "result" => %{
-                 "mode" => "offline",
-                 "consistency" => "provisional_only",
+                 "mode" => "online",
+                 "consistency" => "canonical",
                  "pending_operations" => 0
                }
              } = Jason.decode!(conn.resp_body)
@@ -459,7 +513,10 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 200
 
-      assert %{"ok" => true, "result" => %{"items" => [%{"content" => "json rpc direct"}]}} =
+      assert %{
+               "ok" => true,
+               "result" => %{"provisional_results" => [%{"content" => "json rpc direct"}]}
+             } =
                Jason.decode!(conn.resp_body)
     end
   end
@@ -599,7 +656,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert decoded["id"] == "abc"
       assert decoded["result"]["isError"] == false
 
-      assert %{"id" => _id, "scope" => "proj_local"} =
+      assert %{"command_id" => _id, "status" => "pending"} =
                decoded["result"]["content"]
                |> hd()
                |> Map.fetch!("text")
@@ -1091,10 +1148,14 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{"result" => %{"isError" => false, "content" => [%{"text" => text}]}} =
                Jason.decode!(conn.resp_body)
 
-      assert %{"id" => id} = Jason.decode!(text)
+      assert %{"command_id" => id} = Jason.decode!(text)
 
       assert {:ok, %Result{rows: [%{"agent_id" => "local"}]}} =
-               Store.query(store, "SELECT agent_id FROM memories WHERE id = ?", [id])
+               Store.query(
+                 store,
+                 "SELECT json_extract(payload,'$.arguments.agent_id') AS agent_id FROM memory_outbox WHERE command_id=?",
+                 [id]
+               )
     end
 
     test "returns JSON-RPC error for unknown JSON-RPC method" do
@@ -1125,7 +1186,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       |> call_router()
 
     assert conn.status == 200
-    %{"ok" => true, "result" => %{"id" => id}} = Jason.decode!(conn.resp_body)
+    %{"ok" => true, "result" => %{"command_id" => id}} = Jason.decode!(conn.resp_body)
     id
   end
 
@@ -1153,7 +1214,14 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
-  defp call_router(conn), do: MemoryRouter.call(conn, MemoryRouter.init([]))
+  defp call_router(conn) do
+    conn =
+      if conn.private[:backplane_memory_facade],
+        do: conn,
+        else: put_private(conn, :backplane_memory_facade, BoundFacade)
+
+    MemoryRouter.call(conn, MemoryRouter.init([]))
+  end
 
   defp start_memory!(tmp_dir) do
     name = :"host_agent_memory_router_#{System.unique_integer([:positive])}"

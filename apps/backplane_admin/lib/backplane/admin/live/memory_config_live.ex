@@ -248,15 +248,6 @@ defmodule Backplane.Admin.MemoryConfigLive do
   defp display(value), do: inspect(value)
   defp form_id(key), do: String.replace(key, ".", "-")
 
-  defp setting_error(:requires_pipeline_controls),
-    do: "Enable dual write through Pipeline controls and its confirmation."
-
-  defp setting_error({:blocked_descendant, _}),
-    do: "Disable the dependent gates in Pipeline controls first."
-
-  defp setting_error({:dependency, _, _}),
-    do: "Enable the required parent gate in Pipeline controls first."
-
   defp setting_error(:invalid_value), do: "The value is outside the typed setting bounds."
   defp setting_error(:unknown_setting), do: "The submitted setting is not editable here."
   defp setting_error(_reason), do: "The setting could not be saved."

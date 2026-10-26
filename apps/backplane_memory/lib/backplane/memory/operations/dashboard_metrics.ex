@@ -11,22 +11,17 @@ defmodule Backplane.Memory.Operations.DashboardMetrics do
   @pending_job_states ~w(available scheduled executing retryable)
   @failed_job_states ~w(retryable discarded)
   @backlog_workers %{
-    embedding: ["Backplane.Memory.Workers.EmbedWorker", "BackplaneMemory.Workers.EmbedWorker"],
+    embedding: ["Backplane.Memory.Workers.EmbedWorker"],
     consolidation: [
-      "BackplaneMemory.Workers.EpisodicWorker",
-      "BackplaneMemory.Workers.ProceduralWorker",
-      "BackplaneMemory.Workers.SummaryWorker",
       "Backplane.Memory.Workers.EpisodicWorker",
       "Backplane.Memory.Workers.ProceduralWorker",
       "Backplane.Memory.Workers.SummaryWorker"
     ],
     graph: [
-      "Backplane.Memory.Workers.GraphExtractWorker",
-      "BackplaneMemory.Workers.GraphExtractWorker"
+      "Backplane.Memory.Workers.GraphExtractWorker"
     ],
     profile: [
-      "Backplane.Memory.Workers.ProfileBuildWorker",
-      "BackplaneMemory.Workers.ProfileBuildWorker"
+      "Backplane.Memory.Workers.ProfileBuildWorker"
     ],
     lesson: [
       "Backplane.Memory.Workers.LessonCandidateWorker",

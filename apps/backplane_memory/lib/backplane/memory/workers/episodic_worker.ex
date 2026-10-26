@@ -32,10 +32,6 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
     end
   end
 
-  defp do_perform(%Styx.Job{args: %{"session_id" => session_id} = args})
-       when is_binary(session_id) and map_size(args) == 1,
-       do: {:cancel, :incomplete_partition}
-
   defp do_perform(%Styx.Job{}), do: {:cancel, :invalid_arguments}
 
   defp run_summary(nil, _job), do: :ok
@@ -405,10 +401,6 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
     Memories.record_partition_issue("memory_summaries", summary.id, reason, details)
   end
-
-  @doc "Enqueue an episodic extraction job for the given session_id."
-  @spec enqueue(String.t()) :: {:error, :incomplete_partition}
-  def enqueue(_session_id), do: {:error, :incomplete_partition}
 
   @doc "Enqueue extraction for one exact durable summary revision."
   @spec enqueue_summary(Ecto.UUID.t()) :: {:ok, Styx.Job.t()} | {:error, term()}

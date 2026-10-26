@@ -17,7 +17,6 @@ defmodule Backplane.Memory.NamespaceContractTest do
     list: 1,
     list: 2,
     list_evidence: 1,
-    maybe_detect_contradiction: 2,
     provenance_trace: 1,
     public_get: 3,
     record_application: 4,

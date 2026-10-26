@@ -14,6 +14,20 @@ defmodule Backplane.Memory.PromptsTest do
   alias Backplane.Skills.Hosts
 
   setup do
+    previous = Application.get_env(:backplane_memory, :recall_task_supervisor)
+    supervisor = start_supervised!(Task.Supervisor)
+    Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:backplane_memory, :recall_task_supervisor, previous),
+        else: Application.delete_env(:backplane_memory, :recall_task_supervisor)
+    end)
+
+    :ok
+  end
+
+  setup do
     {:ok, host, _token, _plaintext} =
       Hosts.create_agent_with_token(%{
         "name" => "memory-prompts-#{System.unique_integer([:positive])}",
@@ -87,7 +101,7 @@ defmodule Backplane.Memory.PromptsTest do
     assert text =~ "authorized-needle real persisted context"
     assert text =~ String.slice(authorized.id, 0, 8)
     assert text =~ String.slice(request.id, 0, 8)
-    assert text =~ "session-a"
+    refute text =~ "source_session_id"
     refute text =~ "wrong client"
     refute text =~ "wrong host"
     refute text =~ "wrong namespace"
@@ -335,9 +349,9 @@ defmodule Backplane.Memory.PromptsTest do
 
     commit_line = text |> String.split("\n") |> Enum.find(&String.contains?(&1, "abc123"))
     assert file_line =~ event.id
-    assert file_line =~ "obs-authorized"
+    refute file_line =~ "obs-authorized"
     assert commit_line =~ event.id
-    assert commit_line =~ "obs-authorized"
+    refute commit_line =~ "obs-authorized"
     assert text =~ "authorized procedural decision step"
     assert text =~ request.id
     assert text =~ ~s("record_type":"lesson_capability","status":"empty")
@@ -855,22 +869,23 @@ defmodule Backplane.Memory.PromptsTest do
   end
 
   test "detect_patterns aggregates repeated authorized events with bounded citations" do
-    for {session, index} <- [{"s1", 1}, {"s2", 2}] do
-      append!(%{
-        client_id: "client-a",
-        namespace: "private",
-        session_id: session,
-        project: "project-a",
-        event_type: "tool.call.failed",
-        tool_name: "mix test",
-        status: "failed",
-        content: "authorized failure #{index}",
-        payload: %{
-          "file" => "lib/repeated.ex",
-          "_backplane" => %{"legacy_observation_id" => "obs-#{index}"}
-        }
-      })
-    end
+    events =
+      for {session, index} <- [{"s1", 1}, {"s2", 2}] do
+        append!(%{
+          client_id: "client-a",
+          namespace: "private",
+          session_id: session,
+          project: "project-a",
+          event_type: "tool.call.failed",
+          tool_name: "mix test",
+          status: "failed",
+          content: "authorized failure #{index}",
+          payload: %{
+            "file" => "lib/repeated.ex",
+            "_backplane" => %{"legacy_observation_id" => "obs-#{index}"}
+          }
+        })
+      end
 
     append!(%{
       memory_space_id: foreign_memory_space_id("pattern-client"),
@@ -901,8 +916,9 @@ defmodule Backplane.Memory.PromptsTest do
     text = prompt.messages |> hd() |> get_in([:content, :text])
     assert text =~ "mix test"
     assert text =~ "lib/repeated.ex"
-    assert text =~ "obs-1"
-    assert text =~ "obs-2"
+    for event <- events, do: assert(text =~ event.id)
+    refute text =~ "obs-1"
+    refute text =~ "obs-2"
     refute text =~ "foreign-tool"
     refute text =~ "wrong-host-tool"
     refute text =~ "identify recurring patterns"

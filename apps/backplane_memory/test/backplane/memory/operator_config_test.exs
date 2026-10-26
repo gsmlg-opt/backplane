@@ -25,10 +25,10 @@ defmodule Backplane.Memory.OperatorConfigTest do
   test "operator inventory includes actual gates, routes, credential references and bounds" do
     entries = Map.new(Config.editable_settings(), &{&1.key, &1})
 
-    for key <- ~w(services.memory.enabled memory.pipeline.enabled memory.events.enabled
+    for key <- ~w(services.memory.enabled memory.pipeline.enabled
                   memory.window_summaries.enabled memory.session_summary_v2.enabled
                   memory.fact_extraction_v2.enabled memory.procedure_extraction_v2.enabled
-                  memory.relation_classifier.enabled memory.recall_v2.enabled
+                  memory.relation_classifier.enabled
                   memory.host_sync_v2.enabled memory.llm_model memory.embed_model
                   memory.proxy_credential memory.lesson_decay_archive_days
                   memory.session_stale_after_seconds memory.recall_token_budget) do
@@ -41,9 +41,14 @@ defmodule Backplane.Memory.OperatorConfigTest do
     assert entries["memory.proxy_credential"].type == :credential
   end
 
-  test "config cannot bypass guarded dual-write confirmation" do
-    assert {:error, :requires_pipeline_controls} =
-             Config.update_setting("memory.events.dual_write", "true", @context)
+  test "obsolete implementation selectors cannot be changed or exposed" do
+    entries = Map.new(Config.editable_settings(), &{&1.key, &1})
+
+    for key <-
+          ~w(memory.events.enabled memory.events.dual_write memory.recall_v2.enabled memory.host_sync_v1.enabled) do
+      refute Map.has_key?(entries, key)
+      assert {:error, :unknown_setting} = Config.update_setting(key, "true", @context)
+    end
   end
 
   test "model strings are normalized and bounded; credential references must be safe service keys" do

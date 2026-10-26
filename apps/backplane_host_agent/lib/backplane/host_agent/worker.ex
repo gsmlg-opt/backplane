@@ -387,7 +387,7 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp worker_negotiation(%{memory: %{"selected" => selected} = memory})
-       when selected in ["host_memory.v1", "host_memory.v2"] do
+       when selected == "host_memory.v2" do
     partitions =
       case memory do
         %{"partitions" => partitions} when is_list(partitions) -> partitions

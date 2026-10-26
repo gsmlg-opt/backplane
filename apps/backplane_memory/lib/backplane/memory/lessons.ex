@@ -793,21 +793,21 @@ defmodule Backplane.Memory.Lessons do
 
   defp resolve_observation(id, partition) do
     case repo().one(
-           from(observation in Backplane.Memory.Observations.Observation,
+           from(observation in Backplane.Memory.Projections.ProjectedObservation,
              where:
-               observation.id == ^id and
+               observation.event_id == ^id and
                  observation.memory_space_id == ^partition.memory_space_id and
                  observation.scope == ^partition.scope and
                  observation.namespace == ^partition.namespace,
              limit: 1
            )
          ) do
-      %Backplane.Memory.Observations.Observation{} = observation ->
+      %Backplane.Memory.Projections.ProjectedObservation{} = observation ->
         {:ok,
          %{
-           identity: {:observation, observation.id},
+           identity: {:observation, observation.event_id},
            evidence: %{
-             source_observation_id: observation.id,
+             source_observation_id: observation.event_id,
              session_id: observation.session_id,
              host_id: observation.host_id
            }

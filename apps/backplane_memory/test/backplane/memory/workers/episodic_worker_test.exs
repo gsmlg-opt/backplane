@@ -647,18 +647,23 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
     end)
   end
 
-  test "legacy session-only jobs fail closed without an owner partition" do
+  test "retired session-only jobs are rejected even when a canonical summary exists" do
+    summary = insert_canonical_summary("retired-job-host", "retired-job-session", "job source")
+
     for args <- [
           %{},
           %{"session_id" => 123},
-          %{"session_id" => "legacy", "host_id" => "canonical-ish"},
-          %{"session_id" => "legacy", "processing_version" => "summary-v1"}
+          %{"session_id" => summary.session_id},
+          %{"session_id" => summary.session_id, "host_id" => summary.host_id},
+          %{"session_id" => summary.session_id, "processing_version" => "summary-v1"}
         ] do
       assert {:cancel, :invalid_arguments} = EpisodicWorker.perform(%Styx.Job{args: args})
     end
 
-    assert {:cancel, :incomplete_partition} =
-             EpisodicWorker.perform(%Styx.Job{args: %{"session_id" => "legacy"}})
+    refute_received {:episodic_input, _}
+    refute repo().exists?(Memory)
+    refute repo().exists?(RememberRequest)
+    refute repo().get_by(State, projector: "episodic", subject_id: summary.subject_id)
   end
 
   test "incomplete or mismatched summary ownership is durably quarantined" do
@@ -957,13 +962,22 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
   end
 
   defp insert_summary(session_id, project, content, source_texts) do
-    partition = canonical_partition("legacy", scope: project)
+    host_id = "episodic-summary-fixture"
+    partition = canonical_partition(host_id, scope: project)
 
     summary =
       %Summary{}
       |> Summary.changeset(
         partition
-        |> Map.merge(%{session_id: session_id, project: project, content: content})
+        |> Map.merge(%{
+          session_id: session_id,
+          project: project,
+          content: content,
+          subject_id: Source.subject_id!(host_id, session_id),
+          processing_version: "summary-v1",
+          input_revision: digest("#{host_id}:#{session_id}:#{content}"),
+          output_revision: digest(content)
+        })
       )
       |> repo().insert!()
 

@@ -61,6 +61,104 @@ defmodule Backplane.Memory.SharedCommandsTest do
              Service.call_shared("memory::list", %{}, c.auth, claim(access))
   end
 
+  test "edge-ineligible canonical writes acknowledge without inventing a mirror revision", c do
+    access = grant(c, [:remember])
+
+    command =
+      command(c, access, "remember", %{"content" => "temporary working note", "type" => "working"})
+
+    assert {:ok,
+            %{status: :committed, canonical_id: id, revision: nil, mirror_status: "not_eligible"}} =
+             SharedCommands.settle(c.auth, command)
+
+    assert {:ok,
+            %{status: :duplicate, canonical_id: ^id, revision: nil, mirror_status: "not_eligible"}} =
+             SharedCommands.settle(c.auth, command)
+
+    assert {:ok, memory} = Memories.get(id, c.partition)
+    assert memory.memory_type == "working"
+  end
+
+  test "a causal marker that would exceed the mirror byte limit returns an explicit canonical-only ACK",
+       c do
+    memory = seed(c, c.host, "near mirror payload limit")
+    access = grant(c, [:remember])
+
+    %{rows: [[padding]]} =
+      Repo.query!(
+        """
+        SELECT bpm_memory_edge_max_item_bytes() - 24 - octet_length(
+          bpm_memory_edge_payload(jsonb_populate_record(m,
+            jsonb_build_object('metadata',jsonb_build_object('padding',''))))::text)
+        FROM bpm_memories m WHERE id=$1
+        """,
+        [Ecto.UUID.dump!(memory.id)]
+      )
+
+    Repo.query!(
+      "UPDATE bpm_memories SET metadata=jsonb_build_object('padding',repeat('x',$2::integer)) WHERE id=$1",
+      [Ecto.UUID.dump!(memory.id), padding]
+    )
+
+    assert %{rows: [[true]]} =
+             Repo.query!("SELECT bpm_memory_edge_eligible(m) FROM bpm_memories m WHERE id=$1", [
+               Ecto.UUID.dump!(memory.id)
+             ])
+
+    envelope =
+      command(c, access, "remember", %{"content" => memory.content, "agent_id" => "shared-test"})
+
+    assert {:ok,
+            %{status: :committed, canonical_id: id, revision: nil, mirror_status: "not_eligible"}} =
+             SharedCommands.settle(c.auth, envelope)
+
+    assert id == memory.id
+
+    assert {:ok,
+            %{status: :duplicate, canonical_id: ^id, revision: nil, mirror_status: "not_eligible"}} =
+             SharedCommands.settle(c.auth, envelope)
+
+    assert %{rows: [[false]]} =
+             Repo.query!(
+               "SELECT metadata ? 'host_memory_command_revision' FROM bpm_memories WHERE id=$1",
+               [Ecto.UUID.dump!(id)]
+             )
+  end
+
+  test "deduplicated remembers receive distinct causal revisions and exact retry receipts", c do
+    access = grant(c, [:remember])
+    first = command(c, access, "remember", %{"content" => "one canonical deduplicated fact"})
+    second = command(c, access, "remember", %{"content" => "one canonical deduplicated fact"})
+
+    assert {:ok, %{canonical_id: id, revision: first_revision}} =
+             SharedCommands.settle(c.auth, first)
+
+    assert {:ok, %{canonical_id: ^id, revision: second_revision}} =
+             SharedCommands.settle(c.auth, second)
+
+    assert second_revision > first_revision
+
+    assert {:ok, %{status: :duplicate, canonical_id: ^id, revision: ^first_revision}} =
+             SharedCommands.settle(c.auth, first)
+  end
+
+  test "a dependent forget resolves the committed remember command without changing its immutable target",
+       c do
+    access = grant(c, [:remember, :forget])
+    remember = command(c, access, "remember", %{"content" => "remember followed by forget"})
+    assert {:ok, %{canonical_id: id}} = SharedCommands.settle(c.auth, remember)
+
+    forget =
+      command(c, access, "forget", %{
+        "id" => remember["command_id"],
+        "remember_command_id" => remember["command_id"]
+      })
+
+    assert {:ok, %{status: :committed, canonical_id: ^id}} = SharedCommands.settle(c.auth, forget)
+    assert {:error, :not_found} = Memories.get(id, c.partition)
+    assert {:ok, %{status: :duplicate, canonical_id: ^id}} = SharedCommands.settle(c.auth, forget)
+  end
+
   test "delete-only tombstones a foreign-source canonical ID without read", c do
     memory = seed(c, c.owner, "canonical delete fixture")
     access = grant(c, [:forget])

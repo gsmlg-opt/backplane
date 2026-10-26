@@ -3,7 +3,8 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
 
   import Backplane.Memory.IngestFixtures
 
-  alias Backplane.Memory.{Audit, Config, Ingest, Observations}
+  alias Backplane.Memory.{Audit, Config, Ingest}
+  alias Backplane.Memory.LegacyFixtures.Session, as: LegacySession
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Projections.{ProjectedSession, Rebuild}
   alias Backplane.Memory.Sessions.FallbackSweep
@@ -173,25 +174,24 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     end
 
     legacy_partition = canonical_partition("legacy-decoy")
-    legacy_opts = Map.to_list(legacy_partition)
 
-    assert {:ok, _legacy_session} =
-             Observations.register_session(session_id, "legacy-decoy", legacy_opts)
-
-    assert {1, nil} = Observations.end_session(session_id, legacy_opts)
-
-    repo().update_all(
-      from(session in Backplane.Memory.Observations.Session,
-        where: session.session_id == ^session_id
-      ),
-      set: [consolidated_at: nil]
+    repo().insert!(
+      struct(
+        LegacySession,
+        Map.merge(legacy_partition, %{
+          session_id: session_id,
+          project: "legacy-decoy",
+          started_at: shift(now, -120),
+          ended_at: shift(now, -61)
+        })
+      )
     )
 
     assert {:ok, %{candidates: 2, abandoned: 2, swept: 2}} = sweep(now)
     assert [_event] = abandonment_events("host-a", session_id)
     assert [_event] = abandonment_events("host-b", session_id)
 
-    legacy = repo().get!(Backplane.Memory.Observations.Session, session_id)
+    legacy = repo().get!(LegacySession, session_id)
     assert is_nil(legacy.consolidated_at)
   end
 

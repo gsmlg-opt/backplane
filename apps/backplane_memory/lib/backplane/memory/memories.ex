@@ -746,11 +746,6 @@ defmodule Backplane.Memory.Memories do
     |> repo().aggregate(:count, :id)
   end
 
-  @doc "Deprecated compatibility no-op. Contradictions require explicit durable relations."
-  @deprecated "Use Backplane.Memory.Memories.Relations.create_candidate/3"
-  @spec maybe_detect_contradiction(String.t(), String.t()) :: {:ok, :reduced | :no_change}
-  def maybe_detect_contradiction(_mem1_id, _mem2_id), do: {:ok, :no_change}
-
   @doc "Return counts grouped by scope (non-deleted rows only)."
   @spec scope_stats() :: [%{scope: String.t(), count: integer()}]
   def scope_stats do

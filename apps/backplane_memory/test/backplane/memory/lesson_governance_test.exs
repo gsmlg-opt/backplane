@@ -7,7 +7,6 @@ defmodule Backplane.Memory.LessonGovernanceTest do
   alias Backplane.Memory.Lessons
   alias Backplane.Memory.Lessons.Lesson
   alias Backplane.Memory.Memories.{Evidence, Memory}
-  alias Backplane.Memory.Observations.Observation
   alias Backplane.Memory.Projections.Rebuild
 
   @partition %{
@@ -342,28 +341,14 @@ defmodule Backplane.Memory.LessonGovernanceTest do
 
   test "strengthening accepts an observation only with exact partition ownership" do
     assert {:ok, candidate} = candidate("unverifiable-observation")
-    {_event_id, session_id} = canonical_event!("shared-session")
-
-    observation =
-      %Observation{}
-      |> Observation.changeset(%{
-        memory_space_id: @partition.memory_space_id,
-        host_id: @partition.host_id,
-        source_client_id: @partition.source_client_id,
-        scope: @partition.scope,
-        namespace: @partition.namespace,
-        session_id: session_id,
-        tool_name: "test",
-        content: "unverifiable legacy evidence"
-      })
-      |> repo().insert!()
+    {event_id, _session_id} = canonical_event!("shared-session")
 
     assert {:ok, _lesson} =
              Lessons.strengthen(
                candidate.memory_id,
                "independent_evidence",
                "unverifiable-observation",
-               %{"source_observation_id" => observation.id},
+               %{"source_observation_id" => event_id},
                @partition,
                @trace
              )

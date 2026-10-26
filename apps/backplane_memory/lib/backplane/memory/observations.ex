@@ -1,111 +1,127 @@
 defmodule Backplane.Memory.Observations do
+  @moduledoc "Observation and session commands backed exclusively by canonical events."
+
   import Ecto.Query
-  alias Backplane.Memory.Events.Store
-  alias Backplane.Memory.Observations.{Observation, Session}
-  alias Backplane.Memory.Privacy.Filter
-  alias Backplane.Memory.Config
+
+  alias Backplane.Memory.Events.{Event, Store}
+  alias Backplane.Memory.Ingest.EventValidator
   alias Backplane.Memory.PartitionIdentity
-  alias Backplane.Memory.Projections.Source
+  alias Backplane.Memory.Privacy.Filter
+  alias Backplane.Memory.Projections.{ObservationProjector, ProjectedObservation, Source}
   alias Backplane.Memory.Workers.SummaryWorker
 
-  @event_opt_keys [
-    :event_type,
-    :payload,
-    :stream_id,
-    :project,
-    :agent_id,
-    :memory_space_id,
-    :host_id,
-    :client_id,
-    :source_client_id,
-    :run_id,
-    :correlation_id,
-    :causation_id,
-    :occurred_at,
-    :idempotency_key
-  ]
+  @option_keys [:project, :agent_id, :run_id, :correlation_id, :causation_id]
 
-  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
-
-  @doc "Record an observation, applying privacy filter. Returns {:ok, obs} or {:error, reason}."
+  @doc "Records one canonical event after filtering its content and payload."
   def record(session_id, content, opts \\ []) do
+    with {:ok, partition} <- partition(opts),
+         :ok <- valid_session(session_id),
+         {:ok, filtered} <- Filter.apply(content),
+         :ok <- nonempty_content(filtered) do
+      attrs = event_attrs(session_id, filtered, opts, partition)
+
+      transact(attrs, fn repo, stream ->
+        attrs
+        |> materialize(repo, stream, opts)
+        |> append!(repo)
+        |> observation()
+      end)
+    end
+  end
+
+  @doc "Starts a session once. Its authoritative lifecycle lives in the event stream."
+  def register_session(session_id, project, opts \\ []) do
+    with {:ok, partition} <- partition(opts),
+         :ok <- valid_session(session_id) do
+      attrs = lifecycle_attrs("session.started", session_id, project, opts, partition)
+
+      transact(attrs, fn repo, stream ->
+        case lifecycle_event(repo, stream, "session.started") do
+          %Event{} = event -> session(event, stream)
+          nil -> attrs |> materialize(repo, stream, opts) |> append!(repo) |> session(stream)
+        end
+      end)
+    end
+  end
+
+  @doc "Ends an existing session once and enqueues canonical consolidation."
+  def end_session(session_id, opts \\ []) do
+    with {:ok, partition} <- partition(opts),
+         :ok <- valid_session(session_id) do
+      attrs = lifecycle_attrs("session.ended", session_id, nil, opts, partition)
+
+      result =
+        transact(attrs, fn repo, stream ->
+          case lifecycle_event(repo, stream, "session.started") do
+            nil ->
+              repo.rollback(:not_found)
+
+            %Event{} = started ->
+              if lifecycle_event(repo, stream, "session.ended") do
+                {0, nil}
+              else
+                event_result =
+                  attrs
+                  |> Map.put(:project, started.project)
+                  |> materialize(repo, stream, opts)
+                  |> append!(repo)
+
+                {:ok, _stream} = Store.close_stream(stream.stream_id, repo: repo)
+                %{event_result: event_result, value: {1, nil}}
+              end
+          end
+        end)
+
+      case result do
+        {:ok, {count, nil} = transition} ->
+          if count > 0, do: enqueue_summary(session_id, partition)
+          transition
+
+        {:error, :not_found} ->
+          if opts[:require_existing] == true, do: {:error, :not_found}, else: {0, nil}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @doc "Returns canonical projected observations referencing the requested file paths."
+  def file_history(file_paths, opts \\ []) when is_list(file_paths) do
     with {:ok, partition} <- partition(opts) do
-      opts = canonical_opts(opts, partition)
+      query =
+        from(o in ProjectedObservation,
+          where:
+            o.memory_space_id == ^partition.memory_space_id and o.scope == ^partition.scope and
+              o.namespace == ^partition.namespace and
+              fragment("? && ?", o.file_paths, ^file_paths),
+          order_by: [desc: o.occurred_at, desc: o.event_id],
+          limit: ^Keyword.get(opts, :limit, 50)
+        )
 
-      if Config.dual_write?() do
-        record_with_event(session_id, content, opts)
-      else
-        record_legacy(session_id, content, opts)
-      end
+      query =
+        case opts[:exclude_session] do
+          nil -> query
+          session_id -> where(query, [o], o.session_id != ^session_id)
+        end
+
+      repo().all(query)
+    else
+      {:error, _reason} -> []
     end
   end
 
-  defp record_legacy(session_id, content, opts) do
-    with {:ok, filtered} <- Filter.apply(content) do
-      filtered
-      |> observation_attrs(session_id, opts)
-      |> then(&Observation.changeset(%Observation{}, &1))
-      |> repo().insert()
-    end
-  end
-
-  defp record_with_event(session_id, content, opts) do
+  defp transact(attrs, callback) do
     started_at = System.monotonic_time()
-    observation_id = Ecto.UUID.generate()
-    event_attrs = event_attrs(session_id, observation_id, content, opts)
-
-    Ecto.Multi.new()
-    |> Store.append_multi(:event, event_attrs)
-    |> Ecto.Multi.run(:observation, fn repo, %{event: event_result} ->
-      case event_result do
-        {:inserted, event} ->
-          event.content
-          |> observation_attrs(session_id, opts)
-          |> then(&Observation.changeset(%Observation{id: observation_id}, &1))
-          |> repo.insert()
-
-        {:duplicate, event} ->
-          load_linked_observation(repo, event)
-      end
-    end)
-    |> transact_record(started_at)
-  end
-
-  defp transact_record(multi, started_at) do
-    case repo().transaction(multi) do
-      {:ok, %{event: event_result, observation: observation}} ->
-        Store.emit_result({:ok, event_result}, started_at)
-        {:ok, observation}
-
-      {:error, :event, {:idempotency_race, _marker} = race, _changes} ->
-        resolve_record_race(race, started_at)
-
-      {:error, :event, reason, _changes} ->
-        Store.emit_result({:error, reason}, started_at)
-        {:error, reason}
-
-      {:error, :observation, %Ecto.Changeset{} = changeset, _changes} ->
-        Store.emit_result({:error, changeset}, started_at)
-        {:error, changeset}
-
-      {:error, :observation, reason, _changes} ->
-        Store.emit_result({:error, reason}, started_at)
-        {:error, reason}
-    end
-  end
-
-  defp resolve_record_race(race, started_at) do
-    result =
-      with {:ok, {:duplicate, event} = event_result} <-
-             Store.resolve_idempotency_race(race, repo: repo()),
-           {:ok, observation} <- load_linked_observation(repo(), event) do
-        {:ok, event_result, observation}
-      end
+    result = Store.with_stream_lock(Map.put(attrs, :project, nil), callback)
 
     case result do
-      {:ok, event_result, observation} ->
-        Store.emit_result({:ok, event_result}, started_at)
-        {:ok, observation}
+      {:ok, %{event_result: event_result, value: value}} ->
+        if event_result, do: Store.emit_result({:ok, event_result}, started_at)
+        {:ok, value}
+
+      {:ok, value} ->
+        {:ok, value}
 
       {:error, reason} ->
         Store.emit_result({:error, reason}, started_at)
@@ -113,424 +129,196 @@ defmodule Backplane.Memory.Observations do
     end
   end
 
-  defp load_linked_observation(repo, event) do
-    with id when is_binary(id) <-
-           get_in(event.payload || %{}, ["_backplane", "legacy_observation_id"]),
-         {:ok, id} <- Ecto.UUID.cast(id),
-         %Observation{} = observation <- repo.get(Observation, id) do
-      {:ok, observation}
-    else
-      _ -> {:error, :idempotency_conflict}
+  defp append!(attrs, repo) do
+    case Store.append_tagged(attrs, repo: repo, telemetry: false) do
+      {:ok, result} -> result
+      {:error, reason} -> repo.rollback(reason)
     end
   end
 
-  defp observation_attrs(filtered, session_id, opts) do
-    filtered = normalize_content(filtered)
+  defp observation({status, event}) do
+    projected = ObservationProjector.project([event])["observations"] |> hd()
 
     %{
-      memory_space_id: opts[:memory_space_id],
-      host_id: opts[:host_id],
-      client_id: opts[:client_id],
-      source_client_id: opts[:source_client_id],
-      scope: opts[:scope],
-      namespace: opts[:namespace],
-      session_id: session_id,
-      tool_name: opts[:tool_name],
-      content: filtered,
-      is_error: opts[:is_error] || false,
-      files: %{"paths" => extract_files(filtered)}
+      event_result: {status, event},
+      value: %{
+        id: event.id,
+        event_id: event.id,
+        session_id: event.session_id,
+        tool_name: projected["tool_name"],
+        content: event.content,
+        is_error: projected["is_error"],
+        files: %{"paths" => projected["file_paths"]},
+        created_at: event.occurred_at
+      }
     }
   end
 
-  defp event_attrs(session_id, observation_id, content, opts) do
-    tool_name = opts[:tool_name]
-    is_error = event_is_error(opts[:is_error])
+  defp session({status, event}, stream) do
+    %{event_result: {status, event}, value: session(event, stream)}
+  end
 
-    event_type =
-      opts[:event_type] ||
-        fallback_event_type(tool_name, is_error)
-
-    payload =
-      if Keyword.has_key?(opts, :payload),
-        do: opts[:payload],
-        else: %{"paths" => extract_files(normalize_content(content))}
-
-    base = %{
-      session_id: session_id,
-      event_type: event_type,
-      actor_type: "system",
-      role: "system",
-      status: if(is_error, do: "error", else: "ok"),
-      tool_name: tool_name,
-      content: content,
-      payload: put_observation_link(payload, observation_id)
+  defp session(%Event{} = event, stream) do
+    %{
+      session_id: event.session_id,
+      project: event.project,
+      started_at: event.occurred_at,
+      ended_at: stream.closed_at
     }
-
-    option_attrs =
-      opts
-      |> Keyword.take(@event_opt_keys -- [:event_type, :payload])
-      |> Map.new()
-
-    base
-    |> Map.merge(option_attrs)
-    |> Map.merge(trusted_partition_attrs(opts[:trusted_partition]))
   end
 
-  defp event_is_error(value) do
-    case Ecto.Type.cast(:boolean, value || false) do
-      {:ok, true} -> true
-      _ -> false
-    end
+  defp lifecycle_event(repo, stream, type) do
+    repo.one(
+      from(e in Event,
+        where: e.stream_id == ^stream.stream_id and e.event_type == ^type,
+        order_by: [asc: e.sequence],
+        limit: 1
+      )
+    )
   end
 
-  defp normalize_content(content) when is_binary(content), do: content
-  defp normalize_content(_content), do: ""
+  defp materialize(attrs, repo, stream, opts) do
+    existing =
+      if attrs[:idempotency_key], do: repo.get_by(Event, idempotency_key: attrs.idempotency_key)
 
-  defp put_observation_link(payload, observation_id)
-       when is_map(payload) and not is_struct(payload) do
-    link = %{"legacy_observation_id" => observation_id}
-
-    payload
-    |> Map.delete(:_backplane)
-    |> Map.update("_backplane", link, fn
-      existing when is_map(existing) -> Map.merge(existing, link)
-      _existing -> link
-    end)
-  end
-
-  defp put_observation_link(payload, _observation_id), do: payload
-
-  defp fallback_event_type(tool_name, is_error)
-       when is_binary(tool_name) and byte_size(tool_name) > 0,
-       do: if(is_error, do: "tool.call.failed", else: "tool.call.completed")
-
-  defp fallback_event_type(_tool_name, _is_error), do: "legacy.observation"
-
-  @doc "Register/upsert a session."
-  def register_session(session_id, project, opts \\ []) do
-    with {:ok, partition} <- partition(opts) do
-      opts = canonical_opts(opts, partition)
-
-      if Config.dual_write?() do
-        started_at = System.monotonic_time()
-
-        case register_session_with_event(session_id, project, opts, 1) do
-          {:ok, session, event_result} ->
-            if event_result, do: Store.emit_result({:ok, event_result}, started_at)
-            {:ok, session}
-
-          {:error, reason, event_attempted?} ->
-            if event_attempted?, do: Store.emit_result({:error, reason}, started_at)
-            {:error, reason}
-        end
+    sequence =
+      if existing do
+        existing.source_sequence
       else
-        session_id
-        |> session_changeset(project, opts)
-        |> repo().insert(on_conflict: :nothing, conflict_target: [:session_id])
-      end
-    end
-  end
-
-  defp register_session_with_event(session_id, project, opts, attempts_left) do
-    multi =
-      Ecto.Multi.new()
-      |> Ecto.Multi.run(:session, fn repo, _changes ->
-        preexisting? = repo.exists?(from(s in Session, where: s.session_id == ^session_id))
-
-        case repo.insert(session_changeset(session_id, project, opts),
-               on_conflict: :nothing,
-               conflict_target: [:session_id]
-             ) do
-          {:ok, session} -> {:ok, {session, not preexisting?}}
-          {:error, reason} -> {:error, reason}
-        end
-      end)
-      |> Ecto.Multi.merge(fn
-        %{session: {session, true}} ->
-          Store.append_multi(
-            Ecto.Multi.new(),
-            :event,
-            lifecycle_event_attrs("session.started", session, opts)
+        max_sequence =
+          repo.one(
+            from(e in Event,
+              where: e.host_id == ^attrs.host_id and e.session_id == ^attrs.session_id,
+              select: max(e.source_sequence)
+            )
           )
 
-        %{session: {_session, false}} ->
-          Ecto.Multi.new()
-      end)
+        (max_sequence || 0) + 1
+      end
 
-    case repo().transaction(multi) do
-      {:ok, %{session: {session, _new?}} = changes} ->
-        {:ok, session, Map.get(changes, :event)}
+    occurred_at = opts[:occurred_at] || (existing && existing.occurred_at) || DateTime.utc_now()
 
-      {:error, :event, {:idempotency_race, _marker} = race, _changes}
-      when attempts_left > 0 ->
-        case Store.resolve_idempotency_race(race, repo: repo()) do
-          {:ok, {:duplicate, _event} = resolved} ->
-            case register_session_with_event(session_id, project, opts, attempts_left - 1) do
-              {:ok, session, retried} -> {:ok, session, retried || resolved}
-              {:error, reason, _event_attempted?} -> {:error, reason, true}
-            end
+    {:ok, payload} = Filter.apply_payload(attrs.payload)
 
-          {:error, reason} ->
-            {:error, reason, true}
-        end
-
-      {:error, operation, reason, _changes} ->
-        {:error, reason, operation == :event}
-    end
+    attrs
+    |> Map.put(:payload, payload)
+    |> Map.put(:source_sequence, sequence || stream.next_sequence)
+    |> Map.put(:occurred_at, occurred_at)
+    |> Map.put(:captured_at, (existing && existing.captured_at) || occurred_at)
+    |> Map.put(:payload_hash, EventValidator.payload_hash(payload))
   end
 
-  defp session_changeset(session_id, project, opts) do
-    Session.changeset(%Session{}, %{
-      memory_space_id: opts[:memory_space_id],
-      host_id: opts[:host_id],
-      client_id: opts[:client_id],
-      source_client_id: opts[:source_client_id],
-      scope: opts[:scope],
-      namespace: opts[:namespace],
-      session_id: session_id,
-      project: project,
-      started_at: DateTime.utc_now()
+  defp event_attrs(session_id, content, opts, partition) do
+    error? = opts[:is_error] in [true, "true", 1, "1"]
+    tool = opts[:tool_name]
+    type = opts[:event_type] || default_type(tool, error?)
+    payload = observation_payload(Keyword.get(opts, :payload, %{}), content)
+
+    base_attrs(session_id, opts, partition)
+    |> Map.merge(%{
+      event_type: type,
+      content: content,
+      tool_name: tool,
+      status: if(error?, do: "failed", else: "ok"),
+      payload: payload,
+      idempotency_key: namespaced_key(opts[:idempotency_key], partition)
     })
   end
 
-  @doc "Mark a session as ended and enqueue consolidation."
-  def end_session(session_id, opts \\ []) do
-    with {:ok, partition} <- partition(opts) do
-      opts = canonical_opts(opts, partition)
-
-      case do_end_session(session_id, opts) do
-        {:error, :not_found} = error ->
-          if opts[:require_existing] == true, do: error, else: {0, nil}
-
-        result ->
-          result
-      end
-    end
+  defp lifecycle_attrs(type, session_id, project, opts, partition) do
+    base_attrs(session_id, opts, partition)
+    |> Map.merge(%{
+      project: project,
+      event_type: type,
+      status: "ok",
+      payload: %{},
+      idempotency_key: namespaced_key(type <> ":" <> session_id, partition)
+    })
   end
 
-  defp do_end_session(session_id, opts) do
-    if Config.dual_write?() do
-      started_at = System.monotonic_time()
-
-      case end_session_with_event(session_id, opts, 1) do
-        {:ok, result, event_result} ->
-          if event_result, do: Store.emit_result({:ok, event_result}, started_at)
-          maybe_enqueue_summary(result, session_id, opts)
-          result
-
-        {:error, reason, event_attempted?} ->
-          if event_attempted?, do: Store.emit_result({:error, reason}, started_at)
-          {:error, reason}
-      end
-    else
-      result = transition_session(session_id, opts)
-      maybe_enqueue_summary(result, session_id, opts)
-      result
-    end
+  defp base_attrs(session_id, opts, partition) do
+    partition
+    |> Map.merge(Map.new(Keyword.take(opts, @option_keys)))
+    |> Map.merge(%{
+      stream_id: Keyword.get(opts, :stream_id, stream_id(session_id, partition)),
+      session_id: session_id,
+      schema_version: 1,
+      integration: "memory-api",
+      actor_type: "system",
+      role: "system",
+      payload: %{},
+      privacy: %{"server_filtered" => true}
+    })
   end
 
-  defp end_session_with_event(session_id, opts, attempts_left) do
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+  defp stream_id(session_id, partition) do
+    identity = [
+      partition.memory_space_id,
+      partition.scope,
+      partition.namespace,
+      partition.host_id,
+      session_id
+    ]
 
-    multi =
-      Ecto.Multi.new()
-      |> Ecto.Multi.update_all(
-        :session_transition,
-        from(s in Session,
-          where:
-            s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
-              s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace] and
-              is_nil(s.ended_at)
-        ),
-        set: [ended_at: now]
+    "memory-api:" <> Base.url_encode64(Jason.encode!(identity), padding: false)
+  end
+
+  defp namespaced_key(nil, _partition), do: nil
+
+  defp namespaced_key(key, partition) when is_binary(key) do
+    "memory-api:" <>
+      Base.url_encode64(
+        Jason.encode!([
+          partition.memory_space_id,
+          partition.scope,
+          partition.namespace,
+          partition.host_id,
+          key
+        ]),
+        padding: false
       )
-      |> Ecto.Multi.one(
-        :session,
-        from(s in Session,
-          where:
-            s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
-              s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace]
-        )
-      )
-      |> Ecto.Multi.merge(fn
-        %{session_transition: {1, nil}, session: %Session{} = session} ->
-          Ecto.Multi.new()
-          |> Store.append_multi(:event, lifecycle_event_attrs("session.ended", session, opts))
-          |> Ecto.Multi.run(:closed_stream, fn repo, _changes ->
-            Store.close_stream("session:" <> session.session_id, repo: repo)
-          end)
+  end
 
-        %{session_transition: {0, nil}} ->
-          Ecto.Multi.new()
-      end)
+  defp namespaced_key(_key, _partition), do: nil
 
-    case repo().transaction(multi) do
-      {:ok, %{session_transition: {0, nil}, session: nil}} ->
-        {:error, :not_found, false}
+  defp default_type(tool, error?) when is_binary(tool) and byte_size(tool) > 0,
+    do: if(error?, do: "tool.call.failed", else: "tool.call.completed")
 
-      {:ok, %{session_transition: {count, nil}} = changes} ->
-        {:ok, {count, nil}, Map.get(changes, :event)}
+  defp default_type(_tool, _error?), do: "observation.recorded"
 
-      {:error, :event, {:idempotency_race, _marker} = race, _changes}
-      when attempts_left > 0 ->
-        case Store.resolve_idempotency_race(race, repo: repo()) do
-          {:ok, {:duplicate, _event} = resolved} ->
-            case end_session_with_event(session_id, opts, attempts_left - 1) do
-              {:ok, result, retried} -> {:ok, result, retried || resolved}
-              {:error, reason, _event_attempted?} -> {:error, reason, true}
-            end
+  defp observation_payload(payload, content) when is_map(payload) and not is_struct(payload) do
+    paths = extract_files(content)
 
-          {:error, reason} ->
-            {:error, reason, true}
-        end
+    Map.update(payload, "paths", paths, fn
+      existing when is_list(existing) -> Enum.uniq(existing ++ paths)
+      _existing -> paths
+    end)
+  end
 
-      {:error, operation, reason, _changes} ->
-        {:error, reason, operation in [:event, :closed_stream]}
+  defp observation_payload(payload, _content), do: payload
+
+  defp enqueue_summary(session_id, partition) do
+    with {:ok, %{input_revision: revision}} <-
+           Source.input_revision(partition.host_id, session_id) do
+      SummaryWorker.enqueue(partition.host_id, session_id, revision, partition)
     end
-  end
-
-  defp transition_session(session_id, opts) do
-    result =
-      repo().update_all(
-        from(s in Session,
-          where:
-            s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
-              s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace] and is_nil(s.ended_at)
-        ),
-        set: [ended_at: DateTime.utc_now()]
-      )
-
-    case result do
-      {0, nil} ->
-        if owned_session_exists?(session_id, opts), do: result, else: {:error, :not_found}
-
-      _transitioned ->
-        result
-    end
-  end
-
-  defp owned_session_exists?(session_id, opts) do
-    repo().exists?(
-      from(s in Session,
-        where:
-          s.session_id == ^session_id and s.memory_space_id == ^opts[:memory_space_id] and
-            s.scope == ^opts[:scope] and s.namespace == ^opts[:namespace]
-      )
-    )
-  end
-
-  defp maybe_enqueue_summary({count, nil}, session_id, opts) when count > 0 do
-    with {:ok, %{input_revision: revision}} <- Source.input_revision(opts[:host_id], session_id) do
-      SummaryWorker.enqueue(opts[:host_id], session_id, revision, Map.new(opts))
-    end
-
-    :ok
-  end
-
-  defp maybe_enqueue_summary(_result, _session_id, _opts), do: :ok
-
-  defp lifecycle_event_attrs(type, session, opts) do
-    Map.merge(
-      %{
-        stream_id: "session:" <> session.session_id,
-        session_id: session.session_id,
-        project: session.project,
-        event_type: type,
-        actor_type: "system",
-        role: "system",
-        status: "ok",
-        idempotency_key: type <> ":" <> session.session_id
-      },
-      opts
-      |> Keyword.take([
-        :memory_space_id,
-        :host_id,
-        :client_id,
-        :source_client_id,
-        :scope,
-        :namespace,
-        :agent_id
-      ])
-      |> Map.new()
-      |> Map.merge(trusted_partition_attrs(opts[:trusted_partition]))
-    )
-  end
-
-  defp trusted_partition_attrs(partition) when is_map(partition),
-    do:
-      Map.take(partition, [
-        :memory_space_id,
-        :host_id,
-        :client_id,
-        :source_client_id,
-        :scope,
-        :namespace
-      ])
-
-  defp trusted_partition_attrs(_partition), do: %{}
-
-  @doc "Return observations referencing any of the listed file paths, newest first."
-  def file_history(file_paths, opts \\ []) when is_list(file_paths) do
-    exclude_session = opts[:exclude_session]
-    limit = opts[:limit] || 50
-
-    query =
-      from(o in Observation,
-        where:
-          fragment(
-            "EXISTS (SELECT 1 FROM jsonb_array_elements_text(?->'paths') AS p WHERE p = ANY(?))",
-            o.files,
-            ^file_paths
-          ),
-        order_by: [desc: o.created_at, desc: o.id],
-        limit: ^limit
-      )
-
-    query =
-      if exclude_session do
-        where(query, [o], o.session_id != ^exclude_session)
-      else
-        query
-      end
-
-    query =
-      case partition(opts) do
-        {:ok, partition} ->
-          from(o in query,
-            where:
-              o.memory_space_id == ^partition.memory_space_id and
-                o.scope == ^partition.scope and o.namespace == ^partition.namespace
-          )
-
-        {:error, _reason} ->
-          from(o in query, where: false)
-      end
-
-    repo().all(query)
   end
 
   defp partition(opts) when is_list(opts) do
-    opts[:trusted_partition]
-    |> case do
-      value when is_map(value) -> value
-      _ -> Map.new(opts)
-    end
-    |> PartitionIdentity.validate()
+    candidate = opts[:trusted_partition] || Map.new(opts)
+    PartitionIdentity.validate_generator(candidate)
   end
 
-  defp canonical_opts(opts, partition) do
-    Keyword.merge(opts,
-      memory_space_id: partition.memory_space_id,
-      host_id: partition[:host_id],
-      client_id: partition[:client_id],
-      source_client_id: partition[:source_client_id],
-      scope: partition.scope,
-      namespace: partition.namespace,
-      trusted_partition: partition
-    )
+  defp partition(_opts), do: {:error, :incomplete_partition}
+
+  defp valid_session(id) when is_binary(id) do
+    if String.trim(id) == "", do: {:error, :missing_identity}, else: :ok
   end
 
-  # Extract file paths from content using simple heuristics
+  defp valid_session(_id), do: {:error, :missing_identity}
+  defp nonempty_content(content) when byte_size(content) > 0, do: :ok
+  defp nonempty_content(_content), do: {:error, :invalid_content}
+
   defp extract_files(content) do
     Regex.scan(
       ~r{(?:^|[\s"'`(])(/[^\s"'`)\n]+\.\w+|[a-zA-Z0-9_./\-]+/[a-zA-Z0-9_./\-]+\.\w+)},
@@ -540,4 +328,6 @@ defmodule Backplane.Memory.Observations do
     |> Enum.uniq()
     |> Enum.take(20)
   end
+
+  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 end

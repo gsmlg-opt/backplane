@@ -583,21 +583,15 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   defp private_scopes(%{
-         "selected" => "host_memory.v1",
-         "memory_partition" => %{"scope" => scope}
+         "selected" => "host_memory.v2",
+         "default_access_id" => id,
+         "accesses" => accesses
        })
-       when is_binary(scope) and scope != "",
-       do: [scope]
-
-  defp private_scopes(%{"selected" => "host_memory.v2", "partitions" => partitions})
-       when is_list(partitions) do
-    Enum.flat_map(partitions, fn
-      %{"namespace" => "private", "scope" => scope} when is_binary(scope) and scope != "" ->
-        [scope]
-
-      _ ->
-        []
-    end)
+       when is_list(accesses) do
+    case Enum.find(accesses, &(&1["access_id"] == id)) do
+      %{"partition" => %{"namespace" => "private", "scope" => scope}} -> [scope]
+      _ -> []
+    end
   end
 
   defp private_scopes(_memory), do: []

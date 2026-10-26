@@ -59,6 +59,36 @@ defmodule Backplane.HostAgent.Memory.PrunerTest do
     assert_count(store, "slots", 1)
   end
 
+  test "retention preserves quarantined commands and their original local payload source", %{
+    store: store
+  } do
+    old = "2026-01-01T00:00:00Z"
+
+    insert_memory!(store, "historical", "only historical payload",
+      sync_state: "synced",
+      inserted_at: old
+    )
+
+    insert_outbox!(store, "remember", "historical", "dead_letter")
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "UPDATE memory_outbox SET migration_reason='needs_verified_receipt_and_authority_mapping', migration_state='inflight', dead_lettered_at=?",
+               [old]
+             )
+
+    assert {:ok, %{"deleted" => 0, "outbox_deleted" => 0}} =
+             Pruner.prune_once(
+               store: store,
+               cutoff: "2026-03-17T00:00:00Z",
+               outbox_cutoff: "2026-03-17T00:00:00Z"
+             )
+
+    assert_memory_ids(store, ["historical"])
+    assert_count(store, "memory_outbox", 1)
+  end
+
   test "retains pending commands and prunes only aged terminal outbox rows", %{store: store} do
     old = "2026-01-01T00:00:00Z"
     cutoff = "2026-03-17T00:00:00Z"

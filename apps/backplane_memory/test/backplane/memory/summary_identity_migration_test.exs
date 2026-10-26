@@ -44,10 +44,10 @@ defmodule Backplane.Memory.SummaryIdentityMigrationTest do
                FROM "#{prefix}".memory_summaries
                """).rows
 
-      assert input_revision == Backplane.Memory.Summaries.Summary.legacy_input_revision("same")
+      assert input_revision == md5("legacy-input:same") <> md5("legacy-input-2:same")
 
       assert output_revision ==
-               Backplane.Memory.Summaries.Summary.legacy_output_revision("legacy")
+               md5("legacy") <> md5("legacy-output-2:legacy")
 
       assert [] ==
                migration_repo.query!(
@@ -274,6 +274,8 @@ defmodule Backplane.Memory.SummaryIdentityMigrationTest do
     )
     """)
   end
+
+  defp md5(value), do: :crypto.hash(:md5, value) |> Base.encode16(case: :lower)
 
   defp load_migration do
     :backplane_system
