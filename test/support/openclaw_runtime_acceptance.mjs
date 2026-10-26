@@ -60,12 +60,33 @@ if (process.argv.includes('--chat-admission-self-test')) {
 }
 
 /** Emit only fixed classifications, never an SDK error's text, details, stack or payload. */
-function safeFailure(error, stage) {
+function safeFailure(error, stage, operation) {
   const internal = new Set(['unsupported_openclaw_version', 'runtime_timeout', 'gateway_exited', 'gateway_connect_failed', 'gateway_connect_timeout', 'gateway_startup_probe_invalid', 'gateway_agent_admission_refused', 'gateway_agent_roster_invalid', 'conversation_connect_failed', 'conversation_connect_timeout', 'invalid_native_path', 'invalid_native_content', 'invalid_flush_mode', 'invalid_concurrent_turns', 'concurrent_model_overlap_timeout', 'concurrent_model_request_invalid', 'unknown_operation']);
   const gatewayCodes = new Set(['INVALID_REQUEST', 'UNAVAILABLE', 'UNAUTHORIZED', 'FORBIDDEN', 'NOT_LINKED', 'NOT_PAIRED', 'CLIENT_TIMEOUT']);
   const systemCodes = new Set(['ERR_SQLITE_ERROR', 'ERR_SQLITE_BUSY', 'ENOENT', 'EACCES', 'ENOSPC', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE']);
   const text = typeof error?.message === 'string' ? error.message : '';
   const gatewayCode = gatewayCodes.has(error?.gatewayCode) ? error.gatewayCode : gatewayCodes.has(error?.code) ? error.code : undefined;
+  const knownMessages = new Map([
+    [SESSION_READ_CHANGED, ['session_entry_changed_during_read', SESSION_READ_CHANGED]],
+    ['session changed before chat.send; retry the request', ['session_mutation_authorization_changed', 'session changed before chat.send; retry the request']],
+    ['Session settings changed before send. Retry.', ['session_settings_changed', 'Session settings changed before send. Retry.']],
+    ['active branch changed; review and retry', ['active_leaf_changed', 'active branch changed; review and retry']],
+    ['session routing changed; review and retry', ['session_routing_changed', 'session routing changed; review and retry']],
+    ['Session changed before native confirmation. Retry.', ['session_changed_before_native_confirmation', 'Session changed before native confirmation. Retry.']],
+    ['Session storage changed while starting work. Retry.', ['session_storage_changed', 'Session storage changed while starting work. Retry.']],
+    ['Session preparation changed; retry.', ['session_preparation_changed', 'Session preparation changed; retry.']],
+  ]);
+  const known = knownMessages.get(text) || (/^Session "[^"\r\n]{1,512}" changed while starting work\. Retry\.$/.test(text) ? ['session_incarnation_changed', 'Session "<redacted>" changed while starting work. Retry.'] : undefined);
+  const details = error?.details && typeof error.details === 'object' && !Array.isArray(error.details) ? error.details : undefined;
+  const detailValues = {
+    code: new Set(['SESSION_MUTATION_AUTHORIZATION_CHANGED']),
+    reason: new Set(['session-settings-changed', 'active-leaf-changed', 'session-routing-changed']),
+    method: new Set(['chat.send']),
+  };
+  const safeDetails = details ? Object.fromEntries(Object.entries(detailValues).filter(([key]) => Object.hasOwn(details, key)).map(([key, values]) => [key, values.has(details[key]) ? details[key] : '<unrecognized>'])) : undefined;
+  const detailClass = { 'SESSION_MUTATION_AUTHORIZATION_CHANGED': 'session_mutation_authorization_changed', 'session-settings-changed': 'session_settings_changed', 'active-leaf-changed': 'active_leaf_changed', 'session-routing-changed': 'session_routing_changed' };
+  const failureClass = known?.[0] || detailClass[safeDetails?.code] || detailClass[safeDetails?.reason] || 'unclassified';
+  const operations = new Set(['boot', 'turn', 'snapshot', 'status', 'native', 'reset', 'restart', 'reload', 'flush', 'stop', 'concurrent_turns']);
   let code = internal.has(text) ? text : gatewayCode ? `gateway_${gatewayCode.toLowerCase()}` : systemCodes.has(error?.code) ? error.code.toLowerCase() : error?.name === 'SyntaxError' ? 'runtime_invalid_json' : error?.name === 'TypeError' ? 'runtime_type_error' : 'runtime_operation_failed';
   const reasons = [
     ['pending_final_delivery', /pending.{0,40}final|final.{0,40}pending/i],
@@ -81,7 +102,10 @@ function safeFailure(error, stage) {
   ];
   const reason = reasons.find(([, pattern]) => pattern.test(text))?.[0] || 'unclassified';
   const safeStage = /^[a-z_.]+$/.test(stage) ? stage : 'operation';
-  return { code, message: `${code}:${safeStage}:${reason}`, stage: safeStage, reason,
+  return { code, message: `${code}:${safeStage}:${reason}`, stage: safeStage, reason, failure_class: failureClass,
+    ...(operations.has(operation) ? { operation } : {}),
+    ...(gatewayCode ? { gateway_message: known?.[1] || '<unrecognized>' } : {}),
+    ...(gatewayCode && safeDetails && Object.keys(safeDetails).length ? { gateway_details: safeDetails } : {}),
     ...(gatewayCode ? { gateway_code: gatewayCode } : {}),
     ...(typeof error?.requestSent === 'boolean' ? { request_sent: error.requestSent } : {}),
     ...(typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {}),
@@ -97,10 +121,38 @@ if (process.argv.includes('--diagnostics-self-test')) {
     [new Error(secret), 'runtime_operation_failed'],
   ];
   for (const [error, expected] of cases) {
-    const result = safeFailure(error, 'turn.chat_send');
+    const result = safeFailure(error, 'turn.chat_send', 'turn');
     if (result.code !== expected || JSON.stringify(result).includes(secret)) throw new Error('diagnostics_self_test_failed');
+    assert.equal(result.operation, 'turn');
   }
-  process.stdout.write(JSON.stringify({ ok: true, diagnostic_cases: cases.length, raw_errors_emitted: false }) + '\n');
+  const lifecycle = [
+    [SESSION_READ_CHANGED, {}, 'session_entry_changed_during_read'],
+    ['session changed before chat.send; retry the request', { code: 'SESSION_MUTATION_AUTHORIZATION_CHANGED', method: 'chat.send' }, 'session_mutation_authorization_changed'],
+    ['Session settings changed before send. Retry.', { reason: 'session-settings-changed' }, 'session_settings_changed'],
+    ['active branch changed; review and retry', { reason: 'active-leaf-changed' }, 'active_leaf_changed'],
+    ['session routing changed; review and retry', { reason: 'session-routing-changed' }, 'session_routing_changed'],
+    ['Session changed before native confirmation. Retry.', {}, 'session_changed_before_native_confirmation'],
+    ['Session storage changed while starting work. Retry.', {}, 'session_storage_changed'],
+    ['Session preparation changed; retry.', {}, 'session_preparation_changed'],
+    [`Session "${secret}" changed while starting work. Retry.`, {}, 'session_incarnation_changed'],
+  ];
+  for (const [message, details, expected] of lifecycle) {
+    const error = Object.assign(new Error(message), { gatewayCode: 'INVALID_REQUEST', details: { ...details, sessionKey: secret, prompt: secret, token: secret }, stack: secret });
+    const result = safeFailure(error, 'rpc.chat_send', 'turn');
+    assert.equal(result.failure_class, expected); assert.equal(result.gateway_code, 'INVALID_REQUEST');
+    assert.ok(!JSON.stringify(result).includes(secret));
+    assert.deepEqual(result.gateway_details || {}, details);
+    if (expected === 'session_incarnation_changed') assert.equal(result.gateway_message, 'Session "<redacted>" changed while starting work. Retry.');
+  }
+  const unknown = safeFailure(Object.assign(new Error(`Session settings changed before send. Retry. ${secret}`), { gatewayCode: 'INVALID_REQUEST', details: { code: secret, reason: secret, method: secret, sessionKey: secret } }), secret, secret);
+  assert.equal(unknown.gateway_message, '<unrecognized>'); assert.equal(unknown.failure_class, 'unclassified');
+  assert.equal(unknown.stage, 'operation'); assert.equal(unknown.operation, undefined);
+  assert.deepEqual(unknown.gateway_details, { code: '<unrecognized>', reason: '<unrecognized>', method: '<unrecognized>' });
+  assert.ok(!JSON.stringify(unknown).includes(secret));
+  const typed = safeFailure(Object.assign(new Error(secret), { gatewayCode: 'INVALID_REQUEST', details: { code: 'SESSION_MUTATION_AUTHORIZATION_CHANGED', method: 'chat.send', sessionKey: secret } }), 'rpc.chat_send', 'turn');
+  assert.equal(typed.failure_class, 'session_mutation_authorization_changed'); assert.equal(typed.gateway_message, '<unrecognized>');
+  assert.ok(!JSON.stringify(typed).includes(secret));
+  process.stdout.write(JSON.stringify({ ok: true, diagnostic_cases: cases.length + lifecycle.length + 2, raw_errors_emitted: false, dynamic_identities_redacted: true, typed_refusals_distinguished: true }) + '\n');
   process.exit(0);
 }
 
@@ -331,7 +383,7 @@ async function concurrentTurns(params) {
       return { agentId: turn.agentId, prompt: turn.prompt, sessionKey: turn.sessionKey, sessionId: history.sessionId, runId: sent.runId, admission, terminal, history, events: events.slice(eventOffset).filter((event) => event.payload?.runId === sent.runId) };
     }));
     const state = snapshot();
-    const results = completed.map((result, index) => result.status === 'fulfilled' ? { ...result.value, actualContext: state.actualContext.filter((ctx) => ctx.runId === result.value.runId) } : { ...turns[index], error: safeFailure(result.reason, 'concurrent.turn') });
+    const results = completed.map((result, index) => result.status === 'fulfilled' ? { ...result.value, actualContext: state.actualContext.filter((ctx) => ctx.runId === result.value.runId) } : { ...turns[index], error: safeFailure(result.reason, 'concurrent.turn', 'concurrent_turns') });
     return { ...state, turns: results, overlap: barrier.evidence(), requests: requests.slice(requestOffset), events: events.slice(eventOffset) };
   } finally { barrier.close(); modelBarrier = undefined; }
 }
@@ -379,7 +431,7 @@ try {
   for await (const line of lines) {
     let p;
     try { stage = 'operation.parse'; p = JSON.parse(line); stage = 'operation.dispatch'; const result = await operation(p); stage = 'operation.encode'; process.stdout.write(JSON.stringify({ id: p.id, ok: true, result }) + '\n'); }
-    catch (error) { const safe = safeFailure(error, stage); process.stderr.write(safe.message + '\n'); process.stdout.write(JSON.stringify({ id: p?.id, ok: false, error: safe }) + '\n'); }
+    catch (error) { const safe = safeFailure(error, stage, p?.op); process.stderr.write(safe.message + '\n'); process.stdout.write(JSON.stringify({ id: p?.id, ok: false, error: safe }) + '\n'); }
     if (stopped) break;
   }
 } finally { await haltGateway(); if (server) await new Promise((r) => server.close(r)); }

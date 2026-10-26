@@ -380,7 +380,14 @@ defmodule Backplane.OpenClawLiveAcceptance do
             result
 
           {:ok, %{"id" => ^id, "ok" => false, "error" => error}} ->
-            fail!("node:" <> to_string(error["code"]), Map.take(error, ["code", "message"]))
+            fail!(
+              "node:" <> to_string(error["code"]),
+              Map.take(
+                error,
+                ~w(code message operation stage reason failure_class gateway_code gateway_message
+                gateway_details request_sent retryable admission_attempts pre_admission_rejections)
+              )
+            )
 
           _ ->
             await_node!(port, id, op, deadline, "")
@@ -1644,36 +1651,56 @@ defmodule Backplane.OpenClawLiveAcceptance do
         proxy_mode(:unreceived)
 
         pending =
-          node!("turn", %{
-            prompt: "Fixture #{fixture.marker}: recover exact unreceived occurrence.",
-            responseText: "Acknowledged."
-          })
+          recovery_step!("t06_unreceived_send", fn ->
+            node!("turn", %{
+              prompt: "Fixture #{fixture.marker}: recover exact unreceived occurrence.",
+              responseText: "Acknowledged."
+            })
+          end)
 
-        before = node!("snapshot")
-        node!("restart", %{abrupt: true})
+        before = recovery_step!("t06_snapshot_before_crash", fn -> node!("snapshot") end)
+        recovery_step!("t06_abrupt_restart", fn -> node!("restart", %{abrupt: true}) end)
         proxy_mode(:normal)
         ready!(fixture.base_url)
-        node!("turn", %{prompt: "Inspect recovery settlement.", responseText: "Acknowledged."})
+
+        recovery_step!("t06_abrupt_restart_settlement", fn ->
+          node!("turn", %{prompt: "Inspect recovery settlement.", responseText: "Acknowledged."})
+        end)
+
         verify_turn_identity!(fixture, pending)
         proxy_mode(:lost_ack)
 
         lost =
-          node!("turn", %{
-            prompt: "Fixture #{fixture.marker}: accepted despite response loss.",
-            responseText: "Acknowledged."
-          })
+          recovery_step!("t06_lost_ack_send", fn ->
+            node!("turn", %{
+              prompt: "Fixture #{fixture.marker}: accepted despite response loss.",
+              responseText: "Acknowledged."
+            })
+          end)
 
         proxy_mode(:normal)
         previous = live_connection(nil)
-        stop_worker!()
-        start_worker!(fixture.config)
-        ready!(fixture.base_url, previous)
-        node!("restart")
 
-        node!("turn", %{prompt: "Inspect host restart settlement.", responseText: "Acknowledged."})
+        recovery_step!("t06_host_restart", fn ->
+          stop_worker!()
+          start_worker!(fixture.config)
+          ready!(fixture.base_url, previous)
+        end)
+
+        recovery_step!("t06_plugin_restart_after_host", fn -> node!("restart") end)
+
+        recovery_step!("t06_host_restart_settlement", fn ->
+          node!("turn", %{
+            prompt: "Inspect host restart settlement.",
+            responseText: "Acknowledged."
+          })
+        end)
 
         verify_turn_identity!(fixture, lost)
-        after_restart = node!("snapshot")
+
+        after_restart =
+          recovery_step!("t06_snapshot_after_restart", fn -> node!("snapshot") end)
+
         frozen = fn row -> Map.take(row, ~w(event_id path payload digest sequence binding)) end
 
         recovered =
@@ -1702,12 +1729,14 @@ defmodule Backplane.OpenClawLiveAcceptance do
           "lost_ack_effect_count_wrong"
         )
 
-        node!("reload")
+        recovery_step!("t06_plugin_reload", fn -> node!("reload") end)
 
-        node!("turn", %{
-          prompt: "Inspect actual plugin reload recovery.",
-          responseText: "Acknowledged."
-        })
+        recovery_step!("t06_reload_settlement", fn ->
+          node!("turn", %{
+            prompt: "Inspect actual plugin reload recovery.",
+            responseText: "Acknowledged."
+          })
+        end)
 
         %{
           unreceived: true,
@@ -1723,6 +1752,24 @@ defmodule Backplane.OpenClawLiveAcceptance do
         proxy_mode(:normal)
       end
     end)
+  end
+
+  defp recovery_step!(scenario, fun) do
+    result = fun.()
+
+    IO.puts(
+      Jason.encode!(%{
+        kind: "openclaw_recovery_checkpoint",
+        scenario: scenario,
+        status: "passed"
+      })
+    )
+
+    result
+  rescue
+    error in Error ->
+      reraise %{error | diagnostics: Map.put(error.diagnostics, "scenario", scenario)},
+              __STACKTRACE__
   end
 
   defp guard_environment! do

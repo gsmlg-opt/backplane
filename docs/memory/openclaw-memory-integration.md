@@ -305,8 +305,23 @@ the original profile and retains the original correction/deletion assertions.
 Its recovery checks observed no transient session-read rejection; the exact-error
 retry branch has separate seven-case deterministic coverage.
 
+The first Linux release qualification ([40275862211](https://github.com/gsmlg-opt/backplane/actions/runs/40275862211))
+passed 18/19 deterministic checks but failed T06 with `INVALID_REQUEST` and the
+broad `session_lifecycle_changed` classification. All build/publication jobs were
+skipped. That log did not identify the specific recovery operation or typed host
+guard, so it cannot establish a root cause. The driver now retains fixed T06
+checkpoints and allowlisted, redacted gateway classifications; its retry policy
+and all recovery assertions are unchanged. Diagnostic self-tests cover 16 cases,
+including suppression of prompts, tokens and dynamic session identities.
+A fresh full local run then passed 19/19 deterministic checks and 1/1 real-model
+semantic check with all four cleanup checks true. The Linux refusal did not
+recur locally; this is additional passing evidence, not proof of a root-cause
+repair. Linux release qualification remains a separate required gate.
+
 Final local evidence: `/tmp/openclaw-live-workspace-qualified.log` and
-`/tmp/openclaw-live-workspace-qualified-results.json`; static evidence:
+`/tmp/openclaw-live-workspace-qualified-results.json`, followed by the instrumented
+`/tmp/openclaw-live-release-diagnostics-full.log` and
+`/tmp/openclaw-live-release-diagnostics-full-results.json`; static evidence:
 `/tmp/openclaw-isolated-dialyzer-results.json` and
 `/tmp/openclaw-final-tree-credo.log`; artifact-contract evidence:
 `/tmp/openclaw-delivery-gate-{red,green,final}.log`. All four owned-resource cleanup
