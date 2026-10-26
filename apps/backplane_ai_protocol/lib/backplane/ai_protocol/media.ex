@@ -4,6 +4,7 @@ defmodule Backplane.AiProtocol.Media do
   alias Backplane.AiProtocol.{ContentBlock, Error, Validation}
 
   @types [:audio, :resource, :resource_link]
+  @max_inline_pdf_bytes 10_485_760
   @google_audio ~w(audio/wav audio/mpeg audio/mp3 audio/aiff audio/aac audio/ogg audio/flac)
   @mime ~r/\A[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]*\/[a-zA-Z0-9][a-zA-Z0-9!#$&^_.+-]*(?:;[^\r\n]*)?\z/
 
@@ -17,40 +18,61 @@ defmodule Backplane.AiProtocol.Media do
 
   def validate(_type, _data, _opts), do: invalid("Media data must be an object")
 
-  def preflight(request, protocol) do
-    Enum.reduce_while(request.input, :ok, fn
-      %{role: _, content: blocks} = message, :ok ->
-        case preflight_blocks(blocks, message, protocol) do
-          :ok -> {:cont, :ok}
+  def preflight(request, protocol), do: preflight(request, protocol, [])
+
+  def preflight(request, protocol, opts) do
+    request.input
+    |> Enum.reduce_while({:ok, []}, fn
+      %{role: _, content: blocks} = message, {:ok, pdfs} ->
+        case preflight_blocks(blocks, message, protocol, opts, pdfs) do
+          {:ok, pdfs} -> {:cont, {:ok, pdfs}}
           error -> {:halt, error}
         end
 
-      _item, :ok ->
-        {:cont, :ok}
+      _item, acc ->
+        {:cont, acc}
     end)
+    |> case do
+      {:ok, []} -> :ok
+      {:ok, pdfs} -> Validation.term(Enum.reverse(pdfs), Keyword.get(opts, :limits, %{}))
+      error -> error
+    end
   end
 
   def encode(block, protocol), do: encode(block, protocol, %{role: :user, extensions: %{}})
+  def encode(block, protocol, message), do: encode(block, protocol, message, [])
 
-  def encode(%{type: type} = block, protocol, message) when type in @types do
-    with {:ok, block} <- ContentBlock.new(block),
+  def encode(%{type: type} = block, protocol, message, opts) when type in @types do
+    with {:ok, block} <- ContentBlock.new(block, opts),
          :ok <- portable_metadata(block, protocol) do
       encode_in_message(block, protocol, message)
     end
   end
 
-  defp preflight_blocks(blocks, message, protocol) do
-    Enum.reduce_while(blocks, :ok, fn
-      %{type: type} = block, :ok when type in @types ->
-        case encode(block, protocol, message) do
-          {:ok, _wire} -> {:cont, :ok}
-          error -> {:halt, error}
+  defp preflight_blocks(blocks, message, protocol, opts, pdfs) do
+    Enum.reduce_while(blocks, {:ok, pdfs}, fn
+      %{type: type} = block, {:ok, pdfs} when type in @types ->
+        case encode(block, protocol, message, opts) do
+          {:ok, _wire} ->
+            pdfs = if inline_pdf?(block), do: [block.data | pdfs], else: pdfs
+            {:cont, {:ok, pdfs}}
+
+          error ->
+            {:halt, error}
         end
 
-      _block, :ok ->
-        {:cont, :ok}
+      _block, acc ->
+        {:cont, acc}
     end)
   end
+
+  defp inline_pdf?(%{
+         type: :resource,
+         data: %{"mime_type" => "application/pdf", "uri" => _, "data" => _} = data
+       }),
+       do: map_size(data) == 3
+
+  defp inline_pdf?(_block), do: false
 
   defp fields(:audio), do: [:mime_type, :data, :uri]
   defp fields(:resource), do: [:uri, :mime_type, :text, :data]
@@ -172,6 +194,17 @@ defmodule Backplane.AiProtocol.Media do
     if extensions == %{}, do: :ok, else: unsupported(protocol, type, "media_metadata")
   end
 
+  defp encode_in_message(
+         %{type: :resource, data: %{"mime_type" => "application/pdf", "data" => _}} = block,
+         protocol,
+         %{role: :user, extensions: extensions}
+       )
+       when protocol in [:anthropic, :google] do
+    if extensions == %{},
+      do: encode_media(block, protocol),
+      else: unsupported(protocol, :resource, "user_message_metadata")
+  end
+
   defp encode_in_message(block, protocol, %{role: :user}), do: encode_media(block, protocol)
 
   defp encode_in_message(block, :anthropic, %{role: :tool, extensions: extensions}) do
@@ -224,6 +257,37 @@ defmodule Backplane.AiProtocol.Media do
   defp encode_media(%{type: :audio, data: %{"mime_type" => mime, "data" => data}}, :google)
        when mime in @google_audio,
        do: {:ok, %{"inlineData" => %{"mimeType" => mime, "data" => data}}}
+
+  defp encode_media(
+         %{
+           type: :resource,
+           data: %{"mime_type" => "application/pdf", "uri" => _, "data" => data} = resource
+         },
+         protocol
+       )
+       when map_size(resource) == 3 and protocol in [:anthropic, :google] do
+    case Base.decode64(data) do
+      {:ok, decoded} when byte_size(decoded) in 1..@max_inline_pdf_bytes ->
+        case protocol do
+          :anthropic ->
+            {:ok,
+             %{
+               "type" => "document",
+               "source" => %{
+                 "type" => "base64",
+                 "media_type" => "application/pdf",
+                 "data" => data
+               }
+             }}
+
+          :google ->
+            {:ok, %{"inlineData" => %{"mimeType" => "application/pdf", "data" => data}}}
+        end
+
+      _ ->
+        unsupported(protocol, :resource, "inline_pdf_size")
+    end
+  end
 
   defp encode_media(
          %{type: :resource, data: %{"mime_type" => mime, "uri" => uri} = data},

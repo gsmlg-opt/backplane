@@ -9,7 +9,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Backplane.AiProtocol.Media.preflight(request, :openai),
+    with :ok <- Backplane.AiProtocol.Media.preflight(request, :openai, opts),
          :ok <- Common.reject_custom_tools(request),
          :ok <- Common.reject_state_references(request),
          :ok <-

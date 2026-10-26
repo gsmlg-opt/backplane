@@ -5,6 +5,14 @@ defmodule Backplane.AiProtocol.Codec do
   Supported selectors are `:anthropic`, `:openai`, `:google`, and `:openai_responses`. Request encoding accepts
   `stream: boolean()`. Streaming functions retain state only in the value returned to the caller.
   Transport, authentication, retries, and execution remain host-owned.
+
+  Anthropic and Google admit ordered user inline PDFs as exact URI/MIME/base64
+  resources with empty block/message extensions. URI is canonical-only and omitted
+  from the native inline mapping. Each PDF is nonempty and at most 10 MiB decoded;
+  `limits` apply during media revalidation and to the ordered collection of PDF
+  data maps across the request. Existing defaults remain unchanged. Use the same
+  larger limits at construction, JSON reload/reconstruction and request encoding;
+  hosts separately bound complete persisted JSON and provider HTTP bodies.
   """
 
   alias Backplane.AiProtocol.{Error, Request, Response, StreamEvent}

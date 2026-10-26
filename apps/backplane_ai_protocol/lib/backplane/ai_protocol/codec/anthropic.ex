@@ -9,7 +9,7 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Backplane.AiProtocol.Media.preflight(request, :anthropic),
+    with :ok <- Backplane.AiProtocol.Media.preflight(request, :anthropic, opts),
          :ok <- Common.reject_custom_tools(request),
          :ok <- Common.reject_state_references(request),
          :ok <-
@@ -108,7 +108,7 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
       message ->
         with {:ok, content} <-
-               message.content |> Enum.map(&encode_block(&1, opts)) |> collect(),
+               message.content |> Enum.map(&encode_message_block(&1, message, opts)) |> collect(),
              do: {:ok, %{"role" => role(message.role), "content" => content}}
     end)
     |> collect()
@@ -116,7 +116,7 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp encode_tool_result(message, opts) do
     with {:ok, content} <-
-           message.content |> Enum.map(&encode_tool_block(&1, message, opts)) |> collect() do
+           message.content |> Enum.map(&encode_message_block(&1, message, opts)) |> collect() do
       {:ok,
        %{
          "role" => "user",
@@ -132,11 +132,11 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
     end
   end
 
-  defp encode_tool_block(%ContentBlock{type: type} = block, message, _opts)
+  defp encode_message_block(%ContentBlock{type: type} = block, message, opts)
        when type in [:audio, :resource, :resource_link],
-       do: Backplane.AiProtocol.Media.encode(block, :anthropic, message)
+       do: Backplane.AiProtocol.Media.encode(block, :anthropic, message, opts)
 
-  defp encode_tool_block(block, _message, opts), do: encode_block(block, opts)
+  defp encode_message_block(block, _message, opts), do: encode_block(block, opts)
 
   defp encode_block(%ContentBlock{type: :text, text: text}, _opts),
     do: {:ok, %{"type" => "text", "text" => text}}

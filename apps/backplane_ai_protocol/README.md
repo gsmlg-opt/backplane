@@ -183,8 +183,8 @@ Codec support is explicit:
 | Codec | New supported request forms |
 | --- | --- |
 | OpenAI Chat | User input with inline `audio/wav` or `audio/mpeg`, encoded as `input_audio` WAV/MP3 |
-| Google | User inline WAV, MPEG/MP3, AIFF, AAC, OGG or FLAC audio; URI-only resources with HTTP, HTTPS or GS identities, encoded as `inlineData`/`fileData` |
-| Anthropic | Tool-result HTTPS PDF resource references and named PDF resource links, encoded as URL document blocks |
+| Google | User inline PDF and WAV, MPEG/MP3, AIFF, AAC, OGG or FLAC audio; URI-only resources with HTTP, HTTPS or GS identities, encoded as `inlineData`/`fileData` |
+| Anthropic | User inline PDF documents; tool-result HTTPS PDF resource references and named PDF resource links, encoded as URL document blocks |
 | OpenAI Responses | New audio/resource/link forms return incompatibility |
 
 Anthropic tool results accept `:resource` data with exactly `uri` and `mime_type`,
@@ -203,13 +203,117 @@ audio. Unsupported forms or media with extensions return `:incompatible` and
 `upstream_outcome: :not_submitted` during encoding, including Google tool results
 with a native function-response override.
 Hosts must only submit successfully encoded requests. The codecs never flatten
-media into explanatory text or discard URI/metadata to obtain a supported form.
+media into explanatory text. The user inline-PDF form below explicitly omits its
+canonical-only URI; other mappings preserve their supported URI and metadata or
+return an incompatibility.
 
 The selected Anthropic model must support PDF URL documents; successful local
 encoding does not prove remote model acceptance. The independently authored
 [native fixture provenance](test/fixtures/anthropic/PROVENANCE.md) and
 [source notes](SOURCE_NOTES.md) describe the official schema evidence and the
 canonical JSON-reload/native-encoding checks, without claiming provider execution.
+
+### User inline PDFs
+
+For Anthropic Messages and Google GenerateContent, a user resource with exactly
+three string-keyed data fields encodes as a native inline PDF:
+
+```elixir
+%{type: :resource,
+  data: %{"uri" => "file:///fixture/report.pdf",
+          "mime_type" => "application/pdf",
+          "data" => Base.encode64(pdf_bytes)}}
+```
+
+The MIME is exactly `application/pdf`. Base64 must decode to **1 through
+10,485,760 bytes (10 MiB) per document**, independently of caller structural
+limits. Construction retains its general resource contract (including empty
+base64); the narrower encoding subset rejects empty/oversized documents as
+`:incompatible` with `upstream_outcome: :not_submitted`. Invalid base64, unknown
+or competing data fields, and structural-limit failures retain
+`:invalid_request`. The codec does not inspect PDF contents.
+
+Both PDF block extensions and extensions on any user message containing an
+inline PDF must be empty. Extra titles, filenames, citations, provenance or
+annotations are not synthesized or silently removed. Constructor-valid unsupported
+metadata remains incompatible. Assistant/system/developer/tool messages and
+OpenAI Chat/Responses do not gain this route. Existing URL PDF tool results,
+Google URI resources and supported text/image/audio mappings remain available.
+
+The absolute `uri` is an exact **canonical-only source identity**, including a
+`file:` URI. Construction and JSON reload retain it without fetching or
+normalizing it. This new mapping deliberately omits that URI from provider
+output; it does not become a URL, title, filename or prompt. Anthropic emits
+`{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":BASE64}}`;
+Google emits `{"inlineData":{"mimeType":"application/pdf","data":BASE64}}`.
+Both retain the caller's exact base64 and every text/PDF position, including
+multiple distinct PDFs. Google `encode_rest_request/3` keeps targeting outside
+its native body; the historical `encode_request/3` envelope contains the same
+parts. No response/stream PDF decoder is added.
+
+Global structural defaults stay unchanged: 262,144 bytes per string and
+1,048,576 aggregate bytes per validated portable value. After per-block media
+validation, encoding also validates **one ordered list of canonical data maps
+for all admitted user PDFs across the request**, using caller `limits` and the
+existing byte/depth/node/map/list accounting. This counts URI, MIME, base64 and
+map keys. It excludes prompt text and unrelated media; it does not introduce a
+whole-Request byte budget. Two valid individual documents can therefore exceed
+the PDF collection budget. Host HTTP boundaries must separately bound the
+complete serialized provider body and apply the selected model's current limits.
+
+For an explicit profile supporting two ordinary PDFs up to 10 MiB each, with
+bounded identities/prompts and JSON overhead:
+
+```elixir
+limits = %{max_string_bytes: 13_981_016, max_bytes: 33_554_432}
+opts = [limits: limits]
+json_opts = [limits: limits, max_encoded_bytes: 33_554_432]
+
+{:ok, block} = ContentBlock.new(%{type: :resource, data: %{
+  "uri" => "file:///fixture/report.pdf", "mime_type" => "application/pdf",
+  "data" => Base.encode64(pdf_bytes)
+}}, opts)
+{:ok, message} = Message.new(%{role: :user, content: [block]}, opts)
+{:ok, request} = Request.new(%{model: "pdf-capable-model", input: [message]}, opts)
+{:ok, json} = Serialization.to_json(request)
+true = byte_size(json) <= 33_554_432 # host-owned persistence boundary
+
+validator = fn attrs ->
+  roles = %{"user" => :user, "assistant" => :assistant, "system" => :system,
+            "developer" => :developer, "tool" => :tool}
+  statuses = %{"success" => :success, "error" => :error, nil => nil}
+  input = Enum.map(attrs["input"], fn item ->
+    %{role: Map.fetch!(roles, item["role"]), content: item["content"],
+      tool_call_id: item["tool_call_id"], status: Map.fetch!(statuses, item["status"]),
+      extensions: item["extensions"]}
+  end)
+  # Only fixed public fields and known role/status values; no arbitrary atoms.
+  request_attrs = Map.new(Request.keys(), &{&1, attrs[Atom.to_string(&1)]})
+  Request.new(Map.put(request_attrs, :input, input), opts)
+end
+
+{:ok, restored} = Serialization.decode_and_validate(json, validator, json_opts)
+{:ok, anthropic} = Codec.encode_request(:anthropic, restored, opts)
+{:ok, %{target: target, body: google}} = Codec.encode_rest_request(:google, restored, opts)
+```
+
+Pass the same `limits` to every applicable constructor, reload validation,
+constructor closure and encoder. A maximum-size PDF occupies 13,981,016 base64
+bytes; two occupy 27,962,032 before other data. The 32 MiB profile admits bounded
+additional content, not arbitrary content. Omitting raised options at any stage
+still exposes that stage's defaults. `to_json/1` accepts no options and enforces
+no encoded-size bound. `from_json/2` defaults to 2,097,152 encoded bytes;
+`decode_and_validate/3` additionally bounds the entire decoded JSON projection
+before reconstruction, a broader check than the codec's PDF-only collection.
+No stage retries automatically with larger limits.
+
+Native fixture comparisons and OTP loopback HTTP checks establish local
+persistence, wire encoding and host transport composition. They do not establish
+authenticated provider acceptance, PDF validity/quality, password/page/context
+handling, model capability or analysis results. The host owns acquisition,
+capability selection, authentication, HTTP and provider failures. See the
+[Anthropic](test/fixtures/anthropic/PROVENANCE.md#inline-user-pdfs) and
+[Google](test/fixtures/google_genai/PROVENANCE.md#inline-user-pdfs) schema provenance.
 
 Google response and stream decoding preserve audio as `:audio` and file parts as
 URI-only `:resource`, retaining additional media metadata under

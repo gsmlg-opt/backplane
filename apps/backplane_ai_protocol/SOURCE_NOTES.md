@@ -85,3 +85,39 @@ native JSON, preserve canonical messages across JSON reload, and capture the
 actual JSON sent by OTP's HTTP host client to a task-owned loopback listener.
 The protocol package remains transport-free. This establishes local functional
 encoding and legacy-codec compatibility, without provider/model acceptance.
+
+## User inline PDF evidence
+
+The inline user-PDF mapping addresses Backplane #116, whose reference includes
+OpenClaw commit `488631c18fae7cc541ba8fc8beff6cbb0438787b`. Implementation follows
+the approved `docs/superpowers/specs/2026-10-27-inline-pdf-design.md`: existing
+URI-bearing canonical resources, strict empty metadata subset, Anthropic/Google
+user-role mappings, fixed 10 MiB decoded ceiling and a bounded aggregate list of
+new PDF data maps. The codec remains pure and existing global defaults remain
+unchanged; the README explains each construction/persistence/encoding limit stage.
+
+The fixture author refreshed official native schema sources on 2026-10-27:
+
+- Anthropic `Base64PDFSourceParam` and `DocumentBlockParam` in the official Python
+  SDK, with retrieved source SHA-256 hashes recorded in
+  [Anthropic provenance](test/fixtures/anthropic/PROVENANCE.md#inline-user-pdfs).
+  They require document/base64/application-pdf/data without a URI field.
+- Google GenerateContent discovery `v1beta`, revision `20261026`, whose
+  `Content.parts` → `Part.inlineData` → `Blob` schema supplies MIME plus base64.
+  The retrieved snapshot SHA-256 is recorded in
+  [Google provenance](test/fixtures/google_genai/PROVENANCE.md#inline-user-pdfs).
+
+The local one-page PDF fixtures and complete native request fixtures were
+independently authored, without encoder output as an oracle. Focused ExUnit tests
+cover exact byte/order preservation after constructor-based JSON reload, both
+Google public entry points, explicit larger profiles, per-document boundaries,
+aggregate structural budgets, unsupported metadata/roles/protocols, and real OTP
+HTTP composition at both loopback native paths. Existing media and thought-signature
+behavior is checked by the owning protocol suite. Commands and actual outcomes
+are delivery evidence, separate from these schema sources.
+
+These are local functional and schema checks, not live authenticated provider
+requests. They do not claim every model accepts PDFs or that provider body, page,
+context, document-quality or password constraints have been met. Canonical `uri`
+is deliberately omitted only for this new inline mapping; the host still owns
+acquisition, model selection, HTTP/authentication and provider failure handling.

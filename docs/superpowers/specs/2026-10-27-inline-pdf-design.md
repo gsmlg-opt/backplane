@@ -2,8 +2,8 @@
 
 Date: 2026-10-27
 
-Status: proposed and unapproved. This document requests approval of the concrete
-contract below; it does not authorize implementation or claim completed tests.
+Status: approved by the user on 2026-10-27. Implementation and verification are
+in progress; this document does not claim completed feature tests.
 
 Issue: [#116](https://github.com/gsmlg-opt/backplane/issues/116).
 Source baseline: `main` at `793cd3cf5780f6c003653191275a1c42e920d37b`.

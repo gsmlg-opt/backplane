@@ -26,13 +26,13 @@ defmodule Backplane.AiProtocol.Codec.Google do
   def encode_rest_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Backplane.AiProtocol.Media.preflight(request, :google),
+    with :ok <- Backplane.AiProtocol.Media.preflight(request, :google, opts),
          :ok <- Common.reject_custom_tools(request),
          :ok <- Common.reject_state_references(request),
          :ok <- validate_provider_states(request.input, destination),
-         {:ok, contents} <- encode_contents(request.input),
+         {:ok, contents} <- encode_contents(request.input, opts),
          {:ok, declarations} <- encode_tools(request.tools),
-         {:ok, system} <- encode_system(request.input),
+         {:ok, system} <- encode_system(request.input, opts),
          {:ok, config} <- generation_config(request.settings, request.output_constraints) do
       body = %{"contents" => contents}
 
@@ -114,18 +114,19 @@ defmodule Backplane.AiProtocol.Codec.Google do
   def stream_finish(state, reason),
     do: Common.finish(state, reason, &decode_frame/2, &finish_stream/3)
 
-  defp encode_system(messages) do
+  defp encode_system(messages, opts) do
     messages
     |> Enum.filter(fn
       %{role: role} -> role in [:system, :developer]
       _ -> false
     end)
-    |> Enum.flat_map(& &1.content)
-    |> Enum.map(&encode_part/1)
+    |> Enum.flat_map(fn message ->
+      Enum.map(message.content, &encode_part(&1, message, opts))
+    end)
     |> collect()
   end
 
-  defp encode_message(%{role: :tool} = message, calls) do
+  defp encode_message(%{role: :tool} = message, calls, _opts) do
     case Map.fetch(calls, message.tool_call_id) do
       {:ok, call} ->
         with {:ok, response} <- function_response(message) do
@@ -148,8 +149,8 @@ defmodule Backplane.AiProtocol.Codec.Google do
     end
   end
 
-  defp encode_message(message, _calls) do
-    with {:ok, parts} <- encode_parts(message.content),
+  defp encode_message(message, _calls, opts) do
+    with {:ok, parts} <- encode_parts(message.content, message, opts),
          do:
            {:ok,
             %{
@@ -158,21 +159,23 @@ defmodule Backplane.AiProtocol.Codec.Google do
             }}
   end
 
-  defp encode_part(%ContentBlock{type: :text, text: text}), do: {:ok, %{"text" => text}}
+  defp encode_part(%ContentBlock{type: :text, text: text}, _message, _opts),
+    do: {:ok, %{"text" => text}}
 
-  defp encode_part(%ContentBlock{type: :reasoning, data: text}) when is_binary(text),
-    do: {:ok, %{"text" => text, "thought" => true}}
+  defp encode_part(%ContentBlock{type: :reasoning, data: text}, _message, _opts)
+       when is_binary(text),
+       do: {:ok, %{"text" => text, "thought" => true}}
 
-  defp encode_part(%ContentBlock{type: :image, data: image}) do
+  defp encode_part(%ContentBlock{type: :image, data: image}, _message, _opts) do
     with {:ok, {media_type, data}} <- Common.image(image),
          do: {:ok, %{"inlineData" => %{"mimeType" => media_type, "data" => data}}}
   end
 
-  defp encode_part(%ContentBlock{type: type} = block)
+  defp encode_part(%ContentBlock{type: type} = block, message, opts)
        when type in [:audio, :resource, :resource_link],
-       do: Backplane.AiProtocol.Media.encode(block, :google)
+       do: Backplane.AiProtocol.Media.encode(block, :google, message, opts)
 
-  defp encode_part(%ContentBlock{type: :tool_call, tool_call: call}) do
+  defp encode_part(%ContentBlock{type: :tool_call, tool_call: call}, _message, _opts) do
     with {:ok, args} <- Common.json_arguments(call.raw_arguments) do
       function_call = %{"name" => call.name, "args" => args}
 
@@ -183,14 +186,19 @@ defmodule Backplane.AiProtocol.Codec.Google do
     end
   end
 
-  defp encode_part(%ContentBlock{
-         type: :provider_state,
-         state: %{kind: "google_thought_signature", payload: payload}
-       })
+  defp encode_part(
+         %ContentBlock{
+           type: :provider_state,
+           state: %{kind: "google_thought_signature", payload: payload}
+         },
+         _message,
+         _opts
+       )
        when is_map(payload),
        do: encode_provider_state(payload)
 
-  defp encode_part(_), do: {:error, Error.incompatible!("Google cannot preserve content block")}
+  defp encode_part(_, _message, _opts),
+    do: {:error, Error.incompatible!("Google cannot preserve content block")}
 
   defp encode_tools(tools),
     do:
@@ -205,7 +213,7 @@ defmodule Backplane.AiProtocol.Codec.Google do
       end)
       |> collect()
 
-  defp encode_contents(messages) do
+  defp encode_contents(messages, opts) do
     Enum.reduce_while(messages, {:ok, [], %{}}, fn
       %{role: role}, {:ok, contents, names} when role in [:system, :developer] ->
         {:cont, {:ok, contents, names}}
@@ -214,7 +222,7 @@ defmodule Backplane.AiProtocol.Codec.Google do
         {:halt, {:error, Error.incompatible!("Google does not accept root provider state")}}
 
       message, {:ok, contents, names} ->
-        case encode_message(message, names) do
+        case encode_message(message, names, opts) do
           {:ok, wire} ->
             next_calls =
               Enum.reduce(message.content, names, fn
@@ -646,9 +654,9 @@ defmodule Backplane.AiProtocol.Codec.Google do
     end
   end
 
-  defp encode_parts(blocks) do
+  defp encode_parts(blocks, message, opts) do
     Enum.reduce_while(blocks, {:ok, [], 0}, fn block, {:ok, parts, next_position} ->
-      case encode_part(block) do
+      case encode_part(block, message, opts) do
         {:ok,
          %{
            "__google_exact_part__" => exact,

@@ -21,6 +21,15 @@ defmodule Backplane.AiProtocol.ContentBlock do
   MIME and optional text/base64 content; links retain URI and name. Portable
   annotations and provenance belong in namespaced `extensions`. Known JSON type
   tags decode through a fixed whitelist without creating atoms.
+
+  User inline PDFs for Anthropic/Google use exactly `"uri"`, `"mime_type"` set to
+  `"application/pdf"`, and base64 `"data"` in a resource. Encoding requires empty
+  block/message extensions and 1..10_485_760 decoded bytes per PDF. URI remains
+  canonical-only identity and is explicitly omitted from native inline parts.
+  Constructors retain the general resource contract; encoding checks this subset
+  and caller limits on both individual data maps and their request-wide PDF list.
+  Larger values require the same explicit `limits` through construction, JSON
+  reload validation/reconstruction and encoding; global defaults stay unchanged.
   """
 
   alias Backplane.AiProtocol.Error

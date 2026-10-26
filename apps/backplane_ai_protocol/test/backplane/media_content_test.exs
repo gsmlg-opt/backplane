@@ -190,6 +190,67 @@ defmodule Backplane.AiProtocol.MediaContentTest do
              })
   end
 
+  test "caller limits reach Google audio and Anthropic PDF tool-reference encoding" do
+    opts = [limits: %{max_string_bytes: 300_000, max_bytes: 600_000}]
+    audio_data = Base.encode64(String.duplicate("a", 200_000))
+    audio = put_in(@audio, [:data, "data"], audio_data)
+
+    assert {:ok, request} =
+             Request.new(%{model: "fixture", input: [%{role: :user, content: [audio]}]}, opts)
+
+    assert {:error, %Error{kind: :invalid_request}} = Codec.encode_request(:google, request)
+    assert {:ok, wire} = Codec.encode_request(:google, request, opts)
+
+    assert hd(wire["contents"])["parts"] == [
+             %{"inlineData" => %{"mimeType" => "audio/wav", "data" => audio_data}}
+           ]
+
+    # OpenAI's final audio encoder retains its existing default-limit wrapper.
+    assert {:error, %Error{kind: :invalid_request}} = Codec.encode_request(:openai, request, opts)
+
+    uri = "https://example.invalid/" <> String.duplicate("x", 263_000) <> ".pdf"
+    block = put_in(@pdf_resource, [:data, "uri"], uri)
+
+    assert {:ok, message} =
+             Message.new(%{role: :tool, tool_call_id: "call-pdf", content: [block]}, opts)
+
+    request = tool_request(message, opts)
+    assert {:error, %Error{kind: :invalid_request}} = Codec.encode_request(:anthropic, request)
+    assert {:ok, wire} = Codec.encode_request(:anthropic, request, opts)
+
+    assert List.last(wire["messages"])["content"] == [
+             %{
+               "type" => "tool_result",
+               "tool_use_id" => "call-pdf",
+               "is_error" => false,
+               "content" => [
+                 %{"type" => "document", "source" => %{"type" => "url", "url" => uri}}
+               ]
+             }
+           ]
+  end
+
+  test "all media preflights apply smaller caller limits while old content has no aggregate budget" do
+    request = user_request([@audio])
+
+    for protocol <- [:anthropic, :openai, :openai_responses, :google] do
+      assert {:error, %Error{kind: :invalid_request}} =
+               Codec.encode_request(protocol, request, limits: %{max_string_bytes: 4})
+    end
+
+    reference = %{
+      type: :resource,
+      data: %{"uri" => "gs://fixture/report.pdf", "mime_type" => "application/pdf"}
+    }
+
+    for {protocol, block} <- [{:openai, @audio}, {:google, @audio}, {:google, reference}] do
+      assert {:ok, _} =
+               Codec.encode_request(protocol, user_request([block, block]),
+                 limits: %{max_list_length: 1}
+               )
+    end
+  end
+
   test "OpenAI Chat encodes inline WAV and MP3 user audio without changing content order" do
     for {mime, format} <- [{"audio/wav", "wav"}, {"audio/mpeg", "mp3"}] do
       audio = put_in(@audio, [:data, "mime_type"], mime)
@@ -537,27 +598,30 @@ defmodule Backplane.AiProtocol.MediaContentTest do
     message
   end
 
-  defp tool_request(message) do
+  defp tool_request(message, opts \\ []) do
     assert {:ok, request} =
-             Request.new(%{
-               model: "fixture",
-               input: [
-                 %{
-                   role: :assistant,
-                   content: [
-                     %{
-                       type: :tool_call,
-                       tool_call: %{
-                         id: "call-pdf",
-                         name: "read_pdf",
-                         raw_arguments: {:json, "{}"}
+             Request.new(
+               %{
+                 model: "fixture",
+                 input: [
+                   %{
+                     role: :assistant,
+                     content: [
+                       %{
+                         type: :tool_call,
+                         tool_call: %{
+                           id: "call-pdf",
+                           name: "read_pdf",
+                           raw_arguments: {:json, "{}"}
+                         }
                        }
-                     }
-                   ]
-                 },
-                 message
-               ]
-             })
+                     ]
+                   },
+                   message
+                 ]
+               },
+               opts
+             )
 
     request
   end
