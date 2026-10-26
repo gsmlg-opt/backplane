@@ -316,7 +316,22 @@ including suppression of prompts, tokens and dynamic session identities.
 A fresh full local run then passed 19/19 deterministic checks and 1/1 real-model
 semantic check with all four cleanup checks true. The Linux refusal did not
 recur locally; this is additional passing evidence, not proof of a root-cause
-repair. Linux release qualification remains a separate required gate.
+repair. The subsequent Linux qualification at `7900ecd810bc0c716d9851c92d601bc3e36b7e11`
+([40282298681](https://github.com/gsmlg-opt/backplane/actions/runs/40282298681))
+passed 19/19 deterministic checks, all 11 recovery checkpoints and all four cleanup
+checks. T13 is explicitly `not_run` in that deterministic workflow. The separate
+OpenClaw artifact has SHA-256
+`ea01bd016634ef4ac258acd4355042e155abaf766f4eb908bf4f32545d48b1c1`, verified against
+the downloaded ZIP bytes. The original Linux refusal's root cause remains
+unproven; no broader retry or production plugin workaround was added.
+
+The same source passed [CI 40280294700](https://github.com/gsmlg-opt/backplane/actions/runs/40280294700)
+(5/5) and [Test 40280294679](https://github.com/gsmlg-opt/backplane/actions/runs/40280294679)
+(effective 20/20). Actual selected results were API 342/0, Memory Contract 29/0,
+Memory 1482/0 with five existing exclusions, and Host Agent 707/0. Monitor's first
+job was cancelled during a 15-minute Azure Ubuntu LLVM dependency download before
+compilation/tests; its single-job rerun passed 93/0 while the 19 original successes
+were retained. This environment event is not a code failure or repair.
 
 Final local evidence: `/tmp/openclaw-live-workspace-qualified.log` and
 `/tmp/openclaw-live-workspace-qualified-results.json`, followed by the instrumented
@@ -378,3 +393,49 @@ The workflow separately tests the OpenClaw provider from the assembled host-agen
 release before archiving.
 Full local semantic evidence is required for this implementation acceptance;
 the deterministic CI gate does not replace it.
+
+### Released artifacts
+
+[`v1.10.41`](https://github.com/gsmlg-opt/backplane/releases/tag/v1.10.41) was
+published from `7900ecd810bc0c716d9851c92d601bc3e36b7e11` on 2026-10-26.
+[Release 40282298681](https://github.com/gsmlg-opt/backplane/actions/runs/40282298681)
+completed 16/16 jobs successfully, including all six platform builds, installed
+database migration/startup smoke, five Hex publications and OCI publication.
+The existing `scripts/verify_qualified_hex_publication.py` passed unchanged:
+the version tag, exact source/run, complete 25-asset release and six-file
+qualification ZIP/report checksums all agree.
+
+All six public OTP archives were downloaded and checked against their public
+GitHub digest and checksum sidecar, actual ELF/Mach-O architecture and packaged
+release/application versions. All four host-agent archives contain the same
+seven OpenClaw runtime modules and three version-normalized manifests as the
+immutable source. Both gateway archives' compiled `BuildInfo` literals confirm
+the exact source SHA and `prod` through the official OTP `beam_lib` decoder.
+
+All five Hex packages passed API version/outer checksum binding, the inner Hex
+checksum, package/version metadata and versioned HexDocs HTTP 200 checks. The
+temporary verifier initially rejected HexDocs' official redirect to each exact
+package subdomain; it was corrected to recognize that versioned canonical URL
+without changing checksum, package or version requirements. The initial failed
+verification is retained separately from the final successful result.
+
+The public `ghcr.io/gsmlg-dev/backplane:1.10.41` OCI index is
+`sha256:51d5f5ff714411ffbeed3d5a8819967a26fe5ef35540d3d300caddac6ebbe4c8`.
+Index, manifest and config digests, Linux/amd64 architecture, version and source
+revision were verified; `latest` resolves to the same index. The inherited
+source-URL label still names `gsmlg-dev/backplane`. Image layers were not
+downloaded or executed, and no production deployment is established by these
+checks.
+
+Public verification evidence is in
+`/tmp/openclaw-public-otp-v1.10.41-results.json`,
+`/tmp/openclaw-public-packages-verify-results.json` and
+`/tmp/openclaw-qualified-publication-7900ecd8.log`. Subsequent documentation-only
+commits describe this immutable release. User plugin installation, production
+data migration and deployment remain separate, unperformed operational actions.
+
+During documentation finalization, `main` advanced to the independent AgentRuntime
+fix `2b7a3318a5fbb31b5a49824b01a3343dac043d0b`. It was fast-forwarded without
+conflicts, preserving the OpenClaw documentation and original untracked plan.
+The published release remains pinned to `7900ecd8`; that later runtime fix is
+outside this release's qualification and artifacts.
