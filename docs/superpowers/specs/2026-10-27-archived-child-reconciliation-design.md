@@ -2,7 +2,7 @@
 
 Date: 2026-10-27
 
-Status: proposed for user approval; no implementation is authorized by this document.
+Status: approved by the user on 2026-10-27; implementation and verification are in progress.
 
 Scope: [#117](https://github.com/gsmlg-opt/backplane/issues/117) and
 [#119](https://github.com/gsmlg-opt/backplane/issues/119), targeting the next

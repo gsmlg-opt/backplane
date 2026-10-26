@@ -2,6 +2,8 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   use GenServer
 
   alias Backplane.AgentRuntime.Error
+  alias Backplane.AgentRuntime.Codex.Reconciliation
+  alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
   @moduledoc """
   Process-local run resources with owner/incarnation fencing and bounded cleanup.
@@ -62,6 +64,28 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   def fence_owner(pid, owner), do: GenServer.call(pid, {:fence_owner, owner})
   def close_owner(pid, owner), do: GenServer.call(pid, {:close_owner, owner}, :infinity)
 
+  @doc "Seal the complete local inventory of a fenced recovery-enabled owner."
+  def recovery_manifest(pid, owner) do
+    with {:ok, pin} <- GenServer.call(pid, {:recovery_pin, owner}), do: {:ok, pin.manifest}
+  end
+
+  @doc "Apply a persisted closure receipt without repeating cleanup or acknowledgements."
+  def reconcile_owner(pid, owner, receipt_ref) do
+    with {:ok, pin} <- GenServer.call(pid, {:recovery_pin, owner}),
+         {:ok, receipt} <-
+           Reconciliation.load_confirmed(
+             pin.config,
+             receipt_ref,
+             pin.manifest["subject"],
+             pin.manifest["manifest_digest"]
+           ) do
+      GenServer.call(pid, {:reconcile_owner, owner, pin.manifest, receipt_ref, receipt})
+    end
+  end
+
+  @doc false
+  def recovery_closed(pid, owner), do: GenServer.call(pid, {:recovery_closed, owner})
+
   def code_state(pid, owner, incarnation \\ 1),
     do: GenServer.call(pid, {:code_state, owner, incarnation})
 
@@ -99,8 +123,12 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     timeout = Keyword.get(opts, :cleanup_timeout, @default_cleanup_timeout)
     max_continuations = Keyword.get(opts, :max_continuations, 16)
 
-    if is_integer(timeout) and timeout > 0 and timeout <= 60_000 and is_integer(max_continuations) and
-         max_continuations in 1..256 do
+    recovery_options = Reconciliation.validate_options(opts)
+    owner_incarnation = Keyword.get(opts, :recovery_owner_incarnation, 1)
+
+    if recovery_options == :ok and is_integer(timeout) and timeout > 0 and timeout <= 60_000 and
+         is_integer(max_continuations) and max_continuations in 1..256 and
+         is_integer(owner_incarnation) and owner_incarnation > 0 do
       {:ok, cleanup_supervisor} = Task.Supervisor.start_link()
       {:ok, worker_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
 
@@ -118,18 +146,73 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
          registry_pid: self(),
          cleanup_supervisor: cleanup_supervisor,
          worker_supervisor: worker_supervisor,
-         cleanup_timeout: timeout
+         cleanup_timeout: timeout,
+         recovery: Keyword.get(opts, :recovery),
+         recovery_scope_id: Keyword.get(opts, :recovery_scope_id),
+         recovery_owner_incarnation: owner_incarnation,
+         recovery_inventory: %{},
+         recovery_receipts: %{}
        }}
     else
       {:stop,
-       Error.new(
-         :validation,
-         "cleanup_timeout must be 1..60000 ms and max_continuations must be 1..256"
+       if(recovery_options != :ok,
+         do: elem(recovery_options, 1),
+         else:
+           Error.new(
+             :validation,
+             "cleanup_timeout must be 1..60000 ms and max_continuations must be 1..256"
+           )
        )}
     end
   end
 
   @impl true
+  def handle_call({:recovery_pin, owner}, _from, state) do
+    {:reply, registry_pin(state, owner), state}
+  end
+
+  def handle_call({:recovery_closed, owner}, _from, state) do
+    {:reply, owner_closed(state, owner), state}
+  end
+
+  def handle_call({:reconcile_owner, owner, manifest, reference, receipt}, _from, state) do
+    with {:ok, current} <- registry_pin(state, owner),
+         true <- current.manifest == manifest do
+      digest = receipt["receipt_digest"]
+
+      case state.recovery_receipts[owner] do
+        %{reference: ^reference, receipt_digest: ^digest, acknowledgement: ack} ->
+          {:reply, {:ok, ack}, state}
+
+        _ ->
+          next = project_owner(state, owner, reference)
+
+          ack = %{
+            status: :confirmed,
+            owner_id: owner,
+            receipt_ref: reference,
+            receipt_revision: receipt["revision"]
+          }
+
+          saved = %{
+            reference: reference,
+            receipt_digest: receipt["receipt_digest"],
+            acknowledgement: ack
+          }
+
+          {:reply, {:ok, ack},
+           %{next | recovery_receipts: Map.put(next.recovery_receipts, owner, saved)}}
+      end
+    else
+      false ->
+        {:reply, {:error, Error.new(:resource_conflict, "Registry recovery inventory changed")},
+         state}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
   def handle_call({:code_state, owner, incarnation}, _from, state) do
     with :ok <- owner_open(state, owner), :ok <- validate_incarnation(incarnation) do
       {:reply, Map.get(state.code_state, {owner, incarnation}, %{}), state}
@@ -180,6 +263,7 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     cleanup = Keyword.get(opts, :cleanup)
 
     with :ok <- owner_open(state, owner),
+         :ok <- recovery_capacity(state),
          :ok <- resource_capacity(state, kind),
          :ok <- validate_incarnation(incarnation),
          :ok <- validate_cleanup(cleanup) do
@@ -212,7 +296,10 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
         case Map.get(state.settled, {:resource, handle[:resource_id]}) do
           %{owner_id: ^owner, handle: stored} = settled when is_map(handle) ->
             if stored.incarnation == handle[:incarnation],
-              do: {:reply, {:ok, Map.take(settled, [:status, :reason])}, state},
+              do:
+                {:reply,
+                 {:ok, Map.take(settled, [:status, :reason, :initial_reason, :reconciliation])},
+                 state},
               else:
                 {:reply, {:error, Error.new(:resource_conflict, "stale resource incarnation")},
                  state}
@@ -251,7 +338,16 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
       {:error, %Error{class: :not_found}} = error ->
         case Map.get(state.settled, {:session, id}) do
           %{owner_id: ^owner, handle: %{incarnation: ^incarnation}} = receipt ->
-            {:reply, {:ok, Map.take(receipt, [:status, :reason, :acknowledgement])}, state}
+            {:reply,
+             {:ok,
+              Map.take(receipt, [
+                :status,
+                :reason,
+                :acknowledgement,
+                :initial_reason,
+                :initial_acknowledgement,
+                :reconciliation
+              ])}, state}
 
           _ ->
             {:reply, error, state}
@@ -267,6 +363,7 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     cleanup = Keyword.get(opts, :cleanup)
 
     with :ok <- owner_open(state, owner),
+         :ok <- recovery_capacity(state),
          :ok <- validate_cleanup(cleanup),
          :ok <- validate_lifecycle(Keyword.get(opts, :acknowledge)),
          :ok <- validate_incarnation(Keyword.get(opts, :incarnation, 1)) do
@@ -558,11 +655,157 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   defp get_entry(state, {:resource, id}), do: Map.get(state.resources, id)
   defp get_entry(state, {:session, id}), do: Map.get(state.sessions, id)
 
-  defp put_entry(state, {:resource, id}, entry),
-    do: %{state | resources: Map.put(state.resources, id, entry)}
+  defp put_entry(state, {:resource, id} = key, entry),
+    do: remember_entry(%{state | resources: Map.put(state.resources, id, entry)}, key, entry)
 
-  defp put_entry(state, {:session, id}, entry),
-    do: %{state | sessions: Map.put(state.sessions, id, entry)}
+  defp put_entry(state, {:session, id} = key, entry),
+    do: remember_entry(%{state | sessions: Map.put(state.sessions, id, entry)}, key, entry)
+
+  defp remember_entry(%{recovery: nil} = state, _, _), do: state
+
+  defp remember_entry(state, key, entry) do
+    item = %{
+      owner_id: entry.owner_id,
+      handle: entry.handle,
+      acknowledgement: is_function(Map.get(entry, :acknowledge), 1)
+    }
+
+    %{state | recovery_inventory: Map.put_new(state.recovery_inventory, key, item)}
+  end
+
+  defp remember_settled(%{recovery: nil} = state, _, _), do: state
+
+  defp remember_settled(state, key, receipt) do
+    case state.recovery_inventory[key] do
+      nil ->
+        state
+
+      item ->
+        %{
+          state
+          | recovery_inventory:
+              Map.put(state.recovery_inventory, key, Map.put(item, :settlement, receipt))
+        }
+    end
+  end
+
+  defp recovery_capacity(%{recovery: nil}), do: :ok
+
+  defp recovery_capacity(state) do
+    if map_size(state.recovery_inventory) < 4_096,
+      do: :ok,
+      else: {:error, Error.new(:overloaded, "recovery owner inventory is full")}
+  end
+
+  defp registry_pin(%{recovery: nil}, _),
+    do: {:error, Error.new(:unsupported_capability, "Registry recovery is not configured")}
+
+  defp registry_pin(state, owner) do
+    busy =
+      Enum.any?(state.tasks, fn
+        {_, {:cleanup, key}} -> match?(%{owner_id: ^owner}, get_entry(state, key))
+        {_, {:acknowledge, key, _}} -> match?(%{owner_id: ^owner}, state.recovery_inventory[key])
+        _ -> false
+      end)
+
+    with :ok <- Evidence.identifier(owner),
+         true <- MapSet.member?(state.closed_owners, owner),
+         false <- busy do
+      subject = %{
+        "kind" => "registry_owner",
+        "scope_id" => state.recovery_scope_id,
+        "owner_id" => owner,
+        "incarnation" => state.recovery_owner_incarnation
+      }
+
+      obligations =
+        state.recovery_inventory
+        |> Enum.filter(fn {_, entry} -> entry.owner_id == owner end)
+        |> Enum.flat_map(fn {key, item} ->
+          identity = Map.put(item.handle, :entry_type, elem(key, 0))
+
+          physical =
+            Evidence.obligation(
+              if(elem(key, 0) == :resource, do: "registry_resource", else: "registry_session"),
+              identity,
+              "registry:" <> owner
+            )
+
+          if item.acknowledgement do
+            ack = Evidence.obligation("acknowledgement", identity, "registry-ack:" <> owner)
+            [physical, Map.put(ack, "requires", [physical["obligation_id"]])]
+          else
+            [physical]
+          end
+        end)
+
+      manifest = Evidence.manifest(subject, [], obligations, "registry-fence:" <> owner)
+      {:ok, %{config: state.recovery, manifest: manifest}}
+    else
+      value when is_boolean(value) ->
+        {:error, Error.new(:resource_conflict, "Registry owner is not fenced and settled")}
+
+      error ->
+        error
+    end
+  end
+
+  defp owner_closed(state, owner) do
+    live = Enum.any?(all_entries(state), fn {_, entry} -> entry.owner_id == owner end)
+
+    outstanding =
+      Enum.any?(state.recovery_inventory, fn {_, item} ->
+        item.owner_id == owner and item.acknowledgement and
+          get_in(item, [:settlement, :acknowledgement]) != :ok
+      end)
+
+    with {:ok, _} <- registry_pin(state, owner) do
+      if live or outstanding,
+        do: {:error, Error.new(:unknown_outcome, "Registry owner closure is unconfirmed")},
+        else: {:ok, Map.get(state.recovery_receipts, owner, %{status: :confirmed})}
+    end
+  end
+
+  defp project_owner(state, owner, reference) do
+    state.recovery_inventory
+    |> Enum.filter(fn {_, item} -> item.owner_id == owner end)
+    |> Enum.reduce(state, fn {key, item}, current ->
+      entry = get_entry(current, key)
+      if entry && entry.monitor_ref, do: Process.demonitor(entry.monitor_ref, [:flush])
+      old = Map.get(item, :settlement, %{})
+      initial_reason = if entry, do: entry.reason, else: Map.get(old, :reason)
+
+      projected =
+        Map.merge(old, %{
+          owner_id: owner,
+          handle: item.handle,
+          status: :confirmed,
+          reason: nil,
+          result: {:ok, :reconciled},
+          initial_reason: Map.get(old, :initial_reason, initial_reason),
+          reconciliation: reference
+        })
+
+      projected =
+        if item.acknowledgement,
+          do:
+            Map.merge(projected, %{
+              initial_acknowledgement:
+                Map.get(old, :initial_acknowledgement, old[:acknowledgement]),
+              acknowledgement: :ok
+            }),
+          else: projected
+
+      next =
+        case key do
+          {:resource, id} -> %{current | resources: Map.delete(current.resources, id)}
+          {:session, id} -> %{current | sessions: Map.delete(current.sessions, id)}
+        end
+
+      next = %{next | settled: Map.put(next.settled, key, projected)}
+      remember_settled(next, key, projected)
+    end)
+  end
 
   defp request_cleanup(state, key, from) do
     case get_entry(state, key) do
@@ -704,6 +947,8 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
           }
       end
 
+    state = remember_settled(state, key, state.settled[key])
+
     case Map.get(entry, :acknowledge) do
       fun when is_function(fun, 1) ->
         task =
@@ -731,10 +976,12 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
         state
 
       receipt ->
-        %{
+        next = %{
           state
           | settled: Map.put(state.settled, key, Map.put(receipt, :acknowledgement, result))
         }
+
+        remember_settled(next, key, next.settled[key])
     end
   end
 

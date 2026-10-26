@@ -9,7 +9,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   use GenServer
 
   alias Backplane.AgentRuntime.{Conversation, Error, Goal, InputSchema, Policy, ToolEffects}
-  alias Backplane.AgentRuntime.Codex.{CollaborationBinding, Contract, Session}
+  alias Backplane.AgentRuntime.Codex.{CollaborationBinding, Contract, Reconciliation, Session}
+  alias Backplane.AgentRuntime.Codex.MultiAgent.Archive
+  alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
   alias Backplane.AgentRuntime.Execution
 
@@ -18,6 +20,13 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   @settlement_wait_ms 5_000
   @settlement_stages_per_target 4
   @v1_namespace "multi_agent_v1"
+  @recovery_keys [
+    :recovery_admission_ref,
+    :recovery_store_ref,
+    :recovery_config_ref,
+    :recovery_authority_ref,
+    :recovery_tool_profile
+  ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts),
@@ -76,6 +85,75 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   """
   def notify_active(runtime, sender, recipient, notification),
     do: GenServer.call(runtime, {:notify_active, sender, recipient, notification}, :infinity)
+
+  @doc "Seals a fenced, host-only manager or exact child recovery inventory."
+  def recovery_manifest(runtime, target) do
+    recovery_operation(runtime, {:manifest, target}, fn pin ->
+      if target == :manager,
+        do: Archive.manager_manifest(pin.config, pin),
+        else: Archive.child_manifest(pin.config, pin)
+    end)
+  end
+
+  @doc "Consumes an independently persisted exact child retirement receipt."
+  def reconcile_child(runtime, receipt_ref) do
+    with {:ok, config} <- GenServer.call(runtime, :recovery_config),
+         {:ok, receipt} <- Reconciliation.load_receipt(config, receipt_ref) do
+      recovery_operation(runtime, {:child_receipt, receipt}, fn pin ->
+        with {:ok, receipt} <-
+               Reconciliation.load_confirmed(
+                 config,
+                 receipt_ref,
+                 Archive.subject(pin.identity),
+                 pin.manifest["manifest_digest"]
+               ),
+             {:ok, record} <- Reconciliation.load_record(config, pin.manifest["run_refs"] |> hd()) do
+          {:ok, %{receipt: receipt, record: record}}
+        end
+      end)
+    end
+  end
+
+  def reconcile_close(runtime, receipt_ref) do
+    recovery_operation(runtime, :manager_receipt, fn pin ->
+      Reconciliation.load_confirmed(
+        pin.config,
+        receipt_ref,
+        pin.subject,
+        pin.manifest["manifest_digest"]
+      )
+    end)
+  end
+
+  @doc false
+  def recovery_closed(runtime), do: GenServer.call(runtime, :recovery_closed)
+
+  def export_child(runtime, target, receipt_ref),
+    do:
+      recovery_operation(runtime, {:export, target}, &Archive.export(&1.config, &1, receipt_ref))
+
+  def restore_child(runtime, archive) do
+    with {:ok, archive} <- Archive.validate(archive) do
+      recovery_operation(runtime, {:restore, archive}, &Archive.restore(&1.config, archive))
+    end
+  end
+
+  defp recovery_operation(runtime, operation, validate) do
+    case GenServer.call(runtime, {:recovery_pin, operation}) do
+      {:ready, result} ->
+        {:ok, result}
+
+      {:ok, pin} ->
+        with {:ok, result} <- Reconciliation.bounded(fn -> validate.(pin) end),
+             do: GenServer.call(runtime, {:recovery_apply, operation, pin, result})
+
+      error ->
+        error
+    end
+  catch
+    :exit, _ ->
+      {:error, Error.new(:unknown_outcome, "manager recovery acknowledgement unavailable")}
+  end
 
   def snapshot(runtime), do: GenServer.call(runtime, :snapshot)
   def subscribe(runtime, observer \\ self()), do: GenServer.call(runtime, {:subscribe, observer})
@@ -174,12 +252,23 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
          {:ok, authority} <- required_map(opts, :parent_authority),
          {:ok, child_options} <- required_callback(opts, :child_options, 3),
          {:ok, admission_receipt} <- optional_callback(opts, :admission_receipt, 1),
+         :ok <- Reconciliation.validate_options(opts),
+         :ok <- recovery_root(opts),
          {:ok, v2_child_limit} <- child_limit(opts),
+         {:ok, recovery_supervisor} <- Task.Supervisor.start_link(),
          {:ok, supervisor} <- DynamicSupervisor.start_link(strategy: :one_for_one) do
       {:ok,
        %{
          parent_run_id: parent_run_id,
-         root_id: parent_run_id,
+         root_id: Keyword.get(opts, :root_agent_id, parent_run_id),
+         recovery: Keyword.get(opts, :recovery),
+         recovery_scope_id: Keyword.get(opts, :recovery_scope_id),
+         recovery_supervisor: recovery_supervisor,
+         recovery_manifests: %{},
+         recovery_pins: %{},
+         recovery_jobs: %{},
+         reconciliation: nil,
+         import_open: true,
          parent_name: normalize_root(parent_name),
          parent_authority: authority,
          root_goal_context: %{},
@@ -230,6 +319,50 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   end
 
   @impl true
+  def handle_call(:recovery_config, _from, state) do
+    if state.recovery,
+      do: {:reply, {:ok, state.recovery}, state},
+      else: {:reply, recovery_unavailable(), state}
+  end
+
+  def handle_call(:recovery_closed, _from, state) do
+    result =
+      cond do
+        state.reconciliation != nil ->
+          {:ok, state.reconciliation}
+
+        state.session_closed and
+            Enum.all?(state.agents, fn {_, agent} ->
+              agent.closure == :confirmed and not agent.execution_reserved
+            end) ->
+          {:ok, %{status: :confirmed, manager_id: state.manager_id}}
+
+        true ->
+          {:error, Error.new(:unknown_outcome, "manager closure is unconfirmed")}
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:recovery_pin, operation}, _from, state) do
+    case recovery_pin(state, operation) do
+      {:ok, pin, next} -> {:reply, {:ok, pin}, next}
+      {:ready, result} -> {:reply, {:ready, result}, state}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:recovery_apply, operation, pin, result}, _from, state) do
+    if current_recovery_pin?(state, pin) do
+      apply_recovery(state, operation, pin, result)
+    else
+      {:reply,
+       {:error,
+        Error.new(:resource_conflict, "manager recovery subject changed during validation")},
+       state}
+    end
+  end
+
   def handle_call({:resolve_interaction, correlation, value}, from, state) do
     with :ok <- validate_interaction_correlation(correlation),
          {:ok, _public_value} <- Conversation.public_interaction(value),
@@ -611,6 +744,27 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   # Settlement waits run outside the manager. Only identity-checked evidence is
   # installed; existing reducers still own lifecycle state, revisions and replies.
   defp dispatch_request(action, arguments, from, caller, state) do
+    target = arguments["target"] || arguments["id"]
+
+    archived =
+      case resolve_target(state, target) do
+        {:ok, name, %{archived: true} = agent}
+        when action in [:followup_v2, :send_input, :resume] ->
+          {name, agent}
+
+        _ ->
+          nil
+      end
+
+    if archived do
+      {name, agent} = archived
+      archive_continuation(state, name, agent, action, arguments, from, caller)
+    else
+      dispatch_current_request(action, arguments, from, caller, state)
+    end
+  end
+
+  defp dispatch_current_request(action, arguments, from, caller, state) do
     case settlement_targets(state, action, arguments, caller) do
       {:ok, names} ->
         defer_settlement(state, names, {:dispatch, action, arguments, caller}, from)
@@ -654,7 +808,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp busy_target?(state, target) do
     case resolve_target(state, target) do
-      {:ok, name, _} -> settling?(state, name)
+      {:ok, name, agent} -> settling?(state, name) or Map.get(agent, :recovery_fenced, false)
       _ -> false
     end
   end
@@ -1243,7 +1397,54 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     {:noreply, wake_waiters(state)}
   end
 
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    case Map.pop(state.recovery_jobs, ref) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {job, jobs} ->
+        Process.demonitor(ref, [:flush])
+        finish_archive_continuation(%{state | recovery_jobs: jobs}, job, result)
+    end
+  end
+
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    case Map.pop(state.recovery_jobs, ref) do
+      {nil, _} ->
+        handle_controller_down(ref, pid, reason, state)
+
+      {job, jobs} ->
+        GenServer.reply(
+          job.from,
+          {:error, Error.new(:unknown_outcome, "archive validation worker exited")}
+        )
+
+        {:noreply, %{state | recovery_jobs: jobs}}
+    end
+  end
+
+  def handle_info({:wait_timeout, token}, state) do
+    case Map.pop(state.waiters, token) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {%{from: from, profile: :v1}, waiters} ->
+        GenServer.reply(from, {:ok, %{status: %{}, timed_out: true}})
+        {:noreply, %{state | waiters: waiters}}
+
+      {%{from: from, profile: :v2}, waiters} ->
+        GenServer.reply(
+          from,
+          {:ok, %{message: "Wait timed out.", timed_out: true}}
+        )
+
+        {:noreply, %{state | waiters: waiters}}
+    end
+  end
+
+  def handle_info(_, state), do: {:noreply, state}
+
+  defp handle_controller_down(ref, pid, reason, state) do
     case Enum.find(state.child_sessions, fn {_id, entry} ->
            entry.monitor == ref and entry.binding.session == pid
          end) do
@@ -1272,27 +1473,6 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  def handle_info({:wait_timeout, token}, state) do
-    case Map.pop(state.waiters, token) do
-      {nil, _} ->
-        {:noreply, state}
-
-      {%{from: from, profile: :v1}, waiters} ->
-        GenServer.reply(from, {:ok, %{status: %{}, timed_out: true}})
-        {:noreply, %{state | waiters: waiters}}
-
-      {%{from: from, profile: :v2}, waiters} ->
-        GenServer.reply(
-          from,
-          {:ok, %{message: "Wait timed out.", timed_out: true}}
-        )
-
-        {:noreply, %{state | waiters: waiters}}
-    end
-  end
-
-  def handle_info(_, state), do: {:noreply, state}
-
   defp settlement_or_child_down(state, ref, pid, reason) do
     case Enum.find(state.settlements, fn {_, entry} -> entry.monitor == ref end) do
       {token, _} -> {:noreply, complete_settlement(state, token, %{})}
@@ -1319,6 +1499,15 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   @impl true
   def terminate(_reason, state) do
+    Enum.each(state.recovery_jobs, fn {_ref, job} ->
+      Task.shutdown(job.task, :brutal_kill)
+
+      GenServer.reply(
+        job.from,
+        {:error, Error.new(:unknown_outcome, "manager stopped during archive validation")}
+      )
+    end)
+
     Enum.each(state.settlements, fn {_, entry} ->
       stop_settlement(entry)
 
@@ -1597,7 +1786,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
             snapshot: nil,
             snapshot_identity: nil,
             closure: :open,
-            execution_reserved: true
+            execution_reserved: true,
+            recovery_identity: Map.get(attempt, :recovery_identity),
+            source_manager_id: state.manager_id
           }
 
           state =
@@ -2154,7 +2345,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  defp start_replacement(state, name, agent, message, snapshot) do
+  defp start_replacement(state, name, agent, message, snapshot, prior_ceiling \\ nil) do
     incarnation = agent.incarnation + 1
 
     {state, attempt} =
@@ -2170,7 +2361,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
     parent = Map.put(parent_metadata(state, agent), :child, admission_child(attempt))
 
-    case prepare_child(state, agent.request, attempt, parent, snapshot.run, agent.authority) do
+    case prepare_child(
+           state,
+           agent.request,
+           attempt,
+           parent,
+           snapshot.run,
+           prior_ceiling || agent.authority
+         ) do
       {:ok, opts, host_metadata} ->
         opts =
           opts
@@ -2208,6 +2406,26 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
                 closure: :open,
                 execution_reserved: true
             }
+
+            replacement =
+              Map.merge(replacement, %{
+                archived: false,
+                recovery_fenced: false,
+                reconciled: false,
+                recovery_identity: Map.get(attempt, :recovery_identity),
+                source_manager_id: state.manager_id,
+                retirement_receipt_ref: nil,
+                historical_outcome: nil
+              })
+
+            replacement =
+              Map.drop(replacement, [
+                :settlement_evidence,
+                :admission_uncertain,
+                :settlement_event
+              ])
+
+            state = %{state | recovery_manifests: Map.delete(state.recovery_manifests, name)}
 
             state =
               invalidate_interaction(
@@ -3307,7 +3525,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         agent = state.agents[name]
 
         if agent.run_id == run_id and agent.status == :running and agent.closure == :open and
-             not settling?(state, name),
+             not Map.get(agent, :recovery_fenced, false) and not settling?(state, name),
            do:
              {:ok,
               %{
@@ -3409,7 +3627,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp child_run_id(name, sequence), do: name <> ":" <> Integer.to_string(sequence)
 
   defp start_child(supervisor, opts) do
-    DynamicSupervisor.start_child(supervisor, {Conversation, opts})
+    DynamicSupervisor.start_child(supervisor, {Conversation, Keyword.drop(opts, @recovery_keys)})
   end
 
   defp child_authority(opts, parent_authority) do
@@ -3445,7 +3663,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp prepare_activation(state, profile, replacing \\ nil)
 
-  defp prepare_activation(state, :v1, replacing) when is_binary(replacing), do: {:ok, state}
+  defp prepare_activation(state, :v1, replacing) when is_binary(replacing) do
+    if get_in(state.agents, [replacing, :archived]) == true,
+      do: prepare_activation(state, :v1),
+      else: {:ok, state}
+  end
 
   defp prepare_activation(state, :v1, _replacing) do
     case capacity(state) do
@@ -4065,7 +4287,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp reserve_admission(state, attrs) do
     sequence = state.sequence + 1
-    run_id = child_run_id(attrs.name, sequence)
+
+    run_id =
+      if state.recovery,
+        do: attrs.name <> ":" <> state.manager_id <> ":" <> Integer.to_string(sequence),
+        else: child_run_id(attrs.name, sequence)
 
     attrs =
       if state.triggering_invocation,
@@ -4090,9 +4316,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     next = %{
       state
       | sequence: sequence,
-        admissions: Map.put(state.admissions, attempt.attempt_id, attempt)
+        admissions: Map.put(state.admissions, attempt.attempt_id, attempt),
+        import_open: false
     }
 
+    attempt =
+      if state.recovery,
+        do: Map.put(attempt, :recovery_identity, recovery_identity(state, attempt)),
+        else: attempt
+
+    next = put_in(next, [:admissions, attempt.attempt_id], attempt)
     {publish_admission(next, attempt), attempt}
   end
 
@@ -4105,7 +4338,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         :run_id,
         :incarnation,
         :activation,
-        :triggering_invocation
+        :triggering_invocation,
+        :recovery_identity
       ])
 
   defp record_admission(state, attempt, status, error) do
@@ -4239,12 +4473,14 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   defp public_agent(_state, agent) do
     uncertain =
-      match?({:uncertain, _}, agent.closure) or
-        (is_map(agent.snapshot) and safe_replacement(agent.snapshot) != :ok)
+      not Map.get(agent, :reconciled, false) and
+        (match?({:uncertain, _}, agent.closure) or
+           (is_map(agent.snapshot) and safe_replacement(agent.snapshot) != :ok))
 
     status =
       cond do
         uncertain -> :unknown_outcome
+        Map.get(agent, :historical_outcome) == "unknown_outcome" -> :unknown_outcome
         agent.status == :shutdown -> :closed
         match?({:errored, _}, agent.status) -> :errored
         true -> agent.status
@@ -4281,8 +4517,62 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       resident: is_pid(agent.pid),
       host_metadata: agent.host_metadata,
       result_delivery: Map.get(agent, :result_delivery),
-      pending_interaction: agent.pending_interaction
+      pending_interaction: agent.pending_interaction,
+      archived: Map.get(agent, :archived, false),
+      historical_outcome: Map.get(agent, :historical_outcome),
+      retirement_receipt_ref: Map.get(agent, :retirement_receipt_ref),
+      source_manager_id: Map.get(agent, :source_manager_id),
+      initial_status: initial_status(Map.get(agent, :initial_status)),
+      initial_closure: initial_closure(Map.get(agent, :initial_closure)),
+      initial_settlement_evidence:
+        initial_settlement(Map.get(agent, :initial_settlement_evidence))
     }
+  end
+
+  defp initial_status({:errored, _}), do: :errored
+
+  defp initial_status(status)
+       when status in [nil, :created, :running, :completed, :interrupted, :shutdown],
+       do: status
+
+  defp initial_status(_), do: :unknown_outcome
+
+  defp initial_closure(nil), do: nil
+  defp initial_closure(:open), do: %{status: :open}
+  defp initial_closure(:confirmed), do: %{status: :confirmed}
+
+  defp initial_closure({:uncertain, %Error{class: class}}),
+    do: %{status: :uncertain, error_class: class}
+
+  defp initial_closure(_), do: %{status: :uncertain}
+
+  defp initial_settlement(nil), do: nil
+
+  defp initial_settlement(evidence) do
+    evidence
+    |> Map.take([:cancel_result, :settlement_result, :session_close_result])
+    |> Map.new(fn {stage, result} -> {stage, initial_result(result)} end)
+  end
+
+  defp initial_result({:error, %Error{class: class}}), do: %{status: :error, error_class: class}
+  defp initial_result({:ok, _}), do: %{status: :confirmed}
+  defp initial_result(:ok), do: %{status: :confirmed}
+  defp initial_result(:not_managed), do: %{status: :not_managed}
+  defp initial_result(_), do: %{status: :unknown_outcome}
+
+  defp retain_initial_diagnosis(agent, state) do
+    session_evidence =
+      case state.child_sessions[agent.id] do
+        %{close_result: result} when not is_nil(result) -> %{session_close_result: result}
+        _ -> %{}
+      end
+
+    evidence = Map.merge(session_evidence, Map.get(agent, :settlement_evidence, %{}))
+
+    agent
+    |> Map.put_new(:initial_status, agent.status)
+    |> Map.put_new(:initial_closure, agent.closure)
+    |> Map.put_new(:initial_settlement_evidence, evidence)
   end
 
   defp publish(state, type, name, metadata \\ %{}) do
@@ -4301,6 +4591,612 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     recipients = if is_pid(next.subscriber), do: [next.subscriber | recipients], else: recipients
     Enum.each(Enum.uniq(recipients), &send(&1, {:codex_collaboration, event}))
     next
+  end
+
+  defp recovery_root(opts) do
+    if Keyword.get(opts, :recovery) do
+      Evidence.identifier(Keyword.get(opts, :root_agent_id))
+    else
+      :ok
+    end
+  end
+
+  defp recovery_unavailable,
+    do: {:error, Error.new(:unsupported_capability, "manager recovery is not configured")}
+
+  defp recovery_identity(state, attempt) do
+    %{
+      "scope_id" => state.recovery_scope_id,
+      "root_agent_id" => state.root_id,
+      "source_manager_id" => state.manager_id,
+      "agent_id" => attempt.agent_id,
+      "name" => attempt.name,
+      "parent_id" => attempt.parent_id,
+      "parent_name" => attempt.parent_name,
+      "attempt_id" => attempt.attempt_id,
+      "run_id" => attempt.run_id,
+      "run_incarnation" => attempt.incarnation
+    }
+  end
+
+  defp manager_subject(state),
+    do: %{
+      "kind" => "manager",
+      "scope_id" => state.recovery_scope_id,
+      "manager_id" => state.manager_id,
+      "root_agent_id" => state.root_id
+    }
+
+  defp recovery_child(state, target) do
+    name = if is_map(target), do: target["name"] || target[:name], else: target
+
+    with {:ok, name, agent} <- resolve_target(state, name),
+         identity when is_map(identity) <- Map.get(agent, :recovery_identity),
+         true <- not is_map(target) or target == identity do
+      {:ok, name, agent, identity}
+    else
+      false -> {:error, Error.new(:resource_conflict, "child recovery identity differs")}
+      nil -> {:error, Error.new(:validation, "child lacks immutable recovery admission")}
+      error -> error
+    end
+  end
+
+  defp recovery_pin(%{recovery: nil}, _operation), do: recovery_unavailable()
+
+  defp recovery_pin(state, {:manifest, :manager}) do
+    if manifest = state.recovery_manifests[:manager] do
+      {:ready, manifest}
+    else
+      children = Enum.map(state.agents, fn {_name, agent} -> child_recovery_pin(state, agent) end)
+
+      if Enum.any?(children, &is_nil(&1.admission_ref)) do
+        {:error,
+         Error.new(:validation, "manager inventory lacks an immutable admission reference")}
+      else
+        next = %{state | session_closed: true, parent_binding: nil}
+
+        next = %{
+          next
+          | agents:
+              Map.new(next.agents, fn {name, agent} ->
+                {name, Map.put(agent, :recovery_fenced, true)}
+              end)
+        }
+
+        reserve_recovery_pin(next, :manager, %{
+          subject: manager_subject(state),
+          children: children,
+          fence_ref: "manager-fence:" <> state.manager_id
+        })
+      end
+    end
+  end
+
+  defp recovery_pin(state, :manager_receipt) do
+    if manifest = state.recovery_manifests[:manager],
+      do:
+        reserve_recovery_pin(state, :manager, %{
+          subject: manager_subject(state),
+          manifest: manifest
+        }),
+      else: {:error, Error.new(:resource_conflict, "manager inventory is not sealed")}
+  end
+
+  defp recovery_pin(state, {:restore, archive}) do
+    identity = archive["child_identity"]
+    existing = state.agents[identity["name"]]
+
+    cond do
+      state.session_closed or not state.import_open ->
+        {:error, Error.new(:resource_conflict, "manager archive import phase is closed")}
+
+      not is_nil(existing) and Map.get(existing, :archived, false) and existing.archive == archive ->
+        {:ready, existing.restore_receipt}
+
+      existing != nil ->
+        {:error, Error.new(:resource_conflict, "archive conflicts with an existing child")}
+
+      Enum.any?(state.agents, fn {_, agent} -> agent.id == identity["agent_id"] end) ->
+        {:error,
+         Error.new(:resource_conflict, "archive child identity already belongs to another name")}
+
+      identity["scope_id"] != state.recovery_scope_id or
+          identity["root_agent_id"] != state.root_id ->
+        {:error, Error.new(:resource_conflict, "archive root or recovery scope differs")}
+
+      not archive_parent?(state, identity) ->
+        {:error,
+         Error.new(
+           :resource_conflict,
+           "archive parent must be restored first without reparenting"
+         )}
+
+      true ->
+        reserve_recovery_pin(state, {:restore, identity["name"]}, %{
+          archive_digest: archive["archive_digest"]
+        })
+    end
+  end
+
+  defp recovery_pin(state, {:child_receipt, receipt}) do
+    with %{"kind" => "child", "identity" => identity} <- receipt["subject"],
+         {:ok, name, agent, ^identity} <- recovery_child(state, identity),
+         manifest when is_map(manifest) <- state.recovery_manifests[name] do
+      previous = Map.get(agent, :reconciliation_ack)
+
+      cond do
+        previous && previous.receipt_digest == receipt["receipt_digest"] ->
+          {:ready, previous}
+
+        not is_nil(previous) and previous.receipt_id == receipt["receipt_id"] and
+            previous.revision >= receipt["revision"] ->
+          {:error, Error.new(:resource_conflict, "child receipt revision is stale")}
+
+        true ->
+          reserve_recovery_pin(
+            state,
+            name,
+            Map.merge(child_recovery_pin(state, agent), %{manifest: manifest})
+          )
+      end
+    else
+      nil -> {:error, Error.new(:resource_conflict, "child inventory is not sealed")}
+      {:error, _} = error -> error
+      _ -> {:error, Error.new(:resource_conflict, "receipt does not identify this manager child")}
+    end
+  end
+
+  defp recovery_pin(state, {operation, target}) when operation in [:manifest, :export] do
+    with {:ok, name, agent, _identity} <- recovery_child(state, target),
+         false <-
+           settling?(state, name) or
+             Enum.any?(state.recovery_jobs, fn {_, job} -> job.name == name end),
+         reference when is_binary(reference) <-
+           Keyword.get(agent.opts, :recovery_admission_ref) ||
+             get_in(agent, [:archive, "admission_ref"]) do
+      manifest = state.recovery_manifests[name]
+
+      cond do
+        operation == :manifest and manifest != nil ->
+          {:ready, manifest}
+
+        operation == :export and manifest == nil ->
+          {:error, Error.new(:resource_conflict, "child inventory is not sealed")}
+
+        true ->
+          agent = Map.put(agent, :recovery_fenced, true)
+          next = put_in(state, [:agents, name], agent)
+
+          pin =
+            child_recovery_pin(next, agent)
+            |> Map.merge(%{manifest: manifest, admission_ref: reference})
+
+          reserve_recovery_pin(next, name, pin)
+      end
+    else
+      true -> {:error, settlement_conflict()}
+      nil -> {:error, Error.new(:validation, "child lacks an immutable admission reference")}
+      error -> error
+    end
+  end
+
+  defp child_recovery_pin(state, agent) do
+    session =
+      case state.child_sessions[agent.id] do
+        %{binding: binding} ->
+          subject = %{
+            "kind" => "session",
+            "scope_id" => state.recovery_scope_id,
+            "owner_id" => binding.owner_id,
+            "incarnation" => binding.incarnation
+          }
+
+          [
+            Evidence.obligation(
+              "session",
+              %{"subject" => subject},
+              "manager-owned-session:" <> agent.attempt_id
+            )
+          ]
+
+        _ ->
+          []
+      end
+
+    descendants =
+      for name <- descendant_names(state, agent.name), child = state.agents[name] do
+        identity = %{"subject" => Archive.subject(child.recovery_identity)}
+
+        identity =
+          if ref = Map.get(child, :retirement_receipt_ref),
+            do: Map.put(identity, "receipt_id", ref),
+            else: identity
+
+        Evidence.obligation("child", identity, "manager-admission:" <> child.attempt_id)
+      end
+
+    %{
+      identity: agent.recovery_identity,
+      admission_ref:
+        Keyword.get(agent.opts, :recovery_admission_ref) ||
+          get_in(agent, [:archive, "admission_ref"]),
+      receipt_ref: Map.get(agent, :retirement_receipt_ref),
+      host_metadata: agent.host_metadata,
+      obligations: session ++ descendants,
+      fence_ref: "child-fence:" <> agent.attempt_id
+    }
+  end
+
+  defp reserve_recovery_pin(state, key, attrs) do
+    token = make_ref()
+
+    pin =
+      Map.merge(attrs, %{
+        key: key,
+        token: token,
+        config: state.recovery,
+        manager_id: state.manager_id,
+        sequence: state.sequence,
+        roster: recovery_roster(state)
+      })
+
+    {:ok, pin, %{state | recovery_pins: Map.put(state.recovery_pins, key, token)}}
+  end
+
+  defp recovery_roster(state),
+    do:
+      state.agents
+      |> Enum.map(fn {name, agent} ->
+        {name, agent.id, agent.attempt_id, agent.run_id, agent.incarnation}
+      end)
+      |> Enum.sort()
+
+  defp current_recovery_pin?(state, pin) do
+    state.manager_id == pin.manager_id and state.recovery_pins[pin.key] == pin.token and
+      case pin.key do
+        {:restore, _} ->
+          state.import_open and not state.session_closed and state.sequence == pin.sequence
+
+        :manager ->
+          state.session_closed and recovery_roster(state) == pin.roster
+
+        name ->
+          case state.agents[name] do
+            nil ->
+              false
+
+            agent ->
+              Map.get(agent, :recovery_identity) == pin.identity and
+                Map.get(agent, :recovery_fenced, false)
+          end
+      end
+  end
+
+  defp apply_recovery(state, {:manifest, target}, pin, manifest) do
+    key = if target == :manager, do: :manager, else: pin.key
+    {:reply, {:ok, manifest}, put_in(state, [:recovery_manifests, key], manifest)}
+  end
+
+  defp apply_recovery(state, {:export, _}, _pin, archive), do: {:reply, {:ok, archive}, state}
+
+  defp apply_recovery(state, {:restore, _}, _pin, material) do
+    archive = material.archive
+    identity = archive["child_identity"]
+
+    if state.agents[identity["name"]] != nil or not archive_parent?(state, identity) or
+         Enum.any?(state.agents, fn {_, agent} -> agent.id == identity["agent_id"] end) do
+      {:reply,
+       {:error, Error.new(:resource_conflict, "archive roster changed during validation")}, state}
+    else
+      restore_receipt = %{
+        status: :restored,
+        manager_id: state.manager_id,
+        archive_id: archive["archive_id"],
+        archive_digest: archive["archive_digest"],
+        agent_id: identity["agent_id"],
+        name: identity["name"]
+      }
+
+      agent = %{
+        name: identity["name"],
+        id: identity["agent_id"],
+        attempt_id: identity["attempt_id"],
+        run_id: identity["run_id"],
+        incarnation: archive["terminal_record"]["current_incarnation"],
+        host_metadata: archive["host_metadata"],
+        pid: nil,
+        monitor: nil,
+        status: :shutdown,
+        final: nil,
+        pending_interaction: nil,
+        interaction_closed: true,
+        interaction_resolution_id: nil,
+        interaction_ids: MapSet.new(),
+        result_delivery: nil,
+        opts: [],
+        request: material.request,
+        message: material.request.message,
+        profile: material.request.profile,
+        parent: identity["parent_name"],
+        parent_id: identity["parent_id"],
+        authority: %{},
+        snapshot: nil,
+        snapshot_identity: nil,
+        closure: :confirmed,
+        execution_reserved: false,
+        archived: true,
+        archive: archive,
+        restore_receipt: restore_receipt,
+        recovery_identity: identity,
+        recovery_fenced: false,
+        reconciled: true,
+        historical_outcome: archive["terminal_record"]["historical_outcome"],
+        retirement_receipt_ref: archive["retirement_receipt_ref"],
+        source_manager_id: identity["source_manager_id"]
+      }
+
+      # An old run can be a lookup alias only while it cannot shadow a destination run.
+      index =
+        if Map.has_key?(state.run_index, agent.run_id),
+          do: state.run_index,
+          else: Map.put(state.run_index, agent.run_id, agent.name)
+
+      next =
+        %{state | agents: Map.put(state.agents, agent.name, agent), run_index: index}
+        |> publish(:restored, agent.name)
+
+      {:reply, {:ok, restore_receipt}, next}
+    end
+  end
+
+  defp apply_recovery(state, {:child_receipt, _}, pin, %{receipt: receipt, record: record}) do
+    expected = %{
+      "run_id" => record.run.run_id,
+      "current_incarnation" => record.run.incarnation,
+      "current_revision" => record.revision
+    }
+
+    if Enum.any?(receipt["run_fences"], &(Map.take(&1, Map.keys(expected)) == expected)) do
+      name = pin.key
+      agent = state.agents[name]
+
+      acknowledgement = %{
+        status: :confirmed,
+        receipt_id: receipt["receipt_id"],
+        revision: receipt["revision"],
+        receipt_digest: receipt["receipt_digest"],
+        agent_id: agent.id,
+        historical_outcome: Atom.to_string(record.run.state)
+      }
+
+      if is_reference(agent.monitor), do: Process.demonitor(agent.monitor, [:flush])
+
+      state =
+        invalidate_interaction(
+          state,
+          name,
+          Error.new(:resource_conflict, "child retirement reconciled")
+        )
+
+      agent =
+        state.agents[name]
+        |> retain_initial_diagnosis(state)
+        |> Map.merge(%{
+          status: :shutdown,
+          execution_reserved: false,
+          closure: :confirmed,
+          snapshot: Archive.snapshot(record),
+          snapshot_identity: snapshot_identity(%{run: record.run}),
+          pending_interaction: nil,
+          interaction_resolution_id: nil,
+          interaction_closed: true,
+          pid: nil,
+          monitor: nil,
+          reconciled: true,
+          historical_outcome: Atom.to_string(record.run.state),
+          retirement_receipt_ref: receipt["receipt_id"],
+          reconciliation_ack: acknowledgement,
+          recovery_fenced: true,
+          incarnation: max(agent.incarnation, record.run.incarnation)
+        })
+
+      agent = Map.drop(agent, [:settlement_evidence, :admission_uncertain, :settlement_event])
+
+      child_sessions =
+        case state.child_sessions[agent.id] do
+          nil ->
+            state.child_sessions
+
+          entry ->
+            Map.put(state.child_sessions, agent.id, %{
+              entry
+              | status: :closed,
+                close_result: {:ok, acknowledgement}
+            })
+        end
+
+      next = %{
+        state
+        | agents: Map.put(state.agents, name, agent),
+          child_sessions: child_sessions,
+          monitors: Map.delete(state.monitors, state.agents[name].monitor),
+          mailboxes: Map.delete(state.mailboxes, name),
+          input_activity: Map.delete(state.input_activity, name),
+          updates: MapSet.delete(state.updates, name)
+      }
+
+      next = invalidate_retired_deliveries(next, name) |> publish(:reconciled, name)
+      {:reply, {:ok, acknowledgement}, next}
+    else
+      {:reply, {:error, Error.new(:resource_conflict, "child receipt Store fence differs")},
+       state}
+    end
+  end
+
+  defp apply_recovery(state, :manager_receipt, _pin, receipt) do
+    if Enum.all?(state.agents, fn {_, agent} ->
+         agent.closure == :confirmed and not agent.execution_reserved
+       end) do
+      acknowledgement = %{
+        status: :confirmed,
+        manager_id: state.manager_id,
+        receipt_id: receipt["receipt_id"],
+        revision: receipt["revision"],
+        receipt_digest: receipt["receipt_digest"]
+      }
+
+      case state.reconciliation do
+        ^acknowledgement ->
+          {:reply, {:ok, acknowledgement}, state}
+
+        %{receipt_id: id, revision: revision}
+        when id == acknowledgement.receipt_id and revision >= acknowledgement.revision ->
+          {:reply, {:error, Error.new(:resource_conflict, "manager receipt revision is stale")},
+           state}
+
+        _ ->
+          {:reply, {:ok, acknowledgement}, %{state | reconciliation: acknowledgement}}
+      end
+    else
+      {:reply, {:error, Error.new(:unknown_outcome, "manager child retirement is unconfirmed")},
+       state}
+    end
+  end
+
+  defp archive_parent?(state, identity) do
+    if identity["parent_name"] == state.parent_name do
+      identity["parent_id"] == state.root_id and
+        identity["name"] |> String.starts_with?(state.parent_name <> "/")
+    else
+      case state.agents[identity["parent_name"]] do
+        nil ->
+          false
+
+        parent ->
+          parent.id == identity["parent_id"] and
+            String.starts_with?(identity["name"], parent.name <> "/")
+      end
+    end
+  end
+
+  defp invalidate_retired_deliveries(state, name) do
+    deliveries =
+      Enum.reduce(state.deliveries, state.deliveries, fn {token, entry}, acc ->
+        if entry[:name] == name or get_in(entry, [:source, :name]) == name do
+          Process.cancel_timer(entry.timer)
+          Process.exit(entry.worker, :kill)
+          Map.delete(acc, token)
+        else
+          acc
+        end
+      end)
+
+    %{state | deliveries: deliveries}
+  end
+
+  defp archive_continuation(state, name, agent, action, arguments, from, caller) do
+    parent = state.agents[agent.parent]
+    message = arguments["message"] || input_items_text(arguments["items"])
+    profile = if action == :resume, do: :v1, else: :v2
+    v1_capacity = if profile == :v1, do: capacity(state), else: :ok
+
+    cond do
+      state.session_closed ->
+        {:reply, {:refused, Error.new(:resource_conflict, "manager is closed")}, state}
+
+      parent != nil and Map.get(parent, :archived, false) ->
+        {:reply,
+         {:refused,
+          Error.new(:resource_conflict, "archived parent requires fresh admission first")}, state}
+
+      Enum.any?(state.recovery_jobs, fn {_, job} -> job.name == name end) ->
+        {:reply, {:refused, settlement_conflict()}, state}
+
+      action != :resume and (not is_binary(message) or String.trim(message) == "") ->
+        {:reply, {:refused, Error.new(:validation, "message is required")}, state}
+
+      v1_capacity != :ok ->
+        {:error, error} = v1_capacity
+        {:reply, {:refused, error}, state}
+
+      profile == :v2 and
+          Enum.count(state.agents, fn {other, value} ->
+            other != name and value.execution_reserved
+          end) >= state.v2_child_limit ->
+        {:reply, {:refused, Error.new(:resource_conflict, "agent execution limit reached")},
+         state}
+
+      true ->
+        task =
+          Task.Supervisor.async_nolink(state.recovery_supervisor, fn ->
+            Reconciliation.bounded(fn -> Archive.restore(state.recovery, agent.archive) end)
+          end)
+
+        job = %{
+          task: task,
+          from: from,
+          name: name,
+          identity: agent.recovery_identity,
+          archive_digest: agent.archive["archive_digest"],
+          action: action,
+          arguments: arguments,
+          caller: caller,
+          profile: profile,
+          message: message
+        }
+
+        {:noreply, %{state | recovery_jobs: Map.put(state.recovery_jobs, task.ref, job)}}
+    end
+  end
+
+  defp finish_archive_continuation(state, job, result) do
+    agent = state.agents[job.name]
+    parent = state.agents[agent.parent]
+
+    valid =
+      not state.session_closed and Map.get(agent, :archived, false) and
+        agent.recovery_identity == job.identity and
+        agent.archive["archive_digest"] == job.archive_digest and
+        not (parent != nil and Map.get(parent, :archived, false))
+
+    result =
+      if valid,
+        do: result,
+        else:
+          {:error,
+           Error.new(:resource_conflict, "archive subject changed during continuation validation")}
+
+    case result do
+      {:ok, material} ->
+        case prepare_activation(state, job.profile, job.name) do
+          {:ok, next} ->
+            case start_replacement(
+                   next,
+                   job.name,
+                   next.agents[job.name],
+                   job.message,
+                   material.snapshot,
+                   material.authority_ceiling
+                 ) do
+              {:ok, next} ->
+                reply = if job.action == :resume, do: %{status: :running}, else: %{accepted: true}
+                GenServer.reply(job.from, {:ok, reply})
+                {:noreply, next}
+
+              {:error, error, next} ->
+                GenServer.reply(job.from, {:error, error})
+                {:noreply, next}
+            end
+
+          {_kind, error, next} ->
+            GenServer.reply(job.from, {:error, error})
+            {:noreply, next}
+        end
+
+      {:error, error} ->
+        GenServer.reply(job.from, {:error, error})
+        {:noreply, state}
+    end
   end
 
   defp normalize_root("/" <> _ = name), do: String.trim_trailing(name, "/")

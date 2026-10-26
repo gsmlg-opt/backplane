@@ -12,6 +12,8 @@ defmodule Backplane.AgentRuntime.Codex.Session do
 
   alias Backplane.AgentRuntime.{Error, ToolRegistry}
   alias Backplane.AgentRuntime.Codex.{MultiAgent, ResourceRegistry}
+  alias Backplane.AgentRuntime.Codex.Reconciliation
+  alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
   def start_link(opts),
     do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
@@ -66,6 +68,31 @@ defmodule Backplane.AgentRuntime.Codex.Session do
 
   def status(session), do: GenServer.call(session, :status)
 
+  @doc "Seal a closed Session's exact run, Registry and owned-manager inventory."
+  def recovery_manifest(session) do
+    with {:ok, pin} <- GenServer.call(session, :recovery_pin),
+         {:ok, manifest} <- session_manifest(pin),
+         :ok <- GenServer.call(session, {:recovery_pin_matches, pin}) do
+      {:ok, manifest}
+    end
+  end
+
+  @doc "Explicitly update cleanup from an independently persisted retirement receipt."
+  def reconcile_close(session, reference) do
+    with {:ok, pin} <- GenServer.call(session, :recovery_pin),
+         {:ok, manifest} <- session_manifest(pin),
+         {:ok, receipt} <-
+           Reconciliation.load_confirmed(
+             pin.recovery,
+             reference,
+             manifest["subject"],
+             manifest["manifest_digest"]
+           ),
+         :ok <- owned_closure(pin) do
+      GenServer.call(session, {:reconcile_close, pin, reference, receipt})
+    end
+  end
+
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -73,18 +100,27 @@ defmodule Backplane.AgentRuntime.Codex.Session do
     timeout = Keyword.get(opts, :cleanup_timeout, 5_000)
     max_turns = Keyword.get(opts, :max_turns, 1_024)
 
-    if is_pid(owner) and Process.alive?(owner) and is_integer(timeout) and timeout in 1..60_000 and
+    recovery_options = Reconciliation.validate_options(opts)
+
+    if recovery_options == :ok and is_pid(owner) and Process.alive?(owner) and is_integer(timeout) and
+         timeout in 1..60_000 and
          is_integer(max_turns) and max_turns in 1..100_000 do
-      {:ok, registry} = ResourceRegistry.start_link(cleanup_timeout: timeout)
-      {:ok, supervisor} = Task.Supervisor.start_link()
       owner_id = "session_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+      incarnation = System.unique_integer([:positive, :monotonic])
+
+      registry_opts =
+        Keyword.take(opts, [:recovery, :recovery_scope_id]) ++
+          [cleanup_timeout: timeout, recovery_owner_incarnation: incarnation]
+
+      {:ok, registry} = ResourceRegistry.start_link(registry_opts)
+      {:ok, supervisor} = Task.Supervisor.start_link()
 
       {:ok,
        %{
          owner: owner,
          owner_monitor: Process.monitor(owner),
          owner_id: owner_id,
-         incarnation: System.unique_integer([:positive, :monotonic]),
+         incarnation: incarnation,
          registry: registry,
          supervisor: supervisor,
          cleanup_timeout: timeout,
@@ -97,18 +133,81 @@ defmodule Backplane.AgentRuntime.Codex.Session do
          used_runs: MapSet.new(),
          max_turns: max_turns,
          cleanup: :not_requested,
+         initial_cleanup: :not_requested,
+         cleanup_revision: 0,
+         reconciliation: nil,
+         reconciliation_digest: nil,
+         recovery: Keyword.get(opts, :recovery),
+         recovery_scope_id: Keyword.get(opts, :recovery_scope_id),
+         recovery_runs: %{},
          cleanup_task: nil,
          close_waiters: []
        }}
     else
       {:stop,
-       Error.new(:validation, "session requires a live host owner and bounded cleanup timeout")}
+       if(recovery_options != :ok,
+         do: elem(recovery_options, 1),
+         else:
+           Error.new(
+             :validation,
+             "session requires a live host owner and bounded cleanup timeout"
+           )
+       )}
     end
   end
 
   @impl true
   def handle_call(:status, _from, state),
-    do: {:reply, Map.take(state, [:owner_id, :incarnation, :phase, :cleanup]), state}
+    do:
+      {:reply,
+       Map.take(state, [
+         :owner_id,
+         :incarnation,
+         :phase,
+         :cleanup,
+         :initial_cleanup,
+         :cleanup_revision,
+         :reconciliation
+       ]), state}
+
+  def handle_call(:recovery_pin, _from, state), do: {:reply, session_pin(state), state}
+
+  def handle_call({:recovery_pin_matches, pin}, _from, state) do
+    {:reply,
+     if(session_pin(state) == {:ok, pin},
+       do: :ok,
+       else: {:error, Error.new(:resource_conflict, "Session recovery identity changed")}
+     ), state}
+  end
+
+  def handle_call({:reconcile_close, pin, reference, receipt}, _from, state) do
+    if session_pin(state) == {:ok, pin} do
+      if state.reconciliation == reference and
+           state.reconciliation_digest == receipt["receipt_digest"] do
+        {:reply, state.cleanup, state}
+      else
+        ack = %{
+          status: :confirmed,
+          owner_id: state.owner_id,
+          receipt_ref: reference,
+          receipt_revision: receipt["revision"]
+        }
+
+        next = %{
+          state
+          | cleanup: {:ok, ack},
+            cleanup_revision: state.cleanup_revision + 1,
+            reconciliation: reference,
+            reconciliation_digest: receipt["receipt_digest"]
+        }
+
+        {:reply, {:ok, ack}, next}
+      end
+    else
+      {:reply, {:error, Error.new(:resource_conflict, "Session recovery identity changed")},
+       state}
+    end
+  end
 
   def handle_call({:bind, authority, opts}, _from, %{phase: :idle} = state) do
     run = Map.get(authority, :run_id)
@@ -146,8 +245,25 @@ defmodule Backplane.AgentRuntime.Codex.Session do
           catalog_revision: nil
         }
 
+        recovery_runs =
+          if state.recovery do
+            Map.put(state.recovery_runs, run, %{
+              "store_ref" => Keyword.get(opts, :recovery_store_ref, run),
+              "run_id" => run,
+              "original_incarnation" => incarnation
+            })
+          else
+            state.recovery_runs
+          end
+
         {:reply, {:ok, binding},
-         %{state | phase: :reserved, active: active, used_runs: MapSet.put(state.used_runs, run)}}
+         %{
+           state
+           | phase: :reserved,
+             active: active,
+             used_runs: MapSet.put(state.used_runs, run),
+             recovery_runs: recovery_runs
+         }}
     end
   end
 
@@ -358,7 +474,15 @@ defmodule Backplane.AgentRuntime.Codex.Session do
       )
     end
 
-    {:noreply, %{state | phase: :closed, cleanup: result, cleanup_task: nil, close_waiters: []}}
+    {:noreply,
+     %{
+       state
+       | phase: :closed,
+         cleanup: result,
+         initial_cleanup: result,
+         cleanup_task: nil,
+         close_waiters: []
+     }}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
@@ -377,7 +501,14 @@ defmodule Backplane.AgentRuntime.Codex.Session do
         end
 
         {:noreply,
-         %{state | phase: :closed, cleanup: result, cleanup_task: nil, close_waiters: []}}
+         %{
+           state
+           | phase: :closed,
+             cleanup: result,
+             initial_cleanup: result,
+             cleanup_task: nil,
+             close_waiters: []
+         }}
 
       ref == state.manager_monitor and state.phase not in [:closed, :closing] ->
         {:noreply, begin_close(state, [], false)}
@@ -434,6 +565,102 @@ defmodule Backplane.AgentRuntime.Codex.Session do
       GenServer.stop(state.registry, :normal, state.cleanup_timeout)
     catch
       :exit, _reason -> Process.exit(state.registry, :kill)
+    end
+  end
+
+  defp session_pin(%{recovery: nil}),
+    do: {:error, Error.new(:unsupported_capability, "Session recovery is not configured")}
+
+  defp session_pin(%{phase: :closed} = state) do
+    {:ok,
+     Map.take(state, [
+       :owner_id,
+       :incarnation,
+       :recovery,
+       :recovery_scope_id,
+       :recovery_runs,
+       :registry,
+       :runtimes
+     ])}
+  end
+
+  defp session_pin(_),
+    do: {:error, Error.new(:resource_conflict, "Session is not permanently closed")}
+
+  defp session_manifest(pin) do
+    Reconciliation.bounded(fn ->
+      references = pin.recovery_runs |> Map.values() |> Enum.sort_by(& &1["run_id"])
+
+      with {:ok, registry} <- ResourceRegistry.recovery_manifest(pin.registry, pin.owner_id),
+           {:ok, run_obligations} <- session_run_obligations(pin, references),
+           {:ok, managers} <- manager_manifests(pin.runtimes) do
+        subject = %{
+          "kind" => "session",
+          "scope_id" => pin.recovery_scope_id,
+          "owner_id" => pin.owner_id,
+          "incarnation" => pin.incarnation
+        }
+
+        registry_obligation =
+          Evidence.obligation(
+            "registry_owner",
+            %{"subject" => registry["subject"], "manifest_digest" => registry["manifest_digest"]},
+            "session-registry:" <> pin.owner_id
+          )
+
+        managers =
+          Enum.map(managers, fn manifest ->
+            Evidence.obligation(
+              "manager",
+              %{
+                "subject" => manifest["subject"],
+                "manifest_digest" => manifest["manifest_digest"]
+              },
+              "session-manager:" <> pin.owner_id
+            )
+          end)
+
+        obligations = run_obligations ++ [registry_obligation | managers]
+
+        {:ok,
+         Evidence.manifest(subject, references, obligations, "session-fence:" <> pin.owner_id)}
+      end
+    end)
+  end
+
+  defp session_run_obligations(pin, references) do
+    Enum.reduce_while(references, {:ok, []}, fn reference, {:ok, acc} ->
+      with {:ok, %{run: run}} <- Reconciliation.load_record(pin.recovery, reference),
+           {:ok, obligations} <-
+             Reconciliation.run_obligations(
+               run,
+               reference["original_incarnation"],
+               "session-run:" <> reference["store_ref"]
+             ) do
+        {:cont, {:ok, acc ++ obligations}}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp manager_manifests(runtimes) do
+    Enum.reduce_while(runtimes, {:ok, []}, fn runtime, {:ok, acc} ->
+      case MultiAgent.recovery_manifest(runtime, :manager) do
+        {:ok, manifest} -> {:cont, {:ok, acc ++ [manifest]}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp owned_closure(pin) do
+    with {:ok, _} <- ResourceRegistry.recovery_closed(pin.registry, pin.owner_id) do
+      Enum.reduce_while(pin.runtimes, :ok, fn runtime, :ok ->
+        case MultiAgent.recovery_closed(runtime) do
+          {:ok, _} -> {:cont, :ok}
+          error -> {:halt, error}
+        end
+      end)
     end
   end
 
