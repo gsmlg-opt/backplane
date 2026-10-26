@@ -591,25 +591,23 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  def handle_info({port, {:exit_status, status}}, state)
-      when is_map_key(state.active, port) and
-             :erlang.map_get(:transport, :erlang.map_get(port, state.active)) == :pty do
-    job = Map.fetch!(state.active, port)
-    job = %{job | broker_exit: status, port_closed?: true}
-    state = %{state | active: Map.put(state.active, port, job)}
-
-    state =
-      if job.cleanup_token, do: state, else: request_cleanup(port, :execution_failure, state)
-
-    {:noreply, finish_pty(port, state)}
-  end
-
   def handle_info({port, {:exit_status, status}}, state) when is_map_key(state.active, port) do
     job = Map.fetch!(state.active, port)
-    cancel_timer(job.settle_timer)
-    state = %{state | active: Map.put(state.active, port, %{job | exit_status: status})}
-    terminal_status = if status == 0, do: :completed, else: :failed
-    {:noreply, request_cleanup(port, terminal_status, state)}
+
+    if Map.get(job, :transport, :pipes) == :pty do
+      job = %{job | broker_exit: status, port_closed?: true}
+      state = %{state | active: Map.put(state.active, port, job)}
+
+      state =
+        if job.cleanup_token, do: state, else: request_cleanup(port, :execution_failure, state)
+
+      {:noreply, finish_pty(port, state)}
+    else
+      cancel_timer(job.settle_timer)
+      state = %{state | active: Map.put(state.active, port, %{job | exit_status: status})}
+      terminal_status = if status == 0, do: :completed, else: :failed
+      {:noreply, request_cleanup(port, terminal_status, state)}
+    end
   end
 
   def handle_info({port, :closed}, state) when is_map_key(state.active, port) do

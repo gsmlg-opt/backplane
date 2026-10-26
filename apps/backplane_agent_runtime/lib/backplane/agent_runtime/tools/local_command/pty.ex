@@ -189,7 +189,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
 
   defp write_chunks(port, bytes) do
     size = min(byte_size(bytes), @frame_max - 1)
-    <<chunk::binary-size(size), rest::binary>> = bytes
+    <<chunk::binary-size(^size), rest::binary>> = bytes
     Port.command(port, <<"I", chunk::binary>>, [:nosuspend]) and write_chunks(port, rest)
   end
 

@@ -133,7 +133,7 @@ jobs:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
       - name: Install native PTY prerequisites
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential python3 util-linux
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential python3 util-linux ripgrep
       - name: Verify native PTY source package and consumer
         run: bash scripts/verify_agent_runtime_package.sh
 
