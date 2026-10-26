@@ -803,27 +803,29 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
       case normalize_dispatch_result(result, state.context) do
         {:ok, value, context} ->
-          send_command(state.port, %{
+          command = %{
             type: "tool_result",
             id: state.active_tool.id,
             ok: true,
             value: value
-          })
+          }
 
-          complete_tool(%{state | active_tool: nil, context: context})
+          # Dispatch has already settled. Presentation failure must retain its
+          # context and must not turn the completed effect into uncertainty.
+          deliver_tool_result(%{state | active_tool: nil, context: context}, command)
 
         {:error, %Error{class: :unknown_outcome} = error} ->
           fail(%{state | active_tool: nil}, error)
 
         {:error, %Error{} = error} ->
-          send_command(state.port, %{
+          command = %{
             type: "tool_result",
             id: state.active_tool.id,
             ok: false,
-            error: Error.to_map(error)
-          })
+            error: error
+          }
 
-          complete_tool(%{state | active_tool: nil})
+          deliver_tool_result(%{state | active_tool: nil}, command)
       end
     end
 
@@ -1040,6 +1042,40 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          Error.new(:malformed_result, "nested dispatcher returned an invalid result",
            cause: other
          )}
+
+    defp deliver_tool_result(state, command) do
+      case encode_tool_result(command) do
+        {:ok, record} ->
+          Port.command(state.port, [record, "\n"])
+          complete_tool(state)
+
+        {:error, error} ->
+          fail(state, error)
+      end
+    end
+
+    defp encode_tool_result(command) do
+      record = command |> public_errors() |> JSON.encode!()
+
+      if byte_size(record) <= @max_line,
+        do: {:ok, record},
+        else:
+          {:error,
+           Error.new(:budget_exceeded, "code mode protocol line exceeds the configured bound")}
+    rescue
+      _ -> {:error, Error.new(:malformed_result, "nested tool result is not JSON encodable")}
+    catch
+      _, _ -> {:error, Error.new(:malformed_result, "nested tool result is not JSON encodable")}
+    end
+
+    defp public_errors(%Error{} = error), do: error |> Error.to_map() |> public_errors()
+    defp public_errors(%_{} = value), do: value
+
+    defp public_errors(value) when is_map(value),
+      do: Map.new(value, fn {key, nested} -> {key, public_errors(nested)} end)
+
+    defp public_errors(value) when is_list(value), do: Enum.map(value, &public_errors/1)
+    defp public_errors(value), do: value
 
     defp finish(%{active_tool: tool} = state, _result) when not is_nil(tool),
       do:

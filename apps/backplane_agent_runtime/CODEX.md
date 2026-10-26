@@ -228,6 +228,19 @@ emit a `custom_tool_call_output` event immediately; detached notifications are
 retained for the next wait. No callback from an expired invocation can grant
 access. Unsettled or crashed nested callbacks remain `unknown_outcome`.
 
+At the host-to-Deno boundary, settled native tool errors remain ordinary resolved
+values (`ok: true`), including `is_error: true` results. Native runtime Error
+values inside ordinary maps/lists expose only `class`, `message`, and recursively
+projected `details`; private `cause` is omitted. JavaScript can inspect the result
+and call another tool without replaying the settled invocation. Native
+Conversation/Store results and invocation identities retain their original form.
+Other structs retain their existing JSON encoder behavior. Unsupported values or
+details terminate Code Mode as `malformed_result` after confirmed cleanup; an
+encoded NDJSON record over 1,048,576 UTF-8 bytes, excluding its newline, terminates
+as `budget_exceeded`. Returned context is retained before encoding validation.
+Transport errors still reject the nested Promise; explicit `unknown_outcome`
+and unconfirmed process cleanup remain terminal uncertainty.
+
 `Codex.Session` optionally owns commands, cells, stored state, and collaboration
 identities across separate bounded runs. Hosts bind a fresh run, build its profile,
 and pass the returned `session_binding` to Conversation. Natural successful
