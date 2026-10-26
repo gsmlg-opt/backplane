@@ -5,6 +5,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   @behaviour Backplane.AgentRuntime.Command
 
   alias Backplane.AgentRuntime.Error
+  alias Backplane.AgentRuntime.Tools.LocalCommand.Procfs
 
   @moduledoc """
   Linux local command backend with verified process-group cleanup.
@@ -24,7 +25,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   Cleanup confirms absence through a fresh Linux `/proc` scan, including
   descendants whose leader has exited. A matching live leader avoids that scan
-  only when proving presence. Probe errors remain uncertain. The default 750 ms
+  only when proving presence. ENOENT and ESRCH mean that one proc entry vanished;
+  the remaining group is still scanned. Other probe errors remain uncertain. The default 750 ms
   cleanup budget is unchanged; timeout errors include the last cleanup phase
   and elapsed timing for diagnosis.
   """
@@ -1244,33 +1246,10 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   defp validate_process_identity(pid, launcher_pid) do
-    with {:ok, stat} <- File.read("/proc/#{pid}/stat"),
-         {:ok, %{parent: ^launcher_pid, group: ^pid, session: ^pid}} <- parse_proc_stat(stat) do
+    with {:ok, %{parent: ^launcher_pid, group: ^pid, session: ^pid}} <- Procfs.identity(pid) do
       :ok
     else
       _other -> :error
-    end
-  end
-
-  defp parse_proc_stat(stat) do
-    case String.split(stat, ") ", parts: 2) do
-      [_identity, rest] ->
-        case String.split(rest) do
-          [_state, parent, group, session | _rest] ->
-            with {parent, ""} <- Integer.parse(parent),
-                 {group, ""} <- Integer.parse(group),
-                 {session, ""} <- Integer.parse(session) do
-              {:ok, %{parent: parent, group: group, session: session}}
-            else
-              _other -> :error
-            end
-
-          _other ->
-            :error
-        end
-
-      _other ->
-        :error
     end
   end
 
@@ -1376,50 +1355,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   defp process_group_exists?(process_group_id) do
-    # A matching leader proves presence. Its absence never proves that the
-    # group is empty: descendants can outlive their leader.
-    case proc_group_member?("/proc/#{process_group_id}/stat", process_group_id) do
-      {:ok, true} -> {:ok, true}
-      {:ok, false} -> scan_process_group(process_group_id)
-      {:error, _} = error -> error
-    end
-  end
-
-  defp scan_process_group(process_group_id) do
-    case File.ls("/proc") do
-      {:ok, entries} ->
-        Enum.reduce_while(entries, {:ok, false}, fn entry, {:ok, false} ->
-          case Integer.parse(entry) do
-            {pid, ""} when pid > 0 ->
-              case proc_group_member?("/proc/#{entry}/stat", process_group_id) do
-                {:ok, false} -> {:cont, {:ok, false}}
-                result -> {:halt, result}
-              end
-
-            _ ->
-              {:cont, {:ok, false}}
-          end
-        end)
-
-      {:error, reason} ->
-        {:error, {:proc_directory_unreadable, reason}}
-    end
-  end
-
-  defp proc_group_member?(path, process_group_id) do
-    case File.read(path) do
-      {:ok, stat} ->
-        case parse_proc_stat(stat) do
-          {:ok, %{group: group}} -> {:ok, group == process_group_id}
-          :error -> {:error, {:malformed_proc_stat, path}}
-        end
-
-      {:error, :enoent} ->
-        {:ok, false}
-
-      {:error, reason} ->
-        {:error, {:proc_stat_unreadable, path, reason}}
-    end
+    Procfs.group_exists?(process_group_id)
   end
 
   defp cleanup_progress do
