@@ -106,6 +106,17 @@ context.emit.(%{type: :tool_update, ...})
 {:ok, answer} = context.interact.(%{kind: :permission, question: "Allow?"})
 ```
 
+Direct and nested `Conversation` tool dispatch use the same context projection.
+They preserve the descriptor's configured domain fields and overlay only
+`interact`, `append_feedback`, `emit`, `catalog_snapshot`, `stage_catalog`,
+`request_new_context`, `nested_dispatch`, and `resource_owner_pid`; a bound Goal
+also supplies `goal` and `goal_binding`. Provider configuration and internal
+`provider_emit`, `producer_invocation`, and `publication_boundary` fields are not
+added to the backend context. Descriptor-owned fields with those names are
+preserved. The snapshot remains pinned to the invocation's catalog, and callbacks
+retain that invocation's lifetime and enclosing ownership. Native invocation and
+enclosing identities remain on the operation itself.
+
 The host receives `interaction_requested` with a fresh `interaction_id`, then
 calls `Conversation.resolve(pid, id, answer)` after authenticating the responder.
 The answer is persisted before the worker continues. Stale/duplicate IDs fail.

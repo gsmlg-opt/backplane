@@ -536,7 +536,8 @@ defmodule Backplane.AgentRuntime.Conversation do
             prepared
             | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
               host_context:
-                Map.merge(
+                tool_backend_context(
+                  next_state,
                   prepared.host_context,
                   trusted_effect_context(
                     next_state,
@@ -547,7 +548,6 @@ defmodule Backplane.AgentRuntime.Conversation do
                     outer_invocation(invocation, next_state)
                   )
                 )
-                |> Map.merge(goal_tool_context(next_state))
           }
 
           Execution.dispatch(
@@ -1716,7 +1716,6 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp commit_tool(s, invocation, _descriptor, rest, catalog, approval) do
     invocation = Map.put(invocation, :enclosing_invocation_id, invocation.invocation_id)
-    resource_owner_pid = self()
 
     opts =
       [registry: catalog.registry, authority: catalog.authority, ephemeral_tool_authority: true] ++
@@ -1729,21 +1728,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         prepared = %{
           prepared
           | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
-            host_context:
-              Map.merge(
-                prepared.host_context,
-                Map.take(context, [
-                  :interact,
-                  :append_feedback,
-                  :emit,
-                  :catalog_snapshot,
-                  :stage_catalog,
-                  :request_new_context,
-                  :nested_dispatch
-                ])
-              )
-              |> Map.put(:resource_owner_pid, resource_owner_pid)
-              |> Map.merge(goal_tool_context(s))
+            host_context: tool_backend_context(s, prepared.host_context, context)
         }
 
         case Execution.dispatch(
@@ -2030,6 +2015,23 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp goal_tool_context(s),
     do: %{goal: Keyword.fetch!(s.opts, :goal), goal_binding: s.goal_binding}
+
+  defp tool_backend_context(s, configured, context) do
+    configured
+    |> Map.merge(
+      Map.take(context, [
+        :interact,
+        :append_feedback,
+        :emit,
+        :catalog_snapshot,
+        :stage_catalog,
+        :request_new_context,
+        :nested_dispatch,
+        :resource_owner_pid
+      ])
+    )
+    |> Map.merge(goal_tool_context(s))
+  end
 
   defp goal_text(%{content: text}) when is_binary(text), do: text
 
