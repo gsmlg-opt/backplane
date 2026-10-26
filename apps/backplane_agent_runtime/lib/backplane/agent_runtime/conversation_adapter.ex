@@ -37,7 +37,15 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   in this runtime. Requests contain messages, turn_id, run_id, incarnation,
   step_id, attempt_id, catalog_revision, and canonical tools shaped as
   `%{name: binary, description: binary, parameters: map}`. Context is trusted,
-  ephemeral and never persisted.
+  ephemeral and never persisted. Provider `stream/2` and direct/nested
+  `prepare_tool/2` contexts contain `catalog_snapshot`, the complete native
+  catalog pinned to that request or invocation. Its revision matches the
+  request/invocation's `catalog_revision`; registry, authority, provider tools
+  and native metadata are retained, including admitted registry-only tools.
+  Previously captured contexts remain pinned after publication. Runtime-owned
+  snapshots override the same field in `provider_context` and never enter
+  provider requests, history, events or public JSON. The field grants no
+  publication or dispatch callbacks to these adapters.
 
   Optional hooks run in bounded workers: prompt/2 before appending each user
   message, stop/2 after a response with no tools and no consumed steering.

@@ -303,7 +303,13 @@ defmodule Backplane.AgentRuntime.ConversationPreparationTest do
     assert_receive {:backend, %{tool_name: "outer"}, outer}, 1_000
     outer_effect = :sys.get_state(pid).effect
     send(outer, {:nested, "read", %{"path" => "A"}})
-    assert_receive {:prepare, %{tool_name: "read"}, _, nested_hook}, 1_000
+
+    assert_receive {:prepare, %{tool_name: "read"} = nested_invocation, nested_context,
+                    nested_hook},
+                   1_000
+
+    assert nested_context.catalog_snapshot.revision == nested_invocation.catalog_revision
+    assert nested_context.catalog_snapshot.registry.tools["read"].backend == Backend
     assert :sys.get_state(pid).effect == outer_effect
     send(nested_hook, {:decision, {:allow, %{"path" => "B"}}})
     assert_receive {:intent, %{tool_name: "read", arguments: %{"path" => "B"}}, _}, 1_000
@@ -368,6 +374,8 @@ defmodule Backplane.AgentRuntime.ConversationPreparationTest do
     )
 
     assert_receive {:prepare, invocation, context, hook}, 1_000
+    assert context.catalog_snapshot.revision == invocation.catalog_revision
+    assert context.catalog_snapshot.registry.tools[invocation.tool_name].backend == Backend
     refute Map.has_key?(context, :provider_emit)
     refute Map.has_key?(context, :nested_dispatch)
     refute Map.has_key?(context, :stage_catalog)

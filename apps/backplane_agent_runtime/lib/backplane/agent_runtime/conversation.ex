@@ -204,7 +204,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       host_feedback: Keyword.get(opts, :host_feedback, []),
       steering: [],
       follow_up: [],
-      mailbox: Keyword.get(opts, :mailbox, []),
+      mailbox: retained_mailbox(Keyword.get(opts, :mailbox, [])),
       turn_id: nil,
       turns: [],
       pending_interaction: nil,
@@ -588,6 +588,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     case s.input_binding_pending[runtime] do
       %{identity: ^identity, timer: timer} ->
         Process.cancel_timer(timer)
+        entries = retained_mailbox(entries)
         conversation = Map.update(s.conversation, :mailbox, entries, &(&1 ++ entries))
 
         {:noreply,
@@ -1577,7 +1578,10 @@ defmodule Backplane.AgentRuntime.Conversation do
           if(descriptor[:codex_input_kind] == :custom, do: :custom, else: :function)
         )
 
-      context = feedback_context(context, self(), token)
+      context =
+        context
+        |> Map.put(:catalog_snapshot, catalog)
+        |> feedback_context(self(), token)
 
       task =
         Task.Supervisor.async_nolink(s.supervisor, fn ->
@@ -1828,9 +1832,13 @@ defmodule Backplane.AgentRuntime.Conversation do
     turn = %{turn_id: s.conversation.turn_id, outcome: outcome, error: s.last_error}
 
     conversation =
-      GoalBridge.queue(s, %{s.conversation | turns: s.conversation.turns ++ [turn]}, [
-        {:turn_stopped, %{outcome: outcome}}
-      ])
+      GoalBridge.queue(
+        s,
+        expire_notifications(%{s.conversation | turns: s.conversation.turns ++ [turn]}),
+        [
+          {:turn_stopped, %{outcome: outcome}}
+        ]
+      )
 
     checkpoint(s, conversation, fn s ->
       deliver_goal(s, fn s ->
@@ -2161,7 +2169,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp merge_conversation(base, current, desired) do
     merged =
-      Enum.reduce([:messages, :steering, :follow_up, :mailbox], desired, fn key, acc ->
+      Enum.reduce([:messages, :steering, :follow_up], desired, fn key, acc ->
         base_items = Map.get(base, key, [])
         current_items = Map.get(current, key, [])
         desired_items = Map.get(desired, key, [])
@@ -2173,6 +2181,27 @@ defmodule Backplane.AgentRuntime.Conversation do
 
         Map.put(acc, key, current_items ++ suffix)
       end)
+
+    merged =
+      Map.put(
+        merged,
+        :mailbox,
+        merge_mailbox(
+          Map.get(base, :mailbox, []),
+          Map.get(current, :mailbox, []),
+          Map.get(desired, :mailbox, [])
+        )
+      )
+
+    merged =
+      Map.put(
+        merged,
+        :active_notifications,
+        Map.merge(
+          Map.get(current, :active_notifications, %{}),
+          Map.get(desired, :active_notifications, %{})
+        )
+      )
 
     merged = Map.update!(merged, :messages, &HostFeedback.merge_messages/1)
 
@@ -2186,7 +2215,38 @@ defmodule Backplane.AgentRuntime.Conversation do
     )
   end
 
+  defp merge_mailbox(base, current, desired) do
+    removed = base -- desired
+    added = desired -- base
+    Enum.uniq_by((current -- removed) ++ added, & &1.id)
+  end
+
+  defp retained_mailbox(entries),
+    do: Enum.reject(entries, &match?(%{collaboration: %{kind: :notification}}, &1))
+
+  defp expire_notifications(conversation),
+    do: Map.update(conversation, :mailbox, [], &retained_mailbox/1)
+
+  defp expire_command_notifications({:conversation_updated, at, input}) do
+    {:conversation_updated, at, Map.update!(input, :conversation, &expire_notifications/1)}
+  end
+
+  defp expire_command_notifications(
+         {kind, at, %{context: %{conversation: conversation} = context} = input}
+       )
+       when kind in [:provider_completed, :tool_completed] do
+    {kind, at,
+     Map.put(input, :context, Map.put(context, :conversation, expire_notifications(conversation)))}
+  end
+
+  defp expire_command_notifications(command), do: command
+
   defp do_commit(s, command, meta, extra, next) do
+    command =
+      if is_nil(s.accepting_turn) or not is_nil(s.stopping),
+        do: expire_command_notifications(command),
+        else: command
+
     opts = Keyword.merge(s.opts, extra)
 
     task =
@@ -2218,6 +2278,9 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     context =
       case role do
+        {:provider, _identity, catalog} ->
+          Map.put(context, :catalog_snapshot, catalog)
+
         {:tool, invocation, _, _} ->
           Map.merge(
             context,
@@ -2443,6 +2506,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           s.conversation
           |> Map.put(:pending_interaction, nil)
           |> Map.put(:queue_status, :suspended)
+          |> expire_notifications()
 
         conversation =
           GoalBridge.queue(s, conversation, [

@@ -122,6 +122,57 @@ defmodule Backplane.AgentRuntime.CodexCollaborationBoundaryRegressionTest do
     close(ctx)
   end
 
+  test "a notification missed by the accepting child turn expires while queued messages reach followup" do
+    ctx = runtime()
+
+    {root_provider, _} =
+      tool(ctx.provider, "root", "spawn_agent", %{"task_name" => "worker", "message" => "work"})
+
+    assert_receive {:collaboration_binding, binding}
+    assert_receive {:collaboration_provider, _run, first_request, child_provider}, 1_000
+    {:ok, snapshot} = MultiAgent.snapshot(ctx.manager)
+    [agent] = snapshot.agents
+
+    recipient =
+      Map.take(agent, [:agent_id, :run_id, :incarnation])
+      |> Map.put(:manager_id, snapshot.manager_id)
+
+    assert {:ok, %{status: :accepted, acceptance: :checkpointed}} =
+             MultiAgent.notify_active(ctx.manager, sender(ctx.binding), recipient, %{
+               id: "missed-active-only",
+               text: "MISSED_NOTIFICATION"
+             })
+
+    {root_provider, _} =
+      tool(root_provider, "root", "send_message", %{
+        "target" => "/root/worker",
+        "message" => "ORDINARY_QUEUED_MESSAGE"
+      })
+
+    assert count_messages(first_request, "MISSED_NOTIFICATION") == 0
+    send(child_provider, {:events, [done()]})
+    eventually(fn -> Session.status(binding.session).phase == :idle end)
+
+    eventually(fn ->
+      {:ok, settled} = MultiAgent.snapshot(ctx.manager)
+      hd(settled.agents).status == :completed
+    end)
+
+    tool(root_provider, "root", "followup_task", %{
+      "target" => "/root/worker",
+      "message" => "new explicit task"
+    })
+
+    assert_receive {:collaboration_binding, rebound}
+    assert rebound.run_incarnation == binding.run_incarnation + 1
+    assert_receive {:collaboration_provider, _next_run, request, provider}, 1_000
+    assert count_messages(request, "MISSED_NOTIFICATION") == 0
+    assert count_messages(request, "ORDINARY_QUEUED_MESSAGE") == 1
+    send(provider, {:events, [done()]})
+    eventually(fn -> Session.status(rebound.session).phase == :idle end)
+    close(ctx)
+  end
+
   test "foreign and released native stdin handles settle as rejection without touching valid commands",
        %{tmp_dir: root} do
     child_workspace = Path.join(root, "child")

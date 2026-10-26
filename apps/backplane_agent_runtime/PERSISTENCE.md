@@ -230,6 +230,45 @@ Session readiness may the host signal `Goal.idle/2`. Restarting clears
 process-local pending-receipt tracking, so persisted run outboxes remain the
 host's recovery authority.
 
+For a terminal run, persist receipt removal with the public Kernel command
+through the existing direct Store commit or staged acknowledgement path:
+
+```elixir
+command =
+  {:goal_outbox_acknowledged, System.system_time(:millisecond),
+   %{
+     run_id: run.run_id,
+     incarnation: run.incarnation,
+     receipts: exact_delivered_receipts
+   }}
+
+{:ok, staged} = Store.stage(MyRuntimeStore, context, run, %{command: command})
+{:ok, _ack} = Store.acknowledge_commit(MyRuntimeStore, context, staged.stage, %{})
+```
+
+This command accepts only `:completed`, `:failed`, `:cancelled`, `:timed_out`
+and `:unknown_outcome` runs. Supply a nonempty, duplicate-free list of complete
+receipt maps with nonempty receipt IDs. Each must exactly match one uniquely
+retained entry in `run.context.conversation.goal_outbox`, including its payload.
+Partial maps, changed or unknown receipts, and ambiguous retained IDs are
+rejected. The command uses the current run/incarnation fence; a matching retained
+receipt may originate in an older incarnation. Keep its original contents.
+
+The host establishes delivery before ACKing the exact successfully delivered
+subset. The command removes only that subset and preserves remaining order,
+context, terminal outcome, budgets, tool results and completed or unresolved
+effect evidence. It advances the revision, emits
+`run.goal_outbox_acknowledged` and produces no effects. It accepts no replacement
+conversation or context and does not reopen the terminal Conversation. No Store
+callback is added; the adapter's existing transaction and revision CAS remain
+the persistence boundary.
+
+A definitively rejected ACK write leaves the saved outbox authoritative. A lost
+ACK reply or uncertain write may follow a successful commit: reload and reconcile
+the outbox before deciding what remains. An already removed receipt is rejected
+as a new ACK. If delivery must be repeated, redeliver the same original receipt
+through Goal's existing duplicate accounting; never replay the provider or tool.
+
 Descendant bindings capture root thread and Goal identity at admission. Their
 capabilities authorize root usage accounting only; they cannot read or mutate
 the root Goal through its tools. Child threads that need their own Goal tools

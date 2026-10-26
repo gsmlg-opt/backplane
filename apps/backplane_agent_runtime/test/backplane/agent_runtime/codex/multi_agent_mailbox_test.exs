@@ -567,6 +567,35 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
     root = attach_root(runtime)
     provider = start_root(root)
 
+    {:ok, owner} =
+      Session.validate(root.binding, %{
+        run_id: root.binding.run_id,
+        incarnation: root.binding.run_incarnation
+      })
+
+    sender = %{
+      run_id: root.binding.run_id,
+      incarnation: root.binding.run_incarnation,
+      caller: "host",
+      backend_context: %{resource_owner: owner}
+    }
+
+    {:ok, snapshot} = MultiAgent.snapshot(runtime)
+
+    recipient =
+      %{
+        manager_id: snapshot.manager_id,
+        agent_id: snapshot.root.agent_id,
+        run_id: root.binding.run_id,
+        incarnation: root.binding.run_incarnation
+      }
+
+    assert {:ok, %{status: :accepted, acceptance: :checkpointed}} =
+             MultiAgent.notify_active(runtime, sender, recipient, %{
+               id: "missed-root-notice",
+               text: "unconsumed root notice"
+             })
+
     tool(child.provider, "send_message", %{"target" => "/root", "message" => "retain after final"})
 
     assert_receive {:provider, :child, child_request, _}, 1_000
@@ -579,6 +608,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentMailboxTest do
     assert {:ok, _} = Conversation.prompt(next.pid, "resume root")
     assert_receive {:provider, :root, request, _}, 1_000
     assert mailbox_message(request, "retain after final")
+    refute Enum.any?(request.messages, &(&1[:content] == "unconsumed root notice"))
   end
 
   test "a terminal result containing text blocks is delivered without stopping the manager" do

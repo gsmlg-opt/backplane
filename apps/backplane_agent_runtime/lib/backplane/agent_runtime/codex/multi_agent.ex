@@ -1155,7 +1155,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
       when name == state.parent_name and is_tuple(activity) and elem(activity, 0) == :settled ->
         if state.parent_monitor, do: Process.demonitor(state.parent_monitor, [:flush])
         {:settled, mailbox} = activity
-        entries = Map.get(state.mailboxes, name, []) ++ mailbox
+        entries = retained_mailbox(Map.get(state.mailboxes, name, []) ++ mailbox)
 
         next = %{
           state
@@ -2140,6 +2140,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   defp normalize_delivery(state, {:ok, _}), do: {:ok, state}
   defp normalize_delivery(_state, {:error, %Error{} = error}), do: {:error, error}
 
+  defp retained_mailbox(entries),
+    do: Enum.reject(entries, &match?(%{collaboration: %{kind: :notification}}, &1))
+
   defp replace_agent(state, name, agent, message, admission_profile \\ :v1) do
     with {:ok, snapshot} <- settled_snapshot(agent),
          :ok <- safe_replacement(snapshot) do
@@ -2176,7 +2179,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
           |> Keyword.put(:subscriber, self())
           |> Keyword.put(
             :mailbox,
-            Map.get(snapshot.conversation, :mailbox, []) ++ Map.get(state.mailboxes, name, [])
+            retained_mailbox(
+              Map.get(snapshot.conversation, :mailbox, []) ++ Map.get(state.mailboxes, name, [])
+            )
           )
 
         case retire_replaced_child(state, agent) do

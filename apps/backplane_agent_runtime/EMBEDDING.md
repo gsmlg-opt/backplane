@@ -321,6 +321,16 @@ Existing fixed-catalog callers may continue to pass `registry` and `authority`;
 the initial catalog revision defaults to 1 and definitions are projected from
 the registry unless `tools` is supplied.
 
+Provider `stream/2` and direct/nested `prepare_tool/2` receive the complete
+`context.catalog_snapshot` pinned to their request/invocation. Its `revision`
+matches their `catalog_revision`; `registry`, `authority`, `tools` and native
+metadata remain available, including executable registry entries intentionally
+absent from provider definitions. Old captured contexts keep their old catalog
+after publication. The runtime overrides a same-named host-supplied context
+field. Keep this trusted context ephemeral: it never becomes part of the model
+request, history, persisted execution intents, events or public JSON. Providers
+and preparation hooks gain no publication/dispatch callbacks from this field.
+
 An executing trusted tool can stage one complete replacement with
 `Conversation.stage_catalog/2` or `backend_context.stage_catalog/1`:
 
@@ -597,7 +607,12 @@ checkpoint, including before a same-run followup. Responses are
 `{:ok, %{status: :accepted | :skipped_inactive | :skipped_stale}}`; exact duplicate
 IDs return the prior acceptance and conflicting payloads fail. Skipped notices
 are never placed in manager mailboxes, never start a turn and are not restored.
-Accepted live notices may become ordinary history. Ambiguous checkpoint/delivery
+Accepted notices can enter history once at a later provider boundary within the
+same accepting turn. If that turn ends first, its acknowledged finish or abort
+checkpoint removes the unconsumed notice. It cannot reach a queued followup,
+later root activation, replacement child or restored mailbox. Notices already
+consumed remain ordinary history. Ordinary queued messages remain available
+across those boundaries. Ambiguous checkpoint/delivery
 failures remain errors and must not trigger automatic retries. Ordinary
 `send_message` retains its queued delivery contract.
 

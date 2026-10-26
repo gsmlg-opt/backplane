@@ -6,6 +6,7 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
   defmodule Provider do
     def stream(request, context) do
       send(context.test, {:provider, request, self()})
+      send(context.test, {:provider_context, request, context})
 
       Stream.resource(
         fn -> nil end,
@@ -16,6 +17,13 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
         end,
         fn _ -> :ok end
       )
+    end
+  end
+
+  defmodule SnapshotHooks do
+    def prepare_tool(invocation, context) do
+      send(context.test, {:prepared_catalog, invocation, context})
+      :allow
     end
   end
 
@@ -69,6 +77,70 @@ defmodule Backplane.AgentRuntime.ConversationCatalogTest do
           EphemeralStore.store(context.table, run, meta)
       end
     end
+  end
+
+  test "provider and preparation receive complete pinned ephemeral catalogs across publication" do
+    {pid, store, update} =
+      start(hooks: SnapshotHooks, provider_context: %{test: self(), catalog_snapshot: :spoofed})
+
+    hidden = registry(["hidden"], self(), []).tools["hidden"]
+    hidden = %{hidden | tool_revision: 7} |> Map.put(:codex_exposure, :code_mode_only)
+    {:ok, revised} = ToolRegistry.register(update.catalog.registry, hidden)
+
+    update =
+      update
+      |> put_in([:catalog, :registry], revised)
+      |> update_in([:catalog, :authority, :grants], &(&1 ++ ["hidden"]))
+      |> put_in([:catalog, :authority, :tool_revisions], %{
+        "discover" => 1,
+        "new" => 1,
+        "hidden" => 7
+      })
+
+    assert {:ok, _} = Conversation.prompt(pid, "discover")
+    assert_receive {:provider, first, provider}, 1_000
+    assert_receive {:provider_context, ^first, first_context}
+
+    assert %{revision: 1, registry: %ToolRegistry{}, authority: %{credential: "catalog-secret"}} =
+             first_context.catalog_snapshot
+
+    refute Map.has_key?(first_context, :stage_catalog)
+    refute Map.has_key?(first_context, :nested_dispatch)
+
+    send(provider, {:events, [call("d1", "discover"), done("discover")]})
+    assert_receive {:prepared_catalog, %{catalog_revision: 1}, preparation}, 1_000
+    assert preparation.catalog_snapshot == first_context.catalog_snapshot
+    refute Map.has_key?(preparation, :stage_catalog)
+    refute Map.has_key?(preparation, :nested_dispatch)
+    assert_receive {:tool, %{tool_name: "discover"}, discovery}, 1_000
+    send(discovery, {:stage, update, {:ok, %{text: "found"}}})
+    assert_receive {:stage_receipt, {:ok, %{status: :staged}}}
+    assert_receive {:provider, second, second_provider}, 1_000
+    assert_receive {:provider_context, ^second, second_context}
+    assert second.catalog_revision == second_context.catalog_snapshot.revision
+    assert second_context.catalog_snapshot.revision == 2
+    assert second_context.catalog_snapshot.registry.tools["hidden"].tool_revision == 7
+
+    assert second_context.catalog_snapshot.registry.tools["hidden"].codex_exposure ==
+             :code_mode_only
+
+    refute Enum.any?(second.tools, &(&1.name == "hidden"))
+    assert first_context.catalog_snapshot.revision == 1
+    refute Map.has_key?(first_context.catalog_snapshot.registry.tools, "hidden")
+
+    send(second_provider, {:events, [call("n1", "new"), done("use new")]})
+    assert_receive {:prepared_catalog, %{catalog_revision: 2}, next_preparation}, 1_000
+    assert next_preparation.catalog_snapshot == second_context.catalog_snapshot
+    assert_receive {:tool, operation, backend}, 1_000
+    assert operation.backend_context.catalog_snapshot == next_preparation.catalog_snapshot
+    send(backend, {:result, {:ok, %{text: "done"}}})
+    assert_receive {:provider, _, final_provider}, 1_000
+    send(final_provider, {:events, [done("complete")]})
+    assert_receive {:agent_runtime, "run", %{type: :run_completed}}, 1_000
+    assert {:ok, record} = EphemeralStore.load(store, "run")
+    refute inspect(record) =~ "catalog_snapshot"
+    refute inspect(record) =~ "catalog-secret"
+    refute inspect(record) =~ "backend-secret"
   end
 
   test "publishes after a pinned batch and dispatches the discovered tool exactly once" do

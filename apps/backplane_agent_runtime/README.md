@@ -98,3 +98,7 @@ existing Session admission. Enable it with host-owned `Goal.Store` and
 tools can use this owner through `Codex.ExtensionRuntime`; ordinary runs create
 no Goal. See [EMBEDDING.md](EMBEDDING.md#persistent-thread-goals) for setup and
 [PERSISTENCE.md](PERSISTENCE.md#goal-records-and-accounting-recovery) for recovery.
+Terminal runs can remove exactly delivered receipt subsets with the
+`{:goal_outbox_acknowledged, at, %{run_id: id, incarnation: current, receipts: receipts}}`
+Kernel command through the existing Store CAS boundary. It preserves the terminal
+outcome and execution evidence; a lost acknowledgement requires reloading the run.

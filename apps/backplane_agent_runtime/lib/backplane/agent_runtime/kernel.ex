@@ -26,6 +26,7 @@ defmodule Backplane.AgentRuntime.Kernel do
     :child_settled,
     :cleanup_settled,
     :conversation_updated,
+    :goal_outbox_acknowledged,
     :finish
   ]
   @one_arg_commands [:start, :cancel, :deadline_exceeded]
@@ -64,6 +65,25 @@ defmodule Backplane.AgentRuntime.Kernel do
   end
 
   # -- dispatch ----------------------------------------------------------------
+
+  defp transition(run, :goal_outbox_acknowledged, at, input)
+       when run.state in @terminal_states do
+    receipts = field(input, :receipts)
+
+    with :ok <- validate_run_identity(run, input),
+         {:ok, receipt_ids} <- goal_receipt_ids(receipts),
+         {:ok, outbox} <- retained_goal_outbox(run),
+         :ok <- match_goal_receipts(outbox, receipts) do
+      remaining = Enum.reject(outbox, &Map.has_key?(receipt_ids, &1.receipt_id))
+
+      run
+      |> put_in([:context, :conversation, :goal_outbox], remaining)
+      |> commit(run.state, :goal_outbox_acknowledged, at, input)
+    end
+  end
+
+  defp transition(run, :goal_outbox_acknowledged, _at, _input),
+    do: invalid(run, :goal_outbox_acknowledged)
 
   # Host-neutral conversational checkpoints share the same revision fence as effects.
   defp transition(run, :conversation_updated, at, input) do
@@ -601,6 +621,10 @@ defmodule Backplane.AgentRuntime.Kernel do
     with {:ok, _} <- identity(input, [:run_id, :incarnation], "conversation"), do: {:ok, input}
   end
 
+  defp validate_command_input(:goal_outbox_acknowledged, input) do
+    with {:ok, _} <- identity(input, [:run_id, :incarnation], "run"), do: {:ok, input}
+  end
+
   defp validate_command_input(:provider_started, input) do
     with {:ok, _} <- identity(input, @provider_identity, "provider"), do: {:ok, input}
   end
@@ -648,6 +672,48 @@ defmodule Backplane.AgentRuntime.Kernel do
 
   defp validate_command_input(:cleanup_settled, input) do
     with {:ok, _} <- cleanup_certainty(input), do: {:ok, input}
+  end
+
+  @spec goal_receipt_ids(term()) :: {:ok, %{optional(binary()) => true}} | {:error, Error.t()}
+  defp goal_receipt_ids([_ | _] = receipts), do: goal_receipt_ids(receipts, %{})
+  defp goal_receipt_ids(_), do: validation_error("goal receipts must be a nonempty list")
+
+  @spec goal_receipt_ids(term(), %{optional(binary()) => true}) ::
+          {:ok, %{optional(binary()) => true}} | {:error, Error.t()}
+  defp goal_receipt_ids([], ids), do: {:ok, ids}
+
+  defp goal_receipt_ids([%{receipt_id: id} | rest], ids) when is_binary(id) and id != "" do
+    if Map.has_key?(ids, id),
+      do: validation_error("goal receipt IDs must be unique"),
+      else: goal_receipt_ids(rest, Map.put(ids, id, true))
+  end
+
+  defp goal_receipt_ids(_, _), do: validation_error("goal receipts require nonempty receipt IDs")
+
+  defp retained_goal_outbox(%{context: %{conversation: %{goal_outbox: outbox}}}) do
+    if valid_goal_outbox?(outbox),
+      do: {:ok, outbox},
+      else: validation_error("retained goal outbox is malformed")
+  end
+
+  defp retained_goal_outbox(_), do: validation_error("retained goal outbox is required")
+
+  defp valid_goal_outbox?([]), do: true
+
+  defp valid_goal_outbox?([%{receipt_id: id} | rest]) when is_binary(id) and id != "",
+    do: valid_goal_outbox?(rest)
+
+  defp valid_goal_outbox?(_), do: false
+
+  defp match_goal_receipts(outbox, receipts) do
+    if Enum.all?(receipts, fn receipt ->
+         case Enum.filter(outbox, &(&1.receipt_id == receipt.receipt_id)) do
+           [retained] -> retained === receipt
+           _ -> false
+         end
+       end),
+       do: :ok,
+       else: conflict("goal receipts do not match the retained outbox")
   end
 
   defp required_tool_arguments(input) do
