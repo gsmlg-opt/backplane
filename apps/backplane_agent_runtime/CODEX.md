@@ -380,3 +380,37 @@ production launch. The existing ephemeral extension reference mode remains
 explicitly ephemeral. Scoped fixtures establish package behavior, including
 receipt recovery and native nested-tool acknowledgement; they do not establish
 consumer integration, provider wire compatibility or complete Codex parity.
+
+## First-party Linux PTY
+
+Build the optional native source on the target Linux host:
+
+```sh
+mix backplane.pty.build
+```
+
+```elixir
+alias Backplane.AgentRuntime.{Command, Tools.LocalCommand}
+{:ok, backend} = LocalCommand.start_link(pty: true)
+{:ok, command} = Command.new(%{adapter: LocalCommand, server: backend})
+```
+
+Bind `command` into the existing local Codex profile. `tty: true` uses the native
+controlling terminal; omitted/false tty keeps pipes. Trusted backend options
+`terminal_rows`/`terminal_columns` accept 1..1000 (default 24/80). Startup probes
+the first-party helper and actual PTY/pidfd syscalls; unavailable support returns
+a structured error and never silently substitutes a pipe. Pipe-only consumers
+need no C compiler. Optional `pty_helper_path` selects a trusted absolute helper.
+
+Output preserves prompts, CR/LF and escape bytes without inserted separators.
+Split UTF-8 suffixes wait for the next frame/poll; invalid/final incomplete bytes
+use deterministic replacement. `write_stdin` passes input/control bytes through
+normal terminal line discipline; Ctrl-C signals the foreground job. Explicit
+cancellation/Session close cleans ordinary foreground/background groups in the
+terminal session, including after its original leader exits. Deliberately creating
+a different session is outside this scope.
+
+Confirmation requires exact guardian cleanup evidence, broker reaping and broker
+Port exit. Missing helper proof stays `unknown_outcome`; a successful command
+exit alone does not release the session. No OS sandbox or post-crash observer is
+added. See [protocol, process ownership and build prerequisites](c_src/README.md).

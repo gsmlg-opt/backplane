@@ -76,6 +76,7 @@ defmodule Backplane.Umbrella.MixProject do
           backplane_api: :permanent,
           backplane_admin: :permanent,
           backplane_memory: :permanent,
+          backplane_agent_runtime: :load,
           runtime_tools: :permanent
         ]
       ],

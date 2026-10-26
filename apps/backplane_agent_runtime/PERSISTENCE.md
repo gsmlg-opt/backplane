@@ -38,6 +38,78 @@ Its acknowledgement boundary has these properties:
 ETS table, a restart loses records, and it does not declare durable capabilities
 or implement incarnation fencing.
 
+## Separate lifetime reconciliation receipts
+
+Opt-in `Codex.Reconciliation.Adapter` stores host evidence and closure receipts
+separately from run transitions. Configure Sessions and MultiAgent with
+`recovery: {MyRecoveryAdapter, context}` and a stable `recovery_scope_id`.
+MultiAgent additionally requires `root_agent_id`, stable across root runs. The
+adapter resolves opaque Store/evidence references; its context, callbacks and
+runtime capabilities are never serialized.
+
+The callbacks are `mode/0`, `load_evidence/2`, `runtime_store/2`, `load_receipt/2`
+and `compare_and_swap_receipt/4`. Reads return `{:ok, value}` or an ordinary
+Runtime `Error`. An absent receipt is `:not_found`; no other error means absence.
+CAS creates revision 1 against expected revision 0, or advances the exact current
+positive revision once. Receipt IDs bind their immutable subject and manifest.
+The host must provide exclusive recovery/writer authority from authoritative
+Store reads through receipt persistence. Declare the actual transactional,
+isolation and durable acknowledgement boundary of your adapter.
+
+Public host operations run bounded supervised adapter work outside controller
+mailboxes. After permanently fencing admission, obtain a local ownership
+manifest with `Session.recovery_manifest/1`,
+`ResourceRegistry.recovery_manifest/2` or `MultiAgent.recovery_manifest/2`. The
+host seals its complete admission/effect ledger and records actual component
+observations. Reconcile that immutable evidence reference:
+
+```elixir
+request = %{
+  "schema_version" => 1,
+  "receipt_id" => "closure:owner:1",
+  "expected_revision" => 0,
+  "subject" => manifest["subject"],
+  "evidence_ref" => "evidence:owner:1"
+}
+
+{:ok, receipt} = Codex.Reconciliation.reconcile(recovery, request)
+{:ok, acknowledgement} = Session.reconcile_close(session, receipt["receipt_id"])
+```
+
+The evidence bundle has exactly `schema_version`, `manifest`, `admission_fence`,
+`inventory`, `observations`, `run_fences`, `policy_records`, `archives` and
+`artifacts`. A manifest contains `schema_version`, `manifest_id`,
+`manifest_revision`, `subject`, `admission_fence_ref`, `run_refs`, `obligations`
+and `manifest_digest`. A run reference names `store_ref`, `run_id` and immutable
+`original_incarnation`. An obligation has `obligation_id`, `kind`, exact
+`identity`, `provenance_ref`, and optionally `requires` with predecessor IDs.
+Omitted inventories, missing observations and ownership cycles do not confirm
+closure. Complete sealed empty inventories are explicit, valid evidence.
+
+Each observation names `observation_id`, `observation_revision`, `obligation_id`,
+exact `identity`, `result` (`stopped`, `closed`, `not_started`), `source_ref` and
+`observed_at_unix_ms`. A composite obligation may instead reference a subordinate
+`receipt_id` and exact `subject`. Physical shutdown cannot erase a failed
+acknowledgement obligation. A stopped tool invocation can still have an unknown
+external effect; version 1 supplies no generic success override.
+
+Reconciliation loads current terminal Store records, checks revision/incarnation
+consistency and every Kernel/uncertain-intent cleanup requirement, validates the
+host's contiguous original-to-current fence chain, then rechecks Store authority
+before CAS. A larger incarnation alone is insufficient. Progress receipts retain
+the first failure, pending obligations and unresolved effects. Immutable facts
+cannot be retracted by a later evidence revision. The latest exact request retry
+returns its existing receipt, including creation retries after a lost write ACK;
+older requests conflict after progress. An uncertain acknowledgement is reloaded
+before any projection. Persisted sibling progress survives aggregate refusal.
+
+Projection uses the exact fenced controller identity and manifest. It starts no
+Provider, tool, cleanup callback, queued work or Goal continuation. Original
+terminal `unknown_outcome` runs, journals, budgets, effect evidence and Goal
+outboxes remain unchanged. A separate lifetime receipt never changes a historical
+outcome to success or signals Goal idle. Production durability and actual backend
+observations remain the consuming host's verification responsibility.
+
 ## Reusable conformance run
 
 Run the package harness from the host adapter's integration tests against the

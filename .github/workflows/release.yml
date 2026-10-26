@@ -483,12 +483,26 @@ jobs:
         if: matrix.release == 'backplane'
         run: mix "do" --app backplane_admin loadpaths + compile.all --force --warnings-as-errors
 
+      - name: Build optional Linux PTY helper
+        if: runner.os == 'Linux' && matrix.release == 'backplane'
+        run: mix backplane.pty.build
+
       - name: Build OTP release
         env:
           RELEASE_NAME: ${{ matrix.release }}
         run: |
           rm -rf -- "_build/prod/rel/$RELEASE_NAME"
           mix release "$RELEASE_NAME" --overwrite --version "$RELEASE_VERSION"
+
+      - name: Verify packaged Linux PTY helper
+        if: runner.os == 'Linux' && matrix.release == 'backplane'
+        env:
+          RELEASE_NAME: ${{ matrix.release }}
+        run: |
+          helpers=("_build/prod/rel/$RELEASE_NAME"/lib/backplane_agent_runtime-*/priv/bin/backplane-local-command-pty)
+          test "${#helpers[@]}" -eq 1
+          test -x "${helpers[0]}"
+          "${helpers[0]}" --probe
 
       - name: Verify compiled release metadata
         if: matrix.release == 'backplane'

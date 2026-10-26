@@ -3,6 +3,18 @@ ExUnit.start()
 defmodule Backplane.DockerfileTest do
   use ExUnit.Case, async: true
 
+  test "builds and probes the optional target-native PTY helper before Linux assembly" do
+    dockerfile = File.read!(Path.expand("../Dockerfile", __DIR__))
+    builder = stage(dockerfile, "builder")
+    [before_release, _] = String.split(builder, "RUN mix release backplane", parts: 2)
+    assert before_release =~ "RUN mix backplane.pty.build"
+
+    assert builder =~
+             ~s(backplane_agent_runtime-${VERSION}/priv/bin/backplane-local-command-pty" --probe)
+
+    refute stage(dockerfile, "web-assets-builder") =~ "mix backplane.pty.build"
+  end
+
   test "copies every umbrella app manifest before production deps are fetched" do
     dockerfile = File.read!(Path.expand("../Dockerfile", __DIR__))
 

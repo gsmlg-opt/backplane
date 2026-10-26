@@ -25,7 +25,8 @@ defmodule Backplane.AgentRuntime.CodexCommandPtyTest do
 
       request = %{
         request
-        | executable: System.find_executable("python3"),
+        | tty: false,
+          executable: System.find_executable("python3"),
           arguments:
             [
               helper,

@@ -2,7 +2,7 @@
 
 Date: 2026-10-27
 
-Status: proposed for user approval; implementation has not started.
+Status: approved by the user on 2026-10-27; implementation and verification are in progress.
 
 Issue: [#115](https://github.com/gsmlg-opt/backplane/issues/115), targeting the
 next release after 1.10.42. Runtime baseline is
@@ -171,8 +171,9 @@ into `priv`; generated binaries are ignored in Git and excluded from portable He
 source packaging. Do not reuse a cached wrong-target binary. The build command
 fails explicitly on unsupported targets or unavailable compiler/syscalls.
 
-Official Linux OTP archives and Docker images invoke the task during their
-existing native build before release assembly. Mac builds skip Linux helper
+Official Linux gateway OTP archives containing the runtime and Docker images
+invoke the task during their existing native build before release assembly.
+The standalone host-agent release has no runtime dependency. Mac builds skip Linux helper
 assembly and retain explicit unsupported PTY behavior. The package verifier builds
 from unpacked official source and uses public construction only. No installation
 downloads, prebuilt binary distribution or automatic compiler requirement for
@@ -228,3 +229,8 @@ cross-platform terminal support or production deployment is claimed.
 Approval selects explicit opt-in construction/build, the verified Linux/pidfd
 requirement, broker/guardian proof boundary and ordinary terminal-session scope.
 Then implement, verify and complete the already requested unified release.
+
+The gateway release explicitly includes `backplane_agent_runtime` in `:load`
+mode so its optional helper is packaged without starting runtime supervision.
+The standalone host-agent release has no runtime dependency. Artifact checks
+resolve the runtime application version independently from the release version.

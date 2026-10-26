@@ -187,6 +187,95 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
+  @tag :tmp_dir
+  test "runtime package guard evaluates inactive branches and rejects active local dependencies and external paths",
+       %{tmp_dir: directory} do
+    script = File.read!("scripts/verify_agent_runtime_package.sh")
+    [_, guard] = Regex.run(~r/<<'MANIFEST_GUARD'\n(.*?)\nMANIFEST_GUARD/s, script)
+    guard_path = Path.join(directory, "guard.exs")
+    File.write!(guard_path, guard)
+
+    for {extra, accepted} <- [
+          {"deps: if(false, do: [{:unused, path: \"../unused\", in_umbrella: true}], else: [])",
+           true},
+          {"deps: [{:local, path: \"../local\"}]", false},
+          {"deps: [{:local, in_umbrella: true}]", false},
+          {"build_path: \"../_build\"", false},
+          {"deps_path: \"../deps\"", false},
+          {"config_path: \"../config/config.exs\"", false},
+          {"lockfile: \"../mix.lock\"", false},
+          {"apps_path: \"../apps\"", false}
+        ] do
+      project = Path.join(directory, "project")
+      File.mkdir_p!(project)
+
+      File.write!(
+        Path.join(project, "mix.exs"),
+        "defmodule GuardFixture.MixProject do\nuse Mix.Project\ndef project, do: [app: :backplane_agent_runtime, version: \"0.1.0\", #{extra}]\nend\n"
+      )
+
+      {output, status} = System.cmd("elixir", [guard_path, project], stderr_to_stdout: true)
+
+      if accepted,
+        do: assert(status == 0, output),
+        else: assert(status != 0, "accepted #{extra}: #{output}")
+    end
+  end
+
+  test "runtime package dependency guard distinguishes protocol packages from server apps" do
+    script = File.read!("scripts/verify_agent_runtime_package.sh")
+    [_, expression] = Regex.run(~r/if grep -Eq '([^']+)' <<<"\$dependencies"/, script)
+
+    for {dependency, rejected} <- [
+          {"backplane_mcp_protocol ~> 1.10.32 (Hex package)", false},
+          {"backplane_plugin_protocol ~> 1.10.32 (Hex package)", false},
+          {"backplane_mcp ~> 1.10.32", true},
+          {"backplane_system ~> 1.10.32", true},
+          {"phoenix_live_view ~> 1.0", true},
+          {"ecto_sql ~> 3.0", true},
+          {"postgrex ~> 1.0", true}
+        ] do
+      command = "printf '%s\\n' \"$DEPENDENCY\" | grep -Eq \"$EXPRESSION\""
+
+      {_output, status} =
+        System.cmd("sh", ["-c", command],
+          env: [{"DEPENDENCY", "├── " <> dependency}, {"EXPRESSION", expression}]
+        )
+
+      assert status == 0 == rejected, dependency
+    end
+  end
+
+  test "Linux releases build and probe the packaged optional PTY helper" do
+    steps = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]["build"]["steps"]
+    build = Enum.find(steps, &(&1["name"] == "Build optional Linux PTY helper"))
+    verify = Enum.find(steps, &(&1["name"] == "Verify packaged Linux PTY helper"))
+    assert build["if"] == "runner.os == 'Linux' && matrix.release == 'backplane'"
+    assert build["run"] == "mix backplane.pty.build"
+    assert verify["if"] == "runner.os == 'Linux' && matrix.release == 'backplane'"
+
+    refute File.read!("apps/backplane_host_agent/mix.exs") =~ "{:backplane_agent_runtime,"
+
+    assert verify["run"] =~
+             "backplane_agent_runtime-*/priv/bin/backplane-local-command-pty"
+
+    assert verify["run"] =~ ~s("${helpers[0]}" --probe)
+
+    positions =
+      Enum.map(
+        [
+          "Build optional Linux PTY helper",
+          "Build OTP release",
+          "Verify packaged Linux PTY helper",
+          "Archive OTP release"
+        ],
+        fn name -> Enum.find_index(steps, &(&1["name"] == name)) end
+      )
+
+    refute nil in positions
+    assert positions == Enum.sort(positions)
+  end
+
   test "release refreshes compiled admin metadata and verifies it before archiving" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
     steps = workflow["jobs"]["build"]["steps"]
@@ -697,6 +786,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert releases[:backplane][:applications][:backplane_api] == :permanent
     assert releases[:backplane][:applications][:backplane_admin] == :permanent
     assert releases[:backplane][:applications][:backplane_memory] == :permanent
+    assert releases[:backplane][:applications][:backplane_agent_runtime] == :load
     refute Keyword.has_key?(releases[:backplane][:applications], :backplane_host_agent)
 
     assert releases[:host_agent][:applications][:backplane_host_agent] == :permanent
@@ -704,6 +794,7 @@ defmodule Backplane.ReleaseConfigTest do
     refute Keyword.has_key?(releases[:host_agent][:applications], :backplane)
     refute Keyword.has_key?(releases[:host_agent][:applications], :backplane_api)
     refute Keyword.has_key?(releases[:host_agent][:applications], :backplane_admin)
+    refute Keyword.has_key?(releases[:host_agent][:applications], :backplane_agent_runtime)
   end
 
   test "host agent runtime config does not require Phoenix secrets" do

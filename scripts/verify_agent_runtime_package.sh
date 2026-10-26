@@ -18,6 +18,15 @@ fi
 
 sigma_source="${SIGMA_SOURCE:-$script_dir/../../sigma}"
 require_sigma_source="${REQUIRE_SIGMA_SOURCE:-0}"
+pty_package_only="${PTY_PACKAGE_ONLY:-0}"
+if [[ "$pty_package_only" != "0" && "$pty_package_only" != "1" ]]; then
+  printf 'PTY_PACKAGE_ONLY must be 0 or 1.\n' >&2
+  exit 1
+fi
+if [[ "$pty_package_only" == "1" && "$(uname -s)" != "Linux" ]]; then
+  printf 'Native PTY package verification requires Linux.\n' >&2
+  exit 1
+fi
 
 if [[ "$require_sigma_source" != "0" && "$require_sigma_source" != "1" ]]; then
   printf 'REQUIRE_SIGMA_SOURCE must be 0 or 1, got %s.\n' "$require_sigma_source" >&2
@@ -33,11 +42,30 @@ fi
 # Resolve documentation-only dependencies and build without changing the checkout.
 mkdir -p "$source_dir"
 tar -C "$runtime_dir" --exclude='./_build' --exclude='./deps' --exclude='./doc' \
-  --exclude='./tmp' --exclude='*.tar' -cf - . | tar -xf - -C "$source_dir"
+  --exclude='./tmp' --exclude='./priv/bin/backplane-local-command-pty*' --exclude='*.tar' -cf - . | tar -xf - -C "$source_dir"
 cd "$source_dir"
 MIX_ENV=dev "${mix_command[@]}" deps.get
-MIX_ENV=dev "${mix_command[@]}" format --check-formatted
+if [[ "$pty_package_only" == "1" ]]; then
+  MIX_ENV=dev "${mix_command[@]}" format --check-formatted \
+    lib/backplane/agent_runtime/tools/local_command.ex \
+    lib/backplane/agent_runtime/tools/local_command/pty.ex \
+    lib/backplane/agent_runtime/tools/local_command/procfs.ex \
+    lib/mix/tasks/backplane.pty.build.ex \
+    test/backplane/agent_runtime/tools/local_command_pty_test.exs mix.exs
+else
+  MIX_ENV=dev "${mix_command[@]}" format --check-formatted
+fi
 MIX_ENV=dev "${mix_command[@]}" compile --warnings-as-errors
+if [[ "$(uname -s)" == "Linux" ]]; then
+  MIX_ENV=dev "${mix_command[@]}" backplane.pty.build
+  python3 test/native/pty_protocol_test.py
+  "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror -Wformat=2 \
+    test/native/pty_identity_test.c -o "$work_root/pty-identity-test"
+  "$work_root/pty-identity-test"
+fi
+if [[ "$pty_package_only" == "1" ]]; then
+  MIX_ENV=test "${mix_command[@]}" test test/backplane/agent_runtime/tools/local_command_pty_test.exs
+else
 MIX_ENV=dev "${mix_command[@]}" docs --warnings-as-errors
 if [[ -n "${COREUTILS:-}" || "$(command -v coreutils || true)" != "" ]]; then
   MIX_ENV=test "${mix_command[@]}" test
@@ -48,6 +76,7 @@ else
     ! -path 'test/backplane/agent_runtime/tools/local_command_cleanup_test.exs')"
   MIX_ENV=test "${mix_command[@]}" test ${test_files}
 fi
+fi
 MIX_ENV=dev "${mix_command[@]}" hex.build --output "$artifact"
 
 mkdir -p "$unpacked"
@@ -56,6 +85,10 @@ tar -xf "$artifact" -O contents.tar.gz | tar -xz -C "$unpacked"
 test -f "$unpacked/lib/backplane/agent_runtime/tools/local_resource.ex"
 test -f "$unpacked/lib/backplane/agent_runtime/tools/local_command.ex"
 test -f "$unpacked/priv/local_command_launcher.sh"
+test -f "$unpacked/c_src/local_command_pty.c"
+test -f "$unpacked/c_src/build_pty.sh"
+test -f "$unpacked/lib/mix/tasks/backplane.pty.build.ex"
+test ! -e "$unpacked/priv/bin/backplane-local-command-pty"
 test -f "$unpacked/priv/codex/profile.json"
 test -f "$unpacked/priv/codex/code_mode_worker.js"
 test -f "$unpacked/priv/codex/source-inventory.json"
@@ -74,17 +107,36 @@ if rg -n 'Backplane\.AgentTools|backplane_agent_tools' "$unpacked"; then
   printf 'The artifact contains an obsolete tools application or namespace.\n' >&2
   exit 1
 fi
-if rg -n 'in_umbrella:|path:' "$unpacked/mix.exs"; then
-  printf 'The artifact Mix manifest contains an umbrella source dependency.\n' >&2
-  exit 1
-fi
+# Check evaluated standalone configuration, not inactive umbrella source branches.
+manifest_guard="$work_root/verify_manifest.exs"
+cat > "$manifest_guard" <<'MANIFEST_GUARD'
+Mix.start()
+root = Path.expand(hd(System.argv()))
+Mix.Project.in_project(:backplane_agent_runtime, root, fn _ ->
+  config = Mix.Project.config()
+  unless config[:app] == :backplane_agent_runtime, do: raise("unexpected package app")
+  if config[:apps_path], do: raise("artifact is an active umbrella project")
+  for dependency <- config[:deps] || [] do
+    options = dependency |> Tuple.to_list() |> List.last()
+    if is_list(options) and (Keyword.has_key?(options, :path) or Keyword.get(options, :in_umbrella, false)) do
+      raise "artifact has an active local dependency: #{inspect(elem(dependency, 0))}"
+    end
+  end
+  for key <- [:build_path, :deps_path, :config_path, :lockfile], value = config[key], is_binary(value) do
+    path = Path.expand(value, root)
+    unless path == root or String.starts_with?(path, root <> "/"), do: raise("artifact has external #{key}")
+  end
+  IO.puts("Standalone manifest dependencies and paths: PASS")
+end)
+MANIFEST_GUARD
+elixir "$manifest_guard" "$unpacked"
 
 dependencies="$(cd "$unpacked" && MIX_ENV=prod "${mix_command[@]}" deps.tree --only prod)"
 if ! grep -q 'jsonschex ~> 0.10.0' <<<"$dependencies"; then
   printf 'The artifact is missing its required JSON Schema production dependency:\n%s\n' "$dependencies" >&2
   exit 1
 fi
-if grep -Eq 'backplane_(system|api|admin|mcp|llama|skills)|phoenix|ecto|postgrex' <<<"$dependencies"; then
+if grep -Eq '(^|[[:space:]])(backplane_(system|api|admin|mcp|llama|skills)|phoenix(_[a-z_]+)?|ecto(_[a-z_]+)?|postgrex)([[:space:]]|$)' <<<"$dependencies"; then
   printf 'The artifact unexpectedly resolves umbrella or server dependencies:\n%s\n' "$dependencies" >&2
   exit 1
 fi
@@ -99,7 +151,13 @@ done
 
 artifact_hash="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
 
-for fixture in empty_tool bundled_basic fake_backend; do
+fixtures=(empty_tool bundled_basic fake_backend pty_basic)
+if [[ "$pty_package_only" == "1" ]]; then fixtures=(pty_basic); fi
+for fixture in "${fixtures[@]}"; do
+  if [[ "$fixture" == "pty_basic" && "$(uname -s)" != "Linux" ]]; then
+    printf 'Skipping pty_basic consumer: first-party PTY requires native Linux.\n'
+    continue
+  fi
   if [[ "$fixture" == "bundled_basic" && -z "${COREUTILS:-}" && "$(uname -s)" != "Linux" ]]; then
     printf 'Skipping bundled_basic consumer: Linux LocalCommand backend is unavailable on this host.\n'
     continue
@@ -112,13 +170,22 @@ for fixture in empty_tool bundled_basic fake_backend; do
   (
     cd "$fixture_dir"
     AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod "${mix_command[@]}" deps.get
-    AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod "${mix_command[@]}" compile --warnings-as-errors
+    # Prove normal compilation does not require the optional C compiler.
+    AGENT_RUNTIME_PATH="$unpacked" CC=false MIX_ENV=prod "${mix_command[@]}" compile --warnings-as-errors
+    if [[ "$fixture" == "pty_basic" ]]; then
+      AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod "${mix_command[@]}" backplane.pty.build
+    fi
     module="$(printf '%s' "$fixture" | awk -F_ '{for (i=1; i<=NF; i++) printf "%s", toupper(substr($i,1,1)) substr($i,2)}')"
     AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod "${mix_command[@]}" run -e "$module.verify!()"
   )
 
   test "$(sha256sum "$artifact" | cut -d ' ' -f 1)" = "$artifact_hash"
 done
+
+if [[ "$pty_package_only" == "1" ]]; then
+  printf 'Native PTY source/package checks passed for artifact %s (%s).\n' "$artifact" "$artifact_hash"
+  exit 0
+fi
 
 (
   cd "$work_root/empty_tool"
@@ -178,15 +245,27 @@ cp "$source_dir/test/fixtures/issue_46_live_catalog.json" \
 test "$(sha256sum "$artifact" | cut -d ' ' -f 1)" = "$artifact_hash"
 
 if [[ -d "$sigma_source/apps/sigma_ai" && -d "$sigma_source/apps/sigma_coding" ]]; then
+  # Sigma's provider validates tool calls through its separate AI Protocol dependency.
+  # Supply that actual package to the consumer without adding it to Runtime itself.
+  ai_protocol_artifact="$work_root/backplane_ai_protocol.tar"
+  ai_protocol_unpacked="$work_root/ai_protocol"
+  (
+    cd "$script_dir/../apps/backplane_ai_protocol"
+    MIX_ENV=prod "${mix_command[@]}" hex.build --output "$ai_protocol_artifact"
+  )
+  mkdir -p "$ai_protocol_unpacked"
+  tar -xf "$ai_protocol_artifact" -O contents.tar.gz | tar -xz -C "$ai_protocol_unpacked"
+
   sigma_fixture="$work_root/sigma_source"
   mkdir -p "$sigma_fixture/lib"
   cp -R "$script_dir/../test/agent_runtime_packages/sigma_source/." "$sigma_fixture/"
 
   (
     cd "$sigma_fixture"
-    AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod "${mix_command[@]}" deps.get
-    AGENT_RUNTIME_PATH="$unpacked" MIX_ENV=prod "${mix_command[@]}" compile --warnings-as-errors
-    AGENT_RUNTIME_PATH="$unpacked" SIGMA_SOURCE="$sigma_source" MIX_ENV=prod \
+    export AGENT_RUNTIME_PATH="$unpacked" AI_PROTOCOL_PATH="$ai_protocol_unpacked"
+    MIX_ENV=prod "${mix_command[@]}" deps.get
+    MIX_ENV=prod "${mix_command[@]}" compile --warnings-as-errors
+    SIGMA_SOURCE="$sigma_source" MIX_ENV=prod \
       "${mix_command[@]}" run -e 'SigmaSource.verify!()'
   )
 

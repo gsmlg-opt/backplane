@@ -1,5 +1,44 @@
 # Session-owned Codex resources
 
+## Explicit closure reconciliation
+
+Recovery-enabled Sessions expose `initial_cleanup`, `cleanup_revision` and
+`reconciliation` alongside their latest `cleanup`. The first close result remains
+available even after independent evidence confirms closure. Ordinary `close/2`
+returns the cached latest result; it never retries a failed cleanup itself.
+
+After fencing admission and establishing exact run/component evidence, obtain
+the owner manifests, persist receipts with `Codex.Reconciliation.reconcile/2`,
+then apply `ResourceRegistry.reconcile_owner/3`,
+`MultiAgent.reconcile_child/2` / `reconcile_close/2`, and finally
+`Session.reconcile_close/2` in ownership order. Registry projection requires the
+exact fenced owner and preserves failed acknowledgement obligations separately
+from physical shutdown. Applying receipts calls neither cleanup nor
+acknowledgement again. The Session requires confirmed Registry and every owned
+manager; managed child Sessions borrow the shared manager rather than owning its
+entire lifetime.
+
+The Session stays `phase: :closed`; its old binding remains unusable. Exact
+receipt reapplication is a no-op. Missing evidence, a live unfenced executor,
+unresolved mutation effects or a timeout retains uncertainty and reservations.
+Reconciliation starts no new work and sends no Goal idle signal. A root run
+already terminal `unknown_outcome` retains its original outcome/journal and effect
+evidence; lifetime closure is a separate receipt. Host policy decides any future
+independent admission. See
+[the persistence contract](../../../apps/backplane_agent_runtime/PERSISTENCE.md)
+and [embedding guide](../../../apps/backplane_agent_runtime/EMBEDDING.md).
+
+## Optional Linux PTY resources
+
+The ordinary `exec_command`/`write_stdin` tools support the first-party Linux PTY
+after an explicit `mix backplane.pty.build` and backend `pty: true`. Only a
+`tty: true` request selects it. Existing numeric Sessions, owner/incarnation
+checks, output cursors and budgets apply. Cancellation/Session close must confirm
+the original terminal session's remaining ordinary job-control groups, guardian
+proof, broker reaping and Port exit. Missing helper proof remains uncertain; it
+does not authorize numeric-PID cleanup retries or command replay. Terminal jobs
+are process-local and cannot be imported from an archived child.
+
 `Backplane.AgentRuntime.Codex.Session` is an opt-in, supervised host resource
 owner. Each user turn still runs in a new, finite `Conversation`, with a unique
 run ID, its own incarnation, fresh budget and deadline, and its own admitted

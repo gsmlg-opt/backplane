@@ -5,10 +5,14 @@ on:
     paths:
       - "apps/backplane_agent_runtime/**"
       - ".github/workflows/agent-runtime.yml"
+      - "scripts/verify_agent_runtime_package.sh"
+      - "test/agent_runtime_packages/pty_basic/**"
   pull_request:
     paths:
       - "apps/backplane_agent_runtime/**"
       - ".github/workflows/agent-runtime.yml"
+      - "scripts/verify_agent_runtime_package.sh"
+      - "test/agent_runtime_packages/pty_basic/**"
 
 permissions:
   contents: read
@@ -100,8 +104,38 @@ jobs:
       - name: Compile with warnings as errors
         run: mix compile --warnings-as-errors
 
+      - name: Build optional Linux PTY helper
+        run: mix backplane.pty.build
+
+      - name: Verify native PTY protocol
+        run: python3 test/native/pty_protocol_test.py
+
       - name: Run tests
         run: mix test
+
+      - name: Verify independent BEAM recovery
+        run: python3 test/fixtures/run_reconciliation_cold.py "$RUNNER_TEMP/agent-runtime-cold-recovery"
+
+  native-pty:
+    name: Native PTY package (${{ matrix.runner }})
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    env:
+      PTY_PACKAGE_ONLY: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - name: Install native PTY prerequisites
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential python3 util-linux
+      - name: Verify native PTY source package and consumer
+        run: bash scripts/verify_agent_runtime_package.sh
 
   agent-runtime-latest:
     name: Agent Runtime (Elixir 1.20 / OTP 29)

@@ -81,3 +81,6 @@ Mnesia.nonode@nohost/
 # Git worktrees
 /.trees/
 __pycache__/
+
+# Optional target-native PTY helper (ship source in Hex, assemble into OTP releases).
+/apps/backplane_agent_runtime/priv/bin/backplane-local-command-pty*

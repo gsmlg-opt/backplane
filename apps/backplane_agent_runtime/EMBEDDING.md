@@ -1,5 +1,66 @@
 # Embedded execution
 
+## Explicit recovery and archived children
+
+Recovery is opt-in host configuration. Supply `recovery: {Adapter, context}` and
+`recovery_scope_id` to each owning Session and MultiAgent; a manager also needs a
+stable `root_agent_id`. See [PERSISTENCE.md](PERSISTENCE.md) for the host evidence
+and receipt contract. Sessions pass the same configuration to their Registry.
+`Session.bind/3` accepts `recovery_store_ref` when the opaque Store reference
+differs from its run ID. Recovery-enabled child run IDs include the manager ID
+and sequence; ordinary managers retain their previous IDs.
+
+The host's child-options callback supplies `recovery_admission_ref` and optional
+`recovery_store_ref`, `recovery_config_ref`, `recovery_authority_ref` and
+`recovery_tool_profile` references. Persist the exact `parent.child.recovery_identity`
+in that immutable admission ledger. These metadata options are removed before
+Conversation startup. The record resolves safe historical configuration, prior
+authority ceiling, artifact references and a complete sealed terminal inventory;
+it never serializes the live child-options callback or executable authority.
+
+For a retired eligible child, call `MultiAgent.export_child/3` with its exact
+retirement receipt. Import into a fresh, non-executing destination with
+`MultiAgent.restore_child/2`. Import retains identity, canonical name/parent,
+committed messages/feedback, remaining work/deadline and immutable policy
+references. It allocates no execution slot, Session binding or Provider work.
+Exact imports return the same receipt and emit one restored event. Any fresh
+execution admission closes that manager's import phase.
+
+A later explicit V2 followup or V1 resume performs ordinary fresh admission and
+preparation with a new manager-qualified run, attempt and higher incarnation.
+The prior ceiling and current host/ancestry policy both apply. Restore parents
+before descendants; freshly admit an archived immediate parent before following
+up its descendant. No ancestor starts implicitly. Original admissions remain
+provenance, old pending input/interactions/delivery work is excluded, and stale
+old-manager events cannot settle the new attempt. Completed, failed, cancelled
+and timed-out history may continue only after confirmed retirement. Version 1
+refuses unknown-outcome continuation even after independent lifetime closure.
+
+## Optional first-party Linux terminal transport
+
+Build the packaged helper source explicitly with `mix backplane.pty.build`, then
+start `Tools.LocalCommand` with `pty: true` and construct the ordinary
+`Command.new(%{adapter: LocalCommand, server: backend})`. Only `tty: true` selects
+PTY; pipes need no compiler. Trusted `terminal_rows`/`terminal_columns` accept
+1..1000 (default 24/80), and `pty_helper_path` can select an absolute first-party
+executable. Startup probes the protocol, controlling terminal, procfs and actual
+pidfd support. A tty request never silently falls back to pipes.
+
+The existing Session owns reservations, output cursors and cleanup receipts.
+Terminal echo, CR/LF, escape bytes and foreground control signals apply. Text
+projection preserves split UTF-8 suffixes between polls and replaces invalid or
+final incomplete bytes deterministically; retained bytes count against the hard
+cap. Normal close reconciles the original terminal session's ordinary job-control
+groups, including jobs surviving its leader. Deliberately created new sessions
+are outside this scope; the transport is not an OS sandbox.
+
+Confirmation requires exact guardian proof, broker reaping and broker Port exit.
+Lost proof remains `unknown_outcome`, retaining workspace and lifecycle evidence.
+Retries neither signal an old numeric SID nor rerun exec. Broker death triggers
+surviving-guardian best-effort cleanup without restoring missing proof. PTY jobs
+are process-local; no sidecar or restart restoration is added. See
+[c_src/README.md](c_src/README.md) for prerequisites and protocol.
+
 ## Ownership and API
 
 Start `Backplane.AgentRuntime.Conversation` under a host supervisor with:

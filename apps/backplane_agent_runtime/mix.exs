@@ -60,6 +60,7 @@ defmodule Backplane.AgentRuntime.MixProject do
       extras: [
         "README.md",
         "CODEX.md",
+        {"c_src/README.md", filename: "native-pty", title: "Linux PTY native helper"},
         "EMBEDDING.md",
         "PERSISTENCE.md",
         "SCHEMAS.md",
@@ -70,7 +71,15 @@ defmodule Backplane.AgentRuntime.MixProject do
 
   defp package do
     [
-      files: ["lib", "priv", "mix.exs", "*.md", "examples"],
+      files: [
+        "lib",
+        "priv/codex",
+        "priv/local_command_launcher.sh",
+        "c_src",
+        "mix.exs",
+        "*.md",
+        "examples"
+      ],
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/gsmlg-opt/backplane"},
       maintainers: ["gsmlg-dev"]

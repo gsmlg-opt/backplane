@@ -5,7 +5,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   @behaviour Backplane.AgentRuntime.Command
 
   alias Backplane.AgentRuntime.Error
-  alias Backplane.AgentRuntime.Tools.LocalCommand.Procfs
+  alias Backplane.AgentRuntime.Tools.LocalCommand.{Procfs, Pty}
 
   @moduledoc """
   Linux local command backend with verified process-group cleanup.
@@ -54,6 +54,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         name -> GenServer.start_link(__MODULE__, {opts, config}, name: name)
       end
     end
+  end
+
+  @impl Backplane.AgentRuntime.Command
+  def capabilities(command) do
+    GenServer.call(server(command), :capabilities)
+  catch
+    :exit, _ -> %{}
   end
 
   @impl Backplane.AgentRuntime.Command
@@ -111,6 +118,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     with {:ok, cleanup_supervisor} <- Task.Supervisor.start_link() do
       {:ok,
        %{
+         pty: config.pty,
          active: %{},
          completed: %{},
          pending: %{},
@@ -147,6 +155,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   @impl GenServer
+  def handle_call(:capabilities, _from, state), do: {:reply, Pty.capabilities(state.pty), state}
+
   def handle_call({:start, request}, from, state) do
     case admit_session(state, request) do
       {:ok, state} ->
@@ -212,7 +222,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         {:reply,
          {:ok,
           %{
-            output: events,
+            output: if(current.transport == :pty, do: IO.iodata_to_binary(events), else: events),
             cursor: length(current.output),
             status: current.status,
             exit_status: current.exit_status,
@@ -229,10 +239,18 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       nil ->
         {:reply, {:error, Error.new(:not_found, "job not found")}, state}
 
-      _current ->
+      current ->
         try do
-          Port.command(job.port, chars)
-          {:reply, :ok, state}
+          written =
+            if Map.get(current, :transport, :pipe) == :pty,
+              do: Pty.write(job.port, chars),
+              else: Port.command(job.port, chars)
+
+          if written,
+            do: {:reply, :ok, state},
+            else:
+              {:reply, {:error, Error.new(:overloaded, "command stdin queue is full")},
+               request_cleanup(job.port, :execution_failure, state)}
         rescue
           ArgumentError ->
             {:reply, {:error, Error.new(:execution_failure, "command stdin write failed")}, state}
@@ -427,6 +445,106 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   @impl GenServer
+  def handle_info({port, {:data, frame}}, state)
+      when is_binary(frame) and is_map_key(state.pending, port) do
+    pending = Map.fetch!(state.pending, port)
+
+    case Pty.ready(frame, pending.nonce, pending.launcher_pid, pending.request) do
+      {:ok, identity} ->
+        launch =
+          with :ok <- alive_owner(pending.request),
+               {:ok, remaining} <- remaining_deadline(pending),
+               do: {:ok, remaining}
+
+        {pending, remaining} =
+          case {Map.get(pending, :failure), launch} do
+            {nil, {:ok, remaining}} -> {pending, remaining}
+            {nil, {:error, error}} -> {Map.put(pending, :failure, error), 1}
+            {_error, _} -> {pending, 1}
+          end
+
+        if Map.get(pending, :failure) || Pty.acknowledge(port, pending.nonce) do
+          activate_pending(port, pending, identity.child, remaining, state, identity)
+        else
+          {:noreply,
+           fail_pending(
+             port,
+             Error.new(:unknown_outcome, "PTY launch acknowledgement failed"),
+             state
+           )}
+        end
+
+      _ ->
+        {:noreply,
+         fail_pending(
+           port,
+           Error.new(:unknown_outcome, "PTY readiness could not be verified"),
+           state
+         )}
+    end
+  end
+
+  def handle_info({port, {:data, frame}}, state)
+      when is_binary(frame) and is_map_key(state.active, port) do
+    {:noreply, pty_frame(port, frame, state)}
+  end
+
+  def handle_info({:pty_cleanup_timeout, port, token}, state) do
+    case Map.get(state.active, port) do
+      %{transport: :pty, cleanup_token: ^token} = job ->
+        Pty.close(port)
+
+        {:noreply,
+         settle_job(port, {:error, pty_error(job, "PTY cleanup proof timed out")}, state)}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:pty_startup_cleanup_timeout, port}, state) do
+    case Map.get(state.pending, port) do
+      %{transport: :pty} = pending ->
+        Pty.close(port)
+
+        error =
+          Error.new(:unknown_outcome, "PTY startup cleanup proof is unavailable",
+            details: %{broker_pid: pending.launcher_pid, launch_id: pending.nonce}
+          )
+
+        GenServer.reply(pending.from, {:error, error})
+        if pending.owner_monitor_ref, do: Process.demonitor(pending.owner_monitor_ref, [:flush])
+
+        evidence = %{
+          transport: :pty,
+          session_id: pending.session_id,
+          owner_run_id: pending.request.owner_run_id,
+          owner_incarnation: Map.get(pending.request, :incarnation, 1),
+          process_group_id: nil,
+          pty_identity: nil,
+          workspace: pending.request.workspace,
+          cleanup_status: :uncertain,
+          cleanup_error: error,
+          cleanup_token: nil,
+          cleanup_task_pid: nil,
+          cleanup_task_ref: nil,
+          cleanup_timer: nil,
+          cleanup_progress: nil
+        }
+
+        state = %{
+          state
+          | pending: Map.delete(state.pending, port),
+            cleanup_evidence: Map.put(state.cleanup_evidence, pending.session_id, evidence)
+        }
+
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({port, {:data, {:eol, line}}}, state) when is_map_key(state.pending, port) do
     pending = Map.fetch!(state.pending, port)
 
@@ -435,68 +553,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          :ok <- alive_owner(pending.request),
          {:ok, remaining} <- remaining_deadline(pending),
          true <- Port.command(port, acknowledgement(pending.nonce, pid)) do
-      Process.cancel_timer(pending.timer)
-      timer = Process.send_after(self(), {:timeout, port}, remaining)
-
-      job = %{
-        port: port,
-        session_id: pending.session_id,
-        owner_incarnation: Map.get(pending.request, :incarnation, 1),
-        owner_monitor_ref: pending.owner_monitor_ref,
-        process_group_id: pid,
-        owner_run_id: pending.request.owner_run_id,
-        workspace: pending.request.workspace,
-        deadline: System.monotonic_time(:millisecond) + remaining,
-        output_limit: pending.request.output_limit,
-        cursor: 0,
-        output: [],
-        bytes: 0,
-        status: :running,
-        exit_status: nil,
-        timer: timer,
-        settle_timer: nil,
-        terminal_status: nil,
-        cleanup_token: nil,
-        cleanup_task_pid: nil,
-        cleanup_task_ref: nil,
-        cleanup_timer: nil,
-        cleanup_progress: nil,
-        completion_token: nil,
-        cleanup_status: :not_started,
-        cleanup_error: nil,
-        termination_status: :not_requested,
-        port_closed?: false
-      }
-
-      GenServer.reply(
-        pending.from,
-        {:ok,
-         Map.drop(job, [
-           :process_group_id,
-           :timer,
-           :settle_timer,
-           :cleanup_token,
-           :cleanup_task_pid,
-           :cleanup_task_ref,
-           :cleanup_timer,
-           :cleanup_progress
-         ])}
-      )
-
-      {:noreply,
-       %{
-         state
-         | pending: Map.delete(state.pending, port),
-           active: Map.put(state.active, port, job),
-           owned_groups:
-             Map.put(state.owned_groups, port, %{
-               process_group_id: pid,
-               workspace: pending.request.workspace,
-               owner_run_id: pending.request.owner_run_id,
-               session_id: pending.session_id,
-               owner_incarnation: Map.get(pending.request, :incarnation, 1)
-             })
-       }}
+      activate_pending(port, pending, pid, remaining, state, nil)
     else
       {:error, %Error{} = error} ->
         {:noreply, fail_pending(port, error, state)}
@@ -532,6 +589,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       job = %{job | output: job.output ++ [line], bytes: job.bytes + size}
       {:noreply, %{state | active: Map.put(state.active, port, job)}}
     end
+  end
+
+  def handle_info({port, {:exit_status, status}}, state)
+      when is_map_key(state.active, port) and
+             :erlang.map_get(:transport, :erlang.map_get(port, state.active)) == :pty do
+    job = Map.fetch!(state.active, port)
+    job = %{job | broker_exit: status, port_closed?: true}
+    state = %{state | active: Map.put(state.active, port, job)}
+
+    state =
+      if job.cleanup_token, do: state, else: request_cleanup(port, :execution_failure, state)
+
+    {:noreply, finish_pty(port, state)}
   end
 
   def handle_info({port, {:exit_status, status}}, state) when is_map_key(state.active, port) do
@@ -586,10 +656,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   def handle_info({:settle_exit, port}, state) when is_map_key(state.active, port) do
     job = Map.fetch!(state.active, port)
 
-    if is_nil(job.exit_status) and is_nil(job.cleanup_token) do
-      {:noreply, request_cleanup(port, :execution_failure, state)}
+    if job.transport == :pty do
+      {:noreply,
+       settle_job(port, {:error, pty_error(job, "PTY broker exit proof is missing")}, state)}
     else
-      {:noreply, state}
+      if is_nil(job.exit_status) and is_nil(job.cleanup_token) do
+        {:noreply, request_cleanup(port, :execution_failure, state)}
+      else
+        {:noreply, state}
+      end
     end
   end
 
@@ -776,6 +851,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   @impl GenServer
   def terminate(_reason, state) do
+    state = shutdown_ptys(state)
     Enum.each(state.pending, fn {port, _pending} -> close_port(port) end)
 
     stop_cleanup_tasks(state.cleanup_supervisor)
@@ -783,16 +859,255 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     group_ids =
       state.owned_groups
       |> Map.values()
+      |> Enum.reject(&(Map.get(&1, :transport) == :pty))
       |> Enum.map(& &1.process_group_id)
       |> Enum.uniq()
 
     Enum.each(group_ids, &shutdown_signal(&1, state.shutdown_signaler))
 
-    pending_pids = Enum.map(state.pending, fn {_port, pending} -> pending.launcher_pid end)
+    pending_pids =
+      state.pending
+      |> Enum.reject(fn {_port, pending} -> pending.transport == :pty end)
+      |> Enum.map(fn {_port, pending} -> pending.launcher_pid end)
+
     reconcile_shutdown(group_ids, pending_pids, state.shutdown_timeout)
     stop_cleanup_supervisor(state.cleanup_supervisor, state.shutdown_timeout)
 
     :ok
+  end
+
+  defp pty_frame(port, <<"O", bytes::binary>>, state) do
+    job = Map.fetch!(state.active, port)
+
+    {text, held} = Pty.project(job.utf8_pending <> bytes, false)
+    # Reserve replacement space for every incomplete suffix byte. Its later
+    # projection can expand to U+FFFD without exceeding the retention budget.
+    retained = byte_size(text) + 3 * byte_size(held) - 3 * byte_size(job.utf8_pending)
+    size = retained + @output_entry_overhead
+
+    if job.bytes + size > job.output_limit do
+      request_cleanup(port, :output_limit_exceeded, state)
+    else
+      output = if text == "", do: job.output, else: job.output ++ [text]
+      job = %{job | output: output, utf8_pending: held, bytes: job.bytes + size}
+      %{state | active: Map.put(state.active, port, job)}
+    end
+  end
+
+  defp pty_frame(port, <<"X", status::binary>>, state) do
+    case Integer.parse(status) do
+      {exit_status, ""} ->
+        job = Map.fetch!(state.active, port)
+        state = %{state | active: Map.put(state.active, port, %{job | exit_status: exit_status})}
+        request_cleanup(port, if(exit_status == 0, do: :completed, else: :failed), state)
+
+      _ ->
+        request_cleanup(port, :execution_failure, state)
+    end
+  end
+
+  defp pty_frame(port, "L", state), do: request_cleanup(port, :output_limit_exceeded, state)
+
+  defp pty_frame(port, <<"F", _::binary>> = frame, state) do
+    job = Map.fetch!(state.active, port)
+
+    case Pty.proof(frame, job.pty_identity) do
+      {:ok, proof} ->
+        job = %{
+          job
+          | pty_proof: proof,
+            exit_status: proof.exit_status
+        }
+
+        state = %{state | active: Map.put(state.active, port, job)}
+
+        state =
+          if job.cleanup_token,
+            do: state,
+            else:
+              request_cleanup(
+                port,
+                if(proof.exit_status == 0, do: :completed, else: :failed),
+                state
+              )
+
+        finish_pty(port, state)
+
+      _ ->
+        job = %{
+          job
+          | cleanup_error:
+              job.cleanup_error || pty_error(job, "PTY final proof is malformed or stale")
+        }
+
+        state = %{state | active: Map.put(state.active, port, job)}
+        request_cleanup(port, :execution_failure, state)
+    end
+  end
+
+  defp pty_frame(port, _frame, state), do: request_cleanup(port, :execution_failure, state)
+
+  defp finish_pty(port, state) do
+    job = Map.fetch!(state.active, port)
+
+    if is_integer(job.broker_exit) do
+      result =
+        if ((job.broker_exit == 0 and job.pty_proof) && job.pty_proof.confirmed?) and
+             is_nil(job.cleanup_error),
+           do: :ok,
+           else: {:error, job.cleanup_error || pty_error(job, "PTY cleanup proof is incomplete")}
+
+      settle_job(port, result, state)
+    else
+      state
+    end
+  end
+
+  defp pty_error(job, message) do
+    Error.new(:unknown_outcome, message,
+      details: %{
+        launch: job.pty_identity,
+        proof: job.pty_proof,
+        broker_exit: job.broker_exit,
+        scope: :terminal_session
+      }
+    )
+  end
+
+  defp shutdown_ptys(state) do
+    Enum.each(state.pending, fn {port, pending} ->
+      if pending.transport == :pty, do: Pty.cancel(port)
+    end)
+
+    state =
+      Enum.reduce(state.active, state, fn {port, job}, current ->
+        if job.transport == :pty, do: request_cleanup(port, :cancelled, current), else: current
+      end)
+
+    shutdown_ptys_until(state, System.monotonic_time(:millisecond) + state.shutdown_timeout)
+  end
+
+  defp shutdown_ptys_until(state, deadline) do
+    pending? =
+      Enum.any?(state.active, fn {_, job} -> job.transport == :pty end) or
+        Enum.any?(state.pending, fn {_, job} -> job.transport == :pty end)
+
+    if pending? and System.monotonic_time(:millisecond) < deadline do
+      receive do
+        {port, {:data, _}} = message
+        when is_map_key(state.active, port) or is_map_key(state.pending, port) ->
+          {:noreply, next} = handle_info(message, state)
+          shutdown_ptys_until(next, deadline)
+
+        {port, {:exit_status, _}} = message
+        when is_map_key(state.active, port) or is_map_key(state.pending, port) ->
+          {:noreply, next} = handle_info(message, state)
+          shutdown_ptys_until(next, deadline)
+      after
+        max(0, deadline - System.monotonic_time(:millisecond)) -> state
+      end
+    else
+      state
+    end
+  end
+
+  defp activate_pending(port, pending, pid, remaining, state, identity) do
+    Process.cancel_timer(pending.timer)
+    timer = Process.send_after(self(), {:timeout, port}, remaining)
+
+    job = %{
+      transport: pending.transport,
+      pty_identity: identity,
+      pty_proof: nil,
+      broker_exit: nil,
+      utf8_pending: "",
+      startup_from: if(Map.get(pending, :failure), do: pending.from),
+      startup_error: Map.get(pending, :failure),
+      startup_request: if(Map.get(pending, :failure), do: pending.request),
+      port: port,
+      session_id: pending.session_id,
+      owner_incarnation: Map.get(pending.request, :incarnation, 1),
+      owner_monitor_ref: pending.owner_monitor_ref,
+      process_group_id: pid,
+      owner_run_id: pending.request.owner_run_id,
+      workspace: pending.request.workspace,
+      deadline: System.monotonic_time(:millisecond) + remaining,
+      output_limit: pending.request.output_limit,
+      cursor: 0,
+      output: [],
+      bytes: 0,
+      status: :running,
+      exit_status: nil,
+      timer: timer,
+      settle_timer: nil,
+      terminal_status: nil,
+      cleanup_token: nil,
+      cleanup_task_pid: nil,
+      cleanup_task_ref: nil,
+      cleanup_timer: nil,
+      cleanup_progress: nil,
+      completion_token: nil,
+      cleanup_status: :not_started,
+      cleanup_error: nil,
+      termination_status: :not_requested,
+      port_closed?: false
+    }
+
+    unless Map.get(pending, :failure) do
+      GenServer.reply(
+        pending.from,
+        {:ok,
+         Map.drop(job, [
+           :process_group_id,
+           :transport,
+           :pty_identity,
+           :pty_proof,
+           :broker_exit,
+           :utf8_pending,
+           :startup_from,
+           :startup_error,
+           :startup_request,
+           :timer,
+           :settle_timer,
+           :cleanup_token,
+           :cleanup_task_pid,
+           :cleanup_task_ref,
+           :cleanup_timer,
+           :cleanup_progress
+         ])}
+      )
+    end
+
+    next =
+      %{
+        state
+        | pending: Map.delete(state.pending, port),
+          active: Map.put(state.active, port, job),
+          owned_groups:
+            Map.put(state.owned_groups, port, %{
+              transport: pending.transport,
+              process_group_id: pid,
+              workspace: pending.request.workspace,
+              owner_run_id: pending.request.owner_run_id,
+              session_id: pending.session_id,
+              owner_incarnation: Map.get(pending.request, :incarnation, 1)
+            })
+      }
+
+    next = if Map.get(pending, :failure), do: request_cleanup(port, :cancelled, next), else: next
+    {:noreply, next}
+  end
+
+  defp start_reserved(%{tty: true} = request, _from, %{pty: nil} = state) do
+    error =
+      refusal_error(
+        state,
+        request,
+        Error.new(:unsupported_capability, "PTY execution is unavailable"),
+        reservation: :created
+      )
+
+    {:reply, {:error, error}, session_status(state, request, :never_started)}
   end
 
   defp start_reserved(request, from, state) do
@@ -826,6 +1141,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
               reservation: :created
             )}, session_status(state, request, :never_started)}
         else
+          request =
+            if Map.get(request, :tty, false),
+              do:
+                Map.put_new(request, :terminal, %{
+                  rows: state.pty.rows,
+                  columns: state.pty.columns
+                }),
+              else: request
+
           state = session_status(state, request, :launching)
           nonce = nonce()
           environment = isolated_environment(request.environment)
@@ -850,36 +1174,76 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
             {:cd, request.workspace}
           ]
 
-          port = Port.open({:spawn_executable, state.bootstrap_paths.setsid}, spawn_opts)
-          {:os_pid, launcher_pid} = :erlang.port_info(port, :os_pid)
+          transport = if Map.get(request, :tty, false), do: :pty, else: :pipe
 
-          startup_limit = min(state.startup_timeout, request.deadline_limit)
-          timer = Process.send_after(self(), {:startup_timeout, port}, startup_limit)
+          opened =
+            if transport == :pty,
+              do: Pty.open(state.pty, request, nonce, environment, state.cleanup_timeout),
+              else:
+                {:ok, Port.open({:spawn_executable, state.bootstrap_paths.setsid}, spawn_opts)}
 
-          pending = %{
-            from: from,
-            request: request,
-            nonce: nonce,
-            session_id: Map.get(request, :session_id),
-            launcher_pid: launcher_pid,
-            started_at: System.monotonic_time(:millisecond),
-            timer: timer,
-            owner_monitor_ref:
-              if(is_pid(Map.get(request, :owner_pid)), do: Process.monitor(request.owner_pid))
-          }
+          case opened do
+            {:ok, port} ->
+              {:os_pid, launcher_pid} = :erlang.port_info(port, :os_pid)
 
-          {:noreply,
-           %{
-             state
-             | pending: Map.put(state.pending, port, pending),
-               workspaces: MapSet.put(state.workspaces, request.workspace)
-           }}
+              startup_limit = min(state.startup_timeout, request.deadline_limit)
+              timer = Process.send_after(self(), {:startup_timeout, port}, startup_limit)
+
+              pending = %{
+                transport: transport,
+                from: from,
+                request: request,
+                nonce: nonce,
+                session_id: Map.get(request, :session_id),
+                launcher_pid: launcher_pid,
+                started_at: System.monotonic_time(:millisecond),
+                timer: timer,
+                owner_monitor_ref:
+                  if(is_pid(Map.get(request, :owner_pid)), do: Process.monitor(request.owner_pid))
+              }
+
+              {:noreply,
+               %{
+                 state
+                 | pending: Map.put(state.pending, port, pending),
+                   workspaces: MapSet.put(state.workspaces, request.workspace)
+               }}
+
+            {:error, error} ->
+              {:reply, {:error, refusal_error(state, request, error, reservation: :created)},
+               session_status(state, request, :never_started)}
+          end
         end
       end
     end
   end
 
   defp fail_pending(port, error, state) do
+    case Map.get(state.pending, port) do
+      %{transport: :pty} = pending ->
+        if Map.has_key?(pending, :failure) do
+          state
+        else
+          Process.cancel_timer(pending.timer)
+          Pty.cancel(port)
+
+          timer =
+            Process.send_after(
+              self(),
+              {:pty_startup_cleanup_timeout, port},
+              state.cleanup_timeout
+            )
+
+          pending = pending |> Map.put(:failure, error) |> Map.put(:timer, timer)
+          %{state | pending: Map.put(state.pending, port, pending)}
+        end
+
+      _ ->
+        fail_pipe_pending(port, error, state)
+    end
+  end
+
+  defp fail_pipe_pending(port, error, state) do
     case Map.pop(state.pending, port) do
       {nil, _pending} ->
         state
@@ -935,6 +1299,48 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   defp request_cleanup(port, requested_status, state) do
+    case Map.get(state.active, port) do
+      %{transport: :pty} = job ->
+        terminal = choose_terminal_status(job.terminal_status, requested_status)
+
+        if job.cleanup_token do
+          %{
+            state
+            | active:
+                Map.put(state.active, port, %{
+                  job
+                  | terminal_status: terminal,
+                    status: cleanup_pending_status(terminal)
+                })
+          }
+        else
+          cancel_timer(job.timer)
+          token = make_ref()
+          Pty.cancel(port)
+
+          timer =
+            Process.send_after(self(), {:pty_cleanup_timeout, port, token}, state.cleanup_timeout)
+
+          job = %{
+            job
+            | cleanup_token: token,
+              cleanup_timer: timer,
+              cleanup_progress: cleanup_progress(),
+              cleanup_status: :pending,
+              termination_status: :requested,
+              terminal_status: terminal,
+              status: cleanup_pending_status(terminal)
+          }
+
+          %{state | active: Map.put(state.active, port, job)}
+        end
+
+      _ ->
+        request_pipe_cleanup(port, requested_status, state)
+    end
+  end
+
+  defp request_pipe_cleanup(port, requested_status, state) do
     job = Map.fetch!(state.active, port)
     terminal_status = choose_terminal_status(job.terminal_status, requested_status)
     status = cleanup_pending_status(terminal_status)
@@ -977,6 +1383,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp retry_session_cleanup(session_id, state) do
     case Map.get(state.cleanup_evidence, session_id) do
+      %{transport: :pty} ->
+        state
+
       %{cleanup_status: :uncertain, cleanup_task_ref: nil} = evidence ->
         token = make_ref()
         owner = self()
@@ -1021,6 +1430,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         state
 
       {job, active} ->
+        job = finalize_pty_output(job)
         if job.owner_monitor_ref, do: Process.demonitor(job.owner_monitor_ref, [:flush])
         Process.cancel_timer(job.timer)
         cancel_timer(job.settle_timer)
@@ -1048,6 +1458,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                    completion_token: completion_token
                }, false}
           end
+
+        if job.transport == :pty and job.startup_from do
+          error =
+            if (cleanup_result == :ok and job.pty_proof) &&
+                 job.pty_proof.dispatch == "never_started",
+               do:
+                 refusal_error(state, job.startup_request, job.startup_error,
+                   reservation: :created
+                 ),
+               else: pty_error(job, "PTY startup outcome is uncertain")
+
+          GenServer.reply(job.startup_from, {:error, error})
+        end
 
         Process.send_after(
           self(),
@@ -1080,6 +1503,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         if release_workspace?, do: session_status(state, job, :confirmed), else: state
     end
   end
+
+  defp finalize_pty_output(%{transport: :pty} = job) do
+    {text, ""} = Pty.project(job.utf8_pending, true)
+    output = if text == "", do: job.output, else: job.output ++ [text]
+    # Replacement bytes were reserved when the incomplete suffix was retained.
+    %{job | output: output, utf8_pending: ""}
+  end
+
+  defp finalize_pty_output(job), do: job
 
   defp settle_evidence(session_id, cleanup_result, state) do
     case Map.pop(state.cleanup_evidence, session_id) do
@@ -1129,6 +1561,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp cleanup_evidence(job) do
     %{
+      transport: job.transport,
+      pty_identity: job.pty_identity,
       session_id: job.session_id,
       owner_run_id: job.owner_run_id,
       owner_incarnation: job.owner_incarnation,
@@ -1589,6 +2023,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
            ),
          {:ok, completion_retention} <- completion_retention(opts),
          {:ok, paths} <- bootstrap_paths(opts),
+         {:ok, pty} <- Pty.options(opts),
          {:ok, cleanup_reconciler} <- cleanup_reconciler(opts, paths.kill),
          {:ok, shutdown_signaler} <- shutdown_signaler(opts, paths.kill),
          {:ok, receipt_capacity} <- capacity(opts, :receipt_capacity, @default_receipt_capacity),
@@ -1599,6 +2034,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          shutdown_timeout: shutdown_timeout,
          completion_retention: completion_retention,
          bootstrap_paths: paths,
+         pty: pty,
          cleanup_reconciler: cleanup_reconciler,
          shutdown_signaler: shutdown_signaler,
          receipt_capacity: receipt_capacity,

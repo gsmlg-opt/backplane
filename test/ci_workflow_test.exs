@@ -347,10 +347,14 @@ defmodule Backplane.CIWorkflowTest do
   } do
     assert_package_triggers(workflow, "Agent Runtime", [
       "apps/backplane_agent_runtime/**",
-      ".github/workflows/agent-runtime.yml"
+      ".github/workflows/agent-runtime.yml",
+      "scripts/verify_agent_runtime_package.sh",
+      "test/agent_runtime_packages/pty_basic/**"
     ])
 
-    assert workflow["jobs"] |> Map.keys() |> Enum.sort() == ~w(agent-runtime-latest test)
+    assert workflow["jobs"] |> Map.keys() |> Enum.sort() ==
+             ~w(agent-runtime-latest native-pty test)
+
     job = job!(workflow, "test")
 
     assert Map.delete(job, "steps") == %{
@@ -366,7 +370,10 @@ defmodule Backplane.CIWorkflowTest do
       "Restore dependencies cache",
       "Install dependencies",
       "Compile with warnings as errors",
-      "Run tests"
+      "Build optional Linux PTY helper",
+      "Verify native PTY protocol",
+      "Run tests",
+      "Verify independent BEAM recovery"
     ])
 
     assert_step(job, %{"name" => "Install native build dependencies", "run" => @native_build_run})
@@ -397,7 +404,34 @@ defmodule Backplane.CIWorkflowTest do
       "run" => "mix compile --warnings-as-errors"
     })
 
+    assert_step(job, %{
+      "name" => "Build optional Linux PTY helper",
+      "run" => "mix backplane.pty.build"
+    })
+
+    assert_step(job, %{
+      "name" => "Verify native PTY protocol",
+      "run" => "python3 test/native/pty_protocol_test.py"
+    })
+
     assert_step(job, %{"name" => "Run tests", "run" => "mix test"})
+
+    assert_step(job, %{
+      "name" => "Verify independent BEAM recovery",
+      "run" =>
+        ~s(python3 test/fixtures/run_reconciliation_cold.py "$RUNNER_TEMP/agent-runtime-cold-recovery")
+    })
+
+    native = job!(workflow, "native-pty")
+    assert native["strategy"]["matrix"]["runner"] == ["ubuntu-24.04", "ubuntu-24.04-arm"]
+    assert native["runs-on"] == "${{ matrix.runner }}"
+    assert native["env"] == %{"PTY_PACKAGE_ONLY" => "1"}
+
+    assert_step(native, %{
+      "name" => "Verify native PTY source package and consumer",
+      "run" => "bash scripts/verify_agent_runtime_package.sh"
+    })
+
     assert_agent_runtime_latest_job(workflow)
   end
 

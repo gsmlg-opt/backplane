@@ -5,6 +5,18 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Procfs do
     with {:ok, stat} <- File.read("/proc/#{pid}/stat"), do: parse_stat(stat)
   end
 
+  def exact_identity(pid) do
+    with {:ok, stat} <- File.read("/proc/#{pid}/stat"),
+         {:ok, basic} <- parse_stat(stat),
+         [_, rest] <- String.split(stat, ") ", parts: 2),
+         fields when length(fields) >= 20 <- String.split(rest),
+         {start, ""} <- Integer.parse(Enum.at(fields, 19)) do
+      {:ok, Map.put(basic, :start, start)}
+    else
+      _ -> {:error, :unverified_identity}
+    end
+  end
+
   def group_exists?(process_group_id, read_file \\ &File.read/1, list_directory \\ &File.ls/1) do
     # A matching leader proves presence. Its absence never proves that the
     # group is empty: descendants can outlive their leader.

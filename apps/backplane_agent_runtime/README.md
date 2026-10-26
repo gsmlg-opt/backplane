@@ -5,6 +5,13 @@ configuration, history, UI and public protocols. Optional tools and their backen
 start only when selected by the host. No Phoenix, database, Sigma or Backplane
 server application is required.
 
+Optional first-party Linux PTY support uses the existing `exec_command` and
+`write_stdin` tools. Build with `mix backplane.pty.build`, then start
+`Tools.LocalCommand` with `pty: true`; `tty: true` selects the real controlling
+terminal per invocation. Ordinary pipe consumers require no compiler. Actual
+PTY/pidfd probes must pass; see [native build and cleanup contract](c_src/README.md)
+and [Codex terminal setup](CODEX.md#first-party-linux-pty).
+
 Trusted host backends can return `ToolEffects.reject(operation, error)` for a
 proved rejection before dispatch, preserving provider continuation without
 weakening uncertain-effect handling. Existing adapters returning plain errors
