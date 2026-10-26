@@ -568,7 +568,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
       Enum.reduce_while(rows, :ok, fn row, :ok ->
         with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], state.cipher),
              {:ok, envelope} <- Jason.decode(json) do
-          if envelope["integration"] == "hermes" do
+          if envelope["integration"] in ["hermes", "openclaw"] do
             case Store.execute(
                    conn,
                    "INSERT INTO capture_delivery_receipts(event_id,idempotency_key,fingerprint,sequence,acknowledged_at,expires_at) VALUES (?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",
@@ -1265,6 +1265,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
 
   defp filter_valid_payload(attrs, payload) do
     {filtered_payload, payload_privacy} = PrivacyFilter.filter(payload)
+    filtered_payload = openclaw_coverage(attrs, payload, filtered_payload)
     {filtered_trace, trace_privacy} = filter_trace(value(attrs, :trace))
     privacy = merge_privacy(payload_privacy, trace_privacy)
 
@@ -1276,6 +1277,30 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
 
     attrs = if is_nil(filtered_trace), do: attrs, else: put_value(attrs, :trace, filtered_trace)
     {:ok, attrs}
+  end
+
+  defp openclaw_coverage(attrs, original, filtered) do
+    if value(attrs, :integration) == "openclaw" and
+         get_in(original, ["source", "content"]) != get_in(filtered, ["source", "content"]) do
+      content = get_in(filtered, ["source", "content"])
+      completeness = get_in(filtered, ["source", "completeness"])
+
+      if is_binary(content) and is_map(completeness) do
+        put_in(
+          filtered,
+          ["source", "completeness"],
+          Map.merge(completeness, %{
+            "coverage" => "redacted",
+            "retained_length" => length(String.codepoints(content)),
+            "retained_sha256" => Base.encode16(:crypto.hash(:sha256, content), case: :lower)
+          })
+        )
+      else
+        filtered
+      end
+    else
+      filtered
+    end
   end
 
   defp filter_trace(nil), do: {nil, empty_privacy()}

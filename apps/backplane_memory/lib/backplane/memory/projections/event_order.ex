@@ -17,12 +17,14 @@ defmodule Backplane.Memory.Projections.EventOrder do
     |> sort()
   end
 
-  defp message_identity(%{integration: "hermes", payload: %{"source" => source}} = event) do
+  defp message_identity(%{integration: integration, payload: %{"source" => source}} = event)
+       when integration in ["hermes", "openclaw"] do
     values = [
+      integration,
       source["installation_id"],
       source["profile_id"],
       event.session_id,
-      source["message_uid"]
+      source["message_uid"] || if(integration == "openclaw", do: source["occurrence_id"])
     ]
 
     if event.event_type in [

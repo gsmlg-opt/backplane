@@ -218,6 +218,7 @@ defmodule Backplane.CIWorkflowTest do
       "Checkout code",
       "Set up Elixir",
       "Set up Rust",
+      "Set up qualified OpenClaw Node runtime",
       "Install native build dependencies",
       "Install audio media tools",
       "Install pinned OpenAI SDK for audio conformance",
@@ -232,6 +233,13 @@ defmodule Backplane.CIWorkflowTest do
     ])
 
     assert_common_steps(job, true, @test_cache_key, @test_cache_prefix)
+
+    assert_step(job, %{
+      "name" => "Set up qualified OpenClaw Node runtime",
+      "if" => "matrix.app == 'backplane_host_agent'",
+      "uses" => "actions/setup-node@v6",
+      "with" => %{"node-version" => "24.22.1"}
+    })
 
     assert_step(job, %{
       "name" => "Clean cached umbrella applications",

@@ -5,6 +5,7 @@ defmodule Backplane.HostAgent.Memory.CaptureUploader do
 
   alias Backplane.HostAgent.{Channel, MemoryProxy, Telemetry}
   alias Backplane.HostAgent.Memory.Spool.Turso, as: Spool
+  alias Backplane.HostAgent.Memory.OpenClawBinding
 
   @protocol "host_events.v1"
   @event "memory_events"
@@ -24,6 +25,7 @@ defmodule Backplane.HostAgent.Memory.CaptureUploader do
     state = %{
       spool: Keyword.fetch!(opts, :spool),
       spool_module: Keyword.get(opts, :spool_module, Spool),
+      access_server: Keyword.get(opts, :access_server, Backplane.HostAgent.Memory.Access),
       channel_provider: Keyword.get(opts, :channel_provider, MemoryProxy),
       channel_module: Keyword.get(opts, :channel_module, Channel),
       host_id: Keyword.fetch!(opts, :host_id),
@@ -47,6 +49,7 @@ defmodule Backplane.HostAgent.Memory.CaptureUploader do
       drain_once(
         spool: state.spool,
         spool_module: state.spool_module,
+        access_server: state.access_server,
         channel: channel,
         channel_module: state.channel_module,
         host_id: state.host_id,
@@ -109,13 +112,62 @@ defmodule Backplane.HostAgent.Memory.CaptureUploader do
         {:ok, summary("empty", nil, 0)}
 
       events when is_list(events) ->
-        upload(events, batch_id, opts)
+        with {:ok, admitted, rejected} <- bind_events(events, opts) do
+          if admitted == [] do
+            {:ok,
+             summary("binding_deferred", batch_id, length(events))
+             |> Map.put("dead_lettered", rejected)}
+          else
+            case upload(admitted, batch_id, opts) do
+              {:ok, result} -> {:ok, Map.update!(result, "dead_lettered", &(&1 + rejected))}
+              error -> error
+            end
+          end
+        end
 
       {:oversized, event} ->
         reject_oversized(event, opts)
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp bind_events(events, opts) do
+    Enum.reduce_while(events, {:ok, [], 0}, fn event, {:ok, admitted, rejected} ->
+      check =
+        if event["integration"] == "openclaw",
+          do:
+            OpenClawBinding.validate(
+              get_in(event, ["payload", "source", "binding_fingerprint"]),
+              opts.access_server
+            ),
+          else: :ok
+
+      case check do
+        :ok ->
+          {:cont, {:ok, [event | admitted], rejected}}
+
+        {:error, reason} when reason in [:authority_changed, :unauthorized] ->
+          case safe_callback(:spool, fn ->
+                 opts.spool_module.reject(
+                   opts.spool,
+                   event["event_id"],
+                   Atom.to_string(reason),
+                   true
+                 )
+               end) do
+            :ok -> {:cont, {:ok, admitted, rejected + 1}}
+            error -> {:halt, error}
+          end
+
+        {:error, _} ->
+          {:cont, {:ok, admitted, rejected}}
+      end
+    end)
+    |> case do
+      {:ok, admitted, rejected} -> {:ok, Enum.reverse(admitted), rejected}
+      error -> error
     end
   end
 
@@ -436,6 +488,7 @@ defmodule Backplane.HostAgent.Memory.CaptureUploader do
     %{
       spool: Keyword.fetch!(opts, :spool),
       spool_module: Keyword.get(opts, :spool_module, Spool),
+      access_server: Keyword.get(opts, :access_server, Backplane.HostAgent.Memory.Access),
       channel: Keyword.get(opts, :channel),
       channel_module: Keyword.get(opts, :channel_module, Channel),
       host_id: Keyword.fetch!(opts, :host_id),

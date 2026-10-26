@@ -47,13 +47,17 @@ defmodule Backplane.Memory.SourceSupport do
               SELECT 1 FROM bpm_memory_evidence ev LEFT JOIN bpm_events event ON event.id=ev.source_event_id
               WHERE ev.memory_id=m.id AND ev.evidence_kind='confirms' AND ev.support_score > 0
                 AND event.event_type IN ('conversation.user_message','agent.prompt.submitted')
+                AND (COALESCE(event.integration,'') <> 'openclaw'
+                  OR event.payload #>> '{source,input_provenance,kind}' = 'external_user')
             ) THEN 'established_fact' ELSE 'candidate_inference' END,
             'source_refs', COALESCE((
               SELECT jsonb_agg(jsonb_build_object(
                 'source',jsonb_build_object('integration',s.integration,'installation_id',s.installation_id,'profile_id',s.profile_id,'target',s.target),
                 'entry_id',e.entry_id,'source_revision',e.revision,'event_id',e.mutation_id,'active',true
-              ) ORDER BY s.id,e.entry_id)
+              ) || CASE WHEN s.integration='openclaw' THEN jsonb_build_object('provenance',mutation.provenance)
+                ELSE '{}'::jsonb END ORDER BY s.id,e.entry_id)
               FROM bpm_memory_source_entries e JOIN bpm_memory_sources s ON s.id=e.source_id
+              JOIN bpm_memory_source_mutations mutation ON mutation.id=e.mutation_id
               JOIN bpm_memories root ON root.id=e.memory_id
               WHERE (e.memory_id=m.id OR EXISTS (
                 SELECT 1 FROM bpm_memory_remember_requests r JOIN bpm_memory_request_evidence g ON g.request_id=r.id

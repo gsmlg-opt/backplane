@@ -136,6 +136,18 @@ defmodule Backplane.HostAgent.MemoryRouter do
           "fields" => Enum.map(fields, &to_string/1)
         })
 
+      {:error, reason} when reason in [:unauthorized, :authority_changed] ->
+        send_json(conn, 403, %{"ok" => false, "error" => Atom.to_string(reason)})
+
+      {:error, reason}
+      when reason in [
+             :unsupported_capability,
+             :not_connected,
+             :access_owner_unavailable,
+             :access_storage_unavailable
+           ] ->
+        send_json(conn, 503, %{"ok" => false, "error" => Atom.to_string(reason)})
+
       {:error, :capture_unavailable} ->
         capture_unavailable(conn)
 
@@ -157,7 +169,11 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp handle_capture_status(conn) do
     with %{"event_ids" => ids} = args <- conn.body_params,
-         true <- Map.keys(args) == ["event_ids"] and is_list(ids) and length(ids) in 1..100,
+         true <-
+           Map.keys(args) -- ~w(event_ids protocol) == [] and is_list(ids) and
+             length(ids) in 1..100,
+         true <-
+           Map.get(args, "protocol", "hermes_capture.v1") in ~w(hermes_capture.v1 openclaw_capture.v1),
          true <- Enum.all?(ids, &Backplane.MemorySourceContract.uuid?/1),
          {:ok, runtime} <- capture_runtime() do
       items =
@@ -186,7 +202,10 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
       send_json(conn, 200, %{
         "ok" => true,
-        "result" => %{"protocol" => "hermes_capture.v1", "items" => items}
+        "result" => %{
+          "protocol" => Map.get(args, "protocol", "hermes_capture.v1"),
+          "items" => items
+        }
       })
     else
       {:error, :capture_unavailable} -> capture_unavailable(conn)
@@ -213,7 +232,20 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp capture_body(body) when is_map(body), do: {:ok, body}
   defp capture_body(_body), do: {:error, {:malformed, [:payload]}}
 
-  defp append_capture(runtime, envelope) do
+  defp append_capture(
+         runtime,
+         %{integration: "openclaw", payload: %{"source" => source}} = envelope
+       ) do
+    Backplane.HostAgent.Memory.OpenClawBinding.admit(
+      source["binding_fingerprint"],
+      fn -> do_append_capture(runtime, envelope) end,
+      Map.get(runtime, :access_server, Backplane.HostAgent.Memory.Access)
+    )
+  end
+
+  defp append_capture(runtime, envelope), do: do_append_capture(runtime, envelope)
+
+  defp do_append_capture(runtime, envelope) do
     spool_module = Map.fetch!(runtime, :spool_module)
     spool = Map.fetch!(runtime, :spool)
 

@@ -106,3 +106,7 @@ curl http://127.0.0.1:4222/memory/host_agent/mcp \
 Use `"runtime":"openclaw"` for OpenClaw. The installer writes
 `backplane-memory` under the runtime's default plugin directory in the current
 user's home directory and replaces an older copy by default.
+
+For OpenClaw, use the [qualified runtime and configuration](../memory/openclaw-memory-integration.md)
+and explicitly configure the existing access binding and conversation-hook grant.
+Installing files alone does not activate or authorize the provider.

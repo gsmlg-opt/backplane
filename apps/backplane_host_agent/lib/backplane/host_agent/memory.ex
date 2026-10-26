@@ -202,7 +202,13 @@ defmodule Backplane.HostAgent.Memory do
                  Access.allowed_operation?(row["op"], entry.capabilities) &&
                  "memory_commands.v2" in context.extensions &&
                  (row["op"] not in ~w(source_mutate source_reconcile) or
-                    "memory_sources.v1" in context.extensions) &&
+                    ("memory_sources.v1" in context.extensions and
+                       (get_in(Jason.decode!(row["payload"]), [
+                          "arguments",
+                          "source",
+                          "integration"
+                        ]) != "openclaw" or
+                          "openclaw_source.v1" in context.extensions))) &&
                  bytes + size < 500_000 do
               execute!(
                 conn,

@@ -248,7 +248,9 @@ defmodule Backplane.HostAgent.ChannelTest do
              "memory_access.v1",
              "memory_commands.v2",
              "memory_sources.v1",
-             "hermes_capture.v1"
+             "hermes_capture.v1",
+             "openclaw_source.v1",
+             "openclaw_capture.v1"
            ]
   end
 

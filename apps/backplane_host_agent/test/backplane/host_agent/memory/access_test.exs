@@ -297,6 +297,174 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     assert {:error, :unauthorized} = Sources.call("source_mutate", source_mutation(), context)
   end
 
+  test "OpenClaw support is separately negotiated and capture retains its authority fingerprint",
+       c do
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+    alias Backplane.HostAgent.Memory.OpenClawBinding
+    context = %{access_server: c.owner, agent_id: "Rikka", sync_opts: [channel: nil]}
+
+    args =
+      source_mutation()
+      |> put_in(["source", "integration"], "openclaw")
+      |> put_in(["source", "target"], "provider")
+
+    assert :ok = install_sources(c)
+
+    assert {:ok, %{"ready" => false, "capture_error" => "unsupported_capability"}} =
+             Sources.call("source_capabilities", %{"integration" => "openclaw"}, context)
+
+    assert {:error, :unsupported_capability} = Sources.call("source_mutate", args, context)
+
+    extensions =
+      ~w(memory_access.v1 memory_commands.v2 memory_sources.v1 hermes_capture.v1 openclaw_source.v1 openclaw_capture.v1)
+
+    selected = inventory() |> Map.put("extensions", extensions)
+    assert :ok = Access.install_inventory(%{id: 2, sent_at_ms: 10_000}, selected, c.owner)
+
+    assert {:ok,
+            %{"ready" => true, "contracts" => contracts, "binding_fingerprint" => fingerprint}} =
+             Sources.call("source_capabilities", %{"integration" => "openclaw"}, context)
+
+    assert "openclaw_source.v1" in contracts
+    assert :ok = OpenClawBinding.validate(fingerprint, c.owner)
+
+    assert {:ok, :accepted, %{}} =
+             OpenClawBinding.admit(fingerprint, fn -> {:ok, :accepted, %{}} end, c.owner)
+
+    assert {:ok, %{"status" => "pending"}} = Sources.call("source_mutate", args, context)
+
+    assert :ok =
+             Access.install_inventory(
+               %{id: 2, sent_at_ms: 10_000},
+               inventory(2) |> Map.put("extensions", extensions),
+               c.owner
+             )
+
+    assert {:error, :authority_changed} = OpenClawBinding.validate(fingerprint, c.owner)
+
+    assert {:error, :authority_changed} =
+             OpenClawBinding.admit(
+               fingerprint,
+               fn -> flunk("stale capture admitted") end,
+               c.owner
+             )
+  end
+
+  test "OpenClaw HTTP capture durably pins original binding and uploader refuses relabeling", c do
+    alias Backplane.HostAgent.Memory.{OpenClawBinding, CaptureUploader}
+    alias Backplane.HostAgent.Memory.Spool.Turso, as: CaptureSpool
+
+    extensions =
+      ~w(memory_access.v1 memory_commands.v2 memory_sources.v1 openclaw_source.v1 openclaw_capture.v1)
+
+    assert :ok =
+             Access.install_inventory(
+               %{id: 2, sent_at_ms: 10_000},
+               inventory() |> Map.put("extensions", extensions),
+               c.owner
+             )
+
+    {:ok, _, fingerprint} = OpenClawBinding.current(c.owner)
+
+    spool =
+      start_supervised!(
+        {CaptureSpool,
+         database: Path.join(c.tmp_dir, "openclaw-capture.db"), name: nil, id: make_ref()}
+      )
+
+    original_runtime = Application.get_env(:backplane_host_agent, :capture_runtime)
+
+    Application.put_env(:backplane_host_agent, :capture_runtime, %{
+      host_id: "host",
+      spool: spool,
+      access_server: c.owner,
+      config: %{inject_context: false}
+    })
+
+    on_exit(fn ->
+      if original_runtime,
+        do: Application.put_env(:backplane_host_agent, :capture_runtime, original_runtime),
+        else: Application.delete_env(:backplane_host_agent, :capture_runtime)
+    end)
+
+    body = openclaw_capture(fingerprint)
+
+    post = fn path, args ->
+      Plug.Test.conn(:post, path, Jason.encode!(args))
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Backplane.HostAgent.MemoryRouter.call(Backplane.HostAgent.MemoryRouter.init([]))
+    end
+
+    path = "/capture/v1/hooks/openclaw/message"
+    assert %{status: 202} = post.(path, body)
+    assert %{status: 202} = post.(path, body)
+    assert [event] = CaptureSpool.next_batch(spool, 10, 500_000)
+    assert get_in(event, ["payload", "source", "source_sequence"]) == 20
+    assert event["sequence"] == 1
+
+    status =
+      post.("/capture/v1/status", %{
+        "event_ids" => [body["event_id"]],
+        "protocol" => "openclaw_capture.v1"
+      })
+
+    assert %{
+             "result" => %{
+               "protocol" => "openclaw_capture.v1",
+               "items" => [%{"status" => "host_accepted"}]
+             }
+           } = Jason.decode!(status.resp_body)
+
+    assert :ok =
+             Access.install_inventory(
+               %{id: 2, sent_at_ms: 10_000},
+               inventory(2) |> Map.put("extensions", extensions),
+               c.owner
+             )
+
+    assert %{status: 403} = post.(path, body)
+
+    assert {:ok, %{"dead_lettered" => 1}} =
+             CaptureUploader.drain_once(
+               spool: spool,
+               host_id: "host",
+               channel: self(),
+               access_server: c.owner
+             )
+
+    assert {:ok, %{state: :dead_letter, reason: "authority_changed"}} =
+             CaptureSpool.event_status(spool, body["event_id"])
+
+    assert [] = CaptureSpool.next_batch(spool, 10, 500_000)
+  end
+
+  defp openclaw_capture(fingerprint) do
+    content = "Retained actual turn evidence"
+
+    %{
+      "protocol" => "openclaw_capture.v1",
+      "event_id" => Ecto.UUID.generate(),
+      "installation_id" => Ecto.UUID.generate(),
+      "profile_id" => "primary",
+      "source_sequence" => 20,
+      "session_id" => "real-session",
+      "run_id" => "real-run",
+      "agent_id" => "rikka",
+      "occurrence_id" => "real-run:0",
+      "binding_fingerprint" => fingerprint,
+      "role" => "user",
+      "content" => content,
+      "occurred_at" => "2026-10-26T01:00:00Z",
+      "captured_at" => "2026-10-26T01:00:00Z",
+      "completeness" => %{
+        "truncated" => false,
+        "coverage" => "full",
+        "original_length" => String.length(content),
+        "original_sha256" => Base.encode16(:crypto.hash(:sha256, content), case: :lower)
+      }
+    }
+  end
+
   test "source commands bypass local content dedup and preserve immutable provenance", c do
     alias Backplane.HostAgent.MemorySourceFacade, as: Sources
     assert :ok = install_sources(c)

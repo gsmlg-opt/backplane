@@ -6,6 +6,8 @@ defmodule Backplane.MemorySourceContract do
   @hash ~r/\A[0-9a-f]{64}\z/
   @reserved ~w(host_id client_id source_client_id memory_space_id scope namespace partition requesting_actor authority_version access_id)
   @provenance ~w(session_id parent_session_id message_uid tool_call_uid tool_call_id role author repository_sources cwd write_origin execution_context)
+  @openclaw_provenance ~w(run_id session_key occurrence_id document_path document_revision document_sha256 document_complete input_provenance message_index)
+  @max_safe_integer 9_007_199_254_740_991
   @limits %{
     page_entries: 100,
     pages: 100,
@@ -24,6 +26,7 @@ defmodule Backplane.MemorySourceContract do
          true <- optional_uuid?(args, "memory_access_id"),
          true <- valid_source?(args["source"]),
          true <- valid_method?(method, Map.delete(args, "memory_access_id")),
+         true <- args["source"]["integration"] != "openclaw" or safe_integers?(args),
          {:ok, json} <- encode(args),
          true <- byte_size(json) <= @limits.page_bytes do
       {:ok, args}
@@ -35,8 +38,12 @@ defmodule Backplane.MemorySourceContract do
   def validate(_, _), do: {:error, :invalid_arguments}
 
   def valid_source?(source) when is_map(source) and map_size(source) == 4 do
-    source["integration"] == "hermes" and uuid?(source["installation_id"]) and
-      text?(source["profile_id"], 512) and source["target"] in ~w(memory user)
+    uuid?(source["installation_id"]) and text?(source["profile_id"], 512) and
+      case source["integration"] do
+        "hermes" -> source["target"] in ~w(memory user)
+        "openclaw" -> source["target"] in ~w(memory user provider)
+        _ -> false
+      end
   end
 
   def valid_source?(_), do: false
@@ -53,12 +60,18 @@ defmodule Backplane.MemorySourceContract do
       ~w(content)
     ) and
       common?(args) and uuid?(args["entry_id"]) and positive?(args["revision"]) and
-      args["type"] == "semantic" and provenance?(args["provenance"]) and
+      args["type"] == "semantic" and
+      provenance?(args["provenance"], args["source"]["integration"]) and
       timestamp?(args["occurred_at"]) and
       case args["operation"] do
-        "upsert" -> text?(args["content"], @limits.content_bytes)
-        "withdraw" -> not Map.has_key?(args, "content")
-        _ -> false
+        "upsert" ->
+          text?(args["content"], @limits.content_bytes) and document?(args, args["source"])
+
+        "withdraw" ->
+          not Map.has_key?(args, "content")
+
+        _ ->
+          false
       end
   end
 
@@ -84,7 +97,7 @@ defmodule Backplane.MemorySourceContract do
           ) and
             integer_range?(args["page_index"], 0, @limits.pages - 1) and hash?(args["page_hash"]) and
             is_list(args["entries"]) and length(args["entries"]) <= @limits.page_entries and
-            Enum.all?(args["entries"], &valid_entry?/1) and
+            Enum.all?(args["entries"], &valid_entry?(&1, args["source"])) and
             digest(args["entries"]) == args["page_hash"]
 
         "commit" ->
@@ -102,17 +115,35 @@ defmodule Backplane.MemorySourceContract do
   defp valid_method?(_, _), do: false
   defp common?(args), do: args["protocol"] == @protocol and uuid?(args["event_id"])
 
-  defp valid_entry?(entry) when is_map(entry),
+  defp valid_entry?(entry, source) when is_map(entry),
     do:
       keys?(entry, ~w(entry_id content type provenance), []) and uuid?(entry["entry_id"]) and
         text?(entry["content"], @limits.content_bytes) and entry["type"] == "semantic" and
-        provenance?(entry["provenance"])
+        provenance?(entry["provenance"], source["integration"]) and document?(entry, source)
 
-  defp valid_entry?(_), do: false
+  defp valid_entry?(_, _), do: false
 
-  defp provenance?(value) when is_map(value) do
-    Map.keys(value) -- @provenance == [] and not reserved?(value) and
+  defp provenance?(value, integration) when is_map(value) do
+    allowed =
+      if integration == "openclaw", do: @provenance ++ @openclaw_provenance, else: @provenance
+
+    Map.keys(value) -- allowed == [] and not reserved?(value) and
       Enum.all?(value, fn
+        {"document_complete", complete} ->
+          is_boolean(complete)
+
+        {"message_index", index} ->
+          integer_range?(index, 0, @max_safe_integer)
+
+        {key, hash} when key in ~w(document_revision document_sha256) ->
+          hash?(hash)
+
+        {"document_path", path} ->
+          path in ~w(USER.md MEMORY.md)
+
+        {"input_provenance", input} ->
+          is_map(input) and match?({:ok, _}, encode(input))
+
         {"author", author} ->
           is_map(author) and match?({:ok, _}, encode(author))
 
@@ -127,7 +158,33 @@ defmodule Backplane.MemorySourceContract do
       end)
   end
 
-  defp provenance?(_), do: false
+  defp provenance?(_, _), do: false
+
+  defp document?(entry, %{"integration" => "openclaw", "target" => target}) do
+    provenance = entry["provenance"]
+
+    if target == "provider" do
+      Map.keys(provenance) --
+        ~w(document_path document_revision document_sha256 document_complete) ==
+        Map.keys(provenance)
+    else
+      expected_path = if target == "user", do: "USER.md", else: "MEMORY.md"
+      digest = :crypto.hash(:sha256, entry["content"]) |> Base.encode16(case: :lower)
+
+      provenance["document_path"] == expected_path and provenance["document_complete"] == true and
+        provenance["document_sha256"] == digest and provenance["document_revision"] == digest
+    end
+  end
+
+  defp document?(_, _), do: true
+
+  defp safe_integers?(value) when is_integer(value), do: abs(value) <= @max_safe_integer
+
+  defp safe_integers?(value) when is_map(value),
+    do: Enum.all?(value, fn {_, item} -> safe_integers?(item) end)
+
+  defp safe_integers?(value) when is_list(value), do: Enum.all?(value, &safe_integers?/1)
+  defp safe_integers?(_), do: true
 
   defp reserved?(map) when is_map(map),
     do: Enum.any?(map, fn {key, value} -> key in @reserved or reserved?(value) end)

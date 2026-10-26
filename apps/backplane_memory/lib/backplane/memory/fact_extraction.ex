@@ -47,7 +47,7 @@ defmodule Backplane.Memory.FactExtraction do
   defp assertion_units(records) do
     units =
       records
-      |> Enum.filter(&(&1["role"] in ~w(user tool)))
+      |> Enum.filter(&(user_assertion?(&1) or &1["role"] == "tool"))
       |> Enum.flat_map(&event_units/1)
 
     if length(units) <= @max_assertion_units and
@@ -214,8 +214,8 @@ defmodule Backplane.Memory.FactExtraction do
       event =
         citations |> Enum.at(subject["citation"]) |> then(&find_event(bundle, &1["event_id"]))
 
-      if (kind == "speaker" and event["role"] == "user") or
-           (kind == "entity" and event["role"] in ~w(user tool)),
+      if (kind == "speaker" and user_assertion?(event)) or
+           (kind == "entity" and (user_assertion?(event) or event["role"] == "tool")),
          do: :ok,
          else: {:error, :invalid_fact_attribution}
     else
@@ -271,7 +271,7 @@ defmodule Backplane.Memory.FactExtraction do
            {:ok, earlier} <- bind_citation(correction, bundle),
            old = find_event(bundle, earlier["event_id"]),
            current = find_event(bundle, Enum.at(citations, index)["event_id"]),
-           true <- current["role"] == "user" and current["stream_id"] == old["stream_id"],
+           true <- user_assertion?(current) and current["stream_id"] == old["stream_id"],
            true <- is_integer(old["sequence"]) and is_integer(current["sequence"]),
            true <- old["sequence"] < current["sequence"] do
         {:cont, {:ok, accepted ++ [Map.put(earlier, "correction_citation", index)]}}
@@ -325,7 +325,7 @@ defmodule Backplane.Memory.FactExtraction do
           _ -> event.role || "other"
         end
 
-    %{
+    record = %{
       "id" => event.id,
       "stream_id" => event.stream_id,
       "sequence" => event.sequence,
@@ -336,5 +336,27 @@ defmodule Backplane.Memory.FactExtraction do
       "text" => text,
       "text_sha256" => hash(text)
     }
+
+    if event.integration == "openclaw" do
+      provenance = source["input_provenance"]
+
+      origin =
+        case provenance do
+          nil -> "unknown"
+          %{"kind" => kind} when kind in ~w(external_user inter_session internal_system) -> kind
+          _ -> "unrecognized"
+        end
+
+      Map.merge(record, %{"input_origin" => origin, "input_provenance" => provenance})
+    else
+      record
+    end
   end
+
+  # A missing origin can support a traceable candidate, never proof of human
+  # confirmation. Explicit synthetic origins cannot assert or correct as users.
+  defp user_assertion?(event),
+    do:
+      event["role"] == "user" and
+        event["input_origin"] not in ~w(internal_system inter_session unrecognized)
 end

@@ -491,6 +491,99 @@ defmodule Backplane.Api.HostAgentChannelTest do
     assert_reply(ref, :error, %{"code" => "unsupported_protocol"})
   end
 
+  test "OpenClaw capture negotiation does not advertise unavailable capture permission", c do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    scopes = Application.get_env(:backplane_api, :host_agent_scopes)
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+
+    Application.put_env(
+      :backplane_api,
+      :host_agent_scopes,
+      ~w(host_agent.recall host_agent.import)
+    )
+
+    on_exit(fn ->
+      :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous})
+
+      if scopes,
+        do: Application.put_env(:backplane_api, :host_agent_scopes, scopes),
+        else: Application.delete_env(:backplane_api, :host_agent_scopes)
+    end)
+
+    extensions =
+      ~w(memory_access.v1 memory_commands.v2 memory_sources.v1 openclaw_source.v1 openclaw_capture.v1)
+
+    offer = %{
+      "memory_v2" => %{
+        "offers" => ["host_memory.v2"],
+        "partitions" => [],
+        "extensions" => extensions
+      }
+    }
+
+    assert {:ok, reply, _socket} = subscribe_and_join(c.socket, "host_agent:#{c.host.id}", offer)
+    assert "openclaw_source.v1" in reply["extensions"]
+    refute "openclaw_capture.v1" in reply["extensions"]
+  end
+
+  test "OpenClaw capture requires separately negotiated support and frozen default authority",
+       c do
+    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+
+    extensions =
+      ~w(memory_access.v1 memory_commands.v2 memory_sources.v1 openclaw_source.v1 openclaw_capture.v1)
+
+    offer = %{
+      "memory_v2" => %{
+        "offers" => ["host_memory.v2"],
+        "partitions" => [],
+        "extensions" => extensions
+      }
+    }
+
+    assert {:ok, reply, socket} = subscribe_and_join(c.socket, "host_agent:#{c.host.id}", offer)
+    assert reply["extensions"] == extensions
+    access = Enum.find(reply["accesses"], &(&1["access_id"] == reply["default_access_id"]))
+
+    fingerprint =
+      Backplane.MemorySourceContract.digest(
+        Map.take(access, ~w(access_id authority_version partition))
+      )
+
+    event = openclaw_event(c.host, fingerprint)
+    ref = push_memory_events(socket, c.host, "openclaw-capture", event)
+    assert_reply(ref, :ok, %{"results" => [%{"status" => "accepted"}]})
+    stored = Repo.get!(MemoryEvent, event["event_id"])
+    assert stored.content == "OpenClaw full source evidence"
+    assert stored.role == "user"
+    assert stored.agent_id == "rikka"
+    assert get_in(stored.payload, ["source", "run_id"]) == "actual-run"
+    assert stored.source_sequence == 1
+    assert get_in(stored.payload, ["source", "source_sequence"]) == 20
+
+    stale = openclaw_event(c.host, String.duplicate("b", 64))
+    ref = push_memory_events(socket, c.host, "openclaw-stale", stale)
+    assert_reply(ref, :error, %{"reason" => "authority_changed"})
+    refute Repo.get(MemoryEvent, stale["event_id"])
+
+    operator = %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()}
+
+    assert {:ok, _} =
+             MemorySpaces.revoke_host_access(
+               operator,
+               access["access_id"],
+               access["authority_version"],
+               "OpenClaw revoked fixture"
+             )
+
+    late = openclaw_event(c.host, fingerprint)
+    ref = push_memory_events(socket, c.host, "openclaw-revoked", late)
+    assert_reply(ref, :error, %{"reason" => "unauthorized"})
+    refute Repo.get(MemoryEvent, late["event_id"])
+  end
+
   test "real channel capture keeps the host partition across assigned token rotation", %{
     host: host,
     auth_token: token_a_record,
@@ -1873,6 +1966,46 @@ defmodule Backplane.Api.HostAgentChannelTest do
       "batch_id" => batch_id,
       "host_id" => host.id,
       "events" => [event]
+    })
+  end
+
+  defp openclaw_event(host, fingerprint) do
+    content = "OpenClaw full source evidence"
+    event = captured_memory_event(host, 1)
+
+    source = %{
+      "protocol" => "openclaw_capture.v1",
+      "event_id" => event["event_id"],
+      "installation_id" => Ecto.UUID.generate(),
+      "profile_id" => "primary",
+      "source_sequence" => 20,
+      "session_id" => event["session_id"],
+      "run_id" => "actual-run",
+      "agent_id" => "rikka",
+      "occurrence_id" => "actual-run:0",
+      "binding_fingerprint" => fingerprint,
+      "occurred_at" => event["occurred_at"],
+      "captured_at" => event["captured_at"],
+      "role" => "user",
+      "content" => content,
+      "completeness" => %{
+        "truncated" => false,
+        "coverage" => "full",
+        "original_length" => String.length(content),
+        "original_sha256" => Base.encode16(:crypto.hash(:sha256, content), case: :lower)
+      }
+    }
+
+    payload = %{"hook" => "message", "source" => source}
+
+    Map.merge(event, %{
+      "agent_id" => "rikka",
+      "client_id" => "openclaw",
+      "integration" => "openclaw",
+      "event_type" => "conversation.user_message",
+      "payload" => payload,
+      "payload_hash" => EventValidator.payload_hash(payload),
+      "idempotency_key" => "openclaw:" <> event["event_id"]
     })
   end
 

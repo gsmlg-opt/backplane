@@ -65,6 +65,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      - name: Set up qualified OpenClaw Node runtime
+        if: matrix.app == 'backplane_host_agent'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.1"
+
       - name: Install native build dependencies
         run: |
           sudo apt-get update

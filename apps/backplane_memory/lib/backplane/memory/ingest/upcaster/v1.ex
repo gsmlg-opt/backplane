@@ -66,11 +66,26 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
 
   def upcast(_event, _auth_context), do: {:error, :unsupported_schema}
 
-  defp message_attributes(%{"integration" => "hermes", "payload" => %{"source" => source}}) do
-    %{content: source["content"], role: source["role"], actor_type: source["role"]}
+  defp message_attributes(%{"integration" => integration, "payload" => %{"source" => source}})
+       when integration in ["hermes", "openclaw"] do
+    %{
+      content: source["content"],
+      role: source["role"],
+      actor_type: actor_type(integration, source)
+    }
   end
 
   defp message_attributes(_), do: %{}
+
+  defp actor_type("openclaw", %{"role" => "user"} = source) do
+    case get_in(source, ["input_provenance", "kind"]) do
+      "external_user" -> "user"
+      kind when kind in ~w(internal_system inter_session) -> kind
+      _ -> "unknown"
+    end
+  end
+
+  defp actor_type(_integration, source), do: source["role"]
 
   defp stream_id(host_id, session_id, _event_id) when is_binary(session_id),
     do: "capture:#{host_id}:#{session_id}"

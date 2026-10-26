@@ -5,6 +5,12 @@
   "openclaw": {
     "extensions": [
       "./plugin.mjs"
-    ]
+    ],
+    "install": {
+      "minHostVersion": ">=2026.10.7"
+    }
+  },
+  "engines": {
+    "node": ">=24.22.1 <25 || >=26.12.1"
   }
 }

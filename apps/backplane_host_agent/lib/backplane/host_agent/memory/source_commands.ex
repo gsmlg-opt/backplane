@@ -7,6 +7,9 @@ defmodule Backplane.HostAgent.Memory.SourceCommands do
 
   def enqueue(target, method, args, agent) do
     with true <- Access.local_owner?(target),
+         true <-
+           args["source"]["integration"] != "openclaw" or
+             "openclaw_source.v1" in target.extensions,
          {:ok, args} <- Contract.validate(method, args) do
       args = args |> Map.delete("memory_access_id") |> Map.put("agent_id", agent)
       id = args["event_id"]

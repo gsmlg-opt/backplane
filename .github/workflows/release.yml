@@ -160,6 +160,14 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover
           -s integrations/memory/tests -p 'test_hermes*.py' -v
 
+      - name: Set up qualified OpenClaw Node runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.1"
+
+      - name: Verify OpenClaw provider contract
+        run: node --test integrations/memory/tests/test_openclaw*.mjs
+
       - name: Verify Hermes live semantic oracle
         run: MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs
 
@@ -278,6 +286,7 @@ jobs:
         run: |
           mix test \
             apps/backplane_memory_contract/test/backplane/memory_source_contract_test.exs \
+            apps/backplane_memory_contract/test/backplane/openclaw_capture_contract_test.exs \
             apps/backplane_memory/test/backplane/memory/sources_test.exs \
             apps/backplane_memory/test/backplane/memory/source_commands_test.exs \
             apps/backplane_memory/test/backplane/memory/fact_extraction_test.exs \
@@ -298,10 +307,27 @@ jobs:
             apps/backplane_memory/test/backplane/memory/service_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/access_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/hermes_hook_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/openclaw_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/spool_turso_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/context_packer_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory_facade_test.exs \
             apps/backplane_api/test/backplane/api/host_agent_memory_sync_test.exs
+
+      - name: Install pinned OpenClaw qualification runtime
+        run: npm install --prefix "$RUNNER_TEMP/backplane-openclaw-runtime" --no-audit --no-fund openclaw@2026.10.7
+
+      - name: Verify real OpenClaw canonical path
+        env:
+          BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL: "1"
+          OPENCLAW_LIVE_MODE: deterministic
+          OPENROUTER_API_KEY: ""
+        run: |
+          mkdir -p artifacts/openclaw
+          OPENCLAW_NODE="$(command -v node)" \
+          OPENCLAW_RUNTIME="$RUNNER_TEMP/backplane-openclaw-runtime/node_modules/openclaw" \
+          MIX_TEST_PARTITION="_openclawlive_$(openssl rand -hex 8)" \
+            mix run --no-start test/openclaw_memory_live_acceptance.exs \
+            > artifacts/openclaw/openclaw-live.log
 
       - name: Run guarded Memory V2 qualification and Recall V2 evaluation
         run: |
@@ -331,6 +357,15 @@ jobs:
         with:
           name: memory-v2-qualification
           path: artifacts/memory-v2/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload OpenClaw memory qualification artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: openclaw-memory-qualification
+          path: artifacts/openclaw/
           if-no-files-found: warn
           retention-days: 90
 
@@ -519,6 +554,19 @@ jobs:
               '-s', str(roots[0] / 'tests'), '-p', 'test_hermes*.py', '-v',
           ], check=True)
           PY
+
+      - name: Set up qualified OpenClaw Node runtime
+        if: matrix.release == 'host_agent'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.1"
+
+      - name: Verify packaged OpenClaw provider
+        if: matrix.release == 'host_agent'
+        run: |
+          roots=(_build/prod/rel/host_agent/lib/backplane_host_agent-*/priv/integrations/memory)
+          test "${#roots[@]}" -eq 1
+          node --test "${roots[0]}"/tests/test_openclaw*.mjs
 
       - name: Archive OTP release
         shell: bash

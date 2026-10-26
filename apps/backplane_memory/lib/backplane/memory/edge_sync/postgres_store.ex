@@ -164,8 +164,16 @@ defmodule Backplane.Memory.EdgeSync.PostgresStore do
 
     extensions =
       Enum.filter(
-        ["memory_access.v1", "memory_commands.v2", "memory_sources.v1", "hermes_capture.v1"],
-        &(&1 in Map.get(offer, "extensions", []))
+        [
+          "memory_access.v1",
+          "memory_commands.v2",
+          "memory_sources.v1",
+          "hermes_capture.v1",
+          "openclaw_source.v1",
+          "openclaw_capture.v1"
+        ],
+        &(&1 in Map.get(offer, "extensions", []) and
+            (&1 != "openclaw_capture.v1" or "host_agent.capture" in auth.scopes))
       )
 
     delivery_inventory =

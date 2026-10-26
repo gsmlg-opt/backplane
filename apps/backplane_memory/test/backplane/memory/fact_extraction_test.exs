@@ -297,6 +297,80 @@ defmodule Backplane.Memory.FactExtractionTest do
              FactExtraction.validate([candidate(bundle)], bundle)
   end
 
+  test "OpenClaw synthetic user roles remain evidence without becoming user assertions" do
+    {_, summary, partition, event} = bundle()
+
+    for kind <- ~w(internal_system inter_session future_origin) do
+      synthetic = %{
+        event
+        | integration: "openclaw",
+          payload: %{"source" => %{"input_provenance" => %{"kind" => kind}}}
+      }
+
+      assert {:ok, source} = FactExtraction.bundle(summary, partition, [synthetic])
+      assert [record] = source["events"]
+      assert record["role"] == "user"
+      assert record["input_provenance"] == %{"kind" => kind}
+      assert source["assertion_units"] == []
+
+      assert {:error, :invalid_fact_attribution} =
+               FactExtraction.validate([candidate(source)], source)
+    end
+  end
+
+  test "missing OpenClaw origin permits source-linked candidate inference without inventing external origin" do
+    {_, summary, partition, event} = bundle()
+
+    assert {:ok, source} =
+             FactExtraction.bundle(summary, partition, [%{event | integration: "openclaw"}])
+
+    assert [record] = source["events"]
+    assert record["input_origin"] == "unknown"
+    assert record["input_provenance"] == nil
+    assert {:ok, [_]} = FactExtraction.validate([candidate(source)], source)
+  end
+
+  test "OpenClaw synthetic user-role input cannot correct another event" do
+    {_, summary, partition, event} = bundle()
+
+    older = %{
+      event
+      | id: Ecto.UUID.generate(),
+        sequence: 1,
+        source_sequence: 1,
+        content: "I guessed another label.",
+        role: "assistant",
+        event_type: "conversation.agent_message"
+    }
+
+    synthetic = %{
+      event
+      | integration: "openclaw",
+        payload: %{"source" => %{"input_provenance" => %{"kind" => "inter_session"}}}
+    }
+
+    assert {:ok, source} = FactExtraction.bundle(summary, partition, [older, synthetic])
+    correction = %{"event_id" => older.id, "quote" => older.content, "correction_citation" => 0}
+    fact = candidate(%{source | "events" => [List.last(source["events"])]})
+    fact = %{fact | "correction_of" => [correction]}
+    assert {:error, :invalid_fact_attribution} = FactExtraction.validate([fact], source)
+
+    # A valid primary user assertion must not lend correction authority to a
+    # separate synthetic citation in the same candidate.
+    actual = %{event | id: Ecto.UUID.generate(), sequence: 3, source_sequence: 3}
+    assert {:ok, mixed} = FactExtraction.bundle(summary, partition, [older, synthetic, actual])
+    fact = candidate(%{mixed | "events" => [List.last(mixed["events"])]})
+
+    fact = %{
+      fact
+      | "citations" =>
+          fact["citations"] ++ [%{"event_id" => synthetic.id, "quote" => synthetic.content}],
+        "correction_of" => [%{correction | "correction_citation" => 1}]
+    }
+
+    assert {:error, :invalid_fact_correction} = FactExtraction.validate([fact], mixed)
+  end
+
   test "existing identifier span does not prove semantic scope" do
     {_, summary, partition, event} = bundle()
     text = "My preferred label is café (record sample-1)."

@@ -8,22 +8,110 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": { "type": "boolean" },
-      "base_url": { "type": "string" },
-      "agent_id": { "type": "string" },
-      "token_budget": { "type": "number" },
-      "min_confidence": { "type": "number" },
-      "fallback_on_error": { "type": "boolean" },
-      "timeout_ms": { "type": "number" }
+      "enabled": {
+        "type": "boolean"
+      },
+      "base_url": {
+        "type": "string"
+      },
+      "agent_id": {
+        "type": "string"
+      },
+      "profile_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "journal_path": {
+        "type": "string"
+      },
+      "token_budget": {
+        "type": "integer",
+        "minimum": 128,
+        "maximum": 32768
+      },
+      "min_confidence": {
+        "type": "number",
+        "description": "Deprecated reserved option; ignored with a diagnostic."
+      },
+      "fallback_on_error": {
+        "type": "boolean"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 20000
+      },
+      "native_sync": {
+        "type": "boolean"
+      },
+      "bindings": {
+        "type": "array",
+        "maxItems": 64,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "agent_id",
+            "memory_access_id"
+          ],
+          "properties": {
+            "agent_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "memory_access_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      }
     }
   },
   "uiHints": {
-    "enabled": { "label": "Enabled" },
-    "base_url": { "label": "Base URL", "help": "Backplane host agent Memory API base URL" },
-    "agent_id": { "label": "Agent ID", "help": "Logical agent id used in /memory/:agent_id/ URLs" },
-    "token_budget": { "label": "Token Budget", "help": "Approximate context budget injected before the agent starts" },
-    "min_confidence": { "label": "Min Confidence" },
-    "fallback_on_error": { "label": "Fallback On Error" },
-    "timeout_ms": { "label": "Timeout (ms)" }
+    "enabled": {
+      "label": "Enabled"
+    },
+    "base_url": {
+      "label": "Base URL"
+    },
+    "bindings": {
+      "label": "Authorized owner audience bindings",
+      "help": "Map actual OpenClaw agent IDs to existing granted Backplane access UUIDs; conversation audiences are refused."
+    },
+    "token_budget": {
+      "label": "Rendered context budget",
+      "help": "128-32768 UTF-8 bytes; includes all labels, citations and separators."
+    },
+    "min_confidence": {
+      "label": "Deprecated reserved option",
+      "help": "Ignored with migration diagnostics; canonical relevance policy applies."
+    },
+    "native_sync": {
+      "label": "Sync USER.md and MEMORY.md"
+    }
+  },
+  "contracts": {
+    "tools": [
+      "backplane_memory_search",
+      "backplane_memory_get",
+      "backplane_memory_save",
+      "backplane_memory_correct",
+      "backplane_memory_withdraw",
+      "backplane_memory_forget",
+      "backplane_memory_status"
+    ]
+  },
+  "toolMetadata": {
+    "backplane_memory_search": {
+      "replaySafe": true
+    },
+    "backplane_memory_get": {
+      "replaySafe": true
+    },
+    "backplane_memory_status": {
+      "replaySafe": true
+    }
   }
 }

@@ -6,10 +6,20 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
   def methods, do: ~w(source_capabilities source_mutate source_reconcile source_status)
 
   def call("source_capabilities", args, context) when is_map(args) do
-    with true <- Map.keys(args) -- ["memory_access_id"] == [],
+    with true <-
+           Map.keys(args) -- ["memory_access_id", "integration"] == [] and
+             Map.get(args, "integration", "hermes") in ["hermes", "openclaw"],
          true <-
            not Map.has_key?(args, "memory_access_id") or Contract.uuid?(args["memory_access_id"]),
          %{} = status <- Access.status(server(context)) do
+      integration = Map.get(args, "integration", "hermes")
+
+      extensions =
+        if integration == "openclaw",
+          do: ~w(memory_commands.v2 memory_sources.v1 openclaw_source.v1),
+          else: ~w(memory_commands.v2 memory_sources.v1)
+
+      capture_contract = integration <> "_capture.v1"
       id = args["memory_access_id"] || status.default_access_id
       entry = Enum.find(status.accesses, &(&1.access_id == id))
 
@@ -25,7 +35,7 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
         status.negotiated && not status.blocked && not status.global_fenced && entry &&
           entry.status != "fenced" &&
           Access.allowed_operation?(:source, entry.capabilities) &&
-          Enum.all?(~w(memory_commands.v2 memory_sources.v1), &(&1 in status.extensions))
+          Enum.all?(extensions, &(&1 in status.extensions))
 
       default = Enum.find(status.accesses, &(&1.access_id == status.default_access_id))
 
@@ -42,18 +52,33 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
 
       capture_error =
         cond do
-          id != status.default_access_id -> "capture_binding_mismatch"
-          not capture_configured -> "capture_unavailable"
-          "hermes_capture.v1" not in status.extensions -> "unsupported_capability"
-          ready != true -> "capture_unavailable"
-          true -> nil
+          id != status.default_access_id ->
+            "capture_binding_mismatch"
+
+          integration == "openclaw" and capture_contract not in status.extensions ->
+            "unsupported_capability"
+
+          not capture_configured ->
+            "capture_unavailable"
+
+          capture_contract not in status.extensions ->
+            "unsupported_capability"
+
+          ready != true ->
+            "capture_unavailable"
+
+          true ->
+            nil
         end
 
       {:ok,
        %{
          "protocol" => Contract.protocol(),
          "supported" => true,
-         "contracts" => [Contract.protocol(), "hermes_capture.v1"],
+         "contracts" =>
+           [Contract.protocol(), capture_contract] ++
+             if(integration == "openclaw", do: ["openclaw_source.v1"], else: []),
+         "integration" => integration,
          "negotiated" => status.extensions,
          "ready" => ready == true,
          "binding" => binding,
@@ -75,6 +100,7 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
       when method in ~w(source_mutate source_reconcile source_status) do
     with {:ok, args} <- Contract.validate(method, args),
          :ok <- Backplane.HostAgent.MemoryProxy.authorize_command(),
+         :ok <- integration_supported(args, context),
          {:ok, target, ticket} <- Access.begin_request(selector(args), :source, server(context)) do
       args = Map.delete(args, "memory_access_id")
 
@@ -132,6 +158,18 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
     _ = Access.finish_request(ticket, error, server(context))
     error
   end
+
+  defp integration_supported(%{"source" => %{"integration" => "openclaw"}}, context) do
+    case Access.status(server(context)) do
+      %{extensions: extensions} ->
+        if "openclaw_source.v1" in extensions, do: :ok, else: {:error, :unsupported_capability}
+
+      _ ->
+        {:error, :access_owner_unavailable}
+    end
+  end
+
+  defp integration_supported(_, _), do: :ok
 
   defp selector(%{"memory_access_id" => id}), do: {:access_id, id}
   defp selector(_), do: :default

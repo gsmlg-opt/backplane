@@ -436,7 +436,7 @@ defmodule Backplane.Api.HostAgentChannel do
       :ok ->
         case safe_memory_event_host(socket.assigns.host.id) do
           {:ok, host} ->
-            ingest_memory_events(host, socket, payload)
+            ingest_bound_memory_events(host, socket, payload)
 
           {:error, :ingest_unavailable} ->
             {:reply, {:error, %{"reason" => "ingest_unavailable"}}, socket}
@@ -469,7 +469,14 @@ defmodule Backplane.Api.HostAgentChannel do
         {:error, :invalid_request}
 
       Enum.any?(items, &(&1["op"] in ~w(source_mutate source_reconcile))) ->
-        selected_extension(socket, "memory_sources.v1")
+        with :ok <- selected_extension(socket, "memory_sources.v1") do
+          if Enum.any?(
+               items,
+               &(get_in(&1, ["arguments", "source", "integration"]) == "openclaw")
+             ),
+             do: selected_extension(socket, "openclaw_source.v1"),
+             else: :ok
+        end
 
       true ->
         :ok
@@ -1140,6 +1147,71 @@ defmodule Backplane.Api.HostAgentChannel do
     log_host_event_ingest_failure(host_id, :host_registration_unavailable)
     {:error, :ingest_unavailable}
   end
+
+  defp ingest_bound_memory_events(host, socket, payload) do
+    openclaw = Enum.filter(payload["events"], &(is_map(&1) and &1["integration"] == "openclaw"))
+
+    if openclaw == [] do
+      ingest_memory_events(host, socket, payload)
+    else
+      with :ok <- selected_extension(socket, "openclaw_capture.v1"),
+           :ok <- selected_extension(socket, "openclaw_source.v1"),
+           true <- Enum.all?(openclaw, &valid_openclaw_event?/1),
+           {:ok, actor} <-
+             Backplane.Memory.Authorization.host_actor(shared_auth(socket), :remember),
+           {:ok, reply} <-
+             MemorySpaces.with_host_access(actor, :default, :remember, nil, fn access ->
+               fingerprint =
+                 Backplane.MemorySourceContract.digest(%{
+                   "access_id" => access.access_id,
+                   "authority_version" => access.authority_version,
+                   "partition" =>
+                     Map.new(access.partition, fn {key, value} -> {to_string(key), value} end)
+                 })
+
+               with true <-
+                      Enum.all?(
+                        openclaw,
+                        &(get_in(&1, ["payload", "source", "binding_fingerprint"]) == fingerprint)
+                      ),
+                    {:ok, _} <-
+                      MemorySpaces.resolve_host_access(
+                        host.id,
+                        {:access_id, access.access_id},
+                        :forget
+                      ),
+                    {:ok, partition} <-
+                      MemorySpaces.resolve_host_partition(host.id, host.memory_scope, "private"),
+                    true <-
+                      Map.take(partition, [:memory_space_id, :scope, :namespace]) ==
+                        access.partition do
+                 {:ok, ingest_memory_events(host, socket, payload)}
+               else
+                 _ -> {:error, :authority_changed}
+               end
+             end) do
+        reply
+      else
+        false -> {:reply, {:error, %{"reason" => "invalid_event"}}, socket}
+        {:error, reason} -> {:reply, {:error, %{"reason" => format_memory_error(reason)}}, socket}
+      end
+    end
+  end
+
+  defp valid_openclaw_event?(%{"payload" => %{"hook" => hook, "source" => source}} = event) do
+    with {:ok, type} <-
+           Backplane.OpenClawCaptureContract.validate(hook, source,
+             filtered: get_in(event, ["privacy", "filtered"]) == true
+           ) do
+      event["event_type"] == type and event["event_id"] == source["event_id"] and
+        event["session_id"] == source["session_id"] and event["agent_id"] == source["agent_id"] and
+        event["client_id"] == "openclaw"
+    else
+      _ -> false
+    end
+  end
+
+  defp valid_openclaw_event?(_), do: false
 
   defp ingest_memory_events(host, socket, payload) do
     with {:ok, partition} <-

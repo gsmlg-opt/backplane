@@ -37,6 +37,31 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert attrs.importance == 7
   end
 
+  test "OpenClaw raw user role remains distinct from typed input origin" do
+    for {provenance, actor} <- [
+          {nil, "unknown"},
+          {%{"kind" => "external_user"}, "user"},
+          {%{"kind" => "internal_system"}, "internal_system"},
+          {%{"kind" => "inter_session"}, "inter_session"},
+          {%{"kind" => "future_origin"}, "unknown"}
+        ] do
+      source = %{"role" => "user", "content" => "Retain original user-role evidence."}
+      source = if provenance, do: Map.put(source, "input_provenance", provenance), else: source
+
+      event =
+        valid_event(%{
+          "integration" => "openclaw",
+          "event_type" => "conversation.user_message",
+          "payload" => %{"source" => source}
+        })
+
+      assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
+      assert attrs.role == "user"
+      assert attrs.actor_type == actor
+      assert attrs.payload["source"] == source
+    end
+  end
+
   test "host ownership survives token rotation and ignores the wire client id" do
     raw = valid_event(%{"client_id" => "host:attacker"})
     assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)

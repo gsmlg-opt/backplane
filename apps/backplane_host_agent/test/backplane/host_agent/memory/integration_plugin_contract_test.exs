@@ -259,125 +259,104 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     end
   end
 
-  test "OpenClaw packaged plugin uses exact protocol, fail-open privacy, and async capture" do
+  test "OpenClaw packaged plugin declares policy-bound hooks, tools, and provider flush" do
     node = System.find_executable("node") || flunk("node is required")
     source = Path.join([@integrations_root, "openclaw", "plugin.mjs"])
 
     script = ~S'''
     import { pathToFileURL } from "node:url";
-
     const { default: plugin } = await import(pathToFileURL(process.argv[1]).href);
-    const handlers = {};
-    const warnings = [];
-    const calls = [];
-    const api = {
-      pluginConfig: { enabled: true, agent_id: "openclaw test", fallback_on_error: true, timeout_ms: 50 },
+    const hooks = {}, registrations = {}, warnings = [];
+    plugin.register({
+      pluginConfig: { enabled: true, bindings: [{ agent_id: "main", memory_access_id: "11111111-1111-4111-8111-111111111111" }] },
+      config: { plugins: { entries: { "backplane-memory": { hooks: { allowConversationAccess: true } } } } },
       logger: { warn: (message) => warnings.push(message) },
-      on: (name, handler) => { handlers[name] = handler; },
-      registerMemoryCapability: () => {},
-    };
-    plugin.register(api);
-
-    globalThis.fetch = async (url, options) => {
-      calls.push({ url, method: options.method, body: JSON.parse(options.body) });
-      if (url.endsWith("/recall")) {
-        return { ok: true, json: async () => ({ ok: true, result: { results: [{ content: "prior fact", scope: "project" }] } }) };
-      }
-      return { ok: true, json: async () => ({ ok: true, result: { success: true } }) };
-    };
-
-    const context = await handlers.before_agent_start({ prompt: "memory query" });
-    await handlers.agent_end({
-      success: true,
-      sessionId: "session-1",
-      messages: [
-        { role: "user", content: "remember this" },
-        { role: "assistant", content: "done" },
-      ],
+      on: (name, _handler, options) => { hooks[name] = options || {}; },
+      registerTool: (factory, options) => { registrations.tools = { contextVersion: factory.contextVersion, names: options.names }; },
+      registerMemoryCapability: (capability) => { registrations.flush = capability.providerFlushPlanResolver(); registrations.runtime = typeof capability.providerRuntime.open; },
+      registerService: (service) => { registrations.service = service.id; },
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    globalThis.fetch = async () => { throw new Error("private-secret"); };
-    await handlers.before_agent_start({ prompt: "private-secret" });
-
-    globalThis.fetch = () => new Promise(() => {});
-    const started = Date.now();
-    const completed = await Promise.race([
-      handlers.agent_end({
-        success: true,
-        sessionId: "session-2",
-        messages: [
-          { role: "user", content: "slow user" },
-          { role: "assistant", content: "slow assistant" },
-        ],
-      }).then(() => true),
-      new Promise((resolve) => setTimeout(() => resolve(false), 75)),
-    ]);
-
-    console.log(JSON.stringify({ calls, context, warnings, completed, elapsed_ms: Date.now() - started }));
+    console.log(JSON.stringify({ hooks, registrations, warnings }));
     '''
 
     {output, 0} = System.cmd(node, ["--input-type=module", "-e", script, source])
     result = Jason.decode!(output)
 
-    assert result["context"]["prependContext"] =~ "prior fact"
-    assert result["completed"] == true
-    assert result["elapsed_ms"] < 75
-    refute Enum.any?(result["warnings"], &String.contains?(&1, "private-secret"))
+    assert Enum.sort(Map.keys(result["hooks"])) == [
+             "agent_end",
+             "before_prompt_build",
+             "session_end"
+           ]
 
-    assert [recall, remember] = result["calls"]
-    assert recall["url"] == "http://127.0.0.1:4222/memory/openclaw%20test/call/recall"
-    assert recall["method"] == "POST"
-    assert recall["body"] == %{"query" => "memory query", "limit" => 5}
+    assert result["hooks"]["before_prompt_build"] == %{"requiresToolAuthority" => true}
+    assert result["registrations"]["tools"]["contextVersion"] == 2
 
-    assert remember["url"] ==
-             "http://127.0.0.1:4222/memory/openclaw%20test/call/remember"
+    manifest =
+      @integrations_root
+      |> Path.join("openclaw/openclaw.plugin.json")
+      |> File.read!()
+      |> Jason.decode!()
 
-    assert remember["body"]["content"] == "User: remember this\n\nAssistant: done"
-    assert remember["body"]["type"] == "episodic"
-    assert remember["body"]["session_id"] == "session-1"
-    assert remember["body"]["metadata"]["source"] == "openclaw.agent_end"
+    assert Enum.sort(result["registrations"]["tools"]["names"]) ==
+             Enum.sort(manifest["contracts"]["tools"])
+
+    assert result["registrations"]["runtime"] == "function"
+    assert result["registrations"]["service"] == "backplane-memory-delivery"
+
+    assert result["registrations"]["flush"]["persistenceToolNames"] ==
+             ["backplane_memory_save", "backplane_memory_correct"]
+
+    assert result["registrations"]["flush"]["lookupToolNames"] ==
+             ["backplane_memory_search", "backplane_memory_get", "backplane_memory_status"]
+
+    assert result["warnings"] == []
   end
 
-  test "OpenClaw detached capture handles rejection when fallback is disabled" do
+  test "OpenClaw missing permission and invalid context fail closed without secret diagnostics" do
     node = System.find_executable("node") || flunk("node is required")
     source = Path.join([@integrations_root, "openclaw", "plugin.mjs"])
 
     script = ~S'''
     import { pathToFileURL } from "node:url";
-
     const { default: plugin } = await import(pathToFileURL(process.argv[1]).href);
-    const handlers = {};
-    const warnings = [];
-    plugin.register({
-      pluginConfig: { enabled: true, fallback_on_error: false, timeout_ms: 50 },
+    const warnings = [], missing = [], hooks = {};
+    let calls = 0, caught;
+    globalThis.fetch = async () => { calls++; throw new Error("private-secret"); };
+    const base = {
       logger: { warn: (message) => warnings.push(message) },
-      on: (name, handler) => { handlers[name] = handler; },
-      registerMemoryCapability: () => {},
+      registerTool() {}, registerMemoryCapability() {}, registerService() {},
+    };
+    plugin.register({ ...base, on: (name) => missing.push(name) });
+    plugin.register({ ...base, pluginConfig: { fallback_on_error: false },
+      config: { plugins: { entries: { "backplane-memory": { hooks: { allowConversationAccess: true } } } } },
+      on: (name, handler) => { hooks[name] = handler; },
     });
-
-    globalThis.fetch = async () => { throw new TypeError("private-secret"); };
-    await handlers.agent_end({
-      success: true,
-      sessionId: "session-rejected",
-      messages: [
-        { role: "user", content: "remember this" },
-        { role: "assistant", content: "done" },
-      ],
-    });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    console.log(JSON.stringify({ warnings }));
+    try { await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, {}); }
+    catch (error) { caught = error.message; }
+    let endCaught;
+    try { await hooks.agent_end({ success: true, messages: [{ role: "user", content: "private-secret" }] }, {}); }
+    catch (error) { endCaught = error.message; }
+    const disabled = [];
+    plugin.register({ pluginConfig: { enabled: false }, on: () => disabled.push("hook"), registerTool: () => disabled.push("tool"), registerMemoryCapability: () => disabled.push("provider"), registerService: () => disabled.push("service") });
+    console.log(JSON.stringify({ missing, disabled, warnings, calls, caught, endCaught }));
     '''
 
     {output, 0} =
-      System.cmd(
-        node,
-        ["--unhandled-rejections=strict", "--input-type=module", "-e", script, source],
-        stderr_to_stdout: true
-      )
+      System.cmd(node, [
+        "--unhandled-rejections=strict",
+        "--input-type=module",
+        "-e",
+        script,
+        source
+      ])
 
+    result = Jason.decode!(output)
+    assert result["missing"] == []
+    assert result["disabled"] == []
+    assert result["calls"] == 0
+    assert is_binary(result["caught"])
+    assert is_binary(result["endCaught"])
+    assert Enum.any?(result["warnings"], &String.contains?(&1, "conversation_access_required"))
     refute output =~ "private-secret"
-    assert %{"warnings" => [warning]} = Jason.decode!(output)
-    assert warning =~ "TypeError"
   end
 end

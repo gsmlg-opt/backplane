@@ -67,4 +67,54 @@ defmodule Backplane.MemorySourceContractTest do
     assert {:error, :invalid_arguments} =
              Contract.validate("source_reconcile", Map.put(args, "entry_count", 1))
   end
+
+  test "OpenClaw document and provider ownership have separate explicit contracts" do
+    content = "完整来源"
+    hash = Base.encode16(:crypto.hash(:sha256, content), case: :lower)
+
+    native =
+      mutation()
+      |> put_in(["source", "integration"], "openclaw")
+      |> Map.put("provenance", %{
+        "document_path" => "MEMORY.md",
+        "document_complete" => true,
+        "document_revision" => hash,
+        "document_sha256" => hash,
+        "run_id" => "native-run",
+        "session_key" => "native-session-key"
+      })
+
+    assert {:ok, ^native} = Contract.validate("source_mutate", native)
+
+    for invalid <- [
+          put_in(native, ["provenance", "document_complete"], false),
+          put_in(native, ["provenance", "document_path"], "USER.md"),
+          Map.put(native, "content", "partial"),
+          Map.put(native, "revision", 9_007_199_254_740_992)
+        ] do
+      assert {:error, :invalid_arguments} = Contract.validate("source_mutate", invalid)
+    end
+
+    provider =
+      native
+      |> put_in(["source", "target"], "provider")
+      |> Map.put("provenance", %{
+        "role" => "assistant",
+        "input_provenance" => %{"kind" => "internal"}
+      })
+
+    assert {:ok, ^provider} = Contract.validate("source_mutate", provider)
+
+    assert {:error, :invalid_arguments} =
+             Contract.validate(
+               "source_mutate",
+               put_in(provider, ["provenance", "document_path"], "MEMORY.md")
+             )
+
+    assert {:error, :invalid_arguments} =
+             Contract.validate(
+               "source_mutate",
+               put_in(provider, ["source", "integration"], "hermes")
+             )
+  end
 end

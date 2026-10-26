@@ -40,6 +40,95 @@ defmodule Backplane.Memory.SourcesTest do
 
   defp current(c), do: Memories.list([current: true], c.partition)
 
+  test "OpenClaw confirmation trust requires explicit external origin even on legacy user actors",
+       c do
+    for {integration, origin, trust} <- [
+          {"openclaw", nil, "candidate_inference"},
+          {"openclaw", "internal_system", "candidate_inference"},
+          {"openclaw", "inter_session", "candidate_inference"},
+          {"openclaw", "future_origin", "candidate_inference"},
+          {"openclaw", "external_user", "established_fact"},
+          {"hermes", nil, "established_fact"}
+        ] do
+      source = if origin, do: %{"input_provenance" => %{"kind" => origin}}, else: %{}
+
+      assert {:ok, event} =
+               Backplane.Memory.Events.append(
+                 Map.merge(c.partition, %{
+                   stream_id: Ecto.UUID.generate(),
+                   session_id: "origin-test",
+                   event_type: "conversation.user_message",
+                   integration: integration,
+                   role: "user",
+                   actor_type: "user",
+                   content: "Explicit confirmation with #{integration}:#{origin}",
+                   payload: %{"source" => source}
+                 })
+               )
+
+      assert {:ok, memory} =
+               Memories.remember(
+                 event.content,
+                 Map.to_list(c.partition) ++
+                   [
+                     agent_id: "origin-test",
+                     evidence: [
+                       %{source_event_id: event.id, evidence_kind: "confirms", support_score: 1.0}
+                     ]
+                   ]
+               )
+
+      assert Backplane.Memory.CurrentContext.metadata(memory)["trust"] == trust
+    end
+  end
+
+  test "OpenClaw native documents and provider facts preserve distinct origins and withdrawal support",
+       c do
+    native = %{c | source: %{c.source | "integration" => "openclaw"}}
+    text = "OpenClaw prefers bounded precise recall."
+    hash = Base.encode16(:crypto.hash(:sha256, text), case: :lower)
+
+    provenance = %{
+      "session_id" => "openclaw-session",
+      "run_id" => "openclaw-run",
+      "role" => "assistant",
+      "document_path" => "MEMORY.md",
+      "document_revision" => hash,
+      "document_sha256" => hash,
+      "document_complete" => true
+    }
+
+    native_args = mutation(native, 1, text, %{"provenance" => provenance})
+    assert {:ok, %{canonical_id: id}} = Sources.mutate(native_args, c.partition)
+    assert {:ok, record} = Memories.public_get(id, c.partition, %{})
+    assert record.content == text
+    memory = repo().get!(Backplane.Memory.Memories.Memory, id)
+    assert memory.metadata["source"] == "openclaw.native"
+    assert memory.metadata["current_context"]["trust"] == "candidate_inference"
+
+    assert [%{"source" => %{"integration" => "openclaw"}, "entry_id" => entry}] =
+             memory.metadata["current_context"]["source_refs"]
+
+    assert entry == c.entry
+    assert hd(memory.metadata["current_context"]["source_refs"])["provenance"] == provenance
+
+    provider = %{
+      native
+      | source: %{native.source | "target" => "provider"},
+        entry: Ecto.UUID.generate()
+    }
+
+    assert {:ok, %{canonical_id: ^id}} = Sources.mutate(mutation(provider, 1, text), c.partition)
+    assert {:ok, _} = Sources.mutate(withdraw(native, 2), c.partition)
+    assert Enum.map(current(c), & &1.id) == [id]
+    assert :ok = Memories.forget(id, c.partition)
+
+    assert {:ok, %{outcome: "suppressed"}} =
+             Sources.mutate(mutation(provider, 2, text), c.partition)
+
+    assert current(c) == []
+  end
+
   test "edge publication waits for source evidence and withdrawal emits one tombstone", c do
     repo().query!(
       "INSERT INTO bpm_memory_space_entitlements (memory_space_id,host_id,scope,namespace,status,inserted_at,updated_at) VALUES ($1,$2,$3,$4,'active',now(),now())",

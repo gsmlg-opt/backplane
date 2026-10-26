@@ -10,8 +10,14 @@ defmodule Backplane.HostAgent.Memory.Hooks do
   alias Backplane.HostAgent.Memory.Hooks.ClaudeCode
   alias Backplane.HostAgent.Memory.Hooks.Codex
   alias Backplane.HostAgent.Memory.Hooks.Hermes
+  alias Backplane.HostAgent.Memory.Hooks.OpenClaw
 
-  @adapters %{"claude_code" => ClaudeCode, "codex" => Codex, "hermes" => Hermes}
+  @adapters %{
+    "claude_code" => ClaudeCode,
+    "codex" => Codex,
+    "hermes" => Hermes,
+    "openclaw" => OpenClaw
+  }
 
   @doc "Normalizes a hook through a locally verified adapter."
   def normalize(integration, hook, source, runtime) do
@@ -22,8 +28,9 @@ defmodule Backplane.HostAgent.Memory.Hooks do
   end
 
   @doc "Returns the explicit availability disposition for a runtime."
-  def availability(integration) when integration in ["claude_code", "codex", "hermes"],
-    do: {:supported, Map.fetch!(@adapters, integration)}
+  def availability(integration)
+      when integration in ["claude_code", "codex", "hermes", "openclaw"],
+      do: {:supported, Map.fetch!(@adapters, integration)}
 
   def availability("opencode"), do: {:unsupported, :local_hook_contract_unavailable}
   def availability(_integration), do: {:unsupported, :unknown_integration}

@@ -18,6 +18,12 @@ defmodule Backplane.HostAgent.PluginInstaller do
             "package.json",
             "openclaw.plugin.json",
             "plugin.mjs",
+            "contract.mjs",
+            "journal.mjs",
+            "client.mjs",
+            "context.mjs",
+            "service.mjs",
+            "rollout.mjs",
             "plugin.yaml"
           ],
           target_parts: [".openclaw", "extensions", "backplane-memory"]

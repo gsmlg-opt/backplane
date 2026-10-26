@@ -139,7 +139,8 @@ defmodule Backplane.Memory.Sources do
           session_id: provenance["session_id"],
           request_origin: "external_source",
           metadata:
-            Map.take(provenance, ~w(repository_sources cwd)) |> Map.put("source", "hermes.native"),
+            Map.take(provenance, ~w(repository_sources cwd))
+            |> Map.put("source", source_origin(args["source"])),
           idempotency_scope: "memory-source.v1:" <> mutation.source_id,
           idempotency_key: mutation.id,
           evidence: [
@@ -158,6 +159,11 @@ defmodule Backplane.Memory.Sources do
       {:error, reason} -> repo().rollback(reason)
     end
   end
+
+  defp source_origin(%{"integration" => integration, "target" => "provider"}),
+    do: integration <> ".provider"
+
+  defp source_origin(%{"integration" => integration}), do: integration <> ".native"
 
   defp save_entry(source, entry, mutation, memory_id, active, suppressed) do
     (entry || %Entry{source_id: source.id, entry_id: mutation.entry_id})

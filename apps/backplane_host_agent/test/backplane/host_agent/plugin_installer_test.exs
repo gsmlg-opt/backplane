@@ -43,6 +43,11 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     assert File.exists?(Path.join(target, "package.json"))
     assert File.exists?(Path.join(target, "openclaw.plugin.json"))
     assert File.exists?(Path.join(target, "plugin.mjs"))
+
+    for helper <- ~w(contract journal client context service rollout) do
+      assert File.read!(Path.join(target, helper <> ".mjs")) ==
+               "// packaged #{helper} helper\n"
+    end
   end
 
   @tag :tmp_dir
@@ -178,6 +183,11 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     File.write!(Path.join(openclaw, "package.json"), ~s({"name":"backplane-memory"}))
     File.write!(Path.join(openclaw, "openclaw.plugin.json"), ~s({"id":"backplane-memory"}))
     File.write!(Path.join(openclaw, "plugin.mjs"), "export default {};\n")
+
+    for helper <- ~w(contract journal client context service rollout) do
+      File.write!(Path.join(openclaw, helper <> ".mjs"), "// packaged #{helper} helper\n")
+    end
+
     File.write!(Path.join(openclaw, "plugin.yaml"), "name: openclaw\n")
 
     source_root
