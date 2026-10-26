@@ -308,10 +308,10 @@ class Runner:
         expected = {("agent", "host_id"): self.partition["host_id"], ("agent", "http_port"): "4222",
                     ("agent", "http_bind"): "127.0.0.1", ("memory", "bound_scope"): self.scope,
                     ("memory", "enabled"): "true", ("capture", "enabled"): "true",
-                    ("memory", "host_sync_v2", "enabled"): "true",
+                    ("memory", "host_sync", "enabled"): "true",
                     ("memory", "db_path"): str(self.stores["commands"]),
                     ("capture", "db_path"): str(self.stores["capture"]),
-                    ("memory", "host_sync_v2", "db_path"): str(self.stores["mirror"])}
+                    ("memory", "host_sync", "db_path"): str(self.stores["mirror"])}
         require(all(config.get(key) == value for key, value in expected.items()), "fixture_config_binding_required")
         hub = urllib.parse.urlsplit(config.get(("agent", "hub_url"), ""))
         require(hub.scheme == "http" and hub.hostname in ("127.0.0.1", "localhost", "::1") and hub.port == 4220

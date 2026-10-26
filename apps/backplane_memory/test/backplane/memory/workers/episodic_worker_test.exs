@@ -3,7 +3,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorkerTest do
 
   setup do
     keys =
-      ~w(memory.pipeline.enabled memory.fact_extraction_v2.enabled memory.session_summary_v2.enabled)
+      ~w(memory.pipeline.enabled memory.fact_extraction.enabled memory.session_summary.enabled)
 
     previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
     Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))

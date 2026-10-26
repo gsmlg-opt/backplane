@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Recall.Fusion do
-  @moduledoc "Deterministic weighted reciprocal-rank fusion for Recall V2 channels."
+  @moduledoc "Deterministic weighted reciprocal-rank fusion for Recall channels."
 
   @channels [:fts, :vector, :graph]
   @kind_order %{memory: 0, lesson: 1, crystal: 2, summary: 3, observation: 4}

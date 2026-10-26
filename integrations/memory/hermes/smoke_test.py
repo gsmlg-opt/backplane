@@ -22,7 +22,7 @@ def contains_record(result, content):
 
 
 def validate_scope_rejection(result):
-    assert (isinstance(result,dict) and result.get('success') is False and result.get('http_status')==400 and result.get('error') in {'invalid_scope','unknown_scope','invalid_arguments','invalid_request'}), 'scope override was not rejected by authorization'
+    assert (isinstance(result,dict) and result.get('success') is False and result.get('http_status')==400 and result.get('error') in {'invalid_scope','unknown_scope','invalid_arguments','invalid_request','partition_mismatch'}), 'scope override was not rejected by authorization'
 
 
 def load_provider():

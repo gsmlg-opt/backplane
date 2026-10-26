@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Recall.Run do
-  @moduledoc "Durable, privacy-filtered execution trace for one Recall V2 request."
+  @moduledoc "Durable, privacy-filtered execution trace for one Recall request."
 
   use Ecto.Schema
   import Ecto.Changeset

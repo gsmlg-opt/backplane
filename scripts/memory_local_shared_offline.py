@@ -405,14 +405,14 @@ class OfflineMatrix(online.OnlineMatrix):
             expected = {("agent", "host_id"): host["host_id"], ("agent", "http_bind"): "127.0.0.1",
                 ("agent", "http_port"): str(4222 + index), ("memory", "enabled"): "true",
                 ("memory", "bound_scope"): host["partition"]["scope"],
-                ("memory", "host_sync_v2", "enabled"): "true", ("capture", "enabled"): "true"}
+                ("memory", "host_sync", "enabled"): "true", ("capture", "enabled"): "true"}
             require(all(values.get(key) == value for key, value in expected.items()), "fixture_configuration_mismatch")
             hub = urllib.parse.urlsplit(values.get(("agent", "hub_url"), ""))
             require(hub.scheme == "http" and hub.hostname in ("127.0.0.1", "localhost")
                     and hub.port == (4220 if index == 0 else 4224) and not hub.username and not hub.password
                     and hub.path in ("", "/") and not hub.query and not hub.fragment, "prepared_relay_only_b_required")
             paths = [config] + [Path(values.get(key, "")) for key in (
-                ("memory", "db_path"), ("capture", "db_path"), ("memory", "host_sync_v2", "db_path"))]
+                ("memory", "db_path"), ("capture", "db_path"), ("memory", "host_sync", "db_path"))]
             for path in paths:
                 require(path.is_absolute() and fixture_path.parent in path.parents, "fixture_store_path_required")
                 info = pending.private_file(path)

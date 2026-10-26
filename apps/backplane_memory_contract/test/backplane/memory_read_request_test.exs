@@ -59,6 +59,25 @@ defmodule Backplane.MemoryReadRequestTest do
     end
   end
 
+  test "recall accepts canonical identity filters and rejects nonstring or unknown selectors" do
+    args = %{
+      "query" => "query",
+      "session_id" => "session-a",
+      "agent_id" => "agent-a",
+      "tag" => "tag-a"
+    }
+
+    assert {:ok, ^args} = MemoryReadRequest.validate("recall", args)
+
+    for key <- ~w(session_id agent_id tag), invalid <- [nil, 1, [], %{}] do
+      assert {:error, :invalid_arguments} =
+               MemoryReadRequest.validate("recall", Map.put(args, key, invalid))
+    end
+
+    assert {:error, :invalid_arguments} =
+             MemoryReadRequest.validate("recall", Map.put(args, "unknown_selector", "value"))
+  end
+
   test "recall and list reject schema violations before any fallback" do
     for {method, args} <- [
           {"recall", %{}},

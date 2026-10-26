@@ -78,10 +78,10 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
 
     cond do
       StageResumeWorker.complete?(state_attrs) and
-          (not Config.procedure_extraction_v2_enabled?() or not model_configured?()) ->
+          (not Config.procedure_extraction_enabled?() or not model_configured?()) ->
         []
 
-      not Config.procedure_extraction_v2_enabled?() ->
+      not Config.procedure_extraction_enabled?() ->
         skip_partition(partition, state_attrs, :disabled)
 
       not model_configured?() ->
@@ -241,7 +241,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorker do
       repo(),
       state_attrs,
       fn ->
-        if Config.procedure_extraction_v2_enabled?(),
+        if Config.procedure_extraction_enabled?(),
           do: current_attrs(partition),
           else: {:error, :disabled}
       end,

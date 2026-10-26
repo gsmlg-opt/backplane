@@ -31,11 +31,26 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
             "partition" => entry.partition
           }
 
-      ready =
-        status.negotiated && not status.blocked && not status.global_fenced && entry &&
-          entry.status != "fenced" &&
-          Access.allowed_operation?(:source, entry.capabilities) &&
-          Enum.all?(extensions, &(&1 in status.extensions))
+      source_error =
+        cond do
+          not status.negotiated ->
+            "not_negotiated"
+
+          status.blocked or status.global_fenced or is_nil(entry) ->
+            "unauthorized"
+
+          entry.status == "fenced" or
+              not Access.allowed_operation?(:source, entry.capabilities) ->
+            "unauthorized"
+
+          not Enum.all?(extensions, &(&1 in status.extensions)) ->
+            "unsupported_capability"
+
+          true ->
+            nil
+        end
+
+      ready = is_nil(source_error)
 
       default = Enum.find(status.accesses, &(&1.access_id == status.default_access_id))
 
@@ -52,6 +67,9 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
 
       capture_error =
         cond do
+          not status.negotiated ->
+            "not_negotiated"
+
           id != status.default_access_id ->
             "capture_binding_mismatch"
 
@@ -81,6 +99,7 @@ defmodule Backplane.HostAgent.MemorySourceFacade do
          "integration" => integration,
          "negotiated" => status.extensions,
          "ready" => ready == true,
+         "source_error" => source_error,
          "binding" => binding,
          "binding_fingerprint" => if(binding, do: Contract.digest(binding)),
          "capture_binding" => capture_binding,

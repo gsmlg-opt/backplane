@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Recall.Candidate do
-  @moduledoc "A channel-independent Recall V2 candidate with explicit provenance."
+  @moduledoc "A channel-independent Recall candidate with explicit provenance."
 
   alias Backplane.Memory.Numeric
 

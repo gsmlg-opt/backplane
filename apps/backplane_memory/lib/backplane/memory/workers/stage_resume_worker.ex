@@ -125,7 +125,7 @@ defmodule Backplane.Memory.Workers.StageResumeWorker do
         []
 
       not complete?(attrs(session, "summary")) ->
-        if Config.session_summary_v2_enabled?() and eligible?(attrs(session, "summary"), opts),
+        if Config.session_summary_enabled?() and eligible?(attrs(session, "summary"), opts),
           do: [
             fn ->
               SummaryWorker.enqueue(
@@ -159,7 +159,7 @@ defmodule Backplane.Memory.Workers.StageResumeWorker do
 
   defp downstream_work(session, summary, partition, opts) do
     facts =
-      if Config.fact_extraction_v2_enabled?() and eligible?(attrs(session, "episodic"), opts),
+      if Config.fact_extraction_enabled?() and eligible?(attrs(session, "episodic"), opts),
         do: [fn -> EpisodicWorker.enqueue_summary(summary.id) end],
         else: []
 
@@ -183,7 +183,7 @@ defmodule Backplane.Memory.Workers.StageResumeWorker do
           ProceduralWorker.processing_identity(partition, session.project || "")
 
         procedures =
-          if Config.procedure_extraction_v2_enabled?() and eligible?(procedure_attrs, opts),
+          if Config.procedure_extraction_enabled?() and eligible?(procedure_attrs, opts),
             do: [fn -> ProceduralWorker.enqueue(partition, session.project || "") end],
             else: []
 

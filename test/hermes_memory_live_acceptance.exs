@@ -203,7 +203,10 @@ defmodule Backplane.HermesLiveAcceptance do
         record("startup", "failed", %{code: error.code, diagnostics: error.diagnostics})
 
       error ->
-        record("startup", "failed", %{code: "exception:#{inspect(error.__struct__)}"})
+        record("startup", "failed", %{
+          code: "exception:#{inspect(error.__struct__)}",
+          frames: exception_frames(__STACKTRACE__)
+        })
     catch
       kind, _reason -> record("startup", "failed", %{code: "caught:#{kind}"})
     after
@@ -241,6 +244,20 @@ defmodule Backplane.HermesLiveAcceptance do
     )
 
     if not passed, do: System.halt(1)
+  end
+
+  # Never format exception terms or stack arguments: startup can handle credentials.
+  defp exception_frames(stacktrace) do
+    stacktrace
+    |> Enum.take(8)
+    |> Enum.flat_map(fn
+      {module, function, _arity_or_arguments, location}
+      when is_atom(module) and is_atom(function) and is_list(location) ->
+        [%{module: inspect(module), function: Atom.to_string(function), line: location[:line]}]
+
+      _ ->
+        []
+    end)
   end
 
   defp guard_environment! do
@@ -412,17 +429,17 @@ defmodule Backplane.HermesLiveAcceptance do
 
     model = configure_model!(name)
 
-    for key <- ~w(services.memory.enabled memory.pipeline.enabled memory.events.enabled
-      memory.events.dual_write memory.session_summary_v2.enabled memory.recall_v2.enabled
-      memory.host_sync_v2.enabled),
+    for key <- ~w(services.memory.enabled memory.pipeline.enabled
+      memory.session_summary.enabled memory.recall.enabled
+      memory.host_sync.enabled),
         do: :ok = Settings.set(key, true)
 
-    for key <- ~w(memory.window_summaries.enabled memory.procedure_extraction_v2.enabled
+    for key <- ~w(memory.window_summaries.enabled memory.procedure_extraction.enabled
       memory.relation_classifier.enabled memory.lesson_auto_extract memory.crystals_enabled
       memory.crystal_session_enabled),
         do: :ok = Settings.set(key, false)
 
-    :ok = Settings.set("memory.fact_extraction_v2.enabled", model.available)
+    :ok = Settings.set("memory.fact_extraction.enabled", model.available)
     :ok = Settings.set("memory.event_gap_grace_seconds", 1)
     :ok = Settings.set("monitor.api_usage.enabled", false)
 
@@ -450,8 +467,7 @@ defmodule Backplane.HermesLiveAcceptance do
         sync_batch_size: 50,
         max_attempts: 5,
         tombstone_relearn: :block,
-        host_sync_v1: %{enabled: false},
-        host_sync_v2: %{enabled: false},
+        host_sync: %{enabled: false},
         import_profiles: %{}
       },
       capture: %{enabled: true, db_path: Path.join(root, "capture.db"), upload_interval_ms: 250}
@@ -866,9 +882,11 @@ defmodule Backplane.HermesLiveAcceptance do
   end
 
   defp verify_processing!(host_id, session_id, fixture) do
+    put_resource(:processing_session_id, session_id)
     # A freshly closed session waits for gap grace; enqueue the real existing sweep.
     Process.sleep(1_100)
     {:ok, sweep} = Backplane.Memory.Workers.FallbackSweepWorker.new(%{}) |> Styx.insert()
+    put_resource(:processing_sweep_id, sweep.id)
 
     wait!(
       fn -> Repo.get!(Styx.Job, sweep.id).state == "completed" end,
@@ -1563,6 +1581,7 @@ defmodule Backplane.HermesLiveAcceptance do
       commands: commands,
       canonical_receipts: canonical,
       capture: capture,
+      processing: processing_diagnostics(),
       access: Map.take(access, [:negotiated, :blocked, :global_fenced]),
       access_entries:
         Enum.map(access.accesses, fn entry ->
@@ -1579,6 +1598,127 @@ defmodule Backplane.HermesLiveAcceptance do
   catch
     kind, _ -> %{diagnostic_unavailable: true, caught: kind}
   end
+
+  defp processing_diagnostics do
+    host_id = resource(:host_id)
+    session_id = resource(:processing_session_id)
+
+    session =
+      if is_binary(session_id),
+        do: Repo.get_by(ProjectedSession, host_id: host_id, session_id: session_id)
+
+    if session do
+      summaries =
+        Repo.all(
+          from(s in Summary,
+            where: s.host_id == ^host_id and s.session_id == ^session_id,
+            order_by: [desc: s.inserted_at],
+            limit: 16,
+            select: %{id: s.id, input_revision: s.input_revision, superseded_at: s.superseded_at}
+          )
+        )
+
+      summary_ids = Enum.map(summaries, & &1.id)
+      sweep_id = resource(:processing_sweep_id) || 0
+
+      states =
+        Repo.all(
+          from(s in State,
+            where: s.subject_id == ^session.subject_id,
+            order_by: s.projector,
+            limit: 16
+          )
+        )
+
+      jobs =
+        Repo.all(
+          from(j in Styx.Job,
+            where:
+              j.id == ^sweep_id or fragment("?->>'summary_id'", j.args) in ^summary_ids or
+                (fragment("?->>'host_id'", j.args) == ^host_id and
+                   fragment("?->>'session_id'", j.args) == ^session_id),
+            order_by: [desc: j.id],
+            limit: 32
+          )
+        )
+
+      %{
+        pipeline_enabled: Backplane.Memory.Config.pipeline_enabled?(),
+        fact_extraction_enabled: Backplane.Memory.Config.fact_extraction_enabled?(),
+        model_configured: is_binary(Settings.get("memory.llm_model")),
+        current_summary_count:
+          Enum.count(
+            summaries,
+            &(&1.input_revision == session.input_revision and is_nil(&1.superseded_at))
+          ),
+        stages:
+          Enum.map(states, fn state ->
+            %{
+              projector:
+                diagnostic_enum(state.projector, ~w(summary episodic procedural graph crystal)),
+              status:
+                diagnostic_enum(
+                  state.status,
+                  Backplane.Memory.Projections.ProcessingState.statuses()
+                ),
+              attempt_count: state.attempt_count,
+              current_revision: state.input_revision == session.input_revision,
+              error: processing_error_class(state.last_error)
+            }
+          end),
+        jobs:
+          Enum.map(jobs, fn job ->
+            %{
+              worker:
+                diagnostic_enum(
+                  List.last(String.split(job.worker, ".")),
+                  ~w(FallbackSweepWorker SummaryWorker EpisodicWorker CrystalWorker EmbedWorker StageResumeWorker)
+                ),
+              state:
+                diagnostic_enum(
+                  job.state,
+                  ~w(available scheduled executing retryable completed cancelled discarded suspended)
+                ),
+              attempt: job.attempt,
+              max_attempts: job.max_attempts,
+              errors: Enum.map(job.errors, &processing_error_class(&1["error"]))
+            }
+          end)
+      }
+    else
+      %{session_available: false}
+    end
+  rescue
+    error -> %{diagnostic_unavailable: true, exception_type: inspect(error.__struct__)}
+  end
+
+  defp processing_error_class(nil), do: nil
+
+  defp processing_error_class(value) when is_binary(value) do
+    known =
+      ~w(processing_failed disabled no_model fact_model_unavailable invalid_fact_response
+      invalid_fact_selection invalid_fact_candidate invalid_fact_citation invalid_fact_attribution
+      invalid_fact_assertion invalid_fact_correction fact_semantics_unverified fact_sources_incomplete
+      fact_source_partition_mismatch fact_sources_too_large fact_assertion_units_too_large
+      fact_request_too_large source_fact_contract_unavailable stale_fact_sources stale_input_revision
+      incomplete_partition invalid_arguments source_provenance_mismatch proxy_credential_unavailable)
+
+    cond do
+      value in known ->
+        %{class: value}
+
+      match = Regex.run(~r/\{:llm_status,\s*(\d{3})\}/, value) ->
+        %{class: "llm_status", status: String.to_integer(Enum.at(match, 1))}
+
+      code = Enum.find(known, &String.contains?(value, ":" <> &1)) ->
+        %{class: code}
+
+      true ->
+        %{class: "unclassified_processing_error"}
+    end
+  end
+
+  defp processing_error_class(_value), do: %{class: "unclassified_processing_error"}
 
   defp diagnostic_enum(nil, _allowed), do: nil
 

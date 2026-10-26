@@ -204,13 +204,13 @@ defmodule Backplane.Memory.V2UpgradeTest do
                  ~s|SELECT current_revision FROM "#{prefix}".bpm_memory_partition_revisions|
                ).rows
 
-      # A schema upgrade cannot reactivate the retired protocol or opt into mirror delivery.
-      keys = ~w(memory.host_sync_v2.enabled)
+      # Delivery supports only the current protocol and retains an explicit disablement.
+      keys = ~w(memory.host_sync.enabled)
       previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
 
       try do
-        Enum.each(keys, &:ets.insert(:backplane_settings, {&1, nil}))
-        refute Config.host_sync_v2_enabled?()
+        Enum.each(keys, &:ets.insert(:backplane_settings, {&1, false}))
+        refute Config.host_sync_enabled?()
 
         assert {:error, %{code: :unsupported_protocol}} =
                  EdgeSync.negotiate(host, %{"memory" => %{"protocol" => "host_memory.v1"}})

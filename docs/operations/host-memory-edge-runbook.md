@@ -139,6 +139,17 @@ migration can prove both historical authority and receipt identity. New commands
 continue through authenticated `memory_commands.v2` while that reconciliation
 is pending. No V1 runtime fallback exists.
 
+New writes are represented by Access-bound outbox commands rather than new
+`memories.remote_id` rows or private tombstones. The older local recovery,
+host-first, pending-restart and negative-parity operator drivers still inspect
+those historical row shapes and have not been requalified for the retired
+runtime. Their helper tests are not current command-delivery acceptance. Use the
+current Access-bound diagnostics and the isolated
+[OpenClaw acceptance](../memory/openclaw-memory-integration.md#reproduce-the-isolated-live-checks)
+for the exercised source/capture, recovery and authority contracts. A cold host
+without established Access authority must refuse writes without creating outbox
+work; it cannot provisionally invent a default binding.
+
 ## Protection incident and rollback
 
 If diagnostics show `protection_unavailable`, leave edge sync disabled. Check
@@ -151,7 +162,7 @@ Server migrations through `20260905000010` and host command V3 are additive.
 Migration `20260905000011` replaces the action-edge partition guard with the
 same rejection contract and has no down path; do not infer that an older binary
 understands every new ACK or edge record.
-To disable mirror delivery, set `memory.host_sync_v2.enabled` false and disable
+To disable mirror delivery, set `memory.host_sync.enabled` false and disable
 host edge config. Commands continue through authenticated `memory_commands.v2`.
 Do not restore V1 upload or replay quarantined rows. Stop/restart hosts under a
 schema-compatible binary

@@ -101,7 +101,7 @@ defmodule Backplane.Memory.EdgeSync.PostgresStore do
                 forget: "host_agent.import"
               ],
               Atom.to_string(cap) in row.capabilities and scope in auth.scopes and
-                (cap != :deliver or Backplane.Memory.Config.host_sync_v2_enabled?()),
+                (cap != :deliver or Backplane.Memory.Config.host_sync_enabled?()),
               do: cap
 
         capabilities = Enum.sort(capabilities)

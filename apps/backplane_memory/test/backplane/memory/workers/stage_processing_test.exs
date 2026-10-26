@@ -20,15 +20,15 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
   }
 
   @keys ~w(memory.pipeline.enabled memory.window_summaries.enabled
-    memory.session_summary_v2.enabled memory.fact_extraction_v2.enabled
-    memory.procedure_extraction_v2.enabled memory.relation_classifier.enabled memory.llm_model memory.crystals_enabled)
+    memory.session_summary.enabled memory.fact_extraction.enabled
+    memory.procedure_extraction.enabled memory.relation_classifier.enabled memory.llm_model memory.crystals_enabled)
 
   defmodule Model do
     def extract_fact_candidates(_content, bundle, _model) do
       send(self(), :facts_called)
 
       if Process.get(:disable_during_facts),
-        do: :ets.insert(:backplane_settings, {"memory.fact_extraction_v2.enabled", false})
+        do: :ets.insert(:backplane_settings, {"memory.fact_extraction.enabled", false})
 
       {:ok,
        Backplane.Memory.FactExtractionFixtures.proposals(
@@ -88,19 +88,19 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
                  partition(session)
                )
 
-      :ets.insert(:backplane_settings, {"memory.session_summary_v2.enabled", false})
+      :ets.insert(:backplane_settings, {"memory.session_summary.enabled", false})
       assert :ok = SummaryWorker.perform(repo().get!(Styx.Job, job.id))
       assert state(session, "summary").status == "skipped_disabled"
       assert repo().aggregate(Summary, :count) == 0
 
-      :ets.insert(:backplane_settings, {"memory.session_summary_v2.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.session_summary.enabled", true})
       assert {:ok, _} = StageResumeWorker.perform(%Styx.Job{args: %{}})
       assert :ok = SummaryWorker.perform(repo().get!(Styx.Job, job.id))
       summary = repo().one!(from(s in Summary, where: s.processing_version == "summary-v1"))
       assert summary.content =~ "generation_mode=deterministic"
       assert summary.content =~ "generation_reason=canonical_evidence"
 
-      :ets.insert(:backplane_settings, {"memory.session_summary_v2.enabled", false})
+      :ets.insert(:backplane_settings, {"memory.session_summary.enabled", false})
       assert :ok = SummaryWorker.perform(repo().get!(Styx.Job, job.id))
       assert state(session, "summary").status == "complete"
       assert repo().get!(Summary, summary.id) == summary
@@ -121,12 +121,12 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
 
       assert :ok = SummaryWorker.perform(repo().get!(Styx.Job, job.id))
       assert [facts] = Styx.Testing.all_enqueued(repo(), worker: EpisodicWorker)
-      :ets.insert(:backplane_settings, {"memory.fact_extraction_v2.enabled", false})
+      :ets.insert(:backplane_settings, {"memory.fact_extraction.enabled", false})
       assert :ok = EpisodicWorker.perform(facts)
       refute_received :facts_called
       assert state(session, "episodic").status == "skipped_disabled"
 
-      :ets.insert(:backplane_settings, {"memory.fact_extraction_v2.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.fact_extraction.enabled", true})
       Process.put(:disable_during_facts, true)
       assert :ok = EpisodicWorker.perform(facts)
       assert_received :facts_called
@@ -154,10 +154,10 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
       assert [graph] = Styx.Testing.all_enqueued(repo(), worker: GraphExtractWorker)
       assert procedure.args["memory_space_id"] == session.memory_space_id
       assert procedure.args["project"] == "stage-project"
-      :ets.insert(:backplane_settings, {"memory.procedure_extraction_v2.enabled", false})
+      :ets.insert(:backplane_settings, {"memory.procedure_extraction.enabled", false})
       assert :ok = ProceduralWorker.perform(procedure)
       refute_received :procedures_called
-      :ets.insert(:backplane_settings, {"memory.procedure_extraction_v2.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.procedure_extraction.enabled", true})
       assert :ok = ProceduralWorker.perform(procedure)
       assert {:ok, _} = GraphExtractWorker.perform(graph)
       assert_received :procedures_called
@@ -631,7 +631,7 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
       assert :ok = EpisodicWorker.perform(facts)
       assert state(session, "episodic").status == "complete"
       assert_received :facts_called
-      :ets.insert(:backplane_settings, {"memory.fact_extraction_v2.enabled", false})
+      :ets.insert(:backplane_settings, {"memory.fact_extraction.enabled", false})
       assert :ok = EpisodicWorker.perform(facts)
       assert state(session, "episodic").status == "complete"
       assert repo().aggregate(Memory, :count) == 10
@@ -642,7 +642,7 @@ defmodule Backplane.Memory.Workers.StageProcessingTest do
     Styx.Testing.with_testing_mode(:manual, fn ->
       session = session!("stage-cursor", 1)
       :ets.insert(:backplane_settings, {"memory.window_summaries.enabled", false})
-      :ets.insert(:backplane_settings, {"memory.session_summary_v2.enabled", false})
+      :ets.insert(:backplane_settings, {"memory.session_summary.enabled", false})
       attrs = Map.from_struct(session) |> Map.drop([:__meta__])
 
       for index <- 1..100 do

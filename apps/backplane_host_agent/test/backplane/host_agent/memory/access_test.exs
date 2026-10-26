@@ -278,23 +278,90 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
     alias Backplane.HostAgent.MemorySourceFacade, as: Sources
     context = %{access_server: c.owner, agent_id: "Rikka"}
 
-    assert {:ok, %{"supported" => true, "ready" => false}} =
+    assert {:ok,
+            %{
+              "supported" => true,
+              "ready" => false,
+              "source_error" => "not_negotiated",
+              "negotiated" => [],
+              "binding" => nil,
+              "binding_fingerprint" => nil,
+              "capture_ready" => false,
+              "capture_error" => "not_negotiated",
+              "capture_binding" => nil,
+              "capture_binding_fingerprint" => nil
+            }} =
              Sources.call("source_capabilities", %{}, context)
 
     assert :ok = install(c)
-    assert {:ok, %{"ready" => false}} = Sources.call("source_capabilities", %{}, context)
+
+    assert {:ok, %{"ready" => false, "source_error" => "unsupported_capability"}} =
+             Sources.call("source_capabilities", %{}, context)
 
     assert {:error, :unsupported_capability} =
              Sources.call("source_mutate", source_mutation(), context)
 
     assert :ok = install_sources(c)
 
-    assert {:ok, %{"ready" => true, "binding" => binding}} =
+    assert {:ok,
+            %{
+              "ready" => true,
+              "source_error" => nil,
+              "binding" => binding,
+              "binding_fingerprint" => fingerprint
+            }} =
              Sources.call("source_capabilities", %{}, context)
 
     assert binding["partition"] == @partition
+    assert fingerprint == Backplane.MemorySourceContract.digest(binding)
     assert :ok = install_sources(c, 2, ["remember"])
+
+    assert {:ok, %{"ready" => false, "source_error" => "unauthorized"}} =
+             Sources.call("source_capabilities", %{}, context)
+
     assert {:error, :unauthorized} = Sources.call("source_mutate", source_mutation(), context)
+  end
+
+  test "source diagnostics refuse unavailable selectors and fenced authority", c do
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+    context = %{access_server: c.owner, agent_id: "Rikka"}
+    assert :ok = install_sources(c)
+
+    assert {:ok, %{"ready" => false, "source_error" => "unauthorized", "binding" => nil}} =
+             Sources.call("source_capabilities", %{"memory_access_id" => @other}, context)
+
+    assert :ok = Access.fence({:access_id, @id}, :unauthorized, 1, c.owner)
+
+    assert {:ok, %{"ready" => false, "source_error" => "unauthorized"}} =
+             Sources.call("source_capabilities", %{}, context)
+  end
+
+  test "capture diagnostics distinguish absent negotiation from an unselected extension", c do
+    alias Backplane.HostAgent.MemorySourceFacade, as: Sources
+    context = %{access_server: c.owner, agent_id: "Rikka"}
+    previous = Application.get_env(:backplane_host_agent, :capture_runtime)
+    Application.put_env(:backplane_host_agent, :capture_runtime, %{spool: self()})
+
+    on_exit(fn ->
+      if is_nil(previous),
+        do: Application.delete_env(:backplane_host_agent, :capture_runtime),
+        else: Application.put_env(:backplane_host_agent, :capture_runtime, previous)
+    end)
+
+    for integration <- ["hermes", "openclaw"] do
+      assert {:ok, %{"capture_ready" => false, "capture_error" => "not_negotiated"}} =
+               Sources.call("source_capabilities", %{"integration" => integration}, context)
+    end
+
+    assert :ok = install_sources(c)
+
+    assert {:ok,
+            %{
+              "ready" => true,
+              "source_error" => nil,
+              "capture_ready" => false,
+              "capture_error" => "unsupported_capability"
+            }} = Sources.call("source_capabilities", %{}, context)
   end
 
   test "OpenClaw support is separately negotiated and capture retains its authority fingerprint",
@@ -1783,7 +1850,7 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
   test "Worker binds fresh extended negotiation before shared admission with mirror disabled",
        c do
     Process.register(c.owner, Access)
-    keys = [:memory_config, :memory_store, :memory_host_sync_v2]
+    keys = [:memory_config, :memory_store, :memory_host_sync]
     previous = Map.new(keys, &{&1, Application.fetch_env(:backplane_host_agent, &1)})
 
     on_exit(fn ->
@@ -1805,7 +1872,7 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
       machine_name: "test-host",
       manifest_path: Path.join(c.tmp_dir, "manifest.json"),
       interval_ms: 60_000,
-      memory: %{enabled: false, host_sync_v2: %{enabled: false}},
+      memory: %{enabled: false, host_sync: %{enabled: false}},
       test_connection: %{channel: channel, host_id: "host-b", memory: negotiated}
     }
 

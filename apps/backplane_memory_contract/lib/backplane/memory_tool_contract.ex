@@ -276,6 +276,7 @@ defmodule Backplane.MemoryToolContract do
           "limit" => %{"type" => "integer", "default" => 10},
           "scope" => %{"type" => "string"},
           "agent_id" => %{"type" => "string"},
+          "session_id" => %{"type" => "string"},
           "host_id" => %{"type" => "string"},
           "tag" => %{"type" => "string"},
           "project" => %{"type" => "string"},

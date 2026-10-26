@@ -95,7 +95,7 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
     assert {:ok, %{"edge_protection" => "protection_unavailable"}} =
              Diagnostics.snapshot(
                store: store,
-               host_sync_v2: %{enabled: true, development_plaintext: false}
+               host_sync: %{enabled: true, development_plaintext: false}
              )
   end
 
@@ -147,7 +147,7 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
              Diagnostics.snapshot(
                store: store,
                edge_store: edge,
-               host_sync_v2: %{enabled: true, development_plaintext: true}
+               host_sync: %{enabled: true, development_plaintext: true}
              )
 
     assert %{
@@ -195,7 +195,7 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
              Diagnostics.snapshot(
                store: store,
                edge_store: edge,
-               host_sync_v2: %{enabled: true, development_plaintext: true}
+               host_sync: %{enabled: true, development_plaintext: true}
              )
   end
 
@@ -231,7 +231,7 @@ defmodule Backplane.HostAgent.Memory.DiagnosticsTest do
     opts = [
       store: store,
       edge_store: edge,
-      host_sync_v2: %{enabled: true, development_plaintext: true}
+      host_sync: %{enabled: true, development_plaintext: true}
     ]
 
     assert {:ok, snapshot} = Diagnostics.snapshot(opts)

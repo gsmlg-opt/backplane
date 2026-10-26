@@ -29,7 +29,6 @@ defmodule Backplane.Memory.ConfigTest do
   ]
 
   @recall_flags [
-    {:host_sync_v2_enabled?, "memory.host_sync_v2.enabled", false},
     {:recall_trace_enabled?, "memory.recall_trace_enabled", true},
     {:recall_reranker_enabled?, "memory.recall_reranker_enabled", false}
   ]
@@ -42,14 +41,16 @@ defmodule Backplane.Memory.ConfigTest do
   @flags [
     {:pipeline_enabled?, "memory.pipeline.enabled"},
     {:window_summaries_enabled?, "memory.window_summaries.enabled"},
-    {:session_summary_v2_enabled?, "memory.session_summary_v2.enabled"},
-    {:fact_extraction_v2_enabled?, "memory.fact_extraction_v2.enabled"},
-    {:procedure_extraction_v2_enabled?, "memory.procedure_extraction_v2.enabled"},
-    {:relation_classifier_enabled?, "memory.relation_classifier.enabled"}
+    {:session_summary_enabled?, "memory.session_summary.enabled"},
+    {:fact_extraction_enabled?, "memory.fact_extraction.enabled"},
+    {:procedure_extraction_enabled?, "memory.procedure_extraction.enabled"},
+    {:relation_classifier_enabled?, "memory.relation_classifier.enabled"},
+    {:recall_enabled?, "memory.recall.enabled"}
   ]
 
-  @children tl(@flags)
-  @independent_children tl(@flags)
+  @children Enum.reject(tl(@flags), fn {_accessor, key} -> key == "memory.recall.enabled" end)
+  @independent_children @children
+  @automatic_flags ~w(memory.pipeline.enabled memory.session_summary.enabled memory.fact_extraction.enabled memory.recall.enabled)
 
   setup do
     send(Settings, :seed_and_load)
@@ -59,6 +60,7 @@ defmodule Backplane.Memory.ConfigTest do
       (@flags ++
          @recall_flags ++
          @replay_flags ++
+         [{:host_sync_enabled?, "memory.host_sync.enabled"}] ++
          Enum.map(@numeric_settings, fn {accessor, key, _, _, _} -> {accessor, key} end) ++
          [
            {:recall_channel_weights, "memory.recall_channel_weights"},
@@ -84,28 +86,65 @@ defmodule Backplane.Memory.ConfigTest do
     :ok
   end
 
-  test "relevance calibration is model-bound, operator-visible and conservatively unset by default" do
+  test "vector relevance derives its identity only from the shared resolved embedding model" do
     keys =
-      ~w(memory.recall_relevance_vector_model memory.recall_relevance_vector_min memory.recall_relevance_reranker_model memory.recall_relevance_reranker_min)
+      ~w(memory.embed_model memory.recall_relevance_vector_model memory.recall_relevance_vector_min memory.recall_relevance_reranker_model memory.recall_relevance_reranker_min)
 
     snapshot = Map.new(keys, &{&1, :ets.lookup(@settings_table, &1)})
+    previous = Application.fetch_env(:backplane_memory, :embed_model)
+    Application.delete_env(:backplane_memory, :embed_model)
 
     on_exit(fn ->
       for {key, rows} <- snapshot do
         :ets.delete(@settings_table, key)
         :ets.insert(@settings_table, rows)
       end
+
+      case previous do
+        {:ok, model} -> Application.put_env(:backplane_memory, :embed_model, model)
+        :error -> Application.delete_env(:backplane_memory, :embed_model)
+      end
     end)
 
     for key <- keys, do: :ets.delete(@settings_table, key)
     assert Config.recall_relevance().vector_model == nil
-    for key <- keys, do: assert(Enum.any?(Config.editable_settings(), &(&1.key == key)))
-    put_setting("memory.recall_relevance_vector_model", "embedding-a")
+
+    refute Enum.any?(
+             Config.editable_settings(),
+             &(&1.key == "memory.recall_relevance_vector_model")
+           )
+
+    refute function_exported?(Config, :recall_relevance_vector_model, 0)
+    put_setting("memory.recall_relevance_vector_model", "stale-duplicate-model")
+    put_setting("memory.embed_model", " embedding-a ")
     put_setting("memory.recall_relevance_vector_min", 0.65)
     assert Config.recall_relevance().vector_model == "embedding-a"
     assert Config.recall_relevance().vector_min == 0.65
+
+    refute Backplane.Memory.Recall.Relevance.accepted?(
+             "query",
+             "unrelated",
+             %{vector: 0.99},
+             "stale-duplicate-model",
+             nil,
+             Config.recall_relevance()
+           )
+
+    assert Backplane.Memory.Recall.Relevance.accepted?(
+             "query",
+             "related",
+             %{vector: 0.8},
+             "embedding-a",
+             nil,
+             Config.recall_relevance()
+           )
+
     put_setting("memory.recall_relevance_vector_min", "0.2")
     assert Config.recall_relevance().vector_min == 1.0
+
+    :ets.delete(@settings_table, "memory.embed_model")
+    Application.put_env(:backplane_memory, :embed_model, " environment-embedding ")
+    assert Config.recall_relevance().vector_model == "environment-embedding"
   end
 
   test "model-dependent features use the persisted model selection instead of an adapter" do
@@ -156,6 +195,20 @@ defmodule Backplane.Memory.ConfigTest do
         assert apply(Config, accessor, []) == default
       end
     end
+  end
+
+  test "one host sync control defaults enabled and rejects malformed booleans" do
+    assert Config.host_sync_enabled?()
+    put_setting("memory.pipeline.enabled", false)
+    assert Config.host_sync_enabled?()
+
+    for value <- [false, nil, "true", 1, %{}] do
+      put_setting("memory.host_sync.enabled", value)
+      refute Config.host_sync_enabled?()
+    end
+
+    put_setting("memory.host_sync.enabled", true)
+    assert Config.host_sync_enabled?()
   end
 
   test "replay flags are strict and import depends on replay" do
@@ -221,12 +274,19 @@ defmodule Backplane.Memory.ConfigTest do
     end
   end
 
-  test "all rollout settings are typed disabled defaults with descriptions" do
+  test "pipeline controls have typed defaults with descriptions" do
+    keys = Enum.map(@flags, &elem(&1, 1))
+    repo().delete_all(from(setting in Setting, where: setting.key in ^keys))
+    send(Settings, :seed_and_load)
+    :sys.get_state(Settings)
+
     for {_accessor, key} <- @flags do
-      assert Settings.get(key) == false
+      default = key in @automatic_flags
+      assert Settings.default_value(key) == default
+      assert Settings.get(key) == default
 
       assert %Setting{
-               value: %{"v" => false},
+               value: %{"v" => ^default},
                value_type: "boolean",
                description: description
              } = repo().get!(Setting, key)
@@ -236,9 +296,9 @@ defmodule Backplane.Memory.ConfigTest do
     end
   end
 
-  test "all accessors are false by default" do
-    for {accessor, _key} <- @flags do
-      refute apply(Config, accessor, [])
+  test "automatic processing accessors default enabled while optional rollout stages stay disabled" do
+    for {accessor, key} <- @flags do
+      assert apply(Config, accessor, []) == key in @automatic_flags
     end
   end
 
@@ -270,7 +330,7 @@ defmodule Backplane.Memory.ConfigTest do
     end
   end
 
-  test "the pipeline master gate requires boolean true and disables every child" do
+  test "the background pipeline requires boolean true and disables every processing stage" do
     Enum.each(@children, fn {_accessor, key} -> put_setting(key, true) end)
 
     for value <- [nil, false, "true", 1, %{}] do
@@ -287,12 +347,25 @@ defmodule Backplane.Memory.ConfigTest do
     assert Config.pipeline_enabled?()
   end
 
+  test "recall is independent of background processing and honors its own strict flag" do
+    put_setting("memory.pipeline.enabled", false)
+    assert Config.recall_enabled?()
+
+    for value <- [nil, false, "true", 1, %{}] do
+      put_setting("memory.recall.enabled", value)
+      refute Config.recall_enabled?()
+    end
+
+    put_setting("memory.recall.enabled", true)
+    assert Config.recall_enabled?()
+  end
+
   test "background stages depend only on the master and their own strict boolean flag" do
     put_setting("memory.pipeline.enabled", true)
 
     for {accessor, key} <- @independent_children do
       Enum.each(@independent_children, fn {_other_accessor, other_key} ->
-        :ets.delete(@settings_table, other_key)
+        put_setting(other_key, false)
       end)
 
       put_setting(key, "true")
@@ -307,6 +380,5 @@ defmodule Backplane.Memory.ConfigTest do
     end
   end
 
-  defp put_setting(key, nil), do: :ets.delete(@settings_table, key)
   defp put_setting(key, value), do: :ets.insert(@settings_table, {key, value})
 end

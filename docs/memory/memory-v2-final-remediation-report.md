@@ -1,5 +1,10 @@
 # Memory V2 PR2–PR5 final remediation report
 
+Historical verification record: its version-selectable configuration and
+fact/wipe compatibility description are superseded by the single-feature
+configuration in [the current protocol document](host-memory-v2-protocol.md#configuration-and-protection).
+No compatibility settings or configuration migration remain in the current implementation.
+
 Date: 2026-09-23 (verification and approval evidence through 2026-09-22).
 Scope: local implementation and integration on `main`;
 no remote push or hosted CI run. The [implementation plan](../superpowers/plans/2026-09-05-memory-v2-pr2-pr5-implementation.md)

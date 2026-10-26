@@ -2117,6 +2117,12 @@ defmodule Backplane.Memory.Service do
   defp lesson_strengthen_result({:error, reason}), do: {:error, reason}
 
   defp run_recall(query, args) do
+    if Config.recall_enabled?(),
+      do: do_run_recall(query, args),
+      else: {:error, :recall_disabled}
+  end
+
+  defp do_run_recall(query, args) do
     allowed =
       ~w(query limit memory_space_id host_id client_id source_client_id scope namespace project session_id agent_id tag facets token_budget temporal_hints entity_hints include_working channel_weights __trusted_internal__ requesting_actor)
 

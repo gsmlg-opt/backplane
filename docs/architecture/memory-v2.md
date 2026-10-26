@@ -1,10 +1,13 @@
-# Backplane Memory V2 foundation architecture
+# Backplane Memory architecture
 
 The [2026-10-21 operator browsing clarification](../memory/adr-memory-space-partition.md#operator-browsing-clarification-2026-10-21) supersedes any requirement to choose source provenance before browsing. The trusted admin reads the central collection across existing canonical spaces, with optional host/repository filters. Public-client partition authorization remains enforced. Local checkout paths and Git repository identities are distinct provenance; neither is ownership.
 
-Status: PR 0B architecture record. This document freezes the current Memory
-boundary and records the event-stream target that begins in PR 1. It does not
-claim that event storage or dual-write exists in PR 0B.
+Status: historical PR 0B/PR 1 architecture record, with the Feature controls and
+Authority and routing sections updated for the current implementation. Earlier
+dual-write and compatibility stages below describe the original rollout, not
+available runtime modes. Current source/capture and command contracts are in the
+[Hermes integration review](../memory/hermes-memory-integration.md) and
+[host protocol](../memory/host-memory-v2-protocol.md).
 
 ## Runtime identity and boundary
 
@@ -172,83 +175,73 @@ consolidation, access writeback, and other legacy behavior remain available;
 the ingestion constraint keeps those asynchronous projections outside the
 authoritative transaction rather than removing them.
 
-## Rollout controls
+## Feature controls
 
 [`Backplane.Memory.Config`](../../apps/backplane_memory/lib/backplane/memory/config.ex)
-exposes eight strict boolean controls backed by real defaults in
+exposes strict boolean controls backed by real defaults in
 [`Backplane.Settings`](../../apps/backplane_system/lib/backplane/settings.ex).
-Every default is the boolean `false`. An ETS or database value of the string
-`"true"` does not enable a V2 path.
+Pipeline, session-summary, fact-extraction, recall and host-sync defaults are
+boolean `true`; optional generation controls retain their own defaults.
+An ETS or database value of the string `"true"` does not enable a feature.
+Only the unversioned keys below are supported: old configuration names are not
+read, aliased or migrated. A disabled recall returns `recall_disabled`, and sync
+negotiation accepts only the current contract; neither falls back to an older
+implementation.
 
 | Setting | Accessor | Effective condition |
 |---|---|---|
 | `memory.pipeline.enabled` | `pipeline_enabled?/0` | its value is exactly `true` |
-| `memory.events.enabled` | `events_enabled?/0` | pipeline and its value are exactly `true` |
-| `memory.events.dual_write` | `dual_write?/0` | pipeline, events, and its value are exactly `true` |
 | `memory.window_summaries.enabled` | `window_summaries_enabled?/0` | pipeline and its value are exactly `true` |
-| `memory.session_summary_v2.enabled` | `session_summary_v2_enabled?/0` | pipeline and its value are exactly `true` |
-| `memory.fact_extraction_v2.enabled` | `fact_extraction_v2_enabled?/0` | pipeline and its value are exactly `true` |
-| `memory.procedure_extraction_v2.enabled` | `procedure_extraction_v2_enabled?/0` | pipeline and its value are exactly `true` |
-| `memory.recall_v2.enabled` | `recall_v2_enabled?/0` | pipeline and its value are exactly `true` |
+| `memory.session_summary.enabled` | `session_summary_enabled?/0` | pipeline and its value are exactly `true` |
+| `memory.fact_extraction.enabled` | `fact_extraction_enabled?/0` | pipeline and its value are exactly `true` |
+| `memory.procedure_extraction.enabled` | `procedure_extraction_enabled?/0` | pipeline and its value are exactly `true` |
+| `memory.recall.enabled` | `recall_enabled?/0` | its value is exactly `true`, independent of processing |
+| `memory.host_sync.enabled` | `host_sync_enabled?/0` | its value is exactly `true`; controls mirror delivery only |
 
 The dependency tree is therefore:
 
 ```text
-memory.pipeline.enabled
-|-- memory.events.enabled
-|   `-- memory.events.dual_write
+memory.pipeline.enabled (background processing only)
 |-- memory.window_summaries.enabled
-|-- memory.session_summary_v2.enabled
-|-- memory.fact_extraction_v2.enabled
-|-- memory.procedure_extraction_v2.enabled
-`-- memory.recall_v2.enabled
+|-- memory.session_summary.enabled
+|-- memory.fact_extraction.enabled
+`-- memory.procedure_extraction.enabled
 ```
 
-The first event/observation dual-write rollout requires all three of these
-flags:
-
-```text
-memory.pipeline.enabled = true
-memory.events.enabled = true
-memory.events.dual_write = true
-```
+Canonical event capture, projection repair, Access-bound commands and recall do
+not depend on the background-processing switch. The earlier event-capture and
+observation dual-write selectors are retired. Disabling mirror delivery withholds
+delivery capability and offline leases while authenticated Access and commands
+remain available. `memory.embed_model` is the only embedding selection shared by
+storage and query generation; changing it resets the existing cosine cutoff
+atomically, without copying any retired setting.
 
 `services.memory.enabled` remains the separate, existing boot-time control for
 registering the managed MCP service. `memory.tools` remains the separate
-boot-time tool-catalog selector. Neither is replaced by the V2 master gate.
-With all eight V2 flags at their defaults, PR 0B changes no ingestion, summary,
-memory, or recall execution path.
+boot-time tool-catalog selector. Neither is replaced by the processing master gate.
 
-## Relationship to the V1 design
+## Authority and routing
 
 The current host authority and routing contract is
 [`host-memory-v2-protocol.md`](../memory/host-memory-v2-protocol.md). Backplane
 owns canonical events, memories, partition/entitlement, governance, and edge
 revisions; host capture, provisional commands, and the bounded edge mirror are
-separate stores. Connected `memory::recall` uses the authorized central Recall
-V2 path; only classified transport failures permit stale mirror fallback.
+separate stores. Connected `memory::recall` uses the authorized canonical recall
+pipeline; only classified transport failures permit stale mirror fallback.
 The older [`host-agent-memory-design-final.md`](../host-agent-memory-design-final.md)
-remains useful for V1 command and local device features but its local-first
-memory authority has been superseded. Server migrations through
-`20260905000010` add the revisioned feed and eligible host-origin episodic
-records; `20260905000011` optimizes the action-edge partition guard without
-changing its canonical checks. Host command-store V3 preserves positive
-canonical revisions.
+is historical context; its local-first memory authority and private legacy
+uploader have been superseded. Server migrations through `20261026000002` retire
+legacy runtime storage and preserve provable event identities. Host command-store
+V7 quarantines unbound historical commands without inventing authority or replaying
+them. All new default, private and shared writes use `memory_commands.v2`.
 
 [`docs/memory-design.md`](../memory-design.md) remains useful context for the V1
 schema, retrieval, embedding, consolidation, and host-agent goals that the
 current implementation grew from. This record is the V2 evolution of that
 design and supersedes it where the two documents differ.
 
-In particular, this record governs the current module identity and runtime
-boundary (`Backplane.Memory.*` in the `:backplane_memory` app, registered as an
-in-process managed service), the exact 31/40 MCP surface, the generated-column
-FTS contract, the disabled rollout hierarchy, and the PR 1 event-authority and
-atomic dual-write model. Statements in the V1 document about a dedicated or
-standalone Memory MCP server, the older module layout, or memories as the
-primary ingestion record are not the V2 foundation contract.
-
-The V2 foundation does not otherwise discard working V1 behavior. Existing
-tables, recall behavior, and post-commit workers remain compatibility or
-projection mechanisms until later Window Summary, Session Summary V2, facts,
-procedures, and Recall V2 milestones replace them behind their own flags.
+The in-process module identity remains applicable. The earlier tool-count,
+dual-write and compatibility milestones above retain their historical scope;
+they do not restore retired selectors, schemas, workers or search implementations.
+Use the current source and linked integration/protocol reviews to assess the
+implemented canonical capture, extraction, evidence and recall paths.

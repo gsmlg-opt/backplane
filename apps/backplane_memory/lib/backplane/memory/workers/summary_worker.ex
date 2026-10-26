@@ -140,7 +140,7 @@ defmodule Backplane.Memory.Workers.SummaryWorker do
                ),
              {:ok, _input_partition} <- PartitionIdentity.validate(input, partition),
              true <- summary_ready?(input) do
-          if Config.session_summary_v2_enabled?() do
+          if Config.session_summary_enabled?() do
             state = mark_running(subject_id, expected_revision, partition)
             attrs = summary_attrs(input, partition)
             summary = store_summary(subject_id, attrs)

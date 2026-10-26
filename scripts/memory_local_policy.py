@@ -38,8 +38,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("policy_lifecycle", Path(__file__).with_name("memory_local_dev.py"))
 lifecycle = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(lifecycle)
-CENTRAL = ("memory.pipeline.enabled", "memory.events.enabled", "memory.session_summary_v2.enabled",
-           "memory.host_sync_v1.enabled", "memory.host_sync_v2.enabled")
+CENTRAL = ("memory.pipeline.enabled", "memory.session_summary.enabled",
+           "memory.host_sync.enabled")
 STAMP = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)"
 
 
@@ -214,7 +214,7 @@ def report_values(payload, local_text, negotiation_text, host_id):
             "negotiation_display_mismatch")
     return {"capture": {key: capture.get(key) for key in ("enabled", "inject_context", "upload_interval_ms")},
             "memory": {key: memory.get(key) for key in ("enabled", "bound_scope", "sync_interval_ms")},
-            "host_sync_v2": {key: (memory.get("host_sync_v2") or {}).get(key)
+            "host_sync": {key: (memory.get("host_sync") or {}).get(key)
                              for key in ("enabled", "development_plaintext", "sync_interval_ms")},
             "local_applied_at": applied, "report_received_at": received[0],
             "negotiation": {"selected": "host_memory.v2", "applied_at": negotiated}}
@@ -226,7 +226,7 @@ def validate_report(sample, baseline, enabled, stale=False, fresh_after=None):
     require(sample["stale"] is stale and sample["health_stale"] is stale, "report_staleness_mismatch")
     expected = copy.deepcopy(baseline["policy"])
     expected["capture"]["enabled"] = enabled
-    for key in ("capture", "memory", "host_sync_v2"):
+    for key in ("capture", "memory", "host_sync"):
         require(sample["policy"][key] == expected[key], "reported_local_policy_mismatch")
     policy = sample["policy"]
     require(timestamp(policy["report_received_at"]) >= timestamp(policy["local_applied_at"]),
@@ -430,16 +430,16 @@ class Runner:
                 and hub.scheme == "http" and hub.hostname in ("localhost", "127.0.0.1") and hub.port == 4220
                 and not hub.username and not hub.password and hub.path in ("", "/") and not hub.query and not hub.fragment
                 and memory.get("enabled") is True and memory.get("bound_scope") == self.partition["scope"]
-                and memory.get("host_sync_v2", {}).get("enabled") is True
-                and memory["host_sync_v2"].get("development_plaintext") is True,
+                and memory.get("host_sync", {}).get("enabled") is True
+                and memory["host_sync"].get("development_plaintext") is True,
                 "local_fixture_configuration_required")
-        stores = [memory.get("db_path"), capture.get("db_path"), memory["host_sync_v2"].get("db_path")]
+        stores = [memory.get("db_path"), capture.get("db_path"), memory["host_sync"].get("db_path")]
         require(stores == [str(self.config.parent / name) for name in ("commands.db", "capture-spool.db", "mirror.db")]
                 and len({(info.st_dev, info.st_ino) for info in map(private_file, stores)}) == 3,
                 "three_distinct_fixture_stores_required")
         self.expected_local = {"capture": {key: capture.get(key) for key in ("enabled", "inject_context", "upload_interval_ms")},
             "memory": {key: memory.get(key) for key in ("enabled", "bound_scope", "sync_interval_ms")},
-            "host_sync_v2": {key: memory["host_sync_v2"].get(key) for key in ("enabled", "development_plaintext", "sync_interval_ms")}}
+            "host_sync": {key: memory["host_sync"].get(key) for key in ("enabled", "development_plaintext", "sync_interval_ms")}}
         self.sessions = {phase: "memory-local-oct20-a-policy-" + self.case_id + "-" + phase for phase in ("disabled", "restored")}
         canonical = self.fx.canonical(self, self.bound(10))
         require(canonical["disabled_ids"] == [] and canonical["restored_ids"] == [], "fresh_case_id_required")

@@ -246,7 +246,40 @@ async function startGateway(options = {}) {
     await mkdir(join(root, 'observer'), { recursive: true });
     await writeFile(join(root, 'observer/package.json'), JSON.stringify({ name: 'qualification-observer', version: '1.0.0', type: 'module', openclaw: { extensions: ['./plugin.mjs'] } }));
     await writeFile(join(root, 'observer/openclaw.plugin.json'), JSON.stringify({ id: 'qualification-observer', name: 'Qualification Observer', configSchema: { type: 'object', properties: {} } }));
-    await writeFile(join(root, 'observer/plugin.mjs'), `import {appendFileSync} from 'node:fs';export default {id:'qualification-observer',register(api){for(const name of ['before_prompt_build','agent_end','session_end'])api.on(name,(event,ctx)=>{let current=false;try{ctx.assertMemoryAudienceCurrent?.();current=typeof ctx.assertMemoryAudienceCurrent==='function'}catch{}appendFileSync(${JSON.stringify(join(root, 'contexts.jsonl'))},JSON.stringify({hook:name,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,agentId:ctx.agentId,runId:ctx.runId,memoryAudience:ctx.memoryAudience,sandboxed:ctx.sandboxed,trigger:ctx.trigger,inputProvenance:ctx.inputProvenance,current,prompt:event.prompt,toolAuthority:!!ctx.toolAuthority,flushId:ctx.memoryFlush?.flushId})+'\\n')},name==='before_prompt_build'?{requiresToolAuthority:true}:undefined)}};`);
+    await writeFile(join(root, 'observer/plugin.mjs'), `
+import {appendFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const counts = new Map();
+const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const projection = messages => messages.map(message => ({role:message?.role??null,content:message?.content??null,provenance:message?.provenance??null,toolCallId:message?.toolCallId??null}));
+function audience(ctx) {
+  if(typeof ctx.assertMemoryAudienceCurrent!=='function') return {current:false,code:'unavailable'};
+  try {ctx.assertMemoryAudienceCurrent();return {current:true,code:'current'}}
+  catch(error) {
+    const codes = new Map([['memory audience was released by its owner','released'],['memory audience is no longer current','stale'],['memory audience currency is unavailable; retry the operation','currency_unavailable']]);
+    return {current:false,code:codes.get(error?.message)||'unclassified'};
+  }
+}
+function write(value) {appendFileSync(${JSON.stringify(join(root, 'contexts.jsonl'))},JSON.stringify(value)+'\\n')}
+export default {id:'qualification-observer',register(api){
+  for(const name of ['before_prompt_build','agent_end','session_end']) api.on(name,(event,ctx)=>{
+    const identity=JSON.stringify([ctx.agentId,ctx.sessionId,ctx.runId]);
+    let messageBoundary;
+    if(Array.isArray(event.messages)) {
+      const messages=projection(event.messages);
+      if(name==='before_prompt_build'&&!counts.has(identity)) counts.set(identity,messages.length);
+      const prefixCount=counts.get(identity)??0;
+      messageBoundary={count:messages.length,signature:hash(messages),prefix_count:prefixCount,prefix_signature:hash(messages.slice(0,prefixCount)),messages:messages.slice(0,128).map((message,index)=>({index,role:message.role,signature:hash(message)})),truncated:messages.length>128};
+    }
+    const authority=audience(ctx);
+    write({hook:name,observedAt:new Date().toISOString(),sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,agentId:ctx.agentId,runId:ctx.runId,memoryAudience:ctx.memoryAudience,sandboxed:ctx.sandboxed,trigger:ctx.trigger,inputProvenance:ctx.inputProvenance,current:authority.current,audienceCode:authority.code,prompt:event.prompt,toolAuthority:!!ctx.toolAuthority,flushId:ctx.memoryFlush?.flushId,messageBoundary});
+    if(name==='agent_end') for(const delayMs of [100,1000,5000]) setTimeout(()=>{
+      const checked=audience(ctx);
+      write({hook:'agent_end_audience_check',observedAt:new Date().toISOString(),agentId:ctx.agentId,sessionId:ctx.sessionId,runId:ctx.runId,delayMs,current:checked.current,audienceCode:checked.code});
+    },delayMs).unref();
+  },name==='before_prompt_build'?{requiresToolAuthority:true}:undefined);
+}};
+`);
     await startModel();
     cfg = {
       logging: { file: join(root, 'runtime.log') },
@@ -345,6 +378,7 @@ async function turn(params) {
 }
 function concurrentModelBarrier(turns) {
   const arrivals = [];
+  const observations = [];
   let releasedAt, failure, release;
   const ready = new Promise((r) => { release = r; });
   const fail = (code) => { failure ||= code; release(); };
@@ -353,6 +387,7 @@ function concurrentModelBarrier(turns) {
     async arrive(body, request, requestIndex) {
       const userText = (body.messages || []).filter((message) => message.role === 'user').map((message) => typeof message.content === 'string' ? message.content : JSON.stringify(message.content));
       const matching = turns.filter((turn) => userText.some((text) => text.includes(turn.prompt)));
+      if (observations.length < 32) observations.push({ requestIndex, receivedAt: request.receivedAt, matching_agent_ids: matching.map((turn) => turn.agentId), duplicate_agent: matching.length === 1 && arrivals.some((arrival) => arrival.agentId === matching[0].agentId), message_roles: (body.messages || []).map((message) => message.role), user_content_lengths: userText.map((text) => text.length) });
       if (matching.length !== 1 || arrivals.some((arrival) => arrival.agentId === matching[0].agentId)) fail('concurrent_model_request_invalid');
       else {
         arrivals.push({ agentId: matching[0].agentId, sessionKey: matching[0].sessionKey, requestIndex, receivedAt: request.receivedAt });
@@ -361,7 +396,7 @@ function concurrentModelBarrier(turns) {
       await ready;
       if (failure) throw new Error(failure);
     },
-    evidence: () => ({ model_requests: arrivals.length, held_until_both: arrivals.length === 2 && Boolean(releasedAt) && !failure, arrivals, releasedAt, ...(failure ? { error: failure } : {}) }),
+    evidence: () => ({ model_requests: arrivals.length, held_until_both: arrivals.length === 2 && Boolean(releasedAt) && !failure, arrivals, releasedAt, observations, ...(failure ? { error: failure } : {}) }),
     close() { clearTimeout(timer); if (!releasedAt && !failure) fail('concurrent_model_overlap_timeout'); },
   };
 }

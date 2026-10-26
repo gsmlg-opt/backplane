@@ -300,8 +300,8 @@ jobs:
             apps/backplane_memory/test/backplane/memory/recall/retriever_test.exs \
             apps/backplane_memory/test/backplane/memory/recall/pipeline_test.exs \
             apps/backplane_memory/test/backplane/memory/recall/selection_test.exs \
-            apps/backplane_memory/test/backplane/memory/memories/search_test.exs \
-            apps/backplane_memory/test/backplane/memory/memories/search_expansion_test.exs \
+            apps/backplane_memory/test/backplane/memory/recall/channels_test.exs \
+            apps/backplane_memory/test/backplane/memory/recall/query_plan_test.exs \
             apps/backplane_memory/test/backplane/memory/exact_read_test.exs \
             apps/backplane_memory/test/backplane/memory/config_test.exs \
             apps/backplane_memory/test/backplane/memory/service_test.exs \

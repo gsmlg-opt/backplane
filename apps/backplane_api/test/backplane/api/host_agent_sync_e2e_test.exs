@@ -48,9 +48,9 @@ defmodule Backplane.Api.HostAgentSyncE2ETest do
   end
 
   test "v2 join preserves the negotiated frame bound without extra legacy metadata" do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
     {:ok, host, _, token} = Hosts.create_agent_with_token(%{"name" => "bounded-edge-channel"})
 
     {:ok, socket} =
@@ -80,9 +80,9 @@ defmodule Backplane.Api.HostAgentSyncE2ETest do
   end
 
   test "v2 channel negotiates, retries and acknowledges durable snapshot without v1 downgrade" do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
 
     {:ok, host, _, token} =
       Hosts.create_agent_with_token(%{"name" => "edge-channel", "memory_scope" => "edge"})
@@ -148,11 +148,43 @@ defmodule Backplane.Api.HostAgentSyncE2ETest do
     ref = push(socket, "memory_next", request)
     assert_reply(ref, :error, %{"code" => "unauthorized"})
     Application.delete_env(:backplane_api, :host_agent_scopes)
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", false})
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", false})
     ref = push(socket, "memory_next", request)
     assert_reply(ref, :error, %{"code" => "protocol_disabled"})
     refute_push("memory_facts", _)
     refute_push("memory_wipe", _)
+  end
+
+  test "current ACK cannot bypass withdrawn recall permission" do
+    previous_scopes = Application.get_env(:backplane_api, :host_agent_scopes)
+
+    on_exit(fn ->
+      if previous_scopes,
+        do: Application.put_env(:backplane_api, :host_agent_scopes, previous_scopes),
+        else: Application.delete_env(:backplane_api, :host_agent_scopes)
+    end)
+
+    {:ok, host, _, token} = Hosts.create_agent_with_token(%{"name" => "ack-permission"})
+
+    {:ok, socket} =
+      connect(Backplane.Api.HostAgentSocket, %{"host_id" => host.id},
+        connect_info: %{x_headers: [{"x-backplane-host-token", token}]}
+      )
+
+    offer = %{"memory_v2" => %{"offers" => ["host_memory.v2"], "partitions" => []}}
+
+    assert {:ok, %{"selected" => "host_memory.v2"}, socket} =
+             subscribe_and_join(socket, "host_agent:#{host.id}", offer)
+
+    Application.put_env(
+      :backplane_api,
+      :host_agent_scopes,
+      ~w(host_agent.capture host_agent.import)
+    )
+
+    ref = push(socket, "memory_ack", %{"protocol" => "host_memory.v2"})
+    assert_reply(ref, :error, %{"code" => "unauthorized", "retryable" => false})
+    assert Backplane.Repo.aggregate(Backplane.Memory.EdgeSync.Cursor, :count) == 0
   end
 
   test "host receives desired state for an assigned archive-backed skill" do

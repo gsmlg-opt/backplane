@@ -24,7 +24,7 @@ defmodule Backplane.Memory.Workers.HermesPipelineTest do
 
   setup do
     keys =
-      ~w(memory.pipeline.enabled memory.fact_extraction_v2.enabled memory.session_summary_v2.enabled memory.llm_model)
+      ~w(memory.pipeline.enabled memory.fact_extraction.enabled memory.session_summary.enabled memory.llm_model)
 
     settings = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
     previous_llm = Application.get_env(:backplane_memory, :llm_module)

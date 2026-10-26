@@ -22,7 +22,7 @@ defmodule Backplane.MemoryToolContractTest do
   test "shared selectors preserve legacy arguments, requirements, and permissions" do
     legacy = [
       {"memory::recall",
-       ~w(query limit scope agent_id host_id tag project token_budget temporal_hints entity_hints include_working channel_weights facets),
+       ~w(query limit scope agent_id session_id host_id tag project token_budget temporal_hints entity_hints include_working channel_weights facets),
        ["query"], false, "memory.read"},
       {"memory::list", ~w(type scope agent_id tag q limit offset), nil, nil, "memory.read"},
       {"memory::stats", [], nil, nil, "memory.read"},

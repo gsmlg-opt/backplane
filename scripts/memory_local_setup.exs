@@ -75,7 +75,7 @@ hosts =
       sync_batch_size: 50
       max_attempts: 5
       tombstone_relearn: block
-      host_sync_v2:
+      host_sync:
         enabled: true
         db_path: #{dir}/mirror.db
         development_plaintext: true
@@ -196,15 +196,13 @@ end
 settings = %{
   "services.memory.enabled" => true,
   "memory.pipeline.enabled" => true,
-  "memory.events.enabled" => true,
-  "memory.events.dual_write" => true,
   "memory.window_summaries.enabled" => true,
-  "memory.session_summary_v2.enabled" => true,
-  "memory.fact_extraction_v2.enabled" => true,
-  "memory.procedure_extraction_v2.enabled" => true,
+  "memory.session_summary.enabled" => true,
+  "memory.fact_extraction.enabled" => true,
+  "memory.procedure_extraction.enabled" => true,
   "memory.relation_classifier.enabled" => true,
-  "memory.recall_v2.enabled" => true,
-  "memory.host_sync_v2.enabled" => true,
+  "memory.recall.enabled" => true,
+  "memory.host_sync.enabled" => true,
   "memory.lesson_auto_extract" => true,
   "memory.crystals_enabled" => true,
   "memory.crystal_session_enabled" => true,

@@ -26,10 +26,10 @@ defmodule Backplane.Memory.OperatorConfigTest do
     entries = Map.new(Config.editable_settings(), &{&1.key, &1})
 
     for key <- ~w(services.memory.enabled memory.pipeline.enabled
-                  memory.window_summaries.enabled memory.session_summary_v2.enabled
-                  memory.fact_extraction_v2.enabled memory.procedure_extraction_v2.enabled
-                  memory.relation_classifier.enabled
-                  memory.host_sync_v2.enabled memory.llm_model memory.embed_model
+                  memory.window_summaries.enabled memory.session_summary.enabled
+                  memory.fact_extraction.enabled memory.procedure_extraction.enabled
+                  memory.relation_classifier.enabled memory.recall.enabled
+                  memory.host_sync.enabled memory.llm_model memory.embed_model
                   memory.proxy_credential memory.lesson_decay_archive_days
                   memory.session_stale_after_seconds memory.recall_token_budget) do
       assert Map.has_key?(entries, key), "missing operator setting #{key}"
@@ -38,6 +38,16 @@ defmodule Backplane.Memory.OperatorConfigTest do
     end
 
     assert entries["memory.llm_model"].type == :model
+    assert entries["memory.embed_model"].type == :model
+    refute Map.has_key?(entries, "memory.recall_relevance_vector_model")
+
+    assert {:error, :unknown_setting} =
+             Config.update_setting(
+               "memory.recall_relevance_vector_model",
+               "stale-model",
+               @context
+             )
+
     assert entries["memory.proxy_credential"].type == :credential
   end
 
@@ -49,6 +59,41 @@ defmodule Backplane.Memory.OperatorConfigTest do
       refute Map.has_key?(entries, key)
       assert {:error, :unknown_setting} = Config.update_setting(key, "true", @context)
     end
+  end
+
+  test "only unversioned controls are editable and retired stored values are inert" do
+    entries = Config.editable_settings()
+    assert Enum.count(entries, &(&1.key == "memory.host_sync.enabled")) == 1
+    assert Enum.count(entries, &(&1.key == "memory.recall.enabled")) == 1
+
+    retired =
+      ~w(memory.host_sync_v1.enabled memory.host_sync_v2.enabled memory.recall_v2.enabled memory.session_summary_v2.enabled memory.fact_extraction_v2.enabled memory.procedure_extraction_v2.enabled)
+
+    current =
+      ~w(memory.host_sync.enabled memory.recall.enabled memory.session_summary.enabled memory.fact_extraction.enabled)
+
+    :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
+
+    for key <- current, do: :ets.delete(:backplane_settings, key)
+
+    for key <- retired do
+      :ets.insert(:backplane_settings, {key, false})
+      refute Enum.any?(entries, &(&1.key == key))
+      assert {:error, :unknown_setting} = Config.update_setting(key, "true", @context)
+    end
+
+    assert Config.host_sync_enabled?()
+    assert Config.recall_enabled?()
+    assert Config.session_summary_enabled?()
+    assert Config.fact_extraction_enabled?()
+
+    for key <- current, do: :ets.insert(:backplane_settings, {key, false})
+    for key <- retired, do: :ets.insert(:backplane_settings, {key, true})
+
+    refute Config.host_sync_enabled?()
+    refute Config.recall_enabled?()
+    refute Config.session_summary_enabled?()
+    refute Config.fact_extraction_enabled?()
   end
 
   test "model strings are normalized and bounded; credential references must be safe service keys" do

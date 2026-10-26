@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Recall.Retriever do
-  @moduledoc "Parallel, failure-isolated Recall V2 retrieval and weighted RRF fusion."
+  @moduledoc "Parallel, failure-isolated Recall retrieval and weighted RRF fusion."
 
   alias Backplane.Memory.Config
   alias Backplane.Memory.Embedding.Client

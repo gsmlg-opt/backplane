@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Memory.Eval do
-  @shortdoc "Run the guarded M15 Recall V2 evaluation"
+  @shortdoc "Run the guarded M15 Recall evaluation"
   use Mix.Task
 
   alias Backplane.Memory.Eval

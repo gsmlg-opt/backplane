@@ -74,12 +74,10 @@ defmodule Backplane.HostAgent.Channel do
   end
 
   defp join_payload do
-    payload = %{}
-
     case edge_offer() do
       {:ok, offer} ->
         Map.put(
-          payload,
+          %{},
           "memory_v2",
           Map.put(offer, "extensions", [
             "memory_access.v1",
@@ -92,7 +90,7 @@ defmodule Backplane.HostAgent.Channel do
         )
 
       :disabled ->
-        Map.put(payload, "memory_v2", %{
+        Map.put(%{}, "memory_v2", %{
           "offers" => ["host_memory.v2"],
           "partitions" => [],
           "max_frame_bytes" => 524_288,
@@ -109,7 +107,7 @@ defmodule Backplane.HostAgent.Channel do
   end
 
   defp edge_offer do
-    config = Application.get_env(:backplane_host_agent, :memory_host_sync_v2, %{})
+    config = Application.get_env(:backplane_host_agent, :memory_host_sync, %{})
     mirror_module = Application.get_env(:backplane_host_agent, :edge_mirror_module, Mirror)
 
     if Protection.plaintext_development?(config) do

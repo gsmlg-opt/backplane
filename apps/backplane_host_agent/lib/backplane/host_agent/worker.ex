@@ -391,7 +391,6 @@ defmodule Backplane.HostAgent.Worker do
     partitions =
       case memory do
         %{"partitions" => partitions} when is_list(partitions) -> partitions
-        %{"memory_partition" => partition} when is_map(partition) -> [partition]
         _ -> []
       end
 
@@ -586,7 +585,7 @@ defmodule Backplane.HostAgent.Worker do
          config,
          state
        ) do
-    edge_config = Map.get(Map.get(config, :memory) || %{}, :host_sync_v2) || %{}
+    edge_config = Map.get(Map.get(config, :memory) || %{}, :host_sync) || %{}
 
     opts = [
       channel: connection.channel,
@@ -727,8 +726,8 @@ defmodule Backplane.HostAgent.Worker do
 
     Application.put_env(
       :backplane_host_agent,
-      :memory_host_sync_v2,
-      Map.get(memory_config, :host_sync_v2, %{})
+      :memory_host_sync,
+      Map.get(memory_config, :host_sync, %{})
     )
   end
 

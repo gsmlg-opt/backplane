@@ -15,7 +15,7 @@ defmodule Backplane.Memory.Qualification.Runner do
   @max_batch_size 100
   @default_ingest_concurrency 20
   @sandbox_ingest_concurrency 5
-  @consolidation_policy ~w(memory.pipeline.enabled memory.session_summary_v2.enabled)
+  @consolidation_policy ~w(memory.pipeline.enabled memory.session_summary.enabled)
   @ingest_statuses ~w(accepted duplicate rejected failed)
   @ingest_reasons ~w(database_unavailable transaction_rolled_back timeout disconnected storage_error
     invalid_partition partition_mismatch unsupported_schema invalid_event identity_conflict

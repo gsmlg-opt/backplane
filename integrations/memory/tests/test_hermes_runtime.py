@@ -167,6 +167,104 @@ class RuntimeTest(unittest.TestCase):
             http.assert_not_called()
         self.assertGreater(self.provider.delivery_status()['local_pending'],0)
 
+    def test_unnegotiated_peer_without_binding_preserves_pending_delivery(self):
+        caps=capability()
+        caps.update(ready=False,negotiated=[],binding=None,binding_fingerprint=None,capture_ready=False,capture_binding=None,capture_binding_fingerprint=None,capture_error='not_negotiated')
+        pending=self.provider.delivery_status()['local_pending']
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}),patch.object(plugin,'_http') as http:
+            self.assertFalse(self.provider._deliver_once())
+            http.assert_not_called()
+        self.assertEqual(self.provider.delivery_status()['peer'],'not_negotiated')
+        self.assertEqual(self.provider.delivery_status()['local_pending'],pending)
+        self.assertEqual(self.provider.delivery_status()['rejected'],0)
+        self.assertFalse(self.provider._journal.get('binding_fingerprint'))
+        self.provider._peer_checked=0
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':capability()}):
+            self.assertTrue(self.provider._check_peer())
+        self.assertEqual(self.provider.delivery_status()['binding'],'verified')
+        self.assertEqual(self.provider.delivery_status()['capture_binding'],'verified')
+
+    def test_negotiated_but_unready_peer_does_not_pin_an_unusable_binding(self):
+        caps=capability();caps['ready']=False
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
+            self.assertFalse(self.provider._check_peer())
+        self.assertEqual(self.provider.delivery_status()['peer'],'not_ready')
+        self.assertFalse(self.provider._journal.get('binding_fingerprint'))
+        self.assertFalse(self.provider._journal.get('capture_binding_fingerprint'))
+
+    def test_explicit_unsupported_contract_is_distinct_from_transport_unavailability(self):
+        for caps in [{**capability(),'supported':False},{**capability(),'protocol':'unknown.v1'}]:
+            with self.subTest(caps=caps):
+                self.provider._peer_checked=0
+                with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
+                    self.assertFalse(self.provider._check_peer())
+                self.assertEqual(self.provider.delivery_status()['peer'],'unsupported')
+        self.provider._peer_checked=0
+        with patch.object(plugin,'_post',return_value={'ok':False,'error':'request_failed'}):
+            self.assertFalse(self.provider._check_peer())
+        self.assertEqual(self.provider.delivery_status()['peer'],'unavailable')
+
+    def test_ready_source_binding_must_be_present_and_match_its_fingerprint(self):
+        for binding,fingerprint in [(None,None),([], 'invalid'),(capability()['binding'],'0'*64)]:
+            with self.subTest(binding=binding,fingerprint=fingerprint):
+                caps=capability();caps.update(binding=binding,binding_fingerprint=fingerprint)
+                self.provider._peer_checked=0
+                with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}),patch.object(plugin,'_http') as http:
+                    self.assertFalse(self.provider._deliver_once())
+                    http.assert_not_called()
+                self.assertEqual(self.provider.delivery_status()['peer'],'invalid_binding')
+                self.assertFalse(self.provider._journal.get('binding_fingerprint'))
+
+    def test_missing_capture_binding_temporarily_defers_without_changing_pinned_identity(self):
+        caps=capability()
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
+            self.assertTrue(self.provider._check_peer())
+        saved=self.provider._journal.get('capture_binding_fingerprint')
+        absent={**caps,'capture_ready':False,'capture_binding':None,'capture_binding_fingerprint':None,'capture_error':'capture_unavailable'}
+        self.provider._peer_checked=0
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':absent}):
+            self.assertTrue(self.provider._check_peer())
+        self.assertEqual(self.provider.delivery_status()['capture_binding'],'capture_unavailable')
+        self.assertEqual(self.provider._journal.get('capture_binding_fingerprint'),saved)
+        with self.assertRaisesRegex(RuntimeError,'capture_unavailable'):
+            self.provider.on_pre_compress([{'role':'user','content':'evidence','message_uid':'u1'}],require_checkpoint=True)
+        self.provider._peer_checked=0
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
+            self.assertTrue(self.provider._check_peer())
+        self.assertEqual(self.provider.delivery_status()['capture_binding'],'verified')
+        self.assertEqual(self.provider.delivery_status()['capture_deferred'],0)
+
+    def test_ready_capture_binding_with_invalid_digest_cannot_send_capture(self):
+        caps=capability();caps['capture_binding_fingerprint']='0'*64
+        paths=[]
+        def source_only(base,path,payload):
+            paths.append(path)
+            return {'ok':True,'result':{'protocol':'memory_sources.v1','event_id':payload['event_id'],'status':'committed'}}
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}),patch.object(plugin,'_http',side_effect=source_only):
+            self.provider._deliver_once()
+        self.assertFalse(any(path.startswith('/capture/') for path in paths))
+        self.assertEqual(self.provider.delivery_status()['capture_binding'],'capture_unavailable')
+        self.assertGreater(self.provider.delivery_status()['capture_deferred'],0)
+
+    def test_changed_capture_binding_remains_refused_after_restart(self):
+        caps=capability()
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
+            self.assertTrue(self.provider._check_peer())
+        other={**caps,'capture_binding':{**caps['capture_binding'],'authority_version':2}}
+        other['capture_binding_fingerprint']=hashlib.sha256(plugin.canonical_json(other['capture_binding']).encode()).hexdigest()
+        self.provider._peer_checked=0
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':other}):
+            self.assertTrue(self.provider._check_peer())
+        self.assertEqual(self.provider.delivery_status()['capture_binding'],'capture_binding_mismatch')
+        self.assertEqual(self.provider._journal.get('capture_binding_fingerprint'),caps['capture_binding_fingerprint'])
+        self.provider.shutdown()
+        second=self.build()
+        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
+            self.assertTrue(second._check_peer())
+        self.assertEqual(second.delivery_status()['capture_binding'],'capture_binding_mismatch')
+        with self.assertRaisesRegex(RuntimeError,'capture_binding_mismatch'):
+            second.on_pre_compress([{'role':'user','content':'evidence','message_uid':'u1'}],require_checkpoint=True)
+
     def test_capture_contract_must_be_negotiated_before_automatic_delivery(self):
         caps=capability();caps['negotiated']=['memory_sources.v1']
         paths=[]

@@ -126,7 +126,7 @@ class LocalPolicyTest(unittest.TestCase):
             "  machine_name: memory-local-oct20-a-primary\n  hub_url: http://localhost:4220\n"
             "  token: SECRET\n  http_bind: 127.0.0.1\n  http_port: 4222\n"
             f"memory:\n  enabled: true\n  bound_scope: memory_local_oct20-a_primary\n  db_path: {primary}/commands.db\n"
-            "  sync_interval_ms: 1000\n  host_sync_v2:\n    enabled: true\n    development_plaintext: true\n"
+            "  sync_interval_ms: 1000\n  host_sync:\n    enabled: true\n    development_plaintext: true\n"
             f"    db_path: {primary}/mirror.db\n    sync_interval_ms: 1000\n"
             f"capture:\n  enabled: true # keep comment\n  db_path: {primary}/capture-spool.db\n"
             "  upload_interval_ms: 1000\n  inject_context: false\ntargets: []\n").encode()
@@ -310,7 +310,7 @@ class LocalPolicyTest(unittest.TestCase):
 
     def test_yaml_report_allowlist_excludes_tokens_paths_and_unavailable_timestamps(self):
         payload = {"agent": {"host_id": "host", "token": "SECRET"}, "capture": {"enabled": True, "db_path": "/private"},
-            "memory": {"enabled": True, "bound_scope": "scope", "host_sync_v2": {"enabled": True}},
+            "memory": {"enabled": True, "bound_scope": "scope", "host_sync": {"enabled": True}},
             "local_settings_applied_at": "2026-10-20T01:00:00Z",
             "memory_negotiation": {"selected": "host_memory.v2", "applied_at": "2026-10-20T01:00:01Z"}}
         value = policy.report_values(payload, "2026-10-20T01:00:00Z Report received: 2026-10-20T01:00:02Z",

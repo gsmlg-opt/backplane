@@ -34,8 +34,8 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
        store: store_name,
        name: Map.get(opts, :access_name, Access),
        edge_store:
-         get_in(opts, [:host_sync_v2, :store_name]) || Backplane.HostAgent.Memory.Edge.Store,
-       edge_config: Map.get(opts, :host_sync_v2, %{})},
+         get_in(opts, [:host_sync, :store_name]) || Backplane.HostAgent.Memory.Edge.Store,
+       edge_config: Map.get(opts, :host_sync, %{})},
       {Syncer,
        store: store_name,
        access_server: Map.get(opts, :access_name, Access),
@@ -47,7 +47,7 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
       {Pruner, store: store_name, config: opts, name: Map.fetch!(opts, :pruner_name)},
       {Backplane.HostAgent.Memory.Edge.Supervisor,
        opts
-       |> Map.get(:host_sync_v2, %{})
+       |> Map.get(:host_sync, %{})
        |> Map.update(
          :reserved_db_paths,
          [Map.fetch!(opts, :db_path)],

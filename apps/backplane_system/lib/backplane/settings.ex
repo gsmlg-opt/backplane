@@ -28,10 +28,10 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable API account credit and usage fetching"
     },
-    "memory.host_sync_v2.enabled" => %{
-      value: false,
+    "memory.host_sync.enabled" => %{
+      value: true,
       type: "boolean",
-      desc: "Enable host memory v2 delivery"
+      desc: "Enable host memory delivery"
     },
     "memory.host_sync_max_item_bytes" => %{
       value: 262_144,
@@ -98,39 +98,44 @@ defmodule Backplane.Settings do
     },
     # Memory background processing controls
     "memory.pipeline.enabled" => %{
-      value: false,
+      value: true,
       type: "boolean",
       desc: "Enable background memory summaries and extraction"
     },
     "memory.window_summaries.enabled" => %{
       value: false,
       type: "boolean",
-      desc: "Enable Memory V2 window summaries"
+      desc: "Enable Memory window summaries"
     },
-    "memory.session_summary_v2.enabled" => %{
+    "memory.session_summary.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable Memory session summary generation"
+    },
+    "memory.fact_extraction.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable Memory fact extraction"
+    },
+    "memory.procedure_extraction.enabled" => %{
       value: false,
       type: "boolean",
-      desc: "Enable Memory V2 session summary generation"
-    },
-    "memory.fact_extraction_v2.enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable Memory V2 fact extraction"
-    },
-    "memory.procedure_extraction_v2.enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable Memory V2 procedure extraction"
+      desc: "Enable Memory procedure extraction"
     },
     "memory.relation_classifier.enabled" => %{
       value: false,
       type: "boolean",
-      desc: "Enable automatic Memory V2 relation classification"
+      desc: "Enable automatic Memory relation classification"
+    },
+    "memory.recall.enabled" => %{
+      value: true,
+      type: "boolean",
+      desc: "Enable memory recall"
     },
     "memory.recall_trace_enabled" => %{
       value: true,
       type: "boolean",
-      desc: "Persist privacy-filtered Recall V2 traces"
+      desc: "Persist privacy-filtered Recall traces"
     },
     "memory.recall_trace_retention_days" => %{
       value: 30,
@@ -145,29 +150,23 @@ defmodule Backplane.Settings do
     "memory.recall_channel_weights" => %{
       value: %{"fts" => 1.0, "vector" => 1.0, "graph" => 1.0},
       type: "json",
-      desc: "Recall V2 FTS, vector, and graph fusion weights (each allowed range 0..100)"
+      desc: "Recall FTS, vector, and graph fusion weights (each allowed range 0..100)"
     },
     "memory.recall_channel_limits" => %{
       value: %{"fts" => 50, "vector" => 50, "graph" => 50},
       type: "json",
-      desc: "Recall V2 per-channel candidate limits (each allowed range 1..500)"
+      desc: "Recall per-channel candidate limits (each allowed range 1..500)"
     },
     "memory.recall_max_per_session" => %{
       value: 3,
       type: "integer",
       desc: "Recall diversity maximum per source session (allowed range 1..100)"
     },
-    "memory.recall_relevance_vector_model" => %{
-      value: nil,
-      type: "string",
-      desc:
-        "Exact embedding model with an operator-calibrated cosine cutoff; unset uses lexical fallback"
-    },
     "memory.recall_relevance_vector_min" => %{
       value: 1.0,
       type: "float",
       desc:
-        "Calibrated minimum raw cosine similarity (allowed range -1..1); inert without calibrated model"
+        "Minimum raw cosine similarity for the selected embedding model (allowed range -1..1); resets to 1 on model change"
     },
     "memory.recall_relevance_reranker_model" => %{
       value: nil,
@@ -184,17 +183,17 @@ defmodule Backplane.Settings do
     "memory.recall_token_budget" => %{
       value: 4_096,
       type: "integer",
-      desc: "Default Recall V2 context token budget (allowed range 1..100000)"
+      desc: "Default Recall context token budget (allowed range 1..100000)"
     },
     "memory.recall_reranker_enabled" => %{
       value: false,
       type: "boolean",
-      desc: "Enable optional Recall V2 top-K reranking"
+      desc: "Enable optional Recall top-K reranking"
     },
     "memory.recall_reranker_top_k" => %{
       value: 20,
       type: "integer",
-      desc: "Maximum Recall V2 candidates sent to the reranker (allowed range 1..500)"
+      desc: "Maximum Recall candidates sent to the reranker (allowed range 1..500)"
     },
     "memory.event_gap_grace_seconds" => %{
       value: 60,
@@ -525,27 +524,64 @@ defmodule Backplane.Settings do
 
   # --- Private ---
 
-  defp persist_setting(key, value, state) do
-    wrapped = %{"v" => value}
-    now = DateTime.utc_now()
-    type = get_in(@defaults, [key, :type]) || "string"
-    desc = get_in(@defaults, [key, :desc])
+  defp persist_setting("memory.embed_model" = key, value, state) do
+    if resolved_embedding_model(get(key)) == resolved_embedding_model(value) do
+      persist_single_setting(key, value, state)
+    else
+      updates = [{key, value}, {"memory.recall_relevance_vector_min", 1.0}]
 
-    result =
-      case Repo.get(Setting, key) do
-        nil ->
-          %Setting{}
-          |> Setting.changeset(%{key: key, value: wrapped, value_type: type, description: desc})
-          |> Map.put(:action, :insert)
-          |> Repo.insert()
+      case persist_embedding_selection(updates) do
+        {:ok, _} ->
+          :ets.insert(@table, updates)
 
-        existing ->
-          existing
-          |> Ecto.Changeset.change(value: wrapped, updated_at: now)
-          |> Repo.update()
+          for {changed_key, changed_value} <- updates do
+            Phoenix.PubSub.broadcast(
+              @pubsub,
+              @topic,
+              {:setting_changed, changed_key, changed_value}
+            )
+          end
+
+          {:reply, :ok, state}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
       end
+    end
+  end
 
-    case result do
+  defp persist_setting(key, value, state) do
+    persist_single_setting(key, value, state)
+  end
+
+  defp persist_embedding_selection(updates) do
+    Repo.transaction(fn ->
+      Enum.each(updates, fn {key, value} ->
+        case write_setting(key, value) do
+          {:ok, _} -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end)
+  rescue
+    error in [Postgrex.Error, Ecto.ConstraintError] -> {:error, error}
+  end
+
+  defp resolved_embedding_model(value) do
+    case value || Application.get_env(:backplane_memory, :embed_model) do
+      model when is_binary(model) ->
+        case String.trim(model) do
+          "" -> nil
+          normalized -> normalized
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp persist_single_setting(key, value, state) do
+    case write_setting(key, value) do
       {:ok, _} ->
         :ets.insert(@table, {key, value})
         Phoenix.PubSub.broadcast(@pubsub, @topic, {:setting_changed, key, value})
@@ -553,6 +589,26 @@ defmodule Backplane.Settings do
 
       {:error, changeset} ->
         {:reply, {:error, changeset}, state}
+    end
+  end
+
+  defp write_setting(key, value) do
+    wrapped = %{"v" => value}
+    now = DateTime.utc_now()
+    type = get_in(@defaults, [key, :type]) || "string"
+    desc = get_in(@defaults, [key, :desc])
+
+    case Repo.get(Setting, key) do
+      nil ->
+        %Setting{}
+        |> Setting.changeset(%{key: key, value: wrapped, value_type: type, description: desc})
+        |> Map.put(:action, :insert)
+        |> Repo.insert()
+
+      existing ->
+        existing
+        |> Ecto.Changeset.change(value: wrapped, updated_at: now)
+        |> Repo.update()
     end
   end
 

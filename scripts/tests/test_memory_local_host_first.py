@@ -190,7 +190,7 @@ class HostFirstTest(unittest.TestCase):
         self.config.write_text(f"agent:\n  host_id: {host}\n  token: SECRET\n  http_bind: 127.0.0.1\n"
             f"  http_port: 4222\n  hub_url: http://localhost:4220\nmemory:\n  enabled: true\n"
             f"  bound_scope: {partition['scope']}\n  db_path: {self.config.parent}/commands.db\n"
-            f"  host_sync_v2:\n    enabled: true\n    development_plaintext: true\n    db_path: {self.config.parent}/mirror.db\n"
+            f"  host_sync:\n    enabled: true\n    development_plaintext: true\n    db_path: {self.config.parent}/mirror.db\n"
             f"capture:\n  enabled: true\n  db_path: {self.config.parent}/capture-spool.db\n")
         self.config.chmod(0o600)
         for filename in ("commands.db", "capture-spool.db", "mirror.db"):

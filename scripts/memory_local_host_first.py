@@ -226,10 +226,10 @@ class Runner:
         self.stores = [self.config.parent / name for name in ("commands.db", "capture-spool.db", "mirror.db")]
         values = {("agent", "host_id"): primary["host_id"], ("agent", "http_bind"): "127.0.0.1",
             ("agent", "http_port"): "4222", ("memory", "enabled"): "true", ("capture", "enabled"): "true",
-            ("memory", "bound_scope"): self.partition["scope"], ("memory", "host_sync_v2", "enabled"): "true",
-            ("memory", "host_sync_v2", "development_plaintext"): "true",
+            ("memory", "bound_scope"): self.partition["scope"], ("memory", "host_sync", "enabled"): "true",
+            ("memory", "host_sync", "development_plaintext"): "true",
             ("memory", "db_path"): str(self.stores[0]), ("capture", "db_path"): str(self.stores[1]),
-            ("memory", "host_sync_v2", "db_path"): str(self.stores[2])}
+            ("memory", "host_sync", "db_path"): str(self.stores[2])}
         require(all(config.get(key) == value for key, value in values.items()), "local_fixture_configuration_required")
         hub = urllib.parse.urlsplit(config.get(("agent", "hub_url"), ""))
         require(hub.scheme == "http" and hub.hostname in ("127.0.0.1", "localhost") and hub.port == 4220

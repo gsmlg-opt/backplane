@@ -65,7 +65,7 @@ defmodule Backplane.HostAgent.WorkerTest do
          Config,
          Map.put(config, :memory, %{
            enabled: false,
-           host_sync_v2: %{enabled: true, development_plaintext: true, sync_interval_ms: 1_000}
+           host_sync: %{enabled: true, development_plaintext: true, sync_interval_ms: 1_000}
          })
        )}
     end
@@ -207,7 +207,7 @@ defmodule Backplane.HostAgent.WorkerTest do
         :http_memory_config,
         Application.get_env(:backplane_host_agent, :memory_config),
         Application.get_env(:backplane_host_agent, :memory_store),
-        Application.get_env(:backplane_host_agent, :memory_host_sync_v2)
+        Application.get_env(:backplane_host_agent, :memory_host_sync)
       })
 
       Task.child_spec(fn ->
@@ -462,7 +462,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     Enum.each(owners, &:persistent_term.put({&1, :owner}, self()))
     :persistent_term.put({FakeConnector, :connection}, {:error, :hub_down})
 
-    env_keys = [:memory_config, :memory_store, :memory_host_sync_v2]
+    env_keys = [:memory_config, :memory_store, :memory_host_sync]
     previous_env = Map.new(env_keys, &{&1, Application.fetch_env(:backplane_host_agent, &1)})
 
     {:ok, config} = OfflineRuntimeConfig.load_default()
@@ -471,7 +471,7 @@ defmodule Backplane.HostAgent.WorkerTest do
       enabled: true,
       bound_scope: "standalone_scope",
       store_name: :standalone_startup_store,
-      host_sync_v2: %{enabled: true, development_plaintext: true}
+      host_sync: %{enabled: true, development_plaintext: true}
     }
 
     config = struct!(Config, Map.put(config, :memory, memory_config))
@@ -746,7 +746,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert MemoryProxy.channel() == nil
   end
 
-  test "v2 selection starts an edge syncer at the configured interval and disabled reconnect stops it" do
+  test "current selection starts an edge syncer and a non-memory reconnect stops it" do
     :persistent_term.put({FakeConnector, :owner}, self())
     :persistent_term.put({FakeMemoryProxy, :owner}, self())
     first_channel = start_supervised!({Agent, fn -> nil end})
@@ -797,8 +797,8 @@ defmodule Backplane.HostAgent.WorkerTest do
          channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
          host_id: "host-1",
          host_name: "t430",
-         socket: socket_supervisor(:disabled_memory_socket),
-         memory: %{"selected" => "disabled"}
+         socket: socket_supervisor(:non_memory_socket),
+         memory: %{}
        }}
     )
 

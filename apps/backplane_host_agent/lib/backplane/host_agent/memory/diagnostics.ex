@@ -41,7 +41,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
          "tombstones" => tombstones,
          "last_successful_sync" => last_successful_sync,
          "last_reconcile_at" => last_reconcile_at,
-         "edge_protection" => Atom.to_string(Protection.status(opts.host_sync_v2)),
+         "edge_protection" => Atom.to_string(Protection.status(opts.host_sync)),
          "edge" => edge
        }}
     end
@@ -391,7 +391,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
           Application.get_env(:backplane_host_agent, :memory_store, Store)
         ),
       db_path: Keyword.get(opts, :db_path, config_value(config, :db_path)),
-      host_sync_v2: Keyword.get(opts, :host_sync_v2, config_value(config, :host_sync_v2) || %{}),
+      host_sync: Keyword.get(opts, :host_sync, config_value(config, :host_sync) || %{}),
       edge_store: Keyword.get(opts, :edge_store, Backplane.HostAgent.Memory.Edge.Store),
       seqs: Keyword.get(opts, :seqs, :all),
       metadata_limit: metadata_limit(Keyword.get(opts, :metadata_limit, 50))
@@ -405,7 +405,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
   end
 
   defp edge_summary(opts, outbox) do
-    protection = Protection.status(opts.host_sync_v2)
+    protection = Protection.status(opts.host_sync)
 
     base = %{
       "status" => "unavailable",
@@ -421,7 +421,7 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
       "partitions" => []
     }
 
-    if Protection.plaintext_development?(opts.host_sync_v2) do
+    if Protection.plaintext_development?(opts.host_sync) do
       with true <- edge_available?(opts.edge_store),
            {:ok, stats} <- Eviction.stats(opts.edge_store, partition_limit: opts.metadata_limit) do
         partitions =

@@ -147,6 +147,170 @@ and command IDs, source revision, canonical ID/edge revision when known, and
 selector. Capability reporting separates host-local support from actual
 canonical negotiation/readiness.
 
+### Negotiation prerequisites and recovery
+
+The hub's single `memory.host_sync.enabled` policy defaults to true and controls
+mirror delivery only. Authenticated access, command, source and capture extensions
+negotiate independently of that switch. A fresh authenticated channel join applies
+changed delivery policy. Only the current implementation is accepted; an older-only
+offer is refused, without selecting a compatibility path. A plugin update or a
+successful `memory_list` does not establish source/capture readiness. The host's
+local `memory.host_sync.enabled` controls its edge mirror and can remain false.
+
+`contracts` lists host implementation support; `negotiated` lists the extensions
+selected by the authenticated hub connection. `supported=true`, `ready=false`
+and a null binding is a valid pre-negotiation response. `source_error` and
+`capture_error` report `not_negotiated` in that state. Once an access inventory
+exists, missing source extensions report `unsupported_capability`; absent or
+fenced access and insufficient source grants report `unauthorized`. No diagnostic
+response grants access or substitutes another partition.
+
+The provider classifies unsupported contracts, unavailable transport,
+`not_negotiated`, and negotiated-but-`not_ready` separately. It validates and pins
+the source binding fingerprint only for a ready response. A malformed ready
+binding remains `invalid_binding`; a valid changed binding remains a terminal
+rejection, including after restart. Temporary absence of a capture binding defers
+capture without replacing its saved fingerprint. A valid changed capture binding
+or an explicit `capture_binding_mismatch` remains refused. Preserve existing
+delivery journals during recovery; never clear them to force a new binding.
+
+Enable the existing hub policy through Memory → Config, verify the host's
+registered scope and existing grants, then reconnect/restart the host through its
+process manager. Recheck `source_capabilities` before running the installed
+provider's smoke test with the Hermes-managed Python interpreter. The smoke uses
+a fresh temporary profile and requires canonical settlement; its
+`derived_extraction_verified=false` explicitly leaves derived extraction and
+processing completion unverified.
+
+Localhost verification on 2026-10-27 used `main@48f6303d` plus this repair and
+the installed Hermes-managed Python 3.14.9. Both running applications reported
+`1.10.38-dev`; the source plugin manifest still declared `1.10.38` and matched
+the installed package, so that version label did not prove a stale plugin. The
+initial hub policy disabled v2. After enabling it, a host restart selected v2
+but still received no access extensions from the old hub process. A verified
+development build, complete hub restart and fresh host connection selected all
+six offered extensions and returned matching source/capture bindings with
+independently verified SHA256 fingerprints. The old admin `BuildInfo` SHA
+`c4ce197d` was per-module compile metadata, not proof of every loaded module's
+revision; that source revision already contained Hermes support.
+
+The installed `smoke_test.py` then passed against `127.0.0.1:4222`, logical agent
+`Rikka`, using a new temporary profile below `~/.hermes/cache/scratch`. All 33
+deliveries were canonical committed, with zero pending, rejected or deferred.
+Native replace/withdrawal, independent source survival, global forget, capture,
+unchanged checkpoint messages and scope refusal passed. The real scope refusal
+was HTTP 400 `partition_mismatch`; the provider now preserves that safe terminal
+code and the smoke accepts that exact rejection. Generic HTTP/network errors,
+wrong statuses and successful responses still fail the assertion. Real
+`MEMORY.md`/`USER.md` hashes and modification times were unchanged.
+
+Deterministic regressions passed: 89 Hermes Python tests and 89 host Access,
+router and Hermes/OpenClaw hook tests, plus warnings-as-errors development
+compilation, scoped formatting and strict Credo. An initial stale development
+contract-module warning cleared after recompiling the existing pure contract
+app; no dependency/source workaround was added. This localhost smoke reports
+`derived_extraction_verified=false`; it does not repeat the earlier real-model
+extraction/processing acceptance or establish a new publication/production
+deployment.
+
+### Checking extraction separately from capture
+
+`smoke_test.py` deliberately returns `derived_extraction_verified=false`: it
+checks canonical delivery and source lifecycle, without waiting for backend
+generation. The flag is not an extraction failure result. Canonical capture and
+projection repair remain available when processing is disabled; neither a
+capture ACK nor a completed Styx job proves a generated artifact exists.
+
+Automatic session extraction requires effective
+`memory.pipeline.enabled`, `memory.session_summary.enabled`, and
+`memory.fact_extraction.enabled`, plus a reachable configured
+`memory.llm_model`. Embeddings additionally require a working `memory.embed_model`.
+Route resolution alone does not prove model access. The processing client uses
+`memory.proxy_credential`; without it, requests carry no bearer and a protected
+LLM resource can refuse them.
+
+The pipeline, session-summary, fact-extraction, recall and host-sync switches
+default to `true` when no saved setting exists. Startup seeds missing keys only;
+saved `false` values under the current keys remain authoritative across restart
+and are not rewritten by a default change.
+Invalid nonboolean values still disable the corresponding stage. Model routes
+and resource credentials require explicit configuration; enabling defaults does
+not select a model or prove successful inference.
+
+Configuration has one implementation per feature: `memory.session_summary.enabled`,
+`memory.fact_extraction.enabled`, `memory.procedure_extraction.enabled`,
+`memory.recall.enabled`, and `memory.host_sync.enabled`. Version-named settings
+are not accepted, aliased or copied. There is no configuration migration.
+Disabling recall returns `recall_disabled`; it never selects the former search
+implementation. Wire markers such as `host_memory.v2`, `memory_commands.v2` and
+`memory_sources.v1` identify message schemas, not selectable product versions.
+The processing pipeline controls background generation only; disabling it does
+not disable canonical capture, projection repair, commands or separately enabled
+recall. Default, private and shared writes all retain Access-bound authority.
+
+Check the exact authorized partition, host and session, without dumping user
+content. Require all of these independently:
+
+- The canonical session projection is current, closed and eligible after gap
+  grace; a current, nonsuperseded `memory_summaries` row matches its input revision.
+- The `bpm_projection_states` row for `projector='episodic'` is `complete` at
+  that revision. `skipped_disabled` and `skipped_no_model` are not completion.
+  Session detail's processing representation currently omits `episodic`, so
+  inspect the processing state directly.
+- `bpm_memory_evidence.source_summary_id` identifies that summary, whose
+  `memory_summary_source_events` links resolve to the original `bpm_events`
+  with the actual host/session. `Memories.verify(memory_id, partition)` returns
+  this chain as `summaries`, `summary_event_links`, and `source_events`.
+- Automatic remember receipts have `origin='derived'`,
+  `independent_support=false`, and request-evidence links. Derived output does
+  not become independent confirmation of its own source.
+- Verify retained current facts and their trust separately from processing
+  completion, and check actual embedding/model provenance when required.
+
+The 2026-10-27 read-only check of the local Rikka host found two closed smoke
+sessions with six canonical events each and completed projections. Both had
+summary state `skipped_disabled`, no summary, no episodic state, and no derived
+summary evidence. Pipeline, session-summary and fact-extraction settings were
+all false. Those sessions had not performed automatic extraction.
+
+Do not enable global processing merely to verify one smoke session. Relevant
+configuration changes enqueue `StageResumeWorker`, which also runs every minute.
+It pages historical projected sessions and resumes eligible unfinished current
+revisions, including missing and disabled/no-model skips. Complete, failed and
+dead-letter revisions are excluded by default. Activation therefore affects
+eligible history as well as the test session; disabling does not delete capture.
+Use the isolated real-model entrypoint below to verify implementation without
+changing the operator database. The fixture-backed `hermes_pipeline_test.exs`
+tests Hermes and OpenClaw lineage deterministically, without proving real-model
+semantic quality.
+
+The separate fresh normal live run on 2026-10-27 passed 14/14 gates (exit 0),
+using real Hermes Python 3.14.9, GPT-4.1-mini and
+`openai/text-embedding-3-large` in a newly created partition database. Its
+extraction gate verified the current revision, corrected fact/trust, nine
+original events and nine summary-event links, one derived memory, two derived
+remember receipts with request-evidence links, and real asynchronous generation
+and embedding. Outage/restart recovery, native correction/withdrawal, global
+forget and recall budgets also passed; cleanup confirmed all owned processes
+stopped and the temporary database/directory removed. A separate controlled-model
+selection of pipeline, stage-processing, episodic-worker and fact-extraction tests
+passed 67/67. These are distinct evidence tiers. The live fixture does not qualify
+the operator's configured MiniMax/Ollama routes, enable local processing, or change
+the installed smoke's intentionally unverified extraction flag.
+
+The single-configuration follow-up was revalidated after reconciling local
+`f9d717ef` with upstream `d153846a`. A fresh full Hermes run again passed all
+14 gates, including real extraction and embedding, with all owned resources
+cleaned. The merged configuration/domain selection passed 227 tests and the
+host selection passed 152. These results do not qualify a new release: the
+API selection retained one original 100 ms command-reply failure (70 tests,
+one failure); a diagnostic preserving that assertion observed the exact committed
+reply at 241 ms. The temporary probe was removed, and the assertion remains
+unchanged. Strict Credo also reproduces the two upstream findings in
+`Events.Store.ensure_stream_metadata_consistent/2`, which is unchanged from
+`d153846a`. See the [OpenClaw follow-up](openclaw-memory-integration.md#single-configuration-follow-up-2026-10-27)
+for its separate storage-blocked deterministic result and passing semantic result.
+
 ## Reconciliation, withdrawal and forgetting
 
 `source_reconcile` stages a bounded immutable manifest through `begin`, `page`,
@@ -366,22 +530,29 @@ The existing Memory configuration surface exposes the canonical calibration:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `memory.recall_relevance_vector_model` | unset | Exact embedding model whose raw cosine cutoff was calibrated |
-| `memory.recall_relevance_vector_min` | `1.0` | Minimum raw cosine, in `-1..1`; inactive without a calibrated model |
+| `memory.embed_model` | unset | The single embedding model used for stored vectors and recall |
+| `memory.recall_relevance_vector_min` | `1.0` | Minimum raw cosine, in `-1..1`, for that resolved embedding model |
 | `memory.recall_relevance_reranker_model` | unset | Literal `provider/raw_model` route whose relevance cutoff was calibrated |
 | `memory.recall_relevance_reranker_min` | `1.0` | Minimum raw reranker score, in `0..1`; inactive without a calibrated route |
 
-Model selectors and cutoffs must be calibrated together for the actual retrieval
-workload. Retargetable reranker aliases cannot establish model identity. Missing
-calibration, a changed model, or unavailable semantic providers leaves lexical
-matches eligible; a calibrated weak reranker result rejects semantic-only
-candidates. The synthetic cosine measurements below are diagnostic examples,
-not an operator calibration.
+Calibrate the cosine cutoff for the selected embedding model and actual retrieval
+workload. Changing `memory.embed_model` resets the cosine cutoff to the conservative
+default atomically; saving the same normalized selection preserves it. Recall
+derives vector identity from that single resolved model, and scores from another
+model cannot satisfy the cutoff. The retired duplicate vector-model setting is
+not read or migrated. Retargetable reranker aliases cannot establish model identity.
+The Settings write uses a normal database transaction: model and cutoff both
+commit before ETS updates or notifications. A failed second write leaves both
+values and notifications unchanged. This is covered with a real ConnectionPool;
+an explicit savepoint transaction cannot start on an idle connection, even when
+the same code appears to work inside a SQL Sandbox transaction.
+Unavailable semantic providers leave lexical matches eligible; a calibrated weak
+reranker result rejects semantic-only candidates. The synthetic cosine measurements
+below are diagnostic examples, not an operator calibration.
 
-Admin uses the embedding registry for both `memory.embed_model` and the calibrated
-vector-model selector, including their route-readiness checks. Processing and
-reranker selectors use the LLM registry. A configured unavailable route remains
-visible and marked unavailable.
+Admin exposes one embedding selector, `memory.embed_model`, using the embedding
+registry and its route-readiness checks. Processing and reranker selectors use the
+LLM registry. A configured unavailable route remains visible and marked unavailable.
 
 Canonical `memory.recall_token_budget` defaults to 4096. An explicit request
 budget is supported by both recall paths, and the host applies the final budget

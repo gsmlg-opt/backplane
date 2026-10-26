@@ -114,7 +114,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
   end
 
   test "an actual embedded unrelated query can return zero with an inspectable raw-score rejection" do
-    keys = ~w(memory.recall_relevance_vector_model memory.recall_relevance_vector_min)
+    keys = ~w(memory.embed_model memory.recall_relevance_vector_min)
     snapshot = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
 
     on_exit(fn ->
@@ -125,7 +125,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
     end)
 
     model = "provider/calibrated-embedding"
-    :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_model", model})
+    :ets.insert(:backplane_settings, {"memory.embed_model", model})
     :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_min", 0.6})
 
     {:ok, memory} =
@@ -551,7 +551,7 @@ defmodule Backplane.Memory.Recall.PipelineTest do
     setting = :ets.lookup(:backplane_settings, "memory.embed_model")
 
     calibration =
-      for key <- ~w(memory.recall_relevance_vector_model memory.recall_relevance_vector_min),
+      for key <- ~w(memory.recall_relevance_vector_min),
           into: %{},
           do: {key, :ets.lookup(:backplane_settings, key)}
 
@@ -593,7 +593,6 @@ defmodule Backplane.Memory.Recall.PipelineTest do
       end
 
     [wanted, historical] = memories
-    :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_model", model})
     :ets.insert(:backplane_settings, {"memory.recall_relevance_vector_min", 0.8})
     :ets.insert(:backplane_settings, {"memory.embed_model", model})
     Application.put_env(:backplane_memory, :embed_model, "stale-env-model")

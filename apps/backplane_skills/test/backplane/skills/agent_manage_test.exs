@@ -119,6 +119,73 @@ defmodule Backplane.Skills.AgentManageTest do
     refute Map.has_key?(refreshed.runtime, :memory)
   end
 
+  test "reports one current host sync configuration with bounded safe settings and no secrets" do
+    {:ok, host, auth_token, _} = Hosts.create_agent_with_token(%{"name" => "current-sync-report"})
+    :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+
+    safe_sync = %{
+      "enabled" => true,
+      "development_plaintext" => false,
+      "db_path" => "/tmp/current-memory.db",
+      "max_frame_bytes" => 262_144,
+      "max_changes" => 100,
+      "max_items" => 500,
+      "max_bytes" => 1_048_576,
+      "max_items_per_partition" => 100,
+      "max_age_days" => 30,
+      "sync_interval_ms" => 5_000
+    }
+
+    negotiation = %{
+      "selected" => "host_memory.v2",
+      "applied_at" => "2026-10-27T01:00:00Z",
+      "partitions" => [
+        %{"memory_space_id" => "space-current", "scope" => "project", "namespace" => "private"}
+      ]
+    }
+
+    assert :ok =
+             AgentManage.report_config(host.id, %{
+               "memory" => %{
+                 "enabled" => true,
+                 "api_key" => "hidden-memory-secret",
+                 "host_sync_v1" => %{"enabled" => true},
+                 "host_sync_v2" => %{"enabled" => false},
+                 "host_sync" =>
+                   Map.merge(safe_sync, %{
+                     "token" => "hidden-sync-token",
+                     "api_key" => "hidden-sync-secret"
+                   })
+               },
+               "agent" => %{"token" => "hidden-agent-token"},
+               "capture" => %{"db_path" => String.duplicate("x", 4_097)},
+               "memory_negotiation" => Map.put(negotiation, "token", "hidden-negotiation-token")
+             })
+
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+    assert entry.config["memory"] == %{"enabled" => true, "host_sync" => safe_sync}
+    assert entry.config["memory_negotiation"] == negotiation
+    assert entry.config["agent"]["token"] == "REDACTED"
+    assert entry.config["capture"] == %{}
+    refute inspect(entry.config) =~ "hidden-"
+  end
+
+  test "rejects retired negotiated read protocols without replacing the last current report" do
+    {:ok, host, auth_token, _} = Hosts.create_agent_with_token(%{"name" => "current-read-report"})
+    :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+    current = %{"selected" => "host_memory.v2", "partitions" => []}
+
+    assert :ok = AgentManage.report_config(host.id, %{"memory_negotiation" => current})
+
+    assert {:error, :invalid_payload} =
+             AgentManage.report_config(host.id, %{
+               "memory_negotiation" => %{current | "selected" => "host_memory.v1"}
+             })
+
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+    assert entry.config["memory_negotiation"] == current
+  end
+
   test "rejects malformed oversized and content-bearing memory telemetry" do
     {:ok, host, auth_token, _} =
       Hosts.create_agent_with_token(%{"name" => "invalid-memory-report"})

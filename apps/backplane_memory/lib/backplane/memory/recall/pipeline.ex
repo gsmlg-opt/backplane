@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Recall.Pipeline do
-  @moduledoc "End-to-end Recall V2 orchestration with guarded tracing and telemetry."
+  @moduledoc "End-to-end Recall orchestration with guarded tracing and telemetry."
 
   alias Backplane.Memory.Privacy.Filter
   alias Backplane.Memory.Embedding.Client

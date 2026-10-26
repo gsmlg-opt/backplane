@@ -12,9 +12,9 @@ defmodule Backplane.Admin.MemoryPipelineLive do
   @memory_setting_keys [
     "memory.pipeline.enabled",
     "memory.window_summaries.enabled",
-    "memory.session_summary_v2.enabled",
-    "memory.fact_extraction_v2.enabled",
-    "memory.procedure_extraction_v2.enabled",
+    "memory.session_summary.enabled",
+    "memory.fact_extraction.enabled",
+    "memory.procedure_extraction.enabled",
     "memory.llm_model"
   ]
 

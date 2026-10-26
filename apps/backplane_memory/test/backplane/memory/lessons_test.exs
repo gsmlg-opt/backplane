@@ -244,7 +244,7 @@ defmodule Backplane.Memory.LessonsTest do
     assert {:error, :unauthorized} = Lessons.top(Map.delete(@partition, :host_id))
   end
 
-  test "general Recall V2 includes an active lesson as a typed candidate" do
+  test "general Recall includes an active lesson as a typed candidate" do
     assert {:ok, lesson} =
              save(
                save_attrs("general-recall", "Prefer exact partition retrieval"),

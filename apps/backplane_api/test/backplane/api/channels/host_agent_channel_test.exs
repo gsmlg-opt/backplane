@@ -104,11 +104,11 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
   test "shared extensions return complete effective inventory and refresh rechecks assignment",
        c do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
 
     on_exit(fn ->
-      :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous})
+      :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous})
       Application.delete_env(:backplane_api, :host_agent_scopes)
     end)
 
@@ -190,9 +190,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
   end
 
   test "joined shared channel forwards one access notification per PubSub broadcast", c do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
 
     offer = %{
       "memory_v2" => %{
@@ -214,9 +214,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
   test "negotiated shared reads and commands use explicit authority without private fallback",
        c do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
     {owner, _, _} = create_agent_with_token!("shared-channel-owner")
     {:ok, target} = MemorySpaces.resolve_host_partition(owner.id, nil, "private")
 
@@ -385,9 +385,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
   test "extended peer with revoked private default retains shared access without retargeting",
        c do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
     {owner, _, _} = create_agent_with_token!("no-default-shared-owner")
     {:ok, target} = MemorySpaces.resolve_host_partition(owner.id, nil, "private")
     operator = %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()}
@@ -468,9 +468,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
     host: host,
     socket: socket
   } do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", false})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", false})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
 
     offer = %{
       "memory_v2" => %{
@@ -512,6 +512,19 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
     assert Repo.get!(Backplane.Memory.Memories.Memory, id).content == "commands without mirror"
 
+    claim = command["access"]
+    partition = descriptor["partition"]
+
+    ref =
+      push(socket, "memory_call", %{"access" => claim, "method" => "stats", "arguments" => %{}})
+
+    assert_reply(ref, :ok, %{
+      "ok" => true,
+      "result" => %{"access" => ^claim, "partition" => ^partition, "result" => statistics}
+    })
+
+    assert is_map(statistics)
+
     for event <- ~w(memory_next memory_ack) do
       ref =
         push(socket, event, %{
@@ -524,10 +537,23 @@ defmodule Backplane.Api.HostAgentChannelTest do
     end
   end
 
+  test "retired top-level offers stay rejected when mirror delivery is disabled", c do
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", false})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
+
+    offer = %{"memory" => %{"protocol" => "host_memory.v1", "scopes" => []}}
+
+    for payload <- [offer, Map.put(offer, "selected", "host_memory.v2")] do
+      assert {:error, %{"code" => "invalid_request", "retryable" => false}} =
+               subscribe_and_join(c.socket, "host_agent:#{c.host.id}", payload)
+    end
+  end
+
   test "OpenClaw capture negotiation does not advertise unavailable capture permission", c do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
     scopes = Application.get_env(:backplane_api, :host_agent_scopes)
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
 
     Application.put_env(
       :backplane_api,
@@ -536,7 +562,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
     )
 
     on_exit(fn ->
-      :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous})
+      :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous})
 
       if scopes,
         do: Application.put_env(:backplane_api, :host_agent_scopes, scopes),
@@ -561,9 +587,9 @@ defmodule Backplane.Api.HostAgentChannelTest do
 
   test "OpenClaw capture requires separately negotiated support and frozen default authority",
        c do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
 
     extensions =
       ~w(memory_access.v1 memory_commands.v2 memory_sources.v1 openclaw_source.v1 openclaw_capture.v1)

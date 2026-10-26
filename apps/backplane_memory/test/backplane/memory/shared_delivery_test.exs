@@ -6,9 +6,9 @@ defmodule Backplane.Memory.SharedDeliveryTest do
   alias EdgeSync.{Cursor, Delivery}
 
   setup do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
     fixture()
   end
 

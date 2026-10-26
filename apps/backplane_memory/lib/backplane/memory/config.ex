@@ -6,10 +6,11 @@ defmodule Backplane.Memory.Config do
 
   @pipeline "memory.pipeline.enabled"
   @window_summaries "memory.window_summaries.enabled"
-  @session_summary_v2 "memory.session_summary_v2.enabled"
-  @fact_extraction_v2 "memory.fact_extraction_v2.enabled"
-  @procedure_extraction_v2 "memory.procedure_extraction_v2.enabled"
+  @session_summary "memory.session_summary.enabled"
+  @fact_extraction "memory.fact_extraction.enabled"
+  @procedure_extraction "memory.procedure_extraction.enabled"
   @relation_classifier "memory.relation_classifier.enabled"
+  @recall "memory.recall.enabled"
 
   @event_gap_grace_seconds "memory.event_gap_grace_seconds"
   @host_batch_max_events "memory.host_batch_max_events"
@@ -28,7 +29,6 @@ defmodule Backplane.Memory.Config do
   @recall_token_budget "memory.recall_token_budget"
   @recall_reranker_enabled "memory.recall_reranker_enabled"
   @recall_reranker_top_k "memory.recall_reranker_top_k"
-  @relevance_vector_model "memory.recall_relevance_vector_model"
   @relevance_vector_min "memory.recall_relevance_vector_min"
   @relevance_reranker_model "memory.recall_relevance_reranker_model"
   @relevance_reranker_min "memory.recall_relevance_reranker_min"
@@ -60,13 +60,13 @@ defmodule Backplane.Memory.Config do
     {"services.memory.enabled", "Memory service", :boolean, nil, nil, :service_enabled?},
     {@pipeline, "Processing pipeline", :boolean, nil, nil, :pipeline_enabled?},
     {@window_summaries, "Window summaries", :boolean, nil, nil, :window_summaries_enabled?},
-    {@session_summary_v2, "Session summaries", :boolean, nil, nil, :session_summary_v2_enabled?},
-    {@fact_extraction_v2, "Fact extraction", :boolean, nil, nil, :fact_extraction_v2_enabled?},
-    {@procedure_extraction_v2, "Procedure extraction", :boolean, nil, nil,
-     :procedure_extraction_v2_enabled?},
+    {@session_summary, "Session summaries", :boolean, nil, nil, :session_summary_enabled?},
+    {@fact_extraction, "Fact extraction", :boolean, nil, nil, :fact_extraction_enabled?},
+    {@procedure_extraction, "Procedure extraction", :boolean, nil, nil,
+     :procedure_extraction_enabled?},
     {@relation_classifier, "Graph generation", :boolean, nil, nil, :relation_classifier_enabled?},
-    {"memory.host_sync_v2.enabled", "Host mirror delivery", :boolean, nil, nil,
-     :host_sync_v2_enabled?},
+    {@recall, "Recall", :boolean, nil, nil, :recall_enabled?},
+    {"memory.host_sync.enabled", "Host sync", :boolean, nil, nil, :host_sync_enabled?},
     {"memory.llm_model", "Processing model", :model, nil, nil, :llm_model},
     {"memory.embed_model", "Embedding model (2560 dimensions)", :model, nil, nil, :embed_model},
     {"memory.proxy_credential", "Gateway resource credential", :credential, nil, nil,
@@ -75,8 +75,6 @@ defmodule Backplane.Memory.Config do
      :session_stale_after_seconds},
     {@fallback_sweep_batch_size, "Fallback sweep batch", :integer, 1, 500,
      :fallback_sweep_batch_size},
-    {@relevance_vector_model, "Calibrated recall embedding model", :model, nil, nil,
-     :recall_relevance_vector_model},
     {@relevance_vector_min, "Calibrated minimum cosine similarity", :float, -1.0, 1.0,
      :recall_relevance_vector_min},
     {@relevance_reranker_model, "Calibrated reranker provider/model route", :model, nil, nil,
@@ -127,7 +125,7 @@ defmodule Backplane.Memory.Config do
      :replay_import_max_bytes}
   ]
 
-  @doc "Returns the finite typed operator-editable Memory V2 setting inventory."
+  @doc "Returns the finite typed operator-editable Memory setting inventory."
   def editable_settings do
     Enum.map(@editable_settings, fn {key, label, type, minimum, maximum, accessor} ->
       %{
@@ -308,9 +306,9 @@ defmodule Backplane.Memory.Config do
 
       key in [
         @window_summaries,
-        @session_summary_v2,
-        @fact_extraction_v2,
-        @procedure_extraction_v2,
+        @session_summary,
+        @fact_extraction,
+        @procedure_extraction,
         @relation_classifier
       ] and not pipeline_enabled?() ->
         "Blocked: processing pipeline disabled"
@@ -324,9 +322,9 @@ defmodule Backplane.Memory.Config do
     if key in [
          @pipeline,
          @window_summaries,
-         @session_summary_v2,
-         @fact_extraction_v2,
-         @procedure_extraction_v2,
+         @session_summary,
+         @fact_extraction,
+         @procedure_extraction,
          @relation_classifier,
          @lesson_auto_extract,
          @crystals_enabled,
@@ -348,17 +346,19 @@ defmodule Backplane.Memory.Config do
   def window_summaries_enabled?,
     do: pipeline_enabled?() and enabled?(@window_summaries)
 
-  def session_summary_v2_enabled?,
-    do: pipeline_enabled?() and enabled?(@session_summary_v2)
+  def session_summary_enabled?,
+    do: pipeline_enabled?() and enabled?(@session_summary)
 
-  def fact_extraction_v2_enabled?,
-    do: pipeline_enabled?() and enabled?(@fact_extraction_v2)
+  def fact_extraction_enabled?,
+    do: pipeline_enabled?() and enabled?(@fact_extraction)
 
-  def procedure_extraction_v2_enabled?,
-    do: pipeline_enabled?() and enabled?(@procedure_extraction_v2)
+  def procedure_extraction_enabled?,
+    do: pipeline_enabled?() and enabled?(@procedure_extraction)
 
   def relation_classifier_enabled?,
     do: pipeline_enabled?() and enabled?(@relation_classifier)
+
+  def recall_enabled?, do: enabled?(@recall)
 
   @doc "Returns the final-processing gap grace in seconds (inclusive range 1..3600; default 60)."
   def event_gap_grace_seconds do
@@ -366,7 +366,7 @@ defmodule Backplane.Memory.Config do
   end
 
   def host_batch_max_events, do: bounded_integer(@host_batch_max_events, 100, 1, 100)
-  def host_sync_v2_enabled?, do: strict_boolean("memory.host_sync_v2.enabled", false)
+  def host_sync_enabled?, do: enabled?("memory.host_sync.enabled")
 
   def host_sync_max_item_bytes,
     do: bounded_integer("memory.host_sync_max_item_bytes", 262_144, 1, 262_144)
@@ -451,17 +451,16 @@ defmodule Backplane.Memory.Config do
   def recall_reranker_top_k,
     do: bounded_integer(@recall_reranker_top_k, 20, 1, 500)
 
-  @doc "Semantic cutoffs apply only to the exact model calibrated by the operator; otherwise use lexical evidence."
+  @doc "Vector relevance uses the resolved embedding model; unknown or mismatched models require lexical evidence."
   def recall_relevance do
     %{
-      vector_model: recall_relevance_vector_model(),
+      vector_model: Backplane.Memory.Embedding.Client.model(),
       vector_min: recall_relevance_vector_min(),
       reranker_model: recall_relevance_reranker_model(),
       reranker_min: recall_relevance_reranker_min()
     }
   end
 
-  def recall_relevance_vector_model, do: calibrated_model(@relevance_vector_model)
   def recall_relevance_reranker_model, do: calibrated_model(@relevance_reranker_model)
   def recall_relevance_vector_min, do: bounded_number(@relevance_vector_min, 1.0, -1.0, 1.0)
   def recall_relevance_reranker_min, do: bounded_number(@relevance_reranker_min, 1.0, 0.0, 1.0)

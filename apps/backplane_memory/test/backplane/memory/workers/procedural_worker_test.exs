@@ -2,7 +2,7 @@ defmodule Backplane.Memory.Workers.ProceduralWorkerTest do
   use Backplane.Memory.DataCase, async: false
 
   setup do
-    keys = ~w(memory.pipeline.enabled memory.procedure_extraction_v2.enabled)
+    keys = ~w(memory.pipeline.enabled memory.procedure_extraction.enabled)
     previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
     Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
 

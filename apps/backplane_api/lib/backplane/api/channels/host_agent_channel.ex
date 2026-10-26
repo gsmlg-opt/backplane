@@ -512,15 +512,19 @@ defmodule Backplane.Api.HostAgentChannel do
   defp access_claim(_), do: {:error, :invalid_request}
 
   defp selected_extension(socket, extension) do
-    if socket.assigns.memory_protocol == "host_memory.v2" and
-         extension in socket.assigns.memory_extensions,
-       do: :ok,
-       else: {:error, :unsupported_protocol}
+    cond do
+      socket.assigns.memory_protocol == "host_memory.v2" and
+          extension in socket.assigns.memory_extensions ->
+        :ok
+
+      true ->
+        {:error, :unsupported_protocol}
+    end
   end
 
   defp valid_memory_hint?(hint, socket) when is_map(hint) do
     with :ok <- selected_memory_protocol(socket, "host_memory.v2"),
-         true <- Config.host_sync_v2_enabled?(),
+         true <- Config.host_sync_enabled?(),
          true <-
            Enum.sort(Map.keys(hint)) == ~w(current_revision memory_space_id namespace scope),
          true <- is_integer(hint["current_revision"]) and hint["current_revision"] >= 0,
@@ -704,6 +708,9 @@ defmodule Backplane.Api.HostAgentChannel do
     cond do
       not authorized?("host_agent.recall", host_agent_scopes()) ->
         {:error, %{code: :unauthorized, retryable: false}}
+
+      not Config.host_sync_enabled?() ->
+        {:error, %{code: :protocol_disabled, retryable: false}}
 
       socket.assigns.memory_protocol != protocol ->
         {:error, %{code: :unsupported_protocol, retryable: false}}

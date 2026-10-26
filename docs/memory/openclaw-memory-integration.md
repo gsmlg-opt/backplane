@@ -63,7 +63,7 @@ denied access registers no automatic conversation hooks and reports a diagnostic
 Independent tools/provider calls retain their own authorization. Setting
 `config.enabled=false` registers no active provider, tools, hooks or service.
 
-Version 1 accepts a host-minted, current, owner-private audience for the actual
+The integration accepts a host-minted, current, owner-private audience for the actual
 agent and an explicit mapping to an already granted Backplane access UUID.
 Conversation/group/thread audiences, missing or cross-agent audiences and sandbox
 callers are refused. Several owner agents may intentionally map to the same
@@ -219,6 +219,20 @@ entries are skipped. Irrelevant queries may inject nothing. The historically
 reserved `min_confidence` is deprecated with a diagnostic; it is not cosine
 similarity or fact confidence.
 
+The gateway exposes one set of Memory controls: `memory.session_summary.enabled`,
+`memory.fact_extraction.enabled`, `memory.procedure_extraction.enabled`,
+`memory.recall.enabled` and `memory.host_sync.enabled`. Version-named configuration
+keys are neither read nor migrated. Fixed wire identifiers such as
+`memory_sources.v1` and `memory_commands.v2` remain message-schema contracts.
+
+`memory.embed_model` is the sole embedding selection for stored vectors and
+recall queries. Changing its effective normalized value atomically resets the
+existing cosine cutoff to `1.0`; an unchanged selection preserves calibration.
+The duplicate recall embedding selector is removed. Processing and optional
+reranking models serve different purposes and remain separate from embeddings.
+See the [shared configuration contract](hermes-memory-integration.md#checking-extraction-separately-from-capture)
+for defaults, explicit disablement and extraction prerequisites.
+
 ## Installation, legacy data and rollback
 
 See [the packaged README](../../integrations/memory/openclaw/README.md) for the
@@ -241,6 +255,40 @@ after withdrawals. Production data migration and user installation are separate
 operator actions.
 
 ## Verification and publication
+
+### Single-configuration follow-up (2026-10-27)
+
+After reconciling local `f9d717ef` with upstream `d153846a`, the fresh full-mode
+run passed **15/19 deterministic checks and 1/1 real-model semantic check**.
+This is an incomplete acceptance result. It independently verified actual
+extraction/embedding and source lineage, user correction/trust, native
+correction/deletion, global forget, real overlapping agents, recall budgets,
+lost-ACK delivery, plugin reload and host restart recovery.
+
+The remaining deterministic gates are real provider flush (`err_sqlite_error`
+while reading the plugin journal), audience/permission enforcement (`ENOSPC`
+on restart), binding revocation (subsequent `runtime_type_error`), and owned
+resource cleanup (database removal failed during the run). The first SQLite
+error's precise cause is not established by the later ENOSPC result. The fixture
+stopped its processes and removed its directory; the coordinator subsequently
+dropped the owned database and confirmed it absent. That later cleanup does not
+turn the original gate green. No operator database, service or cache was removed.
+
+The other release blockers are the original API command assertion exceeding its
+100 ms wait (a diagnostic saw the exact committed reply at 241 ms), and the two
+strict Credo findings already present in upstream `Events.Store`. Compile with
+warnings as errors and root formatting passed. Post-merge Dialyzer and remote
+qualification/publication were not run. No new push, release or deployment is
+claimed for this configuration follow-up. Rerun the full deterministic path,
+including flush and both authority checks, after resolving the storage boundary;
+the passing real-model sample is a separate evidence tier.
+
+Local evidence: `/tmp/backplane-single-config-merged-openclaw-live-20261027.log`,
+`/tmp/backplane-single-config-merged-hermes-live-20261027.log`,
+`/tmp/backplane-single-config-integrated-api-diagnosis-20261027.log`, and
+`/tmp/backplane-single-config-merged-final-credo-20261027.log`.
+
+### Historical qualified release
 
 Local qualification completed on 2026-10-26 against the implementation integrated
 with `main@0605d9d4`. The complete full-mode run exited 0: **19/19 deterministic

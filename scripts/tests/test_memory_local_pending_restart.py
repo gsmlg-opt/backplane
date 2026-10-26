@@ -132,7 +132,7 @@ class PendingRestartTest(unittest.TestCase):
                               f"  http_bind: 127.0.0.1\n  http_port: 4222\n  interval_ms: 5000\n"
                               f"memory:\n  enabled: true\n  db_path: {folder}/commands.db\n"
                               f"  bound_scope: memory_local_test_{suffix}\n  sync_interval_ms: 1000\n"
-                              f"  host_sync_v2:\n    enabled: true\n    db_path: {folder}/mirror.db\n"
+                              f"  host_sync:\n    enabled: true\n    db_path: {folder}/mirror.db\n"
                               "    sync_interval_ms: 1000\ncapture:\n  enabled: true\n"
                               f"  db_path: {folder}/capture-spool.db\n  upload_interval_ms: 1000\n")
             config.chmod(0o600)

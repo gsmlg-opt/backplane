@@ -57,8 +57,8 @@ defmodule Backplane.Memory.Memories.VerificationTest do
 
   setup do
     previous_llm = Application.get_env(:backplane_memory, :llm_module)
-    keys = ~w(memory.llm_model memory.pipeline.enabled memory.session_summary_v2.enabled
-      memory.fact_extraction_v2.enabled memory.procedure_extraction_v2.enabled)
+    keys = ~w(memory.llm_model memory.pipeline.enabled memory.session_summary.enabled
+      memory.fact_extraction.enabled memory.procedure_extraction.enabled)
     settings = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
     Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
     Application.put_env(:backplane_memory, :llm_module, MockLLM)

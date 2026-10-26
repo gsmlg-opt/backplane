@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Recall.Store do
-  @moduledoc "Transactional persistence and partition-safe reads for Recall V2 traces."
+  @moduledoc "Transactional persistence and partition-safe reads for Recall traces."
 
   import Ecto.Query
 

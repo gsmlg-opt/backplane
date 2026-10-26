@@ -6,7 +6,7 @@ defmodule Backplane.Memory.Qualification.RunnerPolicyTest do
   alias Backplane.Memory.Qualification.Runner
   alias Backplane.Memory.Summaries.{SourceEvent, Summary}
 
-  @policy_keys ~w(memory.pipeline.enabled memory.session_summary_v2.enabled)
+  @policy_keys ~w(memory.pipeline.enabled memory.session_summary.enabled)
 
   setup do
     original = policy_entries()
@@ -50,7 +50,7 @@ defmodule Backplane.Memory.Qualification.RunnerPolicyTest do
           run_id: unique_run(),
           session_count: 1,
           perform_summary: fn _job ->
-            assert Backplane.Memory.Config.session_summary_v2_enabled?()
+            assert Backplane.Memory.Config.session_summary_enabled?()
             raise "qualification fixture failure"
           end
         )

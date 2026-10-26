@@ -33,7 +33,7 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
         db_path: path,
         name: nil,
         store_name: :collision_command_store,
-        host_sync_v2: %{
+        host_sync: %{
           enabled: true,
           development_plaintext: true,
           db_path: path,
@@ -76,7 +76,7 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
         db_path: Path.join(dir, "command.db"),
         name: nil,
         store_name: :failure_command_store,
-        host_sync_v2: %{
+        host_sync: %{
           enabled: true,
           development_plaintext: true,
           db_path: Path.join(blocked, "edge.db"),
@@ -140,7 +140,7 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
         db_path: Path.join(dir, "command.db"),
         name: nil,
         store_name: store,
-        host_sync_v2: %{enabled: true, db_path: Path.join(dir, "rejected/edge.db")}
+        host_sync: %{enabled: true, db_path: Path.join(dir, "rejected/edge.db")}
       })
 
     assert Process.alive?(pid)
@@ -159,14 +159,15 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
     path = Path.join(dir, "config.yaml")
     File.write!(path, "agent:\n  work_dir: #{dir}\n")
     {:ok, config} = Backplane.HostAgent.Config.load(path)
-    assert config.memory.host_sync_v2.enabled == false
-    assert config.memory.host_sync_v2.development_plaintext == false
+    refute Map.has_key?(config.memory, :host_sync_v1)
+    assert config.memory.host_sync.enabled == false
+    assert config.memory.host_sync.development_plaintext == false
 
     File.write!(path, """
     agent:
       work_dir: #{dir}
     memory:
-      host_sync_v2:
+      host_sync:
         enabled: true
         development_plaintext: true
         db_path: #{dir}/custom/edge.db
@@ -177,7 +178,7 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
 
     {:ok, config} = Backplane.HostAgent.Config.load(path)
 
-    assert config.memory.host_sync_v2 == %{
+    assert config.memory.host_sync == %{
              enabled: true,
              development_plaintext: true,
              db_path: Path.join(dir, "custom/edge.db"),
@@ -199,17 +200,38 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
     agent:
       work_dir: #{dir}
     memory:
-      host_sync_v2:
+      host_sync:
         enabled: true
         development_plaintext: true
         db_path: #{dir}/memory/capture_spool.db
     """)
 
     {:ok, config} = Backplane.HostAgent.Config.load(path)
-    assert config.memory.host_sync_v2.enabled
+    assert config.memory.host_sync.enabled
 
-    assert Backplane.HostAgent.Memory.Edge.Protection.status(config.memory.host_sync_v2) ==
+    assert Backplane.HostAgent.Memory.Edge.Protection.status(config.memory.host_sync) ==
              :protection_unavailable
+  end
+
+  test "removed versioned host-sync keys do not enable or migrate persistence", %{tmp_dir: dir} do
+    path = Path.join(dir, "removed-config.yaml")
+
+    File.write!(path, """
+    agent:
+      work_dir: #{dir}
+    memory:
+      host_sync_v1:
+        enabled: true
+      host_sync_v2:
+        enabled: true
+        development_plaintext: true
+    """)
+
+    assert {:ok, config} = Backplane.HostAgent.Config.load(path)
+    refute config.memory.host_sync.enabled
+    refute config.memory.host_sync.development_plaintext
+    refute Map.has_key?(config.memory, :host_sync_v1)
+    refute Map.has_key?(config.memory, :host_sync_v2)
   end
 
   test "starts the store and completes migrations before returning", %{tmp_dir: tmp_dir} do

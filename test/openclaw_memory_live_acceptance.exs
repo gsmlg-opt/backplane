@@ -5,6 +5,8 @@
 # OPENCLAW_RUNTIME=/absolute/path/to/node_modules/openclaw \
 # mix run --no-start test/openclaw_memory_live_acceptance.exs
 # OPENROUTER_API_KEY is environment-only. Never uses user service ports.
+# OPENCLAW_LIVE_DIAGNOSTIC=capture|overlap|capture_and_overlap runs only the
+# selected unchanged oracles and cleanup; its result never qualifies a release.
 
 defmodule Backplane.OpenClawLiveAcceptance do
   import Ecto.Query
@@ -90,13 +92,19 @@ defmodule Backplane.OpenClawLiveAcceptance do
       end)
 
       packaging_scenario!()
-      run_scenarios!(fixture)
+
+      if resource(:diagnostic),
+        do: run_diagnostics!(fixture),
+        else: run_scenarios!(fixture)
     rescue
       error in Error ->
         record("startup", "failed", %{code: error.code, diagnostics: error.diagnostics})
 
       error ->
-        record("startup", "failed", %{code: "exception:#{inspect(error.__struct__)}"})
+        record("startup", "failed", %{
+          code: "exception:#{inspect(error.__struct__)}",
+          frames: exception_frames(__STACKTRACE__)
+        })
     catch
       kind, _ -> record("startup", "failed", %{code: "caught:#{kind}"})
     after
@@ -113,15 +121,22 @@ defmodule Backplane.OpenClawLiveAcceptance do
                resource(:mode) == "deterministic"))
       )
 
-    IO.puts(
-      Jason.encode!(%{
+    report =
+      %{
         kind: "openclaw_live_acceptance",
         status: if(passed, do: "passed", else: "failed"),
         deterministic_results: Enum.reject(results, &(&1.gate == "T13_real_model_semantics")),
         real_model_results: Enum.filter(results, &(&1.gate == "T13_real_model_semantics")),
         real_model:
-          if(resource(:mode) == "deterministic",
-            do: %{status: "not_run", reason: "not_requested_by_deterministic_scope"},
+          if(resource(:mode) == "deterministic" or resource(:diagnostic),
+            do: %{
+              status: "not_run",
+              reason:
+                if(resource(:diagnostic),
+                  do: "diagnostic_only",
+                  else: "not_requested_by_deterministic_scope"
+                )
+            },
             else: %{
               status:
                 (Enum.find(results, &(&1.gate == "T13_real_model_semantics")) ||
@@ -133,8 +148,22 @@ defmodule Backplane.OpenClawLiveAcceptance do
         production_installation_verified: false,
         database: resource(:database),
         cleanup: resource(:cleanup)
-      })
-    )
+      }
+
+    report =
+      if resource(:diagnostic) do
+        Map.merge(report, %{
+          kind: "openclaw_live_diagnostic",
+          status: if(passed, do: "diagnostic_passed", else: "diagnostic_failed"),
+          diagnostic_only: true,
+          diagnostic: resource(:diagnostic),
+          qualification: "not_qualified"
+        })
+      else
+        report
+      end
+
+    IO.puts(Jason.encode!(report))
 
     if not passed, do: System.halt(1)
   end
@@ -427,7 +456,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
     end
   end
 
-  defp run_scenarios!(fixture) do
+  defp capture_scenario!(fixture) do
     first_input = %{
       prompt: "My durable deployment status color is amber. Fixture #{fixture.marker}",
       responseText: "I guessed cobalt as your deployment status color."
@@ -461,6 +490,21 @@ defmodule Backplane.OpenClawLiveAcceptance do
       )
     end)
 
+    first
+  end
+
+  defp run_diagnostics!(fixture) do
+    if resource(:diagnostic) in ["capture", "capture_and_overlap"] do
+      capture_scenario!(fixture)
+      node!("reset")
+    end
+
+    if resource(:diagnostic) in ["overlap", "capture_and_overlap"],
+      do: concurrent_identity_scenario!(fixture)
+  end
+
+  defp run_scenarios!(fixture) do
+    first = capture_scenario!(fixture)
     node!("reset")
     session_id = first["sessionId"]
 
@@ -537,11 +581,13 @@ defmodule Backplane.OpenClawLiveAcceptance do
       turns = result["turns"] || []
       overlap = result["overlap"] || %{}
 
-      assert!(
-        overlap["held_until_both"] == true and overlap["model_requests"] == 2 and
-          length(overlap["arrivals"] || []) == 2 and is_binary(overlap["releasedAt"]),
-        "actual_model_request_overlap_not_proven"
-      )
+      unless overlap["held_until_both"] == true and overlap["model_requests"] == 2 and
+               length(overlap["arrivals"] || []) == 2 and is_binary(overlap["releasedAt"]) do
+        fail!("actual_model_request_overlap_not_proven", %{
+          overlap: overlap,
+          turns: capture_turn_diagnostics(turns, result)
+        })
+      end
 
       assert!(
         length(turns) == 2 and Enum.sort(Enum.map(turns, & &1["agentId"])) == ~w(main shared) and
@@ -732,10 +778,12 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
     assert!(Enum.count(events, &(&1.role == "user")) == 4, "cumulative_history_duplicated")
 
-    assert!(
-      Enum.count(events, &(&1.role == "assistant")) == 2,
-      "empty_assistant_fabricated_or_lost_messages"
-    )
+    unless Enum.count(events, &(&1.role == "assistant")) == 2 do
+      fail!("empty_assistant_fabricated_or_lost_messages", %{
+        captured_roles: Enum.frequencies_by(events, & &1.role),
+        turns: capture_turn_diagnostics(turns, node!("snapshot"))
+      })
+    end
 
     assert!(
       Enum.all?(events, &(get_in(&1.payload, ["source", "run_id"]) in runs)),
@@ -766,6 +814,56 @@ defmodule Backplane.OpenClawLiveAcceptance do
       exact_turns_completed_and_canonical_acknowledged: true,
       exact_original_content: true
     }
+  end
+
+  # Only identities, roles, equality hashes and fixed authority classifications
+  # leave the isolated runtime on a failed turn-integrity gate.
+  defp capture_turn_diagnostics(turns, snapshot) do
+    Enum.map(turns, fn turn ->
+      run = turn["runId"]
+
+      %{
+        identity: Map.take(turn, ~w(agentId sessionId sessionKey runId)),
+        terminal_state: get_in(turn, ["terminal", "payload", "state"]),
+        hooks:
+          snapshot
+          |> Map.get("actualContext", [])
+          |> Enum.filter(&(is_binary(run) and &1["runId"] == run))
+          |> Enum.map(
+            &Map.take(
+              &1,
+              ~w(hook observedAt current audienceCode delayMs toolAuthority messageBoundary)
+            )
+          ),
+        journal_turns:
+          snapshot
+          |> get_in(["journal", "turns"])
+          |> List.wrap()
+          |> Enum.filter(fn row ->
+            case Jason.decode(row["identity"] || "") do
+              {:ok, [_, _, ^run]} when is_binary(run) -> true
+              _ -> false
+            end
+          end)
+          |> Enum.map(fn row ->
+            %{
+              completed: row["completed"],
+              fence: Map.take(row["payload"] || %{}, ~w(history_count history_hash prompt_hash))
+            }
+          end),
+        deliveries:
+          snapshot
+          |> get_in(["journal", "deliveries"])
+          |> List.wrap()
+          |> Enum.filter(&(is_binary(run) and get_in(&1, ["payload", "run_id"]) == run))
+          |> Enum.map(fn row ->
+            %{
+              state: row["state"],
+              source: Map.take(row["payload"] || %{}, ~w(role occurrence_id message_index))
+            }
+          end)
+      }
+    end)
   end
 
   defp verify_projection!(fixture, session) do
@@ -1840,6 +1938,20 @@ defmodule Backplane.OpenClawLiveAcceptance do
       })
   end
 
+  # Never format exception terms or stack arguments: startup can handle credentials.
+  defp exception_frames(stacktrace) do
+    stacktrace
+    |> Enum.take(8)
+    |> Enum.flat_map(fn
+      {module, function, _arity_or_arguments, location}
+      when is_atom(module) and is_atom(function) and is_list(location) ->
+        [%{module: inspect(module), function: Atom.to_string(function), line: location[:line]}]
+
+      _ ->
+        []
+    end)
+  end
+
   defp safe_exit_diagnostic({reason, {module, function, args}})
        when is_atom(reason) and is_atom(module) and is_atom(function) and is_list(args) do
     target = List.first(args)
@@ -1861,7 +1973,6 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
   defp safe_exit_diagnostic(reason) when is_atom(reason), do: %{reason: Atom.to_string(reason)}
   defp safe_exit_diagnostic(_), do: %{reason: "unclassified"}
-
   defp guard_environment! do
     assert!(Mix.env() == :test, "BLOCKED_ENV:requires_MIX_ENV_test")
 
@@ -1873,6 +1984,14 @@ defmodule Backplane.OpenClawLiveAcceptance do
     mode = System.get_env("OPENCLAW_LIVE_MODE", "full")
     assert!(mode in ["full", "deterministic"], "BLOCKED_ENV:invalid_live_mode")
     put_resource(:mode, mode)
+    diagnostic = System.get_env("OPENCLAW_LIVE_DIAGNOSTIC")
+
+    assert!(
+      is_nil(diagnostic) or diagnostic in ["capture", "overlap", "capture_and_overlap"],
+      "BLOCKED_ENV:invalid_live_diagnostic"
+    )
+
+    put_resource(:diagnostic, diagnostic)
     partition = System.get_env("MIX_TEST_PARTITION", "")
 
     assert!(
@@ -1994,17 +2113,17 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
     model = configure_model!(name)
 
-    for key <- ~w(services.memory.enabled memory.pipeline.enabled memory.events.enabled
-      memory.events.dual_write memory.session_summary_v2.enabled memory.recall_v2.enabled
-      memory.host_sync_v2.enabled),
+    for key <- ~w(services.memory.enabled memory.pipeline.enabled
+      memory.session_summary.enabled memory.recall.enabled
+      memory.host_sync.enabled),
         do: :ok = Settings.set(key, true)
 
-    for key <- ~w(memory.window_summaries.enabled memory.procedure_extraction_v2.enabled
+    for key <- ~w(memory.window_summaries.enabled memory.procedure_extraction.enabled
       memory.relation_classifier.enabled memory.lesson_auto_extract memory.crystals_enabled
       memory.crystal_session_enabled),
         do: :ok = Settings.set(key, false)
 
-    :ok = Settings.set("memory.fact_extraction_v2.enabled", model.available)
+    :ok = Settings.set("memory.fact_extraction.enabled", model.available)
     :ok = Settings.set("memory.event_gap_grace_seconds", 1)
     :ok = Settings.set("monitor.api_usage.enabled", false)
 
@@ -2032,8 +2151,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
         sync_batch_size: 50,
         max_attempts: 5,
         tombstone_relearn: :block,
-        host_sync_v1: %{enabled: false},
-        host_sync_v2: %{enabled: false},
+        host_sync: %{enabled: false},
         import_profiles: %{}
       },
       capture: %{enabled: true, db_path: Path.join(root, "capture.db"), upload_interval_ms: 250}

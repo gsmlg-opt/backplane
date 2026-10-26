@@ -18,6 +18,6 @@ defmodule Backplane.Settings.Setting do
     setting
     |> cast(attrs, [:key, :value, :value_type, :description])
     |> validate_required([:key, :value, :value_type])
-    |> validate_inclusion(:value_type, ~w(string integer boolean json))
+    |> validate_inclusion(:value_type, ~w(string integer float boolean json))
   end
 end

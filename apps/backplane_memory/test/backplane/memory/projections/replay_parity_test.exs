@@ -12,7 +12,7 @@ defmodule Backplane.Memory.Projections.ReplayParityTest do
     previous_enabled = Application.get_env(:backplane_memory, :projection_repair_enabled)
     Application.put_env(:backplane_memory, :projection_repair_enabled, true)
 
-    keys = ~w(memory.session_summary_v2.enabled memory.window_summaries.enabled)
+    keys = ~w(memory.session_summary.enabled memory.window_summaries.enabled)
     settings = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
     Enum.each(keys, &:ets.insert(:backplane_settings, {&1, false}))
 

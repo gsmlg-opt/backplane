@@ -41,7 +41,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
       {:ok, {partition, state_attrs}} ->
         try do
           cond do
-            not Config.fact_extraction_v2_enabled?() ->
+            not Config.fact_extraction_enabled?() ->
               persist_current_result(summary, partition, state_attrs, {:skip, :disabled}, job)
 
             not model_configured?() ->
@@ -156,7 +156,7 @@ defmodule Backplane.Memory.Workers.EpisodicWorker do
 
            with {:ok, partition} <- projected_partition(summary),
                 result =
-                  if(Config.fact_extraction_v2_enabled?(), do: result, else: {:skip, :disabled}),
+                  if(Config.fact_extraction_enabled?(), do: result, else: {:skip, :disabled}),
                 outcome <- persist_result(summary, partition, state_attrs, result, job) do
              case outcome do
                {:rollback_failure, reason} -> repo().rollback({:failure, reason})

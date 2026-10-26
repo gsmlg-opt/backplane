@@ -6,9 +6,9 @@ defmodule Backplane.Memory.EdgeSyncTest do
   alias Backplane.MemorySpaces
 
   setup do
-    previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
-    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
+    previous = Backplane.Settings.get("memory.host_sync.enabled")
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", true})
+    on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync.enabled", previous}) end)
     host = Ecto.UUID.generate()
 
     repo().query!(
@@ -31,13 +31,26 @@ defmodule Backplane.Memory.EdgeSyncTest do
     assert {:error, %{code: :invalid_request, retryable: false}} =
              EdgeSync.negotiate(c.host, %{"memory_v2" => 42})
 
-    :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", false})
+    :ets.insert(:backplane_settings, {"memory.host_sync.enabled", false})
+
+    assert {:error, %{code: :unsupported_protocol, retryable: false}} =
+             EdgeSync.negotiate(c.host, Map.put(offer(), "selected", "host_memory.v1"))
 
     assert {:error, %{code: :protocol_disabled}} =
              EdgeSync.negotiate(c.host, Map.put(offer(), "selected", "host_memory.v2"))
 
-    assert {:error, %{code: :unsupported_protocol}} =
+    assert {:error, %{code: :unsupported_protocol, retryable: false}} =
              EdgeSync.negotiate(c.host, %{"memory" => %{"protocol" => "host_memory.v1"}})
+  end
+
+  test "legacy-only offers are unsupported even when current host sync is enabled", c do
+    assert {:error, %{code: :unsupported_protocol, retryable: false}} =
+             EdgeSync.negotiate(c.host, %{"memory" => %{"protocol" => "host_memory.v1"}})
+
+    assert {:error, %{code: :unsupported_protocol, retryable: false}} =
+             EdgeSync.negotiate(c.host, %{
+               "memory_v2" => %{"offers" => ["host_memory.v1"], "partitions" => []}
+             })
   end
 
   test "initial snapshot is durable and only its bound activation advances the cursor", c do

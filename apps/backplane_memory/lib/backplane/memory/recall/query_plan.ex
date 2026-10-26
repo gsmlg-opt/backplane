@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.Recall.QueryPlan do
-  @moduledoc "Typed, partition-complete input to the Recall V2 pipeline."
+  @moduledoc "Typed, partition-complete input to the Recall pipeline."
 
   alias Backplane.Memory.Numeric
   alias Backplane.Memory.PartitionIdentity

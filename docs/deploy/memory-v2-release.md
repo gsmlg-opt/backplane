@@ -62,10 +62,11 @@ For the current single Memory implementation, require server migrations through
 Memory workers before migration. The forward-only retirement migrates provable
 observation references to canonical event identities, rewrites pending jobs, and
 quarantines host commands whose historical authority or outcome cannot be proved.
-Keep `memory.host_sync_v2.enabled` false and host edge disabled until exact
-partition entitlement, issue dispositions, recoverable snapshot frontier,
-host protection, and A–J qualification pass. Enable V2 only for approved
-dev/test plaintext hosts while [concord#91](https://github.com/gsmlg-dev/concord/issues/91)
+The single `memory.host_sync.enabled` mirror-delivery policy defaults true;
+version-named configuration keys are neither read nor migrated. Keep host edge
+persistence disabled until exact partition entitlement, issue dispositions,
+recoverable snapshot frontier, host protection, and A–J qualification pass.
+Enable the mirror only for approved dev/test plaintext hosts while [concord#91](https://github.com/gsmlg-dev/concord/issues/91)
 remains open; production edge persistence must remain disabled. Commands use
 authenticated `memory_commands.v2` independently of optional mirror delivery.
 No V1 writer, fact cache, wipe compatibility or runtime selector remains. Use the
@@ -85,7 +86,7 @@ No V1 writer, fact cache, wipe compatibility or runtime selector remains. Use th
 
 ## Rollback that preserves accepted events
 
-Before a host-edge binary rollback, disable `memory.host_sync_v2.enabled` and
+Before a host-edge binary rollback, disable `memory.host_sync.enabled` and
 host edge config. Preserve the capture spool, command outbox (including V3
 `remote_revision`), edge DB, server cursors, and issued deliveries as evidence;
 do not translate historical fact hashes into canonical revisions or requeue

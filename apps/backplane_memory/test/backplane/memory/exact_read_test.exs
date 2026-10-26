@@ -416,6 +416,28 @@ defmodule Backplane.Memory.ExactReadTest do
              )
   end
 
+  test "disabled recall refuses current constraints without a legacy fallback", c do
+    previous = :ets.lookup(:backplane_settings, "memory.recall.enabled")
+    :ets.insert(:backplane_settings, {"memory.recall.enabled", false})
+
+    on_exit(fn ->
+      :ets.delete(:backplane_settings, "memory.recall.enabled")
+      :ets.insert(:backplane_settings, previous)
+    end)
+
+    args = %{
+      "query" => "disabled canonical recall",
+      "project" => "project-a",
+      "session_id" => "session-a",
+      "agent_id" => "agent-a",
+      "tag" => "tag-a",
+      "token_budget" => 100
+    }
+
+    assert {:error, :recall_disabled} = Service.call("memory::recall", args, c.auth)
+    assert {:error, :unauthorized} = Service.call("memory::recall", args, %{c.auth | scopes: []})
+  end
+
   test "canonical recall applies supported constraints and rejects malformed values", c do
     memory =
       remember!(c, "constraintneedle user preference", metadata: %{"project" => "project-a"})

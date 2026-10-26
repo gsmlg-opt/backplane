@@ -64,6 +64,16 @@ class HermesContractTest(unittest.TestCase):
             self.assertNotIn("private-credential",json.dumps(result)+stderr.getvalue())
             self.assertTrue(stream.closed)
 
+    def test_partition_mismatch_retains_its_safe_terminal_http_code(self):
+        stream=io.BytesIO(b'{"ok":false,"error":"partition_mismatch","detail":"private-credential"}')
+        error=HTTPError("url",400,"private-credential",{},stream)
+        with patch.object(plugin,"urlopen",side_effect=error),patch("sys.stderr",new_callable=io.StringIO) as stderr:
+            result=json.loads(self.provider.handle_tool_call("memory_list",{"scope":"other-project"}))
+        self.assertEqual(result,{"success":False,"error":"partition_mismatch","http_status":400})
+        self.assertNotIn("private-credential",json.dumps(result)+stderr.getvalue())
+        self.assertTrue(stream.closed)
+        self.assertIn("partition_mismatch",plugin.TERMINAL_CODES)
+
     def test_generic_tools_preserve_bound_scope_and_explicit_scope_authorization(self):
         with patch.object(plugin,"_post",return_value={"ok":True,"result":{"results":[]}}) as post:
             self.provider.handle_tool_call("memory_save",{"content":"fact"})
@@ -440,10 +450,14 @@ class SmokeContractTest(unittest.TestCase):
             {"success": False, "error": "http_error", "http_status": 500},
             {"success": False, "error": "invalid_scope", "http_status": 500},
             {"success": False, "error": "request_failed", "http_status": 400},
+            {"success": False, "error": "http_error", "http_status": 400},
+            {"success": False, "error": "partition_mismatch", "http_status": 500},
+            {"success": False, "error": "partition_mismatch", "http_status": 200},
+            {"success": True, "error": "partition_mismatch", "http_status": 400},
         ]:
             with self.subTest(result=result), self.assertRaises(AssertionError):
                 smoke.validate_scope_rejection(result)
-        for code in ["invalid_scope", "unknown_scope", "invalid_arguments", "invalid_request"]:
+        for code in ["invalid_scope", "unknown_scope", "invalid_arguments", "invalid_request", "partition_mismatch"]:
             smoke.validate_scope_rejection({"success": False, "error": code, "http_status": 400})
 
 

@@ -1,4 +1,4 @@
-# Host memory V2 protocol and authority
+# Host memory protocol and authority
 
 Backplane's `:backplane_memory` app owns canonical events, memories, partitions,
 entitlements, revisions, and governance. The host agent owns a durable capture
@@ -131,15 +131,16 @@ results. Host recovery results include `duplicate`, `snapshot_required`,
 `edge_storage_unavailable`, and `integrity_mismatch`. Error envelopes contain
 bounded identifiers, never memory content or secrets.
 
-## Compatibility and protection
+## Configuration and protection
 
-`memory.host_sync_v2.enabled` controls mirror delivery only and defaults false.
-Authenticated Access and commands negotiate independently of that switch. With
+`memory.host_sync.enabled` is the single mirror-delivery control and defaults
+true. Version-named settings are neither read nor migrated. Authenticated Access
+and commands negotiate independently of that switch. With
 mirror delivery disabled, the inventory exposes no `deliver` capability, no
 delivery partitions and zero offline read lease; `memory_next` and `memory_ack`
 return `protocol_disabled`. Enabling commands never enables an unprotected mirror.
 V1 uploader, facts, wipes, receipts and reconciliation are retired runtime paths.
-The V2 mirror remains a separate protected Turso database with item/byte/type
+The edge mirror remains a separate protected Turso database with item/byte/type
 quotas, priority and expiry eviction, and active-generation reads.
 
 Command-store migration V7 preserves unbound historical rows and quarantines

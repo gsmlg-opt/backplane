@@ -539,24 +539,31 @@ defmodule Backplane.Memory.ServiceTest do
 
   describe "handle_recall/1" do
     setup do
+      restore_recall_settings_on_exit()
       restore_recall_task_supervisor_on_exit()
-      restore_recall_v2_settings_on_exit()
-      supervisor = start_supervised!(Task.Supervisor)
-      Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
-      :ets.insert(:backplane_settings, {"memory.recall_trace_enabled", false})
-      :ok
-    end
 
-    test "flag-enabled authenticated recall uses V2 with exact authorized partition and provenance" do
-      restore_recall_v2_settings_on_exit()
+      supervisor =
+        start_supervised!(
+          {Task.Supervisor,
+           name: String.to_atom("service-recall-#{System.unique_integer([:positive])}")}
+        )
+
+      Application.put_env(:backplane_memory, :recall_task_supervisor, supervisor)
       :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
-      :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", true})
-      :ets.insert(:backplane_settings, {"memory.recall_trace_enabled", true})
+      :ets.insert(:backplane_settings, {"memory.recall.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.recall_trace_enabled", false})
+      :ets.insert(:backplane_settings, {"memory.embed_model", nil})
 
       :ets.insert(
         :backplane_settings,
         {"memory.recall_channel_weights", %{"fts" => 1, "vector" => 0, "graph" => 0}}
       )
+
+      :ok
+    end
+
+    test "enabled authenticated recall uses the current pipeline with exact authorized partition and provenance" do
+      :ets.insert(:backplane_settings, {"memory.recall_trace_enabled", true})
 
       host = create_memory_host!("recall-v2", "scope:recall-v2")
       auth = memory_auth(host)
@@ -653,33 +660,76 @@ defmodule Backplane.Memory.ServiceTest do
                Service.handle_recall(%{"query" => "public", "surprise" => true}, auth)
     end
 
-    test "stale disabled flags cannot select an old recall algorithm" do
-      restore_recall_v2_settings_on_exit()
+    test "disabled recall fails without running legacy lexical or embedding search" do
+      :ets.insert(:backplane_settings, {"memory.recall.enabled", false})
+
+      {:ok, _memory} =
+        Memories.remember("disabled recall exact lexical match",
+          agent_id: "disabled-agent",
+          host_id: "disabled-host",
+          scope: "disabled-scope"
+        )
+
+      test_pid = self()
+      previous = Req.default_options()
+
+      Req.default_options(
+        Keyword.put(previous, :adapter, fn request ->
+          send(test_pid, :unexpected_recall_embedding)
+          {request, Req.Response.new(status: 503, body: %{})}
+        end)
+      )
+
+      on_exit(fn -> Req.default_options(previous) end)
+      :ets.insert(:backplane_settings, {"memory.embed_model", "disabled-test-model"})
+
+      assert {:error, :recall_disabled} =
+               trusted_call("memory::recall", %{
+                 "query" => "disabled recall exact lexical match",
+                 "host_id" => "disabled-host",
+                 "scope" => "disabled-scope"
+               })
+
+      assert {:error, :recall_disabled} =
+               trusted_call("memory::smart_search", %{"query" => "disabled recall"})
+
+      refute_received :unexpected_recall_embedding
+    end
+
+    test "pausing background processing and stale selectors preserve canonical recall" do
       :ets.insert(:backplane_settings, {"memory.pipeline.enabled", false})
       :ets.insert(:backplane_settings, {"memory.recall_v2.enabled", false})
 
       {:ok, memory} =
-        Memories.remember("legacy parity recall",
-          agent_id: "legacy-agent",
-          host_id: "legacy-host",
-          scope: "legacy-scope"
+        Memories.remember("background independent recall",
+          agent_id: "independent-agent",
+          host_id: "independent-host",
+          scope: "independent-scope"
         )
 
-      assert {:ok, %{results: [%{id: id} = result]} = response} =
-               trusted_call("memory::recall", %{
-                 "query" => "legacy parity recall",
-                 "scope" => "legacy-scope"
-               })
+      for tool <- ["memory::recall", "memory::smart_search"] do
+        assert {:ok, %{results: [%{id: id} = result]} = response} =
+                 trusted_call(tool, %{
+                   "query" => "background independent recall",
+                   "host_id" => "independent-host",
+                   "scope" => "independent-scope"
+                 })
 
-      assert id == memory.id
-      assert response.status == :ok
-      assert is_integer(response.used_tokens)
-      assert result.kind == :memory
-      assert result.relevance_accepted
-      assert result.evidence_refs != []
+        assert id == memory.id
+        assert response.status == :ok
+        assert is_integer(response.used_tokens)
+        assert result.kind == :memory
+        assert result.relevance_accepted
+        assert result.evidence_refs != []
+      end
     end
 
     test "falls back to ranked lexical search when the configured embedder returns 503" do
+      :ets.insert(
+        :backplane_settings,
+        {"memory.recall_channel_weights", %{"fts" => 1, "vector" => 1, "graph" => 0}}
+      )
+
       scope = "service-embedding-503-fallback-#{System.unique_integer([:positive])}"
 
       {:ok, strongest} =
@@ -691,7 +741,9 @@ defmodule Backplane.Memory.ServiceTest do
         )
 
       {:ok, weaker} =
-        Memories.remember("gateway fallback signal",
+        Memories.remember(
+          "gateway request retries are bounded while fallback recovery waits for an upstream signal. " <>
+            "The remaining operational details describe unrelated connection maintenance and health checks.",
           agent_id: "service-fallback-agent",
           host_id: "service-fallback-host",
           scope: scope
@@ -721,11 +773,12 @@ defmodule Backplane.Memory.ServiceTest do
         end
       end)
 
-      assert {:ok, %{results: results}} =
+      assert {:ok, %{results: results, channels: channels}} =
                trusted_call("memory::recall", %{
                  "query" => "gateway fallback signal",
                  "limit" => 2,
-                 "scope" => scope
+                 "scope" => scope,
+                 "host_id" => "service-fallback-host"
                })
 
       assert_receive {:embedding_request, %{"model" => "service-fallback-test-model"}}
@@ -745,7 +798,8 @@ defmodule Backplane.Memory.ServiceTest do
                trusted_call("memory::recall", %{
                  "query" => "service recall",
                  "limit" => 5,
-                 "scope" => "service"
+                 "scope" => "service",
+                 "host_id" => "h"
                })
 
       assert id == mem.id
@@ -756,7 +810,7 @@ defmodule Backplane.Memory.ServiceTest do
                trusted_call("memory::recall", %{"query" => "no-such-recall-contract-term"})
     end
 
-    test "applies scope, agent, host, and tag filters" do
+    test "canonical recall and exact list apply supported agent and tag filters" do
       {:ok, target} =
         Memories.remember("filtered recall contract target",
           agent_id: "filtered-agent",
@@ -773,9 +827,26 @@ defmodule Backplane.Memory.ServiceTest do
           tags: ["other-tag"]
         )
 
+      for filters <- [%{"agent_id" => "filtered-agent"}, %{"tag" => "filtered-tag"}] do
+        assert {:ok, %{results: [%{id: id}]}} =
+                 trusted_call(
+                   "memory::recall",
+                   Map.merge(
+                     %{
+                       "query" => "filtered recall contract",
+                       "host_id" => "filtered-host",
+                       "scope" => "filtered-scope"
+                     },
+                     filters
+                   )
+                 )
+
+        assert id == target.id
+      end
+
       assert {:ok, %{results: [%{id: id}]}} =
-               trusted_call("memory::recall", %{
-                 "query" => "filtered recall contract",
+               trusted_call("memory::list", %{
+                 "q" => "filtered recall contract",
                  "scope" => "filtered-scope",
                  "agent_id" => "filtered-agent",
                  "host_id" => "filtered-host",
@@ -800,7 +871,8 @@ defmodule Backplane.Memory.ServiceTest do
       assert {:ok, %{results: results}} =
                trusted_call("memory::recall", %{
                  "query" => "default recall contract",
-                 "scope" => scope
+                 "scope" => scope,
+                 "host_id" => "recall-limit-host"
                })
 
       assert length(results) == 10
@@ -1199,11 +1271,11 @@ defmodule Backplane.Memory.ServiceTest do
   describe "handle_consolidate/1" do
     test "consolidates the selected canonical session with revision progress and idempotent jobs" do
       keys =
-        ~w(memory.pipeline.enabled memory.session_summary_v2.enabled memory.window_summaries.enabled)
+        ~w(memory.pipeline.enabled memory.session_summary.enabled memory.window_summaries.enabled)
 
       previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
       :ets.insert(:backplane_settings, {"memory.pipeline.enabled", true})
-      :ets.insert(:backplane_settings, {"memory.session_summary_v2.enabled", true})
+      :ets.insert(:backplane_settings, {"memory.session_summary.enabled", true})
       :ets.insert(:backplane_settings, {"memory.window_summaries.enabled", false})
 
       on_exit(fn ->
@@ -1450,12 +1522,14 @@ defmodule Backplane.Memory.ServiceTest do
     }
   end
 
-  defp restore_recall_v2_settings_on_exit do
+  defp restore_recall_settings_on_exit do
     keys = [
       "memory.pipeline.enabled",
+      "memory.recall.enabled",
       "memory.recall_v2.enabled",
       "memory.recall_trace_enabled",
-      "memory.recall_channel_weights"
+      "memory.recall_channel_weights",
+      "memory.embed_model"
     ]
 
     snapshot = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})

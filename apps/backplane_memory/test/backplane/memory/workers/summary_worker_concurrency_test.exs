@@ -2,7 +2,7 @@ defmodule Backplane.Memory.Workers.SummaryWorkerConcurrencyTest do
   use ExUnit.Case, async: false
 
   setup do
-    keys = ~w(memory.pipeline.enabled memory.session_summary_v2.enabled)
+    keys = ~w(memory.pipeline.enabled memory.session_summary.enabled)
     previous = Map.new(keys, &{&1, :ets.lookup(:backplane_settings, &1)})
     Enum.each(keys, &:ets.insert(:backplane_settings, {&1, true}))
 

@@ -23,7 +23,10 @@ defmodule Backplane.Memory.EdgeSync do
         not is_map(v2) or "host_memory.v2" not in v2["offers"] ->
           {:error, :unsupported_protocol}
 
-        Config.host_sync_v2_enabled?() or "memory_access.v1" in Map.get(v2, "extensions", []) ->
+        offer["selected"] not in [nil, "host_memory.v2"] ->
+          {:error, :unsupported_protocol}
+
+        Config.host_sync_enabled?() or "memory_access.v1" in Map.get(v2, "extensions", []) ->
           store().negotiate(host, v2)
 
         true ->
@@ -81,7 +84,7 @@ defmodule Backplane.Memory.EdgeSync do
       cond do
         is_nil(request["protocol"]) -> {:error, :invalid_request}
         request["protocol"] != "host_memory.v2" -> {:error, :unsupported_protocol}
-        not Config.host_sync_v2_enabled?() -> {:error, :protocol_disabled}
+        not Config.host_sync_enabled?() -> {:error, :protocol_disabled}
         not is_map(request["partition"]) -> {:error, :invalid_request}
         true -> :ok
       end

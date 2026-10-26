@@ -38,7 +38,7 @@ TIMEOUT = 20
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 SOURCE_RECONCILE_INTERVAL = 30
 ERROR_CODES = {
-    "invalid_scope", "unknown_scope", "memory_scope_mismatch", "invalid_arguments", "invalid_request",
+    "invalid_scope", "unknown_scope", "memory_scope_mismatch", "partition_mismatch", "invalid_arguments", "invalid_request",
     "unauthorized", "forbidden", "access_denied", "not_found", "binding_changed", "unknown_scope",
     "invalid_source_mutation", "invalid_source_reconcile", "idempotency_conflict", "event_conflict",
     "unsupported_protocol", "unsupported_integration", "unsupported_hook", "source_revision_conflict",
@@ -429,8 +429,23 @@ class BackplaneMemoryProvider(MemoryProvider):
         if response.get("error") in {"unauthorized", "forbidden", "access_denied", "memory_access_revoked", "memory_access_denied", "memory_scope_mismatch", "source_binding_mismatch"}:
             self._block_delivery(response["error"])
             return False
-        if not result or result.get("protocol") != "memory_sources.v1" or result.get("supported") is not True:
+        if result is None:
             self._peer = {"state": "unsupported" if response.get("http_status") in {400, 404} else "unavailable"}
+            self._invalidate_context()
+            return False
+        if result.get("protocol") != "memory_sources.v1" or result.get("supported") is not True:
+            self._peer = {"state": "unsupported"}
+            self._invalidate_context()
+            return False
+        # An unready peer may legitimately have no authority binding yet. Only a
+        # ready negotiation can pin or be compared with the journal's identity.
+        negotiated = result.get("negotiated")
+        if not isinstance(negotiated, list) or "memory_sources.v1" not in negotiated:
+            self._peer = {"state": "not_negotiated"}
+            self._invalidate_context()
+            return False
+        if result.get("ready") is not True:
+            self._peer = {"state": "not_ready"}
             self._invalidate_context()
             return False
         fingerprint = result.get("binding_fingerprint")
@@ -445,9 +460,6 @@ class BackplaneMemoryProvider(MemoryProvider):
             self._block_delivery("binding_changed")
             return False
         self._check_capture_binding(result)
-        if result.get("ready") is not True or "memory_sources.v1" not in result.get("negotiated", []):
-            self._peer = {"state": "not_negotiated"}
-            return False
         self._journal.set("binding_fingerprint", fingerprint)
         self._peer = {**result, "state": "ready"}
         return True
@@ -458,7 +470,7 @@ class BackplaneMemoryProvider(MemoryProvider):
         fingerprint = result.get("capture_binding_fingerprint")
         saved = self._journal.get("capture_binding_fingerprint")
         valid = isinstance(capture_binding, dict) and isinstance(fingerprint, str) and hashlib.sha256(canonical_json(capture_binding).encode()).hexdigest() == fingerprint
-        mismatch = result.get("capture_error") == "capture_binding_mismatch" or saved and saved != fingerprint
+        mismatch = result.get("capture_error") == "capture_binding_mismatch" or saved and valid and saved != fingerprint
         if state == "capture_binding_mismatch" or mismatch:
             state = "capture_binding_mismatch"
         elif result.get("capture_ready") is True and "hermes_capture.v1" in result.get("negotiated", []) and valid:

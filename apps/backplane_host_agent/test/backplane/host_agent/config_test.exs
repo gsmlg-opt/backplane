@@ -185,7 +185,7 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: Path.join(work_dir, "memory/host_agent_memory.db"),
-             host_sync_v2: %{
+             host_sync: %{
                enabled: false,
                development_plaintext: false,
                db_path: Path.join(work_dir, "memory/edge_memory.db"),
@@ -425,7 +425,7 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: db_path,
-             host_sync_v2: %{
+             host_sync: %{
                enabled: false,
                development_plaintext: false,
                db_path: Path.join(tmp_dir, "work/memory/edge_memory.db"),
@@ -458,7 +458,7 @@ defmodule Backplane.HostAgent.ConfigTest do
       host_id: host-123
       work_dir: #{tmp_dir}
     memory:
-      host_sync_v2:
+      host_sync:
         max_items: 12
         max_bytes: 4096
         max_items_per_partition: 7
@@ -470,7 +470,7 @@ defmodule Backplane.HostAgent.ConfigTest do
     """)
 
     assert {:ok, config} = Config.load(config_path)
-    edge = config.memory.host_sync_v2
+    edge = config.memory.host_sync
     assert edge.max_items == 12
     assert edge.max_bytes == 4096
     assert edge.max_items_per_partition == 7

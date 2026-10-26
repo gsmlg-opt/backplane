@@ -329,7 +329,7 @@ defmodule Backplane.Memory.SharedCommandsTest do
 
     settings = %{
       "memory.pipeline.enabled" => true,
-      "memory.recall_v2.enabled" => true,
+      "memory.recall.enabled" => true,
       "memory.recall_trace_enabled" => true,
       "memory.recall_channel_weights" => %{"fts" => 1, "vector" => 0, "graph" => 0}
     }
@@ -548,7 +548,7 @@ defmodule Backplane.Memory.SharedCommandsTest do
   test "shared recall discards retrieval if authority or credential changes before release" do
     settings = %{
       "memory.pipeline.enabled" => true,
-      "memory.recall_v2.enabled" => true,
+      "memory.recall.enabled" => true,
       "memory.recall_trace_enabled" => true,
       "memory.recall_channel_weights" => %{"fts" => 1, "vector" => 0, "graph" => 0}
     }

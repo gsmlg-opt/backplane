@@ -6,7 +6,7 @@ defmodule Backplane.HostAgent.AgentChannelTest do
   setup do
     previous_services = Application.get_env(:backplane_host_agent, :local_services)
     previous_syncer = Application.get_env(:backplane_host_agent, :edge_syncer_module)
-    previous_edge = Application.get_env(:backplane_host_agent, :memory_host_sync_v2)
+    previous_edge = Application.get_env(:backplane_host_agent, :memory_host_sync)
     :persistent_term.put({__MODULE__.FakeService, :owner}, self())
     Application.put_env(:backplane_host_agent, :local_services, [__MODULE__.FakeService])
 
@@ -20,7 +20,7 @@ defmodule Backplane.HostAgent.AgentChannelTest do
       :persistent_term.erase({__MODULE__.FakeService, :owner})
       :persistent_term.erase({FakeSyncer, :owner})
       restore_env(:edge_syncer_module, previous_syncer)
-      restore_env(:memory_host_sync_v2, previous_edge)
+      restore_env(:memory_host_sync, previous_edge)
     end)
   end
 

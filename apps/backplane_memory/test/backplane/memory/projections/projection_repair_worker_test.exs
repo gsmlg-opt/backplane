@@ -145,7 +145,7 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
   end
 
   test "a late canonical event automatically repairs only its captured session" do
-    gate = "memory.session_summary_v2.enabled"
+    gate = "memory.session_summary.enabled"
     previous = :ets.lookup(:backplane_settings, gate)
     :ets.insert(:backplane_settings, {gate, false})
 

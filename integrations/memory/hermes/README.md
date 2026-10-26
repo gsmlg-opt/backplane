@@ -33,6 +33,17 @@ memory:
   provider: backplane-memory
 ```
 
+The hub's single `memory.host_sync.enabled` policy defaults to true. Establish a
+fresh host connection after changing it. Only the current sync implementation is
+supported; there is no older-protocol fallback or version selector. The host's
+local `memory.host_sync.enabled` controls edge persistence and can remain false.
+Verify `source_capabilities` reports `ready=true`,
+`capture_ready=true` and valid bindings; `contracts` alone advertises only local
+implementation support. An unready null binding is `not_negotiated`, not a corrupt
+fingerprint. Reconnect/restart the complete host and hub when their running
+negotiation does not reflect the installed code and policy. Preserve delivery
+journals and existing access grants during recovery.
+
 `hermes memory setup` writes nonsecret settings to
 `$HERMES_HOME/backplane-memory.json`. Settings are loaded at initialization;
 restart Hermes after changing them. Existing environment variables override the

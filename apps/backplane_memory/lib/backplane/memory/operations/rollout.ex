@@ -5,19 +5,19 @@ defmodule Backplane.Memory.Operations.Rollout do
   @stages [
     %{key: "memory.window_summaries.enabled", label: "Window summaries", gate: :window_summaries},
     %{
-      key: "memory.session_summary_v2.enabled",
+      key: "memory.session_summary.enabled",
       label: "Session summaries",
-      gate: :session_summary_v2
+      gate: :session_summary
     },
     %{
-      key: "memory.fact_extraction_v2.enabled",
+      key: "memory.fact_extraction.enabled",
       label: "Fact extraction",
-      gate: :fact_extraction_v2
+      gate: :fact_extraction
     },
     %{
-      key: "memory.procedure_extraction_v2.enabled",
+      key: "memory.procedure_extraction.enabled",
       label: "Procedure extraction",
-      gate: :procedure_extraction_v2
+      gate: :procedure_extraction
     }
   ]
   @stage_gates Map.new(@stages, &{&1.gate, &1.key})
@@ -35,7 +35,7 @@ defmodule Backplane.Memory.Operations.Rollout do
       later:
         Enum.map(@stages, fn stage ->
           configured = values[stage.key] == true
-          model_required = stage.gate in [:fact_extraction_v2, :procedure_extraction_v2]
+          model_required = stage.gate in [:fact_extraction, :procedure_extraction]
           effective = configured and enabled and (not model_required or model_ready)
 
           reason =
