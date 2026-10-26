@@ -3,12 +3,16 @@ defmodule Backplane.HostAgent.Memory.Edge.Protection do
   @build_env Mix.env()
 
   if @build_env in [:dev, :test] do
+    def plaintext_development?(config), do: status(config) == :plaintext_development
+
     defp development_status(config) do
       if Map.get(config, :development_plaintext) == true,
         do: :plaintext_development,
         else: :protection_unavailable
     end
   else
+    def plaintext_development?(_config), do: false
+
     defp development_status(_config), do: :protection_unavailable
   end
 

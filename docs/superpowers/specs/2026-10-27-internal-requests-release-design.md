@@ -2,19 +2,24 @@
 
 Date: 2026-10-27
 
-Status: proposed feature designs awaiting user approval. #118 is implemented and
-locally verified; publication has not started. Planned version: 1.10.43, subject
-to verifying that it is still the next unpublished version before dispatch.
+Status: approved features and minimum release-validation corrections implemented
+and independently reviewed. The complete local runtime package verifier passes,
+including 1107 runtime tests, 216 Conversation tests, native PTY consumers and the
+real Sigma source probe. The AI protocol suite passes 191 tests; Memory edge
+qualification passes 10 tests and the Events Store regressions pass 19 tests.
+Planned version: 1.10.43, rechecked as the next unpublished version on 2026-10-27.
+Exact-source remote CI and official publication remain delivery gates; no release
+has been dispatched.
 
 ## Frozen scope
 
 | Issue | Change | State |
 | --- | --- | --- |
-| [#115](https://github.com/gsmlg-opt/backplane/issues/115) | First-party Linux PTY within the existing native command lifecycle | Proposed design |
-| [#116](https://github.com/gsmlg-opt/backplane/issues/116) | Canonical inline user PDFs for Anthropic and Google | Proposed design |
-| [#117](https://github.com/gsmlg-opt/backplane/issues/117) | Restore settled archived child identity/history, then explicitly follow up | Proposed design |
-| [#118](https://github.com/gsmlg-opt/backplane/issues/118) | Treat a procfs ESRCH entry as vanished while continuing group reconciliation | Implemented locally in `bded83d2` |
-| [#119](https://github.com/gsmlg-opt/backplane/issues/119) | Reconcile failed child, manager, Registry and Session closure from exact evidence | Proposed design |
+| [#115](https://github.com/gsmlg-opt/backplane/issues/115) | First-party Linux PTY within the existing native command lifecycle | Implemented; publication pending |
+| [#116](https://github.com/gsmlg-opt/backplane/issues/116) | Canonical inline user PDFs for Anthropic and Google | Implemented; publication pending |
+| [#117](https://github.com/gsmlg-opt/backplane/issues/117) | Restore settled archived child identity/history, then explicitly follow up | Implemented; publication pending |
+| [#118](https://github.com/gsmlg-opt/backplane/issues/118) | Treat a procfs ESRCH entry as vanished while continuing group reconciliation | Published baseline commit `d9d2f539` |
+| [#119](https://github.com/gsmlg-opt/backplane/issues/119) | Reconcile failed child, manager, Registry and Session closure from exact evidence | Implemented; publication pending |
 
 New requests arriving after this snapshot are outside the batch. Implementation
 stays in the owning runtime and AI protocol packages with necessary package,
@@ -59,14 +64,74 @@ configuration or timeout change.
 These are source-checkout checks, not whole-repository CI, official-package
 acceptance or downstream Sigma acceptance. Those gates follow implementation.
 
+## Integrated verification and remaining gates
+
+Source checks passed for warnings-as-errors development and production
+compilation, full strict Credo and Dialyzer under the exact CI compiler, workflow
+contracts, release configuration, all six Docker build
+contract tests and the final integrated diff. A locally assembled gateway OTP
+release contains exactly one runtime PTY helper and its capability probe succeeds.
+Genuine independent-BEAM recovery is
+documented in [cold recovery verification](../plans/2026-10-27-cold-recovery-verification.md).
+These checks do not establish official publication or ARM execution.
+
+The user subsequently authorized the minimum release-validation corrections:
+align stale Memory qualification fixtures with current access/command contracts,
+preserve behavior while clearing Credo and production compiler findings, and
+refresh the in-repository Sigma source consumer. This authorizes no new Memory
+feature, downstream edit, deployment or service restart. The existing CI compiler
+already passes formatting; no formatting-only Memory edit is needed.
+
+The Memory qualification fixtures now use the actual Access owners, explicit
+offline leases, persistent command settlement and current immutable ACK/delta
+contracts. They retain real server transfers, denial and convergence assertions.
+The Events Store change only moves an unchanged metadata predicate before its
+conditional; full strict Credo passes. Production protection callers use an
+explicit development capability which is always false in production. Strict
+production compilation and 62 relevant host-agent regressions pass without
+changing protection policy.
+
+The in-repository Sigma probe compiles 17 selected current provider/tool sources
+and exercises native tool construction plus a two-turn Conversation using the
+actual extracted AI Protocol package. The complete package verifier passes with
+this probe enabled. The selected inputs in the dirty sibling Sigma checkout at
+`f30be139cade36a2cb70af32e99a0a67203b425e` remain unchanged across verification.
+This proves local source compatibility, not Sigma production acceptance. No
+downstream source change or skipped failure is part of the repair.
+
+An additional local whole-API run reports 298 tests and three failures outside
+the changed paths: the pinned OpenAI audio SDK is absent, and two audio deadline
+tests time out before provider dispatch. The unchanged audio pipeline performs
+its media capability probes before dispatch and does not use the modified
+Runtime or AI codec paths. No audio repair or relaxed assertion is included.
+Exact-source remote API CI, which provisions its own media tools and pinned SDK,
+must pass before publication.
+
+Local Dialyzer uses Elixir 1.18.5 and reports supervised-Task opaque-reference
+warnings, including the new reconciliation callsite. The existing CI compiler is
+Elixir 1.19.5, whose Task reference construction addresses that toolchain boundary.
+The isolated reproduction has one warning under local 1.18.5 and none under CI's
+exact 1.19.5/OTP 28.5.0.5 pair; both execute correctly. Full-project Dialyzer also
+passes under that exact CI pair with the existing ignore file unchanged. No
+runtime workaround or warning suppression is part of this change.
+The current full-project format check also passes with that exact pair; the
+local 1.18.5 acceptance-file formatting difference requires no source change.
+
 ## Delivery boundary
 
-Work remains on the current `main`; create no branch or Git worktree. Preserve
-and exclude the unrelated unpublished Memory commit `793cd3cf`. Remote main also
-contains an independent already published documentation commit `48f6303d`.
-Do not push local whole history and accidentally publish Memory. Construct and
-audit the scoped publication against actual remote main, preserving existing local
-history, then run CI on that exact intended release source.
+Work remains on the current `main`; create no branch or Git worktree. At design
+time the unrelated Memory commit `793cd3cf` was unpublished and excluded from
+this task. Before approved execution, an independent task rebased and published
+that work as `dd7813d2`, together with equivalent #118/design commits `d9d2f539`
+and `d153846a`. The current checkout and actual remote main now agree at
+`d153846a`; this task did not perform that rebase/publication. Preserve this
+already published baseline. Memory feature changes remain outside the implementation scope.
+Audit each new scoped commit and qualify the exact intended release source.
+
+The later scope approval includes only the release-validation corrections above.
+The published Memory baseline is retained; no unrelated commits are republished
+or removed. A task-owned migrated test database is used for local qualification,
+leaving the existing shared test database unchanged.
 
 After approved implementation, complete focused tests, required package/workflow
 contracts and CI. Use canonical `.github/workflows/release.yml` from main with the

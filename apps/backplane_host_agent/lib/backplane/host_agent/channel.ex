@@ -112,7 +112,7 @@ defmodule Backplane.HostAgent.Channel do
     config = Application.get_env(:backplane_host_agent, :memory_host_sync_v2, %{})
     mirror_module = Application.get_env(:backplane_host_agent, :edge_mirror_module, Mirror)
 
-    if Protection.status(config) == :plaintext_development do
+    if Protection.plaintext_development?(config) do
       case mirror_module.offer(config: config) do
         {:ok, %{"offers" => ["host_memory.v2"], "partitions" => _} = offer} -> {:ok, offer}
         _ -> :disabled

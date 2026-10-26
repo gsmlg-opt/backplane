@@ -611,16 +611,17 @@ defmodule Backplane.Memory.Events.Store do
 
   defp ensure_stream_metadata_consistent(stream, %Event{schema_version: version} = event)
        when not is_nil(version) do
-    if Enum.any?(
-         [:memory_space_id, :host_id, :client_id, :scope, :namespace, :session_id],
-         fn key ->
-           left = Map.get(stream, key)
-           right = Map.get(event, key)
-           not is_nil(left) and not is_nil(right) and left != right
-         end
-       ),
-       do: {:error, :stream_metadata_conflict},
-       else: :ok
+    mismatch? =
+      Enum.any?(
+        [:memory_space_id, :host_id, :client_id, :scope, :namespace, :session_id],
+        fn key ->
+          left = Map.get(stream, key)
+          right = Map.get(event, key)
+          not is_nil(left) and not is_nil(right) and left != right
+        end
+      )
+
+    if mismatch?, do: {:error, :stream_metadata_conflict}, else: :ok
   end
 
   defp ensure_stream_metadata_consistent(_stream, _event), do: :ok

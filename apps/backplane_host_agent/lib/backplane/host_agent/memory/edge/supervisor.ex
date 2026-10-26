@@ -7,10 +7,7 @@ defmodule Backplane.HostAgent.Memory.Edge.Supervisor do
   def status(config), do: Protection.status(config)
 
   def start_link(config) do
-    case status(config) do
-      :plaintext_development -> start_isolated(config)
-      _ -> :ignore
-    end
+    if Protection.plaintext_development?(config), do: start_isolated(config), else: :ignore
   end
 
   defp start_isolated(config) do

@@ -90,10 +90,11 @@ defmodule Backplane.HostAgent.Memory.Mirror do
   end
 
   defp protection(opts) do
-    case Protection.status(Keyword.get(opts, :config, %{})) do
-      :plaintext_development -> :ok
-      reason -> {:error, reason}
-    end
+    config = Keyword.get(opts, :config, %{})
+
+    if Protection.plaintext_development?(config),
+      do: :ok,
+      else: {:error, Protection.status(config)}
   end
 
   defp store(opts), do: Keyword.get(opts, :store, Backplane.HostAgent.Memory.Edge.Store)

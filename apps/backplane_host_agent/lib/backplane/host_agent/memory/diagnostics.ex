@@ -421,8 +421,9 @@ defmodule Backplane.HostAgent.Memory.Diagnostics do
       "partitions" => []
     }
 
-    if protection == :plaintext_development and edge_available?(opts.edge_store) do
-      with {:ok, stats} <- Eviction.stats(opts.edge_store, partition_limit: opts.metadata_limit) do
+    if Protection.plaintext_development?(opts.host_sync_v2) do
+      with true <- edge_available?(opts.edge_store),
+           {:ok, stats} <- Eviction.stats(opts.edge_store, partition_limit: opts.metadata_limit) do
         partitions =
           Enum.map(stats.partitions, fn partition ->
             Map.put(partition, "stale_age_seconds", stale_age(partition["last_sync_at"]))

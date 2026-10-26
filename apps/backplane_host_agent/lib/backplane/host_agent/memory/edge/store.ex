@@ -8,13 +8,11 @@ defmodule Backplane.HostAgent.Memory.Edge.Store do
   def start_link(opts) do
     config = opts |> Keyword.get(:config, %{}) |> Map.put(:db_path, Keyword.get(opts, :database))
 
-    case Protection.status(config) do
-      :plaintext_development ->
-        Logger.warning("Edge memory protection: plaintext_development; development/test only")
-        open(opts)
-
-      _ ->
-        :ignore
+    if Protection.plaintext_development?(config) do
+      Logger.warning("Edge memory protection: plaintext_development; development/test only")
+      open(opts)
+    else
+      :ignore
     end
   end
 

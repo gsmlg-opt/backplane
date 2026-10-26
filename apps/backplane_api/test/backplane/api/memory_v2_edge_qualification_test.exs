@@ -2,14 +2,15 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
   use Backplane.Api.ChannelCase, async: false
 
   alias Backplane.Api.HostAgentSocket
-  alias Backplane.HostAgent.{Memory, MemoryFacade}
-  alias Backplane.HostAgent.Memory.{Migrator, Store, Syncer}
+  alias Backplane.HostAgent.MemoryFacade
+  alias Backplane.HostAgent.Memory.{Access, Migrator, Store, Syncer}
   alias Backplane.HostAgent.Memory.Mirror
   alias Backplane.HostAgent.Memory.Edge.Supervisor, as: EdgeSupervisor
   alias Backplane.HostAgent.Memory.Edge.Syncer, as: EdgeSyncer
   alias Backplane.HostAgent.Memory.Edge.Store, as: EdgeStore
   alias Backplane.Skills.Hosts
   alias Backplane.Repo
+  alias Backplane.MemorySpaces
   alias Ecto.Adapters.SQL.Sandbox
 
   @moduletag :tmp_dir
@@ -51,11 +52,15 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
   end
 
   defmodule RealMemoryRemote do
-    def call(method, args, _opts) do
+    def call(method, args, opts) do
       socket = Process.get({__MODULE__, :socket})
 
       ref =
-        Phoenix.ChannelTest.push(socket, "memory_call", %{"method" => method, "arguments" => args})
+        Phoenix.ChannelTest.push(socket, "memory_call", %{
+          "method" => method,
+          "arguments" => args,
+          "access" => Keyword.fetch!(opts, :access)
+        })
 
       receive do
         %Phoenix.Socket.Reply{
@@ -89,7 +94,7 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
     end
   end
 
-  setup %{tmp_dir: dir} do
+  setup %{tmp_dir: dir} = tags do
     previous = Backplane.Settings.get("memory.host_sync_v2.enabled")
     :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", true})
     on_exit(fn -> :ets.insert(:backplane_settings, {"memory.host_sync_v2.enabled", previous}) end)
@@ -99,17 +104,41 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
         "name" => "qualification-#{System.unique_integer([:positive])}"
       })
 
+    extensions =
+      if tags[:memory_access] do
+        assert {:ok, access} = MemorySpaces.resolve_host_access(host.id, :default, :read)
+
+        assert {:ok, _access} =
+                 MemorySpaces.change_host_access(
+                   %{kind: :system, ref: nil, request_id: Ecto.UUID.generate()},
+                   access.access_id,
+                   access.authority_version,
+                   %{offline_read_lease_seconds: 300},
+                   "edge qualification offline lease"
+                 )
+
+        ~w(memory_access.v1 memory_commands.v2)
+      else
+        []
+      end
+
     {:ok, socket} =
       connect(HostAgentSocket, %{"host_id" => host.id},
         connect_info: %{x_headers: [{"x-backplane-host-token", token}]}
       )
 
-    assert {:ok, %{"selected" => "host_memory.v2", "partitions" => [inventory]}, socket} =
+    assert {:ok, %{"selected" => "host_memory.v2", "partitions" => [partition]} = inventory,
+            socket} =
              subscribe_and_join(socket, "host_agent:#{host.id}", %{
-               "memory_v2" => %{"offers" => ["host_memory.v2"], "partitions" => []}
+               "memory_v2" => %{
+                 "offers" => ["host_memory.v2"],
+                 "partitions" => [],
+                 "extensions" => extensions
+               }
              })
 
-    partition = Map.take(inventory, ["memory_space_id", "scope", "namespace"])
+    access = Map.take(partition, ["access_id", "authority_version"])
+    partition = Map.take(partition, ["memory_space_id", "scope", "namespace"])
     open = [database: Path.join(dir, "edge.db"), config: @edge_config]
     {:ok, store} = EdgeStore.start_link(open)
     Process.unlink(store)
@@ -120,12 +149,15 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
       host: host,
       socket: socket,
       partition: partition,
+      access: access,
+      inventory: inventory,
       store: store,
       open: open,
       mirror_opts: [store: store, config: @edge_config]
     }
   end
 
+  @tag :memory_access
   test "Scenario B: online recall uses canonical Recall V2 and retains provenance", c do
     previous =
       for key <- [
@@ -171,13 +203,6 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
     Process.put({RealMemoryRemote, :socket}, c.socket)
     on_exit(fn -> Process.delete({RealMemoryRemote, :socket}) end)
 
-    assert {:ok, %{"id" => id}} =
-             RealMemoryRemote.call(
-               "remember",
-               %{"content" => "canonical provenance fact", "agent_id" => "qualification-agent"},
-               []
-             )
-
     command_store =
       start_supervised!(
         {Store,
@@ -186,14 +211,25 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
 
     assert :ok = Migrator.migrate(command_store)
 
+    Process.put({RealCommandChannel, :socket}, c.socket)
+    on_exit(fn -> Process.delete({RealCommandChannel, :socket}) end)
+
+    context =
+      access_context(c, command_store)
+      |> Map.merge(%{
+        remote_adapter: RealMemoryRemote,
+        sync_opts: [channel: self(), channel_module: RealCommandChannel]
+      })
+
+    assert {:ok, %{"id" => id, "status" => "committed", "authority" => "canonical"}} =
+             MemoryFacade.call(
+               "remember",
+               %{"content" => "canonical provenance fact", "type" => "semantic"},
+               context
+             )
+
     assert {:ok, result} =
-             MemoryFacade.call("recall", %{"query" => "canonical provenance fact"}, %{
-               agent_id: "qualification-agent",
-               remote_adapter: RealMemoryRemote,
-               local_adapter: Memory,
-               store: command_store,
-               config: %{bound_scope: c.partition["scope"], tombstone_relearn: "block"}
-             })
+             MemoryFacade.call("recall", %{"query" => "canonical provenance fact"}, context)
 
     assert result["authority"] == "canonical"
     assert result["mode"] == "online"
@@ -205,14 +241,26 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
            end)
   end
 
+  @tag :memory_access
   test "Scenario C: a committed server snapshot survives host restart with bounded stale metadata",
        c do
+    command_store =
+      start_supervised!(
+        {Store,
+         database: Path.join(Path.dirname(c.open[:database]), "restart-commands.db"), pool_size: 1}
+      )
+
+    assert :ok = Migrator.migrate(command_store)
+
+    context = access_context(c, command_store)
+    delivery_context = Map.put(c, :access_server, context.access_server)
     id = insert_memory(c, "durable canonical fact")
-    {batch, ack} = transfer(c, 0)
+    {batch, ack} = transfer(delivery_context, 0)
     assert batch["kind"] == "snapshot_chunk"
     assert ack["applied_revision"] == batch["to_revision"]
     assert byte_size(Jason.encode!(batch)) <= 524_288
 
+    stop_supervised!(Access)
     GenServer.stop(c.store)
     store_name = String.to_atom("qualified-edge-store-#{System.unique_integer([:positive])}")
 
@@ -229,9 +277,12 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
     assert {:ok, first_supervisor} = EdgeSupervisor.start_link(edge_config)
     Process.unlink(first_supervisor)
 
-    assert {:ok, %{"items" => [%{"canonical_id" => ^id}]}} =
-             Mirror.offline_read("list", c.partition, store: store_name, config: edge_config)
+    context = access_context(%{c | store: store_name}, command_store, edge_config)
 
+    assert {:ok, %{"items" => [%{"canonical_id" => ^id}]}} =
+             MemoryFacade.call("list", %{}, context)
+
+    stop_supervised!(Access)
     Elixir.Supervisor.stop(first_supervisor)
     assert {:ok, restarted_supervisor} = EdgeSupervisor.start_link(edge_config)
     Process.unlink(restarted_supervisor)
@@ -240,26 +291,10 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
       if Process.alive?(restarted_supervisor), do: Elixir.Supervisor.stop(restarted_supervisor)
     end)
 
-    command_store =
-      start_supervised!(
-        {Store,
-         database: Path.join(Path.dirname(c.open[:database]), "restart-commands.db"), pool_size: 1}
-      )
-
-    assert :ok = Migrator.migrate(command_store)
+    context = access_context(%{c | store: store_name}, command_store, edge_config)
 
     assert {:ok, result} =
-             MemoryFacade.call("recall", %{"query" => "canonical"}, %{
-               agent_id: "qualification-agent",
-               local_adapter: Memory,
-               remote_adapter: OfflineRemote,
-               store: command_store,
-               config: %{bound_scope: c.partition["scope"], tombstone_relearn: "block"},
-               edge_adapter: Mirror,
-               edge_store: store_name,
-               edge_config: edge_config,
-               edge_partition: c.partition
-             })
+             MemoryFacade.call("recall", %{"query" => "canonical"}, context)
 
     assert [%{"canonical_id" => ^id}] = result["hits"]
     assert result["source"] == "edge_mirror"
@@ -270,45 +305,37 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
     assert result["last_sync_age_seconds"] >= 0
   end
 
-  test "Scenario D: a canonical denial cannot fall back to a populated local mirror", c do
-    id = insert_memory(c, "never reveal secret after denial")
-    transfer(c, 0)
+  for {adapter, error} <- [
+        {DeniedRemote, "unauthorized"},
+        {PartitionMismatchRemote, "partition_mismatch"},
+        {UnsupportedProtocolRemote, "unsupported_protocol"}
+      ] do
+    @tag :memory_access
+    test "Scenario D: canonical #{error} cannot fall back to a populated local mirror", c do
+      command_store =
+        start_supervised!(
+          {Store,
+           database: Path.join(Path.dirname(c.open[:database]), "denied-commands.db"),
+           pool_size: 1}
+        )
 
-    assert {:ok, %{"items" => [%{"canonical_id" => ^id}]}} =
-             Mirror.offline_read("recall", Map.put(c.partition, "query", "secret"), c.mirror_opts)
+      assert :ok = Migrator.migrate(command_store)
 
-    command_store =
-      start_supervised!(
-        {Store,
-         database: Path.join(Path.dirname(c.open[:database]), "denied-commands.db"), pool_size: 1}
-      )
+      context = access_context(c, command_store)
+      delivery_context = Map.put(c, :access_server, context.access_server)
+      id = insert_memory(c, "never reveal secret after denial")
+      transfer(delivery_context, 0)
 
-    assert :ok = Migrator.migrate(command_store)
+      assert {:ok, %{"hits" => [%{"canonical_id" => ^id}], "authority" => "canonical"}} =
+               MemoryFacade.call("recall", %{"query" => "secret"}, context)
 
-    context = %{
-      agent_id: "qualification-agent",
-      local_adapter: Memory,
-      remote_adapter: DeniedRemote,
-      store: command_store,
-      config: %{bound_scope: c.partition["scope"], tombstone_relearn: "block"},
-      edge_adapter: Mirror,
-      edge_store: c.store,
-      edge_config: @edge_config,
-      edge_partition: c.partition
-    }
+      assert {:ok, %{"authority" => "provisional"}} =
+               MemoryFacade.call("remember", %{"content" => "pending secret"}, context)
 
-    assert {:ok, %{"authority" => "provisional"}} =
-             MemoryFacade.call("remember", %{"content" => "pending secret"}, context)
-
-    for {adapter, error} <- [
-          {DeniedRemote, "unauthorized"},
-          {PartitionMismatchRemote, "partition_mismatch"},
-          {UnsupportedProtocolRemote, "unsupported_protocol"}
-        ] do
-      assert {:error, ^error} =
+      assert {:error, unquote(error)} =
                MemoryFacade.call("recall", %{"query" => "secret"}, %{
                  context
-                 | remote_adapter: adapter
+                 | remote_adapter: unquote(adapter)
                })
     end
   end
@@ -490,6 +517,7 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
              [[1]]
   end
 
+  @tag :memory_access
   test "Scenario E: offline remember is provisional, then one canonical item remains after command ACK",
        c do
     command_store =
@@ -499,22 +527,23 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
 
     assert :ok = Migrator.migrate(command_store)
 
-    context = %{
-      agent_id: "qualification-agent",
-      local_adapter: Memory,
-      remote_adapter: OfflineRemote,
-      store: command_store,
-      config: %{bound_scope: c.partition["scope"], tombstone_relearn: "block"},
-      edge_adapter: Mirror,
-      edge_store: c.store,
-      edge_config: @edge_config,
-      edge_partition: c.partition
-    }
+    context = access_context(c, command_store)
+    delivery_context = Map.put(c, :access_server, context.access_server)
+    transfer(delivery_context, 0)
 
     assert {:ok, %{"id" => provisional_id, "authority" => "provisional"}} =
-             MemoryFacade.call("remember", %{"content" => "read my write"}, context)
+             MemoryFacade.call(
+               "remember",
+               %{"content" => "read my write", "type" => "semantic"},
+               context
+             )
 
-    assert {:ok, %{"hits" => [%{"id" => ^provisional_id}], "authority" => "provisional"}} =
+    assert {:ok,
+            %{
+              "hits" => [%{"id" => ^provisional_id, "authority" => "provisional"}],
+              "authority" => "canonical_with_provisional",
+              "pending_operations" => 1
+            }} =
              MemoryFacade.call("recall", %{"query" => "read my write"}, context)
 
     Process.put({RealCommandChannel, :socket}, c.socket)
@@ -527,13 +556,14 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
     assert {:ok, %{"drained" => 1}} =
              Syncer.drain_once(
                store: command_store,
+               access_server: context.access_server,
                channel: self(),
                channel_module: RealCommandChannel
              )
 
     assert %{
              "items" => [
-               %{"status" => "ok", "canonical_id" => canonical_id, "revision" => revision}
+               %{"status" => "committed", "canonical_id" => canonical_id, "revision" => revision}
              ]
            } =
              Process.get({RealCommandChannel, :last_ack})
@@ -544,29 +574,34 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
             %{
               rows: [
                 %{
-                  "remote_id" => ^canonical_id,
-                  "remote_revision" => ^revision,
-                  "sync_state" => "synced"
+                  "ack_canonical_id" => ^canonical_id,
+                  "ack_revision" => ^revision,
+                  "state" => "done"
                 }
               ]
             }} =
              Store.query(
                command_store,
-               "SELECT remote_id, remote_revision, sync_state FROM memories WHERE id = ?",
+               "SELECT ack_canonical_id, ack_revision, state FROM memory_outbox WHERE command_id = ?",
                [provisional_id]
              )
 
-    {delivery, edge_ack} = transfer(c, 0)
+    {delivery, edge_ack} = transfer(delivery_context, 0)
     assert delivery["to_revision"] == revision
     assert edge_ack["applied_revision"] == delivery["to_revision"]
 
-    assert Enum.any?(delivery["items"], fn item ->
-             item["canonical_id"] == canonical_id and
+    assert %{"kind" => "delta", "changes" => changes} = delivery
+
+    assert Enum.any?(changes, fn change ->
+             item = change["payload"]
+
+             change["op"] == "upsert" and change["memory_id"] == canonical_id and
+               change["revision"] == revision and item["canonical_id"] == canonical_id and
                item["metadata"]["host_memory"]["local_id"] == provisional_id
            end)
 
     assert {:ok, %{"items" => [%{"canonical_id" => ^canonical_id}]}} =
-             Mirror.offline_read("list", c.partition, c.mirror_opts)
+             MemoryFacade.call("list", %{}, context)
 
     Process.put({RealMemoryRemote, :socket}, c.socket)
     on_exit(fn -> Process.delete({RealMemoryRemote, :socket}) end)
@@ -596,6 +631,34 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
            ]).rows == [[1]]
   end
 
+  defp access_context(c, command_store, edge_config \\ @edge_config) do
+    owner =
+      start_supervised!(
+        {Access, name: nil, store: command_store, edge_store: c.store, edge_config: edge_config}
+      )
+
+    install_access_inventory(c.inventory, owner)
+
+    %{
+      agent_id: "qualification-agent",
+      access_server: owner,
+      remote_adapter: OfflineRemote,
+      sync_opts: [channel_provider: OfflineRemote]
+    }
+  end
+
+  defp install_access_inventory(inventory, owner) do
+    assert :ok =
+             Access.install_inventory(
+               %{
+                 id: System.unique_integer([:positive, :monotonic]),
+                 sent_at_ms: System.monotonic_time(:millisecond)
+               },
+               inventory,
+               owner
+             )
+  end
+
   defp transfer(c, revision, opts \\ nil) do
     opts = opts || c.mirror_opts
 
@@ -605,9 +668,29 @@ defmodule Backplane.Api.MemoryV2EdgeQualificationTest do
       "applied_revision" => revision
     }
 
+    request = if c.access == %{}, do: request, else: Map.put(request, "access", c.access)
+
     ref = push(c.socket, "memory_next", request)
     assert_reply(ref, :ok, %{"status" => "batch"} = batch)
-    assert {:ok, ack} = Mirror.apply_delivery(batch, opts)
+
+    result =
+      case Map.get(c, :access_server) do
+        nil ->
+          Mirror.apply_delivery(batch, opts)
+
+        owner ->
+          assert {:ok, _target, ticket} = Access.begin_request(:default, :deliver, owner)
+          assert {:ok, permitted, _batch} = Access.finish_request(ticket, {:ok, batch}, owner)
+
+          Access.run_local(
+            permitted,
+            :deliver,
+            &Mirror.apply_delivery(batch, store: &1.edge_store, config: &1.edge_config),
+            owner
+          )
+      end
+
+    assert {:ok, ack} = result
     ref = push(c.socket, "memory_ack", ack)
     assert_reply(ref, :ok, %{"status" => status})
     assert status in ["advanced", "progress"]
