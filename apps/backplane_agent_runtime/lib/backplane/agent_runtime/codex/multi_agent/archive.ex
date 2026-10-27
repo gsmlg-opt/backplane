@@ -8,7 +8,6 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
   @admission_fields ~w(schema_version record_type child_identity store_ref config_ref authority_ceiling_ref tool_profile admission_receipt_ref child_request configuration authority_ceiling artifact_refs inventory_ref)
   @inventory_fields ~w(schema_version record_type child_identity complete producer_ref obligations)
   @archive_fields ~w(schema_version archive_id archive_digest child_identity tool_profile admission_ref admission_receipt_ref retirement_receipt_ref retirement_receipt_digest manifest_digest terminal_record messages host_feedback history_digest remaining_work deadline child_request configuration_ref configuration_digest authority_ceiling_ref authority_ceiling_digest artifact_refs host_metadata)
-  @message_fields ~w(role content id name tool_call_id invocation_id result tool_calls reasoning reasoning_content reasoning_details source host_feedback collaboration refusal annotations provider_state)
   @eligible [:completed, :failed, :cancelled, :timed_out]
 
   def subject(identity), do: %{"kind" => "child", "identity" => identity}
@@ -362,13 +361,12 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
   end
 
   defp message(value) do
-    with :ok <- Evidence.fields(value, @message_fields, ["role"]),
+    with true <- is_map(value),
          true <- value["role"] in ~w(system developer user assistant tool),
          true <- Map.has_key?(value, "content") or Map.has_key?(value, "result") do
       :ok
     else
       false -> Evidence.invalid("archive contains an unsupported runtime message")
-      error -> error
     end
   end
 

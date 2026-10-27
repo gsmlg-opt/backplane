@@ -55,7 +55,23 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentRecoveryTest do
     send(
       provider,
       {:events,
-       [%{type: :response_completed, message: %{role: :assistant, content: "retained answer"}}]}
+       [
+         %{
+           type: :response_completed,
+           message: %{
+             role: :assistant,
+             content: "retained answer",
+             timestamp: "2026-10-27T00:00:00Z",
+             usage: %{input_tokens: 3},
+             provider: "fixture",
+             model: "fixture-model",
+             api: "responses",
+             stop_reason: :stop,
+             phase: :final,
+             extension: %{"unicode" => "你好\r\n"}
+           }
+         }
+       ]}
     )
 
     assert eventually(fn ->
@@ -115,6 +131,16 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentRecoveryTest do
     context = Host.new(self(), managed: true)
     source = manager(context, :source)
     {old, archive, _receipt, _manifest} = retired(context, source, :source)
+    assert {:ok, original_record} = EphemeralStore.load(context.store, old.run_id)
+    assert {:ok, normalized} = Evidence.public(original_record.run.context.conversation.messages)
+    assert archive["messages"] == normalized
+
+    assert archive["history_digest"] ==
+             Evidence.digest(Map.take(archive, ~w(messages host_feedback)))
+
+    archive = archive |> JSON.encode!() |> JSON.decode!()
+    assert List.last(archive["messages"])["phase"] == "final"
+    assert List.last(archive["messages"])["extension"]["unicode"] == "你好\r\n"
     assert_receive {:bound, :source, old_binding}
     assert Session.status(old_binding.session).phase == :closed
     assert_receive {:cleaned, :source, _}
@@ -169,6 +195,11 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentRecoveryTest do
     assert run_id == old.name <> ":" <> snapshot.manager_id <> ":1"
     refute run_id == old.run_id
     assert_receive {:provider, :destination, request, provider}, 1_000
+
+    assert Enum.take(request.messages, length(original_record.run.context.conversation.messages)) ==
+             original_record.run.context.conversation.messages
+
+    assert {:ok, ^original_record} = EphemeralStore.load(context.store, old.run_id)
     assert Enum.any?(request.messages, &(&1[:content] == "retained answer"))
     assert Enum.any?(request.messages, &(&1[:content] == "continue"))
 
@@ -193,6 +224,21 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentRecoveryTest do
 
     complete(destination, request, provider)
     assert Session.status(next_binding.session).phase == :idle
+  end
+
+  test "runtime term metadata remains outside the portable archive boundary" do
+    for value <- [DateTime.utc_now(), self(), make_ref(), fn -> :ok end, {:unsupported, 1}] do
+      assert {:error, %Error{class: :validation}} =
+               Evidence.public(%{role: :assistant, content: "text", timestamp: value})
+    end
+
+    assert {:error, %Error{class: :validation}} =
+             Evidence.public(%{
+               "phase" => "final",
+               role: :assistant,
+               content: "text",
+               phase: :final
+             })
   end
 
   test "scope identity history configuration artifact and unsupported archive conflicts fail before preparation" do

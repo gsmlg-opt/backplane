@@ -508,6 +508,10 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  def handle_call({:effect_deadline, token}, _from, s) do
+    {:reply, effect_deadline(s, token), s}
+  end
+
   def handle_call({:nested_tool, token, request}, from, s) do
     case prepare_nested_tool(s, token, request) do
       {:ok, invocation, descriptor, catalog} ->
@@ -518,7 +522,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp invoke_nested_tool(s, invocation, catalog, from) do
+  defp invoke_nested_tool(s, invocation, catalog, from, selected_timeout) do
     s = %{s | tool_admission_deadline: nil}
     resource_owner_pid = self()
     nested_token = make_ref()
@@ -531,7 +535,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     next = fn next_state, prepared ->
       task =
-        Task.Supervisor.async_nolink(next_state.supervisor, fn ->
+        owned_task(next_state.supervisor, fn ->
           prepared = %{
             prepared
             | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
@@ -560,8 +564,17 @@ defmodule Backplane.AgentRuntime.Conversation do
         end)
 
       generation = make_ref()
-      timeout = effect_timeout(next_state, next_state.limits.effect)
-      timer = Process.send_after(self(), {:nested_timeout, task.ref, generation}, timeout)
+      timeout = tool_timeout(next_state, selected_timeout, true)
+      live_deadline = System.monotonic_time(:millisecond) + timeout
+
+      timer =
+        arm_owned_timer(
+          task,
+          {:nested_timeout, task.ref, generation},
+          live_deadline - System.monotonic_time(:millisecond)
+        )
+
+      send(self(), {:release_owned_effect, nested_token})
 
       %{
         next_state
@@ -570,9 +583,10 @@ defmodule Backplane.AgentRuntime.Conversation do
             task: task,
             timer: timer,
             timer_generation: generation,
-            live_deadline: System.monotonic_time(:millisecond) + timeout,
+            live_deadline: live_deadline,
             from: from,
             token: nested_token,
+            selected_timeout_ms: selected_timeout,
             invocation: invocation,
             catalog: catalog
           }
@@ -660,6 +674,31 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     {:noreply,
      storage_failed(%{s | goal_delivery: nil}, Error.new(:timeout, "goal delivery timed out"))}
+  end
+
+  def handle_info({:owned_timer_failed, ref, error}, s) do
+    if (s.effect && s.effect.task.ref == ref) ||
+         (s.nested && s.nested.task && s.nested.task.ref == ref) do
+      {:noreply, stop(%{s | last_error: error}, :uncertain)}
+    else
+      {:noreply, s}
+    end
+  end
+
+  def handle_info({:release_owned_effect, token}, s) do
+    entry =
+      cond do
+        s.nested && s.nested.token == token -> s.nested
+        s.effect && s.effect.token == token -> s.effect
+        true -> nil
+      end
+
+    if entry && entry.task && is_reference(entry.timer) && is_reference(entry.timer_generation) &&
+         ((entry == s.effect && s.effect_live_deadline > System.monotonic_time(:millisecond)) ||
+            (entry == s.nested && entry.live_deadline > System.monotonic_time(:millisecond))),
+       do: send(entry.task.pid, {:run_owned_effect, self()})
+
+    {:noreply, s}
   end
 
   def handle_info({ref, result}, %{preparation: %{task: %{ref: ref}} = entry} = s) do
@@ -1537,6 +1576,44 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  defp complete_preparation(s, %{stage: :selection} = entry, result) do
+    s = %{s | preparation: nil}
+
+    with {:ok, timeout} <- selected_timeout(result, s.limits.effect),
+         :ok <- managed_tool_authority(s, entry.descriptor, entry.invocation) do
+      if admission_expired?(s) do
+        reject_prepared_tool(
+          s,
+          entry.invocation,
+          entry.catalog,
+          entry.continuation,
+          Error.new(:timeout, "tool admission timed out")
+        )
+      else
+        s = %{s | tool_admission_deadline: nil}
+
+        case entry.continuation do
+          {:direct, rest} ->
+            commit_tool(
+              s,
+              entry.invocation,
+              entry.descriptor,
+              rest,
+              entry.catalog,
+              entry.approval,
+              timeout
+            )
+
+          {:nested, from} ->
+            invoke_nested_tool(s, entry.invocation, entry.catalog, from, timeout)
+        end
+      end
+    else
+      {:error, error} ->
+        reject_prepared_tool(s, entry.invocation, entry.catalog, entry.continuation, error)
+    end
+  end
+
   defp complete_preparation(s, entry, result) do
     s = %{s | preparation: nil}
 
@@ -1643,7 +1720,7 @@ defmodule Backplane.AgentRuntime.Conversation do
          :ok <- managed_tool_authority(s, descriptor, invocation) do
       case continuation do
         {:nested, from} ->
-          invoke_nested_tool(s, invocation, catalog, from)
+          select_tool_timeout(s, invocation, descriptor, catalog, {:nested, from}, [])
 
         {:direct, rest} ->
           if descriptor.safety[:requires_approval] do
@@ -1675,23 +1752,124 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp invoke_tool(s, invocation, descriptor, rest, catalog, approval) do
-    with :ok <- managed_tool_authority(s, descriptor, invocation) do
+    with {:ok, arguments} <- validate_tool_arguments(descriptor, invocation.arguments),
+         invocation = %{invocation | arguments: arguments},
+         {:ok, _} <- Policy.authorize_tool(catalog.authority, descriptor, invocation),
+         :ok <- managed_tool_authority(s, descriptor, invocation) do
       if admission_expired?(s) do
         stop(s, :deadline_exceeded)
       else
-        commit_tool(
-          %{s | tool_admission_deadline: nil},
-          invocation,
-          descriptor,
-          rest,
-          catalog,
-          approval
-        )
+        select_tool_timeout(s, invocation, descriptor, catalog, {:direct, rest}, approval)
       end
     else
       {:error, error} -> reject_prepared_tool(s, invocation, catalog, {:direct, rest}, error)
     end
   end
+
+  defp select_tool_timeout(s, invocation, descriptor, catalog, continuation, approval) do
+    token = make_ref()
+    # Selection is inspection only: never inherit runtime capabilities from host context.
+    context =
+      Keyword.get(s.opts, :provider_context, %{})
+      |> Map.drop([
+        :interact,
+        :emit,
+        :provider_emit,
+        :request_new_context,
+        :nested_dispatch,
+        :stage_catalog,
+        :dispatch,
+        :publication,
+        :append_feedback,
+        :effect_deadline,
+        :resource_owner_pid
+      ])
+      |> Map.merge(%{
+        catalog_snapshot: catalog,
+        input_kind: if(descriptor[:codex_input_kind] == :custom, do: :custom, else: :function),
+        invocation_id: invocation.invocation_id,
+        tool_call_id: invocation.tool_call_id
+      })
+
+    timeout =
+      min(
+        tool_timeout(s, s.limits.effect, match?({:nested, _}, continuation)),
+        max(0, s.tool_admission_deadline - System.monotonic_time(:millisecond))
+      )
+
+    live_deadline = min(s.tool_admission_deadline, System.monotonic_time(:millisecond) + timeout)
+
+    if timeout <= 0 do
+      reject_prepared_tool(
+        s,
+        invocation,
+        catalog,
+        continuation,
+        Error.new(:timeout, "tool admission timed out")
+      )
+    else
+      task =
+        Task.Supervisor.async_nolink(s.supervisor, fn ->
+          try do
+            hook(s, :tool_effect_timeout, [invocation, context], :default)
+          rescue
+            error ->
+              {:error,
+               Error.new(:execution_failure, "tool timeout selector raised",
+                 cause: inspect(error)
+               )}
+          catch
+            kind, reason ->
+              {:error,
+               Error.new(:execution_failure, "tool timeout selector exited",
+                 cause: inspect({kind, reason})
+               )}
+          end
+        end)
+
+      generation = make_ref()
+
+      timer =
+        Process.send_after(
+          self(),
+          {:timeout, task.ref, generation},
+          max(0, live_deadline - System.monotonic_time(:millisecond))
+        )
+
+      %{
+        s
+        | preparation: %{
+            stage: :selection,
+            task: task,
+            token: token,
+            timer: timer,
+            timer_generation: generation,
+            live_deadline: live_deadline,
+            invocation: invocation,
+            descriptor: descriptor,
+            catalog: catalog,
+            continuation: continuation,
+            approval: approval,
+            outer_token: if(match?({:nested, _}, continuation), do: s.effect.token, else: nil)
+          }
+      }
+    end
+  end
+
+  defp selected_timeout(:default, default), do: {:ok, default}
+
+  defp selected_timeout({:ok, value}, _) when is_integer(value) and value in 1..2_147_483_647,
+    do: {:ok, value}
+
+  defp selected_timeout({:ok, _}, _),
+    do:
+      {:error,
+       Error.new(:validation, "selected tool timeout must be in 1..2147483647 milliseconds")}
+
+  defp selected_timeout({:error, %Error{} = error}, _), do: {:error, error}
+
+  defp selected_timeout(_, _),
+    do: {:error, Error.new(:malformed_result, "invalid tool timeout selector result")}
 
   defp managed_tool_authority(s, descriptor, invocation) do
     case Keyword.get(s.opts, :managed_authorization) do
@@ -1714,7 +1892,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp commit_tool(s, invocation, _descriptor, rest, catalog, approval) do
+  defp commit_tool(s, invocation, _descriptor, rest, catalog, approval, selected_timeout) do
     invocation = Map.put(invocation, :enclosing_invocation_id, invocation.invocation_id)
 
     opts =
@@ -1724,21 +1902,26 @@ defmodule Backplane.AgentRuntime.Conversation do
     commit(s, {:tool_invoked, now(), invocation}, %{}, opts, fn s, prepared ->
       emit(s, %{type: :tool_started, invocation: invocation})
 
-      start_effect(s, {:tool, invocation, rest, catalog}, fn context ->
-        prepared = %{
-          prepared
-          | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
-            host_context: tool_backend_context(s, prepared.host_context, context)
-        }
+      start_effect(
+        s,
+        {:tool, invocation, rest, catalog},
+        fn context ->
+          prepared = %{
+            prepared
+            | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
+              host_context: tool_backend_context(s, prepared.host_context, context)
+          }
 
-        case Execution.dispatch(
-               prepared,
-               Keyword.merge(s.opts, registry: catalog.registry, authority: catalog.authority)
-             ) do
-          {:ok, [result]} -> {:ok, result}
-          error -> error
-        end
-      end)
+          case Execution.dispatch(
+                 prepared,
+                 Keyword.merge(s.opts, registry: catalog.registry, authority: catalog.authority)
+               ) do
+            {:ok, [result]} -> {:ok, result}
+            error -> error
+          end
+        end,
+        selected_timeout
+      )
     end)
   end
 
@@ -2021,6 +2204,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     |> Map.merge(
       Map.take(context, [
         :interact,
+        :effect_deadline,
         :append_feedback,
         :emit,
         :catalog_snapshot,
@@ -2272,7 +2456,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     %{s | commit: %{task: task, timer: timer, timer_generation: generation, next: next}}
   end
 
-  defp start_effect(s, role, function) do
+  defp start_effect(s, role, function, selected_timeout \\ nil) do
     owner = self()
     token = make_ref()
 
@@ -2300,14 +2484,20 @@ defmodule Backplane.AgentRuntime.Conversation do
           context
       end
 
-    task = Task.Supervisor.async_nolink(s.supervisor, fn -> function.(context) end)
+    task =
+      if selected_timeout,
+        do: owned_task(s.supervisor, fn -> function.(context) end),
+        else: Task.Supervisor.async_nolink(s.supervisor, fn -> function.(context) end)
 
     configured =
       if match?({:provider, _, _}, role),
         do: s.limits.provider_idle || s.limits.effect,
-        else: s.limits.effect
+        else: selected_timeout || s.limits.effect
 
-    timeout = effect_timeout(s, configured)
+    timeout =
+      if selected_timeout,
+        do: tool_timeout(s, configured, false),
+        else: effect_timeout(s, configured)
 
     timeout =
       if match?({:approval, _, _, _, _}, role) && is_integer(s.tool_admission_deadline),
@@ -2315,7 +2505,19 @@ defmodule Backplane.AgentRuntime.Conversation do
         else: timeout
 
     generation = make_ref()
-    timer = Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
+    live_deadline = System.monotonic_time(:millisecond) + timeout
+
+    timer =
+      if selected_timeout,
+        do:
+          arm_owned_timer(
+            task,
+            {:timeout, task.ref, generation},
+            live_deadline - System.monotonic_time(:millisecond)
+          ),
+        else: Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
+
+    if selected_timeout, do: send(self(), {:release_owned_effect, token})
 
     %{
       s
@@ -2324,9 +2526,10 @@ defmodule Backplane.AgentRuntime.Conversation do
           timer: timer,
           timer_generation: generation,
           role: role,
+          selected_timeout_ms: selected_timeout,
           token: token
         },
-        effect_live_deadline: System.monotonic_time(:millisecond) + timeout,
+        effect_live_deadline: live_deadline,
         phase: :running
     }
   end
@@ -2399,6 +2602,13 @@ defmodule Backplane.AgentRuntime.Conversation do
     end)
     |> Map.put(:nested_dispatch, fn request ->
       GenServer.call(owner, {:nested_tool, token, request}, :infinity)
+    end)
+    |> Map.put(:effect_deadline, fn ->
+      try do
+        GenServer.call(owner, {:effect_deadline, token}, :infinity)
+      catch
+        :exit, _ -> {:error, Error.new(:resource_conflict, "tool effect owner is unavailable")}
+      end
     end)
     |> Map.put(:resource_owner_pid, owner)
     |> Map.put(:producer_invocation, producer)
@@ -2851,6 +3061,91 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.effect.timer, do: Process.cancel_timer(s.effect.timer)
     %{s | effect: %{s.effect | timer: nil, timer_generation: nil}, effect_live_deadline: nil}
   end
+
+  defp owned_task(supervisor, function) do
+    owner = self()
+
+    Task.Supervisor.async_nolink(supervisor, fn ->
+      monitor = Process.monitor(owner)
+
+      receive do
+        {:run_owned_effect, ^owner} ->
+          Process.demonitor(monitor, [:flush])
+          function.()
+
+        {:DOWN, ^monitor, :process, ^owner, _} ->
+          exit(:shutdown)
+      end
+    end)
+  end
+
+  defp arm_owned_timer(task, message, timeout) do
+    try do
+      Process.send_after(self(), message, max(0, timeout))
+    rescue
+      error ->
+        send(
+          self(),
+          {:owned_timer_failed, task.ref,
+           Error.new(:execution_failure, "tool effect timer could not be armed",
+             cause: inspect(error)
+           )}
+        )
+
+        nil
+    end
+  end
+
+  defp tool_timeout(s, selected, nested?) do
+    remaining =
+      if s.run.deadline == :infinity, do: selected, else: min(selected, s.run.deadline - now())
+
+    if nested? && is_integer(s.effect_live_deadline),
+      do: min(remaining, s.effect_live_deadline - System.monotonic_time(:millisecond)),
+      else: remaining
+  end
+
+  defp effect_deadline(%{stopping: nil} = s, token) do
+    entry =
+      cond do
+        s.nested && s.nested.token == token && s.effect && s.effect.task ->
+          {s.nested, s.nested.live_deadline, s.paused_nested_remaining}
+
+        s.effect && s.effect.token == token && match?({:tool, _, _, _}, s.effect.role) ->
+          {s.effect, s.effect_live_deadline, s.paused_effect_remaining}
+
+        true ->
+          nil
+      end
+
+    case entry do
+      {%{task: %{pid: pid}, selected_timeout_ms: selected}, deadline, paused}
+      when is_integer(selected) ->
+        if Process.alive?(pid) do
+          {:ok,
+           %{
+             selected_timeout_ms: selected,
+             deadline_ms: if(is_integer(paused), do: nil, else: deadline),
+             remaining_ms:
+               if(is_integer(paused),
+                 do: paused,
+                 else: max(0, deadline - System.monotonic_time(:millisecond))
+               ),
+             paused: is_integer(paused)
+           }}
+        else
+          stale_deadline()
+        end
+
+      _ ->
+        stale_deadline()
+    end
+  end
+
+  defp effect_deadline(_, _), do: stale_deadline()
+
+  defp stale_deadline,
+    do: {:error, Error.new(:resource_conflict, "tool effect is no longer live")}
 
   defp effect_timeout(%{run: %{deadline: :infinity}}, configured), do: configured
   defp effect_timeout(s, configured), do: max(1, min(configured, s.run.deadline - now()))

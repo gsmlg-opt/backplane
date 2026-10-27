@@ -22,6 +22,29 @@ before final validation, authorization, exact-input approval and invocation comm
 Approval input edits require fresh approval, and nested preparation preserves the
 outer execution fence; see [EMBEDDING.md](EMBEDDING.md).
 
+Optional `hooks.tool_effect_timeout/2` selects a finite budget for each final
+validated and approved invocation before its intent commits. Return `:default`,
+`{:ok, milliseconds}` in `1..2_147_483_647`, or `{:error, %Error{}}`. The selector
+runs once within the remaining preparation/approval admission allowance, with a
+pinned catalog and no runtime interaction, publication or dispatch callbacks.
+It cannot replace arguments, identity, backend or authority.
+
+Direct and supported nested tool backends get `backend_context.effect_deadline.()`:
+
+```elixir
+{:ok, %{selected_timeout_ms: selected, deadline_ms: expiry,
+        remaining_ms: remaining, paused: false}}
+```
+
+Read this callback repeatedly to divide initialization, serial work and settlement
+within one shared diminishing allowance. The runtime clips that allowance by
+finite root and enclosing tool budgets. Human waits freeze active time, return
+`paused: true` and `deadline_ms: nil`, then resume with the retained remainder.
+Completed/cancelled/expired effects return `{:error, %Error{class: :resource_conflict}}`.
+The expiry uses live-VM monotonic milliseconds and may be negative. Never persist
+it. The ordinary one-hour option caps, provider total/idle behavior, independent
+cleanup limit and low-level `Execution.run/5` contract remain unchanged.
+
 Preparation and backend contexts support token-bound host feedback:
 
 ```elixir
@@ -109,3 +132,37 @@ Terminal runs can remove exactly delivered receipt subsets with the
 `{:goal_outbox_acknowledged, at, %{run_id: id, incarnation: current, receipts: receipts}}`
 Kernel command through the existing Store CAS boundary. It preserves the terminal
 outcome and execution evidence; a lost acknowledgement requires reloading the run.
+
+## Plugin connection cleanup
+
+`Plugins.Session` activates an immutable installation for one run. Adapter start,
+discovery, calls and close execute in owned supervised workers so cleanup/status
+remain responsive. Each activation is recorded before allocation; its connection
+is acknowledged before catalog preparation. Failed catalogs retain their cleanup
+obligations while skills and healthy components remain available.
+
+`Plugins.Session.close(session, cleanup_timeout: 5_000, timeout: 100)` seals new
+catalog/tool admission and starts one shared finite cleanup budget. The optional
+`timeout` observes the close; timing out does not cancel or restart it. Repeat
+`close/2` or call `cleanup_status/1` to inspect the same retained close identity,
+component activation IDs, activation errors and cleanup evidence. The finite
+cleanup range is `1..3_600_000` ms. Read-only skill/resource access remains usable.
+Interrupted tool calls retain uncertain execution outcomes independently of
+connection cleanup; `snapshot/1` retains their call IDs and bounded diagnostics.
+
+`stop/1` returns `:ok` and terminates the coordinator only when every owned
+obligation is confirmed. Otherwise it returns a structured `:unknown_outcome`
+and keeps the sealed Session available. Failed/lost cleanup callbacks run once;
+process DOWN alone does not improve their retained result. Reports live only in
+the Session; hosts persist required evidence through their existing lifecycle
+adapter. ResourceRegistry's existing confirmation rules remain unchanged.
+
+Legacy adapters explicitly confirm their declared scope with `:ok`, `:done` or
+`{:ok, :confirmed | :released | :done}`. Other success-shaped maps provide no
+confirmation. The default MCP adapter validates separate transport, client-worker
+and supervisor evidence and uses one-shot connections from construction. Plugin
+stdio requires the explicitly built `mix backplane.mcp.stdio.build` guardian;
+missing/unsupported helpers make that component unavailable before target launch.
+A trusted `guardian_path` Session option selects a specific built guardian.
+Verified stdio receipts cover the direct child, guardian and local pipes; hosts
+own descendants or external effects beyond that scope.

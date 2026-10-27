@@ -8,6 +8,7 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
   @runtime_keys [
     :append_feedback,
     :catalog_snapshot,
+    :effect_deadline,
     :emit,
     :interact,
     :nested_dispatch,

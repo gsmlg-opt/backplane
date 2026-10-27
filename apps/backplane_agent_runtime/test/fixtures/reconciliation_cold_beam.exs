@@ -108,6 +108,18 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
     receipt = reconcile(ctx, manifest, "child-retired")
     assert {:ok, _} = MultiAgent.reconcile_child(source, receipt["receipt_id"])
     {:ok, archive} = MultiAgent.export_child(source, old.name, receipt["receipt_id"])
+    assert {:ok, public_messages} = Evidence.public(record.run.context.conversation.messages)
+    assert archive["messages"] == public_messages
+
+    assert archive["history_digest"] ==
+             Evidence.digest(Map.take(archive, ~w(messages host_feedback)))
+
+    assert Enum.any?(archive["messages"], &(&1["timestamp"] == "2026-10-27T00:00:00Z"))
+    assert Enum.any?(archive["messages"], &(&1["role"] == "tool"))
+    before_export = markers(ctx)
+    archive = archive |> JSON.encode!() |> JSON.decode!()
+    assert {:ok, ^archive} = MultiAgent.export_child(source, old.name, receipt["receipt_id"])
+    assert markers(ctx) == before_export
     :ok = Host.put(ctx.host, :archive, archive)
     {:ok, manager_manifest} = MultiAgent.recovery_manifest(source, :manager)
     manager_receipt = reconcile(ctx, manager_manifest, "source-manager-retired")
@@ -133,6 +145,7 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
     refute producer_pid == System.pid()
     :ok = Host.put(ctx.host, :consumer_os_pid, System.pid())
     {:ok, archive} = Host.get(ctx.host, :archive)
+    archive = archive |> JSON.encode!() |> JSON.decode!()
     {:ok, old} = Host.get(ctx.host, :old)
     {:ok, source_record} = Host.get(ctx.host, :source_terminal_record)
     assert {:ok, ^source_record} = Host.load(ctx.host, old.run_id)
@@ -176,7 +189,16 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
     assert binding.run_incarnation == fresh.incarnation
     assert request.run_id == old.name <> ":" <> snapshot.manager_id <> ":1"
     refute request.run_id == old.run_id
-    assert Enum.any?(request.messages, &(&1[:content] == "retained cold answer"))
+    assert Enum.any?(request.messages, &(&1 == metadata_message()))
+
+    assert {:ok, source_messages} =
+             Evidence.public(source_record.run.context.conversation.messages)
+
+    assert archive["messages"] == source_messages
+
+    assert Enum.take(request.messages, length(source_messages)) ==
+             source_record.run.context.conversation.messages
+
     assert Enum.any?(request.messages, &(&1[:content] == "continue"))
     complete(destination, request, provider)
     assert :ok = MultiAgent.close_session(destination)
@@ -214,7 +236,12 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
       MultiAgent.start_link(
         parent_run_id: "root-" <> ctx.label,
         parent_name: "/root",
-        parent_authority: %{caller: "host", run_id: "root-" <> ctx.label, grants: []},
+        parent_authority: %{
+          caller: "host",
+          run_id: "root-" <> ctx.label,
+          grants: ["read"],
+          tool_revision: 1
+        },
         root_agent_id: "stable-root",
         recovery_scope_id: "cold-scope",
         recovery: Host.config(ctx.host),
@@ -231,7 +258,14 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
     send(ctx.owner, {:prepared, parent.child})
     id = parent.child.attempt_id
     configuration = %{"provider_ref" => "cold-provider", "profile" => "cold"}
-    ceiling = %{"grants" => [], "tool_revisions" => %{}, "tool_bindings" => %{}}
+
+    ceiling = %{
+      "grants" => ["read"],
+      "tool_revision" => 1,
+      "tool_revisions" => %{},
+      "tool_bindings" => %{}
+    }
+
     {:ok, public_request} = Evidence.public(request)
 
     admission = %{
@@ -257,7 +291,7 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
         ],
         do: :ok = Host.put(ctx.host, {:evidence, ref}, value)
 
-    authority = %{caller: "host", run_id: run_id, grants: []}
+    authority = %{caller: "host", run_id: run_id, grants: ["read"], tool_revision: 1}
 
     {:ok, session} =
       Session.start_link(
@@ -309,8 +343,8 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
        context: ctx.host,
        provider: __MODULE__.Provider,
        provider_context: ctx,
-       registry: %ToolRegistry{},
-       tools: [],
+       registry: registry(ctx),
+       hooks: __MODULE__,
        authority: authority,
        schema_admission: :strict,
        work: 10,
@@ -334,16 +368,33 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
   end
 
   defp complete(manager, request, provider) do
-    send(
-      provider,
-      {:events,
-       [
-         %{
-           type: :response_completed,
-           message: %{role: :assistant, content: "retained cold answer"}
-         }
-       ]}
-    )
+    if Enum.any?(request.messages, &(&1[:role] == :tool)) do
+      send(provider, {:events, [%{type: :response_completed, message: metadata_message()}]})
+    else
+      send(
+        provider,
+        {:events,
+         [
+           %{
+             type: :response_completed,
+             message: %{
+               role: :assistant,
+               content: [
+                 %{type: :text, text: "工具调用\r\n"},
+                 %{type: :tool_call, id: "cold-read", name: "read", arguments: %{}}
+               ],
+               phase: :commentary,
+               provider: "fixture",
+               usage: %{input_tokens: 1}
+             }
+           }
+         ]}
+      )
+
+      assert_receive {:provider, next_request, next_provider}, 1_000
+      assert Enum.any?(next_request.messages, &(&1[:role] == :tool))
+      send(next_provider, {:events, [%{type: :response_completed, message: metadata_message()}]})
+    end
 
     assert eventually(fn ->
              {:ok, snapshot} = MultiAgent.snapshot(manager)
@@ -353,6 +404,52 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
                &(&1.run_id == request.run_id and &1.status == :completed)
              )
            end)
+  end
+
+  defp metadata_message do
+    %{
+      role: :assistant,
+      content: [%{type: :text, text: "retained cold answer\r\n你好"}],
+      timestamp: "2026-10-27T00:00:00Z",
+      usage: %{input_tokens: 3, output_tokens: 2},
+      provider: "fixture",
+      model: "fixture-model",
+      api: "responses",
+      stop_reason: :stop,
+      phase: :final,
+      extension: %{"future" => [%{"unicode" => "保留\r\n", "nullable" => nil}]}
+    }
+  end
+
+  defp registry(ctx) do
+    {:ok, registry} =
+      ToolRegistry.register(%ToolRegistry{}, %{
+        tool_name: "read",
+        tool_revision: 1,
+        description: "cold read",
+        backend: __MODULE__.Backend,
+        backend_context: ctx,
+        schema: %{"type" => "object", "properties" => %{}},
+        safety: %{read_only: true, retry_safe: true, parallel_safe: false}
+      })
+
+    registry
+  end
+
+  def tool_effect_timeout(_invocation, ctx) do
+    marker(ctx, "selector")
+    :default
+  end
+
+  defmodule Backend do
+    def execute(operation) do
+      Backplane.AgentRuntime.ReconciliationColdBeamFixture.marker(
+        operation.backend_context,
+        "tool"
+      )
+
+      {:ok, %{content: [%{type: :text, text: "读取\r\n"}]}}
+    end
   end
 
   defp eventually(fun, count \\ 100)

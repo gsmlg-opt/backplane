@@ -124,10 +124,12 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   defp execute(%{tool_name: "request_plugin_install", arguments: arguments} = operation, state) do
     with {:ok, receipt, next_dynamic} <-
            request_plugin(state.dynamic, operation.run_id, arguments),
-         {:ok, host_result, _state} <-
-           adapter_call(state, :plugin_adapter, :request_install, [arguments, operation]) do
-      result = %{request_id: receipt.id, status: :requested, host: host_result}
-      {:ok, result, %{state | dynamic: next_dynamic}}
+         outcome <-
+           call_adapter(state, :plugin_adapter, :request_install, [
+             arguments,
+             Map.put(operation, :plugin_request_id, receipt.id)
+           ]) do
+      plugin_outcome(outcome, receipt, next_dynamic, operation, state)
     end
   end
 
@@ -327,6 +329,14 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   defp adapter_call(state, key, function, arguments) do
+    case call_adapter(state, key, function, arguments) do
+      {:ok, result} when is_map(result) or is_list(result) -> {:ok, result, state}
+      {:error, %Error{} = error} -> {:error, error}
+      other -> malformed_adapter_result(other)
+    end
+  end
+
+  defp call_adapter(state, key, function, arguments) do
     adapter = Map.fetch!(state, key)
 
     cond do
@@ -337,20 +347,60 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
         {:error, unsupported("configured host adapter does not support this operation")}
 
       true ->
-        case apply(adapter, function, arguments) do
-          {:ok, result} when is_map(result) or is_list(result) ->
-            {:ok, result, state}
-
-          {:error, %Error{} = error} ->
-            {:error, error}
-
-          other ->
-            {:error,
-             Error.new(:malformed_result, "host adapter returned invalid data",
-               details: %{received: other}
-             )}
-        end
+        apply(adapter, function, arguments)
     end
+  end
+
+  defp plugin_outcome({:ok, {:completed, fields}}, receipt, dynamic, operation, state) do
+    if valid_plugin_completion?(fields, operation.arguments) do
+      {:ok, completed, _receipt} =
+        Dynamic.complete_plugin(dynamic, operation.run_id, Map.put(fields, :id, receipt.id))
+
+      result = Map.merge(fields, %{request_id: receipt.id, status: :completed})
+      {:ok, result, %{state | dynamic: completed}}
+    else
+      {:error,
+       Error.new(:unknown_outcome, "host plugin completion evidence is invalid",
+         details: %{reason: :malformed_plugin_completion, request_id: receipt.id}
+       )}
+    end
+  end
+
+  defp plugin_outcome({:ok, result}, receipt, dynamic, _operation, state)
+       when is_map(result) or is_list(result) do
+    {:ok, %{request_id: receipt.id, status: :requested, host: result},
+     %{state | dynamic: dynamic}}
+  end
+
+  defp plugin_outcome({:error, %Error{} = error}, _receipt, _dynamic, _operation, _state),
+    do: {:error, error}
+
+  defp plugin_outcome(other, _receipt, _dynamic, _operation, _state),
+    do: malformed_adapter_result(other)
+
+  defp valid_plugin_completion?(fields, arguments) when is_map(fields) do
+    required = [:completed, :user_confirmed, :tool_type, :action_type, :tool_id]
+
+    Enum.all?(required, &Map.has_key?(fields, &1)) and
+      Enum.all?(Map.keys(fields), &(&1 in [:tool_name | required])) and
+      fields.completed == true and is_boolean(fields.user_confirmed) and
+      Enum.all?([:tool_type, :action_type, :tool_id], fn key ->
+        value = Map.get(fields, key)
+        nonempty_text?(value) and value == Map.get(arguments, Atom.to_string(key))
+      end) and
+      (not Map.has_key?(fields, :tool_name) or nonempty_text?(fields.tool_name))
+  end
+
+  defp valid_plugin_completion?(_fields, _arguments), do: false
+
+  defp nonempty_text?(value),
+    do: is_binary(value) and value != "" and String.valid?(value)
+
+  defp malformed_adapter_result(other) do
+    {:error,
+     Error.new(:malformed_result, "host adapter returned invalid data",
+       details: %{received: other}
+     )}
   end
 
   defp adapter?(adapter),

@@ -27,7 +27,11 @@ defmodule Backplane.AgentRuntime.PluginSessionTest do
     def tools(_connection, _timeout),
       do: {:ok, [%{"name" => "valid", "inputSchema" => %{"type" => "object"}}]}
 
-    def stop(connection), do: send(connection.supervisor, :stop)
+    def stop(connection) do
+      ref = Process.monitor(connection.supervisor)
+      send(connection.supervisor, :stop)
+      receive do: ({:DOWN, ^ref, :process, _, _} -> :ok)
+    end
   end
 
   @moduletag :tmp_dir
@@ -88,7 +92,12 @@ defmodule Backplane.AgentRuntime.PluginSessionTest do
       Registry.lookup(Backplane.AgentRuntime.PluginRegistry, {{session, "echo"}, :transport})
 
     ref = Process.monitor(transport)
-    Session.stop(session)
+    assert {:ok, report} = Session.close(session)
+    assert report.outcome == :confirmed, inspect(report, limit: :infinity)
+    assert report.components["echo"].outcome == :confirmed
+    assert {:ok, connection} = report.components["echo"].cleanup
+    assert connection.transport |> elem(1) |> Map.fetch!(:outcome) == :confirmed
+    assert :ok = Session.stop(session)
     assert_receive {:DOWN, ^ref, :process, ^transport, _reason}, 1_000
   end
 

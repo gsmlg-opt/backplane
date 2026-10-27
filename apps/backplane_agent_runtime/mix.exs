@@ -37,9 +37,12 @@ defmodule Backplane.AgentRuntime.MixProject do
     if File.dir?(Path.expand("../../apps", __DIR__)) do
       {app, in_umbrella: true}
     else
-      {app, "~> 1.10.32"}
+      {app, protocol_requirement(app)}
     end
   end
+
+  defp protocol_requirement(:backplane_mcp_protocol), do: "~> 1.10.44"
+  defp protocol_requirement(:backplane_plugin_protocol), do: "~> 1.10.32"
 
   defp umbrella_paths do
     if File.dir?(Path.expand("../../apps", __DIR__)) do

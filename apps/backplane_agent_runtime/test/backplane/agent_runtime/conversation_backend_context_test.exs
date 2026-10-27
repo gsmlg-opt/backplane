@@ -7,6 +7,7 @@ defmodule Backplane.AgentRuntime.ConversationBackendContextTest do
     :append_feedback,
     :catalog_snapshot,
     :emit,
+    :effect_deadline,
     :interact,
     :nested_dispatch,
     :request_new_context,
@@ -27,6 +28,13 @@ defmodule Backplane.AgentRuntime.ConversationBackendContextTest do
         end,
         fn _ -> :ok end
       )
+    end
+  end
+
+  defmodule Selector do
+    def tool_effect_timeout(invocation, context) do
+      send(context.test, {:selected_catalog, invocation, context.catalog_snapshot})
+      :default
     end
   end
 
@@ -75,6 +83,7 @@ defmodule Backplane.AgentRuntime.ConversationBackendContextTest do
          store: EphemeralStore,
          context: store,
          provider: Provider,
+         hooks: Selector,
          provider_context: %{
            test: self(),
            credential: "provider credential",
@@ -170,6 +179,13 @@ defmodule Backplane.AgentRuntime.ConversationBackendContextTest do
 
   defp assert_backend(operation, owner, domain, catalog) do
     context = operation.backend_context
+    invocation_id = operation.invocation_id
+
+    assert_receive {:selected_catalog, %{invocation_id: ^invocation_id} = selected, ^catalog},
+                   1_000
+
+    assert selected.invocation_id == operation.invocation_id
+    assert selected.arguments == operation.arguments
     assert Map.take(context, Map.keys(domain)) == domain
     assert Enum.sort(Map.keys(context)) == Enum.sort(Enum.uniq(Map.keys(domain) ++ @runtime_keys))
     assert context.resource_owner_pid == owner

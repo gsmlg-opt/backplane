@@ -352,3 +352,26 @@ root fences old descendant receipts from the new Goal. `fork_snapshot/2` copies
 the Goal snapshot into an empty target thread, retaining its Goal identity,
 status, budget, totals and timestamps. Run receipts, live bindings, reservations
 and continuation ownership are fresh in the target.
+
+## Historical message metadata and live tool budgets
+
+Child archives preserve all supported top-level message metadata after existing
+bounded `Reconciliation.Evidence.public/1` normalization, including `timestamp`,
+`usage`, `provider`, `model`, `api`, `stop_reason`, `phase` and future JSON fields.
+Roles still require system/developer/user/assistant/tool and a content or result
+field. Typed content/results retain their envelopes. Atom keys/enums normalize
+to strings; timestamps must already be JSON strings or numbers. Structs (including
+`DateTime`), tuples, runtime handles and functions remain unsupported. Existing
+UTF-8, 16 MiB, depth-32, 262144-node and unambiguous-key bounds still apply.
+
+The outer archive/admission/inventory/receipt schemas and schema version are
+unchanged. Full normalized history equality and history digests remain checked
+against authoritative Store records; restored snapshots retain the original Store
+messages. Older readers may reject archives with additional message metadata.
+Export/restore never execute providers, tools, timeout selectors or followups.
+Only explicit fresh continuation admits new work with a fresh run/binding.
+
+Selected tool timeouts, live monotonic deadlines, callback closures and worker
+identities are ephemeral Conversation state. Do not persist them. Recovery
+reconciles prior uncertain execution under the existing Store/lifecycle contract;
+it never replays selection or effects. A fresh explicit invocation selects anew.

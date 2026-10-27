@@ -58,6 +58,36 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   `:code_mode`, and `:services` families. Missing families and duplicate
   canonical names fail before admission.
 
+### Plugin installation outcomes and Web answers
+
+`request_install(arguments, operation)` remains a host installation boundary.
+An ordinary `{:ok, map_or_list}` records a requested receipt. A host that has
+installed and verified its artifact can return `{:ok, {:completed, fields}}`,
+where atom-keyed `fields` contain exactly `completed: true`, the actual boolean
+`user_confirmed`, and nonempty UTF-8 `tool_type`, `action_type`, `tool_id` matching
+the request. `tool_name` is the only optional field. Runtime supplies the same
+receipt as `operation.plugin_request_id`, completes it once, and exposes these
+fields at the top level with `request_id` and `status: :completed`. Malformed
+completion evidence is `:unknown_outcome`; it cannot assert that installation
+did not happen. Completion grants no tools. Settled journal restoration retains
+the receipt without calling the installer again; an unacknowledged crash does
+not authorize installation replay.
+
+The host owns filesystem installation. PluginProtocol provides download, archive
+and manifest validation primitives, rather than an installation scheduler. The
+acceptance fixture downloads a real archive, writes and verifies its files and
+modes, then loads the installed manifest before attesting to completion.
+
+`Web.search/3` and `Web.x_search/3` accept existing `results` maps and explicit
+`kind: :answer` / `"kind" => "answer"` maps. Answers require nonempty UTF-8
+`content`; optional `provider`/`query` are UTF-8 strings, and optional ordered
+`citations` contain nonempty URL strings or maps with `url` and optional `title`.
+Recognized fields accept either key style, without duplicate atom/string aliases.
+Original content, citations, order and additional metadata are retained. Valid
+legacy `results` lists take precedence over answer tags. Both branches retain
+the complete original-map `:erlang.external_size` limit (default 1,048,576),
+including metadata and citations; no rows are synthesized for an answer.
+
 ### Native async event identity
 
 `request_user_input_async` emits `:async_user_input_requested` and

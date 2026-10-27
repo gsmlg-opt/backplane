@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.44
+
+- Select tool effect budgets from final approved invocations and expose fenced,
+  live deadlines while retaining human-wait suspension (#121).
+- Retain Plugin Session activation and cleanup evidence, including failed
+  discovery, and require verified MCP cleanup before successful stop (#122).
+- Accept explicit host-verified plugin installation completion and bounded Web
+  answer/citations results through native and Code Mode execution (#124, #125).
+- Preserve bounded JSON message metadata through managed-child archives without
+  weakening outer schemas, Store equality or history digests (#126).
+- Require MCP Protocol 1.10.44 for the default plugin adapter's ownership APIs.
+
 ## 1.10.36
 
 - Adopt host-created child Sessions into shared collaboration managers (#86).

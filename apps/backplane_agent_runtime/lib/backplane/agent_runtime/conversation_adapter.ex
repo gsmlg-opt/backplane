@@ -61,6 +61,25 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   `{:ok, value}`. Only the trusted host should expose resolve/3 to its UI after
   authenticating the responder. Interaction answers never grant tool authority.
 
+  Optional `tool_effect_timeout/2` inspects the final validated and approved
+  invocation once, before intent commit. Return `:default` for `effect_timeout`,
+  `{:ok, milliseconds}` for a finite tool budget in `1..2_147_483_647`, or a
+  structured `{:error, Error.t()}` to reject admission. Its context retains the
+  pinned `catalog_snapshot`, identity and `input_kind` but has no runtime dispatch,
+  interaction, feedback or publication callbacks. Preparation, approval and
+  selection share the remaining admission allowance. Low-level `Execution.run/5`
+  and other effect/idle/commit/cleanup defaults are unchanged.
+
+  Direct and nested backends receive runtime-owned `effect_deadline.()` returning
+  `{:ok, %{selected_timeout_ms: integer, deadline_ms: integer | nil,
+  remaining_ms: integer, paused: boolean}}`. The effective tool budget is clipped
+  by the finite root and enclosing effect, and starts only after intent ACK.
+  Repeated reads share diminishing active time. Human waits freeze remaining time
+  with a nil deadline; resume shifts the monotonic expiry without renewing time.
+  Completion, cancellation, timeout and owner loss fence retained getters with
+  `{:error, %Error{class: :resource_conflict}}`. Absolute deadlines are live-VM
+  monotonic values, potentially negative, and must never be persisted.
+
   Direct and nested preparation/backend contexts expose
   `append_feedback.(%{id: stable_id, text: text, source: source, stage: stage})`.
   All four values are nonempty UTF-8 strings: id/source/stage are at most 256
@@ -98,5 +117,7 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
               | {:allow, map() | binary()}
               | {:deny, term()}
               | {:error, Backplane.AgentRuntime.Error.t()}
-  @optional_callbacks prompt: 2, stop: 2, prepare_tool: 2
+  @callback tool_effect_timeout(map(), map()) ::
+              :default | {:ok, pos_integer()} | {:error, Backplane.AgentRuntime.Error.t()}
+  @optional_callbacks prompt: 2, stop: 2, prepare_tool: 2, tool_effect_timeout: 2
 end

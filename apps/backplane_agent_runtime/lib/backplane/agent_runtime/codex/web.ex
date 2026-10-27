@@ -166,8 +166,9 @@ defmodule Backplane.AgentRuntime.Codex.Web do
     limit = Keyword.get(opts, :result_limit, @default_result_limit)
 
     cond do
-      not is_list(results) ->
-        {:error, Error.new(:malformed_result, "search result must contain a results list")}
+      not is_list(results) and not valid_answer?(result) ->
+        {:error,
+         Error.new(:malformed_result, "search result must contain results or a valid answer")}
 
       not is_integer(limit) or limit <= 0 ->
         {:error, validation("result_limit must be positive")}
@@ -179,6 +180,44 @@ defmodule Backplane.AgentRuntime.Codex.Web do
         {:ok, result}
     end
   end
+
+  defp valid_answer?(result) do
+    unambiguous?(result, [:kind, :content, :provider, :query, :citations]) and
+      field(result, :kind) in [:answer, "answer"] and
+      nonempty_text?(field(result, :content)) and
+      optional_field?(result, :provider, &text?/1) and
+      optional_field?(result, :query, &text?/1) and
+      optional_field?(result, :citations, &valid_citations?/1)
+  end
+
+  defp valid_citations?(citations) when is_list(citations),
+    do: Enum.all?(citations, &valid_citation?/1)
+
+  defp valid_citations?(_citations), do: false
+
+  defp valid_citation?(citation) when is_binary(citation), do: nonempty_text?(citation)
+
+  defp valid_citation?(citation) when is_map(citation) do
+    unambiguous?(citation, [:url, :title]) and nonempty_text?(field(citation, :url)) and
+      optional_field?(citation, :title, &text?/1)
+  end
+
+  defp valid_citation?(_citation), do: false
+
+  defp unambiguous?(map, fields),
+    do:
+      Enum.all?(fields, &(not (Map.has_key?(map, &1) and Map.has_key?(map, Atom.to_string(&1)))))
+
+  defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp optional_field?(map, key, valid?) do
+    if Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key)),
+      do: valid?.(field(map, key)),
+      else: true
+  end
+
+  defp text?(value), do: is_binary(value) and String.valid?(value)
+  defp nonempty_text?(value), do: text?(value) and value != ""
 
   defp normalize_headers(headers) do
     Enum.map(headers, fn {key, value} -> {to_string(key), to_string(value)} end)
