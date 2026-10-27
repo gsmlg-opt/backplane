@@ -22,23 +22,47 @@ defmodule Backplane.McpProtocol.Transport.STDIOVerifiedTest do
 
   @fixture Path.expand("../../../fixtures/stdio_verified_target.py", __DIR__)
 
-  test "verified JSON-RPC preserves bytes, arguments, environment and cwd; EOF reaps the direct child" do
+  @tag :tmp_dir
+  test "verified JSON-RPC preserves bytes, arguments, environment and cwd; EOF reaps the direct child",
+       %{tmp_dir: tmp_dir} do
+    working_dir = Path.join(tmp_dir, "physical")
+    requested_cwd = Path.join(tmp_dir, "cwd-link")
+    File.mkdir_p!(working_dir)
+    File.ln_s!(working_dir, requested_cwd)
+
     transport =
       start_guard("echo",
         args: ["space argument", "--flag"],
         env: %{"MCP_FIXTURE_VALUE" => "expected"},
-        cwd: System.tmp_dir!()
+        cwd: requested_cwd
       )
 
     request = JSON.encode!(%{"jsonrpc" => "2.0", "id" => "wire", "method" => "fixture"}) <> "\n"
     assert :ok = STDIO.send_message(transport, request, timeout: 1_000)
     assert_receive {:"$gen_cast", {:response, data}}, 2_000
 
-    assert %{"id" => "wire", "result" => %{"argv" => ["space argument", "--flag"], "value" => "expected", "cwd" => cwd}} =
+    assert %{
+             "id" => "wire",
+             "result" => %{
+               "argv" => ["space argument", "--flag"],
+               "value" => "expected",
+               "cwd" => cwd
+             }
+           } =
              JSON.decode!(data)
 
-    assert cwd == System.tmp_dir!()
-    assert {:ok, report} = STDIO.close(transport, timeout: 1_000, activation_id: "json-rpc", close_id: "once")
+    actual_directory = File.stat!(cwd)
+    expected_directory = File.stat!(working_dir)
+
+    assert {actual_directory.major_device, actual_directory.minor_device, actual_directory.inode} ==
+             {expected_directory.major_device, expected_directory.minor_device,
+              expected_directory.inode}
+
+    refute cwd == requested_cwd
+
+    assert {:ok, report} =
+             STDIO.close(transport, timeout: 1_000, activation_id: "json-rpc", close_id: "once")
+
     assert report.outcome == :confirmed
     assert report.close_id == "once"
     assert report.activation_id == "fixture"
@@ -55,10 +79,18 @@ defmodule Backplane.McpProtocol.Transport.STDIOVerifiedTest do
     transport = start_guard("echo")
     assert {:ok, before} = STDIO.cleanup_status(transport)
     assert before.activation_id == "fixture"
-    assert {:ok, report} = STDIO.close(transport, timeout: 1_000, activation_id: "another-generation")
+
+    assert {:ok, report} =
+             STDIO.close(transport, timeout: 1_000, activation_id: "another-generation")
+
     assert report.activation_id == before.activation_id
-    assert Enum.all?(report.resources, fn resource -> elem(resource.id, 0) == before.activation_id end)
-    assert {:ok, ^report} = STDIO.close(transport, timeout: 100, activation_id: "third-generation")
+
+    assert Enum.all?(report.resources, fn resource ->
+             elem(resource.id, 0) == before.activation_id
+           end)
+
+    assert {:ok, ^report} =
+             STDIO.close(transport, timeout: 100, activation_id: "third-generation")
   end
 
   for {mode, escalated} <- [{"term", :term_sent}, {"kill", :kill_sent}] do

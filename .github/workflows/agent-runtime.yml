@@ -4,12 +4,14 @@ on:
   push:
     paths:
       - "apps/backplane_agent_runtime/**"
+      - "apps/backplane_mcp_protocol/**"
       - ".github/workflows/agent-runtime.yml"
       - "scripts/verify_agent_runtime_package.sh"
       - "test/agent_runtime_packages/pty_basic/**"
   pull_request:
     paths:
       - "apps/backplane_agent_runtime/**"
+      - "apps/backplane_mcp_protocol/**"
       - ".github/workflows/agent-runtime.yml"
       - "scripts/verify_agent_runtime_package.sh"
       - "test/agent_runtime_packages/pty_basic/**"

@@ -348,6 +348,7 @@ defmodule Backplane.CIWorkflowTest do
   } do
     assert_package_triggers(workflow, "Agent Runtime", [
       "apps/backplane_agent_runtime/**",
+      "apps/backplane_mcp_protocol/**",
       ".github/workflows/agent-runtime.yml",
       "scripts/verify_agent_runtime_package.sh",
       "test/agent_runtime_packages/pty_basic/**"
