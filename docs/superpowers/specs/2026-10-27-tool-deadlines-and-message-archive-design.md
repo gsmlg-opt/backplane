@@ -2,9 +2,8 @@
 
 Date: 2026-10-27
 
-Status: proposed; not approved or implemented. The source audit and OTP
-documentation check described here are complete. No implementation, runtime
-verification, consumer acceptance, or release is claimed by this document.
+Status: approved by the user at `7d82bdb3`; implementation and integrated
+verification are in progress. The coordinating design tracks release gates.
 
 Baseline: `main` at `fd31834b178e40a0ee335fc9c2872fa6dd8182ce`, released as
 1.10.43. This document covers

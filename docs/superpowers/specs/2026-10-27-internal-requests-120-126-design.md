@@ -2,9 +2,9 @@
 
 Date: 2026-10-27
 
-Status: proposed design, awaiting user approval. No implementation or release
-dispatch is part of this design stage. The source audits establish the causes
-and available contracts; they do not establish passing runtime regressions.
+Status: approved by the user at design commit `7d82bdb3` and implemented on main
+for release 1.10.44. Local integrated verification is complete. Exact-source CI,
+remaining native platforms and publication are separate delivery gates.
 
 ## Frozen batch and baseline
 
@@ -168,11 +168,49 @@ Report implemented, source-verified, published and downstream/deployed states
 separately. Close/label issues only with accurate scoped evidence; the invoked
 internal-request skill authorizes those issue operations.
 
+## Implementation review and local evidence
+
+MCP Protocol now owns Fetch requests through `HTTP.Lifecycle`, including original
+completion handles, body workers, redirect hops and bounded close evidence. Only
+records with both successful original completion barriers and actual worker DOWN
+are compacted; unresolved obligations remain individually visible. Aggregate and
+cleanup-worker identities retain their activation and satisfy the unchanged
+Runtime report validator. `Client.OwnedRequest` shares logical request custody
+between the existing ToolCall and new ResourceRequest facades. Raw timeout values
+are validated before constructing the positive-budget Operation value.
+
+`Client.Connection` fences admission and coordinates transport, client workers
+and supervisor retirement within one budget. Plugin Session records activation
+before allocation and retains failed catalog and close outcomes for observation.
+The explicitly built guardian frames target bytes separately from control data,
+reaps only its direct child, and requires both its receipt and actual helper exit
+before confirmation. Missing evidence remains unknown; neither supervisor DOWN
+nor a late successful tool response replaces a cleanup receipt.
+
+Conversation selects a budget after final input approval and before intent ACK,
+then owns the armed timer and token-fenced live deadline. Native plugin completion
+uses the original request receipt and verified host fields; ordinary host maps
+remain requested. Existing Web result lists retain precedence over the new answer
+branch. Child archives preserve normalized bounded message metadata while keeping
+outer schemas, authoritative Store equality and digest verification intact.
+
+Local Linux x86_64 evidence includes 1,143 Runtime tests, 33 MCP doctests and 1,481
+MCP tests, extracted Runtime/MCP package builds, 13 native guardian protocol tests,
+real Deno output and separate producer/consumer BEAM recovery checks. Targeted
+regressions also passed after the final identity and static-analysis corrections.
+The exact general-CI Elixir 1.19.5 / OTP 28.5.0.5 toolchain passed strict compile,
+format, Credo and Dialyzer; workflow, release and Hex-dependency contracts passed.
+The local development package checks used Elixir 1.18.5 / OTP 28.5.0.8.
+
+macOS and ARM acceptance must come from the native CI matrix. The release must
+still verify all five official Hex/HexDocs packages, fresh registry consumers,
+GitHub archive checksums and embedded provenance, and GHCR version/latest metadata.
+These checks establish no production deployment or downstream adoption.
+
 ## Approval boundary
 
-The user has authorized the fix/release workflow on main. These seven requests
-introduce new public contracts and an explicit native stdio build requirement;
-the proposed choices above need written design approval before implementation.
-Approval selects these concrete contracts, their file/verification boundaries and
-implementation followed by the already requested 1.10.44 release. It does not
-authorize unrelated repairs, downstream adoption or deployment.
+The user approved these concrete contracts at `7d82bdb3`, including the native
+Linux/macOS stdio build requirement and the direct-child/helper/local-pipe scope.
+The approval authorizes implementation, verification and release 1.10.44 on main
+within these boundaries. It does not authorize unrelated repairs, downstream
+adoption or deployment.

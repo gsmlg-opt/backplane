@@ -228,6 +228,7 @@ defmodule Backplane.CIWorkflowTest do
       "Start PostgreSQL 17 with pgvector",
       "Prepare test database",
       "Compile umbrella applications",
+      "Build verified MCP stdio guardian",
       "Install admin asset dependencies",
       "Run tests"
     ])
@@ -371,9 +372,11 @@ defmodule Backplane.CIWorkflowTest do
       "Install dependencies",
       "Compile with warnings as errors",
       "Build optional Linux PTY helper",
+      "Build verified MCP stdio guardian",
       "Verify native PTY protocol",
       "Run tests",
-      "Verify independent BEAM recovery"
+      "Verify independent BEAM recovery",
+      "Verify independent BEAM plugin completion"
     ])
 
     assert_step(job, %{"name" => "Install native build dependencies", "run" => @native_build_run})
@@ -420,6 +423,12 @@ defmodule Backplane.CIWorkflowTest do
       "name" => "Verify independent BEAM recovery",
       "run" =>
         ~s(python3 test/fixtures/run_reconciliation_cold.py "$RUNNER_TEMP/agent-runtime-cold-recovery")
+    })
+
+    assert_step(job, %{
+      "name" => "Verify independent BEAM plugin completion",
+      "run" =>
+        ~s(python3 test/fixtures/run_plugin_completion_cold.py "$RUNNER_TEMP/agent-runtime-cold-plugin-completion")
     })
 
     native = job!(workflow, "native-pty")
@@ -497,6 +506,25 @@ defmodule Backplane.CIWorkflowTest do
     assert count_value(mutated_job, @rust_pin) == 1
 
     assert_raise ExUnit.AssertionError, fn -> assert_rust_step(mutated_job) end
+  end
+
+  test "MCP extracted package and guardian execute on supported native platforms" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/mcp-protocol.yml")
+    job = job!(workflow, "package")
+
+    assert job["strategy"]["matrix"]["runner"] ==
+             ["ubuntu-24.04", "ubuntu-24.04-arm", "macos-15-intel", "macos-latest"]
+
+    assert_step(job, %{
+      "name" => "Verify extracted MCP package and native cleanup",
+      "run" => "bash scripts/verify_mcp_protocol_package.sh"
+    })
+
+    script = File.read!("scripts/verify_mcp_protocol_package.sh")
+    assert script =~ "CC=false mix compile --warnings-as-errors"
+    assert script =~ "mix backplane.mcp.stdio.build"
+    assert script =~ "test/native/stdio_guardian_protocol_test.py"
+    assert script =~ "mix run verify.exs"
   end
 
   defp assert_standard_ci_job(workflow, id, name, native?, command_step) do

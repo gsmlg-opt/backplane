@@ -276,6 +276,52 @@ defmodule Backplane.ReleaseConfigTest do
     assert positions == Enum.sort(positions)
   end
 
+  test "gateway native releases and Docker explicitly build and probe the MCP guardian" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    steps = workflow["jobs"]["build"]["steps"]
+    build = Enum.find(steps, &(&1["name"] == "Build verified MCP stdio guardian"))
+    verify = Enum.find(steps, &(&1["name"] == "Verify packaged MCP stdio guardian"))
+    assert build["if"] == "matrix.release == 'backplane'"
+    assert build["run"] == "mix backplane.mcp.stdio.build"
+    assert verify["if"] == "matrix.release == 'backplane'"
+    assert verify["run"] =~ "backplane_mcp_protocol-*/priv/bin/backplane-mcp-stdio-guardian"
+    assert verify["run"] =~ "backplane-mcp-stdio-guardian 1"
+
+    positions =
+      Enum.map(
+        [
+          "Build verified MCP stdio guardian",
+          "Build OTP release",
+          "Verify packaged MCP stdio guardian",
+          "Archive OTP release"
+        ],
+        fn name ->
+          Enum.find_index(steps, &(&1["name"] == name))
+        end
+      )
+
+    refute nil in positions
+    assert positions == Enum.sort(positions)
+
+    docker = File.read!("Dockerfile")
+    assert docker =~ "RUN mix backplane.mcp.stdio.build"
+    assert docker =~ "backplane_mcp_protocol-${VERSION}/priv/bin/backplane-mcp-stdio-guardian"
+    assert docker =~ "backplane-mcp-stdio-guardian 1"
+
+    packages = workflow["jobs"]["hex-packages"]
+    assert "hex-mcp-protocol" in packages["needs"]
+    names = Enum.map(packages["strategy"]["matrix"]["package"], & &1["name"])
+    assert "backplane_agent_runtime" in names
+    refute "backplane_mcp_protocol" in names
+
+    mcp = workflow["jobs"]["hex-mcp-protocol"]
+    assert mcp["needs"] == ["publish", "hex-plugin-protocol"]
+    assert mcp["if"] == "needs.publish.outputs.release_apps == 'all'"
+    publish_mcp = Enum.find(mcp["steps"], &(&1["name"] == "Publish package"))
+    assert publish_mcp["working-directory"] == "apps/backplane_mcp_protocol"
+    assert publish_mcp["run"] == "mix hex.publish --yes"
+  end
+
   test "release refreshes compiled admin metadata and verifies it before archiving" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
     steps = workflow["jobs"]["build"]["steps"]
@@ -1015,12 +1061,13 @@ defmodule Backplane.ReleaseConfigTest do
     for package <- [
           "backplane_agent_runtime",
           "backplane_ai_protocol",
-          "backplane_skill_protocol",
-          "backplane_mcp_protocol"
+          "backplane_skill_protocol"
         ] do
       assert release_workflow =~ "name: #{package}"
       assert release_workflow =~ "Publish ${{ matrix.package.name }} to Hex"
     end
+
+    assert release_workflow =~ "name: Publish backplane_mcp_protocol to Hex"
 
     assert release_workflow =~ "Install package publishing dependencies"
     assert release_workflow =~ "Verify package documentation"

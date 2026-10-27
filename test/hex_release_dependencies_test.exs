@@ -14,11 +14,17 @@ defmodule Backplane.HexReleaseDependenciesTest do
       plugin = jobs["hex-plugin-protocol"]
       assert is_map(plugin), "#{path} must publish the runtime's plugin dependency first"
       assert gate in List.wrap(plugin["needs"])
-      assert Enum.sort(jobs["hex-packages"]["needs"]) == Enum.sort([gate, "hex-plugin-protocol"])
+
+      expected_dependencies =
+        if gate == "publish",
+          do: [gate, "hex-plugin-protocol", "hex-mcp-protocol"],
+          else: [gate, "hex-plugin-protocol"]
+
+      assert Enum.sort(jobs["hex-packages"]["needs"]) == Enum.sort(expected_dependencies)
 
       if gate == "publish" do
         assert Enum.map(jobs["hex-packages"]["strategy"]["matrix"]["package"], & &1["name"]) ==
-                 @packages
+                 @packages -- ["backplane_mcp_protocol"]
       else
         assert jobs["hex-packages"]["strategy"]["matrix"] ==
                  "${{ fromJSON(needs.qualify.outputs.package_matrix) }}"
@@ -40,6 +46,27 @@ defmodule Backplane.HexReleaseDependenciesTest do
       validation = Enum.find(plugin["steps"], &(&1["name"] == "Validate package version"))
       assert validation["env"]["RELEASE_VERSION"] == "${{ needs.#{gate}.outputs.version }}"
       assert validation["run"] =~ ~s("$package_version" != "$RELEASE_VERSION")
+    end
+  end
+
+  test "release publishes the required MCP package before the standalone runtime consumer" do
+    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+    mcp = jobs["hex-mcp-protocol"]
+    assert mcp["needs"] == ["publish", "hex-plugin-protocol"]
+    assert mcp["if"] == "needs.publish.outputs.release_apps == 'all'"
+    assert "hex-mcp-protocol" in jobs["hex-packages"]["needs"]
+
+    checkout = Enum.find(mcp["steps"], &(&1["uses"] == "actions/checkout@v7"))
+    assert checkout["with"]["ref"] == "${{ needs.publish.outputs.gated_sha }}"
+
+    for {name, command} <- [
+          {"Install package publishing dependencies", "mix deps.get"},
+          {"Verify package documentation", "mix docs"},
+          {"Publish package", "mix hex.publish --yes"}
+        ] do
+      step = Enum.find(mcp["steps"], &(&1["name"] == name))
+      assert step["working-directory"] == "apps/backplane_mcp_protocol"
+      assert step["run"] == command
     end
   end
 

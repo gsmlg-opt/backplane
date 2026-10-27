@@ -1,0 +1,45 @@
+name: MCP Protocol
+
+on:
+  push:
+    paths:
+      - "apps/backplane_mcp_protocol/**"
+      - ".github/workflows/mcp-protocol.yml"
+      - "scripts/verify_mcp_protocol_package.sh"
+      - "test/mcp_protocol_packages/**"
+  pull_request:
+    paths:
+      - "apps/backplane_mcp_protocol/**"
+      - ".github/workflows/mcp-protocol.yml"
+      - "scripts/verify_mcp_protocol_package.sh"
+      - "test/mcp_protocol_packages/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18.4"
+  OTP_VERSION: "28.5.0.5"
+
+jobs:
+  package:
+    name: MCP native package (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - name: Verify extracted MCP package and native cleanup
+        run: bash scripts/verify_mcp_protocol_package.sh

@@ -10,6 +10,43 @@ artifact="$work_root/backplane_agent_runtime.tar"
 unpacked="$work_root/unpacked"
 source_dir="$work_root/source"
 
+# Before publication, qualify Runtime against the candidate MCP source package.
+# The artifact itself retains its published dependency requirement unchanged.
+candidate_mcp="${MCP_PROTOCOL_SOURCE-$script_dir/../apps/backplane_mcp_protocol}"
+if [[ -n "$candidate_mcp" ]]; then
+  test -f "$candidate_mcp/mix.exs"
+  mkdir -p "$work_root/mcp-source" "$work_root/mcp-package"
+  tar -C "$candidate_mcp" --exclude='./_build' --exclude='./deps' --exclude='./doc' \
+    --exclude='./tmp' --exclude='./priv/bin/backplane-mcp-stdio-guardian*' --exclude='*.tar' -cf - . \
+    | tar -xf - -C "$work_root/mcp-source"
+  (cd "$work_root/mcp-source" && MIX_ENV=prod mix hex.build --output "$work_root/mcp.tar")
+  tar -xf "$work_root/mcp.tar" -O contents.tar.gz | tar -xz -C "$work_root/mcp-package"
+  export MCP_PROTOCOL_SOURCE="$work_root/mcp-package"
+fi
+
+use_candidate_mcp() {
+  if [[ -z "$candidate_mcp" ]]; then return; fi
+  python3 - "$1" "$2" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+if sys.argv[2] == "source":
+    needle = '      {app, protocol_requirement(app)}'
+    replacement = '''      if app == :backplane_mcp_protocol do
+        {app, path: System.fetch_env!("MCP_PROTOCOL_SOURCE"), override: true}
+      else
+        {app, protocol_requirement(app)}
+      end'''
+else:
+    needle = '{:backplane_agent_runtime, path: System.fetch_env!("AGENT_RUNTIME_PATH")}'
+    replacement = needle + ',\n      {:backplane_mcp_protocol, path: System.fetch_env!("MCP_PROTOCOL_SOURCE"), override: true}'
+if text.count(needle) != 1:
+    raise SystemExit("candidate MCP qualification marker is missing or ambiguous")
+path.write_text(text.replace(needle, replacement))
+PY
+}
+
 if command -v unbuffer >/dev/null 2>&1; then
   mix_command=(unbuffer mix)
 else
@@ -44,7 +81,11 @@ mkdir -p "$source_dir"
 tar -C "$runtime_dir" --exclude='./_build' --exclude='./deps' --exclude='./doc' \
   --exclude='./tmp' --exclude='./priv/bin/backplane-local-command-pty*' --exclude='*.tar' -cf - . | tar -xf - -C "$source_dir"
 cd "$source_dir"
+# Build the distributable before adding qualification-only local overrides.
+MIX_ENV=dev "${mix_command[@]}" hex.build --output "$artifact"
+use_candidate_mcp "$source_dir/mix.exs" source
 MIX_ENV=dev "${mix_command[@]}" deps.get
+if [[ -n "$candidate_mcp" ]]; then MIX_ENV=dev "${mix_command[@]}" format mix.exs; fi
 if [[ "$pty_package_only" == "1" ]]; then
   MIX_ENV=dev "${mix_command[@]}" format --check-formatted \
     lib/backplane/agent_runtime/tools/local_command.ex \
@@ -56,6 +97,7 @@ else
   MIX_ENV=dev "${mix_command[@]}" format --check-formatted
 fi
 MIX_ENV=dev "${mix_command[@]}" compile --warnings-as-errors
+MIX_ENV=dev "${mix_command[@]}" backplane.mcp.stdio.build
 if [[ "$(uname -s)" == "Linux" ]]; then
   MIX_ENV=dev "${mix_command[@]}" backplane.pty.build
   python3 test/native/pty_protocol_test.py
@@ -76,9 +118,8 @@ else
     ! -path 'test/backplane/agent_runtime/tools/local_command_cleanup_test.exs')"
   MIX_ENV=test "${mix_command[@]}" test ${test_files}
 fi
+MIX_ENV=test python3 test/fixtures/run_plugin_completion_cold.py "$work_root/cold-plugin-completion"
 fi
-MIX_ENV=dev "${mix_command[@]}" hex.build --output "$artifact"
-
 mkdir -p "$unpacked"
 tar -xf "$artifact" -O contents.tar.gz | tar -xz -C "$unpacked"
 
@@ -166,6 +207,7 @@ for fixture in "${fixtures[@]}"; do
   fixture_dir="$work_root/$fixture"
   mkdir -p "$fixture_dir/lib"
   cp -R "$script_dir/../test/agent_runtime_packages/$fixture/." "$fixture_dir/"
+  use_candidate_mcp "$fixture_dir/mix.exs" consumer
 
   (
     cd "$fixture_dir"
@@ -210,6 +252,7 @@ conversation_fixture="$work_root/conversation"
 mkdir -p "$conversation_fixture/test/backplane/agent_runtime"
 mkdir -p "$conversation_fixture/test/fixtures"
 cp -R "$script_dir/../test/agent_runtime_packages/conversation/." "$conversation_fixture/"
+use_candidate_mcp "$conversation_fixture/mix.exs" consumer
 cp "$source_dir/test/backplane/agent_runtime/conversation_test.exs" \
   "$conversation_fixture/test/backplane/agent_runtime/conversation_test.exs"
 cp "$source_dir/test/backplane/agent_runtime/conversation_rejections_test.exs" \
@@ -259,6 +302,7 @@ if [[ -d "$sigma_source/apps/sigma_ai" && -d "$sigma_source/apps/sigma_coding" ]
   sigma_fixture="$work_root/sigma_source"
   mkdir -p "$sigma_fixture/lib"
   cp -R "$script_dir/../test/agent_runtime_packages/sigma_source/." "$sigma_fixture/"
+  use_candidate_mcp "$sigma_fixture/mix.exs" consumer
 
   (
     cd "$sigma_fixture"

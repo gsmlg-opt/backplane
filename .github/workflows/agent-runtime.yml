@@ -107,6 +107,9 @@ jobs:
       - name: Build optional Linux PTY helper
         run: mix backplane.pty.build
 
+      - name: Build verified MCP stdio guardian
+        run: mix backplane.mcp.stdio.build
+
       - name: Verify native PTY protocol
         run: python3 test/native/pty_protocol_test.py
 
@@ -115,6 +118,9 @@ jobs:
 
       - name: Verify independent BEAM recovery
         run: python3 test/fixtures/run_reconciliation_cold.py "$RUNNER_TEMP/agent-runtime-cold-recovery"
+
+      - name: Verify independent BEAM plugin completion
+        run: python3 test/fixtures/run_plugin_completion_cold.py "$RUNNER_TEMP/agent-runtime-cold-plugin-completion"
 
   native-pty:
     name: Native PTY package (${{ matrix.runner }})

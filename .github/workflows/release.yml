@@ -487,6 +487,10 @@ jobs:
         if: runner.os == 'Linux' && matrix.release == 'backplane'
         run: mix backplane.pty.build
 
+      - name: Build verified MCP stdio guardian
+        if: matrix.release == 'backplane'
+        run: mix backplane.mcp.stdio.build
+
       - name: Build OTP release
         env:
           RELEASE_NAME: ${{ matrix.release }}
@@ -503,6 +507,16 @@ jobs:
           test "${#helpers[@]}" -eq 1
           test -x "${helpers[0]}"
           "${helpers[0]}" --probe
+
+      - name: Verify packaged MCP stdio guardian
+        if: matrix.release == 'backplane'
+        env:
+          RELEASE_NAME: ${{ matrix.release }}
+        run: |
+          helpers=("_build/prod/rel/$RELEASE_NAME"/lib/backplane_mcp_protocol-*/priv/bin/backplane-mcp-stdio-guardian)
+          test "${#helpers[@]}" -eq 1
+          test -x "${helpers[0]}"
+          test "$("${helpers[0]}" --probe)" = "backplane-mcp-stdio-guardian 1"
 
       - name: Verify compiled release metadata
         if: matrix.release == 'backplane'
@@ -897,11 +911,82 @@ jobs:
         working-directory: apps/backplane_plugin_protocol
         run: mix hex.publish --yes
 
+  hex-mcp-protocol:
+    name: Publish backplane_mcp_protocol to Hex
+    needs:
+      - publish
+      - hex-plugin-protocol
+    if: needs.publish.outputs.release_apps == 'all'
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: read
+
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      MIX_ENV: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.publish.outputs.gated_sha }}
+
+      - name: Unify app versions
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Validate package version
+        working-directory: apps/backplane_mcp_protocol
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          package_version="$(awk -F '"' '/^[[:space:]]*@version/ { print $2; exit }' mix.exs)"
+
+          if [[ -z "$package_version" ]]; then
+            echo "Could not read backplane_mcp_protocol version from mix.exs" >&2
+            exit 1
+          fi
+
+          if [[ "$package_version" != "$RELEASE_VERSION" ]]; then
+            echo "Release version $RELEASE_VERSION does not match backplane_mcp_protocol version $package_version" >&2
+            exit 1
+          fi
+
+      - name: Require Hex API key
+        shell: bash
+        run: |
+          if [[ -z "${HEX_API_KEY:-}" ]]; then
+            echo "HEX_API_KEY secret is required to publish backplane_mcp_protocol to Hex" >&2
+            exit 1
+          fi
+
+      - name: Install package publishing dependencies
+        working-directory: apps/backplane_mcp_protocol
+        run: mix deps.get
+
+      - name: Verify package documentation
+        working-directory: apps/backplane_mcp_protocol
+        run: mix docs
+
+      - name: Publish package
+        working-directory: apps/backplane_mcp_protocol
+        run: mix hex.publish --yes
+
   hex-packages:
     name: Publish ${{ matrix.package.name }} to Hex
     needs:
       - publish
       - hex-plugin-protocol
+      - hex-mcp-protocol
     if: needs.publish.outputs.release_apps == 'all'
     runs-on: ubuntu-24.04
 
@@ -915,8 +1000,6 @@ jobs:
             path: apps/backplane_ai_protocol
           - name: backplane_skill_protocol
             path: apps/backplane_skill_protocol
-          - name: backplane_mcp_protocol
-            path: apps/backplane_mcp_protocol
 
     permissions:
       contents: read

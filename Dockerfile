@@ -117,11 +117,14 @@ RUN bash scripts/set-version.sh "${VERSION}" all
 COPY --from=web-assets-builder /web-assets/apps/backplane_api/priv/static ./apps/backplane_api/priv/static
 COPY --from=web-assets-builder /web-assets/apps/backplane_admin/priv/static ./apps/backplane_admin/priv/static
 RUN mix backplane.pty.build
+RUN mix backplane.mcp.stdio.build
 RUN mix release backplane --overwrite --version "${VERSION}" \
   && elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
     --release _build/prod/rel/backplane \
   && test -x "_build/prod/rel/backplane/lib/backplane_agent_runtime-${VERSION}/priv/bin/backplane-local-command-pty" \
-  && "_build/prod/rel/backplane/lib/backplane_agent_runtime-${VERSION}/priv/bin/backplane-local-command-pty" --probe
+  && "_build/prod/rel/backplane/lib/backplane_agent_runtime-${VERSION}/priv/bin/backplane-local-command-pty" --probe \
+  && test -x "_build/prod/rel/backplane/lib/backplane_mcp_protocol-${VERSION}/priv/bin/backplane-mcp-stdio-guardian" \
+  && test "$("_build/prod/rel/backplane/lib/backplane_mcp_protocol-${VERSION}/priv/bin/backplane-mcp-stdio-guardian" --probe)" = "backplane-mcp-stdio-guardian 1"
 
 RUN <<'VERIFY_RELEASE_VERSION'
 elixir -e '

@@ -2,7 +2,8 @@
 
 Date: 2026-10-27
 
-Status: proposed; implementation has not started. This design covers internal
+Status: approved by the user at `7d82bdb3`; implementation and integrated
+verification are in progress. This design covers internal
 requests [#124](https://github.com/gsmlg-opt/backplane/issues/124) and
 [#125](https://github.com/gsmlg-opt/backplane/issues/125), against main at
 `fd31834b178e40a0ee335fc9c2872fa6dd8182ce` (published as 1.10.43).
@@ -239,10 +240,11 @@ Implementation must provide the following ordinary functional evidence:
 
 1. A legacy map and list adapter response retains the exact requested wrapper.
    A legacy map containing completion-like keys remains requested.
-2. A real local Plugin Protocol package is installed through the supported public
-   installer; the trusted test host verifies the installed artifact before
-   returning the tagged outcome. Keep this proof distinct from a deterministic
-   adapter-shape fixture.
+2. A real local Plugin Protocol package is downloaded through its public Client
+   and unpacked/verified through its public Archive/manifest contracts. The
+   trusted host installs the files and verifies the installed artifact before
+   returning the tagged outcome; Plugin Protocol exposes no installer scheduler.
+   Keep this proof distinct from a deterministic adapter-shape fixture.
 3. The public native dispatcher returns completed fields at the top level, with
    exactly the receipt ID delivered to the host. `user_confirmed: false` remains
    false when that is the host's actual verified result. Installation completion

@@ -2,8 +2,8 @@
 
 Date: 2026-10-27
 
-Status: proposed; not approved or implemented. This document records source
-investigation and proposed public contracts, not executed runtime acceptance.
+Status: approved by the user at `7d82bdb3`; implementation and integrated
+verification are in progress. The coordinating design tracks release gates.
 Baseline: `main` at `fd31834b178e40a0ee335fc9c2872fa6dd8182ce`, published as
 1.10.43. It covers [#120](https://github.com/gsmlg-opt/backplane/issues/120),
 [#122](https://github.com/gsmlg-opt/backplane/issues/122) and

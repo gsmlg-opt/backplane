@@ -133,6 +133,10 @@ jobs:
       - name: Compile umbrella applications
         run: mix compile
 
+      - name: Build verified MCP stdio guardian
+        if: matrix.app == 'backplane_mcp_protocol'
+        run: mix backplane.mcp.stdio.build
+
       - name: Install admin asset dependencies
         if: matrix.app == 'backplane_admin'
         run: mix npm.install --frozen
