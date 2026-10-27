@@ -11,7 +11,8 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
 
     session_supervisor =
       start_supervised!(
-        {DynamicSupervisor, name: Registry.session_supervisor_name(ModernStubServer), strategy: :one_for_one}
+        {DynamicSupervisor,
+         name: Registry.session_supervisor_name(ModernStubServer), strategy: :one_for_one}
       )
 
     transport_context = %{
@@ -25,6 +26,17 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
       session_supervisor: session_supervisor,
       transport_context: transport_context
     }
+  end
+
+  test "events/list without advertised events never invokes application callback", context do
+    assert {:response, %{"error" => %{"code" => -32_601}}} =
+             Executor.execute(
+               ModernStubServer,
+               request("events/list", %{}, id: "unadvertised-events"),
+               context.transport_context
+             )
+
+    refute_receive {:modern_handle_request, _, _}
   end
 
   test "discovery is deterministic, modern-only, and bypasses application callbacks", context do
@@ -59,8 +71,17 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
   end
 
   test "sanitizes malformed discovery metadata without losing the request id", context do
-    for {params, id} <- [{[], "params-list"}, {"invalid", "params-scalar"}, {%{"_meta" => []}, "meta-list"}] do
-      request = %{"jsonrpc" => "2.0", "id" => id, "method" => "server/discover", "params" => params}
+    for {params, id} <- [
+          {[], "params-list"},
+          {"invalid", "params-scalar"},
+          {%{"_meta" => []}, "meta-list"}
+        ] do
+      request = %{
+        "jsonrpc" => "2.0",
+        "id" => id,
+        "method" => "server/discover",
+        "params" => params
+      }
 
       assert {:response, %{"id" => ^id, "error" => %{"code" => -32_602}}} =
                Executor.execute(ModernStubServer, request, context.transport_context)
@@ -99,14 +120,19 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
     refute_receive {:modern_init_request, _}
   end
 
-  test "normal requests initialize once, use fresh frames, and return deterministic lists", context do
+  test "normal requests initialize once, use fresh frames, and return deterministic lists",
+       context do
     list_request = request("tools/list", %{}, id: 10)
 
     assert {:response, first} =
              Executor.execute(ModernStubServer, list_request, context.transport_context)
 
     assert {:response, second} =
-             Executor.execute(ModernStubServer, %{list_request | "id" => 11}, context.transport_context)
+             Executor.execute(
+               ModernStubServer,
+               %{list_request | "id" => 11},
+               context.transport_context
+             )
 
     assert Enum.map(first["result"]["tools"], & &1.name) == ["alpha", "middle", "route", "zeta"]
     assert Enum.map(second["result"]["tools"], & &1.name) == ["alpha", "middle", "route", "zeta"]
@@ -129,8 +155,11 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
       )
     end
 
-    assert {:response, first} = Executor.execute(ModernStubServer, call.(1), context.transport_context)
-    assert {:response, second} = Executor.execute(ModernStubServer, call.(2), context.transport_context)
+    assert {:response, first} =
+             Executor.execute(ModernStubServer, call.(1), context.transport_context)
+
+    assert {:response, second} =
+             Executor.execute(ModernStubServer, call.(2), context.transport_context)
 
     first_content = first["result"]["structuredContent"]
     second_content = second["result"]["structuredContent"]
@@ -189,7 +218,8 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
     refute_receive {:modern_handle_request, "tools/call", _}
   end
 
-  test "returns header mismatch before unsupported version for disagreeing HTTP markers", context do
+  test "returns header mismatch before unsupported version for disagreeing HTTP markers",
+       context do
     request =
       "tools/list"
       |> request()
@@ -340,7 +370,8 @@ defmodule Backplane.McpProtocol.Server.Modern.ExecutorTest do
     assert response["error"]["code"] == -32_603
   end
 
-  test "offers an explicit test-only inline path without weakening the production default", context do
+  test "offers an explicit test-only inline path without weakening the production default",
+       context do
     no_supervisor_context = Map.delete(context.transport_context, :task_supervisor)
 
     assert {:response, %{"error" => %{"code" => -32_603}}} =

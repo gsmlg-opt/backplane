@@ -1,19 +1,24 @@
 defmodule Backplane.McpProtocol.Client.OwnedRequest do
   @moduledoc false
 
-  alias Backplane.McpProtocol.Client.{ResourceRequest, ToolCall}
+  alias Backplane.McpProtocol.Client.{EventRequest, ResourceRequest, ToolCall}
   alias Backplane.McpProtocol.MCP.{Error, ID}
 
-  @type t :: ToolCall.t() | ResourceRequest.t()
-  @handle_modules [ToolCall, ResourceRequest]
+  @type t :: ToolCall.t() | ResourceRequest.t() | EventRequest.t()
+  @handle_modules [ToolCall, ResourceRequest, EventRequest]
 
   def new(module, client, owner) when module in @handle_modules do
-    struct!(module,
-      client: client,
-      owner: owner,
-      logical_id: ID.generate_request_id(),
-      reply_ref: make_ref()
-    )
+    handle =
+      struct!(module,
+        client: client,
+        owner: owner,
+        logical_id: ID.generate_request_id(),
+        reply_ref: make_ref()
+      )
+
+    if module == ResourceRequest,
+      do: %{handle | cancellation_key: System.unique_integer([:positive, :monotonic])},
+      else: handle
   end
 
   def handle?(%{__struct__: module}) when module in @handle_modules, do: true
@@ -35,6 +40,9 @@ defmodule Backplane.McpProtocol.Client.OwnedRequest do
 
   def monitor_owner(handle), do: Process.monitor(handle.owner)
   def owner_alive?(handle), do: Process.alive?(handle.owner)
+
+  def equal?(%ResourceRequest{} = left, %ResourceRequest{} = right),
+    do: Map.drop(left, [:identity]) == Map.drop(right, [:identity])
 
   def equal?(left, right), do: handle?(left) and left == right
 

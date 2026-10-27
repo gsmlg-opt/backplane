@@ -7,6 +7,9 @@ defmodule Backplane.McpProtocol.ToolCallTransport do
   def start_link(_opts), do: {:ok, self()}
 
   @impl true
+  def cancel_request(_transport, _id, _opts), do: :ok
+
+  @impl true
   def send_message(agent, encoded, opts) do
     {test_pid, action} =
       Agent.get_and_update(agent, fn state ->

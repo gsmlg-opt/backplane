@@ -3,7 +3,7 @@ Code.require_file("reconciliation_host.exs", __DIR__)
 
 defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
   import ExUnit.Assertions
-  alias Backplane.AgentRuntime.{Error, Kernel, Store, ToolRegistry}
+  alias Backplane.AgentRuntime.{Codex, Conversation, Error, Kernel, Store, ToolRegistry}
   alias Backplane.AgentRuntime.ReconciliationFileHostFixture, as: Host
   alias Backplane.AgentRuntime.ReconciliationHostFixture, as: Shapes
   alias Backplane.AgentRuntime.Codex.{MultiAgent, Reconciliation, ResourceRegistry, Session}
@@ -116,6 +116,14 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
 
     assert Enum.any?(archive["messages"], &(&1["timestamp"] == "2026-10-27T00:00:00Z"))
     assert Enum.any?(archive["messages"], &(&1["role"] == "tool"))
+
+    assert Enum.any?(archive["messages"], fn message ->
+             match?(
+               %{"class" => "not_found", "cause" => nil},
+               get_in(message, ["result", "error"])
+             )
+           end)
+
     before_export = markers(ctx)
     archive = archive |> JSON.encode!() |> JSON.decode!()
     assert {:ok, ^archive} = MultiAgent.export_child(source, old.name, receipt["receipt_id"])
@@ -166,6 +174,8 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
     destination = manager(ctx)
     assert {:ok, restored} = MultiAgent.restore_child(destination, archive)
     assert {:ok, ^restored} = MultiAgent.restore_child(destination, archive)
+    assert :ok = MultiAgent.transfer_ready(destination)
+    :ok = parent_only_turn(ctx, archive)
     assert markers(ctx) == prior_markers
     refute_receive {:prepared, _}, 0
     refute_receive {:provider, _, _}, 0
@@ -198,6 +208,10 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
 
     assert Enum.take(request.messages, length(source_messages)) ==
              source_record.run.context.conversation.messages
+
+    assert Enum.any?(request.messages, fn message ->
+             match?(%Error{class: :not_found, cause: nil}, get_in(message, [:result, :error]))
+           end)
 
     assert Enum.any?(request.messages, &(&1[:content] == "continue"))
     complete(destination, request, provider)
@@ -343,7 +357,7 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
        context: ctx.host,
        provider: __MODULE__.Provider,
        provider_context: ctx,
-       registry: registry(ctx),
+       registry: registry(Map.put(ctx, :binding, binding)),
        hooks: __MODULE__,
        authority: authority,
        schema_admission: :strict,
@@ -448,7 +462,73 @@ defmodule Backplane.AgentRuntime.ReconciliationColdBeamFixture do
         "tool"
       )
 
-      {:ok, %{content: [%{type: :text, text: "读取\r\n"}]}}
+      binding = operation.backend_context.binding
+
+      {:error, error} =
+        ResourceRegistry.fetch_session(
+          binding.resource_registry,
+          999_999,
+          binding.owner_id,
+          binding.run_incarnation
+        )
+
+      {:ok, %{is_error: true, error: error, content: [%{type: :text, text: "读取\r\n"}]}}
+    end
+  end
+
+  defp parent_only_turn(ctx, archive) do
+    ctx = %{ctx | label: ctx.label <> "-parent-only"}
+    manager = manager(ctx)
+    assert {:ok, _} = MultiAgent.restore_child(manager, archive)
+    run_id = "root-" <> ctx.label
+    authority = %{caller: "host", run_id: run_id, grants: ["list_agents"], tool_revision: 1}
+    {:ok, session} = Session.start_link(owner_pid: self(), cleanup_timeout: 1_000)
+    {:ok, binding} = Session.bind(session, authority)
+
+    context = %{
+      session_binding: binding,
+      collaboration_runtime: manager,
+      caller: %{run_id: run_id}
+    }
+
+    {:ok, profile} =
+      Codex.profile(:configured, context, authority,
+        families: [:collaboration_v2],
+        tools: ["list_agents"]
+      )
+
+    {:ok, conversation} =
+      Conversation.start_link(
+        run_id: run_id,
+        store: Host,
+        context: ctx.host,
+        provider: __MODULE__.ParentProvider,
+        provider_context: %{owner: self()},
+        registry: profile.registry,
+        tools: profile.tools,
+        authority: profile.authority,
+        session_binding: binding,
+        schema_admission: :strict,
+        run_timeout: 5_000
+      )
+
+    assert {:ok, _} = Conversation.prompt(conversation, "parent only")
+    assert_receive {:parent_only_provider, %{run_id: ^run_id}}, 1_000
+    assert eventually(fn -> Conversation.status(conversation).phase == :terminal end)
+    assert Conversation.status(conversation).run.state == :completed
+    assert {:ok, %{run: %{state: :completed}}} = Host.load(ctx.host, run_id)
+    assert Session.status(session).phase == :idle
+    GenServer.stop(conversation)
+    assert {:ok, %{status: :confirmed}} = Session.close(session)
+    GenServer.stop(session)
+    GenServer.stop(manager)
+    :ok
+  end
+
+  defmodule ParentProvider do
+    def stream(request, %{owner: owner}) do
+      send(owner, {:parent_only_provider, request})
+      [%{type: :response_completed, message: %{role: :assistant, content: "root-only done"}}]
     end
   end
 

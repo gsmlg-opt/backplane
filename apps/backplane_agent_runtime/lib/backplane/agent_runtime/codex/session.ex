@@ -66,6 +66,13 @@ defmodule Backplane.AgentRuntime.Codex.Session do
   def close(session, opts) when is_pid(session),
     do: GenServer.call(session, {:close, nil, opts}, :infinity)
 
+  @doc false
+  def close_async(%{session: session} = binding, opts),
+    do: :gen_server.send_request(session, {:close, binding, opts})
+
+  @doc false
+  def close_response(message, request), do: :gen_server.check_response(message, request)
+
   def status(session), do: GenServer.call(session, :status)
 
   @doc "Seal a closed Session's exact run, Registry and owned-manager inventory."
@@ -458,7 +465,7 @@ defmodule Backplane.AgentRuntime.Codex.Session do
           Keyword.get(opts, :run_fenced, false) and
             state.active != nil and elem(from, 0) == state.active.pid
 
-        {:noreply, begin_close(state, [from], fenced)}
+        {:noreply, begin_close(state, [from], fenced, Keyword.get(opts, :cleanup_deadline))}
     end
   end
 
@@ -664,14 +671,19 @@ defmodule Backplane.AgentRuntime.Codex.Session do
     end
   end
 
-  defp begin_close(state, waiters, fenced) do
+  defp begin_close(state, waiters, fenced, supplied_deadline \\ nil) do
     # Admission is fenced before waiting for the run. Cleanup retains its share
     # of the same deadline even when the run cannot acknowledge cancellation.
     admission_fence = fence_registry(state)
 
     task =
       Task.Supervisor.async_nolink(state.supervisor, fn ->
-        deadline = System.monotonic_time(:millisecond) + state.cleanup_timeout
+        now = System.monotonic_time(:millisecond)
+
+        deadline =
+          if is_integer(supplied_deadline),
+            do: min(supplied_deadline, now + state.cleanup_timeout),
+            else: now + state.cleanup_timeout
 
         needs_fence =
           state.active != nil and is_pid(state.active.pid) and
@@ -682,7 +694,10 @@ defmodule Backplane.AgentRuntime.Codex.Session do
             receive do
               :run_fenced -> :ok
             after
-              max(1, div(state.cleanup_timeout, 2)) ->
+              max(
+                0,
+                min(div(state.cleanup_timeout, 2), deadline - System.monotonic_time(:millisecond))
+              ) ->
                 {:error, Error.new(:unknown_outcome, "session run fencing timed out")}
             end
           else

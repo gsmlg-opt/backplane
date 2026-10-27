@@ -58,7 +58,7 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
         assert {:ok, handle} =
                  start.(name,
                    cursor: "second",
-                   meta: %{"fixture" => "metadata"},
+                   meta: %{"fixture/request" => %{"label" => "汉字\r\n", "nested" => [1, true]}},
                    progress: [token: "resource-progress", callback: fn _, _, _ -> :ok end]
                  )
 
@@ -67,17 +67,41 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
         assert response.result["nextCursor"] == "third"
         assert_receive {:resource_http, ^method, %{"cursor" => "second", "_meta" => meta}, _}
         assert meta["progressToken"] == "resource-progress"
-        if mode == :modern_http, do: assert(meta["fixture"] == "metadata")
+        assert meta["fixture/request"] == %{"label" => "汉字\r\n", "nested" => [1, true]}
       end
 
-      assert {:ok, handle} = Client.start_read_resource(name, "fixture://contents")
+      assert {:ok, handle} =
+               Client.start_read_resource(name, "fixture://contents",
+                 meta: %{"fixture/read" => ["汉字", 1]}
+               )
+
       assert {:ok, response} = Client.await_resource_request(handle, 2_000)
       assert response.result["contents"] == contents()
-      assert_receive {:resource_http, "resources/read", %{"uri" => "fixture://contents"}, headers}
+
+      assert_receive {:resource_http, "resources/read",
+                      %{"uri" => "fixture://contents", "_meta" => read_meta}, headers}
+
+      assert read_meta["fixture/read"] == ["汉字", 1]
 
       if mode == :modern_http do
         assert headers["mcp-method"] == "resources/read"
         assert headers["mcp-name"] == "fixture://contents"
+
+        assert {:ok, events} =
+                 Client.start_list_events(name,
+                   cursor: "opaque/+events",
+                   meta: %{"fixture/event" => true}
+                 )
+
+        assert {:ok, page} = Client.await_event_request(events, 2_000)
+        assert page.result == event_page()
+
+        assert_receive {:resource_http, "events/list",
+                        %{"cursor" => "opaque/+events", "_meta" => event_meta}, event_headers}
+
+        assert event_meta["fixture/event"] == true
+        assert event_meta["io.modelcontextprotocol/protocolVersion"] == "2026-07-28"
+        assert event_headers["mcp-method"] == "events/list"
       end
 
       owner =
@@ -86,20 +110,38 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
           send(test, {:resource_owner_ready, self()})
 
           receive do
-            :cancel -> send(test, {:resource_cancelled, Client.cancel_resource_request(request)})
+            :cancel ->
+              send(
+                test,
+                {:resource_cancelled,
+                 Client.cancel_resource_request(request, "client_cancelled", verified: true)}
+              )
           end
 
           send(test, {:resource_cancel_result, Client.await_resource_request(request, 1_000)})
         end)
 
       assert_receive {:resource_owner_ready, ^owner}, 1_000
-      assert_receive {:resource_blocked, _}, 2_000
-      assert {:ok, other} = Client.start_read_resource(name, "fixture://contents")
+      assert_receive {:resource_blocked, first_id, "fixture://blocked"}, 2_000
+      assert {:ok, other} = Client.start_read_resource(name, "fixture://blocked-other")
+      assert_receive {:resource_blocked, other_id, "fixture://blocked-other"}, 2_000
+      refute other_id == first_id
+      assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 1)
+      send(owner, :cancel)
+      assert_receive {:resource_cancelled, {:ok, report}}, 2_000
+      assert report.local == :cancelled
+      assert report.local_cleanup == :confirmed
+      assert report.request_id == first_id
+      assert report.remote == :unknown
+      assert report.cleanup_evidence.workers_down
+      assert report.cleanup_evidence.transport == :confirmed
+      assert_receive {:resource_cancel_result, {:error, %{reason: :request_cancelled}}}, 2_000
+      assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 1)
+      other_worker = Agent.get(state, & &1.blocked[other_id])
+      assert Process.alive?(other_worker)
+      send(other_worker, :release)
       assert {:ok, other_response} = Client.await_resource_request(other, 2_000)
       assert other_response.result["contents"] == contents()
-      send(owner, :cancel)
-      assert_receive {:resource_cancelled, {:ok, %{local: :cancelled, remote: :unknown}}}, 2_000
-      assert_receive {:resource_cancel_result, {:error, %{reason: :request_cancelled}}}, 2_000
 
       assert {:ok, next} = Client.start_list_resources(name)
       assert {:ok, _} = Client.await_resource_request(next, 2_000)
@@ -109,6 +151,49 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
 
       assert activation == "resource-http-#{mode}"
     end
+  end
+
+  test "queued HTTP sends cannot allocate a request after their original deadline" do
+    server = HTTPServer.open()
+    test = self()
+
+    HTTPServer.stub(server, "POST", "/mcp", fn conn ->
+      send(test, :expired_http_dispatched)
+      Plug.Conn.resp(conn, 202, "")
+    end)
+
+    {:ok, transport} =
+      Backplane.McpProtocol.Transport.StreamableHTTP.start_link(
+        name: nil,
+        client: self(),
+        url: "http://127.0.0.1:#{server.port}/mcp"
+      )
+
+    :ok = :sys.suspend(transport)
+
+    sender =
+      spawn(fn ->
+        result =
+          try do
+            Backplane.McpProtocol.Transport.StreamableHTTP.send_message(transport, "{}",
+              timeout: 10
+            )
+          catch
+            :exit, {:timeout, _} -> :send_timed_out
+          end
+
+        send(test, {:expired_sender, result})
+      end)
+
+    assert_receive {:expired_sender, :send_timed_out}, 1_000
+    refute Process.alive?(sender)
+    :ok = :sys.resume(transport)
+    refute_receive :expired_http_dispatched, 100
+
+    assert {:ok, %{outcome: :confirmed}} =
+             Backplane.McpProtocol.Transport.StreamableHTTP.close(transport, timeout: 1_000)
+
+    GenServer.stop(transport)
   end
 
   defp install_fixture(server, state, mode, test) do
@@ -174,7 +259,7 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
           %{
             "resultType" => "complete",
             "supportedVersions" => ["2026-07-28"],
-            "capabilities" => %{"resources" => %{}},
+            "capabilities" => %{"resources" => %{}, "events" => %{}},
             "ttlMs" => 0,
             "cacheScope" => "private"
           }
@@ -186,6 +271,9 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
             "serverInfo" => %{"name" => "fixture", "version" => "1"}
           }
 
+        "events/list" ->
+          event_page()
+
         "resources/list" ->
           %{"resources" => [], "nextCursor" => "third"}
 
@@ -193,15 +281,15 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
           %{"resourceTemplates" => [], "nextCursor" => "third"}
 
         "resources/read" ->
-          if wire["params"]["uri"] == "fixture://blocked" do
+          if wire["params"]["uri"] in ["fixture://blocked", "fixture://blocked-other"] do
             worker = self()
             Agent.update(state, &put_in(&1.blocked[id], worker))
-            send(test, {:resource_blocked, id})
+            send(test, {:resource_blocked, id, wire["params"]["uri"]})
 
             receive do
               :release -> :ok
             after
-              3_000 -> raise "resource fixture was not cancelled"
+              5_000 -> raise "resource fixture was not cancelled"
             end
           end
 
@@ -225,6 +313,28 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
         end
     end
   end
+
+  defp event_page,
+    do: %{
+      "resultType" => "complete",
+      "events" => [
+        %{
+          "name" => "comment.created",
+          "description" => "汉字",
+          "delivery" => ["webhook"],
+          "inputSchema" => %{"type" => "object"},
+          "payloadSchema" => true
+        },
+        %{
+          "name" => "comment.updated",
+          "delivery" => ["webhook", "other"],
+          "inputSchema" => false,
+          "payloadSchema" => %{"type" => "object"}
+        }
+      ],
+      "nextCursor" => "opaque/next",
+      "extension" => [1, 2]
+    }
 
   defp contents,
     do: [

@@ -5,6 +5,22 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Evidence do
 
   @max_bytes 16_777_216
   @max_nodes 262_144
+  @error_classes [
+    :validation,
+    :forbidden,
+    :approval_required,
+    :not_found,
+    :timeout,
+    :cancelled,
+    :transient_transport,
+    :resource_conflict,
+    :execution_failure,
+    :malformed_result,
+    :budget_exceeded,
+    :unsupported_capability,
+    :unknown_outcome,
+    :overloaded
+  ]
   @manifest_fields ~w(schema_version manifest_id manifest_revision subject admission_fence_ref run_refs obligations manifest_digest)
   @child_fields ~w(scope_id root_agent_id source_manager_id agent_id name parent_id parent_name attempt_id run_id run_incarnation)
   @obligation_kinds ~w(provider tool child dependency executor session registry_owner registry_resource registry_session manager host_component acknowledgement)
@@ -286,6 +302,19 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation.Evidence do
     |> case do
       {:ok, acc, count} -> {:ok, Enum.reverse(acc), count}
       error -> error
+    end
+  end
+
+  defp normalize(%Error{} = error, depth, nodes) do
+    fields = Map.from_struct(error)
+
+    if map_size(fields) == 4 and
+         error.class in @error_classes and
+         (is_nil(error.message) or is_binary(error.message)) and
+         is_map(error.details) and not is_struct(error.details) do
+      normalize(fields, depth, nodes)
+    else
+      :error
     end
   end
 

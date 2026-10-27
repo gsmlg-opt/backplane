@@ -15,6 +15,45 @@ Backplane.McpProtocol namespace. The package supports the modern
 `2026-07-28` protocol over Streamable HTTP and stdio while preserving the
 legacy initialization and session behavior required by older protocol versions.
 
+## Owned resource and event requests
+
+Resource operations can retain ownership in the actual caller with
+`Client.start_list_resources/2`, `start_list_resource_templates/2` and
+`start_read_resource/3`. Await the returned opaque handle with
+`Client.await_resource_request/2`; an observation timeout leaves the request
+active. Only the original owner can await or cancel it. Owner exit cancels that
+request while preserving unrelated work on the shared client.
+
+Adapters requiring interruption evidence can create a
+`Client.resource_cancellation_control/0` in that same owner before registration,
+then pass it as `cancellation: control` to `await_resource_request/3`.
+`Client.cancel_resource_wait(control, reason, timeout: remaining_ms)` signals the
+wait and acknowledges only delivery of that signal. The owner performs the exact
+request cancellation and receives `{:cancelled, report}`. A control binds to one
+request and cannot be reused for another. `resource_request_identity/1` exposes
+the original registered identity to that owner, including after completion; MRTR
+can change the current wire request ID without changing the logical identity.
+
+Cancellation retains the existing `local: :cancelled` logical meaning. The
+separate `local_cleanup` field is `:confirmed` only after actual request worker
+termination and request-scoped transport cleanup are observed. HTTP/SSE use the
+original request completion barriers and keep the shared connection open.
+STDIO rejects expired sends and sends from terminated callers at the actual write,
+then confirms a mailbox barrier after the exact dispatch workers terminate; it
+keeps the shared target open and does not claim remote rollback.
+Custom transports may implement the optional `cancel_request/3` callback to
+provide this evidence; without it, verified cleanup remains uncertain. Notification
+acceptance never proves remote rollback: `remote` remains `:unknown`.
+An ordinary result that wins the race remains an ordinary result and supplies no
+verified cleanup assertion.
+
+`Client.start_list_events/2`, `await_event_request/2` and
+`cancel_event_request/3` provide the same finite owned lifecycle for one raw
+`events/list` page. They require a ready `2026-07-28` client advertising the
+`events` capability. Cursor and descriptor order, schema booleans/objects,
+`nextCursor` and extra result fields remain unchanged; no auto-pagination or
+webhook execution is performed.
+
 ## Installation
 
 ```elixir

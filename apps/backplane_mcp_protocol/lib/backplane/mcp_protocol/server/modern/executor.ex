@@ -44,14 +44,16 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   """
   @spec execute(module(), map(), map(), keyword()) :: execute_result()
   def execute(server_module, request, transport_context, opts \\ [])
-      when is_atom(server_module) and is_map(request) and is_map(transport_context) and is_list(opts) do
+      when is_atom(server_module) and is_map(request) and is_map(transport_context) and
+             is_list(opts) do
     timeout = normalize_timeout(opts[:timeout] || transport_context[:request_timeout])
     deadline = System.monotonic_time(:millisecond) + timeout
     task_supervisor = task_supervisor(server_module, transport_context, opts)
 
     case run_isolated(task_supervisor, deadline, opts, fn -> snapshot_server(server_module) end) do
       {:ok, {:server_snapshot, snapshot}} ->
-        routing_context = Map.put(transport_context, :supported_versions, snapshot.supported_versions)
+        routing_context =
+          Map.put(transport_context, :supported_versions, snapshot.supported_versions)
 
         case ProfileRouter.route(request, routing_context) do
           {:ok, {:modern, %Profile{} = profile}} ->
@@ -78,7 +80,16 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     end
   end
 
-  defp execute_modern(server_module, snapshot, profile, request, transport_context, task_supervisor, deadline, opts) do
+  defp execute_modern(
+         server_module,
+         snapshot,
+         profile,
+         request,
+         transport_context,
+         task_supervisor,
+         deadline,
+         opts
+       ) do
     with method when is_binary(method) <- request["method"],
          :ok <- RequestContext.validate_required_metadata(request),
          :ok <- Headers.validate(profile, request, transport_context),
@@ -155,9 +166,16 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
           | context: RequestContext.to_server_context(request_context)
         }
 
-        case validate_tool_headers(server_module, request_context, initialized_frame, transport_context) do
+        case validate_tool_headers(
+               server_module,
+               request_context,
+               initialized_frame,
+               transport_context
+             ) do
           :ok ->
-            callback_return = server_module.handle_request(request_context.request, initialized_frame)
+            callback_return =
+              server_module.handle_request(request_context.request, initialized_frame)
+
             {:callback_return, callback_return, take_progress_notifications([])}
 
           {:error, %Error{} = error} ->
@@ -184,14 +202,20 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     end
   end
 
-  defp validate_tool_headers(server_module, %RequestContext{method: "tools/call"} = context, frame, transport_context) do
+  defp validate_tool_headers(
+         server_module,
+         %RequestContext{method: "tools/call"} = context,
+         frame,
+         transport_context
+       ) do
     tool_name = get_in(context.request, ["params", "name"])
     tool = server_module |> Handlers.get_server_tools(frame) |> Enum.find(&(&1.name == tool_name))
 
     if tool, do: Headers.validate_tool_params(tool, context.request, transport_context), else: :ok
   end
 
-  defp validate_tool_headers(_server_module, _request_context, _frame, _transport_context), do: :ok
+  defp validate_tool_headers(_server_module, _request_context, _frame, _transport_context),
+    do: :ok
 
   defp fresh_frame(request_context) do
     frame = Frame.new(request_context.assigns)
@@ -262,7 +286,11 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     |> normalize_to_envelope(context)
   end
 
-  defp normalize_discovery_to_envelope({:ok, {:protocol_error, %Error{} = error}}, _snapshot, context) do
+  defp normalize_discovery_to_envelope(
+         {:ok, {:protocol_error, %Error{} = error}},
+         _snapshot,
+         context
+       ) do
     emit_response(context, :error)
     respond_error(error, context.request_id)
   end
@@ -271,7 +299,11 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     respond_callback_failure(context)
   end
 
-  defp normalize_callback_to_envelope({:ok, {:callback_return, callback_return, notifications}}, snapshot, context) do
+  defp normalize_callback_to_envelope(
+         {:ok, {:callback_return, callback_return, notifications}},
+         snapshot,
+         context
+       ) do
     normalized =
       context.method
       |> Result.normalize(callback_return, context, snapshot)
@@ -280,7 +312,11 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     attach_notifications(normalized, notifications)
   end
 
-  defp normalize_callback_to_envelope({:ok, {:callback_return, callback_return}}, snapshot, context) do
+  defp normalize_callback_to_envelope(
+         {:ok, {:callback_return, callback_return}},
+         snapshot,
+         context
+       ) do
     normalize_callback_to_envelope(
       {:ok, {:callback_return, callback_return, []}},
       snapshot,
@@ -288,7 +324,11 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     )
   end
 
-  defp normalize_callback_to_envelope({:ok, {:protocol_error, %Error{} = error}}, _server, context) do
+  defp normalize_callback_to_envelope(
+         {:ok, {:protocol_error, %Error{} = error}},
+         _server,
+         context
+       ) do
     emit_response(context, :error)
     respond_error(error, context.request_id)
   end
@@ -367,6 +407,7 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
     end
   end
 
+  defp required_server_capability("events/list"), do: :events
   defp required_server_capability("completion/complete"), do: :completions
   defp required_server_capability("prompts/" <> _action), do: :prompts
   defp required_server_capability("resources/" <> _action), do: :resources
@@ -374,11 +415,15 @@ defmodule Backplane.McpProtocol.Server.Modern.Executor do
   defp required_server_capability(_method), do: nil
 
   defp server_capability?(capabilities, :completions) when is_map(capabilities) do
-    Enum.any?(["completions", :completions, "completion", :completion], &Map.has_key?(capabilities, &1))
+    Enum.any?(
+      ["completions", :completions, "completion", :completion],
+      &Map.has_key?(capabilities, &1)
+    )
   end
 
   defp server_capability?(capabilities, capability) when is_map(capabilities) do
-    Map.has_key?(capabilities, capability) or Map.has_key?(capabilities, Atom.to_string(capability))
+    Map.has_key?(capabilities, capability) or
+      Map.has_key?(capabilities, Atom.to_string(capability))
   end
 
   defp server_capability?(_capabilities, _capability), do: false

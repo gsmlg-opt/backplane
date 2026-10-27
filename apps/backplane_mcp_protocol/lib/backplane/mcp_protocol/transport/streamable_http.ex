@@ -191,11 +191,35 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     GenServer.start_link(__MODULE__, opts, name: opts.name)
   end
 
+  @doc false
+  @impl true
+  def cancel_request(pid, request_id, opts) do
+    timeout = Keyword.fetch!(opts, :timeout)
+    opts = Keyword.put_new(opts, :deadline, System.monotonic_time(:millisecond) + timeout)
+
+    GenServer.call(
+      pid,
+      {:cancel_owned_request, request_id, opts},
+      Keyword.fetch!(opts, :timeout) + 100
+    )
+  end
+
   @impl Transport
   def send_message(pid \\ __MODULE__, message, opts) when is_binary(message) do
     timeout = Keyword.get(opts, :timeout, 5000)
     request_context = Keyword.get(opts, :request_context)
-    GenServer.call(pid, {:send, message, timeout, request_context}, timeout)
+
+    deadline =
+      Keyword.get(
+        opts,
+        :deadline,
+        if(timeout == :infinity,
+          do: :infinity,
+          else: System.monotonic_time(:millisecond) + timeout
+        )
+      )
+
+    GenServer.call(pid, {:send, message, deadline, request_context}, timeout)
   end
 
   @impl Transport
@@ -277,6 +301,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
         lifecycle: lifecycle,
         closing: false,
         pending: %{},
+        request_jobs: %{},
         streams: []
       }
 
@@ -319,7 +344,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   def handle_call({:close, opts}, from, state) do
     lifecycle = state.lifecycle
     spawn(fn -> GenServer.reply(from, Lifecycle.close(lifecycle, opts)) end)
-    Enum.each(state.pending, fn {_ref, {caller, _context}} -> GenServer.reply(caller, {:error, :closing}) end)
+
+    Enum.each(state.pending, fn {_ref, {caller, _context, _worker}} ->
+      GenServer.reply(caller, {:error, :closing})
+    end)
+
     {:noreply, %{state | closing: true, pending: %{}}}
   end
 
@@ -359,19 +388,66 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     end
   end
 
-  def handle_call({:send, message, timeout, request_context}, from, state) do
+  def handle_call({:cancel_owned_request, request_id, opts}, from, state) do
+    case Map.fetch(state.request_jobs, request_id) do
+      {:ok, worker} ->
+        lifecycle = state.lifecycle
+
+        Task.Supervisor.start_child(Backplane.McpProtocol.Client.OperationSupervisor, fn ->
+          GenServer.reply(from, Lifecycle.release_job(lifecycle, worker, opts))
+        end)
+
+        # A cancelled HTTP worker cannot deliver its normal result. Release
+        # only that worker's retained call while keeping shared work pending.
+        pending =
+          Map.reject(state.pending, fn {_ref, {_caller, _context, pid}} -> pid == worker end)
+
+        {:noreply, %{state | pending: pending}}
+
+      :error ->
+        {:reply, {:error, :request_cleanup_unknown}, state}
+    end
+  end
+
+  def handle_call({:send, message, deadline, request_context}, from, state) do
     state = persist_legacy_protocol_version(state, request_context)
     emit_telemetry(:send, state, %{message_size: byte_size(message)})
     ref = make_ref()
     parent = self()
 
-    {:ok, _worker} =
+    {:ok, worker} =
       Lifecycle.start(state.lifecycle, fn ->
-        result = send_http_request(state, message, timeout, request_context)
+        timeout =
+          if deadline == :infinity,
+            do: :infinity,
+            else: max(deadline - System.monotonic_time(:millisecond), 0)
+
+        result =
+          if timeout == 0,
+            do: {:error, :timeout},
+            else: send_http_request(state, message, timeout, request_context)
+
         send(parent, {:http_result, ref, result})
       end)
 
-    {:noreply, put_in(state.pending[ref], {from, request_context})}
+    request_jobs =
+      case JSON.decode(message) do
+        {:ok, %{"id" => id}} -> Map.put(state.request_jobs, id, worker)
+        _ -> state.request_jobs
+      end
+
+    request_jobs =
+      if map_size(request_jobs) > 128 do
+        case Enum.find(request_jobs, fn {_id, pid} -> not Process.alive?(pid) end) do
+          {id, _pid} -> Map.delete(request_jobs, id)
+          nil -> request_jobs
+        end
+      else
+        request_jobs
+      end
+
+    state = %{state | request_jobs: request_jobs}
+    {:noreply, put_in(state.pending[ref], {from, request_context, worker})}
   end
 
   @impl GenServer
@@ -393,7 +469,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
       {nil, _} ->
         {:noreply, state}
 
-      {{from, context}, pending} ->
+      {{from, context, _worker}, pending} ->
         state = %{state | pending: pending, active_request: from}
 
         case result do
@@ -408,7 +484,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
               GenServer.reply(from, {:error, :session_expired})
 
               {:noreply,
-               %{state | active_request: nil, session_id: nil, last_event_id: nil, legacy_protocol_version: nil}}
+               %{
+                 state
+                 | active_request: nil,
+                   session_id: nil,
+                   last_event_id: nil,
+                   legacy_protocol_version: nil
+               }}
             else
               GenServer.reply(from, {:error, reason})
               # Private functions
@@ -563,7 +645,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
         {:reply, :ok, %{new_state | active_request: nil}}
 
       {_, content_type} ->
-        {:reply, {:error, {:unsupported_content_type, content_type}}, %{new_state | active_request: nil}}
+        {:reply, {:error, {:unsupported_content_type, content_type}},
+         %{new_state | active_request: nil}}
     end
   end
 
@@ -611,7 +694,10 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   # Additional helper functions for SSE support
 
-  defp update_legacy_protocol_version(state, body, %RequestContext{era: :legacy, method: "initialize"}) do
+  defp update_legacy_protocol_version(state, body, %RequestContext{
+         era: :legacy,
+         method: "initialize"
+       }) do
     case negotiated_protocol_version(body) do
       version when version in @legacy_protocol_versions ->
         %{state | legacy_protocol_version: version}
@@ -702,7 +788,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   defp maybe_start_sse_connection(%{enable_sse: true, session_id: nil} = state), do: state
 
-  defp maybe_start_sse_connection(%{enable_sse: true, sse_task: task} = state) when not is_nil(task), do: state
+  defp maybe_start_sse_connection(%{enable_sse: true, sse_task: task} = state)
+       when not is_nil(task),
+       do: state
 
   defp maybe_start_sse_connection(%{enable_sse: true} = state) do
     pid = start_sse_task(state)
@@ -717,7 +805,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     end
   end
 
-  defp maybe_start_legacy_sse_on_session_acquired(%{session_id: nil} = new_state, _old_state), do: new_state
+  defp maybe_start_legacy_sse_on_session_acquired(%{session_id: nil} = new_state, _old_state),
+    do: new_state
 
   defp maybe_start_legacy_sse_on_session_acquired(new_state, %{session_id: nil}) do
     maybe_start_sse_connection(new_state)
@@ -816,12 +905,18 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   defp put_last_event_id_header(headers, nil), do: headers
 
-  defp put_last_event_id_header(headers, event_id), do: Map.put(headers, "last-event-id", event_id)
+  defp put_last_event_id_header(headers, event_id),
+    do: Map.put(headers, "last-event-id", event_id)
 
   defp sanitize_headers_error(reason) when is_atom(reason), do: reason
 
   defp sanitize_headers_error({reason, _detail})
-       when reason in [:duplicate_header, :invalid_header, :invalid_header_name, :invalid_header_value],
+       when reason in [
+              :duplicate_header,
+              :invalid_header,
+              :invalid_header_name,
+              :invalid_header_value
+            ],
        do: reason
 
   defp sanitize_headers_error(_reason), do: :request_headers_unavailable
@@ -830,7 +925,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   defp legacy_request?(%RequestContext{era: :legacy}), do: true
   defp legacy_request?(_request_context), do: false
 
-  defp persist_legacy_protocol_version(state, %RequestContext{era: :legacy, method: method, protocol_version: version})
+  defp persist_legacy_protocol_version(state, %RequestContext{
+         era: :legacy,
+         method: method,
+         protocol_version: version
+       })
        when method != "initialize" and version in @legacy_protocol_versions do
     %{state | legacy_protocol_version: version}
   end

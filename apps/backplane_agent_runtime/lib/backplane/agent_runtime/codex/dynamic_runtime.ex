@@ -7,6 +7,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     Codex.Contract,
     Codex.Dynamic,
     Codex.ToolSearch,
+    Codex.ResourceRequest,
     Error,
     ToolRegistry,
     ToolCatalog
@@ -50,11 +51,34 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   def contracts(_context), do: []
 
   @spec call(map()) :: {:ok, map()} | {:error, Error.t()}
+  def call(%{tool_name: name, backend_context: %{runtime: runtime}} = operation)
+      when is_pid(runtime) and
+             name in ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"] do
+    adapter = GenServer.call(runtime, :resource_adapter)
+
+    case execute(operation, %{mcp_adapter: adapter}) do
+      {:ok, result, _} -> {:ok, result}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
   def call(%{backend_context: %{runtime: runtime}} = operation) when is_pid(runtime),
     do: GenServer.call(runtime, {:tool, operation}, :infinity)
 
   def call(_operation),
     do: {:error, Error.new(:unsupported_capability, "dynamic runtime is unavailable")}
+
+  @doc """
+  Runs one caller-owned MCP resource request with cooperative local cancellation.
+
+  The starter must only start that resource request in the calling process. It
+  returns the public MCP result for the adapter's usual result/error conversion.
+  Additional untracked adapter effects cannot be confirmed by this helper.
+  """
+  def resource_request(operation, starter), do: ResourceRequest.run(operation, starter)
+
+  @doc false
+  def cancel_resource(operation), do: ResourceRequest.cancel(operation)
 
   @impl true
   def init(opts) do
@@ -67,6 +91,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
          candidates: candidates,
          discovery_owners: %{},
          pending_publications: %{},
+         resource_requests: %{},
          mcp_adapter: Keyword.get(opts, :mcp_adapter),
          plugin_adapter: Keyword.get(opts, :plugin_adapter),
          plugin_context: Keyword.get(opts, :plugin_context, %{})
@@ -75,6 +100,116 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   @impl true
+  def handle_call(:resource_adapter, _from, state), do: {:reply, state.mcp_adapter, state}
+
+  def handle_call({:register_resource, operation, control}, {owner, _}, state) do
+    registration = ResourceRequest.registration_id()
+
+    entry = %{
+      registration: registration,
+      operation: operation,
+      owner: owner,
+      monitor: Process.monitor(owner),
+      control: control,
+      waiters: [],
+      result: nil,
+      request_identity: nil,
+      stop_generation: nil,
+      coordinator_monitor: nil,
+      managed: false
+    }
+
+    {:reply, {:ok, registration},
+     %{state | resource_requests: Map.put(state.resource_requests, registration, entry)}}
+  end
+
+  def handle_call({:coordinate_resource, registration, coordinator}, {owner, _}, state)
+      when is_pid(coordinator) do
+    case state.resource_requests[registration] do
+      %{owner: ^owner, coordinator_monitor: nil} = entry ->
+        entry = %{entry | coordinator_monitor: Process.monitor(coordinator), managed: true}
+        {:reply, :ok, put_in(state.resource_requests[registration], entry)}
+
+      _ ->
+        {:reply, {:error, Error.new(:resource_conflict, "resource coordinator is stale")}, state}
+    end
+  end
+
+  def handle_call({:cancel_resource, operation, deadline}, from, state) do
+    identity = Backplane.AgentRuntime.ToolEffects.cancellation_identity(operation)
+    entry = state.resource_requests[operation[:resource_registration]]
+
+    entry =
+      if entry &&
+           Backplane.AgentRuntime.ToolEffects.cancellation_identity(entry.operation) === identity &&
+           (entry.stop_generation == nil or entry.stop_generation === operation[:stop_generation]),
+         do: entry
+
+    case entry do
+      %{result: {:cancelled, report}} ->
+        {:reply, ResourceRequest.assertion(entry, report), state}
+
+      %{result: nil} ->
+        ResourceRequest.signal(entry.control, "runtime_cancelled", deadline)
+
+        entry = %{
+          entry
+          | waiters: [from | entry.waiters],
+            stop_generation: operation.stop_generation
+        }
+
+        {:noreply, put_in(state.resource_requests[entry.registration], entry)}
+
+      _ ->
+        {:reply, {:error, Error.new(:unknown_outcome, "resource cancellation is unconfirmed")},
+         state}
+    end
+  end
+
+  def handle_call({:finish_resource, registration, result}, {owner, _}, state) do
+    case state.resource_requests[registration] do
+      %{owner: ^owner, result: nil} = entry ->
+        entry = %{entry | result: result}
+
+        assertion =
+          case result do
+            {:cancelled, report} -> ResourceRequest.assertion(entry, report)
+            _ -> {:error, Error.new(:unknown_outcome, "resource completed before cancellation")}
+          end
+
+        Enum.each(entry.waiters, &GenServer.reply(&1, assertion))
+        {:reply, :ok, put_in(state.resource_requests[registration], %{entry | waiters: []})}
+
+      _ ->
+        {:reply,
+         {:error, Error.new(:resource_conflict, "resource request registration is stale")}, state}
+    end
+  end
+
+  def handle_call({:attach_resource, registration, identity}, {owner, _}, state) do
+    case state.resource_requests[registration] do
+      %{owner: ^owner, request_identity: nil} = entry ->
+        {:reply, :ok,
+         put_in(state.resource_requests[registration], %{entry | request_identity: identity})}
+
+      _ ->
+        {:reply, {:error, Error.new(:resource_conflict, "resource registration is stale")}, state}
+    end
+  end
+
+  def handle_call({:discard_resource, registration}, {owner, _}, state) do
+    case state.resource_requests[registration] do
+      %{owner: ^owner} = entry ->
+        retire_resource_monitors(entry)
+
+        {:reply, :ok,
+         %{state | resource_requests: Map.delete(state.resource_requests, registration)}}
+
+      _ ->
+        {:reply, :ok, state}
+    end
+  end
+
   def handle_call(:capabilities, _from, state) do
     {:reply,
      %{
@@ -89,6 +224,66 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
       {:ok, result, next} -> {:reply, {:ok, result}, next}
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
     end
+  end
+
+  @impl true
+  def handle_cast({:release_resource, registration, identity}, state) do
+    case state.resource_requests[registration] do
+      %{operation: operation} = entry ->
+        if Backplane.AgentRuntime.ToolEffects.cancellation_identity(operation) === identity do
+          retire_resource_monitors(entry)
+
+          {:noreply,
+           %{state | resource_requests: Map.delete(state.resource_requests, registration)}}
+        else
+          {:noreply, state}
+        end
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:DOWN, monitor, :process, _owner, _reason}, state) do
+    requests =
+      Enum.reduce(state.resource_requests, %{}, fn {id, entry}, acc ->
+        cond do
+          entry.coordinator_monitor == monitor ->
+            reply_resource_waiters(entry, "resource coordinator exited")
+            retire_resource_monitors(entry)
+            acc
+
+          entry.monitor == monitor ->
+            reply_resource_waiters(entry, "resource owner exited")
+
+            if entry.managed and entry.result != nil do
+              Map.put(acc, id, %{entry | monitor: nil, waiters: []})
+            else
+              retire_resource_monitors(entry)
+              acc
+            end
+
+          true ->
+            Map.put(acc, id, entry)
+        end
+      end)
+
+    {:noreply, %{state | resource_requests: requests}}
+  end
+
+  defp retire_resource_monitors(entry) do
+    for monitor <- [entry.monitor, entry.coordinator_monitor],
+        is_reference(monitor),
+        do: Process.demonitor(monitor, [:flush])
+
+    :ok
+  end
+
+  defp reply_resource_waiters(entry, message) do
+    Enum.each(entry.waiters, fn from ->
+      GenServer.reply(from, {:error, Error.new(:unknown_outcome, message)})
+    end)
   end
 
   defp execute(%{tool_name: "tool_search", arguments: arguments} = operation, state) do

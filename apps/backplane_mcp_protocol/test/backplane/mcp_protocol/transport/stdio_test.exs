@@ -107,7 +107,7 @@ defmodule Backplane.McpProtocol.Transport.STDIOTest do
 
         def init(opts), do: {:ok, opts}
 
-        def handle_call({:send, _message}, _from, state) do
+        def handle_call({:send, _message, deadline}, _from, state) when is_integer(deadline) do
           Process.sleep(60)
           {:reply, :ok, state}
         end

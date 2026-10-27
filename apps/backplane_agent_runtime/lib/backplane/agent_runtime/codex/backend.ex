@@ -15,6 +15,13 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
 
   def execute(%{backend_context: %{session_binding: binding} = backend} = operation) do
     with {:ok, owner} <- Session.validate(binding, operation) do
+      operation =
+        Map.put(
+          operation,
+          :session_binding_identity,
+          Map.take(binding, [:run_id, :owner_id, :incarnation, :run_incarnation])
+        )
+
       operation = %{
         operation
         | backend_context:
@@ -61,4 +68,10 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
 
   def execute(_operation),
     do: {:error, Error.new(:unsupported_capability, "Codex backend context is unavailable")}
+
+  def cancel(%{backend_context: %{family: :dynamic}} = operation),
+    do: DynamicRuntime.cancel_resource(operation)
+
+  def cancel(_),
+    do: {:error, Error.new(:unsupported_capability, "tool has no verified cancellation contract")}
 end

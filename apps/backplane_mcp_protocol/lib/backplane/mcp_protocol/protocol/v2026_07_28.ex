@@ -47,7 +47,7 @@ defmodule Backplane.McpProtocol.Protocol.V2026_07_28 do
   ]
 
   @request_methods ~w(
-    server/discover completion/complete
+    server/discover completion/complete events/list
     prompts/get prompts/list
     resources/list resources/templates/list resources/read
     subscriptions/listen

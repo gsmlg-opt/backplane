@@ -26,7 +26,7 @@ defmodule Backplane.McpProtocol.Protocol.V20260728Test do
   test "modern top-level methods match the 2026-07-28 message unions" do
     assert MapSet.new(V2026_07_28.request_methods()) ==
              MapSet.new(~w(
-               server/discover completion/complete
+               server/discover completion/complete events/list
                prompts/get prompts/list
                resources/list resources/templates/list resources/read
                subscriptions/listen

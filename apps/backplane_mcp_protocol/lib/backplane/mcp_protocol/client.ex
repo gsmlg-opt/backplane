@@ -99,7 +99,15 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Client.Sampling
   alias Backplane.McpProtocol.Client.State
   alias Backplane.McpProtocol.Client.Subscription
-  alias Backplane.McpProtocol.Client.{OwnedRequest, ResourceRequest, ToolCall}
+
+  alias Backplane.McpProtocol.Client.{
+    EventRequest,
+    OwnedRequest,
+    ResourceCancellation,
+    ResourceRequest,
+    ToolCall
+  }
+
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.ID
   alias Backplane.McpProtocol.MCP.Message
@@ -486,6 +494,30 @@ defmodule Backplane.McpProtocol.Client do
   def await_resource_request(%ResourceRequest{} = handle, timeout \\ :infinity),
     do: OwnedRequest.await(handle, timeout)
 
+  @doc "Returns the original registered resource identity to its owner, including after completion."
+  @spec resource_request_identity(ResourceRequest.t()) :: {:ok, map()} | {:error, Error.t()}
+  def resource_request_identity(%ResourceRequest{owner: owner, identity: identity})
+      when owner == self() and is_map(identity),
+      do: {:ok, identity}
+
+  def resource_request_identity(_), do: {:error, Error.transport(:request_owner_mismatch)}
+
+  @doc "Creates a cancellation control in the actual resource request owner."
+  @spec resource_cancellation_control() :: ResourceCancellation.t()
+  def resource_cancellation_control, do: ResourceCancellation.new()
+
+  @doc "Signals a controlled wait; :ok acknowledges the signal, not request cleanup."
+  @spec cancel_resource_wait(ResourceCancellation.t(), String.t(), keyword()) ::
+          :ok | {:error, Error.t()}
+  def cancel_resource_wait(control, reason, opts \\ []),
+    do: ResourceCancellation.signal(control, reason, opts)
+
+  @doc "Waits with an explicit owner-bound cancellation control; returns {:cancelled, report}."
+  @spec await_resource_request(ResourceRequest.t(), timeout(), keyword()) ::
+          {:ok, Response.t()} | {:error, Error.t()} | {:cancelled, map()}
+  def await_resource_request(handle, timeout, opts),
+    do: ResourceCancellation.await(handle, timeout, Keyword.get(opts, :cancellation))
+
   @doc "Cancels only this owner's resource operation, with the tool cancellation delivery report."
   @spec cancel_resource_request(ResourceRequest.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, Error.t()}
@@ -495,6 +527,35 @@ defmodule Backplane.McpProtocol.Client do
         opts \\ []
       ),
       do: cancel_owned_request(handle, reason, opts)
+
+  @doc "Starts one modern caller-owned events/list page without projecting its result."
+  @spec start_list_events(t(), keyword()) :: {:ok, EventRequest.t()} | {:error, Error.t()}
+  def start_list_events(client, opts \\ []) do
+    start_owned_request(
+      client,
+      %{
+        method: "events/list",
+        params: cursor_params(opts),
+        extra_meta: Keyword.get(opts, :meta, %{}),
+        progress_opts: Keyword.get(opts, :progress),
+        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+      },
+      opts,
+      EventRequest
+    )
+  end
+
+  @doc "Awaits one raw events response; observation timeout does not cancel it."
+  @spec await_event_request(EventRequest.t(), timeout()) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def await_event_request(%EventRequest{} = handle, timeout \\ :infinity),
+    do: OwnedRequest.await(handle, timeout)
+
+  @doc "Cancels only the event request owned by this caller."
+  @spec cancel_event_request(EventRequest.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def cancel_event_request(%EventRequest{} = handle, reason \\ "client_cancelled", opts \\ []),
+    do: cancel_owned_request(handle, reason, opts)
 
   defp cursor_params(opts) do
     case Keyword.get(opts, :cursor) do
@@ -842,7 +903,15 @@ defmodule Backplane.McpProtocol.Client do
       if is_integer(timeout) and timeout > 0 do
         GenServer.call(
           OwnedRequest.client(handle),
-          {:cancel_tool_call, handle, reason, timeout},
+          if(Keyword.get(opts, :verified, false) and match?(%ResourceRequest{}, handle),
+            do:
+              {:cancel_verified_resource, handle, reason,
+               min(
+                 System.monotonic_time(:millisecond) + timeout,
+                 Keyword.get(opts, :deadline, System.monotonic_time(:millisecond) + timeout)
+               )},
+            else: {:cancel_tool_call, handle, reason, timeout}
+          ),
           timeout + 250
         )
       else
@@ -1582,6 +1651,83 @@ defmodule Backplane.McpProtocol.Client do
 
       nil ->
         {:reply, Error.transport(:request_not_found), state}
+    end
+  end
+
+  def handle_call(
+        {:cancel_verified_resource, %ResourceRequest{} = handle, reason, deadline},
+        {caller, _} = from,
+        state
+      ) do
+    with true <- OwnedRequest.owned_by?(handle, caller),
+         {request_id, %Request{} = request} <-
+           find_request(state, OwnedRequest.logical_id(handle)),
+         true <- matching_tool_call?(request, handle) do
+      delivery = request_delivery(request)
+      {_request, next} = State.remove_request(state, request_id)
+      Request.reply(request, {:error, Error.transport(:request_cancelled, %{reason: reason})})
+      timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      report =
+        Map.merge(cancellation_report(delivery), %{
+          logical_id: request.logical_id,
+          request_id: request.id,
+          client_incarnation: state.client_incarnation,
+          method: request.method,
+          local_cleanup: :uncertain,
+          cleanup_evidence: %{workers_down: false, transport: :uncertain}
+        })
+
+      case start_operation_task(fn ->
+             cleanup =
+               Backplane.McpProtocol.Client.RequestCleanup.release(
+                 request,
+                 state.transport,
+                 deadline
+               )
+
+             notification =
+               cond do
+                 delivery == :not_sent ->
+                   :not_needed
+
+                 not cancellation_supported?(state) ->
+                   :unsupported
+
+                 System.monotonic_time(:millisecond) >= deadline ->
+                   :timeout
+
+                 true ->
+                   case safe_send_cancellation(state, request.id, reason, deadline) do
+                     :ok -> :accepted
+                     _ -> :failed
+                   end
+               end
+
+             report |> Map.merge(cleanup) |> Map.put(:notification_delivery, notification)
+           end) do
+        {:ok, task} ->
+          timer_ref =
+            Process.send_after(self(), {:cancellation_worker_timeout, task.ref}, timeout)
+
+          worker = %{
+            task: task,
+            timer_ref: timer_ref,
+            from: from,
+            report: report,
+            request_id: request.id,
+            kind: :verified
+          }
+
+          {:noreply,
+           %{next | cancellation_workers: Map.put(next.cancellation_workers, task.ref, worker)}}
+
+        {:error, _} ->
+          {:reply, {:ok, %{report | notification_delivery: :failed}}, next}
+      end
+    else
+      false -> {:reply, {:error, Error.transport(:request_owner_mismatch)}, state}
+      nil -> {:reply, {:error, Error.transport(:request_not_found)}, state}
     end
   end
 
@@ -2898,8 +3044,24 @@ defmodule Backplane.McpProtocol.Client do
     send_notification(state, "notifications/cancelled", params)
   end
 
-  defp safe_send_cancellation(state, request_id, reason) do
-    case send_cancellation(state, request_id, reason) do
+  defp safe_send_cancellation(state, request_id, reason, deadline \\ nil) do
+    result =
+      if is_nil(deadline) do
+        send_cancellation(state, request_id, reason)
+      else
+        with {:ok, data} <-
+               encode_notification("notifications/cancelled", %{
+                 "requestId" => request_id,
+                 "reason" => reason
+               }) do
+          send_to_transport(state.transport, data,
+            timeout: max(deadline - System.monotonic_time(:millisecond), 1),
+            deadline: deadline
+          )
+        end
+      end
+
+    case result do
       :ok -> :ok
       {:error, _reason} -> {:error, :send_failure}
       _unexpected -> {:error, :send_failure}
@@ -3022,16 +3184,46 @@ defmodule Backplane.McpProtocol.Client do
     end)
   end
 
+  defp validate_owned_capability(state, "events/list") do
+    if state.negotiation_status == :ready and state.era == :modern and
+         state.negotiated_version == "2026-07-28" do
+      State.validate_capability(state, "events/list")
+    else
+      {:error,
+       Error.transport(:unsupported_operation, %{
+         method: "events/list",
+         reason: :requires_ready_modern_client
+       })}
+    end
+  end
+
+  defp validate_owned_capability(state, method), do: State.validate_capability(state, method)
+
   defp register_tool_call(state, handle, %Operation{} = operation) do
     logical_id = OwnedRequest.logical_id(handle)
 
     with true <- OwnedRequest.handle?(handle),
-         :ok <- State.validate_capability(state, operation.method),
+         :ok <- validate_owned_capability(state, operation.method),
          false <- Map.has_key?(state.pending_requests, logical_id),
          {:ok, state, progress_owner} <-
            register_tool_call_progress(state, operation.progress_opts, logical_id) do
       timer_ref =
         Process.send_after(self(), {:request_timeout, logical_id}, operation.timeout)
+
+      handle =
+        if match?(%ResourceRequest{}, handle) do
+          %{
+            handle
+            | identity: %{
+                logical_id: logical_id,
+                request_id: logical_id,
+                client_incarnation: state.client_incarnation,
+                method: operation.method
+              }
+          }
+        else
+          handle
+        end
 
       request =
         %{
@@ -3317,6 +3509,17 @@ defmodule Backplane.McpProtocol.Client do
   defp start_cancellation_worker(state, _request_id, _reason, _timeout, from, report) do
     report = %{report | notification_delivery: :failed}
     if from, do: {:reply, {:ok, report}, state}, else: {:noreply, state}
+  end
+
+  defp finish_cancellation_worker(state, task_ref, %{kind: :verified} = worker, result) do
+    Process.cancel_timer(worker.timer_ref)
+    Process.demonitor(task_ref, [:flush])
+
+    report =
+      if is_map(result), do: result, else: %{worker.report | notification_delivery: :timeout}
+
+    if worker.from, do: GenServer.reply(worker.from, {:ok, report})
+    %{state | cancellation_workers: Map.delete(state.cancellation_workers, task_ref)}
   end
 
   defp finish_cancellation_worker(state, task_ref, worker, result) do

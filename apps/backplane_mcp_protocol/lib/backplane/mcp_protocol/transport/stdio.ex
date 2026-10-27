@@ -154,7 +154,19 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
     # Request contexts carry HTTP-only routing fields. STDIO deliberately sends
     # only the encoded JSON-RPC body, which already contains protocol metadata.
     _request_context = Keyword.get(opts, :request_context)
-    GenServer.call(pid, {:send, message}, Keyword.get(opts, :timeout, 5000))
+    timeout = Keyword.get(opts, :timeout, 5000)
+
+    deadline =
+      Keyword.get(
+        opts,
+        :deadline,
+        if(timeout == :infinity,
+          do: :infinity,
+          else: System.monotonic_time(:millisecond) + timeout
+        )
+      )
+
+    GenServer.call(pid, {:send, message, deadline}, timeout)
   end
 
   @impl Transport
@@ -178,7 +190,8 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   @impl Transport
   def close_stream(pid \\ __MODULE__, stream, opts)
 
-  def close_stream(pid, %{transport: :stdio, subscription_id: subscription_id}, opts) when is_list(opts) do
+  def close_stream(pid, %{transport: :stdio, subscription_id: subscription_id}, opts)
+      when is_list(opts) do
     reason = Keyword.get(opts, :reason, "subscription closed")
 
     notification = %{
@@ -210,6 +223,15 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
     end
   catch
     :exit, _ -> {:error, Error.transport(:cleanup_report_unavailable)}
+  end
+
+  @impl Transport
+  def cancel_request(pid, _request_id, opts) do
+    timeout = Keyword.fetch!(opts, :timeout)
+    deadline = Keyword.get(opts, :deadline, System.monotonic_time(:millisecond) + timeout)
+    GenServer.call(pid, {:request_barrier, deadline}, timeout)
+  catch
+    :exit, _ -> {:error, :request_cleanup_unavailable}
   end
 
   @impl Transport
@@ -295,16 +317,26 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
       cmd ->
         helper = state.guardian_path || Guardian.path()
         token = Base.encode16(state.guard_token, case: :lower)
-        opts = [:binary, :exit_status, {:packet, 4}, args: ["--token", token, "--", cmd | state.args || []]]
+
+        opts = [
+          :binary,
+          :exit_status,
+          {:packet, 4},
+          args: ["--token", token, "--", cmd | state.args || []]
+        ]
 
         opts =
-          if state.env, do: opts ++ [env: normalize_env_for_erlang(Map.merge(get_default_env(), state.env))], else: opts
+          if state.env,
+            do: opts ++ [env: normalize_env_for_erlang(Map.merge(get_default_env(), state.env))],
+            else: opts
 
         opts = if state.cwd, do: opts ++ [cd: state.cwd], else: opts
         port = Port.open({:spawn_executable, String.to_charlist(helper)}, opts)
         {:os_pid, pid} = Port.info(port, :os_pid)
         timer = Process.send_after(self(), :guardian_startup_timeout, 5_000)
-        {:noreply, %{state | port: port, ref: Port.monitor(port), guard_pid: pid, startup_timer: timer}}
+
+        {:noreply,
+         %{state | port: port, ref: Port.monitor(port), guard_pid: pid, startup_timer: timer}}
     end
   end
 
@@ -321,7 +353,8 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   end
 
   @impl GenServer
-  def handle_call(:cleanup_status, _from, state), do: {:reply, {:ok, Guardian.report(state)}, state}
+  def handle_call(:cleanup_status, _from, state),
+    do: {:reply, {:ok, Guardian.report(state)}, state}
 
   def handle_call({:close, _opts}, _from, %{close_phase: :closed} = state),
     do: {:reply, {:ok, Guardian.report(state)}, state}
@@ -334,27 +367,67 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   def handle_call({:close, opts}, _from, state) do
     if is_port(state.port) and Port.info(state.port), do: Port.close(state.port)
-    state = %{state | sealed: true, close_phase: :closed, close_id: Keyword.get(opts, :close_id) || make_ref()}
+
+    state = %{
+      state
+      | sealed: true,
+        close_phase: :closed,
+        close_id: Keyword.get(opts, :close_id) || make_ref()
+    }
+
     {:reply, {:ok, Guardian.report(state)}, state}
   end
 
-  def handle_call({:send, _}, _from, %{sealed: true} = state), do: {:reply, {:error, :closing}, state}
+  # The exact dispatch/resolver workers must already be DOWN before this
+  # barrier is requested. A reply also observes return from any in-flight write
+  # callback; later queued sends from those dead callers fail the write guard.
+  def handle_call({:request_barrier, deadline}, _from, state) do
+    result = if before_deadline?(deadline), do: :ok, else: {:error, :request_cleanup_timeout}
+    {:reply, result, state}
+  end
 
-  def handle_call({:send, _}, _from, %{cleanup: :verified, guardian_started: false} = state),
-    do: {:reply, {:error, :port_not_connected}, state}
+  def handle_call({:send, message, deadline}, {caller, _}, state) do
+    if Process.alive?(caller) and before_deadline?(deadline),
+      do: write_message(message, caller, deadline, state),
+      else: {:reply, {:error, :send_expired}, state}
+  end
 
-  def handle_call({:send, message}, _from, %{cleanup: :verified} = state) do
+  defp before_deadline?(:infinity), do: true
+  defp before_deadline?(deadline), do: System.monotonic_time(:millisecond) < deadline
+
+  defp write_message(_message, _caller, _deadline, %{sealed: true} = state),
+    do: {:reply, {:error, :closing}, state}
+
+  defp write_message(
+         _message,
+         _caller,
+         _deadline,
+         %{cleanup: :verified, guardian_started: false} = state
+       ),
+       do: {:reply, {:error, :port_not_connected}, state}
+
+  defp write_message(message, caller, deadline, %{cleanup: :verified} = state) do
+    packets = Guardian.chunks(message)
+    # Packets are fragments of one JSON message. Fence before its first write,
+    # then finish the bounded nonblocking sequence so cancellation does not leave
+    # a partial line on the shared target. The later barrier observes its return.
     result =
-      Enum.reduce_while(Guardian.chunks(message), :ok, fn packet, _ ->
-        if Port.command(state.port, packet, [:nosuspend]), do: {:cont, :ok}, else: {:halt, {:error, :port_backpressure}}
-      end)
+      if Process.alive?(caller) and before_deadline?(deadline) do
+        Enum.reduce_while(packets, :ok, fn packet, _ ->
+          if Port.command(state.port, packet, [:nosuspend]),
+            do: {:cont, :ok},
+            else: {:halt, {:error, :port_backpressure}}
+        end)
+      else
+        {:error, :send_expired}
+      end
 
     {:reply, result, state}
   rescue
     _ -> {:reply, {:error, :port_not_connected}, state}
   end
 
-  def handle_call({:send, message}, _, %{port: port} = state) when is_port(port) do
+  defp write_message(message, caller, deadline, %{port: port} = state) when is_port(port) do
     metadata = %{
       transport: :stdio,
       message_size: byte_size(message),
@@ -367,11 +440,15 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
       metadata
     )
 
-    Port.command(port, message)
-    {:reply, :ok, state}
+    if Process.alive?(caller) and before_deadline?(deadline) do
+      Port.command(port, message)
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :send_expired}, state}
+    end
   end
 
-  def handle_call({:send, message}, _, state) do
+  defp write_message(message, _caller, _deadline, state) do
     Telemetry.execute(
       Telemetry.event_transport_error(),
       %{system_time: System.system_time()},
@@ -396,7 +473,10 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
     {:noreply, finish_guard_close(state)}
   end
 
-  def handle_info(:guardian_startup_timeout, %{cleanup: :verified, guardian_started: false} = state) do
+  def handle_info(
+        :guardian_startup_timeout,
+        %{cleanup: :verified, guardian_started: false} = state
+      ) do
     {:noreply, begin_guard_close(%{state | guard_error: :startup_timeout}, [], nil)}
   end
 
@@ -411,18 +491,32 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   def handle_info(:guardian_close_retry, %{cleanup: :verified, close_phase: :closing} = state),
     do: {:noreply, send_guard_close(state)}
 
-  def handle_info({:DOWN, ref, :port, port, _reason}, %{cleanup: :verified, port: port, ref: ref} = state) do
+  def handle_info(
+        {:DOWN, ref, :port, port, _reason},
+        %{cleanup: :verified, port: port, ref: ref} = state
+      ) do
     state = %{state | sealed: true}
-    {:noreply, if(state.close_phase == :active, do: begin_guard_close(state, [], nil), else: state)}
+
+    {:noreply,
+     if(state.close_phase == :active, do: begin_guard_close(state, [], nil), else: state)}
   end
 
-  def handle_info({port, :closed}, %{cleanup: :verified, port: port} = state), do: {:noreply, state}
-  def handle_info({:EXIT, port, _reason}, %{cleanup: :verified, port: port} = state), do: {:noreply, state}
+  def handle_info({port, :closed}, %{cleanup: :verified, port: port} = state),
+    do: {:noreply, state}
+
+  def handle_info({:EXIT, port, _reason}, %{cleanup: :verified, port: port} = state),
+    do: {:noreply, state}
+
   def handle_info(:guardian_close_retry, state), do: {:noreply, state}
 
-  def handle_info({port, _event}, %{port: port, close_phase: :closed} = state), do: {:noreply, state}
-  def handle_info({:DOWN, ref, :port, _port, _}, %{ref: ref, close_phase: :closed} = state), do: {:noreply, state}
-  def handle_info({:EXIT, port, _}, %{port: port, close_phase: :closed} = state), do: {:noreply, state}
+  def handle_info({port, _event}, %{port: port, close_phase: :closed} = state),
+    do: {:noreply, state}
+
+  def handle_info({:DOWN, ref, :port, _port, _}, %{ref: ref, close_phase: :closed} = state),
+    do: {:noreply, state}
+
+  def handle_info({:EXIT, port, _}, %{port: port, close_phase: :closed} = state),
+    do: {:noreply, state}
 
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     Logging.transport_event("stdio_received", String.slice(data, 0, 100))
@@ -509,7 +603,8 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   @impl GenServer
   def handle_cast(:close_port, %{cleanup: :verified} = state) do
-    {:noreply, if(state.close_phase == :active, do: begin_guard_close(state, [], nil), else: state)}
+    {:noreply,
+     if(state.close_phase == :active, do: begin_guard_close(state, [], nil), else: state)}
   end
 
   def handle_cast(:close_port, %{port: port} = state) do
@@ -528,7 +623,8 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   @impl GenServer
   def terminate(reason, state) do
-    if state.cleanup == :verified and is_port(state.port) and Port.info(state.port), do: Port.close(state.port)
+    if state.cleanup == :verified and is_port(state.port) and Port.info(state.port),
+      do: Port.close(state.port)
 
     Telemetry.execute(
       Telemetry.event_transport_terminate(),
@@ -548,7 +644,10 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
       else: begin_guard_close(%{state | guard_error: :startup_backpressure}, [], nil)
   end
 
-  defp handle_guard_packet({:started, token, pid}, %{guard_token: token, guardian_acked: true} = state) do
+  defp handle_guard_packet(
+         {:started, token, pid},
+         %{guard_token: token, guardian_acked: true} = state
+       ) do
     if state.startup_timer, do: Process.cancel_timer(state.startup_timer)
     if not state.sealed, do: GenServer.cast(state.client, :negotiate)
     %{state | guardian_started: true, target_pid: pid}
@@ -568,7 +667,13 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
          %{guard_token: token, close_nonce: nonce, close_phase: :closing} = state
        ) do
     if is_nil(state.target_pid) or receipt.target_pid == state.target_pid do
-      state = %{state | guard_receipt: receipt, target_pid: receipt.target_pid, target_status: receipt.target_status}
+      state = %{
+        state
+        | guard_receipt: receipt,
+          target_pid: receipt.target_pid,
+          target_status: receipt.target_status
+      }
+
       if is_nil(state.guard_exit), do: state, else: finish_guard_close(state)
     else
       %{state | guard_error: :target_identity_mismatch}

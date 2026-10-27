@@ -260,6 +260,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       jobs: :queue.new(),
       interaction: nil,
       stopping: nil,
+      cancellations: %{},
       cleanup_due: nil,
       timer: timer,
       timer_generation: generation,
@@ -512,6 +513,21 @@ defmodule Backplane.AgentRuntime.Conversation do
     {:reply, effect_deadline(s, token), s}
   end
 
+  def handle_call({:register_cancellation, token, operation, registration}, {caller, _}, s) do
+    with true <- current_effect?(s, token),
+         {:ok, invocation} <- async_event_invocation(s, token),
+         true <- cancellation_operation?(s, operation, invocation),
+         true <- cancellation_caller?(s, token, caller),
+         true <- not Map.has_key?(s.cancellations, operation.invocation_id) do
+      entry = %{operation: operation, registration: registration}
+      {:reply, {:ok, self()}, put_in(s.cancellations[operation.invocation_id], entry)}
+    else
+      _ ->
+        {:reply,
+         {:error, Error.new(:resource_conflict, "resource cancellation admission is stale")}, s}
+    end
+  end
+
   def handle_call({:nested_tool, token, request}, from, s) do
     case prepare_nested_tool(s, token, request) do
       {:ok, invocation, descriptor, catalog} ->
@@ -598,6 +614,107 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   @impl true
+  def handle_info({ref, result}, %{stopping: %{task: %{ref: ref}} = stopping} = s) do
+    Process.demonitor(ref, [:flush])
+
+    case stopping.stage do
+      :requests ->
+        {certainty, evidence} = result
+
+        next = %{
+          s
+          | stopping: %{
+              stopping
+              | task: nil,
+                uncertain: certainty != :confirmed,
+                evidence: evidence
+            }
+        }
+
+        {:noreply, close_cooperative_resources(next)}
+
+      :resources ->
+        {:noreply, finish_cooperative_cleanup(s, result)}
+    end
+  end
+
+  def handle_info(
+        {[:alias | request], _result} = message,
+        %{stopping: %{close_request: request}} = s
+      ) do
+    case Session.close_response(message, request) do
+      {:reply, result} -> {:noreply, finish_cooperative_cleanup(s, result)}
+      _ -> {:noreply, s}
+    end
+  end
+
+  def handle_info(
+        {:cooperative_stop_timeout, generation},
+        %{stopping: %{generation: generation} = stopping} = s
+      ) do
+    if stopping.task, do: Task.shutdown(stopping.task, :brutal_kill)
+    if s.nested && s.nested.task, do: kill_task(s.nested)
+    if s.effect, do: kill_task(s.effect)
+
+    if s.nested,
+      do: GenServer.reply(s.nested.from, {:error, Error.new(:cancelled, "run cancelled")})
+
+    if stopping.close_request == nil do
+      case Keyword.get(s.opts, :session_binding) do
+        nil -> :ok
+        binding -> Session.close_async(binding, run_fenced: true, cleanup_deadline: s.cleanup_due)
+      end
+    end
+
+    {:noreply,
+     advance_stop(%{
+       s
+       | effect: nil,
+         nested: nil,
+         resource_cleanup: {:uncertain, :cleanup_deadline_exceeded},
+         stopping: %{stopping | task: nil, close_request: nil, uncertain: true, evidence: []}
+     })}
+  end
+
+  def handle_info(
+        {:DOWN, request, :process, _pid, reason},
+        %{stopping: %{close_request: request}} = s
+      )
+      when is_reference(request),
+      do: {:noreply, finish_cooperative_cleanup(s, {:error, reason})}
+
+  def handle_info(
+        {ref, _result},
+        %{stopping: %{cooperative: true}, effect: %{task: %{ref: ref}}} = s
+      ),
+      do: {:noreply, s}
+
+  def handle_info(
+        {ref, _result},
+        %{stopping: %{cooperative: true}, nested: %{task: %{ref: ref}}} = s
+      ),
+      do: {:noreply, s}
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{stopping: %{cooperative: true}} = s)
+      when (is_map(s.effect) and ref == s.effect.task.ref) or
+             (is_map(s.nested) and is_map(s.nested.task) and ref == s.nested.task.ref) or
+             (is_map(s.stopping.task) and ref == s.stopping.task.ref) do
+    refs = [s.effect && s.effect.task.ref, s.nested && s.nested.task && s.nested.task.ref]
+
+    if ref in refs do
+      {:noreply, s}
+    else
+      case s.stopping.task do
+        %{ref: ^ref} ->
+          send(self(), {:cooperative_stop_timeout, s.stopping.generation})
+          {:noreply, s}
+
+        _ ->
+          {:noreply, s}
+      end
+    end
+  end
+
   def handle_info({:codex_input_bound, runtime, identity, {:ok, entries}}, s) do
     case s.input_binding_pending[runtime] do
       %{identity: ^identity, timer: timer} ->
@@ -861,6 +978,11 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.goal_delivery, do: kill_task(s.goal_delivery)
     if s.commit, do: kill_task(s.commit)
     if s.nested && s.nested.task, do: kill_task(s.nested)
+
+    Enum.each(s.cancellations, fn {_id, entry} ->
+      Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+    end)
+
     if Process.alive?(s.supervisor), do: Supervisor.stop(s.supervisor)
   end
 
@@ -1244,7 +1366,10 @@ defmodule Backplane.AgentRuntime.Conversation do
         |> Map.put(:context, Map.put(s.run.context, :conversation, conversation))
 
       commit(s, {:tool_completed, now(), input}, %{}, [], fn s, _ ->
-        s = settle_catalog_producer(s, invocation, normalized)
+        s =
+          s
+          |> release_cancellation(invocation.invocation_id)
+          |> settle_catalog_producer(invocation, normalized)
 
         emit(s, %{
           type: :tool_settled,
@@ -1777,6 +1902,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :provider_emit,
         :request_new_context,
         :nested_dispatch,
+        :register_cancellation,
         :stage_catalog,
         :dispatch,
         :publication,
@@ -2211,6 +2337,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :stage_catalog,
         :request_new_context,
         :nested_dispatch,
+        :register_cancellation,
         :resource_owner_pid
       ])
     )
@@ -2603,6 +2730,9 @@ defmodule Backplane.AgentRuntime.Conversation do
     |> Map.put(:nested_dispatch, fn request ->
       GenServer.call(owner, {:nested_tool, token, request}, :infinity)
     end)
+    |> Map.put(:register_cancellation, fn operation, registration ->
+      GenServer.call(owner, {:register_cancellation, token, operation, registration}, :infinity)
+    end)
     |> Map.put(:effect_deadline, fn ->
       try do
         GenServer.call(owner, {:effect_deadline, token}, :infinity)
@@ -2647,7 +2777,246 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp stale_feedback,
     do: {:error, Error.new(:resource_conflict, "feedback producer is no longer live")}
 
+  defp release_cancellation(s, invocation) do
+    case Map.pop(s.cancellations, invocation) do
+      {nil, _} ->
+        s
+
+      {entry, remaining} ->
+        Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+        %{s | cancellations: remaining}
+    end
+  end
+
+  defp cancellation_operation?(s, operation, invocation) do
+    binding = Keyword.get(s.opts, :session_binding)
+
+    binding_matches =
+      is_nil(binding) or
+        operation[:session_binding_identity] ===
+          Map.take(binding, [:run_id, :owner_id, :incarnation, :run_incarnation])
+
+    binding_matches and operation.run_id === s.run.run_id and
+      operation.incarnation === s.run.incarnation and
+      operation.tool_name in [
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource"
+      ] and
+      Map.delete(ToolEffects.cancellation_identity(operation), :session_binding_identity) ===
+        ToolEffects.cancellation_identity(invocation)
+  end
+
+  defp cancellation_caller?(%{nested: %{token: token, task: task}}, token, caller),
+    do: task.pid == caller
+
+  defp cancellation_caller?(%{effect: %{token: token, task: task}}, token, caller),
+    do: task.pid == caller
+
+  defp cancellation_caller?(_, _, _), do: false
+
+  defp cooperative_cancellation?(%{stopping: nil} = s) do
+    requirements = RunKernel.cleanup_requirements(s.run)
+    active = Enum.map(requirements.tools, & &1.invocation_id)
+    registered = Enum.filter(active, &Map.has_key?(s.cancellations, &1))
+    outer = cooperative_outer(s)
+    covered = if outer && registered != [], do: [outer | registered], else: registered
+
+    live = if s.nested, do: s.nested.task, else: s.effect && s.effect.task
+
+    live != nil and active != [] and Enum.sort(active) == Enum.sort(Enum.uniq(covered)) and
+      requirements.provider == nil and requirements.children == [] and
+      requirements.dependencies == []
+  end
+
+  defp cooperative_cancellation?(_), do: false
+
+  defp cooperative_outer(%{
+         nested: %{invocation: nested},
+         effect: %{role: {:tool, outer, _, catalog}}
+       }) do
+    case ToolRegistry.lookup(catalog.registry, outer.tool_name) do
+      {:ok,
+       %{backend: Backplane.AgentRuntime.Codex.Backend, backend_context: %{family: :code_mode}}}
+      when nested.enclosing_invocation_id == outer.invocation_id ->
+        outer.invocation_id
+
+      _ ->
+        nil
+    end
+  end
+
+  defp cooperative_outer(_), do: nil
+
+  defp stop_cooperatively(s, reason) do
+    s = invalidate_run_timer(s)
+    if s.preparation, do: kill_task(s.preparation)
+    reject_nested_preparation(s, Error.new(:cancelled, "run cancelled"))
+    if s.goal_delivery, do: kill_task(s.goal_delivery)
+    if s.effect && s.effect.timer, do: Process.cancel_timer(s.effect.timer)
+    if s.nested && s.nested.timer, do: Process.cancel_timer(s.nested.timer)
+    Enum.each(s.callers, &GenServer.reply(&1, {:error, Error.new(:cancelled, "run stopped")}))
+    reject_jobs(s.jobs)
+
+    deadline = s.cleanup_due || System.monotonic_time(:millisecond) + s.limits.cleanup
+    generation = "stop_#{System.unique_integer([:positive, :monotonic])}"
+
+    entries =
+      Map.take(
+        s.cancellations,
+        Enum.map(RunKernel.cleanup_requirements(s.run).tools, & &1.invocation_id)
+      )
+
+    task =
+      Task.Supervisor.async_nolink(s.supervisor, fn ->
+        cooperative_cleanup(s, entries, deadline, generation)
+      end)
+
+    timer =
+      Process.send_after(
+        self(),
+        {:cooperative_stop_timeout, generation},
+        max(1, deadline - System.monotonic_time(:millisecond))
+      )
+
+    %{
+      s
+      | phase: :cancelling,
+        cleanup_due: deadline,
+        preparation: nil,
+        goal_delivery: nil,
+        nested_admission: nil,
+        interaction: nil,
+        admission: nil,
+        callers: [],
+        jobs: :queue.new(),
+        commit_queue: :queue.new(),
+        new_context_requested: false,
+        stopping: %{
+          cooperative: true,
+          reason: reason,
+          generation: generation,
+          task: task,
+          timer: timer,
+          uncertain: false,
+          evidence: [],
+          stage: :requests,
+          close_request: nil
+        }
+    }
+  end
+
+  defp cooperative_cleanup(s, entries, deadline, generation) do
+    evidence =
+      Enum.map(entries, fn {_id, entry} ->
+        operation =
+          entry.operation
+          |> Map.put(:cleanup_deadline, deadline)
+          |> Map.put(:resource_registration, entry.registration)
+          |> Map.put(:stop_generation, generation)
+
+        with {:ok, assertion} <-
+               ToolEffects.cancel(Backplane.AgentRuntime.Codex.Backend, operation),
+             {:ok, public} <- ToolEffects.validate_cancellation(assertion, operation) do
+          {:ok, %{identity: ToolEffects.cancellation_identity(operation), report: public}}
+        else
+          _ -> :uncertain
+        end
+      end)
+
+    target = if s.nested, do: s.nested, else: s.effect
+    target_down = await_task_exit(target.task.pid, deadline)
+
+    if s.nested,
+      do: GenServer.reply(s.nested.from, {:error, Error.new(:cancelled, "run cancelled")})
+
+    confirmed = target_down == :ok and Enum.all?(evidence, &match?({:ok, _}, &1))
+    public = for {:ok, entry} <- evidence, do: Map.put(entry, :effect_down, target_down == :ok)
+    {if(confirmed, do: :confirmed, else: :uncertain), public}
+  end
+
+  defp close_cooperative_resources(s) do
+    case Keyword.get(s.opts, :session_binding) do
+      nil ->
+        remaining = max(1, s.cleanup_due - System.monotonic_time(:millisecond))
+
+        task =
+          Task.Supervisor.async_nolink(s.supervisor, fn ->
+            cleaned = cleanup_run_resources(%{s | limits: %{s.limits | cleanup: remaining}})
+
+            if cleaned.resource_cleanup == :confirmed,
+              do: {:ok, %{status: :confirmed}},
+              else: {:error, :uncertain}
+          end)
+
+        %{s | stopping: %{s.stopping | stage: :resources, task: task}}
+
+      binding ->
+        request = Session.close_async(binding, run_fenced: true, cleanup_deadline: s.cleanup_due)
+        %{s | stopping: %{s.stopping | stage: :resources, close_request: request}}
+    end
+  end
+
+  defp finish_cooperative_cleanup(s, result) do
+    stopping = s.stopping
+    if stopping.timer, do: Process.cancel_timer(stopping.timer)
+    outer_down = if s.nested, do: kill_task(s.effect), else: :ok
+    resources_confirmed = match?({:ok, %{status: :confirmed}}, result)
+    uncertain = stopping.uncertain or not resources_confirmed or outer_down != :ok
+
+    evidence =
+      if s.nested do
+        [
+          %{
+            kind: :code_mode,
+            enclosing: ToolEffects.cancellation_identity(elem(s.effect.role, 1)),
+            nested: stopping.evidence,
+            effect_down: outer_down == :ok,
+            resources: if(resources_confirmed, do: :confirmed, else: :uncertain)
+          }
+        ]
+      else
+        stopping.evidence
+      end
+
+    advance_stop(%{
+      s
+      | effect: nil,
+        nested: nil,
+        resource_cleanup: if(resources_confirmed, do: :confirmed, else: {:uncertain, result}),
+        stopping: %{
+          stopping
+          | task: nil,
+            close_request: nil,
+            uncertain: uncertain,
+            evidence: evidence
+        }
+    })
+  end
+
+  defp await_task_exit(pid, deadline) do
+    monitor = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, _} -> :ok
+    after
+      max(0, deadline - System.monotonic_time(:millisecond)) ->
+        Process.demonitor(monitor, [:flush])
+        :uncertain
+    end
+  end
+
+  defp stop(%{stopping: %{cooperative: true}} = s, _reason), do: s
+
   defp stop(s, reason) do
+    if cooperative_cancellation?(s) do
+      stop_cooperatively(s, reason)
+    else
+      stop_immediately(s, reason)
+    end
+  end
+
+  defp stop_immediately(s, reason) do
     s = invalidate_run_timer(s)
     task_stop = if s.effect, do: kill_task(s.effect), else: :ok
     if s.preparation, do: kill_task(s.preparation)
@@ -2698,6 +3067,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp advance_stop(%{commit: commit} = s) when not is_nil(commit), do: s
+  defp advance_stop(%{stopping: %{task: task}} = s) when not is_nil(task), do: s
+  defp advance_stop(%{stopping: %{close_request: request}} = s) when not is_nil(request), do: s
 
   defp advance_stop(s) do
     cond do
@@ -2736,10 +3107,15 @@ defmodule Backplane.AgentRuntime.Conversation do
               certainty: :uncertain,
               evidence: %{reason: "worker stopped; external effects require host reconciliation"}
             },
-            else: %{certainty: :confirmed, settled: RunKernel.cleanup_requirements(s.run)}
+            else: %{
+              certainty: :confirmed,
+              settled: RunKernel.cleanup_requirements(s.run),
+              evidence: Map.get(s.stopping, :evidence, [])
+            }
 
         # Keep the stop request until the cleanup commit has succeeded.
         commit(%{s | stopping: nil}, {:cleanup_settled, now(), settlement}, %{}, [], fn s, _ ->
+          s = Enum.reduce(Map.keys(s.cancellations), s, &release_cancellation(&2, &1))
           s = %{s | phase: :terminal}
 
           unbind_goal(s, fn s ->
@@ -2769,6 +3145,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     reject_jobs(s.jobs)
     emit(s, %{type: :storage_failed, error: error, recovery_required: true})
 
+    s = Enum.reduce(Map.keys(s.cancellations), s, &release_cancellation(&2, &1))
     s = s |> discard_pending_catalog() |> cleanup_resources()
 
     %{
@@ -2951,7 +3328,9 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     next = fn next_state, _prepared ->
       next_state =
-        settle_nested_catalog(next_state, nested.invocation, actual_outcome(normalized))
+        next_state
+        |> release_cancellation(nested.invocation.invocation_id)
+        |> settle_nested_catalog(nested.invocation, actual_outcome(normalized))
 
       emit(next_state, %{
         type: :tool_settled,

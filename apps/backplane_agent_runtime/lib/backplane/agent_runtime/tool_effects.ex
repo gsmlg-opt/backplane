@@ -15,6 +15,13 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     @type t :: %__MODULE__{identity: map(), error: Backplane.AgentRuntime.Error.t()}
   end
 
+  defmodule Cancellation do
+    @moduledoc "Exact trusted local cancellation evidence; never a remote rollback receipt."
+    @enforce_keys [:identity, :evidence]
+    defstruct [:identity, :evidence]
+    @type t :: %__MODULE__{identity: map(), evidence: map()}
+  end
+
   defmodule Presentation do
     @moduledoc "A trusted backend's invocation-bound result and consumer presentation."
     @enforce_keys [:identity, :result, :decision]
@@ -37,11 +44,55 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @callback execute(map()) :: result()
 
-  @callback cancel(map()) :: :ok | {:error, Error.t()}
+  @callback cancel(map()) :: :ok | {:ok, Cancellation.t()} | {:error, Error.t()}
 
   @default_output_limit 1_048_576
 
   @identity_fields ~w(run_id incarnation step_id attempt_id invocation_id tool_name tool_revision catalog_revision tool_call_id turn_id arguments collaboration_binding)a
+
+  @doc false
+  def cancellation_identity(operation),
+    do:
+      Map.take(operation, [:enclosing_invocation_id, :session_binding_identity | @identity_fields])
+
+  @doc false
+  def confirm_cancellation(operation, evidence) do
+    assertion = %Cancellation{identity: cancellation_identity(operation), evidence: evidence}
+
+    with {:ok, _} <- validate_cancellation(assertion, operation), do: {:ok, assertion}
+  end
+
+  @doc false
+  def validate_cancellation(%Cancellation{identity: identity, evidence: evidence}, operation) do
+    with true <- valid_identity?(identity),
+         true <- identity === cancellation_identity(operation),
+         true <- is_map(evidence) and evidence[:local_cleanup] === :confirmed,
+         true <- evidence[:stop_generation] === operation[:stop_generation],
+         true <- is_binary(evidence[:stop_generation]) and evidence[:stop_generation] != "",
+         true <- evidence[:registration_id] === operation[:resource_registration],
+         true <- evidence[:local] === :cancelled and evidence[:remote] === :unknown,
+         true <-
+           Enum.all?([:logical_id, :request_id, :client_incarnation, :method], fn key ->
+             is_binary(evidence[key]) and evidence[key] != ""
+           end),
+         %{workers_down: true, transport: :confirmed, worker_count: count} <-
+           evidence[:cleanup_evidence],
+         true <- is_integer(count) and count >= 0,
+         registration when is_binary(registration) and registration != "" <-
+           evidence[:registration_id],
+         {:ok, public} <- Backplane.AgentRuntime.Codex.Reconciliation.Evidence.public(evidence) do
+      {:ok, public}
+    else
+      _ -> unverified_cancellation()
+    end
+  end
+
+  def validate_cancellation(_, _), do: unverified_cancellation()
+
+  defp unverified_cancellation,
+    do:
+      {:error,
+       Error.new(:unknown_outcome, "tool cancellation lacks exact local cleanup evidence")}
 
   @doc """
   Rejects an invocation before dispatching any tool or external effect.
@@ -139,7 +190,8 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @doc false
   def presentation_identity(operation),
-    do: Map.take(operation, [:enclosing_invocation_id | @identity_fields])
+    do:
+      Map.take(operation, [:enclosing_invocation_id, :session_binding_identity | @identity_fields])
 
   defp invalid_presentation,
     do:
@@ -215,7 +267,7 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     end
   end
 
-  @spec cancel(adapter(), map()) :: :ok | {:error, Error.t()}
+  @spec cancel(adapter(), map()) :: :ok | {:ok, Cancellation.t()} | {:error, Error.t()}
   def cancel(adapter, invocation) when is_atom(adapter) and is_map(invocation) do
     with {:ok, _} <- validate_invocation(invocation) do
       adapter.cancel(invocation)

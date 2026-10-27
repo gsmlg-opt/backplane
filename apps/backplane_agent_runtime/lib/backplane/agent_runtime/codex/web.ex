@@ -184,10 +184,18 @@ defmodule Backplane.AgentRuntime.Codex.Web do
   defp valid_answer?(result) do
     unambiguous?(result, [:kind, :content, :provider, :query, :citations]) and
       field(result, :kind) in [:answer, "answer"] and
-      nonempty_text?(field(result, :content)) and
+      valid_answer_content?(result) and
       optional_field?(result, :provider, &text?/1) and
       optional_field?(result, :query, &text?/1) and
       optional_field?(result, :citations, &valid_citations?/1)
+  end
+
+  defp valid_answer_content?(result) do
+    nonempty_text?(field(result, :content)) or
+      (field(result, :content) == "" and unambiguous?(result, [:truncated]) and
+         field(result, :truncated) === true and
+         match?([_ | _], field(result, :citations)) and
+         valid_citations?(field(result, :citations)))
   end
 
   defp valid_citations?(citations) when is_list(citations),

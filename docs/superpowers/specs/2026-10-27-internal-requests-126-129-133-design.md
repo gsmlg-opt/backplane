@@ -2,7 +2,7 @@
 
 Date: 2026-10-27
 
-Status: design for user review; implementation has not started.
+Status: approved and implemented; release delivery is tracked separately in the implementation plan.
 Baseline: main `69aa7842709db96c581ab4790bdf4be1d7da09ec`, released as 1.10.45.
 Target: 1.10.46, subject to all source and unified release gates passing.
 

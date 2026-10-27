@@ -17,6 +17,20 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
   def track(pid, resource), do: GenServer.call(pid, {:track, resource})
   def allocation(pid, job), do: GenServer.call(pid, {:allocation, job})
   def completion(pid, id, handle), do: GenServer.call(pid, {:completion, id, handle})
+
+  def release_job(pid, worker, opts) do
+    timeout = Keyword.fetch!(opts, :timeout)
+    deadline = Keyword.get(opts, :deadline, System.monotonic_time(:millisecond) + timeout)
+
+    GenServer.call(
+      pid,
+      {:release_job, worker, deadline},
+      timeout + 100
+    )
+  catch
+    :exit, _ -> {:error, :request_cleanup_unavailable}
+  end
+
   def status(pid), do: GenServer.call(pid, :status)
 
   def close(pid, opts) do
@@ -59,7 +73,8 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
        retry_timer: nil,
        recent: :queue.new(),
        recent_count: 0,
-       confirmed_counts: %{}
+       confirmed_counts: %{},
+       completed_jobs: %{}
      }}
   end
 
@@ -96,7 +111,13 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
     id = make_ref()
     request = %{job: job, handle: nil}
     state = put_in(state.requests[id], request)
-    state = update_in(state.jobs[job], &%{&1 | requests: MapSet.put(&1.requests, id), had_requests: true})
+
+    state =
+      update_in(
+        state.jobs[job],
+        &%{&1 | requests: MapSet.put(&1.requests, id), had_requests: true}
+      )
+
     {:reply, {:ok, id}, state}
   end
 
@@ -111,6 +132,58 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
 
       :error ->
         {:reply, {:error, :missing_obligation}, state}
+    end
+  end
+
+  def handle_call({:release_job, worker, deadline}, from, state) do
+    case Enum.find(state.jobs, fn {_id, job} -> job.pid == worker end) do
+      {id, job} ->
+        coordinator = self()
+        next = put_in(state.jobs[id], Map.put(job, :releasing, true))
+
+        Task.Supervisor.start_child(OperationSupervisor, fn ->
+          down = Backplane.McpProtocol.Client.Connection.release_workers([worker], deadline)
+
+          material =
+            GenServer.call(coordinator, {:release_material, id}, max(remaining(deadline), 1))
+
+          result =
+            case material do
+              {:ok, requests} ->
+                results =
+                  Enum.map(requests, fn {_id, request} ->
+                    if request.handle,
+                      do: RequestCompletion.abort_and_await(request.handle, remaining(deadline)),
+                      else: {:error, :missing_completion_handle}
+                  end)
+
+                if down.outcome == :confirmed and Enum.all?(results, &(&1 == :ok)),
+                  do: :ok,
+                  else: {:error, :request_cleanup_unconfirmed}
+
+              _ ->
+                {:error, :request_cleanup_unconfirmed}
+            end
+
+          send(coordinator, {:job_released, id, result, from})
+        end)
+
+        {:noreply, next}
+
+      nil ->
+        result =
+          if Map.has_key?(state.completed_jobs, worker),
+            do: :ok,
+            else: {:error, :request_cleanup_unknown}
+
+        {:reply, result, state}
+    end
+  end
+
+  def handle_call({:release_material, id}, _from, state) do
+    case state.jobs[id] do
+      %{requests: ids} -> {:reply, {:ok, Map.take(state.requests, MapSet.to_list(ids))}, state}
+      _ -> {:reply, {:error, :request_cleanup_unknown}, state}
     end
   end
 
@@ -129,7 +202,9 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
 
   @impl true
   def handle_info({:finished, id}, state) do
-    state = if Map.has_key?(state.jobs, id), do: put_in(state.jobs[id].finished, true), else: state
+    state =
+      if Map.has_key?(state.jobs, id), do: put_in(state.jobs[id].finished, true), else: state
+
     {:noreply, state}
   end
 
@@ -176,8 +251,39 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
 
   def handle_info(:close_deadline, %{phase: :closing} = state) do
     kill_work(state)
-    resources = pending_resources(state) ++ work_resource(state, {:error, :cleanup_worker_pending})
+
+    resources =
+      pending_resources(state) ++ work_resource(state, {:error, :cleanup_worker_pending})
+
     continue(finish(state, resources))
+  end
+
+  def handle_info({:job_released, id, result, from}, state) do
+    state =
+      if result == :ok do
+        job = state.jobs[id]
+
+        next =
+          Enum.reduce(job.requests, state, fn request_id, acc ->
+            acc = remember(acc, resource(acc, request_id, :http_request, :ok))
+
+            %{
+              acc
+              | requests: Map.delete(acc.requests, request_id),
+                retries: MapSet.delete(acc.retries, request_id)
+            }
+          end)
+
+        next =
+          put_in(next.jobs[id], %{job | requests: MapSet.new(), finished: true, releasing: false})
+
+        compact_job(next, id)
+      else
+        state
+      end
+
+    GenServer.reply(from, result)
+    {:noreply, state}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -195,7 +301,8 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
 
       Task.Supervisor.start_child(OperationSupervisor, fn ->
         Enum.each(requests, fn {_id, request} ->
-          if request.handle, do: RequestCompletion.abort_and_await(request.handle, remaining(deadline))
+          if request.handle,
+            do: RequestCompletion.abort_and_await(request.handle, remaining(deadline))
         end)
       end)
     end
@@ -214,7 +321,8 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
       reason: nil,
       scope: scope,
       requests: MapSet.new(),
-      had_requests: false
+      had_requests: false,
+      releasing: false
     }
 
     %{
@@ -245,9 +353,13 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
 
       {{:value, id}, checks} ->
         state = %{state | checks: checks, queued: MapSet.delete(state.queued, id)}
-        handle = state.requests[id].handle
+        handle = state.requests[id] && state.requests[id].handle
 
-        case start_work(state, {:observe, id}, fn -> RequestCompletion.await(handle, 0) end) do
+        case if(handle,
+               do:
+                 start_work(state, {:observe, id}, fn -> RequestCompletion.await(handle, 0) end),
+               else: {:error, state}
+             ) do
           {:ok, state} -> state
           {:error, state} -> observe_next(state)
         end
@@ -288,15 +400,24 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
     %{state | retries: MapSet.put(state.retries, id), retry_timer: timer}
   end
 
+  defp compact_request(%{requests: requests} = state, id) when not is_map_key(requests, id),
+    do: state
+
   defp compact_request(state, id) do
     request = state.requests[id]
     job = state.jobs[request.job]
 
     # Only the original RequestCompletion barrier AND actual owned worker DOWN
     # authorize replacing this handle with confirmed historical evidence.
-    if job.down do
+    if job.down and not job.releasing do
       state = remember(state, resource(state, id, :http_request, :ok))
-      state = %{state | requests: Map.delete(state.requests, id), retries: MapSet.delete(state.retries, id)}
+
+      state = %{
+        state
+        | requests: Map.delete(state.requests, id),
+          retries: MapSet.delete(state.retries, id)
+      }
+
       state = update_in(state.jobs[request.job].requests, &MapSet.delete(&1, id))
       compact_job(state, request.job)
     else
@@ -307,9 +428,17 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
   defp compact_job(state, id) do
     job = state.jobs[id]
 
-    if job.down and MapSet.size(job.requests) == 0 and worker_confirmed?(job) do
+    if job.down and not job.releasing and MapSet.size(job.requests) == 0 and
+         worker_confirmed?(job) do
       state = remember(state, worker_resource(state, id, job))
-      %{state | jobs: Map.delete(state.jobs, id)}
+      completed = Map.put(state.completed_jobs, job.pid, true)
+
+      completed =
+        if map_size(completed) > 128,
+          do: Map.delete(completed, completed |> Map.keys() |> hd()),
+          else: completed
+
+      %{state | jobs: Map.delete(state.jobs, id), completed_jobs: completed}
     else
       state
     end
@@ -365,7 +494,10 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
               do: RequestCompletion.abort_and_await(request.handle, remaining(deadline)),
               else: {:error, :missing_completion_handle}
 
-          send(coordinator, {:resource_result, resource(%{activation: activation}, id, :http_request, result)})
+          send(
+            coordinator,
+            {:resource_result, resource(%{activation: activation}, id, :http_request, result)}
+          )
         end)
 
         :done
@@ -379,7 +511,14 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
           finish(
             state,
             pending_resources(state) ++
-              [resource(state, :cleanup_worker, :http_worker, {:error, :cleanup_worker_unavailable})]
+              [
+                resource(
+                  state,
+                  :cleanup_worker,
+                  :http_worker,
+                  {:error, :cleanup_worker_unavailable}
+                )
+              ]
           )
       end
     end
@@ -402,29 +541,51 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
 
   defp finish(state, resources) do
     if state.timer, do: Process.cancel_timer(state.timer)
-    outcome = if Enum.all?(resources, &(&1.outcome == :confirmed)), do: :confirmed, else: :unconfirmed
-    report = %{state.report | activation_id: state.activation, phase: :closed, outcome: outcome, resources: resources}
+
+    outcome =
+      if Enum.all?(resources, &(&1.outcome == :confirmed)), do: :confirmed, else: :unconfirmed
+
+    report = %{
+      state.report
+      | activation_id: state.activation,
+        phase: :closed,
+        outcome: outcome,
+        resources: resources
+    }
+
     Enum.each(state.waiters, &GenServer.reply(&1, {:ok, report}))
     %{state | phase: :closed, report: report, waiters: []}
   end
 
   defp pending_resources(state) do
     Enum.map(state.requests, fn {id, _} ->
-      Map.get(state.results, {state.activation, id}, resource(state, id, :http_request, {:error, :cleanup_pending}))
+      Map.get(
+        state.results,
+        {state.activation, id},
+        resource(state, id, :http_request, {:error, :cleanup_pending})
+      )
     end) ++ worker_resources(state) ++ confirmed_resources(state)
   end
 
-  defp worker_resources(state), do: Enum.map(state.jobs, fn {id, job} -> worker_resource(state, id, job) end)
+  defp worker_resources(state),
+    do: Enum.map(state.jobs, fn {id, job} -> worker_resource(state, id, job) end)
 
   defp worker_resource(state, id, job) do
     result = if worker_confirmed?(job), do: :ok, else: {:error, :worker_evidence_lost}
-    resource(state, id, if(job.scope == :controller, do: :stream_controller, else: :http_worker), result)
+
+    resource(
+      state,
+      id,
+      if(job.scope == :controller, do: :stream_controller, else: :http_worker),
+      result
+    )
   end
 
   defp worker_confirmed?(job),
     do: job.down and (job.finished or job.had_requests or job.scope in [:consumer, :controller])
 
-  defp work_resource(%{work: %{task: task}} = state, result), do: [resource(state, task.ref, :http_worker, result)]
+  defp work_resource(%{work: %{task: task}} = state, result),
+    do: [resource(state, task.ref, :http_worker, result)]
 
   defp work_resource(_state, _result), do: []
 
@@ -432,7 +593,11 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
     aggregates =
       Enum.map(state.confirmed_counts, fn {scope, count} ->
         resource = resource(state, "confirmed_history:#{scope}", scope, :ok)
-        %{resource | evidence: Map.merge(resource.evidence, %{aggregate: true, confirmed_count: count})}
+
+        %{
+          resource
+          | evidence: Map.merge(resource.evidence, %{aggregate: true, confirmed_count: count})
+        }
       end)
 
     aggregates ++ :queue.to_list(state.recent)
@@ -443,7 +608,10 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
       id: {state.activation, id},
       scope: scope,
       outcome: if(result == :ok, do: :confirmed, else: :uncertain),
-      evidence: %{barrier: if(scope == :http_request, do: :request_completion, else: :process_down), result: result},
+      evidence: %{
+        barrier: if(scope == :http_request, do: :request_completion, else: :process_down),
+        result: result
+      },
       error: if(result == :ok, do: nil, else: result)
     }
   end

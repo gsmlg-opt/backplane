@@ -81,10 +81,28 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
   end
 
   defmodule AnswerHost do
-    def search(_query, _opts), do: {:ok, answer()}
+    def search(query, _opts), do: {:ok, answer(query)}
     def x_search(query, opts), do: search(query, opts)
 
-    def answer,
+    def answer(query \\ "fixture")
+
+    def answer("citation-budget") do
+      citations =
+        for index <- 1..20 do
+          prefix = "https://source.example/#{index}/"
+          %{"url" => prefix <> String.duplicate("a", 1_000 - String.length(prefix))}
+        end
+
+      %{
+        "kind" => "answer",
+        "content" => "",
+        "citations" => citations,
+        "truncated" => true,
+        "provider" => "perplexity"
+      }
+    end
+
+    def answer(_query),
       do: %{
         "kind" => "answer",
         "content" => "答案\r\nnext",
@@ -252,6 +270,36 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
              Web.search(SearchHost, "q", fixture: fixture, result_limit: 500)
   end
 
+  test "citation URLs can truthfully exhaust the answer body budget" do
+    citations =
+      for index <- 1..20 do
+        prefix = "https://source.example/#{index}/"
+        %{"url" => prefix <> String.duplicate("a", 1_000 - String.length(prefix))}
+      end
+
+    assert Enum.sum(Enum.map(citations, &String.length(&1["url"]))) == 20_000
+
+    for fixture <- [
+          %{
+            "kind" => "answer",
+            "content" => "",
+            "citations" => citations,
+            "truncated" => true,
+            "provider" => "perplexity"
+          },
+          %{kind: :answer, content: "", citations: citations, truncated: true}
+        ] do
+      assert {:ok, ^fixture} =
+               Web.search(SearchHost, "ordinary citation budget", fixture: fixture)
+
+      assert {:ok, ^fixture} =
+               Web.x_search(SearchHost, "ordinary citation budget", fixture: fixture)
+
+      assert {:error, %Error{class: :budget_exceeded}} =
+               Web.search(SearchHost, "q", fixture: fixture, result_limit: 1_000)
+    end
+  end
+
   test "valid legacy results win over answer-like metadata" do
     for fixture <- [%{results: [], kind: :answer}, %{"results" => [], "kind" => "answer"}] do
       assert {:ok, ^fixture} = Web.search(SearchHost, "q", fixture: fixture)
@@ -283,8 +331,10 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
     assert System.find_executable("deno"), "this acceptance test requires real Deno"
     runtime = start_supervised!({DynamicRuntime, plugin_adapter: PluginHost})
 
-    for outcome <- [:completed, :legacy], mode <- [:direct, :deno] do
-      run_id = "completion-#{outcome}-#{mode}"
+    for outcome <- [:completed, :legacy],
+        mode <- [:direct, :deno],
+        query <- ["fixture", "citation-budget"] do
+      run_id = "completion-#{outcome}-#{mode}-#{query}"
       session = start_supervised!({Session, owner_pid: self()}, id: make_ref())
       {profile, binding} = profile(runtime, session, run_id, 7, self(), %{outcome: outcome})
       {:ok, store} = EphemeralStore.new(7)
@@ -308,7 +358,7 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
       conversation = start_supervised!({Conversation, opts}, id: make_ref())
       assert {:ok, _} = Conversation.prompt(conversation, "install and search")
       assert_receive {:completion_provider, %{run_id: ^run_id}, provider}, 2_000
-      send_calls(provider, mode)
+      send_calls(provider, mode, query)
       assert_receive {:install_operation, installed}, 3_000
       assert installed.run_id == run_id
       assert installed.incarnation == binding.run_incarnation
@@ -316,7 +366,7 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
       assert is_binary(installed.invocation_id)
       assert_receive {:completion_provider, %{messages: messages}, provider}, 5_000
       expected = expected_install(installed.plugin_request_id, outcome)
-      assert_outcomes(messages, mode, expected)
+      assert_outcomes(messages, mode, expected, AnswerHost.answer(query))
       send(provider, {:events, [done()]})
       assert eventually(fn -> Conversation.status(conversation).phase == :terminal end)
       assert {:ok, %{run: run}} = EphemeralStore.load(store, run_id)
@@ -532,7 +582,9 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
     {profile, binding}
   end
 
-  defp send_calls(provider, :direct) do
+  defp send_calls(provider, mode, query \\ "fixture")
+
+  defp send_calls(provider, :direct, query) do
     send(
       provider,
       {:events,
@@ -543,16 +595,16 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
          },
          %{
            type: :tool_call_completed,
-           tool_call: %{id: "answer", name: "web::search", arguments: %{"query" => "fixture"}}
+           tool_call: %{id: "answer", name: "web::search", arguments: %{"query" => query}}
          },
          done()
        ]}
     )
   end
 
-  defp send_calls(provider, :deno) do
+  defp send_calls(provider, :deno, query) do
     code =
-      "const installed = await tools.request_plugin_install(#{JSON.encode!(arguments())}); const search = await tools.web__search({query: 'fixture'}); return {installed, search};"
+      "const installed = await tools.request_plugin_install(#{JSON.encode!(arguments())}); const search = await tools.web__search({query: #{JSON.encode!(query)}}); return {installed, search};"
 
     send(
       provider,
@@ -582,10 +634,12 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
       else: %{request_id: id, status: :requested, host: fields}
   end
 
-  defp assert_outcomes(messages, :direct, expected) do
+  defp assert_outcomes(messages, mode, expected, answer \\ AnswerHost.answer())
+
+  defp assert_outcomes(messages, :direct, expected, answer) do
     results = for %{role: :tool, result: result} <- messages, do: Map.drop(result, [:is_error])
     assert expected in results
-    assert AnswerHost.answer() in results
+    assert answer in results
 
     assert JSON.decode!(JSON.encode!(expected)) in Enum.map(
              results,
@@ -593,12 +647,12 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
            )
   end
 
-  defp assert_outcomes(messages, :deno, expected) do
+  defp assert_outcomes(messages, :deno, expected, answer) do
     assert %{result: %{status: :completed, value: value, is_error: false}} = List.last(messages)
 
     assert value == %{
              "installed" => JSON.decode!(JSON.encode!(expected)),
-             "search" => AnswerHost.answer()
+             "search" => answer
            }
   end
 

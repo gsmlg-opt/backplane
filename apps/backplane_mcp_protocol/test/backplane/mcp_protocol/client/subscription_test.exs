@@ -16,7 +16,7 @@ defmodule Backplane.McpProtocol.Client.SubscriptionTest do
     def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
     def init(owner), do: {:ok, owner}
 
-    def handle_call({:send, encoded}, _from, owner) do
+    def handle_call({:send, encoded, deadline}, _from, owner) when is_integer(deadline) do
       case owner do
         {pid, label} -> send(pid, {:stdio_send, label, encoded})
         pid -> send(pid, {:stdio_send, encoded})

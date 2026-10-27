@@ -354,13 +354,19 @@ defmodule Backplane.AgentRuntime.Kernel do
   defp settle_cleanup(run, at, input, :confirmed) do
     expected = cleanup_requirements(run)
 
-    if field(input, :settled) == expected do
+    if field(input, :settled) === expected do
       terminal = if run.stop_reason == :deadline_exceeded, do: :timed_out, else: :cancelled
 
       outcome = %{
         "stop_reason" => Atom.to_string(run.stop_reason),
         "cleanup" => %{"certainty" => "confirmed"}
       }
+
+      outcome =
+        case field(input, :evidence) do
+          nil -> outcome
+          evidence -> put_in(outcome, ["cleanup", "evidence"], deep_stringify_keys(evidence))
+        end
 
       run
       |> clear_active_work()
@@ -671,8 +677,29 @@ defmodule Backplane.AgentRuntime.Kernel do
   end
 
   defp validate_command_input(:cleanup_settled, input) do
-    with {:ok, _} <- cleanup_certainty(input), do: {:ok, input}
+    key = if Map.has_key?(input, :evidence), do: :evidence, else: "evidence"
+
+    with {:ok, _} <- cleanup_certainty(input),
+         false <- Map.has_key?(input, :evidence) and Map.has_key?(input, "evidence"),
+         {:ok, evidence} <- normalize_cleanup_evidence(field(input, :evidence)) do
+      {:ok, if(Map.has_key?(input, key), do: Map.put(input, key, evidence), else: input)}
+    else
+      true -> validation_error("cleanup evidence must have one unambiguous field")
+      error -> error
+    end
   end
+
+  defp normalize_cleanup_evidence(nil), do: {:ok, nil}
+
+  defp normalize_cleanup_evidence(value) when is_map(value) or is_list(value) do
+    case Backplane.AgentRuntime.Codex.Reconciliation.Evidence.public(value) do
+      {:ok, public} -> {:ok, public}
+      _ -> validation_error("cleanup evidence must be bounded JSON")
+    end
+  end
+
+  defp normalize_cleanup_evidence(_),
+    do: validation_error("cleanup evidence must be bounded JSON")
 
   @spec goal_receipt_ids(term()) :: {:ok, %{optional(binary()) => true}} | {:error, Error.t()}
   defp goal_receipt_ids([_ | _] = receipts), do: goal_receipt_ids(receipts, %{})

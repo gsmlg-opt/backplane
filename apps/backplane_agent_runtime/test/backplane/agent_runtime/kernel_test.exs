@@ -139,6 +139,36 @@ defmodule Backplane.AgentRuntime.KernelTest do
       assert Kernel.terminal?(:timed_out)
     end
 
+    test "cleanup retains the canonical evidence it validated" do
+      alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+
+      evidence = %{
+        reason: Backplane.AgentRuntime.Error.new(:cancelled, "stopped", cause: %{code: 1})
+      }
+
+      assert {:ok, public} = Evidence.public(evidence)
+
+      for key <- [:evidence, "evidence"] do
+        {:ok, run, _, []} = Kernel.execute(base_run(), {:admit, 10, %{state: :running}})
+        {:ok, run, _, []} = Kernel.execute(run, {:cancel, 11})
+
+        input =
+          %{certainty: :confirmed, settled: Kernel.cleanup_requirements(run)}
+          |> Map.put(key, evidence)
+
+        assert {:ok, settled, transition, []} = Kernel.execute(run, {:cleanup_settled, 12, input})
+        assert settled.outcome["cleanup"]["evidence"] == public
+        assert hd(transition.events).payload["input"]["cleanup"]["evidence"] == public
+
+        assert {:error, %Backplane.AgentRuntime.Error{class: :validation}} =
+                 Kernel.execute(
+                   run,
+                   {:cleanup_settled, 12,
+                    input |> Map.put(:evidence, evidence) |> Map.put("evidence", evidence)}
+                 )
+      end
+    end
+
     test "deterministic replay produces the same state and transitions without effects" do
       run =
         base_run()

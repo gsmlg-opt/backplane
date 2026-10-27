@@ -155,6 +155,207 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestTest do
     assert :sys.get_state(client).pending_requests == %{}
   end
 
+  test "events preserve one opaque cursor page and raw ordered descriptor schemas" do
+    client = start_client()
+    :sys.replace_state(client, &%{&1 | server_capabilities: %{"events" => %{}}})
+
+    assert {:ok, handle} =
+             Client.start_list_events(client,
+               cursor: "opaque/+page",
+               meta: %{"fixture/request" => true}
+             )
+
+    {_worker, wire} = receive_wire("events/list")
+    assert wire["params"]["cursor"] == "opaque/+page"
+
+    result = %{
+      "events" => [
+        %{
+          "name" => "created",
+          "delivery" => ["webhook"],
+          "inputSchema" => %{"type" => "object"},
+          "payloadSchema" => true
+        },
+        %{"name" => "updated", "payloadSchema" => false}
+      ],
+      "nextCursor" => "opaque/next",
+      "extra" => [1, 2]
+    }
+
+    respond(client, wire["id"], result)
+    assert {:ok, response} = Client.await_event_request(handle, 1_000)
+    assert response.result === result
+  end
+
+  test "event await timeout is nonterminal and cancellation leaves another page pending" do
+    client = start_client()
+    :sys.replace_state(client, &%{&1 | server_capabilities: %{"events" => %{}}})
+    {:ok, first} = Client.start_list_events(client, cursor: "first")
+    {_worker, first_wire} = receive_wire("events/list")
+    {:ok, second} = Client.start_list_events(client, cursor: "second")
+    {_worker, second_wire} = receive_wire("events/list")
+    assert {:error, %Error{reason: :request_timeout}} = Client.await_event_request(second, 1)
+    assert {:ok, %{local: :cancelled}} = Client.cancel_event_request(first)
+    {_worker, notification} = receive_wire("notifications/cancelled")
+    assert notification["params"]["requestId"] == first_wire["id"]
+    assert {:error, %Error{reason: :request_cancelled}} = Client.await_event_request(first)
+    result = %{"events" => [], "nextCursor" => "third"}
+    respond(client, second_wire["id"], result)
+    assert {:ok, response} = Client.await_event_request(second, 1_000)
+    assert response.result == result
+  end
+
+  test "event registration deadline and owner exit preserve unrelated event work" do
+    client = start_client()
+    :sys.replace_state(client, &%{&1 | server_capabilities: %{"events" => %{}}})
+    :ok = :sys.suspend(client)
+
+    assert {:error, %Error{reason: :registration_timeout}} =
+             Client.start_list_events(client, registration_timeout: 5)
+
+    :ok = :sys.resume(client)
+    refute_receive {:tool_call_send, _, _, _}, 20
+    test = self()
+
+    owner =
+      spawn(fn ->
+        {:ok, handle} = Client.start_list_events(client)
+        send(test, {:event_owned, handle})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    assert_receive {:event_owned, handle}
+    {_worker, owned_wire} = receive_wire("events/list")
+
+    assert {:error, %Error{reason: :request_owner_mismatch}} =
+             Client.await_event_request(handle, 1)
+
+    assert {:error, %Error{reason: :request_owner_mismatch}} = Client.cancel_event_request(handle)
+    {:ok, other} = Client.start_list_events(client)
+    {_worker, other_wire} = receive_wire("events/list")
+    send(owner, :finish)
+    {_worker, notification} = receive_wire("notifications/cancelled")
+    assert notification["params"]["requestId"] == owned_wire["id"]
+    respond(client, other_wire["id"], %{"events" => []})
+    assert {:ok, _} = Client.await_event_request(other, 1_000)
+  end
+
+  test "events require ready modern negotiation and advertised capability before dispatch" do
+    client = start_client()
+    assert {:error, %Error{reason: :method_not_found}} = Client.start_list_events(client)
+    :sys.replace_state(client, &%{&1 | server_capabilities: %{"events" => %{}}, era: :legacy})
+    assert {:error, %Error{reason: :unsupported_operation}} = Client.start_list_events(client)
+    assert :sys.get_state(client).pending_requests == %{}
+    refute_receive {:tool_call_send, _, _, _}, 20
+  end
+
+  test "cancel-aware resource await reports exact verified local retirement" do
+    client = start_client([{:block, make_ref()}, :ok])
+    test = self()
+
+    owner =
+      spawn(fn ->
+        control = Client.resource_cancellation_control()
+        send(test, {:control, control})
+        {:ok, handle} = Client.start_read_resource(client, "fixture://controlled")
+        send(test, {:controlled_handle, handle})
+
+        send(
+          test,
+          {:controlled_result,
+           Client.await_resource_request(handle, :infinity, cancellation: control)}
+        )
+      end)
+
+    assert_receive {:control, control}
+    assert_receive {:controlled_handle, handle}
+    {worker, wire} = receive_wire("resources/read")
+    monitor = Process.monitor(worker)
+    assert :ok = Client.cancel_resource_wait(control, "interrupted", timeout: 1_000)
+    assert_receive {:controlled_result, {:cancelled, report}}, 1_500
+    assert report.local == :cancelled
+    assert report.local_cleanup == :confirmed
+    assert report.logical_id == handle.logical_id
+    assert report.request_id == wire["id"]
+    assert is_binary(report.client_incarnation)
+    assert report.method == "resources/read"
+    assert report.remote == :unknown
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}
+    refute Process.alive?(owner)
+  end
+
+  test "cancellation controls cannot select another request after an observation timeout" do
+    client = start_client()
+    control = Client.resource_cancellation_control()
+    {:ok, first} = Client.start_read_resource(client, "fixture://first")
+    receive_wire("resources/read")
+
+    assert {:error, %Error{reason: :request_timeout}} =
+             Client.await_resource_request(first, 1, cancellation: control)
+
+    {:ok, second} = Client.start_read_resource(client, "fixture://second")
+    {_worker, wire} = receive_wire("resources/read")
+
+    assert {:error, %Error{reason: :cancellation_request_mismatch}} =
+             Client.await_resource_request(second, 1, cancellation: control)
+
+    respond(client, wire["id"], %{"contents" => []})
+    assert {:ok, _} = Client.await_resource_request(second, 1_000)
+  end
+
+  test "exact delivered completion reconciles a cancellation that observes request_not_found" do
+    client = start_client()
+    control = Client.resource_cancellation_control()
+    {:ok, handle} = Client.start_read_resource(client, "fixture://race")
+    {_worker, wire} = receive_wire("resources/read")
+    :ok = Client.cancel_resource_wait(control, "interrupted", timeout: 1_000)
+    respond(client, wire["id"], %{"contents" => []})
+    assert :sys.get_state(client).pending_requests == %{}
+    assert {:ok, response} = Client.await_resource_request(handle, 1_000, cancellation: control)
+    assert response.result == %{"contents" => []}
+    assert {:ok, identity} = Client.resource_request_identity(handle)
+    assert identity.logical_id == handle.logical_id
+    assert identity.request_id == wire["id"]
+    assert identity.method == "resources/read"
+    assert is_binary(identity.client_incarnation)
+  end
+
+  test "client mailbox delay does not renew the cancellation cleanup budget" do
+    client = start_client()
+    control = Client.resource_cancellation_control()
+    {:ok, handle} = Client.start_read_resource(client, "fixture://queue-delay")
+    receive_wire("resources/read")
+    :ok = :sys.suspend(client)
+    :ok = Client.cancel_resource_wait(control, "interrupted", timeout: 20)
+
+    spawn(fn ->
+      Process.sleep(60)
+      :sys.resume(client)
+    end)
+
+    assert {:cancelled, report} =
+             Client.await_resource_request(handle, 1_000, cancellation: control)
+
+    assert report.notification_delivery == :timeout
+    refute_receive {:tool_call_send, _, %{"method" => "notifications/cancelled"}, _}, 20
+  end
+
+  test "request_not_found without exact terminal evidence remains an error" do
+    client = start_client()
+    control = Client.resource_cancellation_control()
+    {:ok, handle} = Client.start_read_resource(client, "fixture://consumed")
+    {_worker, wire} = receive_wire("resources/read")
+    respond(client, wire["id"], %{"contents" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+    :ok = Client.cancel_resource_wait(control, "interrupted", timeout: 1_000)
+
+    assert {:error, %Error{reason: :request_not_found}} =
+             Client.await_resource_request(handle, 1_000, cancellation: control)
+  end
+
   defp start_client(actions \\ []) do
     test_pid = self()
 

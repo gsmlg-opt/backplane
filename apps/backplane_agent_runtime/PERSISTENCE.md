@@ -180,6 +180,21 @@ restart reconciliation must retain serializable resource/run identities and
 backend-specific evidence in their own recovery system. Never serialize registry
 values, PIDs, ports, cleanup functions, dispatch closures, credentials or grants.
 
+Child archive normalization explicitly supports the Runtime's ordinary `Error`
+struct, including all four fields: `class`, `message`, `details` and `cause`.
+Nested values retain the same canonical JSON bounds and ambiguity checks. An
+unsupported cause or struct is rejected; it is never removed or converted with
+`inspect`. JSON-only archives retain their existing representation and digest.
+Restoration still compares full normalized history against the authoritative
+Store record and continues from that original record, preserving its typed Error
+values. A portable archive alone does not reconstruct executable history.
+
+An idle imported child retains the terminal snapshot already authenticated by
+archive/Store/retirement-receipt validation. Parent transfer and Session detachment
+can inspect that snapshot without preparing child IO or invoking a Provider/tool.
+Only an explicit followup admits a fresh child run and binding. Import does not
+create new cleanup evidence or change the historical outcome.
+
 `Codex.MultiAgent.cancel_interaction/3` uses the observed five-field interaction
 correlation and shares an atomic manager reservation with resolution. Child
 acceptance checks the run, incarnation, interaction and live producer. Its `:ok`

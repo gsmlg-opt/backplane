@@ -414,6 +414,20 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
     assert after_run.run.tool_results[original_id] == original_result
     assert after_run.run.tool_results[error_id] == native_error
 
+    assert {:ok, portable_results} =
+             Backplane.AgentRuntime.Codex.Reconciliation.Evidence.public(
+               after_run.run.tool_results
+             )
+
+    assert portable_results[error_id]["error"] == %{
+             "class" => "not_found",
+             "message" => "command session is unknown",
+             "details" => %{},
+             "cause" => nil
+           }
+
+    assert JSON.decode!(JSON.encode!(portable_results)) == portable_results
+
     assert Enum.count(after_run.run.tool_results, fn {_id, result} ->
              match?(%{is_error: true, error: %Error{class: :not_found}}, result)
            end) == 1

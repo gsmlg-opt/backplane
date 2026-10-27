@@ -91,7 +91,10 @@ modes, then loads the installed manifest before attesting to completion.
 `citations` contain nonempty URL strings or maps with `url` and optional `title`.
 Recognized fields accept either key style, without duplicate atom/string aliases.
 Original content, citations, order and additional metadata are retained. Valid
-legacy `results` lists take precedence over answer tags. Both branches retain
+legacy `results` lists take precedence over answer tags. Empty answer content is
+accepted only with an explicit answer tag, nonempty valid ordered citations and
+an unambiguous boolean `truncated: true`; the original map and whole-result bound
+are retained. Both branches retain
 the complete original-map `:erlang.external_size` limit (default 1,048,576),
 including metadata and citations; no rows are synthesized for an answer.
 
@@ -451,3 +454,28 @@ Confirmation requires exact guardian cleanup evidence, broker reaping and broker
 Port exit. Missing helper proof stays `unknown_outcome`; a successful command
 exit alone does not release the session. No OS sandbox or post-crash observer is
 added. See [protocol, process ownership and build prerequisites](c_src/README.md).
+
+### Caller-owned MCP resources and interruption
+
+Dynamic MCP list, template-list and read callbacks run in their actual effect
+caller. Existing adapters keep their ordinary success/error behavior and now own
+MCP handles in that caller; legacy adapters retain uncertain interruption cleanup.
+An adapter whose only cancellable work is one MCP resource request can opt in:
+
+```elixir
+DynamicRuntime.resource_request(operation, fn ->
+  Client.start_read_resource(client, uri, opts)
+end)
+```
+
+The helper preserves the public MCP success/error for the adapter to convert. It
+requires `backplane_mcp_protocol ~> 1.10.46`. It registers the admitted operation
+before starting and binds cancellation to that registration, the original MCP
+logical request and live client incarnation. A confirmed cleanup records exact
+local request retirement, actual effect Task termination, and Session/Registry
+cleanup. Remote cancellation remains unknown. Nested Code Mode also requires the
+matching enclosing invocation and real Deno cleanup; either proof alone is
+insufficient. Missing acknowledgements or an expired cleanup deadline retain
+uncertain obligations, and cancellation never synthesizes a successful tool result.
+If ordinary completion wins the cancellation race, its result alone does not prove
+local cleanup; interruption remains uncertain without that separate evidence.

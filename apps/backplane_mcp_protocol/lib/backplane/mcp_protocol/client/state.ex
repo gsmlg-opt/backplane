@@ -44,6 +44,7 @@ defmodule Backplane.McpProtocol.Client.State do
 
   defstruct [
     :client_info,
+    :client_incarnation,
     :capabilities,
     :server_capabilities,
     :server_info,
@@ -87,6 +88,7 @@ defmodule Backplane.McpProtocol.Client.State do
 
     %__MODULE__{
       client_info: opts.client_info,
+      client_incarnation: ID.generate_request_id(),
       capabilities: opts.capabilities,
       protocol_preference: protocol_preference,
       protocol_pinned?: protocol_preference != :auto,

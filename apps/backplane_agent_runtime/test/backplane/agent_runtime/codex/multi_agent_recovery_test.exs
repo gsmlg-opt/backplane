@@ -154,6 +154,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgentRecoveryTest do
     destination = manager(context, :destination)
     assert {:ok, restored} = MultiAgent.restore_child(destination, archive)
     assert {:ok, ^restored} = MultiAgent.restore_child(destination, archive)
+    assert :ok = MultiAgent.transfer_ready(destination)
     assert {:ok, snapshot} = MultiAgent.snapshot(destination)
     assert snapshot.admissions == []
 

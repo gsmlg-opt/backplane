@@ -97,14 +97,14 @@ defmodule Backplane.McpProtocol.MCP.Message do
   }
 
   @completion_complete_params_schema %{
-    "ref" => {:required, {:oneof, [@completion_prompt_ref_schema, @completion_resource_ref_schema]}},
+    "ref" =>
+      {:required, {:oneof, [@completion_prompt_ref_schema, @completion_resource_ref_schema]}},
     "argument" => {:required, @completion_argument_schema}
   }
 
   @progress_params %{
-    "_meta" => %{
-      "progressToken" => {:either, {:string, :integer}}
-    }
+    "_meta" =>
+      {:schema, %{"progressToken" => {:either, {:string, :integer}}}, {:additional_keys, :any}}
   }
 
   @text_content_schema %{
@@ -126,7 +126,8 @@ defmodule Backplane.McpProtocol.MCP.Message do
 
   @message_schema %{
     "role" => {:required, {:enum, ~w(user assistant system)}},
-    "content" => {:required, {:oneof, [@text_content_schema, @image_content_schema, @audio_content_schema]}}
+    "content" =>
+      {:required, {:oneof, [@text_content_schema, @image_content_schema, @audio_content_schema]}}
   }
 
   @model_preferences_schema %{
@@ -145,7 +146,8 @@ defmodule Backplane.McpProtocol.MCP.Message do
 
   @elicitation_create_params %{
     "message" => {:required, :string},
-    "requestedSchema" => {:required, {:custom, &Backplane.McpProtocol.MCP.ElicitationSchema.validate/1}}
+    "requestedSchema" =>
+      {:required, {:custom, &Backplane.McpProtocol.MCP.ElicitationSchema.validate/1}}
   }
 
   @request_branch_specs %{
@@ -268,7 +270,9 @@ defmodule Backplane.McpProtocol.MCP.Message do
     :sampling_result_schema,
     %{
       "role" => {:required, {:literal, "assistant"}},
-      "content" => {:required, {:oneof, [@text_content_schema, @image_content_schema, @audio_content_schema]}},
+      "content" =>
+        {:required,
+         {:oneof, [@text_content_schema, @image_content_schema, @audio_content_schema]}},
       "model" => {:required, :string},
       "stopReason" => {:string, {:default, "endTurn"}}
     },
@@ -568,7 +572,8 @@ defmodule Backplane.McpProtocol.MCP.Message do
   """
   @spec encode_progress_notification(map(), term() | nil) ::
           {:ok, String.t()} | {:error, term()}
-  def encode_progress_notification(params, params_schema \\ @progress_notif_params_schema) when is_map(params) do
+  def encode_progress_notification(params, params_schema \\ @progress_notif_params_schema)
+      when is_map(params) do
     # Validate params against the provided schema
     case Peri.validate(params_schema, params) do
       {:ok, validated_params} ->
@@ -691,7 +696,8 @@ defmodule Backplane.McpProtocol.MCP.Message do
 
   defp maybe_add_logger(params, nil), do: params
 
-  defp maybe_add_logger(params, logger) when is_binary(logger), do: Map.put(params, "logger", logger)
+  defp maybe_add_logger(params, logger) when is_binary(logger),
+    do: Map.put(params, "logger", logger)
 
   @doc """
   Returns the progress notification parameters schema for 2025-03-26 (with message field).
@@ -741,7 +747,8 @@ defmodule Backplane.McpProtocol.MCP.Message do
   left untouched.
   """
   @spec build_response(map(), String.t() | integer(), String.t()) :: map()
-  def build_response(%{"resultType" => result_type} = result, id, "2026-07-28") when is_binary(result_type) do
+  def build_response(%{"resultType" => result_type} = result, id, "2026-07-28")
+      when is_binary(result_type) do
     build_response(result, id)
   end
 

@@ -168,10 +168,33 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     GenServer.start_link(__MODULE__, Map.new(opts), name: opts[:name])
   end
 
+  @doc false
+  @impl true
+  def cancel_request(pid, request_id, opts) do
+    timeout = Keyword.fetch!(opts, :timeout)
+    opts = Keyword.put_new(opts, :deadline, System.monotonic_time(:millisecond) + timeout)
+
+    GenServer.call(
+      pid,
+      {:cancel_owned_request, request_id, opts},
+      Keyword.fetch!(opts, :timeout) + 100
+    )
+  end
+
   @impl Transport
   def send_message(pid, message, opts) when is_binary(message) do
     timeout = Keyword.get(opts, :timeout, 5000)
-    deadline = if timeout == :infinity, do: :infinity, else: System.monotonic_time(:millisecond) + timeout
+
+    deadline =
+      Keyword.get(
+        opts,
+        :deadline,
+        if(timeout == :infinity,
+          do: :infinity,
+          else: System.monotonic_time(:millisecond) + timeout
+        )
+      )
+
     GenServer.call(pid, {:send, message, deadline}, timeout)
   end
 
@@ -227,7 +250,14 @@ defmodule Backplane.McpProtocol.Transport.SSE do
          {:ok, lifecycle} <- Lifecycle.start_link(:sse, opts.activation_id) do
       state =
         opts
-        |> Map.merge(%{message_url: nil, stream_task: nil, lifecycle: lifecycle, closing: false, pending: %{}})
+        |> Map.merge(%{
+          message_url: nil,
+          stream_task: nil,
+          lifecycle: lifecycle,
+          closing: false,
+          pending: %{},
+          request_jobs: %{}
+        })
         |> Map.put(:http_options, Keyword.merge(opts.transport_opts, opts.http_options))
         |> Map.put(:server_url, server_url)
         |> Map.put(:sse_url, sse_url)
@@ -274,7 +304,11 @@ defmodule Backplane.McpProtocol.Transport.SSE do
           Logger.metadata(parent_metadata)
 
           stream =
-            SSE.connect(state.sse_url, state.headers, Keyword.merge(state.transport_opts, state.http_options))
+            SSE.connect(
+              state.sse_url,
+              state.headers,
+              Keyword.merge(state.transport_opts, state.http_options)
+            )
 
           process_stream(stream, parent)
         end,
@@ -334,7 +368,11 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   def handle_call({:close, opts}, from, state) do
     lifecycle = state.lifecycle
     spawn(fn -> GenServer.reply(from, Lifecycle.close(lifecycle, opts)) end)
-    Enum.each(state.pending, fn {_ref, {caller, _context}} -> GenServer.reply(caller, {:error, :closing}) end)
+
+    Enum.each(state.pending, fn {_ref, {caller, _context, _worker}} ->
+      GenServer.reply(caller, {:error, :closing})
+    end)
+
     {:noreply, %{state | closing: true, pending: %{}}}
   end
 
@@ -346,11 +384,32 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     {:reply, {:error, :not_connected}, state}
   end
 
+  def handle_call({:cancel_owned_request, request_id, opts}, from, state) do
+    case Map.fetch(state.request_jobs, request_id) do
+      {:ok, worker} ->
+        lifecycle = state.lifecycle
+
+        Task.Supervisor.start_child(Backplane.McpProtocol.Client.OperationSupervisor, fn ->
+          GenServer.reply(from, Lifecycle.release_job(lifecycle, worker, opts))
+        end)
+
+        # A cancelled HTTP worker cannot deliver its normal result. Release
+        # only that worker's retained call while keeping shared work pending.
+        pending =
+          Map.reject(state.pending, fn {_ref, {_caller, _context, pid}} -> pid == worker end)
+
+        {:noreply, %{state | pending: pending}}
+
+      :error ->
+        {:reply, {:error, :request_cleanup_unknown}, state}
+    end
+  end
+
   def handle_call({:send, message, deadline}, from, state) do
     parent = self()
     ref = make_ref()
 
-    {:ok, _worker} =
+    {:ok, worker} =
       Lifecycle.start(state.lifecycle, fn ->
         result =
           case remaining(deadline) do
@@ -370,7 +429,24 @@ defmodule Backplane.McpProtocol.Transport.SSE do
         send(parent, {:http_result, ref, result})
       end)
 
-    {:noreply, put_in(state.pending[ref], {from, nil})}
+    request_jobs =
+      case JSON.decode(message) do
+        {:ok, %{"id" => id}} -> Map.put(state.request_jobs, id, worker)
+        _ -> state.request_jobs
+      end
+
+    request_jobs =
+      if map_size(request_jobs) > 128 do
+        case Enum.find(request_jobs, fn {_id, pid} -> not Process.alive?(pid) end) do
+          {id, _pid} -> Map.delete(request_jobs, id)
+          nil -> request_jobs
+        end
+      else
+        request_jobs
+      end
+
+    state = %{state | request_jobs: request_jobs}
+    {:noreply, put_in(state.pending[ref], {from, nil, worker})}
   end
 
   @impl GenServer
@@ -379,7 +455,7 @@ defmodule Backplane.McpProtocol.Transport.SSE do
       {nil, _} ->
         {:noreply, state}
 
-      {{from, _}, pending} ->
+      {{from, _, _worker}, pending} ->
         GenServer.reply(from, result)
         {:noreply, %{state | pending: pending}}
     end

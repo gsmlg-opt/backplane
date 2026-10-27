@@ -320,6 +320,24 @@ defmodule Backplane.McpProtocol.MCP.MessageTest do
       assert decoded["method"] == "ping"
     end
 
+    test "shared progress metadata preserves nested namespaced values and validates its token" do
+      meta = %{
+        "progressToken" => 42,
+        "fixture/request" => %{"text" => "汉字\r\n", "nested" => [1, true]}
+      }
+
+      for {method, params} <- [
+            {"tools/call", %{"name" => "echo", "arguments" => %{}}},
+            {"prompts/get", %{"name" => "hello"}}
+          ] do
+        request = %{"method" => method, "params" => Map.put(params, "_meta", meta)}
+        assert {:ok, encoded} = Message.encode_request(request, 1)
+        assert JSON.decode!(encoded)["params"]["_meta"] == meta
+        invalid = put_in(request, ["params", "_meta", "progressToken"], %{"bad" => true})
+        assert {:error, _} = Message.encode_request(invalid, 1)
+      end
+    end
+
     test "returns error for invalid request" do
       req = %{"method" => "unknown_method"}
 
