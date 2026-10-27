@@ -2,7 +2,7 @@ defmodule Backplane.AgentRuntime.Goal do
   @moduledoc "Optional persistent thread goal owner. Host owns storage, user provenance and ordinary Session admission."
   use GenServer
   alias Backplane.AgentRuntime.Error
-  alias Backplane.AgentRuntime.Goal.{State, Store}
+  alias Backplane.AgentRuntime.Goal.{Settlement, State, Store}
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def get(goal), do: GenServer.call(goal, :get)
@@ -33,7 +33,9 @@ defmodule Backplane.AgentRuntime.Goal do
   `{:ok, {:not_withdrawn, :stale | :started}}`. A matching committed start for
   the admitted run/incarnation prevents withdrawal even when the host's logical
   turn ID differs from the Runtime's minted turn ID. Once host release wins,
-  ordinary Runtime cancellation is required, even before Goal sees that receipt.
+  ordinary Runtime cancellation is required, even before Goal sees that receipt,
+  except for the explicitly host-attested no-start path in
+  `settle_unstarted_admission/4`.
 
   This owner-only call cannot fence the host's execution queue. Before calling,
   the host must atomically invalidate the exact token/generation against release
@@ -42,6 +44,25 @@ defmodule Backplane.AgentRuntime.Goal do
   """
   def withdraw_admission(goal, expected_admission, reason),
     do: GenServer.call(goal, {:withdraw_admission, expected_admission, reason})
+
+  @doc """
+  Durably settles an exact released admission whose executor ended before Runtime admission.
+
+  Only the owner may attest to the closed evidence map containing the exact
+  `admission`, `executor: :confirmed_down`, `runtime_admission: :never_started`,
+  `future_start: :fenced` and `effects: :none_dispatched`. The host must correlate
+  actual executor termination and permanently seal that token/generation at the
+  same boundary as admission, including startup children and queued work.
+  Missing Runtime state alone is not evidence. Keep the seal on storage errors.
+
+  Reasons are `:preparation_failed`, `:superseded` and `:cancelled`; only cancellation
+  also durably defers continuation. Returns `{:ok, {:settled, reason}}` after an
+  exact Store acknowledgement, including historical retries, or
+  `{:ok, {:not_settled, :stale | :bound | :started | :execution_observed}}`.
+  Persistence errors do not confirm settlement. This API never starts a turn.
+  """
+  def settle_unstarted_admission(goal, admission, reason, attestation),
+    do: GenServer.call(goal, {:settle_unstarted_admission, admission, reason, attestation})
 
   @admission_identity ~w(run_id turn_id incarnation host_generation reservation_token)a
 
@@ -71,6 +92,9 @@ defmodule Backplane.AgentRuntime.Goal do
          bindings: %{},
          reserved: nil,
          reserved_start: nil,
+         reserved_observation: nil,
+         reserved_context: nil,
+         settlement_attempts: %{},
          pending_receipts: MapSet.new(),
          monotonic: System.monotonic_time(:millisecond),
          elapsed_ms: 0
@@ -143,6 +167,8 @@ defmodule Backplane.AgentRuntime.Goal do
                bindings: %{},
                reserved: nil,
                reserved_start: nil,
+               reserved_observation: nil,
+               reserved_context: nil,
                pending_receipts: MapSet.new(),
                monotonic: System.monotonic_time(:millisecond),
                elapsed_ms: 0
@@ -350,6 +376,7 @@ defmodule Backplane.AgentRuntime.Goal do
 
       fresh_receipt? = not Map.has_key?(state.record.receipts, event.receipt_id)
       state = observe_reserved_start(state, event, fresh_receipt?)
+      state = observe_reserved_execution(state, event, fresh_receipt?)
 
       event =
         if event.type == :turn_started and reserved_run?(state, event) and
@@ -382,7 +409,7 @@ defmodule Backplane.AgentRuntime.Goal do
         {:ok, next, result} ->
           next =
             if reserved_terminal?(next, event, fresh_receipt?),
-              do: %{next | reserved: nil, reserved_start: nil},
+              do: clear_reservation(next),
               else: next
 
           next = %{
@@ -422,7 +449,7 @@ defmodule Backplane.AgentRuntime.Goal do
         {:reply, {:ok, {:not_withdrawn, :started}}, state}
 
       reason == :superseded ->
-        {:reply, {:ok, {:withdrawn, :superseded}}, %{state | reserved: nil}}
+        {:reply, {:ok, {:withdrawn, :superseded}}, clear_reservation(state)}
 
       true ->
         expected_goal_id = goal_id(state.record)
@@ -434,11 +461,27 @@ defmodule Backplane.AgentRuntime.Goal do
                end
              end) do
           {:ok, next, outcome} ->
-            {:reply, {:ok, outcome}, %{next | reserved: nil, reserved_start: nil}}
+            {:reply, {:ok, outcome}, clear_reservation(next)}
 
           {:error, error, next} ->
             {:reply, {:error, error}, next}
         end
+    end
+  end
+
+  def handle_call(
+        {:settle_unstarted_admission, admission, reason, attestation},
+        {caller, _},
+        state
+      ) do
+    if caller == state.owner do
+      with {:ok, payload} <- Settlement.normalize(admission, reason, attestation) do
+        settle_unstarted(state, payload)
+      else
+        {:error, error} -> {:reply, {:error, error}, state}
+      end
+    else
+      denied(state)
     end
   end
 
@@ -489,8 +532,20 @@ defmodule Backplane.AgentRuntime.Goal do
                  is_integer(incarnation) and incarnation > 0 ->
             case admission_identity(admission, request) do
               {:ok, admission} ->
+                pair = {admission.run_id, admission.incarnation}
+
                 {:reply, {:ok, {:started, admission}},
-                 %{state | reserved: admission, reserved_start: nil}}
+                 %{
+                   state
+                   | reserved: admission,
+                     reserved_start: nil,
+                     reserved_observation: nil,
+                     reserved_context: %{
+                       expected_goal_id: goal_id(state.record),
+                       receipt_count: Map.get(state.record.runtime_receipt_counts, pair, 0),
+                       event_revision: Map.get(state.record.event_revisions, pair, 0)
+                     }
+                 }}
 
               {:error, error} ->
                 {:reply, {:error, error}, state}
@@ -519,7 +574,7 @@ defmodule Backplane.AgentRuntime.Goal do
            with {:ok, next} <- fun.(record), do: {:ok, next, State.response(next)}
          end) do
       {:ok, next, response} ->
-        {:reply, {:ok, response}, %{next | reserved: nil, reserved_start: nil}}
+        {:reply, {:ok, response}, clear_reservation(next)}
 
       {:error, error, next} ->
         {:reply, {:error, error}, next}
@@ -563,6 +618,150 @@ defmodule Backplane.AgentRuntime.Goal do
 
   defp observe_reserved_start(state, _event, _fresh?), do: state
 
+  defp observe_reserved_execution(state, event, true) do
+    if reserved_run?(state, event) and match?({:ok, _}, State.account(state.record, event)),
+      do: %{state | reserved_observation: state.reserved_observation || event.type},
+      else: state
+  end
+
+  defp observe_reserved_execution(state, _event, _fresh?), do: state
+
+  defp clear_reservation(state),
+    do: %{
+      state
+      | reserved: nil,
+        reserved_start: nil,
+        reserved_observation: nil,
+        reserved_context: nil
+    }
+
+  defp settle_unstarted(state, payload) do
+    token = payload.admission.reservation_token
+
+    case settlement_lookup(state.record, state.settlement_attempts, payload) do
+      {:cached, response} ->
+        settled_reply(state, payload, response)
+
+      {:error, error} ->
+        {:reply, {:error, error}, state}
+
+      :new ->
+        case settlement_guard(state, state.record, payload.admission) do
+          :ok -> persist_settlement(state, token, payload)
+          reason -> {:reply, {:ok, {:not_settled, reason}}, state}
+        end
+    end
+  end
+
+  defp persist_settlement(state, token, payload) do
+    receipt =
+      Map.merge(payload, %{
+        thread_id: state.thread_id,
+        expected_goal_id: state.reserved_context.expected_goal_id
+      })
+
+    state = %{state | settlement_attempts: Map.put(state.settlement_attempts, token, receipt)}
+
+    fun = fn record ->
+      case settlement_lookup(record, %{}, payload) do
+        {:cached, response} ->
+          {:cached, record, response}
+
+        {:error, error} ->
+          {:error, error}
+
+        :new ->
+          persist_unstarted_record(state, record, receipt)
+      end
+    end
+
+    case transact(state, fun, 2, true) do
+      {:ok, next, response} -> settled_reply(next, payload, response)
+      {:error, error, next} -> {:reply, {:error, error}, next}
+    end
+  end
+
+  defp persist_unstarted_record(state, record, receipt) do
+    case settlement_guard(state, record, receipt.admission) do
+      :ok ->
+        result =
+          if receipt.reason == :cancelled,
+            do: State.cancel_admission(record, receipt.admission),
+            else: {:ok, record}
+
+        with {:ok, next} <- result do
+          ledger =
+            Map.put(next.admission_settlements, receipt.admission.reservation_token, receipt)
+
+          {:ok, %{next | admission_settlements: ledger}, receipt.response}
+        end
+
+      reason ->
+        {:cached, record, {:not_settled, reason}}
+    end
+  end
+
+  defp settlement_lookup(record, attempts, payload) do
+    token = payload.admission.reservation_token
+    saved = record.admission_settlements[token]
+    attempt = attempts[token]
+
+    cond do
+      saved != nil and Settlement.same_payload?(saved, payload) -> {:cached, saved.response}
+      saved != nil -> settlement_conflict()
+      attempt != nil and not Settlement.same_payload?(attempt, payload) -> settlement_conflict()
+      true -> :new
+    end
+  end
+
+  defp settlement_guard(state, record, admission) do
+    pair = {admission.run_id, admission.incarnation}
+
+    cond do
+      state.reserved == nil or Map.take(state.reserved, @admission_identity) !== admission or
+          state.reserved_context.expected_goal_id != goal_id(record) ->
+        :stale
+
+      state.reserved_start != nil or state.reserved_observation == :turn_started ->
+        :started
+
+      state.reserved_observation != nil or
+        Map.get(record.runtime_receipt_counts, pair, 0) > state.reserved_context.receipt_count or
+          Map.get(record.event_revisions, pair, 0) > state.reserved_context.event_revision ->
+        :execution_observed
+
+      Enum.any?(state.bindings, fn {_, binding} ->
+        binding.thread_id == state.thread_id and binding.run_id == admission.run_id and
+            binding.incarnation == admission.incarnation
+      end) ->
+        :bound
+
+      true ->
+        :ok
+    end
+  end
+
+  defp settled_reply(state, payload, {:settled, _} = response) do
+    state =
+      if state.reserved != nil and
+           Map.take(state.reserved, @admission_identity) === payload.admission,
+         do: clear_reservation(state),
+         else: state
+
+    next = %{
+      state
+      | settlement_attempts:
+          Map.delete(state.settlement_attempts, payload.admission.reservation_token)
+    }
+
+    {:reply, {:ok, response}, next}
+  end
+
+  defp settled_reply(state, _payload, response), do: {:reply, {:ok, response}, state}
+
+  defp settlement_conflict,
+    do: {:error, Error.new(:resource_conflict, "admission settlement conflict")}
+
   defp reserved_terminal?(%{reserved_start: start} = state, event, true) when is_map(start),
     do:
       event.type in [:turn_stopped, :turn_aborted, :turn_error] and reserved_run?(state, event) and
@@ -570,7 +769,7 @@ defmodule Backplane.AgentRuntime.Goal do
 
   defp reserved_terminal?(_, _, _), do: false
 
-  defp transact(state, fun, retries \\ 2) do
+  defp transact(state, fun, retries \\ 2, preserve_elapsed \\ false) do
     state = elapsed(state)
 
     case fun.(state.record) do
@@ -602,7 +801,14 @@ defmodule Backplane.AgentRuntime.Goal do
           {:error, %Error{class: :resource_conflict}} when retries > 0 ->
             case Store.load(state.store, state.store_context, state.thread_id) do
               {:ok, latest} ->
-                transact(%{state | record: merge_record(state, latest)}, fun, retries - 1)
+                latest = preserve_settlement_elapsed(state, latest, preserve_elapsed)
+
+                transact(
+                  %{state | record: merge_record(state, latest)},
+                  fun,
+                  retries - 1,
+                  preserve_elapsed
+                )
 
               {:error, error} ->
                 {:error, error, state}
@@ -613,6 +819,20 @@ defmodule Backplane.AgentRuntime.Goal do
         end
     end
   end
+
+  defp preserve_settlement_elapsed(state, %{goal: goal} = latest, true) when is_map(goal) do
+    if goal_id(state.record) == goal.goal_id do
+      put_in(
+        latest,
+        [:goal, :time_used_seconds],
+        max(goal.time_used_seconds, state.record.goal.time_used_seconds)
+      )
+    else
+      latest
+    end
+  end
+
+  defp preserve_settlement_elapsed(_state, latest, _preserve), do: latest
 
   defp merge_record(state, record),
     do:
@@ -676,6 +896,40 @@ defmodule Backplane.AgentRuntime.Goal do
         attrs.authority[:run_id] == attrs.run_id
 
   defp mint_binding(state, attrs) do
+    case binding_admission(state, attrs) do
+      :ok -> do_mint_binding(state, attrs)
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  defp binding_admission(state, attrs) do
+    fences =
+      Map.values(state.record.admission_settlements) ++ Map.values(state.settlement_attempts)
+
+    fenced =
+      Enum.any?(fences, fn receipt ->
+        receipt.thread_id == attrs.thread_id and receipt.admission.run_id == attrs.run_id and
+          receipt.admission.incarnation == attrs.incarnation
+      end)
+
+    if Map.has_key?(attrs, :admission) do
+      with {:ok, identity} <- Settlement.identity(attrs.admission) do
+        if attrs.thread_id == state.thread_id and state.reserved != nil and
+             identity === Map.take(state.reserved, @admission_identity) and
+             identity.run_id == attrs.run_id and identity.incarnation == attrs.incarnation and
+             not Enum.any?(
+               fences,
+               &(&1.admission.reservation_token == identity.reservation_token)
+             ),
+           do: :ok,
+           else: settlement_conflict()
+      end
+    else
+      if fenced, do: settlement_conflict(), else: :ok
+    end
+  end
+
+  defp do_mint_binding(state, attrs) do
     binding =
       Map.take(attrs, [
         :thread_id,
@@ -684,7 +938,8 @@ defmodule Backplane.AgentRuntime.Goal do
         :authority,
         :mode,
         :root_thread_id,
-        :root_goal_id
+        :root_goal_id,
+        :admission
       ])
 
     binding =

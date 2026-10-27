@@ -2,8 +2,9 @@
 
 Date: 2026-10-27
 
-Status: proposed for user review. Investigation and design only; implementation,
-regression acceptance and release 1.10.45 have not been performed.
+Status: approved by the user at design commit `248fc3c1` and implemented on main
+for release 1.10.45. Focused integrated and static checks pass; extracted-package
+qualification, exact-source CI and publication remain separate delivery gates.
 
 ## Batch, baseline and authority
 
@@ -428,6 +429,34 @@ compilation, formatting, Credo, Dialyzer and workflow-contract checks required
 by the repository. Do not repair or weaken unrelated failing gates; record
 their exact evidence and stop only affected work. Route any confirmed covered
 upstream blocker through `upstream-issue-routing`, with no local workaround.
+
+## Implementation review and local evidence
+
+The implementation keeps the specified owning modules and adds the small
+`Goal.Settlement` validator. Both new-field maps are validated by the existing
+Store wrapper. Independent review identified coercing numeric equality at new
+admission/attestation/retry/binding boundaries and the exact Store ACK boundary;
+strict term equality now distinguishes scalar and nested generations such as
+`1` versus `1.0`. Nine regressions failed before correction and pass afterward.
+Readiness message-alias comparison likewise uses strict equality, with its
+own red/green numeric-alias counterexample. No withdrawal policy was changed.
+
+Final focused Goal contracts pass 76 tests, including 30 new settlement cases.
+Readiness units plus direct and real-Deno continuation pass 16 tests; the earlier
+existing-control/settled-error group passed 32 before the additional alias case.
+The integrated owning suite passed 1,181 tests before these review corrections;
+the extracted-package suite and exact-source CI independently verify the final
+source. Strict compilation, repository format, strict Credo, configured Dialyzer
+and all nine workflow-contract tests pass under the CI Elixir 1.19.5 toolchain.
+The existing Dialyzer ignore configuration is unchanged.
+
+Independent producer/consumer BEAMs confirm a durable cancellation settlement
+can be replayed after Goal replacement without applying old deferral or clearing
+a new reservation. Both actual OS process exits are checked. The executable
+fixture lives at `test/fixtures/run_goal_settlement_cold.py` in the Runtime app
+and is included in the existing package qualifier. This is sequential fixture
+custody, not production host/persistence acceptance. Local logs are under
+`/tmp/backplane-1.10.45-internal-fdhdbxrk`.
 
 ## Release and completion gates
 

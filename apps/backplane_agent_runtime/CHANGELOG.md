@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.45
+
+- Settle exact released Goal admissions after confirmed pre-Runtime executor
+  termination and host fencing. Persist separate idempotent settlement results,
+  reject late binding and retain uncertainty on failed acknowledgements (#127).
+- Preserve bounded environment startup failures and exact environment identities
+  through readiness waits and ordinary direct/Code Mode tool errors (#128).
+
 ## 1.10.44
 
 - Select tool effect budgets from final approved invocations and expose fenced,

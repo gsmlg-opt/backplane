@@ -1,6 +1,7 @@
 defmodule Backplane.AgentRuntime.Goal.Store do
   @moduledoc "Host-owned durable thread records; CAS atomically stores goals and receipt fences."
   alias Backplane.AgentRuntime.Error
+  alias Backplane.AgentRuntime.Goal.Settlement
   @callback load(term(), binary()) :: {:ok, map()} | {:error, Error.t()}
   @callback compare_and_swap(term(), binary(), non_neg_integer(), binary() | nil, map()) ::
               {:ok, map()} | {:error, Error.t()}
@@ -17,7 +18,7 @@ defmodule Backplane.AgentRuntime.Goal.Store do
            invoke(impl, :compare_and_swap, [context, thread, revision, goal_id, next]),
          :ok <- validate(record) do
       if record.revision == revision + 1 and
-           Map.delete(record, :revision) == Map.delete(next, :revision),
+           Map.delete(record, :revision) === Map.delete(next, :revision),
          do: {:ok, record},
          else: {:error, Error.new(:malformed_result, "invalid goal CAS acknowledgement")}
     end
@@ -40,24 +41,10 @@ defmodule Backplane.AgentRuntime.Goal.Store do
        )
        when is_integer(revision) and revision >= 0 and (is_map(goal) or is_nil(goal)) and
               is_map(receipts) do
-    if serializable?(record),
-      do: :ok,
+    if Settlement.serializable?(record),
+      do: Settlement.validate_extensions(record),
       else: {:error, Error.new(:validation, "goal record contains live capabilities")}
   end
 
   defp validate(_), do: {:error, Error.new(:malformed_result, "invalid goal record")}
-
-  defp serializable?(value)
-       when is_pid(value) or is_reference(value) or is_function(value) or is_port(value),
-       do: false
-
-  defp serializable?(value) when is_map(value),
-    do: Enum.all?(value, fn {k, v} -> serializable?(k) and serializable?(v) end)
-
-  defp serializable?(value) when is_list(value), do: Enum.all?(value, &serializable?/1)
-
-  defp serializable?(value) when is_tuple(value),
-    do: value |> Tuple.to_list() |> Enum.all?(&serializable?/1)
-
-  defp serializable?(_), do: true
 end

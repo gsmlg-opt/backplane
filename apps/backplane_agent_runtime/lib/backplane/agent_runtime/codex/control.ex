@@ -72,15 +72,11 @@ defmodule Backplane.AgentRuntime.Codex.Control do
         %{tool_name: "wait_for_environment", arguments: %{"environment_id" => id}} =
           operation
       ) do
-    with true <- (is_binary(id) and id != "") or validation("environment_id is required"),
-         {:ok, provider} <- host_callback(operation, :environment_provider, 1),
-         {:ok, state} <-
-           Readiness.await(
-             fn -> provider.(id) end,
-             host_value(operation, :environment_wait_timeout, 300_000),
-             host_value(operation, :cancelled, fn -> false end)
-           ) do
-      {:ok, %{environment_id: id, status: "ready", environment: state}}
+    with true <- valid_environment_id?(id) or validation("valid environment_id is required"),
+         {:ok, provider} <- host_callback(operation, :environment_provider, 1) do
+      operation
+      |> await_environment(provider, id)
+      |> environment_result(id)
     end
   end
 
@@ -108,6 +104,38 @@ defmodule Backplane.AgentRuntime.Codex.Control do
 
   def call(_operation),
     do: {:error, Error.new(:not_found, "unknown Codex control tool")}
+
+  defp valid_environment_id?(id) when is_binary(id),
+    do: byte_size(id) in 1..1_024 and String.valid?(id)
+
+  defp valid_environment_id?(_), do: false
+
+  defp await_environment(operation, provider, id) do
+    Readiness.await(
+      fn -> provider.(id) end,
+      host_value(operation, :environment_wait_timeout, 300_000),
+      host_value(operation, :cancelled, fn -> false end),
+      expected_environment_id: id
+    )
+  end
+
+  defp environment_result({:ok, state}, id),
+    do: {:ok, %{environment_id: id, status: "ready", environment: state}}
+
+  defp environment_result({:error, %Error{class: class} = error}, _id)
+       when class in [:execution_failure, :not_found, :malformed_result] do
+    {:ok,
+     %{
+       is_error: true,
+       error: %{
+         "class" => Atom.to_string(class),
+         "message" => error.message,
+         "details" => error.details
+       }
+     }}
+  end
+
+  defp environment_result(error, _id), do: error
 
   defp contract_attrs(context) do
     backend_context = %{family: :control, context: context}

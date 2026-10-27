@@ -1046,8 +1046,10 @@ Unrelated bindings, receipt tracking, accounting and active elapsed time survive
 Storage errors do not confirm withdrawal; keep the host fence and reconcile.
 
 The host must never execute a successfully withdrawn reservation. If its atomic
-release already won, use ordinary Runtime cancellation even before Goal observes
-a start receipt. A newly observed committed start for the admitted run and
+release already won, use ordinary Runtime cancellation for admitted Runtime work
+even before Goal observes a start receipt. A definitively ended executor with
+no Runtime admission may use the separate settlement contract below. A newly
+observed committed start for the admitted run and
 incarnation also returns `{:ok, {:not_withdrawn, :started}}`, including when
 Runtime mints a turn ID different from the host's logical admission ID. Goal
 binds that Runtime turn's first fresh start; only its fresh terminal receipt
@@ -1055,6 +1057,51 @@ clears the reservation. Replayed start/terminal receipts cannot clear a newer
 token even if the host reuses run identities. Withdrawal compares the complete
 returned run, logical turn, incarnation, generation and token. `restore/1` is
 recovery and must not be used to withdraw a reservation.
+
+### Released admission ending before Runtime start
+
+After release, `Goal.settle_unstarted_admission(goal, admission, reason,
+attestation)` handles a definitively ended host executor that never admitted a
+Runtime or dispatched effects. This owner-only exception requires authoritative
+executor termination and an atomic host seal against all later binding,
+Runtime admission and effect dispatch, including queued startup workers. An
+absent Runtime record or end event alone is insufficient. Keep the seal through
+unknown storage acknowledgements; otherwise use ordinary Runtime cancellation
+and recovery. Never manufacture Runtime start/error/terminal receipts.
+
+Pass the complete five-field admission returned by idle. For this durable API,
+its host generation must be serializable, without PID/reference/function/Port.
+The closed attestation is:
+
+```elixir
+%{
+  admission: Map.take(admission, [
+    :run_id, :incarnation, :turn_id, :host_generation, :reservation_token
+  ]),
+  executor: :confirmed_down,
+  runtime_admission: :never_started,
+  future_start: :fenced,
+  effects: :none_dispatched
+}
+```
+
+`:preparation_failed` retires the reservation without changing active Goal
+policy. `:cancelled` also durably defers continuation, without pausing the Goal.
+`:superseded` retires only that reservation. Success is
+`{:ok, {:settled, reason}}`; exact historical retries return the saved result
+without affecting a replacement Goal or newer reservation. A changed payload
+under the same token conflicts. `{:not_settled, :stale | :bound | :started |
+:execution_observed}` outcomes are returned inside `{:ok, ...}` and do not
+confirm settlement. Persistence errors retain uncertainty and fences.
+
+Live matching bindings and fresh Runtime receipt observations prevent settlement,
+including a real start whose Goal accounting ACK failed. Pending and durable
+settlement fences reject delayed bind/delegate for that thread/run/incarnation.
+For deliberate reuse under a new reservation, provide the complete fresh
+identity as `Goal.bind(goal, Map.put(attrs, :admission, new_admission))`; it must
+match the new reservation and use an unsettled token. Never infer admission from
+an unrelated parent. Unrelated bindings, accounting and elapsed time survive.
+Settlement does not launch work; the host makes a later ordinary idle decision.
 
 After ordinary run settlement, receipt reconciliation and Session readiness,
 the owner calls `Goal.idle(goal, current_host_generation)`. There is no polling
@@ -1074,3 +1121,31 @@ settle. It does not assert the objective was achieved. Elapsed seconds report
 active Goal time, including active idle intervals, and do not create a deadline.
 Plan entry/exit resets the local clock; restore starts a fresh clock without
 charging process downtime.
+
+### Environment startup observations
+
+`Codex.Readiness.await/2,3` retain the existing atom-keyed readiness callback and
+`{:ok, state} | {:error, %Error{}}` results. `await/4` additionally accepts only
+`[]` or `[expected_environment_id: id]`. The expected ID must be nonempty valid
+UTF-8, at most 1,024 bytes; options are validated before either callback runs.
+Control supplies this identity for native `wait_for_environment` calls.
+
+Every observation checks cancellation, shape/identity, explicit terminal status,
+then the existing `ready && authorized` gate and timeout. Failed status returns
+`:execution_failure` immediately; unavailable/closed return distinct `:not_found`
+errors. Unknown/missing statuses retain legacy readiness polling. Gate flags
+must be booleans when present. A terminal state requires an exact valid ID,
+provided by the callback or logically bound from the expected-ID option. A
+missing key is compatible; explicit nil or mismatched IDs are malformed.
+Successful await returns the original callback map.
+
+Failed states may supply an Error or atom/string-keyed class/message map.
+Reasons retain a valid UTF-8 prefix of at most 256 bytes, without ellipsis;
+`reason_truncated` reports truncation. Missing/blank/non-text reasons use
+`startup reason unavailable`; invalid UTF-8 uses a fixed placeholder. Only known
+startup classes and allowlisted details are projected, never arbitrary causes.
+Native Control returns these observed failures as ordinary JSON-safe
+`%{is_error: true, error: %{\"class\" => ..., \"message\" => ..., \"details\" => ...}}`
+values in both direct and nested execution. Argument errors, absent callbacks,
+actual timeout and cancellation keep their error-tuple behavior. Permission and
+authorization policy is unchanged.

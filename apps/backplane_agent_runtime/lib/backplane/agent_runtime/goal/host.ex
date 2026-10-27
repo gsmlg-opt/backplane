@@ -13,7 +13,14 @@ defmodule Backplane.AgentRuntime.Goal.Host do
   Before withdrawing, fence the exact token/generation against release. A
   successful `Goal.withdraw_admission/3` requires that no later execution can
   use that reservation. If release won, use ordinary Runtime cancellation even
-  when the start receipt has not reached Goal. A committed start for the same
+  when the start receipt has not reached Goal, unless the exclusively owned
+  executor definitively ended before Runtime admission. For that narrow case,
+  atomically seal the exact token/generation against binding, admission and
+  future dispatch, reconcile any uncertain startup/outbox writes, and attest
+  actual executor termination and no dispatched effects through
+  `Goal.settle_unstarted_admission/4`. An absent Runtime record alone is not
+  proof. Keep the seal after storage errors; an unknown ACK is not settlement.
+  A committed start for the same
   run/incarnation also refuses withdrawal; Runtime may mint a different turn ID
   from the host's logical reservation ID. Goal binds that first fresh start and
   only its fresh terminal receipt releases the reservation. Receipt replays do
@@ -23,6 +30,13 @@ defmodule Backplane.AgentRuntime.Goal.Host do
   `:cancelled` for explicit cancellation. Cancellation persists continuation
   deferral before acknowledgement while leaving Goal status and accounting
   intact. Restore is recovery, not a substitute for conditional withdrawal.
+
+  No-start settlement also accepts `:preparation_failed`, which retires the
+  reservation without fabricating a Runtime error or deferring continuation.
+  A matching live binding or fresh Runtime evidence refuses settlement. Late
+  binding/delegation for a pending/settled run identity is fenced; deliberate
+  reuse requires explicitly passing the new complete `:admission` to binding.
+  The host's external seal remains authoritative across Goal process restart.
   """
   alias Backplane.AgentRuntime.Error
   @callback record_user_instruction(term(), binary(), map()) :: :ok | {:error, Error.t()}

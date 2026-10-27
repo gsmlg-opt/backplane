@@ -21,6 +21,13 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   permission request, environment readiness, `new_context`, and
   `get_context_remaining` tools. Host callbacks authenticate replies, apply
   grants, and supply authoritative readiness/token state.
+  Environment callbacks may report `status: :failed | :unavailable | :closed`
+  (or the corresponding strings), with the exact `environment_id`. Failed
+  startup uses `error: %{class: class, message: reason}`; Control returns an
+  ordinary `%{is_error: true, error: json_safe_error}` value, including in Code
+  Mode, so the model can continue with other tools. The UTF-8 reason is bounded
+  to 256 bytes. Timeout and cancellation remain distinct errors. Explicit IDs
+  must match the requested ID exactly; legacy maps without an ID remain valid.
 - `:collaboration_v1` and `:collaboration_v2` expose their distinct pinned names.
   `Codex.MultiAgent` owns wait/list state and starts child `Conversation`
   processes under a `DynamicSupervisor`; child options and authority come only

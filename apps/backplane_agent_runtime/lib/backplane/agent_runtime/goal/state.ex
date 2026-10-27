@@ -27,6 +27,8 @@ defmodule Backplane.AgentRuntime.Goal.State do
        revision: 0,
        goal: nil,
        receipts: %{},
+       runtime_receipt_counts: %{},
+       admission_settlements: %{},
        invocations: %{},
        deliveries: %{},
        continuation_deferral: nil,
@@ -222,12 +224,15 @@ defmodule Backplane.AgentRuntime.Goal.State do
           with {:ok, next} <- apply_event(state, receipt) do
             key = {receipt.run_id, receipt.incarnation}
 
+            counts = Map.update(Map.get(next, :runtime_receipt_counts, %{}), key, 1, &(&1 + 1))
+
             {:ok,
              %{
                next
                | receipts: Map.put(next.receipts, receipt.receipt_id, digest),
                  event_revisions: Map.put(next.event_revisions, key, receipt.revision)
-             }}
+             }
+             |> Map.put(:runtime_receipt_counts, counts)}
           end
 
         _ ->

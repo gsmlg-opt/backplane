@@ -283,6 +283,34 @@ whole seconds are persisted; a restored owner establishes a fresh local clock.
 The file-backed test fixture proves package restart handling, not production
 adapter durability.
 
+Released admissions that end before Runtime admission have a separate
+`admission_settlements` ledger, keyed by reservation token. Each durable record
+contains original thread/Goal identity, the five-field admission, reason, closed
+host attestation and saved response. It is not a Runtime receipt. Explicit
+cancellation deferral is committed atomically with its settlement. Preserve
+this ledger through Goal clear/replacement and restore so a historical retry
+cannot clear newer work or reapply old cancellation policy. Changed payloads
+under the same token conflict. Never infer acknowledgement from a missing
+reservation after restart.
+
+`runtime_receipt_counts`, keyed by run/incarnation, advances once per fresh
+accepted Runtime receipt ID. Reservation baselines distinguish old replay from
+new execution evidence even when several receipts share one event revision.
+Persist both new maps as part of the full record, defaulting absent fields for
+old records and rejecting malformed present fields. Forks start with empty maps.
+Do not prune these fences or drop unknown fields in an adapter.
+
+Settlement only acknowledges confirmed executor termination plus a trusted
+owner's permanent admission seal and no-effects attestation. Storage failure
+retains the local pending fence; a persisted-but-lost ACK can be reconciled by
+an exact retry. Same-process restore retains pending settlement fences, but a
+new process cannot recover uncommitted local observations. Retain host seals
+and reconcile real Runtime/outbox state before ordinary admission. Neither
+restore nor a missing Runtime record proves no start. The sequential independent
+BEAM fixture `test/fixtures/run_goal_settlement_cold.py` demonstrates saved
+acknowledgement after Goal replacement without new work; it does not establish
+production multi-writer or power-loss durability.
+
 Conversation checkpoints the Goal receipt outbox with the acknowledged
 provider/tool/turn transition. Goal CAS records the receipt and response before
 Conversation clears the outbox in another checkpoint. A lost reply may therefore

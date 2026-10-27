@@ -119,6 +119,7 @@ else
   MIX_ENV=test "${mix_command[@]}" test ${test_files}
 fi
 MIX_ENV=test python3 test/fixtures/run_plugin_completion_cold.py "$work_root/cold-plugin-completion"
+MIX_ENV=test python3 test/fixtures/run_goal_settlement_cold.py "$work_root/cold-goal-settlement"
 fi
 mkdir -p "$unpacked"
 tar -xf "$artifact" -O contents.tar.gz | tar -xz -C "$unpacked"
