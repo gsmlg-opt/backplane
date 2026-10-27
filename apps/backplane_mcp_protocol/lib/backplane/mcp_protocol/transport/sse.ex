@@ -31,6 +31,8 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   import Peri
 
   alias Backplane.McpProtocol.HTTP
+  alias Backplane.McpProtocol.HTTP.Lifecycle
+  alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.SSE
   alias Backplane.McpProtocol.SSE.Event
   alias Backplane.McpProtocol.Telemetry
@@ -124,8 +126,8 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   - `:client` - The client to send the messages to, respecting the `GenServer` "Name Registration" section.
   - `:server` - The server configuration.
   - `:headers` - The headers to send with the HTTP requests.
-  - `:transport_opts` - The underlying HTTP transport options to pass to the HTTP client. You can check on the [Mint docs](https://hexdocs.pm/mint/Mint.HTTP.html#connect/4-transport-options)
-  - `:http_options` - The underlying HTTP client options to pass to the HTTP client. You can check on the [Finch docs](https://hexdocs.pm/finch/Finch.html#t:request_opt/0)
+  - `:transport_opts` - The SSE reconnection/backoff options.
+  - `:http_options` - The Fetch HTTP options (request_timeout, receive_timeout, connect_timeout, ssl, socket_opts).
     Set `allowed_origin: url` to confine the connection, redirects and advertised message endpoints to that origin.
   """
   @type option ::
@@ -134,10 +136,12 @@ defmodule Backplane.McpProtocol.Transport.SSE do
           | {:server, server}
           | {:headers, map()}
           | {:transport_opts, keyword}
-          | {:http_options, Finch.request_opts()}
+          | {:http_options, keyword()}
           | GenServer.option()
 
   defschema(:options_schema, %{
+    one_shot: {:boolean, {:default, false}},
+    activation_id: {:any, {:default, nil}},
     name: {{:custom, &Backplane.McpProtocol.genserver_name/1}, {:default, __MODULE__}},
     client:
       {:required,
@@ -166,12 +170,34 @@ defmodule Backplane.McpProtocol.Transport.SSE do
 
   @impl Transport
   def send_message(pid, message, opts) when is_binary(message) do
-    GenServer.call(pid, {:send, message}, Keyword.get(opts, :timeout, 5000))
+    timeout = Keyword.get(opts, :timeout, 5000)
+    deadline = if timeout == :infinity, do: :infinity, else: System.monotonic_time(:millisecond) + timeout
+    GenServer.call(pid, {:send, message, deadline}, timeout)
   end
 
   @impl Transport
   def shutdown(pid) do
     GenServer.cast(pid, :close_connection)
+  end
+
+  @impl Transport
+  def close(pid, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    if is_integer(timeout) and timeout > 0 do
+      GenServer.call(pid, {:close, opts}, timeout + 200)
+    else
+      {:error, Error.protocol(:invalid_params, %{reason: :invalid_cleanup_timeout})}
+    end
+  catch
+    :exit, _ -> {:error, Error.transport(:cleanup_report_unavailable)}
+  end
+
+  @impl Transport
+  def cleanup_status(pid) do
+    GenServer.call(pid, :cleanup_status)
+  catch
+    :exit, _ -> {:error, Error.transport(:cleanup_report_unavailable)}
   end
 
   @impl Transport
@@ -195,10 +221,14 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     server_url = URI.append_path(opts.server[:base_url], opts.server[:base_path])
     sse_url = URI.append_path(server_url, opts.server[:sse_path])
 
-    with :ok <- HTTP.check_origin(sse_url, Keyword.get(opts.http_options, :allowed_origin)) do
+    with :ok <- HTTP.validate_options(opts.http_options),
+         :ok <- HTTP.validate_options(opts.transport_opts),
+         :ok <- HTTP.check_origin(sse_url, Keyword.get(opts.http_options, :allowed_origin)),
+         {:ok, lifecycle} <- Lifecycle.start_link(:sse, opts.activation_id) do
       state =
         opts
-        |> Map.merge(%{message_url: nil, stream_task: nil})
+        |> Map.merge(%{message_url: nil, stream_task: nil, lifecycle: lifecycle, closing: false, pending: %{}})
+        |> Map.put(:http_options, Keyword.merge(opts.transport_opts, opts.http_options))
         |> Map.put(:server_url, server_url)
         |> Map.put(:sse_url, sse_url)
 
@@ -238,19 +268,21 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     )
 
     task =
-      Task.async(fn ->
-        Logger.metadata(parent_metadata)
+      Lifecycle.start(
+        state.lifecycle,
+        fn ->
+          Logger.metadata(parent_metadata)
 
-        stream =
-          SSE.connect(state.sse_url, state.headers,
-            dest: self(),
-            transport_opts: state.transport_opts
-          )
+          stream =
+            SSE.connect(state.sse_url, state.headers, Keyword.merge(state.transport_opts, state.http_options))
 
-        process_stream(stream, parent)
-      end)
+          process_stream(stream, parent)
+        end,
+        :consumer
+      )
 
-    Process.monitor(task.pid)
+    {:ok, task} = task
+    Process.monitor(task)
 
     {:noreply, %{state | stream_task: task}}
   end
@@ -295,38 +327,65 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   end
 
   @impl GenServer
-  def handle_call({:send, _}, _from, %{message_url: nil} = state) do
+  def handle_call(:cleanup_status, _from, state) do
+    {:reply, Lifecycle.status(state.lifecycle), state}
+  end
+
+  def handle_call({:close, opts}, from, state) do
+    lifecycle = state.lifecycle
+    spawn(fn -> GenServer.reply(from, Lifecycle.close(lifecycle, opts)) end)
+    Enum.each(state.pending, fn {_ref, {caller, _context}} -> GenServer.reply(caller, {:error, :closing}) end)
+    {:noreply, %{state | closing: true, pending: %{}}}
+  end
+
+  def handle_call(_request, _from, %{closing: true} = state) do
+    {:reply, {:error, :closing}, state}
+  end
+
+  def handle_call({:send, _, _deadline}, _from, %{message_url: nil} = state) do
     {:reply, {:error, :not_connected}, state}
   end
 
-  def handle_call({:send, message}, _from, state) do
-    metadata = %{
-      transport: :sse,
-      message_size: byte_size(message),
-      endpoint: state.message_url
-    }
+  def handle_call({:send, message, deadline}, from, state) do
+    parent = self()
+    ref = make_ref()
 
-    Telemetry.execute(
-      Telemetry.event_transport_send(),
-      %{system_time: System.system_time()},
-      metadata
-    )
+    {:ok, _worker} =
+      Lifecycle.start(state.lifecycle, fn ->
+        result =
+          case remaining(deadline) do
+            0 ->
+              {:error, :timeout}
 
-    {request, options} = make_message_request(message, state)
+            timeout ->
+              {request, options} = make_message_request(message, state, timeout)
 
-    case HTTP.follow_redirect(request, options) do
-      {:ok, %Finch.Response{status: status}} when status in 200..299 ->
-        {:reply, :ok, state}
+              case HTTP.follow_redirect(request, options) do
+                {:ok, %{status: status}} when status in 200..299 -> :ok
+                {:ok, %{status: status, body: body}} -> {:error, {:http_error, status, body}}
+                {:error, reason} -> {:error, reason}
+              end
+          end
 
-      {:ok, %Finch.Response{status: status, body: body}} ->
-        Logging.transport_event("http_error", %{status: status, body: body}, level: :error)
+        send(parent, {:http_result, ref, result})
+      end)
 
-        {:reply, {:error, {:http_error, status, body}}, state}
+    {:noreply, put_in(state.pending[ref], {from, nil})}
+  end
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+  @impl GenServer
+  def handle_info({:http_result, ref, result}, state) do
+    case Map.pop(state.pending, ref) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {{from, _}, pending} ->
+        GenServer.reply(from, result)
+        {:noreply, %{state | pending: pending}}
     end
   end
+
+  def handle_info(_message, %{closing: true} = state), do: {:noreply, state}
 
   @impl GenServer
   def handle_info({:endpoint, endpoint}, %{client: client, server_url: server_url} = state) do
@@ -362,7 +421,7 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, _ref, :process, pid, reason}, %{stream_task: %Task{pid: pid}} = state) do
+  def handle_info({:DOWN, _ref, :process, pid, reason}, %{stream_task: pid} = state) do
     Logging.transport_event("stream_terminated", %{reason: reason}, level: :error)
 
     Telemetry.execute(
@@ -407,17 +466,32 @@ defmodule Backplane.McpProtocol.Transport.SSE do
       }
     )
 
-    Task.shutdown(task, :brutal_kill)
+    Process.exit(task, :kill)
     :ok
   end
 
   def terminate(_reason, _state), do: :ok
 
-  defp make_message_request(message, %{message_url: endpoint} = state) do
+  defp make_message_request(message, %{message_url: endpoint} = state, timeout) do
     request = HTTP.build(:post, endpoint, state.headers, message)
-    options = state.http_options
+
+    options =
+      Enum.reduce(
+        [request_timeout: 15_000, receive_timeout: 15_000, connect_timeout: 10_000],
+        state.http_options,
+        fn {key, default}, options ->
+          Keyword.put(options, key, min_timeout(Keyword.get(options, key, default), timeout))
+        end
+      )
+
     {request, options}
   end
+
+  defp remaining(:infinity), do: :infinity
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+  defp min_timeout(:infinity, timeout), do: timeout
+  defp min_timeout(timeout, :infinity), do: timeout
+  defp min_timeout(left, right), do: min(left, right)
 
   # Handles multiple possible formats for message_url URI.
   defp parse_message_url(%{path: base_path} = base, %{scheme: nil, host: nil, path: path} = uri)

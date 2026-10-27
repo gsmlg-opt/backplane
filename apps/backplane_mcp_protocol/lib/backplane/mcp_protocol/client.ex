@@ -99,7 +99,7 @@ defmodule Backplane.McpProtocol.Client do
   alias Backplane.McpProtocol.Client.Sampling
   alias Backplane.McpProtocol.Client.State
   alias Backplane.McpProtocol.Client.Subscription
-  alias Backplane.McpProtocol.Client.ToolCall
+  alias Backplane.McpProtocol.Client.{OwnedRequest, ResourceRequest, ToolCall}
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.ID
   alias Backplane.McpProtocol.MCP.Message
@@ -314,7 +314,7 @@ defmodule Backplane.McpProtocol.Client do
       id: id,
       start: {Backplane.McpProtocol.Client.Supervisor, :start_link, [opts]},
       type: :supervisor,
-      restart: :permanent
+      restart: if(Keyword.get(opts, :one_shot, false), do: :temporary, else: :permanent)
     }
   end
 
@@ -458,6 +458,61 @@ defmodule Backplane.McpProtocol.Client do
 
     buffer_timeout = operation.timeout + to_timeout(second: 1)
     GenServer.call(client, {:operation, operation}, buffer_timeout)
+  end
+
+  @doc """
+  Starts a caller-owned resource listing. Accepts the synchronous list options
+  plus a finite `:registration_timeout` (default 5,000 ms).
+  """
+  @spec start_list_resources(t(), keyword()) :: {:ok, ResourceRequest.t()} | {:error, Error.t()}
+  def start_list_resources(client, opts \\ []),
+    do: start_resource_request(client, "resources/list", cursor_params(opts), opts)
+
+  @doc "Starts a caller-owned resource-template listing with the same list options."
+  @spec start_list_resource_templates(t(), keyword()) ::
+          {:ok, ResourceRequest.t()} | {:error, Error.t()}
+  def start_list_resource_templates(client, opts \\ []),
+    do: start_resource_request(client, "resources/templates/list", cursor_params(opts), opts)
+
+  @doc "Starts a caller-owned read using the original resource URI and read options."
+  @spec start_read_resource(t(), String.t(), keyword()) ::
+          {:ok, ResourceRequest.t()} | {:error, Error.t()}
+  def start_read_resource(client, uri, opts \\ []),
+    do: start_resource_request(client, "resources/read", %{"uri" => uri}, opts)
+
+  @doc "Waits for one resource result; observation timeout does not cancel it."
+  @spec await_resource_request(ResourceRequest.t(), timeout()) ::
+          {:ok, Response.t()} | {:error, Error.t()}
+  def await_resource_request(%ResourceRequest{} = handle, timeout \\ :infinity),
+    do: OwnedRequest.await(handle, timeout)
+
+  @doc "Cancels only this owner's resource operation, with the tool cancellation delivery report."
+  @spec cancel_resource_request(ResourceRequest.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def cancel_resource_request(
+        %ResourceRequest{} = handle,
+        reason \\ "client_cancelled",
+        opts \\ []
+      ),
+      do: cancel_owned_request(handle, reason, opts)
+
+  defp cursor_params(opts) do
+    case Keyword.get(opts, :cursor) do
+      nil -> %{}
+      cursor -> %{"cursor" => cursor}
+    end
+  end
+
+  defp start_resource_request(client, method, params, opts) do
+    operation_attrs = %{
+      method: method,
+      params: params,
+      extra_meta: Keyword.get(opts, :meta, %{}),
+      progress_opts: Keyword.get(opts, :progress),
+      timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+    }
+
+    start_owned_request(client, operation_attrs, opts, ResourceRequest)
   end
 
   @doc """
@@ -692,20 +747,23 @@ defmodule Backplane.McpProtocol.Client do
     params = %{"name" => name}
     params = if arguments, do: Map.put(params, "arguments", arguments), else: params
 
-    operation =
-      Operation.new(%{
-        method: "tools/call",
-        params: params,
-        extra_meta: Keyword.get(opts, :meta, %{}),
-        progress_opts: Keyword.get(opts, :progress),
-        timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
-      })
+    operation_attrs = %{
+      method: "tools/call",
+      params: params,
+      extra_meta: Keyword.get(opts, :meta, %{}),
+      progress_opts: Keyword.get(opts, :progress),
+      timeout: Keyword.get(opts, :timeout, @default_operation_timeout)
+    }
 
+    start_owned_request(client, operation_attrs, opts, ToolCall)
+  end
+
+  defp start_owned_request(client, operation_attrs, opts, handle_module) do
     registration_timeout =
       Keyword.get(opts, :registration_timeout, @tool_call_registration_timeout)
 
     client_pid = GenServer.whereis(client)
-    handle = if is_pid(client_pid), do: ToolCall.new(client_pid, self())
+    handle = if is_pid(client_pid), do: OwnedRequest.new(handle_module, client_pid, self())
 
     cond do
       not is_pid(client_pid) ->
@@ -714,7 +772,11 @@ defmodule Backplane.McpProtocol.Client do
       not (is_integer(registration_timeout) and registration_timeout > 0) ->
         {:error, Error.protocol(:invalid_params, %{field: "registration_timeout"})}
 
+      not (is_integer(operation_attrs.timeout) and operation_attrs.timeout > 0) ->
+        {:error, Error.protocol(:invalid_params, %{field: "timeout"})}
+
       true ->
+        operation = Operation.new(operation_attrs)
         deadline = System.monotonic_time(:millisecond) + registration_timeout
 
         try do
@@ -725,7 +787,7 @@ defmodule Backplane.McpProtocol.Client do
                ) do
             {:ok, registered_handle} = result ->
               GenServer.cast(
-                ToolCall.client(registered_handle),
+                OwnedRequest.client(registered_handle),
                 {:activate_tool_call, registered_handle}
               )
 
@@ -768,12 +830,18 @@ defmodule Backplane.McpProtocol.Client do
   def cancel_tool_call(handle, reason \\ "client_cancelled", opts \\ [])
 
   def cancel_tool_call(handle, reason, opts) when is_binary(reason) do
-    if ToolCall.owned_by?(handle, self()) do
+    if ToolCall.handle?(handle),
+      do: cancel_owned_request(handle, reason, opts),
+      else: {:error, Error.transport(:request_owner_mismatch)}
+  end
+
+  defp cancel_owned_request(handle, reason, opts) when is_binary(reason) do
+    if OwnedRequest.owned_by?(handle, self()) do
       timeout = Keyword.get(opts, :notification_timeout, @cancellation_worker_timeout)
 
       if is_integer(timeout) and timeout > 0 do
         GenServer.call(
-          ToolCall.client(handle),
+          OwnedRequest.client(handle),
           {:cancel_tool_call, handle, reason, timeout},
           timeout + 250
         )
@@ -1217,6 +1285,15 @@ defmodule Backplane.McpProtocol.Client do
     GenServer.cast(client, :close)
   end
 
+  @doc """
+  Closes an owned connection tree within one finite budget. The result keeps
+  transport-resource, client-worker and supervisor termination outcomes separate.
+  A dead process without retained transport evidence is unconfirmed.
+  """
+  @spec close_connection(pid(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def close_connection(supervisor, opts \\ []),
+    do: Backplane.McpProtocol.Client.Connection.close(supervisor, opts)
+
   # GenServer Callbacks
 
   @impl true
@@ -1271,13 +1348,27 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   @impl true
+  def handle_call({:seal_connection, deadline}, _from, state) do
+    {report, state} = seal_connection(state, deadline)
+    {:reply, {:ok, report}, state}
+  end
+
+  def handle_call({:register_tool_call, _, _, _}, _from, %{closing?: true} = state),
+    do: {:reply, {:error, Error.transport(:connection_closed)}, state}
+
+  def handle_call({:operation, _}, _from, %{closing?: true} = state),
+    do: {:reply, {:error, Error.transport(:connection_closed)}, state}
+
+  def handle_call({:listen_subscriptions, _, _, _}, _from, %{closing?: true} = state),
+    do: {:reply, {:error, Error.transport(:connection_closed)}, state}
+
   def handle_call(
         {:register_tool_call, handle, %Operation{} = operation, deadline},
         {owner, _tag},
         state
       ) do
     cond do
-      not ToolCall.owned_by?(handle, owner) ->
+      not OwnedRequest.owned_by?(handle, owner) ->
         {:reply, {:error, Error.transport(:request_owner_mismatch)}, state}
 
       System.monotonic_time(:millisecond) >= deadline ->
@@ -1287,7 +1378,7 @@ defmodule Backplane.McpProtocol.Client do
         {:reply, {:error, Error.transport(:request_owner_down)}, state}
 
       true ->
-        case register_tool_call(state, ToolCall.bind_client(handle, self()), operation) do
+        case register_tool_call(state, OwnedRequest.bind_client(handle, self()), operation) do
           {:ok, registered_handle, updated_state} ->
             {:reply, {:ok, registered_handle}, updated_state}
 
@@ -1499,9 +1590,9 @@ defmodule Backplane.McpProtocol.Client do
         {caller, _tag} = from,
         state
       ) do
-    with true <- ToolCall.owned_by?(handle, caller),
+    with true <- OwnedRequest.owned_by?(handle, caller),
          {active_request_id, %Request{} = request} <-
-           find_request(state, ToolCall.logical_id(handle)),
+           find_request(state, OwnedRequest.logical_id(handle)),
          true <- matching_tool_call?(request, handle) do
       cancel_owned_tool_call(
         state,
@@ -1574,8 +1665,14 @@ defmodule Backplane.McpProtocol.Client do
     {:stop, :normal, state}
   end
 
+  def handle_cast(:seal_admission, state), do: {:noreply, %{state | closing?: true}}
+
+  def handle_cast(message, %{closing?: true} = state)
+      when message in [:initialize, :negotiate],
+      do: {:noreply, state}
+
   def handle_cast({:activate_tool_call, handle}, state) do
-    case find_request(state, ToolCall.logical_id(handle)) do
+    case find_request(state, OwnedRequest.logical_id(handle)) do
       {request_id, %Request{dispatch_status: :registered} = request} ->
         if matching_tool_call?(request, handle) do
           {:noreply, activate_tool_call(state, request_id, request)}
@@ -1589,7 +1686,7 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   def handle_cast({:abandon_tool_call, handle}, state) do
-    case find_request(state, ToolCall.logical_id(handle)) do
+    case find_request(state, OwnedRequest.logical_id(handle)) do
       {request_id, %Request{} = request} ->
         if matching_tool_call?(request, handle) do
           {:noreply, settle_abandoned_tool_call(state, request_id, request)}
@@ -1883,7 +1980,7 @@ defmodule Backplane.McpProtocol.Client do
     Catalog.cleanup(catalog_key(state))
     Cache.cleanup(state.client_info["name"])
 
-    state.transport.layer.shutdown(state.transport.name)
+    unless state.closing?, do: state.transport.layer.shutdown(state.transport.name)
   end
 
   # Message handling
@@ -2926,9 +3023,9 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp register_tool_call(state, handle, %Operation{} = operation) do
-    logical_id = ToolCall.logical_id(handle)
+    logical_id = OwnedRequest.logical_id(handle)
 
-    with true <- ToolCall.handle?(handle),
+    with true <- OwnedRequest.handle?(handle),
          :ok <- State.validate_capability(state, operation.method),
          false <- Map.has_key?(state.pending_requests, logical_id),
          {:ok, state, progress_owner} <-
@@ -2947,7 +3044,7 @@ defmodule Backplane.McpProtocol.Client do
         |> Request.retain_operation(operation)
         |> Map.merge(%{
           tool_call: handle,
-          owner_monitor: ToolCall.monitor_owner(handle),
+          owner_monitor: OwnedRequest.monitor_owner(handle),
           dispatch_status: :registered,
           progress_owner: progress_owner
         })
@@ -3007,7 +3104,7 @@ defmodule Backplane.McpProtocol.Client do
 
   defp activate_tool_call(state, request_id, request) do
     cond do
-      not ToolCall.owner_alive?(request.tool_call) ->
+      not OwnedRequest.owner_alive?(request.tool_call) ->
         settle_owned_tool_call(state, request_id, request, "owner_down", false)
 
       not positive_remaining_time?(request) ->
@@ -3081,7 +3178,7 @@ defmodule Backplane.McpProtocol.Client do
     Enum.find_value(state.pending_requests, fn {request_id, request} ->
       case request do
         %Request{owner_monitor: ^monitor, tool_call: handle} when not is_nil(handle) ->
-          if ToolCall.owned_by?(handle, owner), do: {request_id, request}
+          if OwnedRequest.owned_by?(handle, owner), do: {request_id, request}
 
         _other ->
           nil
@@ -3099,7 +3196,7 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp matching_tool_call?(%Request{tool_call: stored}, handle) do
-    ToolCall.equal?(stored, handle)
+    OwnedRequest.equal?(stored, handle)
   end
 
   defp settle_abandoned_tool_call(state, request_id, request) do
@@ -3255,6 +3352,56 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp stop_request_dispatch(%Request{}), do: :ok
+
+  defp seal_connection(%{close_report: report} = state, _deadline) when is_map(report),
+    do: {report, state}
+
+  defp seal_connection(state, deadline) do
+    requests = Map.values(state.pending_requests)
+
+    tasks = [
+      state.tool_validator_task | Enum.map(state.cancellation_workers, fn {_, w} -> w.task end)
+    ]
+
+    tasks = tasks ++ Enum.flat_map(requests, &[&1.dispatch_task, &1.resolver_task])
+    pids = for %Task{pid: pid} <- tasks, do: pid
+    pids = pids ++ Enum.map(requests, & &1.resolver_supervisor) ++ Subscription.take_owned_pids()
+
+    report = Backplane.McpProtocol.Client.Connection.release_workers(pids, deadline)
+
+    state =
+      Enum.reduce(requests, state, fn request, acc ->
+        {_request, next} = State.remove_request(acc, request.id)
+
+        unless negotiation_request?(request) do
+          Request.reply(
+            request,
+            {:error, Error.transport(:request_cancelled, %{reason: "connection closed"})}
+          )
+        end
+
+        next
+      end)
+
+    Enum.each(state.cancellation_workers, fn {_ref, worker} ->
+      Process.cancel_timer(worker.timer_ref)
+    end)
+
+    Enum.each(
+      state.ready_waiters,
+      &GenServer.reply(&1, {:error, Error.transport(:connection_closed)})
+    )
+
+    {report,
+     %{
+       state
+       | closing?: true,
+         close_report: report,
+         cancellation_workers: %{},
+         ready_waiters: [],
+         tool_validator_task: nil
+     }}
+  end
 
   defp stop_supervised_task(%Task{pid: pid, ref: ref}) do
     Process.demonitor(ref, [:flush])

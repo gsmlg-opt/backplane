@@ -24,8 +24,10 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidator do
 
   use Backplane.McpProtocol.Logging
 
+  alias Backplane.McpProtocol.HTTP
+
   @http_receive_timeout 5_000
-  @http_pool_timeout 1_000
+  @http_connect_timeout 1_000
 
   @spec validate_token(String.t(), map()) :: {:ok, map()} | {:error, term()}
   @impl true
@@ -35,16 +37,17 @@ defmodule Backplane.McpProtocol.Server.Authorization.IntrospectionValidator do
     headers = build_headers(opts)
     request_body = URI.encode_query(%{"token" => token, "token_type_hint" => "access_token"})
 
-    request = Finch.build(:post, endpoint, headers, request_body)
+    request = HTTP.build(:post, endpoint, headers, request_body)
 
-    case Finch.request(request, Backplane.McpProtocol.Finch,
+    case HTTP.request(request,
            receive_timeout: @http_receive_timeout,
-           pool_timeout: @http_pool_timeout
+           request_timeout: @http_receive_timeout,
+           connect_timeout: @http_connect_timeout
          ) do
-      {:ok, %Finch.Response{status: 200, body: resp_body}} ->
+      {:ok, %{status: 200, body: resp_body}} ->
         parse_introspection_response(resp_body)
 
-      {:ok, %Finch.Response{status: status}} ->
+      {:ok, %{status: status}} ->
         Logging.server_event("introspection_http_error", %{status: status}, level: :warning)
         {:error, {:introspection_error, status}}
 

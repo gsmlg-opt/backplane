@@ -5,13 +5,14 @@ defmodule Backplane.McpProtocol.Application do
 
   use Application
 
+  alias Backplane.McpProtocol.Logging
+
   @impl true
   def start(_type, _args) do
     :logger.add_handlers(:backplane_mcp_protocol)
 
     children =
       [
-        {Finch, name: Backplane.McpProtocol.Finch, pools: %{default: [size: 15]}},
         {Task.Supervisor, name: Backplane.McpProtocol.Client.ValidatorSupervisor},
         {Task.Supervisor, name: Backplane.McpProtocol.Client.OperationSupervisor}
       ] ++ maybe_start_session_store()
@@ -44,7 +45,7 @@ defmodule Backplane.McpProtocol.Application do
         []
 
       is_nil(adapter) ->
-        Backplane.McpProtocol.Logging.log(
+        Logging.log(
           :warning,
           "Session store enabled but adapter not configured",
           []
@@ -53,7 +54,7 @@ defmodule Backplane.McpProtocol.Application do
         []
 
       Code.ensure_loaded?(adapter) ->
-        Backplane.McpProtocol.Logging.log(:info, "Starting session store",
+        Logging.log(:info, "Starting session store",
           enabled: true,
           adapter: adapter,
           ttl: Keyword.get(config, :ttl),
@@ -63,7 +64,7 @@ defmodule Backplane.McpProtocol.Application do
         [{adapter, config}]
 
       true ->
-        Backplane.McpProtocol.Logging.log(
+        Logging.log(
           :warning,
           "Session store enabled but adapter not available",
           adapter: adapter

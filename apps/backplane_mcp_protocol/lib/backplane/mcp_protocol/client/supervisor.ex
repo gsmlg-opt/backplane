@@ -85,6 +85,10 @@ defmodule Backplane.McpProtocol.Client.Supervisor do
     transport_name = derive_transport_name(opts[:transport_name], client_name)
 
     {layer, transport_opts} = parse_transport_config(transport)
+    restart = if Keyword.get(opts, :one_shot, false), do: :temporary, else: :permanent
+
+    transport_opts =
+      Keyword.put(transport_opts, :activation_id, Keyword.get(opts, :activation_id))
 
     client_transport = [layer: layer, name: transport_name]
 
@@ -101,8 +105,11 @@ defmodule Backplane.McpProtocol.Client.Supervisor do
       )
 
     children = [
-      %{id: Client, start: {Client, :start_link_server, [client_opts]}},
-      {layer, transport_opts ++ [name: transport_name, client: client_name]}
+      %{id: Client, start: {Client, :start_link_server, [client_opts]}, restart: restart},
+      Supervisor.child_spec(
+        {layer, transport_opts ++ [name: transport_name, client: client_name]},
+        restart: restart
+      )
     ]
 
     Supervisor.init(children, strategy: :one_for_all)

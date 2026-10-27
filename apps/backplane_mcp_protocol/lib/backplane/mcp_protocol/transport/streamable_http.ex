@@ -48,6 +48,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   import Peri
 
   alias Backplane.McpProtocol.HTTP
+  alias Backplane.McpProtocol.HTTP.Lifecycle
+  alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.SSE
   alias Backplane.McpProtocol.SSE.Event
   alias Backplane.McpProtocol.Telemetry
@@ -161,11 +163,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
           | {:headers, map()}
           | {:headers_provider, RequestHeaders.provider() | nil}
           | {:transport_opts, keyword}
-          | {:http_options, Finch.request_opts()}
+          | {:http_options, keyword()}
           | {:enable_sse, boolean()}
           | GenServer.option()
 
   defschema(:options_schema, %{
+    one_shot: {:boolean, {:default, false}},
+    activation_id: {:any, {:default, nil}},
     name: {{:custom, &Backplane.McpProtocol.genserver_name/1}, {:default, __MODULE__}},
     client: {:required, Backplane.McpProtocol.get_schema(:process_name)},
     url: {:string, {:transform, &URI.new!/1}},
@@ -218,6 +222,26 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   @impl Transport
+  def close(pid, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    if is_integer(timeout) and timeout > 0 do
+      GenServer.call(pid, {:close, opts}, timeout + 200)
+    else
+      {:error, Error.protocol(:invalid_params, %{reason: :invalid_cleanup_timeout})}
+    end
+  catch
+    :exit, _ -> {:error, Error.transport(:cleanup_report_unavailable)}
+  end
+
+  @impl Transport
+  def cleanup_status(pid) do
+    GenServer.call(pid, :cleanup_status)
+  catch
+    :exit, _ -> {:error, Error.transport(:cleanup_report_unavailable)}
+  end
+
+  @impl Transport
   def supported_protocol_versions, do: ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]
 
   @impl GenServer
@@ -233,20 +257,27 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   @impl GenServer
   def init(opts) do
-    with :ok <- HTTP.check_origin(opts.mcp_url, Keyword.get(opts.http_options, :allowed_origin)) do
+    with :ok <- HTTP.validate_options(opts.http_options),
+         :ok <- HTTP.validate_options(opts.transport_opts),
+         :ok <- HTTP.check_origin(opts.mcp_url, Keyword.get(opts.http_options, :allowed_origin)),
+         {:ok, lifecycle} <- Lifecycle.start_link(:streamable_http, opts.activation_id) do
       state = %{
         client: opts.client,
         mcp_url: opts.mcp_url,
         headers: opts.headers,
         headers_provider: opts.headers_provider,
         transport_opts: opts.transport_opts,
-        http_options: opts.http_options,
+        http_options: Keyword.merge(opts.transport_opts, opts.http_options),
         session_id: nil,
         enable_sse: Map.get(opts, :enable_sse, false),
         sse_task: nil,
         last_event_id: nil,
         legacy_protocol_version: nil,
-        active_request: nil
+        active_request: nil,
+        lifecycle: lifecycle,
+        closing: false,
+        pending: %{},
+        streams: []
       }
 
       emit_telemetry(:init, state)
@@ -281,6 +312,21 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   @impl GenServer
+  def handle_call(:cleanup_status, _from, state) do
+    {:reply, Lifecycle.status(state.lifecycle), state}
+  end
+
+  def handle_call({:close, opts}, from, state) do
+    lifecycle = state.lifecycle
+    spawn(fn -> GenServer.reply(from, Lifecycle.close(lifecycle, opts)) end)
+    Enum.each(state.pending, fn {_ref, {caller, _context}} -> GenServer.reply(caller, {:error, :closing}) end)
+    {:noreply, %{state | closing: true, pending: %{}}}
+  end
+
+  def handle_call(_request, _from, %{closing: true} = state) do
+    {:reply, {:error, :closing}, state}
+  end
+
   def handle_call({:open_stream, message, opts}, _from, state) do
     context = Keyword.get(opts, :request_context)
     owner = Keyword.get(opts, :owner)
@@ -292,6 +338,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
          {:ok, stream} <-
            Stream.start(%{
              owner: owner,
+             lifecycle: state.lifecycle,
              transport: self(),
              mcp_url: state.mcp_url,
              headers: state.headers,
@@ -301,7 +348,8 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
              request_context: context,
              subscription_id: subscription_id
            }) do
-      {:reply, {:ok, stream}, state}
+      :ok = Lifecycle.track(state.lifecycle, stream)
+      {:reply, {:ok, stream}, %{state | streams: [stream | state.streams]}}
     else
       false -> {:reply, {:error, :invalid_stream_owner}, state}
       %RequestContext{} -> {:reply, {:error, :unsupported_stream}, state}
@@ -313,53 +361,72 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   def handle_call({:send, message, timeout, request_context}, from, state) do
     state = persist_legacy_protocol_version(state, request_context)
-
     emit_telemetry(:send, state, %{message_size: byte_size(message)})
+    ref = make_ref()
+    parent = self()
 
-    Logging.transport_event("sending_http_request", %{
-      url: URI.to_string(state.mcp_url),
-      size: byte_size(message),
-      timeout: timeout
-    })
+    {:ok, _worker} =
+      Lifecycle.start(state.lifecycle, fn ->
+        result = send_http_request(state, message, timeout, request_context)
+        send(parent, {:http_result, ref, result})
+      end)
 
-    new_state = %{state | active_request: from}
-
-    case send_http_request(new_state, message, timeout, request_context) do
-      {:ok, response} ->
-        Logging.transport_event("got_http_response", %{status: response.status})
-        handle_response(response, new_state, request_context)
-
-      {:error, {:http_error, 404, _body} = reason} ->
-        if legacy_request?(request_context) and not is_nil(state.session_id) do
-          Logging.transport_event("session_expired", %{has_session: true})
-          GenServer.cast(state.client, :session_expired)
-
-          {:reply, {:error, :session_expired},
-           %{state | session_id: nil, last_event_id: nil, legacy_protocol_version: nil}}
-        else
-          Logging.transport_event("http_request_error", %{reason: inspect(reason)}, level: :error)
-          log_error(reason)
-          {:reply, {:error, reason}, state}
-        end
-
-      {:error, reason} ->
-        Logging.transport_event("http_request_error", %{reason: inspect(reason)}, level: :error)
-
-        log_error(reason)
-        {:reply, {:error, reason}, state}
-    end
+    {:noreply, put_in(state.pending[ref], {from, request_context})}
   end
 
   @impl GenServer
   def handle_cast(:close_connection, state) do
-    if state.session_id, do: delete_session(state)
-    if state.sse_task, do: Process.exit(state.sse_task, :kill)
+    parent = self()
 
-    {:stop, :normal,
-     %{state | session_id: nil, sse_task: nil, last_event_id: nil, legacy_protocol_version: nil}}
+    {:ok, _} =
+      Lifecycle.start(state.lifecycle, fn ->
+        if state.session_id, do: delete_session(state)
+        send(parent, :shutdown_done)
+      end)
+
+    {:noreply, %{state | closing: true}}
   end
 
   @impl GenServer
+  def handle_info({:http_result, ref, result}, state) do
+    case Map.pop(state.pending, ref) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {{from, context}, pending} ->
+        state = %{state | pending: pending, active_request: from}
+
+        case result do
+          {:ok, response} ->
+            {:reply, reply, state} = handle_response(response, state, context)
+            GenServer.reply(from, reply)
+            {:noreply, state}
+
+          {:error, {:http_error, 404, _} = reason} ->
+            if legacy_request?(context) and not is_nil(state.session_id) do
+              GenServer.cast(state.client, :session_expired)
+              GenServer.reply(from, {:error, :session_expired})
+
+              {:noreply,
+               %{state | active_request: nil, session_id: nil, last_event_id: nil, legacy_protocol_version: nil}}
+            else
+              GenServer.reply(from, {:error, reason})
+              # Private functions
+              {:noreply, %{state | active_request: nil}}
+            end
+
+          {:error, reason} ->
+            log_error(reason)
+            GenServer.reply(from, {:error, reason})
+            {:noreply, %{state | active_request: nil}}
+        end
+    end
+  end
+
+  def handle_info(:shutdown_done, state), do: {:stop, :normal, state}
+
+  def handle_info(_message, %{closing: true} = state), do: {:noreply, state}
+
   def handle_info({:sse_event, event}, state) do
     {:noreply, handle_sse_event(event, state)}
   end
@@ -417,12 +484,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   @impl GenServer
   def terminate(reason, state) do
     if state.sse_task, do: Process.exit(state.sse_task, :kill)
-    if state.session_id, do: delete_session(state)
 
     emit_telemetry(:terminate, state, %{reason: reason})
   end
-
-  # Private functions
 
   defp send_http_request(state, message, timeout, request_context) do
     with {:ok, request_headers} <-
@@ -438,8 +502,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
         end
 
       # Set receive_timeout, ensuring it takes precedence over any default in http_options.
-      # transport_opts configure Finch pools and are not individual request options.
-      options = Keyword.put(state.http_options, :receive_timeout, timeout)
+      # Fetch options remain per request; the operation timeout bounds its total lifetime.
+      options =
+        state.http_options
+        |> Keyword.put(:receive_timeout, timeout)
+        |> Keyword.update(:request_timeout, timeout, &min_timeout(&1, timeout))
+
       url = URI.to_string(state.mcp_url)
 
       Logging.transport_event("http_request", %{
@@ -491,39 +559,17 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
         {:reply, :ok, %{new_state | active_request: nil}}
 
       {_, "text/event-stream"} ->
-        stream_sse_response(body, new_state)
-        {:noreply, new_state}
+        new_state = Enum.reduce(SSE.Parser.run(body), new_state, &handle_sse_event/2)
+        {:reply, :ok, %{new_state | active_request: nil}}
 
       {_, content_type} ->
-        {:reply, {:error, {:unsupported_content_type, content_type}},
-         %{new_state | active_request: nil}}
+        {:reply, {:error, {:unsupported_content_type, content_type}}, %{new_state | active_request: nil}}
     end
   end
 
   defp forward_to_client(message, %{client: client} = state) do
     emit_telemetry(:receive, state, %{message_size: byte_size(message)})
     GenServer.cast(client, {:response, message})
-  end
-
-  defp stream_sse_response(body, state) do
-    parent = self()
-
-    Task.start(fn ->
-      body
-      |> SSE.Parser.run()
-      |> Enum.each(fn event ->
-        send(parent, {:sse_response_event, event})
-      end)
-
-      send(parent, :sse_response_complete)
-    end)
-  rescue
-    e ->
-      Logging.transport_event("sse_parse_error", %{error: e}, level: :warning)
-
-      if state.active_request do
-        GenServer.reply(state.active_request, {:error, :sse_parse_error})
-      end
   end
 
   defp handle_sse_event({:error, :halted}, state) do
@@ -563,10 +609,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     end
   end
 
-  defp update_legacy_protocol_version(state, body, %RequestContext{
-         era: :legacy,
-         method: "initialize"
-       }) do
+  # Additional helper functions for SSE support
+
+  defp update_legacy_protocol_version(state, body, %RequestContext{era: :legacy, method: "initialize"}) do
     case negotiated_protocol_version(body) do
       version when version in @legacy_protocol_versions ->
         %{state | legacy_protocol_version: version}
@@ -651,15 +696,13 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     Logging.transport_event("request_error", %{reason: reason}, level: :error)
   end
 
-  # Additional helper functions for SSE support
+  defp maybe_start_sse_connection(%{closing: true} = state), do: state
 
   defp maybe_start_sse_connection(%{enable_sse: false} = state), do: state
 
   defp maybe_start_sse_connection(%{enable_sse: true, session_id: nil} = state), do: state
 
-  defp maybe_start_sse_connection(%{enable_sse: true, sse_task: task} = state)
-       when not is_nil(task),
-       do: state
+  defp maybe_start_sse_connection(%{enable_sse: true, sse_task: task} = state) when not is_nil(task), do: state
 
   defp maybe_start_sse_connection(%{enable_sse: true} = state) do
     pid = start_sse_task(state)
@@ -674,8 +717,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     end
   end
 
-  defp maybe_start_legacy_sse_on_session_acquired(%{session_id: nil} = new_state, _old_state),
-    do: new_state
+  defp maybe_start_legacy_sse_on_session_acquired(%{session_id: nil} = new_state, _old_state), do: new_state
 
   defp maybe_start_legacy_sse_on_session_acquired(new_state, %{session_id: nil}) do
     maybe_start_sse_connection(new_state)
@@ -685,7 +727,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   defp start_sse_task(state) do
     parent = self()
-    {:ok, pid} = Task.start(fn -> run_sse_task(parent, state) end)
+    {:ok, pid} = Lifecycle.start(state.lifecycle, fn -> run_sse_task(parent, state) end)
     Process.monitor(pid)
     pid
   end
@@ -720,28 +762,35 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   defp process_sse_request(request, options, parent) do
-    case HTTP.follow_redirect(request, options) do
-      {:ok, %{status: 200, headers: resp_headers, body: body}} ->
-        handle_sse_response(resp_headers, body, parent)
+    callback = fn
+      {:status, 200}, acc ->
+        {:cont, acc}
 
-      {:ok, %{status: 405}} ->
-        Logging.transport_event(
-          "sse_not_supported",
-          "Server returned 405 for GET request"
-        )
+      {:status, _}, acc ->
+        {:halt, acc}
 
-      error ->
-        Logging.transport_event("sse_connection_failed", %{error: error}, level: :warning)
+      {:headers, headers}, acc ->
+        if get_content_type(headers) == "text/event-stream", do: {:cont, acc}, else: {:halt, acc}
+
+      {:data, chunk}, buffer ->
+        {events, buffer} = SSE.parse_chunk(buffer, chunk)
+        Enum.each(events, &send(parent, {:sse_event, &1}))
+        {:cont, buffer}
+
+      {:trailers, _}, acc ->
+        {:cont, acc}
     end
+
+    HTTP.stream_while(
+      request,
+      "",
+      callback,
+      Keyword.merge([request_timeout: :infinity, receive_timeout: :infinity], options)
+    )
   end
 
-  defp handle_sse_response(headers, body, parent) do
-    if get_content_type(headers) == "text/event-stream" do
-      body
-      |> SSE.Parser.run()
-      |> Enum.each(fn event -> send(parent, {:sse_event, event}) end)
-    end
-  end
+  defp min_timeout(:infinity, timeout), do: timeout
+  defp min_timeout(configured, timeout), do: min(configured, timeout)
 
   defp delete_session(state) do
     options = state.http_options
@@ -753,7 +802,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
            configured_headers
            |> Headers.put_legacy_protocol_header(state.legacy_protocol_version)
            |> put_session_header(state.session_id),
-         %Finch.Request{} = request <-
+         %{url: _} = request <-
            HTTP.build(:delete, URI.to_string(state.mcp_url), headers, nil),
          {:ok, %{status: status}} when status in [200, 405] <-
            HTTP.follow_redirect(request, options) do
@@ -767,18 +816,12 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
   defp put_last_event_id_header(headers, nil), do: headers
 
-  defp put_last_event_id_header(headers, event_id),
-    do: Map.put(headers, "last-event-id", event_id)
+  defp put_last_event_id_header(headers, event_id), do: Map.put(headers, "last-event-id", event_id)
 
   defp sanitize_headers_error(reason) when is_atom(reason), do: reason
 
   defp sanitize_headers_error({reason, _detail})
-       when reason in [
-              :duplicate_header,
-              :invalid_header,
-              :invalid_header_name,
-              :invalid_header_value
-            ],
+       when reason in [:duplicate_header, :invalid_header, :invalid_header_name, :invalid_header_value],
        do: reason
 
   defp sanitize_headers_error(_reason), do: :request_headers_unavailable
@@ -787,11 +830,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   defp legacy_request?(%RequestContext{era: :legacy}), do: true
   defp legacy_request?(_request_context), do: false
 
-  defp persist_legacy_protocol_version(state, %RequestContext{
-         era: :legacy,
-         method: method,
-         protocol_version: version
-       })
+  defp persist_legacy_protocol_version(state, %RequestContext{era: :legacy, method: method, protocol_version: version})
        when method != "initialize" and version in @legacy_protocol_versions do
     %{state | legacy_protocol_version: version}
   end

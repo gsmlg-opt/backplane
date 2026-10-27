@@ -1,11 +1,11 @@
 defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.McpProtocol.Test.HTTPServer
-
+  alias Backplane.McpProtocol.HTTP
   alias Backplane.McpProtocol.Server.Registry
   alias Backplane.McpProtocol.Server.Supervisor, as: ServerSupervisor
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.Plug, as: StreamableHTTPPlug
+  alias Backplane.McpProtocol.Test.HTTPServer
 
   @version "2026-07-28"
   @server_info_key "io.modelcontextprotocol/serverInfo"
@@ -245,8 +245,8 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     for method <- [:get, :delete] do
       assert {:ok, response} =
                method
-               |> Finch.build(context.url, [{"mcp-protocol-version", @version}])
-               |> Finch.request(Backplane.McpProtocol.Finch)
+               |> HTTP.build(context.url, [{"mcp-protocol-version", @version}])
+               |> HTTP.request()
 
       assert response.status == 405
       assert header(response, "allow") == "POST"
@@ -273,8 +273,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
     }
   end
 
-  defp tool_request(arguments, id),
-    do: request("tools/call", %{"name" => "mutate", "arguments" => arguments}, id)
+  defp tool_request(arguments, id), do: request("tools/call", %{"name" => "mutate", "arguments" => arguments}, id)
 
   defp post(url, message, overrides \\ []) do
     headers = [
@@ -298,14 +297,13 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.AgentNoteParityT
 
     assert {:ok, response} =
              :post
-             |> Finch.build(url, headers, JSON.encode!(message))
-             |> Finch.request(Backplane.McpProtocol.Finch)
+             |> HTTP.build(url, headers, JSON.encode!(message))
+             |> HTTP.request()
 
     {response, JSON.decode!(response.body)}
   end
 
-  defp header(response, name),
-    do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
+  defp header(response, name), do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
 
   defp assert_rpc_error(response, body, id, code) do
     assert response.status == 400

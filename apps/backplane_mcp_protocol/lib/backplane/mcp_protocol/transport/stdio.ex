@@ -16,9 +16,11 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
 
   import Peri
 
+  alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.Telemetry
   alias Backplane.McpProtocol.Transport.Behaviour, as: Transport
   alias Backplane.McpProtocol.Transport.RequestContext
+  alias Backplane.McpProtocol.Transport.STDIO.Guardian
 
   @type t :: GenServer.server()
 
@@ -110,6 +112,10 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
           | GenServer.option()
 
   defschema(:options_schema, %{
+    cleanup: {:any, {:default, :best_effort}},
+    guardian_path: {:string, {:default, nil}},
+    activation_id: {:any, {:default, nil}},
+    one_shot: {:boolean, {:default, false}},
     name: {{:custom, &Backplane.McpProtocol.genserver_name/1}, {:default, __MODULE__}},
     client: {:required, Backplane.McpProtocol.get_schema(:process_name)},
     command: {:required, :string},
@@ -137,7 +143,10 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   @spec start_link(params_t) :: GenServer.on_start()
   def start_link(opts \\ []) do
     opts = options_schema!(opts)
-    GenServer.start_link(__MODULE__, Map.new(opts), name: opts[:name])
+
+    with :ok <- validate_cleanup(opts) do
+      GenServer.start_link(__MODULE__, Map.new(opts), name: opts[:name])
+    end
   end
 
   @impl Transport
@@ -191,6 +200,34 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   end
 
   @impl Transport
+  def close(pid, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    if is_integer(timeout) and timeout in 1..4_294_967_295 do
+      GenServer.call(pid, {:close, opts}, timeout + 100)
+    else
+      {:error, Error.protocol(:invalid_params, %{reason: :invalid_cleanup_timeout})}
+    end
+  catch
+    :exit, _ -> {:error, Error.transport(:cleanup_report_unavailable)}
+  end
+
+  @impl Transport
+  def cleanup_status(pid) do
+    GenServer.call(pid, :cleanup_status)
+  catch
+    :exit, _ -> {:error, Error.transport(:cleanup_report_unavailable)}
+  end
+
+  defp validate_cleanup(opts) do
+    case opts[:cleanup] do
+      :best_effort -> :ok
+      :verified -> Guardian.available(opts[:guardian_path] || Guardian.path())
+      _ -> {:error, Error.protocol(:invalid_params, %{reason: :invalid_stdio_cleanup_mode})}
+    end
+  end
+
+  @impl Transport
   def supported_protocol_versions, do: :all
 
   # credo:disable-for-next-line Credo.Check.Design.TagTODO
@@ -198,13 +235,40 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   @impl GenServer
   def format_status(status) do
     Map.update!(status, :state, fn state ->
-      Enum.reduce([:env], state, &Map.replace(&2, &1, :redacted))
+      Enum.reduce([:env, :guard_token, :close_nonce], state, &Map.replace(&2, &1, :redacted))
     end)
   end
 
   @impl GenServer
   def init(%{} = opts) do
-    state = Map.merge(opts, %{port: nil, ref: nil})
+    if opts.cleanup == :verified, do: Process.flag(:trap_exit, true)
+
+    state =
+      Map.merge(opts, %{
+        port: nil,
+        ref: nil,
+        guard_token: Guardian.token(),
+        guard_pid: nil,
+        target_pid: nil,
+        target_status: nil,
+        guard_receipt: nil,
+        guard_exit: nil,
+        startup_timer: nil,
+        close_timer: nil,
+        close_deadline: nil,
+        close_nonce: nil,
+        close_id: nil,
+        close_phase: :active,
+        close_waiters: [],
+        sealed: false,
+        close_report: nil,
+        guardian_started: false,
+        guardian_acked: false,
+        close_sent: false,
+        guard_error: nil
+      })
+
+    state = %{state | activation_id: state.activation_id || make_ref()}
 
     metadata = %{
       transport: :stdio,
@@ -223,6 +287,27 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   end
 
   @impl GenServer
+  def handle_continue(:spawn, %{cleanup: :verified} = state) do
+    case System.find_executable(state.command) do
+      nil ->
+        {:stop, {:error, "Command not found: #{state.command}"}, state}
+
+      cmd ->
+        helper = state.guardian_path || Guardian.path()
+        token = Base.encode16(state.guard_token, case: :lower)
+        opts = [:binary, :exit_status, {:packet, 4}, args: ["--token", token, "--", cmd | state.args || []]]
+
+        opts =
+          if state.env, do: opts ++ [env: normalize_env_for_erlang(Map.merge(get_default_env(), state.env))], else: opts
+
+        opts = if state.cwd, do: opts ++ [cd: state.cwd], else: opts
+        port = Port.open({:spawn_executable, String.to_charlist(helper)}, opts)
+        {:os_pid, pid} = Port.info(port, :os_pid)
+        timer = Process.send_after(self(), :guardian_startup_timeout, 5_000)
+        {:noreply, %{state | port: port, ref: Port.monitor(port), guard_pid: pid, startup_timer: timer}}
+    end
+  end
+
   def handle_continue(:spawn, state) do
     if cmd = System.find_executable(state.command) do
       port = spawn_port(cmd, state)
@@ -236,6 +321,39 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   end
 
   @impl GenServer
+  def handle_call(:cleanup_status, _from, state), do: {:reply, {:ok, Guardian.report(state)}, state}
+
+  def handle_call({:close, _opts}, _from, %{close_phase: :closed} = state),
+    do: {:reply, {:ok, Guardian.report(state)}, state}
+
+  def handle_call({:close, _opts}, from, %{close_phase: :closing} = state),
+    do: {:noreply, %{state | close_waiters: [from | state.close_waiters]}}
+
+  def handle_call({:close, opts}, from, %{cleanup: :verified} = state),
+    do: {:noreply, begin_guard_close(state, opts, from)}
+
+  def handle_call({:close, opts}, _from, state) do
+    if is_port(state.port) and Port.info(state.port), do: Port.close(state.port)
+    state = %{state | sealed: true, close_phase: :closed, close_id: Keyword.get(opts, :close_id) || make_ref()}
+    {:reply, {:ok, Guardian.report(state)}, state}
+  end
+
+  def handle_call({:send, _}, _from, %{sealed: true} = state), do: {:reply, {:error, :closing}, state}
+
+  def handle_call({:send, _}, _from, %{cleanup: :verified, guardian_started: false} = state),
+    do: {:reply, {:error, :port_not_connected}, state}
+
+  def handle_call({:send, message}, _from, %{cleanup: :verified} = state) do
+    result =
+      Enum.reduce_while(Guardian.chunks(message), :ok, fn packet, _ ->
+        if Port.command(state.port, packet, [:nosuspend]), do: {:cont, :ok}, else: {:halt, {:error, :port_backpressure}}
+      end)
+
+    {:reply, result, state}
+  rescue
+    _ -> {:reply, {:error, :port_not_connected}, state}
+  end
+
   def handle_call({:send, message}, _, %{port: port} = state) when is_port(port) do
     metadata = %{
       transport: :stdio,
@@ -268,6 +386,44 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   end
 
   @impl GenServer
+  def handle_info({port, {:data, packet}}, %{cleanup: :verified, port: port} = state) do
+    {:noreply, handle_guard_packet(Guardian.decode(packet), state)}
+  end
+
+  def handle_info({port, {:exit_status, status}}, %{cleanup: :verified, port: port} = state) do
+    state = %{state | guard_exit: status, sealed: true}
+    state = if state.close_phase == :active, do: begin_guard_close(state, [], nil), else: state
+    {:noreply, finish_guard_close(state)}
+  end
+
+  def handle_info(:guardian_startup_timeout, %{cleanup: :verified, guardian_started: false} = state) do
+    {:noreply, begin_guard_close(%{state | guard_error: :startup_timeout}, [], nil)}
+  end
+
+  def handle_info(:guardian_startup_timeout, state), do: {:noreply, state}
+
+  def handle_info(:guardian_close_deadline, %{cleanup: :verified, close_phase: :closing} = state) do
+    # Port teardown releases our handle but cannot replace the lost exit receipt.
+    if is_port(state.port) and Port.info(state.port), do: Port.close(state.port)
+    {:noreply, finish_guard_close(state)}
+  end
+
+  def handle_info(:guardian_close_retry, %{cleanup: :verified, close_phase: :closing} = state),
+    do: {:noreply, send_guard_close(state)}
+
+  def handle_info({:DOWN, ref, :port, port, _reason}, %{cleanup: :verified, port: port, ref: ref} = state) do
+    state = %{state | sealed: true}
+    {:noreply, if(state.close_phase == :active, do: begin_guard_close(state, [], nil), else: state)}
+  end
+
+  def handle_info({port, :closed}, %{cleanup: :verified, port: port} = state), do: {:noreply, state}
+  def handle_info({:EXIT, port, _reason}, %{cleanup: :verified, port: port} = state), do: {:noreply, state}
+  def handle_info(:guardian_close_retry, state), do: {:noreply, state}
+
+  def handle_info({port, _event}, %{port: port, close_phase: :closed} = state), do: {:noreply, state}
+  def handle_info({:DOWN, ref, :port, _port, _}, %{ref: ref, close_phase: :closed} = state), do: {:noreply, state}
+  def handle_info({:EXIT, port, _}, %{port: port, close_phase: :closed} = state), do: {:noreply, state}
+
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     Logging.transport_event("stdio_received", String.slice(data, 0, 100))
 
@@ -352,6 +508,10 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   end
 
   @impl GenServer
+  def handle_cast(:close_port, %{cleanup: :verified} = state) do
+    {:noreply, if(state.close_phase == :active, do: begin_guard_close(state, [], nil), else: state)}
+  end
+
   def handle_cast(:close_port, %{port: port} = state) do
     Telemetry.execute(
       Telemetry.event_transport_disconnect(),
@@ -367,7 +527,9 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   end
 
   @impl GenServer
-  def terminate(reason, _state) do
+  def terminate(reason, state) do
+    if state.cleanup == :verified and is_port(state.port) and Port.info(state.port), do: Port.close(state.port)
+
     Telemetry.execute(
       Telemetry.event_transport_terminate(),
       %{system_time: System.system_time()},
@@ -378,6 +540,96 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
     )
 
     :ok
+  end
+
+  defp handle_guard_packet({:hello, token}, %{guard_token: token, guardian_acked: false} = state) do
+    if Port.command(state.port, Guardian.ack(token), [:nosuspend]),
+      do: %{state | guardian_acked: true},
+      else: begin_guard_close(%{state | guard_error: :startup_backpressure}, [], nil)
+  end
+
+  defp handle_guard_packet({:started, token, pid}, %{guard_token: token, guardian_acked: true} = state) do
+    if state.startup_timer, do: Process.cancel_timer(state.startup_timer)
+    if not state.sealed, do: GenServer.cast(state.client, :negotiate)
+    %{state | guardian_started: true, target_pid: pid}
+  end
+
+  defp handle_guard_packet({:data, data}, %{guardian_acked: true} = state) do
+    if state.close_phase == :active, do: GenServer.cast(state.client, {:response, data})
+    state
+  end
+
+  defp handle_guard_packet({:target_exit, pid, status}, state) do
+    %{state | target_pid: state.target_pid || pid, target_status: status, sealed: true}
+  end
+
+  defp handle_guard_packet(
+         {:receipt, token, nonce, receipt},
+         %{guard_token: token, close_nonce: nonce, close_phase: :closing} = state
+       ) do
+    if is_nil(state.target_pid) or receipt.target_pid == state.target_pid do
+      state = %{state | guard_receipt: receipt, target_pid: receipt.target_pid, target_status: receipt.target_status}
+      if is_nil(state.guard_exit), do: state, else: finish_guard_close(state)
+    else
+      %{state | guard_error: :target_identity_mismatch}
+    end
+  end
+
+  defp handle_guard_packet(_invalid, state) do
+    if state.close_phase == :active,
+      do: begin_guard_close(%{state | guard_error: :invalid_guardian_packet}, [], nil),
+      else: state
+  end
+
+  defp begin_guard_close(%{close_phase: :active} = state, opts, from) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    timer = Process.send_after(self(), :guardian_close_deadline, timeout)
+
+    state = %{
+      state
+      | sealed: true,
+        close_phase: :closing,
+        close_id: Keyword.get(opts, :close_id) || make_ref(),
+        close_nonce: Guardian.token(),
+        close_deadline: System.monotonic_time(:millisecond) + timeout,
+        close_timer: timer,
+        close_waiters: if(from, do: [from], else: [])
+    }
+
+    if is_nil(state.guard_exit), do: send_guard_close(state), else: finish_guard_close(state)
+  end
+
+  defp begin_guard_close(state, _opts, _from), do: state
+
+  defp send_guard_close(%{close_sent: true} = state), do: state
+
+  defp send_guard_close(state) do
+    remaining = max(state.close_deadline - System.monotonic_time(:millisecond), 0)
+
+    if remaining > 0 and is_port(state.port) and Port.info(state.port) do
+      packet = Guardian.close(state.guard_token, state.close_nonce, remaining)
+
+      if Port.command(state.port, packet, [:nosuspend]) do
+        %{state | close_sent: true}
+      else
+        Process.send_after(self(), :guardian_close_retry, min(remaining, 10))
+        state
+      end
+    else
+      state
+    end
+  rescue
+    _ -> %{state | guard_error: :close_delivery_unknown}
+  end
+
+  defp finish_guard_close(%{close_phase: :closed} = state), do: state
+
+  defp finish_guard_close(state) do
+    if state.close_timer, do: Process.cancel_timer(state.close_timer)
+    state = %{state | close_phase: :closed}
+    report = Guardian.report(state)
+    Enum.each(state.close_waiters, &GenServer.reply(&1, {:ok, report}))
+    %{state | close_waiters: [], close_report: report}
   end
 
   defp spawn_port(cmd, state) do

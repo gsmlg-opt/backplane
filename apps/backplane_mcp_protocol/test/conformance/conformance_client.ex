@@ -4,6 +4,7 @@ defmodule Conformance.Client do
   alias Backplane.McpProtocol.Client, as: ProtocolClient
   alias Backplane.McpProtocol.Client.Authorization
   alias Backplane.McpProtocol.Client.Authorization.CredentialStore
+  alias Backplane.McpProtocol.HTTP
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.Response
 
@@ -244,8 +245,8 @@ defmodule Conformance.Client do
 
   defp http_request(method, url, headers, body) do
     method
-    |> Finch.build(url, Map.to_list(headers), body)
-    |> Finch.request(Backplane.McpProtocol.Finch, receive_timeout: 10_000)
+    |> HTTP.build(url, Map.to_list(headers), body)
+    |> HTTP.request(receive_timeout: 10_000)
   end
 
   defp with_client(url, protocol_version, callback) do

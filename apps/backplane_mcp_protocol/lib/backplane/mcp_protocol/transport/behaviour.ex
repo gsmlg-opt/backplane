@@ -23,6 +23,8 @@ defmodule Backplane.McpProtocol.Transport.Behaviour do
                    | {:subscription_id, String.t() | integer()}
   @callback close_stream(t(), term(), keyword()) :: :ok | {:error, reason()}
   @callback shutdown(t()) :: :ok | {:error, reason()}
+  @callback close(t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  @callback cleanup_status(t()) :: {:ok, map()} | {:error, Error.t()}
 
   @doc """
   Returns the list of MCP protocol versions supported by this transport.
@@ -34,5 +36,5 @@ defmodule Backplane.McpProtocol.Transport.Behaviour do
   """
   @callback supported_protocol_versions() :: [String.t()] | :all
 
-  @optional_callbacks open_stream: 3, close_stream: 3
+  @optional_callbacks open_stream: 3, close_stream: 3, close: 2, cleanup_status: 1
 end

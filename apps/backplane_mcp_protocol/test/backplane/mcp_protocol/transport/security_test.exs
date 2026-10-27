@@ -221,10 +221,17 @@ defmodule Backplane.McpProtocol.Transport.SecurityTest do
       parameter_headers: %{}
     }
 
+    lifecycle =
+      start_supervised!(%{
+        id: :secure_stream_lifecycle,
+        start: {Backplane.McpProtocol.HTTP.Lifecycle, :start_link, [:streamable_http]}
+      })
+
     {:ok, stream} =
       Stream.start(%{
         owner: self(),
         transport: self(),
+        lifecycle: lifecycle,
         subscription_id: "secure-stream",
         mcp_url: URI.parse(url <> "/mcp"),
         headers: %{},

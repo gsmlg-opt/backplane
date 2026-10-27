@@ -205,6 +205,13 @@ defmodule Backplane.McpProtocol.Client.Subscription do
     :ok
   end
 
+  @doc false
+  def take_owned_pids do
+    pids = registry() |> Map.values() |> Enum.uniq()
+    Process.delete(@registry_key)
+    pids
+  end
+
   defp client_closing(pid, reason) do
     GenServer.call(pid, {:client_closing, reason}, 1_000)
   catch

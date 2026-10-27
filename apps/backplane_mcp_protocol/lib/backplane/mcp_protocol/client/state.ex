@@ -69,6 +69,8 @@ defmodule Backplane.McpProtocol.Client.State do
     unsupported_version_retries: MapSet.new(),
     ready_waiters: [],
     tool_validator_task: nil,
+    closing?: false,
+    close_report: nil,
     transport_parse_state: nil
   ]
 

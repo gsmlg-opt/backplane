@@ -36,9 +36,11 @@ if Code.ensure_loaded?(JOSE) do
 
     use Backplane.McpProtocol.Logging
 
+    alias Backplane.McpProtocol.HTTP
+
     @jwks_ttl_seconds 300
     @http_receive_timeout 5_000
-    @http_pool_timeout 1_000
+    @http_connect_timeout 1_000
 
     @spec validate_token(String.t(), map()) :: {:ok, map()} | {:error, term()}
     @impl true
@@ -69,13 +71,14 @@ if Code.ensure_loaded?(JOSE) do
     end
 
     defp do_fetch_jwks(jwks_uri, cache_key) do
-      request = Finch.build(:get, jwks_uri, [{"accept", "application/json"}])
+      request = HTTP.build(:get, jwks_uri, [{"accept", "application/json"}])
 
-      case Finch.request(request, Backplane.McpProtocol.Finch,
+      case HTTP.request(request,
              receive_timeout: @http_receive_timeout,
-             pool_timeout: @http_pool_timeout
+             request_timeout: @http_receive_timeout,
+             connect_timeout: @http_connect_timeout
            ) do
-        {:ok, %Finch.Response{status: 200, body: body}} ->
+        {:ok, %{status: 200, body: body}} ->
           case JSON.decode(body) do
             {:ok, jwks} ->
               :persistent_term.put(cache_key, {jwks, System.os_time(:second)})
@@ -86,7 +89,7 @@ if Code.ensure_loaded?(JOSE) do
               {:error, :invalid_jwks_response}
           end
 
-        {:ok, %Finch.Response{status: status}} ->
+        {:ok, %{status: status}} ->
           Logging.server_event("jwks_fetch_error", %{status: status, uri: jwks_uri}, level: :error)
           {:error, {:jwks_fetch_failed, status}}
 

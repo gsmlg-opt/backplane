@@ -1,13 +1,13 @@
 defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaValidationTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.McpProtocol.Test.HTTPServer
-
   import ExUnit.CaptureLog
 
+  alias Backplane.McpProtocol.HTTP
   alias Backplane.McpProtocol.Server.Registry
   alias Backplane.McpProtocol.Server.Supervisor, as: ServerSupervisor
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.Plug, as: StreamableHTTPPlug
+  alias Backplane.McpProtocol.Test.HTTPServer
 
   defmodule FixtureServer do
     @moduledoc false
@@ -62,8 +62,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
 
       strict_attachment =
         {:schema, %{name: {:required, {:string, {:transform, &String.trim/1}}}},
-         {:additional_keys,
-          {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
+         {:additional_keys, {:required, {:custom, fn _ -> {:error, "unsupported attachment field", []} end}}}}
 
       attachments_schema = %{attachments: {:list, {:custom, Schema.validator(strict_attachment)}}}
 
@@ -338,13 +337,12 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
 
     assert {:ok, response} =
              :post
-             |> Finch.build(url, headers, JSON.encode!(message))
-             |> Finch.request(Backplane.McpProtocol.Finch)
+             |> HTTP.build(url, headers, JSON.encode!(message))
+             |> HTTP.request()
 
     body = if response.body == "", do: nil, else: JSON.decode!(response.body)
     {response, body}
   end
 
-  defp header(response, name),
-    do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
+  defp header(response, name), do: response.headers |> List.keyfind(name, 0, {name, nil}) |> elem(1)
 end

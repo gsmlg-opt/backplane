@@ -3,7 +3,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   Owns one modern request-scoped POST/SSE exchange.
 
   A small controller remains responsive to owner, transport, and explicit close
-  signals while a linked worker blocks in Finch. The worker carries an
+  signals while a linked worker waits for HTTP. The worker carries an
   incremental SSE frame buffer so arbitrary TCP chunk boundaries never become
   protocol message boundaries.
   """
@@ -11,6 +11,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   use GenServer
 
   alias Backplane.McpProtocol.HTTP
+  alias Backplane.McpProtocol.HTTP.Lifecycle
   alias Backplane.McpProtocol.SSE.Parser
   alias Backplane.McpProtocol.Transport.StreamableHTTP.Headers
   alias Backplane.McpProtocol.Transport.StreamableHTTP.RequestHeaders
@@ -77,14 +78,14 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   def handle_continue(:open, state) do
     controller = self()
 
-    {worker, monitor} =
-      :erlang.spawn_opt(
-        fn ->
-          request = Map.put(state.request, :controller, controller)
-          send(controller, {:stream_result, self(), run_stream(request)})
-        end,
-        [:link, :monitor]
-      )
+    fun = fn ->
+      Process.link(controller)
+      request = Map.put(state.request, :controller, controller)
+      send(controller, {:stream_result, self(), run_stream(request)})
+    end
+
+    {:ok, worker} = Lifecycle.start(state.request.lifecycle, fun)
+    monitor = Process.monitor(worker)
 
     {:noreply, %{state | worker: worker, worker_monitor: monitor}}
   end
@@ -118,17 +119,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
     {:stop, :normal, state}
   end
 
-  def handle_info(
-        {:DOWN, ref, :process, pid, _reason},
-        %{transport: pid, transport_monitor: ref} = state
-      ) do
+  def handle_info({:DOWN, ref, :process, pid, _reason}, %{transport: pid, transport_monitor: ref} = state) do
     {:stop, :normal, state}
   end
 
-  def handle_info(
-        {:DOWN, ref, :process, pid, reason},
-        %{worker: pid, worker_monitor: ref} = state
-      ) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{worker: pid, worker_monitor: ref} = state) do
     send(state.owner, {:mcp_stream_error, self(), {:stream_worker_down, reason}})
     {:stop, :normal, state}
   end
@@ -158,7 +153,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
            RequestHeaders.resolve(opts.headers, opts.headers_provider),
          {:ok, headers} <-
            Headers.build(request_headers, opts.encoded_request, opts.request_context),
-         %Finch.Request{} = request <-
+         %{url: _} = request <-
            HTTP.build(:post, URI.to_string(opts.mcp_url), headers, opts.encoded_request) do
       initial = %{
         controller: opts.controller,
@@ -172,13 +167,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
 
       stream_options =
         opts.http_options
-        |> Keyword.delete(:allowed_origin)
         |> Keyword.put(:receive_timeout, :infinity)
         |> Keyword.put(:request_timeout, :infinity)
 
-      case Finch.stream_while(
+      case HTTP.stream_while(
              request,
-             Backplane.McpProtocol.Finch,
              initial,
              &stream_entry/2,
              stream_options
@@ -186,7 +179,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
         {:ok, %{error: nil}} -> :ok
         {:ok, %{error: reason}} -> {:error, reason}
         {:error, reason, %{error: nil}} -> {:error, reason}
-        {:error, _finch_reason, %{error: reason}} -> {:error, reason}
+        {:error, _http_reason, %{error: reason}} -> {:error, reason}
       end
     end
   rescue
@@ -235,8 +228,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
     end
   end
 
-  defp stream_entry({:data, _data}, acc),
-    do: {:halt, %{acc | error: acc.error || :unvalidated_stream_data}}
+  defp stream_entry({:data, _data}, acc), do: {:halt, %{acc | error: acc.error || :unvalidated_stream_data}}
 
   defp stream_entry({:trailers, _trailers}, acc), do: {:cont, acc}
 
@@ -294,30 +286,19 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.Stream do
   end
 
   defp subscription_message?(
-         %{
-           "jsonrpc" => "2.0",
-           "id" => id,
-           "result" => %{"_meta" => %{@subscription_id_key => id}}
-         } = message,
+         %{"jsonrpc" => "2.0", "id" => id, "result" => %{"_meta" => %{@subscription_id_key => id}}} = message,
          id
        ) do
     not Map.has_key?(message, "method") and not Map.has_key?(message, "error")
   end
 
-  defp subscription_message?(
-         %{"jsonrpc" => "2.0", "id" => id, "error" => %{} = error} = message,
-         id
-       ) do
+  defp subscription_message?(%{"jsonrpc" => "2.0", "id" => id, "error" => %{} = error} = message, id) do
     is_integer(error["code"]) and is_binary(error["message"]) and
       not Map.has_key?(message, "method") and not Map.has_key?(message, "result")
   end
 
   defp subscription_message?(
-         %{
-           "jsonrpc" => "2.0",
-           "method" => method,
-           "params" => %{"_meta" => %{@subscription_id_key => id}}
-         } = message,
+         %{"jsonrpc" => "2.0", "method" => method, "params" => %{"_meta" => %{@subscription_id_key => id}}} = message,
          id
        )
        when is_binary(method) do

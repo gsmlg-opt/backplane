@@ -1,7 +1,7 @@
 defmodule Backplane.McpProtocol.Client.Request do
   @moduledoc false
 
-  alias Backplane.McpProtocol.Client.ToolCall
+  alias Backplane.McpProtocol.Client.OwnedRequest
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -19,7 +19,7 @@ defmodule Backplane.McpProtocol.Client.Request do
           continuation: term(),
           resolver_supervisor: pid() | nil,
           resolver_task: Task.t() | nil,
-          tool_call: ToolCall.t() | nil,
+          tool_call: OwnedRequest.t() | nil,
           owner_monitor: reference() | nil,
           dispatch_task: Task.t() | nil,
           dispatch_status: :registered | :dispatching | :accepted | nil,
@@ -82,13 +82,13 @@ defmodule Backplane.McpProtocol.Client.Request do
 
   @doc false
   @spec async?(t()) :: boolean()
-  def async?(%__MODULE__{tool_call: handle}), do: ToolCall.handle?(handle)
+  def async?(%__MODULE__{tool_call: handle}), do: OwnedRequest.handle?(handle)
 
   @doc false
   @spec reply(t(), term()) :: :ok
   def reply(%__MODULE__{tool_call: handle, from: from}, result) do
-    if ToolCall.handle?(handle) do
-      ToolCall.deliver(handle, result)
+    if OwnedRequest.handle?(handle) do
+      OwnedRequest.deliver(handle, result)
     else
       GenServer.reply(from, result)
     end

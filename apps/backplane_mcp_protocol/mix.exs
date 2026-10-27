@@ -8,10 +8,6 @@ defmodule Backplane.McpProtocol.MixProject do
     [
       app: :backplane_mcp_protocol,
       version: @version,
-      build_path: "../../_build",
-      config_path: "../../config/config.exs",
-      deps_path: "../../deps",
-      lockfile: "../../mix.lock",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -28,7 +24,20 @@ defmodule Backplane.McpProtocol.MixProject do
       ],
       extra_applications: [:observer, :wx],
       releases: releases()
-    ]
+    ] ++ umbrella_paths()
+  end
+
+  defp umbrella_paths do
+    if File.dir?(Path.expand("../../apps", __DIR__)) do
+      [
+        build_path: "../../_build",
+        config_path: "../../config/config.exs",
+        deps_path: "../../deps",
+        lockfile: "../../mix.lock"
+      ]
+    else
+      []
+    end
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -51,7 +60,7 @@ defmodule Backplane.McpProtocol.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:finch, "~> 0.19"},
+      {:http_fetch, "~> 0.21.17"},
       {:peri, "~> 0.11.3"},
       {:telemetry, "~> 1.2"},
       {:redix, "~> 1.5", optional: true},
@@ -102,7 +111,7 @@ defmodule Backplane.McpProtocol.MixProject do
         "Docs" => "https://hexdocs.pm/backplane_mcp_protocol"
       },
       files:
-        ~w[lib pages priv/static mix.exs README.md CHANGELOG.md CONTRIBUTING.md LICENSE .formatter.exs]
+        ~w[lib pages priv/static c_src mix.exs README.md CHANGELOG.md CONTRIBUTING.md LICENSE .formatter.exs]
     }
   end
 
@@ -126,6 +135,7 @@ defmodule Backplane.McpProtocol.MixProject do
         "pages/recipes.md",
         "pages/reference.md",
         "pages/authorization.md",
+        "pages/ownership-and-cleanup.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
@@ -142,7 +152,8 @@ defmodule Backplane.McpProtocol.MixProject do
         "Patterns & Reference": [
           "pages/recipes.md",
           "pages/reference.md",
-          "pages/authorization.md"
+          "pages/authorization.md",
+          "pages/ownership-and-cleanup.md"
         ],
         "Project Info": [
           "CHANGELOG.md",

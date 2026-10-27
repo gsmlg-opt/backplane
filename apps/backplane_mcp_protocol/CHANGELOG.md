@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.44
+
+- Replace mandatory Finch/Mint with Fetch and retain request-owned HTTP cleanup
+  evidence across legacy SSE and modern Streamable HTTP (#120).
+- Add caller-owned resource list, template and read handles with independent
+  await/cancel semantics (#123).
+- Add one-shot connections and retained close reports. Verified stdio uses an
+  explicitly built Linux/macOS guardian to confirm its direct child, helper and
+  local pipes; ordinary stdio remains available without native compilation (#122).
+
 ## Unreleased
 
 - Fixes single Peri validation errors crashing tool and prompt input handling,

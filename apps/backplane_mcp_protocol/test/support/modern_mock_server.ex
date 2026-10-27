@@ -10,14 +10,14 @@ defmodule ModernMockServer do
     ],
     protocol_versions: ["2026-07-28"]
 
-  alias Backplane.McpProtocol.Test.HTTPServer
-
+  alias Backplane.McpProtocol.HTTP
   alias Backplane.McpProtocol.Server.Component.Schema
   alias Backplane.McpProtocol.Server.Frame
   alias Backplane.McpProtocol.Server.Modern.RequestContext
   alias Backplane.McpProtocol.Server.Registry
   alias Backplane.McpProtocol.Server.Response
   alias Backplane.McpProtocol.Server.Transport.StreamableHTTP.Plug, as: StreamableHTTPPlug
+  alias Backplane.McpProtocol.Test.HTTPServer
 
   @test_pid_key {__MODULE__, :test_pid}
 
@@ -131,8 +131,8 @@ defmodule ModernMockServer do
     headers = Keyword.get(opts, :headers, [])
 
     method
-    |> Finch.build(url, headers)
-    |> Finch.request(Backplane.McpProtocol.Finch)
+    |> HTTP.build(url, headers)
+    |> HTTP.request()
   end
 
   def stdio_transport do

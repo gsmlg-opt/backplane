@@ -1,9 +1,8 @@
 defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.McpProtocol.Test.HTTPServer
-
   alias Backplane.McpProtocol.Protocol.Registry
+  alias Backplane.McpProtocol.Test.HTTPServer
   alias Backplane.McpProtocol.Transport.RequestContext
   alias Backplane.McpProtocol.Transport.StreamableHTTP
 
@@ -12,9 +11,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
   @test_http_opts [max_reconnections: 0]
 
   setup do
-    unless Process.whereis(Backplane.McpProtocol.Finch) do
-      start_supervised!({Finch, name: Backplane.McpProtocol.Finch})
-    end
+    {:ok, _} = Application.ensure_all_started(:http_fetch)
 
     http_server = HTTPServer.open()
     Process.group_leader(self(), self())
@@ -263,7 +260,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
     stop_transport(transport)
   end
 
-  test "killing a stream controller terminates its exact Finch worker", %{
+  test "killing a stream controller terminates its exact HTTP worker", %{
     http_server: http_server
   } do
     test_pid = self()
@@ -402,8 +399,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP.StreamTest do
   defp listen_request(id) do
     params = modern_params(%{"notifications" => %{}})
 
-    {JSON.encode!(request("subscriptions/listen", id, params)),
-     context("subscriptions/listen", params)}
+    {JSON.encode!(request("subscriptions/listen", id, params)), context("subscriptions/listen", params)}
   end
 
   defp request(method, id, params) do
