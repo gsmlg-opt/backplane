@@ -450,6 +450,11 @@ source. Strict compilation, repository format, strict Credo, configured Dialyzer
 and all nine workflow-contract tests pass under the CI Elixir 1.19.5 toolchain.
 The existing Dialyzer ignore configuration is unchanged.
 
+The first standalone package run exposed three new test failures because their
+JSON assertions used umbrella-only Jason. Those tests and the cold fixture now
+use the same standard `JSON` module as Runtime; no dependency or assertion was
+removed, and the original failure log is retained.
+
 Independent producer/consumer BEAMs confirm a durable cancellation settlement
 can be replayed after Goal replacement without applying old deferral or clearing
 a new reservation. Both actual OS process exits are checked. The executable

@@ -109,7 +109,7 @@ defmodule Backplane.AgentRuntime.GoalSettlementColdBeamFixture do
     File.write!(Path.join(dir, "retry.term"), :erlang.term_to_binary({admission, attestation}))
 
     IO.puts(
-      Jason.encode!(%{
+      JSON.encode!(%{
         producer_os_pid: System.pid(),
         executor_down: true,
         sealed: true,
@@ -140,7 +140,7 @@ defmodule Backplane.AgentRuntime.GoalSettlementColdBeamFixture do
     assert {:ok, ^before_retry} = GoalFileStore.load(store, "cold-thread")
 
     IO.puts(
-      Jason.encode!(%{
+      JSON.encode!(%{
         consumer_os_pid: System.pid(),
         historical_ack: true,
         replacement_preserved: true,

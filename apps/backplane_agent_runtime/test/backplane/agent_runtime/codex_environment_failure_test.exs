@@ -150,7 +150,7 @@ defmodule Backplane.AgentRuntime.CodexEnvironmentFailureTest do
              end)
 
     assert_error(error, id, actual.message)
-    assert is_binary(Jason.encode!(native_error))
+    assert is_binary(JSON.encode!(native_error))
     send(provider, {:events, [done()]})
     assert_receive {:agent_runtime, ^run, %{type: :run_completed}}, 5_000
     {:ok, after_run} = EphemeralStore.load(store, run)

@@ -191,7 +191,7 @@ defmodule Backplane.AgentRuntime.CodexReadinessFailureTest do
     assert error.cause == nil
     assert {:ok, %{is_error: true, error: value}} = call(state)
     assert value["class"] == "execution_failure"
-    assert is_binary(Jason.encode!(value))
+    assert is_binary(JSON.encode!(value))
     refute Map.has_key?(value, "cause")
   end
 
