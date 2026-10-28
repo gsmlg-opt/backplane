@@ -107,7 +107,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
              incarnation: resource_owner.incarnation,
              owner_pid: resource_owner.owner_pid
            ),
-         {:ok, result} <- execute(registry, owner, code, opts) do
+         {:ok, result} <- execute_occurrence(registry, owner, code, opts, operation) do
       {:ok, public_result(result)}
     end
   end
@@ -155,6 +155,101 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
   end
 
   def call(_operation), do: {:error, Error.new(:not_found, "unknown Code Mode tool")}
+
+  @doc false
+  def validate_headless_input(source, input, catalog, owner) do
+    with {:ok,
+          %{
+            backend: Backplane.AgentRuntime.Codex.Backend,
+            backend_context: %{family: :code_mode, context: context}
+          }} <-
+           Backplane.AgentRuntime.ToolRegistry.lookup(catalog.registry, "exec"),
+         {:ok, registry} <- required_registry(context),
+         :ok <- validate_code(source, code_options(context, [])),
+         {:ok, _slice} <- source_options(source),
+         stored when is_map(stored) <-
+           ResourceRegistry.code_state(registry, owner.owner_id, owner.incarnation),
+         tools =
+           tool_metadata(%{
+             backend_context: %{catalog_snapshot: catalog},
+             effective_authority: catalog.authority
+           }),
+         frame = %{type: "execute", code: source, input: input, stored: stored, tools: tools},
+         true <- byte_size(JSON.encode!(frame)) <= 1_048_576 do
+      :ok
+    else
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      _ ->
+        {:error,
+         Error.new(
+           :validation,
+           "headless execution requires a native exec and bounded protocol frame"
+         )}
+    end
+  catch
+    :exit, _ -> {:error, Error.new(:resource_conflict, "headless resources are unavailable")}
+  end
+
+  defp execute_occurrence(registry, owner, code, opts, operation) do
+    if operation.backend_context[:execution_mode] == :headless do
+      with accessor when is_function(accessor, 0) <- operation.backend_context[:effect_deadline],
+           {:ok, %{remaining_ms: remaining}} when remaining > 0 <- accessor.(),
+           deadline = System.monotonic_time(:millisecond) + min(remaining, opts[:timeout]),
+           opts =
+             Keyword.merge(opts,
+               input: operation.backend_context[:headless_input],
+               absolute_deadline: deadline,
+               timeout: min(remaining, opts[:timeout])
+             ),
+           {:ok, result} <- execute(registry, owner, code, opts) do
+        collect_occurrence(registry, owner, result, opts, [], false, 0)
+      else
+        {:error, %Error{} = error} -> {:error, error}
+        _ -> {:error, Error.new(:timeout, "headless execution deadline expired")}
+      end
+    else
+      execute(registry, owner, code, opts)
+    end
+  end
+
+  defp collect_occurrence(registry, owner, result, opts, output, truncated, bytes) do
+    {output, truncated, bytes} =
+      Enum.reduce(
+        Map.get(result, :output, []),
+        {output, truncated, bytes},
+        fn item, {items, cut, used} ->
+          size = byte_size(JSON.encode!(item))
+
+          if cut or used + size > min(opts[:output_limit], opts[:max_tokens] * 4),
+            do: {items, true, used},
+            else: {items ++ [item], cut, used + size}
+        end
+      )
+
+    truncated = truncated or Map.get(result, :output_truncated, false)
+
+    if result.status == :yielded do
+      if System.monotonic_time(:millisecond) < opts[:absolute_deadline] do
+        with {:ok, next} <- resume(registry, result.handle, nil, Keyword.put(opts, :owner, owner)) do
+          next = if next.status == :yielded, do: Map.put(next, :handle, result.handle), else: next
+          collect_occurrence(registry, owner, next, opts, output, truncated, bytes)
+        end
+      else
+        case cancel(registry, result.handle, owner) do
+          {:ok, _} -> {:error, Error.new(:timeout, "headless execution deadline expired")}
+          error -> error
+        end
+      end
+    else
+      {:ok,
+       result
+       |> Map.delete(:handle)
+       |> Map.put(:output, output)
+       |> Map.put(:output_truncated, truncated)}
+    end
+  end
 
   @spec execute(pid(), String.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, Error.t()}
@@ -334,6 +429,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
   defp worker_opts(code, context, dispatcher, opts) do
     [
       code: code,
+      input: Keyword.get(opts, :input),
+      absolute_deadline: Keyword.get(opts, :absolute_deadline),
       context: context,
       dispatcher: dispatcher,
       timeout: Keyword.get(opts, :timeout, @default_timeout),
@@ -597,6 +694,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
              end,
            handle: nil,
            code: Keyword.fetch!(opts, :code),
+           input: Keyword.get(opts, :input),
+           absolute_deadline: Keyword.get(opts, :absolute_deadline),
            context: Keyword.fetch!(opts, :context),
            dispatcher: Keyword.fetch!(opts, :dispatcher),
            timeout: Keyword.fetch!(opts, :timeout),
@@ -665,11 +764,17 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       send_command(state.port, %{
         type: "execute",
         code: state.code,
+        input: state.input,
         tools: state.tools,
         stored: state.stored
       })
 
       {:noreply, arm(state, from)}
+    end
+
+    def handle_call(:suspend_timer, _from, %{absolute_deadline: deadline} = state)
+        when is_integer(deadline) do
+      {:reply, :ok, state}
     end
 
     def handle_call(:suspend_timer, _from, state) do
@@ -1175,13 +1280,19 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           state
         else
           generation = make_ref()
-          timer = Process.send_after(self(), {:deadline, generation}, state.timeout)
+
+          remaining =
+            if is_integer(state.absolute_deadline),
+              do: max(0, state.absolute_deadline - System.monotonic_time(:millisecond)),
+              else: state.timeout
+
+          timer = Process.send_after(self(), {:deadline, generation}, remaining)
 
           %{
             state
             | timer: timer,
               timer_generation: generation,
-              timer_deadline: System.monotonic_time(:millisecond) + state.timeout,
+              timer_deadline: System.monotonic_time(:millisecond) + remaining,
               paused_remaining: nil
           }
         end

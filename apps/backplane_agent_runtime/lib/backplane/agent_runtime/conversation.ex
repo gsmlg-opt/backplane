@@ -220,7 +220,10 @@ defmodule Backplane.AgentRuntime.Conversation do
           expected_revision: 0,
           state: :queued,
           admitted: false,
-          context: %{conversation: conversation},
+          context: %{
+            conversation: conversation,
+            execution_mode: Keyword.get(opts, :execution_mode, :interactive)
+          },
           children: [],
           deadline: initial_deadline(opts, limits.run),
           execution_budget: budget
@@ -260,7 +263,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       jobs: :queue.new(),
       interaction: nil,
       stopping: nil,
+      headless_owner: nil,
       cancellations: %{},
+      retirement_evidence: [],
       cleanup_due: nil,
       timer: timer,
       timer_generation: generation,
@@ -374,6 +379,7 @@ defmodule Backplane.AgentRuntime.Conversation do
          catalog_publication: catalog_publication(s.catalog, :published),
          pending_catalog_publication:
            catalog_publication(s.pending_catalog && s.pending_catalog.catalog, :staged),
+         retirement_evidence: s.retirement_evidence,
          resource_cleanup: s.resource_cleanup
        }, s}
 
@@ -414,6 +420,50 @@ defmodule Backplane.AgentRuntime.Conversation do
     GenServer.reply(from, :ok)
     {:noreply, stop(s, :cancelled)}
   end
+
+  def handle_call({:headless_execute, source, input}, {caller, _} = from, s) do
+    cond do
+      get_in(s.run, [:context, :execution_mode]) != :headless ->
+        {:reply, {:error, Error.new(:unsupported_capability, "run is not headless")}, s}
+
+      s.phase != :idle or s.headless_owner != nil ->
+        {:reply,
+         {:error, Error.new(:resource_conflict, "headless occurrence is already admitted")}, s}
+
+      true ->
+        binding = Keyword.get(s.opts, :session_binding)
+
+        resource_owner =
+          if binding,
+            do: Map.take(binding, [:owner_id, :incarnation]),
+            else: %{owner_id: s.run.run_id, incarnation: s.run.incarnation}
+
+        case Backplane.AgentRuntime.Codex.CodeMode.validate_headless_input(
+               source,
+               input,
+               s.catalog,
+               resource_owner
+             ) do
+          :ok ->
+            owner = %{pid: caller, monitor: Process.monitor(caller)}
+
+            {:noreply,
+             enqueue(
+               %{s | headless_owner: owner, phase: :starting, callers: [from | s.callers]},
+               {:headless_execute, source, input, from}
+             )}
+
+          error ->
+            {:reply, error, s}
+        end
+    end
+  end
+
+  def handle_call({:input, _, _}, _from, %{run: %{context: %{execution_mode: :headless}}} = s),
+    do:
+      {:reply,
+       {:error, Error.new(:unsupported_capability, "headless runs do not accept provider input")},
+       s}
 
   def handle_call({:input, mode, content}, from, s) do
     cond do
@@ -694,6 +744,12 @@ defmodule Backplane.AgentRuntime.Conversation do
         %{stopping: %{cooperative: true}, nested: %{task: %{ref: ref}}} = s
       ),
       do: {:noreply, s}
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{headless_owner: %{monitor: ref}} = s) do
+    if s.phase in [:terminal, :recovery_required, :storage_failed],
+      do: {:noreply, s},
+      else: {:noreply, stop(s, :cancelled)}
+  end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{stopping: %{cooperative: true}} = s)
       when (is_map(s.effect) and ref == s.effect.task.ref) or
@@ -1097,6 +1153,53 @@ defmodule Backplane.AgentRuntime.Conversation do
         do: accepted.(%{s | conversation: conversation}),
         else: checkpoint(s, conversation, accepted)
     end
+  end
+
+  defp process(s, {:headless_execute, source, input, from}) do
+    catalog = %{
+      revision: s.catalog.revision,
+      tools:
+        s.catalog.registry.tools
+        |> Map.values()
+        |> Enum.map(
+          &Map.take(&1, [
+            :tool_name,
+            :tool_revision,
+            :schema,
+            :safety,
+            :codex_input_kind,
+            :codex_format
+          ])
+        )
+        |> Enum.sort_by(& &1.tool_name)
+    }
+
+    catalog =
+      Map.put(
+        catalog,
+        :descriptor_digest,
+        Backplane.AgentRuntime.Codex.Reconciliation.Evidence.digest(catalog)
+      )
+
+    commit(s, {:admit, now(), %{state: :running, deadline: s.run.deadline}}, %{}, [], fn s, _ ->
+      step =
+        Map.merge(identity(s), %{
+          step_id: id("host_step"),
+          attempt_id: id("host_attempt"),
+          catalog: catalog
+        })
+
+      commit(s, {:host_step_started, now(), step}, %{}, [], fn s, _ ->
+        turn_id = id("headless_turn")
+        conversation = %{s.conversation | turn_id: turn_id}
+
+        checkpoint(%{s | phase: :running}, conversation, fn s ->
+          s = reply(s, from, {:ok, Map.merge(identity(s), %{turn_id: turn_id})})
+          s = %{s | opts: Keyword.put(s.opts, :headless_input, input)}
+          begin_tools(s, [%{id: id("host_exec"), name: "exec", arguments: source}], s.catalog)
+        end)
+      end)
+    end)
   end
 
   defp process(s, {:input, mode, content, from}) do
@@ -2061,6 +2164,37 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp validate_tool_arguments(descriptor, arguments),
     do: InputSchema.validate(descriptor.schema, arguments)
 
+  defp append_tool_result(
+         %{run: %{context: %{execution_mode: :headless}}} = s,
+         invocation,
+         result,
+         [],
+         _catalog
+       ) do
+    # The native outer result is already ACKed. No provider continuation is allowed.
+    if result[:is_error] do
+      finish_turn(%{s | last_error: result[:error]}, :failed)
+    else
+      count =
+        s.run.tool_results
+        |> Map.keys()
+        |> Enum.reject(&(&1 == invocation.invocation_id))
+        |> length()
+
+      outcome =
+        result
+        |> Map.take([:status, :value, :output, :output_truncated])
+        |> Map.put(:nested_invocations, count)
+        |> Map.put(:outer_reservations, 1)
+
+      checkpoint(
+        s,
+        Map.put(s.conversation, :headless_result, outcome),
+        &finish_turn(&1, :completed)
+      )
+    end
+  end
+
   defp append_tool_result(s, invocation, result, rest, catalog) do
     message = %{
       role: :tool,
@@ -2342,7 +2476,17 @@ defmodule Backplane.AgentRuntime.Conversation do
       ])
     )
     |> Map.merge(goal_tool_context(s))
+    |> headless_tool_context(s)
   end
+
+  defp headless_tool_context(context, %{run: %{context: %{execution_mode: :headless}}} = s),
+    do:
+      Map.merge(context, %{
+        execution_mode: :headless,
+        headless_input: Keyword.get(s.opts, :headless_input)
+      })
+
+  defp headless_tool_context(context, _s), do: context
 
   defp goal_text(%{content: text}) when is_binary(text), do: text
 
@@ -2783,7 +2927,10 @@ defmodule Backplane.AgentRuntime.Conversation do
         s
 
       {entry, remaining} ->
-        Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+        if entry.operation.tool_name == "request_plugin_install",
+          do: Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry),
+          else: Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+
         %{s | cancellations: remaining}
     end
   end
@@ -2801,7 +2948,8 @@ defmodule Backplane.AgentRuntime.Conversation do
       operation.tool_name in [
         "list_mcp_resources",
         "list_mcp_resource_templates",
-        "read_mcp_resource"
+        "read_mcp_resource",
+        "request_plugin_install"
       ] and
       Map.delete(ToolEffects.cancellation_identity(operation), :session_binding_identity) ===
         ToolEffects.cancellation_identity(invocation)
@@ -2960,9 +3108,24 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp finish_cooperative_cleanup(s, result) do
     stopping = s.stopping
     if stopping.timer, do: Process.cancel_timer(stopping.timer)
-    outer_down = if s.nested, do: kill_task(s.effect), else: :ok
+    outer_down = if s.nested, do: stop_task_before(s.effect, s.cleanup_due), else: :ok
     resources_confirmed = match?({:ok, %{status: :confirmed}}, result)
-    uncertain = stopping.uncertain or not resources_confirmed or outer_down != :ok
+
+    uncertain =
+      stopping.uncertain or not resources_confirmed or outer_down != :ok or
+        System.monotonic_time(:millisecond) > s.cleanup_due
+
+    plugin_proofs =
+      for %{report: %{"record_type" => "native_plugin_wait_retirement"} = proof} <-
+            stopping.evidence,
+          do: proof
+
+    retirement = outer_retirement(s, plugin_proofs, not uncertain)
+
+    s = %{
+      s
+      | retirement_evidence: Enum.take(retirement ++ plugin_proofs ++ s.retirement_evidence, 256)
+    }
 
     evidence =
       if s.nested do
@@ -2971,6 +3134,7 @@ defmodule Backplane.AgentRuntime.Conversation do
             kind: :code_mode,
             enclosing: ToolEffects.cancellation_identity(elem(s.effect.role, 1)),
             nested: stopping.evidence,
+            retirement_evidence: retirement,
             effect_down: outer_down == :ok,
             resources: if(resources_confirmed, do: :confirmed, else: :uncertain)
           }
@@ -2992,6 +3156,106 @@ defmodule Backplane.AgentRuntime.Conversation do
             evidence: evidence
         }
     })
+  end
+
+  defp outer_retirement(%{nested: nil}, _proofs, _confirmed), do: []
+  defp outer_retirement(_s, [], _confirmed), do: []
+  defp outer_retirement(_s, _proofs, false), do: []
+
+  defp outer_retirement(s, proofs, true) do
+    alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+    outer = elem(s.effect.role, 1) |> retirement_operation(s)
+
+    nested =
+      s.run
+      |> Map.get(:execution_intents, %{})
+      |> Map.values()
+      |> Enum.filter(&(&1[:type] == :tool))
+      |> Enum.map(& &1.operation)
+      |> Enum.filter(
+        &(&1[:enclosing_invocation_id] == outer.invocation_id &&
+            &1.invocation_id != outer.invocation_id)
+      )
+      |> Enum.map(fn invocation ->
+        identity = invocation |> retirement_operation(s) |> ToolEffects.cancellation_identity()
+        {:ok, public_identity} = Evidence.public(identity)
+        proof = Enum.find(proofs, &(&1["identity"] === public_identity))
+
+        cond do
+          proof ->
+            %{
+              kind: :native_plugin_wait_retirement,
+              identity: identity,
+              evidence_digest: proof["retirement_digest"]
+            }
+
+          Map.has_key?(s.run.tool_results, invocation.invocation_id) ->
+            case Evidence.public(%{
+                   identity: identity,
+                   result: s.run.tool_results[invocation.invocation_id]
+                 }) do
+              {:ok, record} ->
+                %{
+                  kind: :acknowledged_settlement,
+                  identity: identity,
+                  evidence_digest: Evidence.digest(record)
+                }
+
+              _ ->
+                nil
+            end
+
+          true ->
+            nil
+        end
+      end)
+
+    if nested != [] and Enum.all?(nested, &is_map/1) and
+         System.monotonic_time(:millisecond) <= s.cleanup_due do
+      record =
+        Evidence.public(%{
+          schema_version: 1,
+          record_type: :code_mode_retirement,
+          identity: ToolEffects.cancellation_identity(outer),
+          stop_generation: s.stopping.generation,
+          provenance: %{session_binding_identity: outer[:session_binding_identity]},
+          executor_down: true,
+          resources: :confirmed,
+          nested: nested,
+          local_cleanup: :confirmed,
+          outcome: :unknown
+        })
+
+      with {:ok, record} <- record,
+           proof = Evidence.seal(record, "retirement_digest"),
+           {:ok, ^proof} <- ToolEffects.validate_retirement_record(proof, outer) do
+        [proof]
+      else
+        _ -> []
+      end
+    else
+      []
+    end
+  end
+
+  defp retirement_operation(operation, s) do
+    case Keyword.get(s.opts, :session_binding) do
+      binding when is_map(binding) ->
+        Map.put(
+          operation,
+          :session_binding_identity,
+          Map.take(binding, [:run_id, :owner_id, :incarnation, :run_incarnation])
+        )
+
+      _ ->
+        operation
+    end
+  end
+
+  defp stop_task_before(entry, deadline) do
+    clear_task(entry)
+    Process.exit(entry.task.pid, :kill)
+    await_task_exit(entry.task.pid, deadline)
   end
 
   defp await_task_exit(pid, deadline) do

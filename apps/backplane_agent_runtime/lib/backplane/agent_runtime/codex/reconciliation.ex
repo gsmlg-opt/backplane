@@ -7,7 +7,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
   cleanup callback. Receipts certify lifetime closure separately from outcomes.
   """
 
-  alias Backplane.AgentRuntime.{Error, Kernel, Store}
+  alias Backplane.AgentRuntime.{Error, Kernel, Store, ToolEffects}
   alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
   @callbacks [
@@ -65,6 +65,24 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
 
   @doc "Load a current authoritative terminal Store record through a trusted reference."
   def load_record(config, reference), do: bounded(fn -> record(config, reference) end)
+
+  @doc "Read a bounded recovery journal through an explicitly capable host adapter."
+  def load_recovery_journal({module, _context} = config, reference) do
+    bounded(fn ->
+      with :ok <- adapter(config),
+           :ok <- Evidence.run_ref(reference) do
+        if function_exported?(module, :load_recovery_journal, 2) do
+          with {:ok, value} <- invoke(config, :load_recovery_journal, [reference]),
+               do: Evidence.public(value)
+        else
+          {:error,
+           Error.new(:unsupported_capability, "staged export requires load_recovery_journal/2")}
+        end
+      end
+    end)
+  end
+
+  def load_recovery_journal(_, _), do: Evidence.invalid("invalid recovery adapter")
 
   @doc false
   def load_receipt(config, reference) do
@@ -149,7 +167,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
          {:ok, records} <- records(config, manifest["run_refs"]),
          {:ok, fences} <- run_fences(records, manifest, bundle),
          :ok <- run_inventory(records, manifest),
-         {:ok, progress} <- observations(config, manifest["obligations"], bundle),
+         {:ok, progress} <- observations(config, manifest["obligations"], bundle, records),
          :ok <- monotonic_progress(previous, progress),
          :ok <- recheck_records(config, manifest["run_refs"], records) do
       next = build_receipt(request, previous, bundle, manifest, records, fences, progress)
@@ -493,14 +511,14 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
   defp identity_subset?(expected, actual),
     do: Enum.all?(expected, fn {k, v} -> actual[k] == v end)
 
-  defp observations(config, obligations, bundle) do
+  defp observations(config, obligations, bundle, records) do
     observations = bundle["observations"]
 
     with :ok <- Evidence.each(observations, &observation/1),
          :ok <- Evidence.unique(observations, & &1["observation_id"]),
          :ok <- Evidence.unique(observations, & &1["obligation_id"]),
          :ok <- Evidence.each(observations, &observation_identity(&1, obligations)),
-         {:ok, results} <- collect(obligations, &satisfy(config, &1, observations)) do
+         {:ok, results} <- collect(obligations, &satisfy(config, &1, observations, records)) do
       results = propagate_dependencies(results)
       satisfied = for {obligation, true, _} <- results, do: obligation
       pending = for {obligation, false, _} <- results, do: obligation
@@ -529,7 +547,8 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
     fields =
       ~w(observation_id observation_revision obligation_id identity result source_ref observed_at_unix_ms)
 
-    with :ok <- Evidence.fields(value, fields, fields),
+    with :ok <- Evidence.fields(value, fields ++ ["effect_retirement_ref"], fields),
+         :ok <- optional_retirement_ref(value),
          :ok <-
            Evidence.each(
              ~w(observation_id obligation_id source_ref),
@@ -545,26 +564,42 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
     end
   end
 
+  defp optional_retirement_ref(%{"effect_retirement_ref" => ref, "result" => "closed"}),
+    do: Evidence.identifier(ref)
+
+  defp optional_retirement_ref(%{"effect_retirement_ref" => _}),
+    do: Evidence.invalid("effect retirement requires a closed tool observation")
+
+  defp optional_retirement_ref(_), do: :ok
+
   defp observation_identity(observation, obligations) do
     case Enum.find(obligations, &(&1["obligation_id"] == observation["obligation_id"])) do
       nil ->
         conflict("observation refers to an unknown obligation")
 
       obligation ->
-        same(
-          observation["identity"],
-          obligation["identity"],
-          "observed component identity differs"
-        )
+        if Map.has_key?(observation, "effect_retirement_ref") and obligation["kind"] != "tool" do
+          Evidence.invalid("effect retirement applies only to tool obligations")
+        else
+          same(
+            observation["identity"],
+            obligation["identity"],
+            "observed component identity differs"
+          )
+        end
     end
   end
 
-  defp satisfy(config, obligation, observations) do
+  defp satisfy(config, obligation, observations, records) do
     fact = Enum.find(observations, &(&1["obligation_id"] == obligation["obligation_id"]))
 
     case {obligation["kind"], obligation["identity"]} do
       {"tool", _} ->
-        unresolved = is_nil(fact) or fact["result"] != "not_started"
+        unresolved =
+          is_nil(fact) or
+            (fact["result"] != "not_started" and
+               not retired_tool?(config, obligation, fact, observations, records))
+
         {:ok, {obligation, not is_nil(fact), unresolved}}
 
       {_, %{"receipt_id" => id, "subject" => subject} = identity} ->
@@ -587,6 +622,172 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
         {:ok, {obligation, not is_nil(fact), false}}
     end
   end
+
+  # Typed records are loaded only through the trusted immutable evidence adapter.
+  # The digest detects corruption; the host adapter supplies provenance authority.
+  defp retired_tool?(config, obligation, fact, facts, records) do
+    with "closed" <- fact["result"],
+         ref when is_binary(ref) <- fact["effect_retirement_ref"],
+         {:ok, raw} <- invoke(config, :load_evidence, [ref]),
+         {:ok, proof} <- Evidence.public(raw),
+         {:ok, run, operation} <- original_tool(records, obligation["identity"]),
+         {:ok, operation} <- proof_operation(proof, operation),
+         {:ok, ^proof} <- ToolEffects.validate_retirement_record(proof, operation),
+         true <- source_generation?(run, proof),
+         true <- nested_retirement?(config, run, operation, proof, facts, records) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp original_tool(records, identity) do
+    matches =
+      for %{run: run} <- records,
+          intent <- Map.values(Map.get(run, :execution_intents, %{})),
+          intent[:type] == :tool,
+          operation = intent.operation,
+          {:ok, public} = Evidence.public(ToolEffects.cancellation_identity(operation)),
+          identity_subset?(identity, public),
+          do: {run, operation}
+
+    case matches do
+      [{run, operation}] -> {:ok, run, operation}
+      _ -> uncertain("retirement has no exact authoritative tool intent")
+    end
+  end
+
+  defp proof_operation(proof, operation) do
+    {:ok, original} = Evidence.public(ToolEffects.cancellation_identity(operation))
+    identity = proof["identity"]
+
+    with true <- is_map(identity),
+         true <-
+           Map.delete(identity, "session_binding_identity") ===
+             Map.delete(original, "session_binding_identity"),
+         :ok <- session_identity(identity["session_binding_identity"], operation) do
+      if Map.has_key?(identity, "session_binding_identity"),
+        do:
+          {:ok,
+           Map.put(operation, :session_binding_identity, identity["session_binding_identity"])},
+        else: {:ok, operation}
+    else
+      _ -> uncertain("retirement differs from the authoritative invocation")
+    end
+  end
+
+  defp session_identity(nil, _), do: :ok
+
+  defp session_identity(binding, operation) when is_map(binding) do
+    with :ok <-
+           Evidence.fields(
+             binding,
+             ~w(run_id owner_id incarnation run_incarnation),
+             ~w(run_id owner_id incarnation run_incarnation)
+           ),
+         :ok <- same(binding["run_id"], operation.run_id, "retirement Session run differs"),
+         :ok <-
+           same(
+             binding["run_incarnation"],
+             operation.incarnation,
+             "retirement Session incarnation differs"
+           ),
+         :ok <- Evidence.identifier(binding["owner_id"]),
+         do: Evidence.positive(binding["incarnation"])
+  end
+
+  defp session_identity(_, _), do: Evidence.invalid("invalid retirement Session identity")
+
+  defp source_generation?(run, proof) do
+    retained = retirement_records(get_in(run, [:outcome, "cleanup", "evidence"]))
+    stable = Map.take(proof["identity"], ~w(run_id incarnation step_id attempt_id invocation_id))
+
+    same_invocation =
+      Enum.filter(retained, fn record ->
+        Map.take(record["identity"], ~w(run_id incarnation step_id attempt_id invocation_id)) ==
+          stable
+      end)
+
+    same_invocation == [] or proof in same_invocation
+  end
+
+  defp retirement_records(%{"record_type" => type} = record)
+       when type in ["native_plugin_wait_retirement", "code_mode_retirement"] do
+    [record]
+  end
+
+  defp retirement_records(map) when is_map(map),
+    do: map |> Map.values() |> Enum.flat_map(&retirement_records/1)
+
+  defp retirement_records(list) when is_list(list), do: Enum.flat_map(list, &retirement_records/1)
+  defp retirement_records(_), do: []
+
+  defp nested_retirement?(
+         _config,
+         _run,
+         _outer,
+         %{"record_type" => "native_plugin_wait_retirement"},
+         _facts,
+         _records
+       ),
+       do: true
+
+  defp nested_retirement?(
+         config,
+         run,
+         outer,
+         %{"record_type" => "code_mode_retirement"} = proof,
+         facts,
+         records
+       ) do
+    expected =
+      run
+      |> Map.get(:execution_intents, %{})
+      |> Map.values()
+      |> Enum.filter(&(&1[:type] == :tool))
+      |> Enum.map(& &1.operation)
+      |> Enum.filter(
+        &(&1[:enclosing_invocation_id] == outer.invocation_id and
+            &1.invocation_id != outer.invocation_id)
+      )
+
+    nested = proof["nested"]
+
+    length(expected) == length(nested) and
+      Enum.all?(expected, fn operation ->
+        case Enum.find(nested, &(&1["identity"]["invocation_id"] == operation.invocation_id)) do
+          %{"kind" => "acknowledged_settlement"} = entry ->
+            with {:ok, bound} <- proof_operation(%{"identity" => entry["identity"]}, operation),
+                 {:ok, result} <- Map.fetch(run.tool_results, operation.invocation_id),
+                 {:ok, record} <-
+                   Evidence.public(%{
+                     identity: ToolEffects.cancellation_identity(bound),
+                     result: result
+                   }),
+                 do: entry["evidence_digest"] == Evidence.digest(record),
+                 else: (_ -> false)
+
+          %{"kind" => "native_plugin_wait_retirement"} = entry ->
+            fact = Enum.find(facts, &(&1["identity"]["invocation_id"] == operation.invocation_id))
+
+            with true <- is_map(fact),
+                 ref when is_binary(ref) <- fact["effect_retirement_ref"],
+                 {:ok, nested_proof} <- invoke(config, :load_evidence, [ref]),
+                 {:ok, nested_proof} <- Evidence.public(nested_proof),
+                 true <- nested_proof["identity"] === entry["identity"],
+                 true <- nested_proof["retirement_digest"] == entry["evidence_digest"],
+                 true <- nested_proof["stop_generation"] == proof["stop_generation"],
+                 obligation = %{"identity" => fact["identity"]},
+                 do: retired_tool?(config, obligation, fact, facts, records),
+                 else: (_ -> false)
+
+          _ ->
+            false
+        end
+      end)
+  end
+
+  defp nested_retirement?(_, _, _, _, _, _), do: false
 
   defp subordinate_authority(config, %{"retirement" => "confirmed"} = receipt),
     do: receipt_authority(config, receipt)

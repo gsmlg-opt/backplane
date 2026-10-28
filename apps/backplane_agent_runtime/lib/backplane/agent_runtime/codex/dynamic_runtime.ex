@@ -8,6 +8,8 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     Codex.Dynamic,
     Codex.ToolSearch,
     Codex.ResourceRequest,
+    Codex.PluginInstallWait,
+    ToolEffects,
     Error,
     ToolRegistry,
     ToolCatalog
@@ -62,6 +64,21 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     end
   end
 
+  def call(
+        %{tool_name: "request_plugin_install", backend_context: %{runtime: runtime}} = operation
+      )
+      when is_pid(runtime) do
+    with {:ok, admitted, adapter} <- GenServer.call(runtime, {:begin_plugin, operation}) do
+      outcome =
+        call_adapter(%{plugin_adapter: adapter}, :plugin_adapter, :request_install, [
+          admitted.arguments,
+          admitted
+        ])
+
+      GenServer.call(runtime, {:finish_plugin, admitted, outcome}, :infinity)
+    end
+  end
+
   def call(%{backend_context: %{runtime: runtime}} = operation) when is_pid(runtime),
     do: GenServer.call(runtime, {:tool, operation}, :infinity)
 
@@ -80,6 +97,23 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   @doc false
   def cancel_resource(operation), do: ResourceRequest.cancel(operation)
 
+  @doc """
+  Observe an already acknowledged immutable host request in the actual effect caller.
+
+  The callback may only wait for that request. It must not install, dispatch MCP,
+  or start untracked work. Registration precedes the callback; cancellation seals
+  completion and observes the registered caller's termination, not remote rollback.
+  """
+  def plugin_install_wait(operation, host_request_ref, wait_fn),
+    do: PluginInstallWait.run(operation, host_request_ref, wait_fn)
+
+  @doc "Returns retained exact plugin-wait retirement evidence, or unknown_outcome."
+  def plugin_install_retirement(runtime, exact_identity) do
+    GenServer.call(runtime, {:plugin_install_retirement, exact_identity})
+  catch
+    :exit, _ -> PluginInstallWait.unavailable()
+  end
+
   @impl true
   def init(opts) do
     with {:ok, dynamic} <- Dynamic.new(max_results: Keyword.get(opts, :max_results, 50)) do
@@ -92,6 +126,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
          discovery_owners: %{},
          pending_publications: %{},
          resource_requests: %{},
+         plugin_calls: %{},
+         plugin_retirements: [],
+         runtime_id: unique_id("dynamic_runtime"),
          mcp_adapter: Keyword.get(opts, :mcp_adapter),
          plugin_adapter: Keyword.get(opts, :plugin_adapter),
          plugin_context: Keyword.get(opts, :plugin_context, %{})
@@ -100,6 +137,134 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   @impl true
+  def handle_call({:begin_plugin, operation}, {owner, _}, state) do
+    with true <- map_size(state.plugin_calls) < 1_024,
+         {:ok, receipt, dynamic} <-
+           request_plugin(state.dynamic, operation.run_id, operation.arguments) do
+      admitted = Map.put(operation, :plugin_request_id, receipt.id)
+
+      entry = %{
+        operation: admitted,
+        receipt: receipt,
+        owner: owner,
+        monitor: Process.monitor(owner),
+        registration: nil,
+        host_request_ref: nil,
+        coordinator: nil,
+        coordinator_monitor: nil,
+        gate: :open,
+        stop_generation: nil,
+        deadline: nil,
+        timer: nil,
+        waiters: []
+      }
+
+      {:reply, {:ok, admitted, state.plugin_adapter},
+       %{state | dynamic: dynamic, plugin_calls: Map.put(state.plugin_calls, receipt.id, entry)}}
+    else
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      _ -> {:reply, {:error, Error.new(:overloaded, "too many active plugin requests")}, state}
+    end
+  end
+
+  def handle_call({:finish_plugin, operation, outcome}, {owner, _}, state) do
+    case state.plugin_calls[operation.plugin_request_id] do
+      %{owner: ^owner, gate: :open} = entry ->
+        if exact_plugin?(entry, operation) do
+          state = drop_plugin(state, entry)
+
+          case plugin_outcome(outcome, entry.receipt, state.dynamic, operation, state) do
+            {:ok, result, next} -> {:reply, {:ok, result}, next}
+            {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+          end
+        else
+          {:reply, PluginInstallWait.unavailable(), state}
+        end
+
+      _ ->
+        {:reply, PluginInstallWait.unavailable(), state}
+    end
+  end
+
+  def handle_call({:register_plugin_wait, operation, reference}, {owner, _}, state) do
+    case state.plugin_calls[operation[:plugin_request_id]] do
+      %{owner: ^owner, gate: :open, registration: nil} = entry ->
+        if exact_plugin?(entry, operation) do
+          registration = unique_id("plugin_wait")
+          entry = %{entry | registration: registration, host_request_ref: reference}
+
+          {:reply, {:ok, registration},
+           put_in(state.plugin_calls[operation.plugin_request_id], entry)}
+        else
+          {:reply, PluginInstallWait.unavailable(), state}
+        end
+
+      _ ->
+        {:reply, PluginInstallWait.unavailable(), state}
+    end
+  end
+
+  def handle_call({:coordinate_plugin_wait, registration, coordinator}, {owner, _}, state) do
+    case find_plugin(state, registration) do
+      %{owner: ^owner, gate: :open, coordinator: nil} = entry when is_pid(coordinator) ->
+        entry = %{
+          entry
+          | coordinator: coordinator,
+            coordinator_monitor: Process.monitor(coordinator)
+        }
+
+        {:reply, :ok, put_in(state.plugin_calls[entry.operation.plugin_request_id], entry)}
+
+      _ ->
+        {:reply, PluginInstallWait.unavailable(), state}
+    end
+  end
+
+  def handle_call({:cancel_plugin_wait, operation, deadline}, from, state) do
+    entry = find_plugin(state, operation[:resource_registration])
+
+    if entry && exact_plugin?(entry, operation) && entry.coordinator != nil &&
+         is_binary(operation[:stop_generation]) && operation.stop_generation != "" &&
+         (entry.stop_generation == nil || entry.stop_generation === operation.stop_generation) &&
+         is_integer(deadline) && deadline > System.monotonic_time(:millisecond) do
+      if entry.gate == :open do
+        timer =
+          Process.send_after(
+            self(),
+            {:plugin_wait_timeout, entry.registration, operation.stop_generation},
+            max(1, deadline - System.monotonic_time(:millisecond))
+          )
+
+        entry = %{
+          entry
+          | gate: :closed,
+            stop_generation: operation.stop_generation,
+            deadline: deadline,
+            timer: timer,
+            waiters: [from]
+        }
+
+        Process.exit(entry.owner, :kill)
+        {:noreply, put_in(state.plugin_calls[entry.operation.plugin_request_id], entry)}
+      else
+        {:noreply,
+         put_in(
+           state.plugin_calls[entry.operation.plugin_request_id],
+           %{entry | waiters: [from | entry.waiters]}
+         )}
+      end
+    else
+      {:reply, PluginInstallWait.unavailable(), state}
+    end
+  end
+
+  def handle_call({:plugin_install_retirement, identity}, _from, state) do
+    case Enum.find(state.plugin_retirements, &(&1.identity === identity)) do
+      %{proof: proof} -> {:reply, {:ok, proof}, state}
+      _ -> {:reply, PluginInstallWait.unavailable(), state}
+    end
+  end
+
   def handle_call(:resource_adapter, _from, state), do: {:reply, state.mcp_adapter, state}
 
   def handle_call({:register_resource, operation, control}, {owner, _}, state) do
@@ -227,6 +392,18 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   @impl true
+  def handle_cast({:release_plugin_wait, registration, identity}, state) do
+    case find_plugin(state, registration) do
+      %{operation: operation} = entry ->
+        if ToolEffects.cancellation_identity(operation) === identity,
+          do: {:noreply, drop_plugin(state, entry)},
+          else: {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_cast({:release_resource, registration, identity}, state) do
     case state.resource_requests[registration] do
       %{operation: operation} = entry ->
@@ -245,7 +422,20 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   @impl true
+  def handle_info({:plugin_wait_timeout, registration, generation}, state) do
+    case find_plugin(state, registration) do
+      %{stop_generation: ^generation} = entry ->
+        Enum.each(entry.waiters, &GenServer.reply(&1, PluginInstallWait.unavailable()))
+        {:noreply, drop_plugin(state, entry)}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, state) do
+    state = plugin_down(state, monitor)
+
     requests =
       Enum.reduce(state.resource_requests, %{}, fn {id, entry}, acc ->
         cond do
@@ -270,6 +460,72 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
       end)
 
     {:noreply, %{state | resource_requests: requests}}
+  end
+
+  defp find_plugin(state, registration) when is_binary(registration),
+    do:
+      Enum.find_value(state.plugin_calls, fn {_, entry} ->
+        if entry.registration === registration, do: entry
+      end)
+
+  defp find_plugin(_, _), do: nil
+
+  defp exact_plugin?(entry, operation),
+    do:
+      entry.operation.plugin_request_id === operation[:plugin_request_id] &&
+        ToolEffects.cancellation_identity(entry.operation) ===
+          ToolEffects.cancellation_identity(operation)
+
+  defp drop_plugin(state, entry) do
+    for monitor <- [entry.monitor, entry.coordinator_monitor],
+        is_reference(monitor),
+        do: Process.demonitor(monitor, [:flush])
+
+    if entry.timer, do: Process.cancel_timer(entry.timer)
+    %{state | plugin_calls: Map.delete(state.plugin_calls, entry.operation.plugin_request_id)}
+  end
+
+  defp plugin_down(state, monitor) do
+    Enum.reduce(state.plugin_calls, state, fn {_, entry}, current ->
+      cond do
+        entry.monitor === monitor && entry.gate == :closed && entry.coordinator != nil &&
+          Process.alive?(entry.coordinator) &&
+            System.monotonic_time(:millisecond) <= entry.deadline ->
+          proof = PluginInstallWait.proof(entry, current.runtime_id)
+
+          operation =
+            entry.operation
+            |> Map.put(:stop_generation, entry.stop_generation)
+            |> Map.put(:resource_registration, entry.registration)
+
+          assertion = ToolEffects.confirm_retirement(operation, proof)
+          Enum.each(entry.waiters, &GenServer.reply(&1, assertion))
+          current = drop_plugin(current, entry)
+
+          case assertion do
+            {:ok, _} ->
+              retained = %{
+                identity: ToolEffects.cancellation_identity(entry.operation),
+                proof: proof
+              }
+
+              %{
+                current
+                | plugin_retirements: Enum.take([retained | current.plugin_retirements], 256)
+              }
+
+            _ ->
+              current
+          end
+
+        monitor in [entry.monitor, entry.coordinator_monitor] ->
+          Enum.each(entry.waiters, &GenServer.reply(&1, PluginInstallWait.unavailable()))
+          drop_plugin(current, entry)
+
+        true ->
+          current
+      end
+    end)
   end
 
   defp retire_resource_monitors(entry) do
@@ -315,18 +571,6 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
 
   defp execute(%{tool_name: "list_available_plugins_to_install"} = operation, state),
     do: adapter_call(state, :plugin_adapter, :list_candidates, [operation, state.plugin_context])
-
-  defp execute(%{tool_name: "request_plugin_install", arguments: arguments} = operation, state) do
-    with {:ok, receipt, next_dynamic} <-
-           request_plugin(state.dynamic, operation.run_id, arguments),
-         outcome <-
-           call_adapter(state, :plugin_adapter, :request_install, [
-             arguments,
-             Map.put(operation, :plugin_request_id, receipt.id)
-           ]) do
-      plugin_outcome(outcome, receipt, next_dynamic, operation, state)
-    end
-  end
 
   defp execute(_operation, _state), do: {:error, Error.new(:not_found, "unknown dynamic tool")}
 

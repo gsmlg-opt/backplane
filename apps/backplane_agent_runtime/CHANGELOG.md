@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.47
+
+- Stage bounded child export evidence before manager loss and complete offline
+  after exact Goal ACKs, authoritative journal validation and receipt CAS (#134).
+- Retire adopted plugin observation waits with exact runtime-issued evidence;
+  independently validate enclosing Code Mode and all original nested effects (#135).
+- Mark image generation as mutating and non-retry-safe; supply reserved exact
+  invocation, ownership and live deadline context to image adapters (#136, #137).
+- Execute one host-authored native Code Mode occurrence through Conversation
+  without a model, preserving Store-first intent/result ACKs, bounded JSON input,
+  internal yields, caller ownership and inspection-only reload (#138).
+
 ## 1.10.45
 
 - Settle exact released Goal admissions after confirmed pre-Runtime executor

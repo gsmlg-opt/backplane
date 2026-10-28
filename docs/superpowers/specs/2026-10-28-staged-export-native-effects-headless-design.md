@@ -1,7 +1,7 @@
 # Staged child export, native effect retirement, and headless execution
 
 Date: 2026-10-28. Baseline: main `7f7ddfd9e3cc02ee66ca3f06872b242b91dbc19b`.
-Target: 1.10.47. Status: proposed, awaiting user approval; implementation has not started.
+Target: 1.10.47. Status: approved by the user and implemented; public contracts are documented in Runtime CODEX.md and PERSISTENCE.md.
 Scope: internal requests #134–#138 in gsmlg-opt/backplane.
 
 ## Problem and approach

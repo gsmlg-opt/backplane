@@ -10,7 +10,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
 
   alias Backplane.AgentRuntime.{Conversation, Error, Goal, InputSchema, Policy, ToolEffects}
   alias Backplane.AgentRuntime.Codex.{CollaborationBinding, Contract, Reconciliation, Session}
-  alias Backplane.AgentRuntime.Codex.MultiAgent.Archive
+  alias Backplane.AgentRuntime.Codex.MultiAgent.{Archive, StagedExport}
   alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
   alias Backplane.AgentRuntime.Execution
@@ -131,6 +131,29 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
   def export_child(runtime, target, receipt_ref),
     do:
       recovery_operation(runtime, {:export, target}, &Archive.export(&1.config, &1, receipt_ref))
+
+  @doc """
+  Seals portable export evidence before losing a fenced source manager.
+
+  The host must durably persist the complete returned record under one immutable
+  recovery evidence reference. Goal delivery may remain pending. `:host_metadata`
+  optionally replaces the child's bounded metadata in the resulting archive.
+  """
+  def stage_child_export(runtime, target, opts \\ []) do
+    recovery_operation(runtime, {:stage_export, target}, &StagedExport.stage(&1.config, &1, opts))
+  end
+
+  @doc """
+  Completes a persisted stage without the source manager or executing any effect.
+
+  Only exact Goal acknowledgements and recovery fences may follow its checkpoint.
+  The host must explicitly refresh stale retirement receipts before completion.
+  """
+  def complete_child_export(config, stage_ref, retirement_receipt_ref) do
+    Reconciliation.bounded(fn ->
+      StagedExport.complete(config, stage_ref, retirement_receipt_ref)
+    end)
+  end
 
   def restore_child(runtime, archive) do
     with {:ok, archive} <- Archive.validate(archive) do
@@ -4746,7 +4769,8 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     end
   end
 
-  defp recovery_pin(state, {operation, target}) when operation in [:manifest, :export] do
+  defp recovery_pin(state, {operation, target})
+       when operation in [:manifest, :export, :stage_export] do
     with {:ok, name, agent, _identity} <- recovery_child(state, target),
          false <-
            settling?(state, name) or
@@ -4760,7 +4784,7 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
         operation == :manifest and manifest != nil ->
           {:ready, manifest}
 
-        operation == :export and manifest == nil ->
+        operation in [:export, :stage_export] and manifest == nil ->
           {:error, Error.new(:resource_conflict, "child inventory is not sealed")}
 
         true ->
@@ -4877,7 +4901,9 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent do
     {:reply, {:ok, manifest}, put_in(state, [:recovery_manifests, key], manifest)}
   end
 
-  defp apply_recovery(state, {:export, _}, _pin, archive), do: {:reply, {:ok, archive}, state}
+  defp apply_recovery(state, {operation, _}, _pin, value)
+       when operation in [:export, :stage_export],
+       do: {:reply, {:ok, value}, state}
 
   defp apply_recovery(state, {:restore, _}, _pin, material) do
     archive = material.archive

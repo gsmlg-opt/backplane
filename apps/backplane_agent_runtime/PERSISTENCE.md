@@ -418,3 +418,49 @@ Selected tool timeouts, live monotonic deadlines, callback closures and worker
 identities are ephemeral Conversation state. Do not persist them. Recovery
 reconciles prior uncertain execution under the existing Store/lifecycle contract;
 it never replays selection or effects. A fresh explicit invocation selects anew.
+
+## Offline staged child export
+
+`MultiAgent.stage_child_export(manager, child, opts)` preserves bounded export
+material while a live fenced manager can validate the child pin, even with
+outstanding Goal delivery ACKs. It returns a sealed `child_export_stage`, not an
+archive or retirement receipt. Persist the entire record once using the host's
+immutable evidence store. The stage includes the exact admission, manifest,
+checkpoint and inline bounded source journal prefix plus digest.
+
+Staging requires the optional read-only recovery adapter callback
+`load_recovery_journal(context, run_ref)`. The journal is a complete contiguous
+admission-to-current-revision chain of `revision`, `prior_revision`,
+`prior_incarnation`, `incarnation`, `kind` and canonical `input`. Existing adapters
+remain compatible for other operations; missing capability, incomplete chains or
+exceeded JSON bounds explicitly refuse staged export. Store.load remains a
+snapshot contract. The trusted storage/exclusive-writer boundary supplies
+provenance; a digest detects corruption and does not authorize recovery.
+
+After actual idempotent Goal redelivery and Store ACK, explicitly refresh stale
+retirement receipts through existing Reconciliation CAS. Then call
+`MultiAgent.complete_child_export(config, stage_ref, retirement_receipt_ref)`
+without the source manager. It reloads trusted evidence and current Store/journal,
+requires an unchanged prefix and checkpoint, and permits only exact Goal ACKs and
+normal incarnation fences in the suffix. History, outcome, budget and deadline
+cannot change. Existing Archive validation still rejects accepted inputs,
+remaining delivery obligations and incomplete retirement. Identical validated
+inputs yield identical archive content; retry never replays business effects.
+
+## Typed native tool retirement
+
+A tool's existing `closed` observation may add `effect_retirement_ref`, resolving
+through the trusted immutable evidence adapter. Only exact typed
+`native_plugin_wait_retirement` or `code_mode_retirement` records can clear the
+corresponding started-tool effect obligation. Validation binds the authoritative
+original Store tool intent, exact invocation and Session identity, native request
+and generation, and all original nested identities and acknowledged-result or
+retirement digests. Persisted source retirement records additionally constrain
+later evidence; stale or altered records cannot replace them. The runtime emits
+these records from actual registered cleanup, not a host success map.
+
+Ordinary `closed`, `stopped`, process DOWN, a different component's proof, missing
+or malformed evidence and unregistered legacy plugin waits remain unresolved.
+This extension does not invent `not_started`/`tool_completed`, change the cancelled
+or unknown historical outcome, rerun installation, or execute any cleanup callback
+inside reconciliation. Native proofs must be captured before source runtime loss.

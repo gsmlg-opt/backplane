@@ -140,6 +140,42 @@ defmodule Backplane.AgentRuntime.Codex.MultiAgent.Archive do
     end
   end
 
+  @doc false
+  def staging_material(config, pin) do
+    with {:ok, material} <- material(config, pin.admission_ref, pin.identity),
+         {:ok, checkpoint} <- source_checkpoint(material) do
+      {:ok, material, checkpoint}
+    end
+  end
+
+  defp source_checkpoint(material) do
+    record = material.record
+    run = record.run
+    outbox = Map.get(run.context.conversation, :goal_outbox, [])
+    settled = put_in(run, [:context, :conversation, :goal_outbox], [])
+
+    with :ok <- eligible(run),
+         {:ok, history} <- history(settled),
+         {:ok, outbox} <- Evidence.public(outbox),
+         {:ok, immutable} <-
+           Evidence.public(Map.drop(settled, [:incarnation, :expected_revision])) do
+      {:ok,
+       %{
+         "run_ref" => material.run_ref,
+         "revision" => record.revision,
+         "incarnation" => run.incarnation,
+         "state" => to_string(run.state),
+         "outcome_digest" => Evidence.digest(Map.get(run, :outcome)),
+         "messages_digest" => Evidence.digest(history["messages"]),
+         "host_feedback_digest" => Evidence.digest(history["host_feedback"]),
+         "remaining_work" => remaining(run),
+         "deadline" => deadline(run.deadline),
+         "goal_outbox" => outbox,
+         "run_digest" => Evidence.digest(immutable)
+       }}
+    end
+  end
+
   def restore(config, archive) do
     with {:ok, archive} <- validate(archive),
          {:ok, material} <- material(config, archive["admission_ref"], archive["child_identity"]),

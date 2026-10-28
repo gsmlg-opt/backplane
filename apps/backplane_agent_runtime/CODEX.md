@@ -479,3 +479,75 @@ insufficient. Missing acknowledgements or an expired cleanup deadline retain
 uncertain obligations, and cancellation never synthesizes a successful tool result.
 If ordinary completion wins the cancellation race, its result alone does not prove
 local cleanup; interruption remains uncertain without that separate evidence.
+
+### Headless native Code Mode
+
+`Codex.Headless` is a facade over one `Conversation` owner. Supply the ordinary
+Store, admitted native catalog and resources, with no provider options:
+
+```elixir
+{:ok, occurrence} = Headless.start_link(opts)
+{:ok, identity} = Headless.execute(occurrence, source, input: %{"job" => "daily"})
+{:ok, result} = Headless.await(occurrence, timeout: 30_000)
+```
+
+One instance admits one occurrence. The actual `execute` caller is monitored for
+its entire execution; supervisors and later observers do not replace it.
+`status/1` and `cancel/1` use the same owner. Await timeout leaves execution alone.
+Prompt, steer, follow-up and provider options are rejected. Source/input and the
+complete worker command frame are bounded before admission; JSON input is the
+worker's `input` global and is never interpolated into source or host callbacks.
+
+The Store journals `host_step_started`, then the actual native outer `exec`
+intent/result. It records a portable catalog projection and digest, without
+executable registry handles. Every nested intent precedes its effect and every
+nested result ACK precedes its JavaScript reply. Generator and time-slice yields
+are resumed internally with nil under one original deadline and configured timeout.
+Ordered output shares one total hard/presentation bound across slices; truncation
+is retained. The result preserves the raw supported JSON `value`, `output`,
+`output_truncated`, `nested_invocations` and separate `outer_reservations`.
+Successful await requires committed terminal completion; cancellation cannot turn
+an intermediate persisted raw result into success. Zero nested calls are valid.
+Terminal reload is inspection-only; unfinished reload enters `recovery_required`
+without provider calls, script replay or ownership reattachment.
+
+### Plugin request observation retirement
+
+Plugin installation adapters run on the actual native effect caller, with
+serialized request admission and result publication. An adapter may durably
+acknowledge its host request, then opt into narrowly cancellable observation:
+
+```elixir
+DynamicRuntime.plugin_install_wait(operation, immutable_host_request_ref, fn ->
+  observe_existing_request()
+end)
+```
+
+The callback only observes that acknowledged request. It must not install,
+start an MCP client or dispatch other work. The runtime seals the exact request's
+completion gate before stopping its registered caller/waiter. It records actual
+DOWN under the original cleanup deadline. Old adapters remain compatible and
+retain unknown interruption outcomes. The host request survives independently;
+late completion or a later explicit installation cannot rewrite the old run.
+
+`DynamicRuntime.plugin_install_retirement(runtime, exact_identity)` returns a
+bounded typed proof for the exact original invocation, request, registration,
+Session and stop generation. `Conversation.status/1.retirement_evidence` retains
+up to 256 proofs. Hosts must persist needed evidence before losing the runtime;
+missing or evicted records remain unavailable. A separate outer Code Mode proof
+requires actual executor exit, Session/Registry cleanup and every original nested
+settlement or exact retirement proof. These records certify local retirement,
+with business outcome unknown, and do not report remote rollback or tool success.
+
+### Image invocation context
+
+`image_gen::imagegen` revision 2 is mutating, not retry-safe or parallel-safe.
+The existing `generate(request, opts)` adapter receives reserved
+`opts[:runtime_context]`: portable exact invocation/Session identity, resource
+ownership, the original effect caller PID and a live `effect_deadline` accessor.
+Configured image options cannot replace it. Image timeout is clamped to that
+live remaining budget, and stale accessor errors propagate. Process-local
+ownership/accessors must not be stored as artifact metadata. Standalone image
+calls and adapters ignoring the additive option remain supported. Paid requests
+are never automatically replayed; local Task termination does not prove remote
+cancellation. Web contracts retain their existing metadata.

@@ -104,6 +104,7 @@ try {
     if (command.type === "execute") {
       metadata = command.tools || []; stored = command.stored || {}; globalThis.ALL_TOOLS = Object.freeze(metadata);
       try {
+        globalThis.input = command.input;
         const F = Object.getPrototypeOf(async function*(){}).constructor;
         const program = new F("codex", "'use strict';\n" + command.code);
         iterator = program(codex); advance(undefined);

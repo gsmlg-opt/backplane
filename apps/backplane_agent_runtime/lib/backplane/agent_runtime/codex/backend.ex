@@ -50,8 +50,35 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
     Tools.call(context, operation.tool_name, operation.arguments)
   end
 
-  def execute(%{backend_context: %{family: :service, context: context}} = operation),
-    do: Services.call(context, operation.tool_name, operation.arguments)
+  def execute(%{backend_context: %{family: :service, context: context} = backend} = operation) do
+    runtime_context = %{
+      identity:
+        Map.take(operation, [
+          :run_id,
+          :incarnation,
+          :turn_id,
+          :step_id,
+          :attempt_id,
+          :invocation_id,
+          :tool_name,
+          :tool_revision,
+          :catalog_revision,
+          :tool_call_id,
+          :enclosing_invocation_id,
+          :session_binding_identity
+        ]),
+      resource_owner: Map.get(backend, :resource_owner),
+      resource_owner_pid: Map.get(backend, :resource_owner_pid),
+      effect_owner_pid: self(),
+      effect_deadline: Map.get(backend, :effect_deadline)
+    }
+
+    Services.call(
+      Map.put(context, :runtime_context, runtime_context),
+      operation.tool_name,
+      operation.arguments
+    )
+  end
 
   def execute(%{backend_context: %{family: :control}} = operation), do: Control.call(operation)
 
@@ -68,6 +95,11 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
 
   def execute(_operation),
     do: {:error, Error.new(:unsupported_capability, "Codex backend context is unavailable")}
+
+  def cancel(
+        %{tool_name: "request_plugin_install", backend_context: %{family: :dynamic}} = operation
+      ),
+      do: Backplane.AgentRuntime.Codex.PluginInstallWait.cancel(operation)
 
   def cancel(%{backend_context: %{family: :dynamic}} = operation),
     do: DynamicRuntime.cancel_resource(operation)

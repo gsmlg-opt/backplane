@@ -33,15 +33,6 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
         {:ok, %{manifest: %{"name" => "example"}}} = PluginProtocol.load_directory(context.root)
       end
 
-      if Map.get(context, :blocked, false) do
-        send(context.test, {:blocked_installer, self()})
-
-        receive do
-          {:release_installer, reason} ->
-            send(context.test, {:installer_observed_stop, reason})
-        end
-      end
-
       fields = %{
         completed: true,
         user_confirmed: false,
@@ -51,11 +42,34 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
         tool_name: "Example"
       }
 
+      if Map.get(context, :blocked, false) do
+        caller = self()
+
+        host_request =
+          spawn(fn ->
+            receive do
+              {:release_installer, reason} ->
+                result = {:ok, {:completed, fields}}
+                send(context.test, {:installer_observed_stop, reason})
+                send(context.test, {:late_completion, result})
+                send(caller, {:host_completion, result})
+            end
+          end)
+
+        send(context.test, {:blocked_installer, caller, host_request})
+
+        receive do
+          {:host_completion, result} -> result
+        end
+      else
+        outcome(context, fields)
+      end
+    end
+
+    defp outcome(context, fields) do
       case Map.get(context, :outcome, :completed) do
         :completed ->
-          result = {:ok, {:completed, fields}}
-          if Map.get(context, :blocked, false), do: send(context.test, {:late_completion, result})
-          result
+          {:ok, {:completed, fields}}
 
         :legacy ->
           {:ok, fields}
@@ -508,26 +522,32 @@ defmodule Backplane.AgentRuntime.CodexCompletionAndAnswerTest do
       )
 
       assert_receive {:install_operation, installed}, 1_000
-      assert_receive {:blocked_installer, installer}, 1_000
-      assert installer == runtime
+      assert_receive {:blocked_installer, installer, host_request}, 1_000
+      on_exit(fn -> if Process.alive?(host_request), do: Process.exit(host_request, :kill) end)
+      host_monitor = Process.monitor(host_request)
+      refute installer == runtime
       state = :sys.get_state(conversation)
       effect_ref = state.effect.task.ref
       worker = state.effect.task.pid
+      assert installer == worker
       monitor = Process.monitor(worker)
       if reason == :cancelled, do: assert(:ok == Conversation.cancel(conversation))
       assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 2_000
       assert eventually(fn -> Conversation.status(conversation).phase == :terminal end)
-      assert Process.alive?(installer)
+      refute Process.alive?(installer)
+      assert Process.alive?(host_request)
       assert {:ok, %{run: before}} = EphemeralStore.load(store, run_id)
       assert before.state == :unknown_outcome
       assert before.active_tools[installed.invocation_id].tool_name == "request_plugin_install"
       assert before.execution_intents["tool:#{installed.invocation_id}"].status == :uncertain
       refute Map.has_key?(before.tool_results, installed.invocation_id)
 
-      send(installer, {:release_installer, reason})
+      send(host_request, {:release_installer, reason})
       assert_receive {:installer_observed_stop, ^reason}, 1_000
       assert_receive {:late_completion, {:ok, {:completed, _}}}, 1_000
-      # The real adapter has returned to a dead caller. Also exercise the original
+      assert_receive {:DOWN, ^host_monitor, :process, ^host_request, :normal}, 1_000
+
+      # The independent host request completed after its observing caller died. Also exercise the original
       # task reference: stale delivery cannot rewrite the authoritative settlement.
       send(
         conversation,

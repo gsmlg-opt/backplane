@@ -17,6 +17,7 @@ defmodule Backplane.AgentRuntime.Kernel do
   @wait_identity [:run_id, :incarnation, :continuation_id, :target_run_id]
 
   @two_arg_commands [
+    :host_step_started,
     :provider_started,
     :provider_completed,
     :tool_invoked,
@@ -134,8 +135,28 @@ defmodule Backplane.AgentRuntime.Kernel do
     end
   end
 
+  defp transition(run, :host_step_started, at, input) do
+    with :ok <- require_state(run, :running, :host_step_started),
+         :ok <- validate_run_identity(run, input),
+         true <- get_in(run, [:context, :execution_mode]) == :headless,
+         true <- Map.get(run, :current_step) == nil,
+         :ok <- ensure_no_active_provider(run),
+         {:ok, identity} <- identity(input, @provider_identity, "host step"),
+         {:ok, catalog} <- required(input, :catalog, "headless catalog"),
+         {:ok, catalog} <- Backplane.AgentRuntime.Codex.Reconciliation.Evidence.public(catalog) do
+      run
+      |> Map.put(:current_step, Map.take(identity, [:step_id, :attempt_id]))
+      |> Map.update!(:context, &Map.put(&1, :headless_catalog, catalog))
+      |> commit(:running, :host_step_started, at, input)
+    else
+      false -> validation_error("host step requires a new admitted headless run")
+      error -> error
+    end
+  end
+
   defp transition(run, :provider_started, at, input) do
-    with :ok <- require_state(run, :running, :provider_started),
+    with true <- get_in(run, [:context, :execution_mode]) != :headless,
+         :ok <- require_state(run, :running, :provider_started),
          :ok <- validate_run_identity(run, input),
          :ok <- ensure_provider_start_allowed(run),
          {:ok, identity} <- identity(input, @provider_identity, "provider"),
@@ -146,6 +167,9 @@ defmodule Backplane.AgentRuntime.Kernel do
       |> record_provider_attempt(identity)
       |> record_execution_intent(input)
       |> commit(:running, :provider_started, at, input)
+    else
+      false -> validation_error("headless mode cannot start a provider")
+      error -> error
     end
   end
 
@@ -629,6 +653,12 @@ defmodule Backplane.AgentRuntime.Kernel do
 
   defp validate_command_input(:goal_outbox_acknowledged, input) do
     with {:ok, _} <- identity(input, [:run_id, :incarnation], "run"), do: {:ok, input}
+  end
+
+  defp validate_command_input(:host_step_started, input) do
+    with {:ok, _} <- identity(input, @provider_identity, "host step"),
+         {:ok, _} <- required(input, :catalog, "headless catalog"),
+         do: {:ok, input}
   end
 
   defp validate_command_input(:provider_started, input) do

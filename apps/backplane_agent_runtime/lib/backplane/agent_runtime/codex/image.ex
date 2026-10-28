@@ -1,6 +1,13 @@
 defmodule Backplane.AgentRuntime.Codex.Image do
   @moduledoc """
   Host-configured image-generation adapter; no local fake executor.
+
+  Native service calls supply a reserved `:runtime_context` option containing
+  portable invocation `:identity`, process-local resource/effect ownership and
+  the live `:effect_deadline` accessor. Standalone calls do not invent identity.
+  Adapters may ignore this additive option; process-local values must not be
+  serialized into artifact metadata. Adapter timeout is bounded by configuration
+  and the current runtime allowance, without renewing that allowance.
   """
   alias Backplane.AgentRuntime.Error
 
@@ -22,7 +29,8 @@ defmodule Backplane.AgentRuntime.Codex.Image do
            function_exported?(adapter, :generate, 2) or
              {:error,
               Error.new(:unsupported_capability, "image generation adapter is unavailable")},
-         result <- run(adapter, request, opts, timeout),
+         {:ok, timeout} <- runtime_timeout(opts, timeout),
+         result <- run(adapter, request, Keyword.put(opts, :timeout, timeout), timeout),
          {:ok, result} <- normalize_result(result, max_bytes) do
       {:ok, result}
     end
@@ -45,6 +53,28 @@ defmodule Backplane.AgentRuntime.Codex.Image do
     if is_integer(value) and value > 0,
       do: {:ok, value},
       else: {:error, Error.new(:validation, "#{key} must be positive")}
+  end
+
+  defp runtime_timeout(opts, configured) do
+    case Keyword.get(opts, :runtime_context) do
+      %{effect_deadline: accessor} when is_function(accessor, 0) ->
+        case accessor.() do
+          {:ok, %{remaining_ms: remaining}} when is_integer(remaining) and remaining > 0 ->
+            {:ok, min(configured, remaining)}
+
+          {:ok, %{remaining_ms: 0}} ->
+            {:error, Error.new(:timeout, "image runtime deadline is exhausted")}
+
+          {:error, %Error{} = error} ->
+            {:error, error}
+
+          _ ->
+            {:error, Error.new(:malformed_result, "image runtime deadline is invalid")}
+        end
+
+      _ ->
+        {:ok, configured}
+    end
   end
 
   defp run(adapter, request, opts, timeout) do

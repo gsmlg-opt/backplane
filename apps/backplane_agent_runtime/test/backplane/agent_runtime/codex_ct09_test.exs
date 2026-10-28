@@ -338,6 +338,25 @@ defmodule Backplane.AgentRuntime.CodexCt09Test do
              })
   end
 
+  test "actual image contract describes non-retryable effects and preserves Web metadata" do
+    contracts = Services.contracts(%{web_run_adapter: WebRunAdapter, image_adapter: ImageAdapter})
+    image = Enum.find(contracts, &(&1.namespace == "image_gen"))
+    web = Enum.find(contracts, &(&1.namespace == "web"))
+    assert image.name == "imagegen"
+    assert image.tool_revision == 2
+    assert image.safety == %{read_only: false, retry_safe: false, parallel_safe: false}
+    assert web.tool_revision == 1
+    assert web.safety == %{read_only: true, retry_safe: true, parallel_safe: true}
+    assert image.backend == Backplane.AgentRuntime.Codex.Backend
+    assert image.source == %{family: :service_backed, profile: :opt_in}
+    assert image.schema["required"] == ["prompt"]
+
+    assert Map.keys(image.schema["properties"]) |> MapSet.new() ==
+             MapSet.new(
+               ~w(prompt transparent_background referenced_image_paths num_last_images_to_include)
+             )
+  end
+
   test "pinned web and image extensions are public only with configured adapters" do
     tools = ["web::run", "image_gen::imagegen"]
     context = %{web_run_adapter: WebRunAdapter, image_adapter: ImageAdapter}
@@ -346,7 +365,7 @@ defmodule Backplane.AgentRuntime.CodexCt09Test do
       caller: "host",
       run_id: "service-run",
       grants: tools,
-      tool_revisions: Map.new(tools, &{&1, 1})
+      tool_revisions: %{"web::run" => 1, "image_gen::imagegen" => 2}
     }
 
     assert {:ok, profile} = Codex.profile(:service_compat, context, authority, tools: tools)

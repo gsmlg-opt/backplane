@@ -22,6 +22,13 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     @type t :: %__MODULE__{identity: map(), evidence: map()}
   end
 
+  defmodule Retirement do
+    @moduledoc "Typed native observation retirement; business outcome remains unknown."
+    @enforce_keys [:identity, :evidence]
+    defstruct [:identity, :evidence]
+    @type t :: %__MODULE__{identity: map(), evidence: map()}
+  end
+
   defmodule Presentation do
     @moduledoc "A trusted backend's invocation-bound result and consumer presentation."
     @enforce_keys [:identity, :result, :decision]
@@ -44,7 +51,7 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @callback execute(map()) :: result()
 
-  @callback cancel(map()) :: :ok | {:ok, Cancellation.t()} | {:error, Error.t()}
+  @callback cancel(map()) :: :ok | {:ok, Cancellation.t() | Retirement.t()} | {:error, Error.t()}
 
   @default_output_limit 1_048_576
 
@@ -87,7 +94,90 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     end
   end
 
+  def validate_cancellation(%Retirement{identity: identity, evidence: evidence}, operation) do
+    with true <- identity === cancellation_identity(operation),
+         {:ok, proof} <- validate_retirement_record(evidence, operation),
+         true <- proof["record_type"] == "native_plugin_wait_retirement",
+         true <- proof["plugin_request_id"] === operation[:plugin_request_id],
+         true <- proof["registration_id"] === operation[:resource_registration],
+         true <- proof["stop_generation"] === operation[:stop_generation] do
+      {:ok, proof}
+    else
+      _ -> unverified_cancellation()
+    end
+  end
+
   def validate_cancellation(_, _), do: unverified_cancellation()
+
+  @doc false
+  def confirm_retirement(operation, proof) do
+    assertion = %Retirement{identity: cancellation_identity(operation), evidence: proof}
+    with {:ok, _} <- validate_cancellation(assertion, operation), do: {:ok, assertion}
+  end
+
+  @doc false
+  def validate_retirement_record(proof, operation) when is_map(proof) and is_map(operation) do
+    alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+
+    with true <- valid_identity?(cancellation_identity(operation)),
+         {:ok, ^proof} <- Evidence.public(proof),
+         {:ok, identity} <- Evidence.public(cancellation_identity(operation)),
+         true <- proof["identity"] === identity,
+         true <- proof["schema_version"] === 1,
+         true <- proof["local_cleanup"] === "confirmed" and proof["outcome"] === "unknown",
+         true <-
+           proof["retirement_digest"] === Evidence.digest(Map.delete(proof, "retirement_digest")),
+         true <- retirement_fields?(proof, identity) do
+      {:ok, proof}
+    else
+      _ -> unverified_cancellation()
+    end
+  end
+
+  def validate_retirement_record(_, _), do: unverified_cancellation()
+
+  defp retirement_fields?(%{"record_type" => "native_plugin_wait_retirement"} = proof, identity) do
+    exact_fields?(
+      proof,
+      ~w(schema_version record_type identity plugin_request_id host_request_ref registration_id stop_generation provenance completion_gate waiter_down local_cleanup outcome retirement_digest)
+    ) and
+      exact_fields?(proof["provenance"], ~w(runtime_id session_binding_identity)) and
+      identity["tool_name"] == "request_plugin_install" and proof["waiter_down"] === true and
+      proof["completion_gate"] === "closed" and
+      Enum.all?(
+        ~w(plugin_request_id host_request_ref registration_id stop_generation),
+        &(is_binary(proof[&1]) and proof[&1] != "")
+      ) and
+      is_map(proof["provenance"]) and is_binary(proof["provenance"]["runtime_id"]) and
+      proof["provenance"]["session_binding_identity"] === identity["session_binding_identity"]
+  end
+
+  defp retirement_fields?(%{"record_type" => "code_mode_retirement"} = proof, identity) do
+    exact_fields?(
+      proof,
+      ~w(schema_version record_type identity stop_generation provenance executor_down resources nested local_cleanup outcome retirement_digest)
+    ) and
+      exact_fields?(proof["provenance"], ~w(session_binding_identity)) and
+      proof["provenance"]["session_binding_identity"] === identity["session_binding_identity"] and
+      identity["tool_name"] in ["exec", "wait"] and proof["executor_down"] === true and
+      proof["resources"] === "confirmed" and is_list(proof["nested"]) and proof["nested"] != [] and
+      is_binary(proof["stop_generation"]) and proof["stop_generation"] != "" and
+      Enum.all?(proof["nested"], fn nested ->
+        exact_fields?(nested, ~w(kind identity evidence_digest)) and is_map(nested["identity"]) and
+          nested["identity"]["enclosing_invocation_id"] === identity["invocation_id"] and
+          is_binary(nested["evidence_digest"]) and
+          nested["kind"] in ["acknowledged_settlement", "native_plugin_wait_retirement"]
+      end) and
+      length(Enum.uniq_by(proof["nested"], & &1["identity"]["invocation_id"])) ==
+        length(proof["nested"])
+  end
+
+  defp retirement_fields?(_, _), do: false
+
+  defp exact_fields?(value, fields) when is_map(value),
+    do: Enum.sort(Map.keys(value)) == Enum.sort(fields)
+
+  defp exact_fields?(_, _), do: false
 
   defp unverified_cancellation,
     do:
@@ -267,7 +357,8 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     end
   end
 
-  @spec cancel(adapter(), map()) :: :ok | {:ok, Cancellation.t()} | {:error, Error.t()}
+  @spec cancel(adapter(), map()) ::
+          :ok | {:ok, Cancellation.t() | Retirement.t()} | {:error, Error.t()}
   def cancel(adapter, invocation) when is_atom(adapter) and is_map(invocation) do
     with {:ok, _} <- validate_invocation(invocation) do
       adapter.cancel(invocation)

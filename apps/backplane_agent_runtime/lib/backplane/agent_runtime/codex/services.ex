@@ -63,10 +63,18 @@ defmodule Backplane.AgentRuntime.Codex.Services do
 
   @spec image(map(), map()) :: {:ok, map()} | {:error, Error.t()}
   def image(context, arguments) when is_map(context) and is_map(arguments) do
+    opts = Map.get(context, :image_options, [])
+
+    opts =
+      case Map.fetch(context, :runtime_context) do
+        {:ok, runtime_context} -> Keyword.put(opts, :runtime_context, runtime_context)
+        :error -> opts
+      end
+
     Image.generate(
       Map.get(context, :image_adapter),
       arguments,
-      Map.get(context, :image_options, [])
+      opts
     )
   end
 
@@ -234,6 +242,8 @@ defmodule Backplane.AgentRuntime.Codex.Services do
         "Generate or edit an image through the configured Codex-compatible image service.",
         imagegen_schema()
       )
+      |> Map.put(:tool_revision, 2)
+      |> Map.put(:safety, %{read_only: false, retry_safe: false, parallel_safe: false})
     ]
   end
 
