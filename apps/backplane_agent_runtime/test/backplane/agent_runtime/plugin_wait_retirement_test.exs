@@ -88,13 +88,58 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
     end
   end
 
-  for mode <- [:direct, :deno] do
-    @tag mode: mode
-    test "#{mode} acknowledged plugin wait has exact independent retirement",
-         %{mode: mode} = ctx do
+  defmodule PostHookAdapter do
+    def execute(operation) do
+      operation =
+        if operation.backend_context[:family] == :code_mode do
+          callback = operation.backend_context.register_code_mode
+          test = operation.backend_context.adapter_test
+
+          wrapped = fn op, registry, handle, worker ->
+            wrong_worker = callback.(op, registry, handle, self())
+            wrong_owner = callback.(op, registry, %{handle | owner_id: "foreign"}, worker)
+
+            send(
+              test,
+              {:native_registration_probe, callback, op, registry, handle, worker, wrong_worker,
+               wrong_owner}
+            )
+
+            callback.(op, registry, handle, worker)
+          end
+
+          put_in(operation.backend_context.register_code_mode, wrapped)
+        else
+          operation
+        end
+
+      case Backplane.AgentRuntime.Codex.Backend.execute(operation) do
+        {:ok, result} ->
+          if operation.backend_context[:post_block],
+            do:
+              ToolEffects.present(operation, result, %{type: :block, text: "post hook blocked"}),
+            else: {:ok, result}
+
+        other ->
+          other
+      end
+    end
+  end
+
+  defmodule UnregisteredAdapter do
+    def execute(operation) do
+      operation = update_in(operation.backend_context, &Map.delete(&1, :register_code_mode))
+      Backplane.AgentRuntime.Codex.Backend.execute(operation)
+    end
+  end
+
+  for mode <- [:direct, :deno, :deno_wait], adapted <- [false, true] do
+    @tag mode: mode, adapted: adapted
+    test "#{mode} adapted=#{adapted} acknowledged plugin wait has exact independent retirement",
+         %{mode: mode, adapted: adapted} = ctx do
       requests = :ets.new(:plugin_requests, [:public, :set])
       runtime = start_supervised!({DynamicRuntime, plugin_adapter: PluginHost})
-      {conversation, store, _session} = start_run(runtime, requests, "original-#{mode}")
+      {conversation, store, _session} = start_run(runtime, requests, "original-#{mode}", adapted)
       assert {:ok, _} = Conversation.prompt(conversation, "request installation")
       assert_receive {:plugin_provider, request, provider}, 1_000
 
@@ -107,16 +152,36 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
             {"exec",
              "await tools.fixture__observe({}); return await tools.request_plugin_install(#{JSON.encode!(args)});"}
 
+      payload = if mode == :deno_wait, do: "yield_control(); " <> payload, else: payload
       send(provider, {:events, [call(name, payload), done()]})
+
+      if mode == :deno_wait do
+        assert_receive {:plugin_provider, yielded, continuation}, 2_000
+        result = List.last(yielded.messages).result
+        assert result.status == :yielded
+        send(continuation, {:events, [call("wait", %{"cell_id" => result.cell_id}), done()]})
+      end
+
       assert_receive {:host_request_ack, reference, operation}, 2_000
       assert_receive {:plugin_observer, observer}, 2_000
+
+      if adapted and mode != :direct do
+        assert_receive {:native_registration_probe, callback, native_op, registry, handle, worker,
+                        {:error, %Error{class: :resource_conflict}},
+                        {:error, %Error{class: :resource_conflict}}},
+                       1_000
+
+        assert {:error, %Error{class: :resource_conflict}} =
+                 callback.(native_op, registry, handle, worker)
+      end
+
       assert observer != runtime
       state = :sys.get_state(conversation)
       task = if mode == :direct, do: state.effect.task, else: state.nested.task
       assert observer == task.pid
 
       executor =
-        if mode == :deno do
+        if mode != :direct do
           assert_receive {:settled_native, settled}
           assert settled.enclosing_invocation_id == operation.enclosing_invocation_id
 
@@ -155,7 +220,7 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
 
       assert retained == plugin
       assert {:ok, ^plugin} = ToolEffects.validate_retirement_record(plugin, operation)
-      assert map_size(status.run.tool_results) == if(mode == :deno, do: 1, else: 0)
+      assert map_size(status.run.tool_results) == %{direct: 0, deno: 1, deno_wait: 2}[mode]
 
       for changed <- [
             Map.delete(ToolEffects.cancellation_identity(operation), :turn_id),
@@ -177,7 +242,7 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
                  ToolEffects.validate_retirement_record(changed, operation)
       end
 
-      if mode == :deno do
+      if mode != :direct do
         outer = Enum.find(proofs, &(&1["record_type"] == "code_mode_retirement"))
         assert outer["identity"]["invocation_id"] != operation.invocation_id
         assert outer["executor_down"] == true
@@ -220,7 +285,7 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
       assert {:ok, ^original} = EphemeralStore.load(store, request.run_id)
       refute_receive {:plugin_provider, _, _}, 30
 
-      {next, _, _} = start_run(runtime, requests, "fresh-#{mode}")
+      {next, _, _} = start_run(runtime, requests, "fresh-#{mode}", adapted)
       assert {:ok, _} = Conversation.prompt(next, "continue with installed inventory")
       assert_receive {:plugin_provider, fresh, fresh_provider}, 1_000
       assert fresh.run_id != request.run_id
@@ -258,6 +323,23 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
       stop_supervised!({:installed_client, mode})
       assert_receive {:DOWN, ^monitor, :process, ^client_pid, _}
     end
+  end
+
+  test "family metadata without native registration cannot confirm outer retirement" do
+    requests = :ets.new(:unregistered_requests, [:public, :set])
+    runtime = start_supervised!({DynamicRuntime, plugin_adapter: PluginHost})
+    {conversation, _, _} = start_run(runtime, requests, "unregistered", :unregistered)
+    assert {:ok, _} = Conversation.prompt(conversation, "request")
+    assert_receive {:plugin_provider, _, provider}
+    source = "return await tools.request_plugin_install(#{JSON.encode!(arguments())});"
+    send(provider, {:events, [call("exec", source), done()]})
+    assert_receive {:host_request_ack, _, _}, 2_000
+    assert_receive {:plugin_observer, _}, 2_000
+    assert :ok = Conversation.cancel(conversation)
+    eventually(fn -> Conversation.status(conversation).phase == :terminal end)
+    status = Conversation.status(conversation)
+    assert status.run.state == :unknown_outcome
+    assert status.retirement_evidence == []
   end
 
   test "an unrelated operation cannot retrieve plugin retirement" do
@@ -478,7 +560,7 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
     name
   end
 
-  defp start_run(runtime, requests, run) do
+  defp start_run(runtime, requests, run, adapted \\ false) do
     session = start_supervised!({Session, owner_pid: self()}, id: {:session, run})
 
     installed =
@@ -535,6 +617,32 @@ defmodule Backplane.AgentRuntime.PluginWaitRetirementTest do
         authority,
         tools: names
       )
+
+    profile =
+      if adapted do
+        registry =
+          Map.new(profile.registry.tools, fn {name, descriptor} ->
+            descriptor =
+              if descriptor.backend == Backplane.AgentRuntime.Codex.Backend,
+                do: %{
+                  descriptor
+                  | backend:
+                      if(adapted == :unregistered, do: UnregisteredAdapter, else: PostHookAdapter)
+                },
+                else: descriptor
+
+            descriptor = %{
+              descriptor
+              | backend_context: Map.put(descriptor.backend_context, :adapter_test, self())
+            }
+
+            {name, descriptor}
+          end)
+
+        %{profile | registry: %{profile.registry | tools: registry}}
+      else
+        profile
+      end
 
     {:ok, store} = EphemeralStore.new(1)
 

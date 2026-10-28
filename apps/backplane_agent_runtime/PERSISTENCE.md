@@ -477,13 +477,32 @@ inputs yield identical archive content; retry never replays business effects.
 
 A tool's existing `closed` observation may add `effect_retirement_ref`, resolving
 through the trusted immutable evidence adapter. Only exact typed
-`native_plugin_wait_retirement` or `code_mode_retirement` records can clear the
+`native_plugin_wait_retirement`, `resource_scope_retirement` or
+`code_mode_retirement` records can clear the
 corresponding started-tool effect obligation. Validation binds the authoritative
 original Store tool intent, exact invocation and Session identity, native request
 and generation, and all original nested identities and acknowledged-result or
 retirement digests. Persisted source retirement records additionally constrain
 later evidence; stale or altered records cannot replace them. The runtime emits
 these records from actual registered cleanup, not a host success map.
+
+`resource_scope_retirement` retains the original validated
+`resource_scope_cancellation` report: registration and scope/stop generations,
+sealed ordered slot inventory and digest, each actual client/request identity and
+its local worker/transport retirement receipt. Conversation emits it only after
+the effect Task is down and Session/Registry cleanup is confirmed within the
+original deadline. Completed slots remain in the inventory without replay or
+another cancellation. The record's exact invocation and Session identity,
+`executor_down`, `resources`, `local_cleanup`, unknown business `outcome` and
+canonical `retirement_digest` are part of the portable contract. An enclosing
+Code Mode record references it by its exact identity and retirement digest.
+
+After source runtime loss, resource-scope reconciliation requires the byte-equal
+public record retained in authoritative terminal Store cleanup evidence. Merely
+resealing a substituted inventory cannot replace that source record. A host saves
+the immutable record under its `effect_retirement_ref`; it does not reconstruct
+the retired scope's ephemeral admission capability. Store ACK failure remains
+recovery-required even if local cleanup finished.
 
 Ordinary `closed`, `stopped`, process DOWN, a different component's proof, missing
 or malformed evidence and unregistered legacy plugin waits remain unresolved.

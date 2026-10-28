@@ -1,7 +1,11 @@
+Code.require_file("../../fixtures/reconciliation_host.exs", __DIR__)
+
 defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
   use ExUnit.Case, async: false
   alias Backplane.AgentRuntime.{Codex, Conversation, EphemeralStore, Error, ToolEffects}
-  alias Backplane.AgentRuntime.Codex.{DynamicRuntime, MultiAgent, Session}
+  alias Backplane.AgentRuntime.Codex.{DynamicRuntime, MultiAgent, Reconciliation, Session}
+  alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+  alias Backplane.AgentRuntime.ReconciliationHostFixture, as: Host
   alias Backplane.McpProtocol.Client
   @moduletag :tmp_dir
   @moduletag capture_log: true
@@ -77,7 +81,9 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
 
       DynamicRuntime.resource_request_scope(op, fn scope ->
         send(op.backend_context.test, {:scope_owner, self()})
-        scenario = arguments["uri"]
+
+        scenario =
+          if arguments["cursor"] == "scope-pages", do: "mem://pages", else: arguments["uri"]
 
         case scenario do
           "mem://empty" ->
@@ -209,7 +215,16 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
                       :list ->
                         Client.start_list_resources(
                           client,
-                          Keyword.merge([cursor: arguments["cursor"]], opts)
+                          Keyword.merge(
+                            [
+                              cursor:
+                                if(scenario == "mem://pages",
+                                  do: if(index == 0, do: "first", else: "pending"),
+                                  else: arguments["cursor"]
+                                )
+                            ],
+                            opts
+                          )
                         )
 
                       :templates ->
@@ -339,7 +354,8 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       eventually(fn -> Enum.any?(wires(Enum.at(roots, 1)), &pending?/1) end)
       assert :ok = Conversation.cancel(context.conversation)
       eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
-      settled = Conversation.status(context.conversation).run
+      status = Conversation.status(context.conversation)
+      settled = status.run
       assert settled.state == :cancelled
       [evidence] = settled.outcome["cleanup"]["evidence"]
 
@@ -350,8 +366,108 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       assert report["inventory_count"] == 2
       assert Enum.map(report["slots"], & &1["receipt"]["terminal"]) == ["completed", "cancelled"]
       assert report["local_cleanup"] == "confirmed"
+      proofs = assert_retirement_records(context.store, status, ctx.mode)
+      host = Host.new()
+      :ok = Host.put(host, {:store, "original"}, {EphemeralStore, context.store})
+      monitor = Process.monitor(context.conversation)
       stop_supervised!(:root_conversation)
+      assert_receive {:DOWN, ^monitor, :process, _, _}
+      refute Process.alive?(context.provider)
+      assert Session.status(context.root_binding.session).phase == :closed
+      assert_cold_reconciliation(host, settled, proofs, context.root_binding, ctx.mode)
       stop_supervised!(:resource_manager)
+    end
+  end
+
+  for mode <- [:direct, :deno] do
+    @tag mode: mode, full_resource_retirement: true
+    test "#{mode} parent interruption preserves shared paginated client through complete child retirement",
+         ctx do
+      client = start_client(ctx.tmp_dir, "resource_scope_retirement_mcp.py")
+      dynamic = start_supervised!({DynamicRuntime, mcp_adapter: Adapter})
+      host = Host.new()
+      context = runtime([client, client], dynamic, recovery_host: host)
+
+      {parent, _} =
+        tool(context.provider, "root", "spawn_agent", %{
+          "task_name" => "worker",
+          "message" => "list pages"
+        })
+
+      assert_receive {:resource_provider, child_run, _, provider}, 2_000
+
+      {name, input} =
+        if ctx.mode == :direct,
+          do: {"list_mcp_resources", %{"cursor" => "scope-pages"}},
+          else: {"exec", "return await tools.list_mcp_resources({cursor: 'scope-pages'});"}
+
+      send(provider, {:events, [call(name, input), done()]})
+      eventually(fn -> Enum.any?(wires(ctx.tmp_dir), &pending?/1) end)
+      assert {:ok, other} = Client.start_read_resource(client, "mem://survivor-pending")
+      assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 10)
+      {parent, result} = tool(parent, "root", "interrupt_agent", %{"target" => "/root/worker"})
+      refute result[:is_error], inspect(result)
+      assert {:ok, snapshot} = MultiAgent.snapshot(context.manager)
+      [child] = snapshot.agents
+      assert child.run_id == child_run && child.cleanup == :confirmed
+      # Public roster identifies the child; Runtime status supplies original persisted proofs.
+      child_pid = :sys.get_state(context.manager).agents[child.name].pid
+      status = Conversation.status(child_pid)
+      assert status.run.state == :cancelled
+      proofs = assert_retirement_records(host.store, status, ctx.mode)
+      resource = Enum.find(proofs, &(&1["record_type"] == "resource_scope_retirement"))
+      [first, second] = resource["cancellation"]["slots"]
+      assert first["identity"]["client_incarnation"] == second["identity"]["client_incarnation"]
+      assert first["receipt"]["terminal"] == "completed"
+      assert second["receipt"]["terminal"] == "cancelled"
+      resource_wires = Enum.filter(wires(ctx.tmp_dir), &(&1["method"] == "resources/list"))
+      assert Enum.map(resource_wires, & &1["params"]["cursor"]) == ["first", "pending"]
+
+      cancellations =
+        Enum.filter(wires(ctx.tmp_dir), &(&1["method"] == "notifications/cancelled"))
+
+      assert Enum.map(cancellations, & &1["params"]["requestId"]) == [
+               second["identity"]["request_id"]
+             ]
+
+      assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 10)
+      assert {:ok, release} = Client.start_read_resource(client, "mem://release")
+      assert {:ok, _} = Client.await_resource_request(release, 1_000)
+      assert {:ok, _} = Client.await_resource_request(other, 1_000)
+      assert {:ok, again} = Client.start_read_resource(client, "mem://again")
+      assert {:ok, _} = Client.await_resource_request(again, 1_000)
+      assert Enum.count(wires(ctx.tmp_dir), &(&1["method"] == "initialize")) == 1
+      {parent, result} = tool(parent, "root", "list_agents", %{})
+      refute result[:is_error], inspect(result)
+      send(parent, {:events, [done()]})
+      eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
+      assert Conversation.status(context.conversation).run.state == :completed
+      monitor = Process.monitor(child_pid)
+      assert :ok = MultiAgent.close_session(context.manager)
+      assert_receive {:DOWN, ^monitor, :process, ^child_pid, _}, 2_000
+      refute Process.alive?(provider)
+      assert Session.status(context.child_session).phase == :closed
+      seal_actual_child_inventory(host, child, status.run)
+      assert {:ok, manifest} = MultiAgent.recovery_manifest(context.manager, child.name)
+
+      assert {:ok, %{"retirement" => "confirmed"} = receipt} =
+               reconcile_actual(host, manifest, proofs, "child-retired")
+
+      assert {:ok, %{status: :confirmed}} =
+               MultiAgent.reconcile_child(context.manager, receipt["receipt_id"])
+
+      assert {:ok, manager_manifest} = MultiAgent.recovery_manifest(context.manager, :manager)
+
+      assert {:ok, %{"retirement" => "confirmed"} = manager_receipt} =
+               reconcile_actual(host, manager_manifest, proofs, "manager-retired")
+
+      assert {:ok, %{status: :confirmed}} =
+               MultiAgent.reconcile_close(context.manager, manager_receipt["receipt_id"])
+
+      assert {:ok, %{status: :confirmed}} = Session.close(context.root_binding.session)
+      assert {:ok, original} = EphemeralStore.load(host.store, child_run)
+      assert original.run == status.run
+      cleanup_context(context)
     end
   end
 
@@ -903,6 +1019,174 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     cleanup_context(context)
   end
 
+  defp assert_retirement_records(store, status, mode) do
+    proofs = status.retirement_evidence
+    resource = Enum.find(proofs, &(&1["record_type"] == "resource_scope_retirement"))
+    assert is_map(resource)
+    assert resource["executor_down"] == true
+    assert resource["resources"] == "confirmed"
+    assert resource["local_cleanup"] == "confirmed"
+    assert resource["outcome"] == "unknown"
+    assert {:ok, stored} = EphemeralStore.load(store, status.run.run_id)
+    assert stored.run == status.run
+    retained = retained_records(stored.run.outcome["cleanup"]["evidence"])
+    assert Enum.all?(proofs, &(&1 in retained))
+
+    assert :erlang.term_to_binary(resource) ==
+             :erlang.term_to_binary(Enum.find(retained, &(&1 == resource)))
+
+    if mode == :deno do
+      outer = Enum.find(proofs, &(&1["record_type"] == "code_mode_retirement"))
+      assert is_map(outer)
+      assert outer["executor_down"] && outer["resources"] == "confirmed"
+      assert outer["stop_generation"] == resource["stop_generation"]
+      assert resource["identity"]["enclosing_invocation_id"] == outer["identity"]["invocation_id"]
+
+      assert Enum.find(outer["nested"], &(&1["kind"] == "resource_scope_retirement")) == %{
+               "kind" => "resource_scope_retirement",
+               "identity" => resource["identity"],
+               "evidence_digest" => resource["retirement_digest"]
+             }
+    end
+
+    proofs
+  end
+
+  defp retained_records(%{"record_type" => type} = record)
+       when type in ["resource_scope_retirement", "code_mode_retirement"],
+       do: [record]
+
+  defp retained_records(value) when is_map(value),
+    do: value |> Map.values() |> Enum.flat_map(&retained_records/1)
+
+  defp retained_records(value) when is_list(value), do: Enum.flat_map(value, &retained_records/1)
+  defp retained_records(_), do: []
+
+  defp assert_cold_reconciliation(host, run, proofs, binding, mode) do
+    {:ok, obligations} = Reconciliation.run_obligations(run, run.incarnation, "actual-owner")
+
+    subject = %{
+      "kind" => "session",
+      "scope_id" => "scope",
+      "owner_id" => binding.owner_id,
+      "incarnation" => binding.incarnation
+    }
+
+    refs = [
+      %{
+        "store_ref" => "original",
+        "run_id" => run.run_id,
+        "original_incarnation" => run.incarnation
+      }
+    ]
+
+    manifest = Host.manifest(subject, refs, obligations)
+
+    assert {:ok, %{"retirement" => "confirmed"}} =
+             reconcile_actual(host, manifest, proofs, "cold")
+
+    resource = Enum.find(proofs, &(&1["record_type"] == "resource_scope_retirement"))
+    [first | rest] = resource["cancellation"]["slots"]
+
+    replacement =
+      first
+      |> put_in(["identity", "client_incarnation"], "different-client")
+      |> put_in(["receipt", "client_incarnation"], "different-client")
+
+    slots = [replacement | rest]
+
+    changed =
+      resource
+      |> put_in(["cancellation", "slots"], slots)
+      |> put_in(["cancellation", "inventory_digest"], Evidence.digest(slots))
+      |> Evidence.seal("retirement_digest")
+
+    altered = Enum.map(proofs, fn p -> if p == resource, do: changed, else: p end)
+
+    assert {:error, %Error{class: :unknown_outcome}} =
+             reconcile_actual(host, manifest, altered, "replaced-#{mode}")
+  end
+
+  defp reconcile_actual(host, manifest, proofs, id) do
+    observations =
+      Enum.map(manifest["obligations"], fn obligation ->
+        fact = Host.observe(obligation, "closed")
+
+        if obligation["kind"] == "tool" do
+          invocation = obligation["identity"]["invocation_id"]
+          proof = Enum.find(proofs, &(&1["identity"]["invocation_id"] == invocation))
+          assert is_map(proof)
+          ref = id <> ":effect:" <> invocation
+          :ok = Host.put(host, {:evidence, ref}, proof)
+          Map.put(fact, "effect_retirement_ref", ref)
+        else
+          fact
+        end
+      end)
+
+    :ok = Host.put(host, {:evidence, id}, Host.bundle(manifest, observations))
+    Reconciliation.reconcile(Host.config(host), Host.request(manifest, id, id))
+  end
+
+  defp recovery_admission(host, request, parent, options) do
+    identity = parent.child.recovery_identity
+    ref = "admission:" <> parent.child.attempt_id
+    {:ok, request} = Evidence.public(request)
+
+    {:ok, ceiling} =
+      Evidence.public(
+        Map.take(options[:authority], [:grants, :tool_revisions, :tool_bindings, :tool_revision])
+      )
+
+    configuration = %{"provider_ref" => "resource-provider", "profile" => "native-resource"}
+
+    admission = %{
+      "schema_version" => 1,
+      "record_type" => "child_admission",
+      "child_identity" => identity,
+      "store_ref" => "source",
+      "config_ref" => ref <> ":config",
+      "authority_ceiling_ref" => ref <> ":ceiling",
+      "tool_profile" => request["profile"],
+      "admission_receipt_ref" => ref,
+      "child_request" => request,
+      "configuration" => configuration,
+      "authority_ceiling" => ceiling,
+      "artifact_refs" => [],
+      "inventory_ref" => ref <> ":inventory"
+    }
+
+    :ok = Host.put(host, {:evidence, ref}, admission)
+    :ok = Host.put(host, {:evidence, admission["config_ref"]}, configuration)
+    :ok = Host.put(host, {:evidence, admission["authority_ceiling_ref"]}, ceiling)
+    :ok = Host.put(host, {:store, "source"}, {EphemeralStore, host.store})
+
+    Keyword.merge(options,
+      context: host.store,
+      recovery_admission_ref: ref,
+      recovery_store_ref: "source",
+      recovery_config_ref: admission["config_ref"],
+      recovery_authority_ref: admission["authority_ceiling_ref"],
+      recovery_tool_profile: String.to_existing_atom(request["profile"])
+    )
+  end
+
+  defp seal_actual_child_inventory(host, child, run) do
+    ref = "admission:" <> child.attempt_id
+    {:ok, admission} = Host.load_evidence(host, ref)
+    {:ok, obligations} = Reconciliation.run_obligations(run, run.incarnation, "actual-runtime")
+
+    :ok =
+      Host.put(host, {:evidence, admission["inventory_ref"]}, %{
+        "schema_version" => 1,
+        "record_type" => "child_inventory",
+        "child_identity" => admission["child_identity"],
+        "complete" => true,
+        "producer_ref" => "actual-managed-child-owner-ledger",
+        "obligations" => obligations
+      })
+  end
+
   defp native_slot(slot) do
     receipt =
       Map.new(slot["receipt"], fn {key, value} -> {String.to_existing_atom(key), value} end)
@@ -966,9 +1250,9 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     cleanup_context(context)
   end
 
-  defp start_client(root) do
+  defp start_client(root, fixture_name \\ "resource_scope_mcp.py") do
     name = String.to_atom("RuntimeResource#{System.unique_integer([:positive])}")
-    fixture = Path.expand("../../fixtures/resource_scope_mcp.py", __DIR__)
+    fixture = Path.expand("../../fixtures/" <> fixture_name, __DIR__)
 
     start_supervised!(
       {Client,
@@ -990,7 +1274,14 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
 
   defp runtime(client, dynamic, child_overrides \\ []) do
     test = self()
-    root = start_supervised!({Session, owner_pid: test}, id: :root_session)
+    {recovery_host, child_overrides} = Keyword.pop(child_overrides, :recovery_host)
+
+    recovery =
+      if recovery_host,
+        do: [recovery: Host.config(recovery_host), recovery_scope_id: "scope"],
+        else: []
+
+    root = start_supervised!({Session, [owner_pid: test] ++ recovery}, id: :root_session)
 
     host =
       spawn(fn ->
@@ -1000,7 +1291,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       end)
 
     on_exit(fn -> send(host, :stop) end)
-    child = start_supervised!({Session, owner_pid: host}, id: :child_session)
+    child = start_supervised!({Session, [owner_pid: host] ++ recovery}, id: :child_session)
     table = :ets.new(:resource_contracts, [:public])
     names = @resources ++ @collaboration ++ ["exec", "wait"]
     authority = authority("root", names)
@@ -1008,23 +1299,34 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     manager =
       start_supervised!(
         {MultiAgent,
-         parent_run_id: "root",
-         parent_name: "/root",
-         parent_authority: authority,
-         min_wait_timeout_ms: 0,
-         child_options: fn _, run, parent ->
-           child_opts =
-             options(
-               child,
-               run,
-               parent.child.incarnation,
-               names,
-               :ets.lookup_element(table, :contracts, 2),
-               test
-             )
+         [root_agent_id: "root-agent"] ++
+           recovery ++
+           [
+             parent_run_id: "root",
+             parent_name: "/root",
+             parent_authority: authority,
+             min_wait_timeout_ms: 0,
+             child_options: fn request, run, parent ->
+               child_opts =
+                 options(
+                   child,
+                   run,
+                   parent.child.incarnation,
+                   names,
+                   :ets.lookup_element(table, :contracts, 2),
+                   test
+                 )
 
-           {:ok, Keyword.merge(child_opts, child_overrides)}
-         end},
+               child_opts = Keyword.merge(child_opts, child_overrides)
+
+               child_opts =
+                 if recovery_host,
+                   do: recovery_admission(recovery_host, request, parent, child_opts),
+                   else: child_opts
+
+               {:ok, child_opts}
+             end
+           ]},
         id: :resource_manager
       )
 
@@ -1047,7 +1349,9 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
       conversation: conversation,
       provider: provider,
       root_binding: opts[:session_binding],
-      dynamic: dynamic
+      dynamic: dynamic,
+      store: opts[:context],
+      child_session: child
     }
   end
 

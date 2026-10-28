@@ -546,13 +546,27 @@ return and owner DOWN until authoritative result/cleanup Store acknowledgement,
 storage-failure release or coordinator teardown. Missing proof or acknowledgement
 keeps recovery requirements; it cannot authorize replay or create tool output.
 
+Confirmed scope cleanup also produces a portable `resource_scope_retirement`
+record in `Conversation.status/1.retirement_evidence` and durable cleanup evidence.
+It binds the exact original invocation/Session, registration and generations,
+sealed ordered inventory, actual effect Task DOWN and confirmed owned-resource
+cleanup. Reconciliation validates it against the authoritative started intent and
+trusted immutable evidence store, including references from an enclosing
+`code_mode_retirement`. Local retirement leaves historical results and unknown
+remote/business outcomes unchanged. A generic stopped process or Session close
+does not satisfy a started resource obligation.
+
 ### Headless native Code Mode
 
 `Codex.Headless` is a facade over one `Conversation` owner. Supply the ordinary
-Store, admitted native catalog and resources, with no provider options:
+Store, admitted native catalog and resources, with no provider options. The
+optional trusted `host_context` map composes original host hooks without a model:
 
 ```elixir
-{:ok, occurrence} = Headless.start_link(opts)
+{:ok, occurrence} = Headless.start_link(Keyword.merge(opts,
+  hooks: MyHostHooks,
+  host_context: %{tool_context_resolver: resolver, host_metadata: metadata}
+))
 {:ok, identity} = Headless.execute(occurrence, source, input: %{"job" => "daily"})
 {:ok, result} = Headless.await(occurrence, timeout: 30_000)
 ```
@@ -563,6 +577,12 @@ its entire execution; supervisors and later observers do not replace it.
 Prompt, steer, follow-up and provider options are rejected. Source/input and the
 complete worker command frame are bounded before admission; JSON input is the
 worker's `input` global and is never interpolated into source or host callbacks.
+`host_context` reaches tool preparation and finite timeout selection with the
+exact pinned invocation/catalog. Runtime callbacks, resource ownership and the
+original deadline remain authoritative. It is ephemeral trusted host data, never
+guest input, provider wire content or serialized history. Descriptor-specific
+backend dependencies retain their existing boundary. Both `provider` and
+`provider_context` options remain rejected, even when no provider adapter is set.
 
 The Store journals `host_step_started`, then the actual native outer `exec`
 intent/result. It records a portable catalog projection and digest, without
@@ -604,6 +624,19 @@ missing or evicted records remain unavailable. A separate outer Code Mode proof
 requires actual executor exit, Session/Registry cleanup and every original nested
 settlement or exact retirement proof. These records certify local retirement,
 with business outcome unknown, and do not report remote rollback or tool success.
+
+Transparent execution/presentation adapters may preserve the original backend
+context and delegate once to `Codex.Backend.execute/1`, then present a normal
+result with `ToolEffects.present/3`. Native Code Mode registers its actual owned
+worker against the current Runtime invocation through the supplied
+`register_code_mode` callback before starting or resuming execution. Preserve that
+callback together with `nested_dispatch` and `register_cancellation`; adapters
+need no replacement cancellation handler. This registration supports cooperative
+outer cancellation independently of the descriptor's adapter module. A
+`family: :code_mode` label alone does not establish native execution or retirement.
+Exact nested cancellation, actual executor DOWN and confirmed Deno/Session/Registry
+cleanup are still required. Resumed `wait` invocations bind the existing worker to
+their own current identity; an older `exec` registration cannot cover them.
 
 ### Image invocation context
 

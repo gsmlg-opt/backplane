@@ -708,11 +708,17 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
           stable
       end)
 
-    same_invocation == [] or proof in same_invocation
+    if proof["record_type"] == "resource_scope_retirement",
+      do: proof in same_invocation,
+      else: same_invocation == [] or proof in same_invocation
   end
 
   defp retirement_records(%{"record_type" => type} = record)
-       when type in ["native_plugin_wait_retirement", "code_mode_retirement"] do
+       when type in [
+              "native_plugin_wait_retirement",
+              "resource_scope_retirement",
+              "code_mode_retirement"
+            ] do
     [record]
   end
 
@@ -726,10 +732,11 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
          _config,
          _run,
          _outer,
-         %{"record_type" => "native_plugin_wait_retirement"},
+         %{"record_type" => type},
          _facts,
          _records
-       ),
+       )
+       when type in ["native_plugin_wait_retirement", "resource_scope_retirement"],
        do: true
 
   defp nested_retirement?(
@@ -767,7 +774,8 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
                  do: entry["evidence_digest"] == Evidence.digest(record),
                  else: (_ -> false)
 
-          %{"kind" => "native_plugin_wait_retirement"} = entry ->
+          %{"kind" => kind} = entry
+          when kind in ["native_plugin_wait_retirement", "resource_scope_retirement"] ->
             fact = Enum.find(facts, &(&1["identity"]["invocation_id"] == operation.invocation_id))
 
             with true <- is_map(fact),
@@ -775,6 +783,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
                  {:ok, nested_proof} <- invoke(config, :load_evidence, [ref]),
                  {:ok, nested_proof} <- Evidence.public(nested_proof),
                  true <- nested_proof["identity"] === entry["identity"],
+                 true <- nested_proof["record_type"] === kind,
                  true <- nested_proof["retirement_digest"] == entry["evidence_digest"],
                  true <- nested_proof["stop_generation"] == proof["stop_generation"],
                  obligation = %{"identity" => fact["identity"]},

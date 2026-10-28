@@ -83,6 +83,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          {:ok, slice} <- source_options(code),
          opts =
            code_options(context,
+             register_execution: native_registration(operation),
              yield_time_ms: slice.yield_time_ms,
              max_tokens: slice.max_output_tokens,
              tools: tool_metadata(operation),
@@ -127,6 +128,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
              {:ok, result} <-
                resume(registry, handle, nil,
                  owner: owner,
+                 register_execution: native_registration(operation),
                  tools: tool_metadata(operation),
                  yield_time_ms: arguments["yield_time_ms"] || 10_000,
                  max_tokens: arguments["max_tokens"] || 10_000,
@@ -273,9 +275,43 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
          {:ok, handle} <-
            register_worker(registry, owner, worker, os_identity, opts),
          :ok <- __MODULE__.Worker.adopt(worker, handle),
+         :ok <- register_execution(registry, handle, owner, worker, opts, true),
          result <- begin_worker(worker),
          {:ok, result} <- settle_execution(registry, owner, handle, result) do
       {:ok, result}
+    end
+  end
+
+  defp native_registration(operation) do
+    case operation.backend_context[:register_code_mode] do
+      callback when is_function(callback, 4) ->
+        fn registry, handle, worker -> callback.(operation, registry, handle, worker) end
+
+      _ ->
+        fn _registry, _handle, _worker -> :ok end
+    end
+  end
+
+  defp register_execution(registry, handle, owner, worker, opts, cleanup?) do
+    result =
+      case Keyword.get(opts, :register_execution) do
+        callback when is_function(callback, 3) -> callback.(registry, handle, worker)
+        nil -> :ok
+      end
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, %Error{}} = error ->
+        if cleanup? do
+          case ResourceRegistry.release(registry, handle, owner) do
+            {:ok, _} -> error
+            {:error, %Error{}} = cleanup_error -> cleanup_error
+          end
+        else
+          error
+        end
     end
   end
 
@@ -310,7 +346,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     owner = Keyword.get(opts, :owner)
 
     with {:ok, owner} <- validate_resume_owner(owner),
-         {:ok, worker} <- ResourceRegistry.fetch(registry, handle, owner) do
+         {:ok, worker} <- ResourceRegistry.fetch(registry, handle, owner),
+         :ok <- register_execution(registry, handle, owner, worker, opts, false) do
       case resume_worker(worker, value, opts) do
         {:ok, result} ->
           settle_resume(registry, handle, owner, result, opts)

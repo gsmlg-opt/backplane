@@ -68,6 +68,16 @@ Start `Backplane.AgentRuntime.Conversation` under a host supervisor with:
 - `run_id`, optional `incarnation` (default 1), `store`, and `context` (the store handle).
 - `provider`: a module implementing `ConversationAdapter.stream(request, context)`.
 - `provider_context`: trusted ephemeral adapter dependencies; never persisted.
+- Optional map `host_context`: trusted ephemeral tool-hook dependencies and host
+  metadata, independent of provider transport. It is available to preparation,
+  finite timeout selection and the trusted tool execution boundary. Tool hooks
+  receive legacy `provider_context` data overlaid with `host_context`; the latter
+  wins duplicate host keys. Provider execution continues receiving only its
+  original `provider_context`, without the new host map. Non-map values fail
+  validation before startup. Functions such as a host's `tool_context_resolver`
+  are valid values inside this map; none of this context is persisted or supplied
+  as guest script input. This Conversation option is independent of Goal's
+  existing `host_context` adapter handle.
 - `registry`: `ToolRegistry` descriptors with `schema`, `backend`, `backend_context`,
   revision and safety metadata. An empty registry is valid.
 - `authority`: existing runtime grants/caller/run/revision. Model arguments never
@@ -113,6 +123,13 @@ starts, no durable terminal is asserted, and the host must load/reconcile storag
 A timeout can mean the store committed without replying. Do not retry blindly.
 
 ## Provider and tool adapters
+
+Runtime callback, catalog, identity, ownership and deadline values take precedence
+over similarly named host data. Timeout selection is inspection only: it does not
+receive execution/publication capabilities, including `register_code_mode`.
+The descriptor retains its native family/backend dependencies; use the existing
+host preparation hook to resolve invocation-specific policy and metadata.
+`host_context` does not replace descriptor configuration or the immutable catalog.
 
 The provider receives serializable request metadata, messages, turn_id, run_id,
 incarnation, step_id and attempt_id. It returns an Enumerable. The runtime consumes

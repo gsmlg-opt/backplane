@@ -46,6 +46,7 @@ defmodule Backplane.AgentRuntime.Conversation do
          opts = Keyword.put(opts, :host_feedback, feedback),
          :ok <- ProviderOutput.validate_options(opts),
          :ok <- validate_session_options(opts),
+         :ok <- validate_host_context(opts),
          :ok <- validate_presentation_history(Keyword.get(opts, :run)),
          :ok <- GoalBridge.validate_options(opts),
          :ok <- validate_inherited_deadline(opts),
@@ -54,6 +55,17 @@ defmodule Backplane.AgentRuntime.Conversation do
          {:ok, _} <- Budget.new(%{work: Keyword.get(opts, :work, 100)}) do
       GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
     end
+  end
+
+  defp validate_host_context(opts) do
+    if is_map(Keyword.get(opts, :host_context, %{})),
+      do: :ok,
+      else: {:error, Error.new(:validation, "host_context must be a map")}
+  end
+
+  defp tool_host_context(s) do
+    Keyword.get(s.opts, :provider_context, %{})
+    |> Map.merge(Keyword.get(s.opts, :host_context, %{}))
   end
 
   defp validate_inherited_deadline(opts) do
@@ -561,6 +573,40 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   def handle_call({:effect_deadline, token}, _from, s) do
     {:reply, effect_deadline(s, token), s}
+  end
+
+  def handle_call(
+        {:register_code_mode, token, operation, registry, handle, worker},
+        {caller, _},
+        s
+      ) do
+    with %{token: ^token, task: %{pid: ^caller}, role: {:tool, outer, _, catalog}} = effect <-
+           s.effect,
+         true <- s.stopping == nil and outer.tool_name in ["exec", "wait"],
+         {:ok, descriptor} <- ToolRegistry.lookup(catalog.registry, outer.tool_name),
+         true <- native_execution_identity?(s, operation, outer),
+         {expected_registry, owner, incarnation} <- code_mode_owner(s, descriptor),
+         true <- registry === expected_registry,
+         %{kind: :continuation, owner_id: ^owner, incarnation: ^incarnation} <- handle,
+         {:ok, ^worker} <- ResourceRegistry.fetch(registry, handle, owner),
+         {:ok, _} <- Backplane.AgentRuntime.Codex.CodeMode.Worker.os_identity(worker) do
+      registration = %{
+        identity: ToolEffects.cancellation_identity(outer),
+        registry: registry,
+        handle: handle,
+        worker: worker
+      }
+
+      {:reply, :ok, %{s | effect: Map.put(effect, :native_code_mode, registration)}}
+    else
+      _ ->
+        {:reply,
+         {:error, Error.new(:resource_conflict, "native Code Mode registration is stale")}, s}
+    end
+  catch
+    :exit, _ ->
+      {:reply, {:error, Error.new(:resource_conflict, "native Code Mode worker is unavailable")},
+       s}
   end
 
   def handle_call({:register_cancellation, token, operation, registration}, {caller, _}, s) do
@@ -1888,7 +1934,8 @@ defmodule Backplane.AgentRuntime.Conversation do
           Map.drop(base_effect_context(s, self(), token), [
             :provider_emit,
             :emit,
-            :request_new_context
+            :request_new_context,
+            :register_code_mode
           ]),
           :input_kind,
           if(descriptor[:codex_input_kind] == :custom, do: :custom, else: :function)
@@ -2009,7 +2056,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     token = make_ref()
     # Selection is inspection only: never inherit runtime capabilities from host context.
     context =
-      Keyword.get(s.opts, :provider_context, %{})
+      tool_host_context(s)
       |> Map.drop([
         :interact,
         :emit,
@@ -2017,6 +2064,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :request_new_context,
         :nested_dispatch,
         :register_cancellation,
+        :register_code_mode,
         :cancellation_coordinator,
         :stage_catalog,
         :dispatch,
@@ -2484,6 +2532,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :request_new_context,
         :nested_dispatch,
         :register_cancellation,
+        :register_code_mode,
         :cancellation_coordinator,
         :resource_owner_pid
       ])
@@ -2744,7 +2793,10 @@ defmodule Backplane.AgentRuntime.Conversation do
     owner = self()
     token = make_ref()
 
-    context = base_effect_context(s, owner, token)
+    context =
+      if match?({:provider, _, _}, role),
+        do: base_effect_context(s, owner, token, :provider),
+        else: base_effect_context(s, owner, token)
 
     context =
       case role do
@@ -2829,8 +2881,13 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp catalog_from_role({:tool, _invocation, _rest, catalog}), do: catalog
 
-  defp base_effect_context(s, owner, token) do
-    Keyword.get(s.opts, :provider_context, %{})
+  defp base_effect_context(s, owner, token, scope \\ :tool) do
+    context =
+      if scope == :provider,
+        do: Keyword.get(s.opts, :provider_context, %{}),
+        else: tool_host_context(s)
+
+    context
     |> Map.put(:interact, fn request ->
       GenServer.call(owner, {:interact, token, request}, :infinity)
     end)
@@ -2888,6 +2945,13 @@ defmodule Backplane.AgentRuntime.Conversation do
       GenServer.call(owner, {:nested_tool, token, request}, :infinity)
     end)
     |> Map.put(:cancellation_coordinator, owner)
+    |> Map.put(:register_code_mode, fn operation, registry, handle, worker ->
+      GenServer.call(
+        owner,
+        {:register_code_mode, token, operation, registry, handle, worker},
+        :infinity
+      )
+    end)
     |> Map.put(:register_cancellation, fn operation, registration ->
       GenServer.call(owner, {:register_cancellation, token, operation, registration}, :infinity)
     end)
@@ -2947,6 +3011,28 @@ defmodule Backplane.AgentRuntime.Conversation do
 
         %{s | cancellations: remaining}
     end
+  end
+
+  defp code_mode_owner(s, descriptor) do
+    case Keyword.get(s.opts, :session_binding) do
+      %{resource_registry: registry, owner_id: owner, incarnation: incarnation} ->
+        {registry, owner, incarnation}
+
+      nil ->
+        {get_in(descriptor, [:backend_context, :context, :resource_registry]), s.run.run_id,
+         s.run.incarnation}
+    end
+  end
+
+  defp native_execution_identity?(s, operation, invocation) do
+    binding = Keyword.get(s.opts, :session_binding)
+
+    expected =
+      if binding, do: Map.take(binding, [:run_id, :owner_id, :incarnation, :run_incarnation])
+
+    operation[:session_binding_identity] === expected and
+      Map.delete(ToolEffects.cancellation_identity(operation), :session_binding_identity) ===
+        ToolEffects.cancellation_identity(invocation)
   end
 
   defp cancellation_operation?(s, operation, invocation) do
@@ -3025,17 +3111,11 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp cooperative_outer(%{
          nested: %{invocation: nested},
-         effect: %{role: {:tool, outer, _, catalog}}
+         effect: %{role: {:tool, outer, _, _}, native_code_mode: %{identity: identity}}
        }) do
-    case ToolRegistry.lookup(catalog.registry, outer.tool_name) do
-      {:ok,
-       %{backend: Backplane.AgentRuntime.Codex.Backend, backend_context: %{family: :code_mode}}}
-      when nested.enclosing_invocation_id == outer.invocation_id ->
-        outer.invocation_id
-
-      _ ->
-        nil
-    end
+    if identity === ToolEffects.cancellation_identity(outer) and
+         nested.enclosing_invocation_id == outer.invocation_id,
+       do: outer.invocation_id
   end
 
   defp cooperative_outer(_), do: nil
@@ -3184,11 +3264,13 @@ defmodule Backplane.AgentRuntime.Conversation do
             stopping.evidence,
           do: proof
 
-    retirement = outer_retirement(s, plugin_proofs, not uncertain)
+    scope_proofs = resource_scope_retirements(s, stopping.evidence, not uncertain)
+    proofs = plugin_proofs ++ scope_proofs
+    retirement = outer_retirement(s, proofs, not uncertain)
 
     s = %{
       s
-      | retirement_evidence: Enum.take(retirement ++ plugin_proofs ++ s.retirement_evidence, 256)
+      | retirement_evidence: Enum.take(retirement ++ proofs ++ s.retirement_evidence, 256)
     }
 
     evidence =
@@ -3198,13 +3280,13 @@ defmodule Backplane.AgentRuntime.Conversation do
             kind: :code_mode,
             enclosing: ToolEffects.cancellation_identity(elem(s.effect.role, 1)),
             nested: stopping.evidence,
-            retirement_evidence: retirement,
+            retirement_evidence: retirement ++ scope_proofs,
             effect_down: outer_down == :ok,
             resources: if(resources_confirmed, do: :confirmed, else: :uncertain)
           }
         ]
       else
-        stopping.evidence
+        Enum.map(stopping.evidence, &Map.put(&1, :retirement_evidence, scope_proofs))
       end
 
     advance_stop(%{
@@ -3220,6 +3302,44 @@ defmodule Backplane.AgentRuntime.Conversation do
             evidence: evidence
         }
     })
+  end
+
+  defp resource_scope_retirements(_s, _evidence, false), do: []
+
+  defp resource_scope_retirements(s, evidence, true) do
+    alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+
+    for %{
+          identity: identity,
+          report: %{"record_type" => "resource_scope_cancellation"} = report,
+          effect_down: true
+        } <- evidence,
+        {:ok, operation} <- [retirement_invocation(s, identity)],
+        operation = retirement_operation(operation, s),
+        {:ok, record} <- [
+          Evidence.public(%{
+            schema_version: 1,
+            record_type: :resource_scope_retirement,
+            identity: ToolEffects.cancellation_identity(operation),
+            stop_generation: s.stopping.generation,
+            provenance: %{session_binding_identity: operation[:session_binding_identity]},
+            cancellation: report,
+            executor_down: true,
+            resources: :confirmed,
+            local_cleanup: :confirmed,
+            outcome: :unknown
+          })
+        ],
+        proof = Evidence.seal(record, "retirement_digest"),
+        {:ok, ^proof} <- [ToolEffects.validate_retirement_record(proof, operation)],
+        do: proof
+  end
+
+  defp retirement_invocation(s, identity) do
+    case s.cancellations[identity.invocation_id] do
+      %{operation: operation} -> {:ok, operation}
+      _ -> :error
+    end
   end
 
   defp outer_retirement(%{nested: nil}, _proofs, _confirmed), do: []
@@ -3248,7 +3368,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         cond do
           proof ->
             %{
-              kind: :native_plugin_wait_retirement,
+              kind: proof["record_type"],
               identity: identity,
               evidence_digest: proof["retirement_digest"]
             }

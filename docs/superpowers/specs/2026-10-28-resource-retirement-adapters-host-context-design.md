@@ -1,7 +1,7 @@
 # Resource retirement, native adapters, and provider-free host context
 
 Date: 2026-10-28. Baseline: main `2a006a9fa762529a33b648f0e8bf805264d9b2f5` (1.10.49).
-Target: 1.10.50. Status: proposed, awaiting user approval before implementation.
+Target: 1.10.50. Status: approved by the user; implemented and undergoing release verification.
 Scope: Backplane internal requests #141, #142, #143.
 
 ## Problem and selected approach

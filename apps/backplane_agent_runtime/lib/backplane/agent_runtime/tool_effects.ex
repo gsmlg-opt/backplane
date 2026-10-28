@@ -237,6 +237,17 @@ defmodule Backplane.AgentRuntime.ToolEffects do
       proof["provenance"]["session_binding_identity"] === identity["session_binding_identity"]
   end
 
+  defp retirement_fields?(%{"record_type" => "resource_scope_retirement"} = proof, identity) do
+    exact_fields?(
+      proof,
+      ~w(schema_version record_type identity stop_generation provenance cancellation executor_down resources local_cleanup outcome retirement_digest)
+    ) and
+      exact_fields?(proof["provenance"], ~w(session_binding_identity)) and
+      proof["provenance"]["session_binding_identity"] === identity["session_binding_identity"] and
+      proof["executor_down"] === true and proof["resources"] === "confirmed" and
+      public_scope_cancellation?(proof["cancellation"], proof["stop_generation"])
+  end
+
   defp retirement_fields?(%{"record_type" => "code_mode_retirement"} = proof, identity) do
     exact_fields?(
       proof,
@@ -251,13 +262,77 @@ defmodule Backplane.AgentRuntime.ToolEffects do
         exact_fields?(nested, ~w(kind identity evidence_digest)) and is_map(nested["identity"]) and
           nested["identity"]["enclosing_invocation_id"] === identity["invocation_id"] and
           is_binary(nested["evidence_digest"]) and
-          nested["kind"] in ["acknowledged_settlement", "native_plugin_wait_retirement"]
+          nested["kind"] in [
+            "acknowledged_settlement",
+            "native_plugin_wait_retirement",
+            "resource_scope_retirement"
+          ]
       end) and
       length(Enum.uniq_by(proof["nested"], & &1["identity"]["invocation_id"])) ==
         length(proof["nested"])
   end
 
   defp retirement_fields?(_, _), do: false
+
+  defp public_scope_cancellation?(report, stop_generation) when is_map(report) do
+    alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+
+    exact_fields?(
+      report,
+      ~w(schema_version record_type registration_id scope_generation stop_generation gate inventory_count inventory_digest slots local_cleanup remote)
+    ) and
+      report["schema_version"] === 1 and report["record_type"] === "resource_scope_cancellation" and
+      report["stop_generation"] === stop_generation and
+      Enum.all?(~w(registration_id scope_generation stop_generation), fn key ->
+        is_binary(report[key]) and report[key] != ""
+      end) and
+      report["gate"] === "sealed" and report["local_cleanup"] === "confirmed" and
+      report["remote"] === "unknown" and is_list(report["slots"]) and
+      is_integer(report["inventory_count"]) and report["inventory_count"] in 0..128 and
+      length(report["slots"]) === report["inventory_count"] and
+      public_scope_slots?(report["slots"]) and
+      report["inventory_digest"] === Evidence.digest(report["slots"])
+  end
+
+  defp public_scope_cancellation?(_, _), do: false
+
+  defp public_scope_slots?(slots) do
+    Enum.with_index(slots, 1)
+    |> Enum.all?(fn {slot, index} ->
+      exact_fields?(slot, ~w(index identity receipt phase)) and slot["index"] === index and
+        slot["phase"] === "retired" and
+        public_resource_receipt?(slot["receipt"], slot["identity"])
+    end) and Enum.uniq_by(slots, & &1["identity"]) === slots
+  end
+
+  defp public_resource_receipt?(receipt, identity) when is_map(receipt) and is_map(identity) do
+    exact_fields?(identity, ~w(logical_id request_id client_incarnation method)) and
+      exact_fields?(
+        receipt,
+        ~w(schema version logical_id request_id request_ids client_incarnation method terminal local local_cleanup cleanup_evidence remote)
+      ) and
+      exact_fields?(receipt["cleanup_evidence"], ~w(workers_down worker_count transport)) and
+      receipt["schema"] === "resource_retirement" and receipt["version"] === 1 and
+      receipt["local"] === "retired" and receipt["local_cleanup"] === "confirmed" and
+      receipt["remote"] === "unknown" and
+      receipt["terminal"] in ~w(completed cancelled failed timed_out) and
+      Enum.all?(~w(logical_id request_id client_incarnation method), fn key ->
+        Map.fetch(receipt, key) === Map.fetch(identity, key) and is_binary(receipt[key]) and
+          receipt[key] != ""
+      end) and
+      is_list(receipt["request_ids"]) and receipt["request_ids"] != [] and
+      length(receipt["request_ids"]) <= 256 and
+      Enum.uniq(receipt["request_ids"]) === receipt["request_ids"] and
+      hd(receipt["request_ids"]) === identity["request_id"] and
+      Enum.all?(receipt["request_ids"], &(is_binary(&1) and &1 != "")) and
+      match?(
+        %{"workers_down" => true, "transport" => "confirmed", "worker_count" => count}
+        when is_integer(count) and count >= 0,
+        receipt["cleanup_evidence"]
+      )
+  end
+
+  defp public_resource_receipt?(_, _), do: false
 
   defp exact_fields?(value, fields) when is_map(value),
     do: Enum.sort(Map.keys(value)) == Enum.sort(fields)

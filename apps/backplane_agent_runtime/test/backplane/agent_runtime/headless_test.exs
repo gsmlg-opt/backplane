@@ -1,6 +1,6 @@
 defmodule Backplane.AgentRuntime.HeadlessTest do
   use ExUnit.Case, async: false
-  alias Backplane.AgentRuntime.{Codex, EphemeralStore, Error}
+  alias Backplane.AgentRuntime.{Codex, Conversation, EphemeralStore, Error}
   alias Backplane.AgentRuntime.Codex.{CodeMode, Headless, ResourceRegistry, Session}
 
   for {label, code, expected} <- [
@@ -97,6 +97,214 @@ defmodule Backplane.AgentRuntime.HeadlessTest do
     refute Process.alive?(worker)
     assert {:error, _} = Headless.await(owner, timeout: 100)
   end
+
+  @tag :host_context
+  test "trusted host context reaches original hooks without a provider and respects Store ACKs" do
+    run = "headless-host-context"
+    {opts, store} = options(run, echo_backend: __MODULE__.HostEcho)
+    test = self()
+
+    resolver = fn invocation, catalog ->
+      send(test, {:host_resolver, invocation, catalog})
+      %{test: test, marker: "ephemeral-host-resolver"}
+    end
+
+    host_context = %{
+      tool_context_resolver: resolver,
+      host_metadata: "ephemeral-host-metadata",
+      catalog_snapshot: :host_cannot_replace_catalog,
+      register_code_mode: :host_cannot_replace_runtime_callback,
+      effect_deadline: :host_cannot_replace_deadline
+    }
+
+    opts =
+      opts
+      |> Keyword.put(:hooks, __MODULE__.ResolverHooks)
+      |> Keyword.put(:host_context, host_context)
+      |> Keyword.put(:context, Map.put(opts[:context], :host_gates, true))
+      |> Keyword.put(:subscriber, self())
+
+    {:ok, owner} = Headless.start_link(opts)
+
+    assert {:ok, _} =
+             Headless.execute(
+               owner,
+               "text('before'); const value = await tools.echo({value: input.value}); text('after'); return value;",
+               input: %{value: 41}
+             )
+
+    assert_receive {:host_prepare, outer, outer_context, %{marker: "ephemeral-host-resolver"}},
+                   2_000
+
+    assert outer.tool_name == "exec"
+    assert outer_context.host_metadata == "ephemeral-host-metadata"
+    assert outer_context.tool_context_resolver == resolver
+    assert outer_context.catalog_snapshot.registry == opts[:registry]
+    assert outer_context.catalog_snapshot.authority == opts[:authority]
+    refute Map.has_key?(outer_context, :register_code_mode)
+
+    assert_receive {:host_timeout, ^outer, outer_selection}, 2_000
+    assert outer_selection.catalog_snapshot == outer_context.catalog_snapshot
+    assert outer_selection.invocation_id == outer.invocation_id
+    assert outer_selection.tool_call_id == outer.tool_call_id
+    assert_inspection_context(outer_selection)
+
+    assert_receive {:host_prepare, nested, nested_context, %{marker: "ephemeral-host-resolver"}},
+                   2_000
+
+    assert nested.tool_name == "echo"
+    assert nested.enclosing_invocation_id == outer.invocation_id
+    assert nested_context.tool_context_resolver == resolver
+    assert nested_context.host_metadata == outer_context.host_metadata
+    assert nested_context.catalog_snapshot == outer_context.catalog_snapshot
+    refute Map.has_key?(nested_context, :register_code_mode)
+    assert_receive {:host_timeout, ^nested, nested_selection}, 2_000
+    assert nested_selection.invocation_id == nested.invocation_id
+    assert nested_selection.catalog_snapshot == outer_context.catalog_snapshot
+    assert_inspection_context(nested_selection)
+
+    assert_receive {:host_checkpoint, :tool_invoked, nested_id, intent_writer}, 2_000
+    assert nested_id == nested.invocation_id
+    assert {:ok, %{run: intent_record}} = EphemeralStore.load(store, run)
+
+    assert intent_record.execution_intents["tool:#{nested_id}"].operation.invocation_id ==
+             nested_id
+
+    refute_receive {:host_effect, _, _}, 20
+
+    binding = Keyword.fetch!(opts, :session_binding)
+    {:ok, workers} = ResourceRegistry.worker_supervisor(binding.resource_registry)
+    [{_, worker, _, _}] = DynamicSupervisor.which_children(workers)
+    {:ok, os_identity} = CodeMode.Worker.os_identity(worker)
+    worker_ref = Process.monitor(worker)
+
+    send(intent_writer, :acknowledge_host)
+    assert_receive {:host_effect, operation, {:ok, %{remaining_ms: remaining}}}, 2_000
+    assert operation.invocation_id == nested_id
+    assert operation.backend_context.catalog_snapshot == outer_context.catalog_snapshot
+    assert is_function(operation.backend_context.effect_deadline, 0)
+    assert remaining > 0 and remaining <= 1_000
+    assert_receive {:host_checkpoint, :tool_completed, ^nested_id, result_writer}, 2_000
+    assert {:ok, %{run: result_record}} = EphemeralStore.load(store, run)
+    assert Map.has_key?(result_record.tool_results, nested_id)
+    assert {:error, %Error{class: :timeout}} = Headless.await(owner, timeout: 0)
+    refute_receive {:agent_runtime, ^run, %{type: :tool_settled}}, 20
+
+    send(result_writer, :acknowledge_host)
+    assert {:ok, result} = Headless.await(owner, timeout: 3_000)
+    assert result.value == %{"value" => 41}
+    assert result.nested_invocations == 1
+    assert result.output == Enum.map(["before", "after"], &%{"type" => "text", "text" => &1})
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker, _}, 2_000
+    assert :ok = CodeMode.Worker.cleanup_identity(os_identity)
+    assert Headless.status(owner).resource_cleanup == :confirmed
+    assert {:ok, %{run: record}} = EphemeralStore.load(store, run)
+    assert record.state == :completed
+    assert Map.get(record, :provider_attempts, %{}) == %{}
+    refute JSON.encode!(record) =~ "ephemeral-host-"
+    refute_receive {:headless_commit, :provider_started}, 0
+    refute_receive {:host_effect, _, _}, 0
+  end
+
+  @tag :host_context
+  test "host context must be a map and never permits provider options in Headless" do
+    {opts, store} = options("headless-context-options")
+
+    for invalid <- [nil, [], :host, self()] do
+      assert {:error, %Error{class: :validation}} =
+               Headless.start_link(Keyword.put(opts, :host_context, invalid))
+    end
+
+    for provider_option <- [[provider: __MODULE__.HookProvider], [provider_context: %{}]] do
+      assert {:error, %Error{class: :validation}} =
+               Headless.start_link(Keyword.merge(opts, provider_option))
+    end
+
+    assert {:error, %Error{class: :not_found}} =
+             EphemeralStore.load(store, "headless-context-options")
+  end
+
+  for mode <- [:legacy, :overlay] do
+    @tag :host_context
+    @tag context_mode: mode
+    test "#{mode} provider context remains compatible and separate from host metadata", context do
+      run = "provider-host-context-#{context.context_mode}"
+      {opts, _store} = options(run)
+      test = self()
+      resolver = fn _, _ -> %{test: test, marker: :resolved} end
+
+      legacy = %{test: test, tool_context_resolver: resolver, host_metadata: :legacy}
+
+      opts =
+        opts
+        |> Keyword.put(:provider, __MODULE__.HookProvider)
+        |> Keyword.put(:provider_context, legacy)
+        |> Keyword.put(:hooks, __MODULE__.ResolverHooks)
+
+      opts =
+        if context.context_mode == :overlay,
+          do:
+            Keyword.put(opts, :host_context, %{
+              host_metadata: :host,
+              host_only: "provider-must-not-see-host-data"
+            }),
+          else: opts
+
+      {:ok, owner} = Conversation.start_link(opts)
+      assert {:ok, _} = Conversation.prompt(owner, "echo once")
+      assert_receive {:hook_provider, _request, provider_context, provider}, 2_000
+      assert provider_context.host_metadata == :legacy
+      assert provider_context.tool_context_resolver == resolver
+      refute Map.has_key?(provider_context, :host_only)
+
+      send(provider, {:events, [echo_call(), provider_done()]})
+      assert_receive {:host_prepare, invocation, preparation, _}, 2_000
+      assert invocation.tool_name == "echo"
+
+      assert preparation.host_metadata ==
+               if(context.context_mode == :legacy, do: :legacy, else: :host)
+
+      assert preparation.tool_context_resolver == resolver
+      assert_receive {:host_timeout, ^invocation, selection}, 2_000
+      assert selection.host_metadata == preparation.host_metadata
+      assert_inspection_context(selection)
+      assert_receive {:echo_effect, _}, 2_000
+      assert_receive {:hook_provider, _, next_provider_context, next_provider}, 2_000
+      assert next_provider_context.host_metadata == :legacy
+      refute Map.has_key?(next_provider_context, :host_only)
+      send(next_provider, {:events, [provider_done()]})
+      eventually_value(fn -> Conversation.status(owner).phase == :terminal end)
+      assert Conversation.status(owner).run.state == :completed
+    end
+  end
+
+  defp assert_inspection_context(context) do
+    for capability <- [
+          :interact,
+          :emit,
+          :provider_emit,
+          :request_new_context,
+          :nested_dispatch,
+          :register_cancellation,
+          :register_code_mode,
+          :cancellation_coordinator,
+          :stage_catalog,
+          :append_feedback,
+          :effect_deadline,
+          :resource_owner_pid
+        ],
+        do: refute(Map.has_key?(context, capability))
+  end
+
+  defp echo_call do
+    %{
+      type: :tool_call_completed,
+      tool_call: %{id: "host-echo", name: "echo", arguments: %{"value" => 42}}
+    }
+  end
+
+  defp provider_done,
+    do: %{type: :response_completed, message: %{role: :assistant, content: "done"}}
 
   test "terminal reload inspects; result ACK loss requires recovery without effect replay" do
     {opts, store} = options("headless-ack-loss")
@@ -301,6 +509,19 @@ defmodule Backplane.AgentRuntime.HeadlessTest do
     def store(context, run, meta) do
       result = EphemeralStore.store(context.table, run, meta)
 
+      if context[:host_gates] == true and
+           elem(meta.command, 0) in [:tool_invoked, :tool_completed] and
+           elem(meta.command, 2)[:tool_name] == "echo" do
+        send(
+          context.test,
+          {:host_checkpoint, elem(meta.command, 0), elem(meta.command, 2).invocation_id, self()}
+        )
+
+        receive do
+          :acknowledge_host -> :ok
+        end
+      end
+
       if context[:hold_result] == true and elem(meta.command, 0) == :conversation_updated and
            get_in(elem(meta.command, 2), [:conversation, :headless_result]) != nil and
            :ets.insert_new(context.table, {:headless_hold_once, true}) do
@@ -331,6 +552,45 @@ defmodule Backplane.AgentRuntime.HeadlessTest do
     def execute(operation) do
       send(operation.backend_context.test, {:echo_gate, self()})
       receive do: (:release_echo -> Echo.execute(operation))
+    end
+  end
+
+  defmodule HostEcho do
+    def execute(operation) do
+      send(
+        operation.backend_context.test,
+        {:host_effect, operation, operation.backend_context.effect_deadline.()}
+      )
+
+      {:ok, operation.arguments}
+    end
+  end
+
+  defmodule ResolverHooks do
+    def prepare_tool(invocation, context) do
+      resolved = context.tool_context_resolver.(invocation, context.catalog_snapshot)
+      send(resolved.test, {:host_prepare, invocation, context, resolved})
+      :allow
+    end
+
+    def tool_effect_timeout(invocation, context) do
+      resolved = context.tool_context_resolver.(invocation, context.catalog_snapshot)
+      send(resolved.test, {:host_timeout, invocation, context})
+      {:ok, 1_000}
+    end
+  end
+
+  defmodule HookProvider do
+    def stream(request, context) do
+      send(context.test, {:hook_provider, request, context, self()})
+
+      Stream.resource(
+        fn -> nil end,
+        fn state ->
+          receive do: ({:events, events} -> {events, state})
+        end,
+        fn _ -> :ok end
+      )
     end
   end
 
