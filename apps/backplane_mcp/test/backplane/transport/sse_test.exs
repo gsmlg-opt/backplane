@@ -45,7 +45,7 @@ defmodule Backplane.Transport.SSETest do
       assert conn.state == :chunked
       assert {"content-type", "text/event-stream; charset=utf-8"} in conn.resp_headers
       assert {"cache-control", "no-cache"} in conn.resp_headers
-      assert {"connection", "keep-alive"} in conn.resp_headers
+      assert get_resp_header(conn, "connection") == []
     end
   end
 

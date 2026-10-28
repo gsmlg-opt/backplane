@@ -74,7 +74,6 @@ defmodule Backplane.Transport.McpPlug do
       |> unbounded_sse()
       |> put_resp_content_type("text/event-stream")
       |> put_resp_header("cache-control", "no-cache")
-      |> put_resp_header("connection", "keep-alive")
       |> send_chunked(200)
       |> sse_notification_loop()
     end
