@@ -834,6 +834,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
           state.terminal_result != nil ->
             finish(%{state | from: from}, state.terminal_result)
 
+          match?({:generator, _}, state.pending_yield) ->
+            {:generator, result} = state.pending_yield
+            pause(%{state | from: from, pending_yield: nil}, result)
+
           state.awaiting_resume ->
             send_command(state.port, %{type: "resume", value: value})
             {:noreply, arm(%{state | awaiting_resume: false}, from)}
@@ -1230,25 +1234,27 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       {:stop, :normal, %{state | from: nil, awaiting_resume: false, os_cleanup_status: status}}
     end
 
-    defp pause(%{from: nil} = state, _result),
-      do: fail(state, Error.new(:resource_conflict, "unexpected code mode yield"))
-
     defp pause(state, result) do
       if state.timer, do: Process.cancel_timer(state.timer)
-      GenServer.reply(state.from, with_output(state, result))
 
-      {:noreply,
-       %{
-         state
-         | from: nil,
-           timer: nil,
-           timer_deadline: nil,
-           paused_remaining: nil,
-           timer_generation: nil,
-           slice_generation: nil,
-           awaiting_resume: true,
-           outputs: []
-       }}
+      paused = %{
+        state
+        | timer: nil,
+          timer_deadline: nil,
+          paused_remaining: nil,
+          timer_generation: nil,
+          slice_generation: nil,
+          awaiting_resume: true
+      }
+
+      if state.from do
+        GenServer.reply(state.from, with_output(state, result))
+        {:noreply, %{paused | from: nil, outputs: []}}
+      else
+        # A timer slice may have replied while JavaScript was still running.
+        # Publish this generator yield on the next wait before advancing it.
+        {:noreply, %{paused | pending_yield: {:generator, result}}}
+      end
     end
 
     defp fail(state, error), do: finish(state, {:error, error})

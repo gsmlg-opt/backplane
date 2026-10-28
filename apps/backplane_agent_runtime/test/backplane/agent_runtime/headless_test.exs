@@ -114,6 +114,74 @@ defmodule Backplane.AgentRuntime.HeadlessTest do
     refute_receive {:echo_effect, _}, 50
   end
 
+  test "automatic continuation preserves a generator arriving between a timer slice and resume" do
+    {opts, store} = options("headless-slice-generator", echo_backend: __MODULE__.GatedEcho)
+    context = Map.put(opts[:context], :hold_result, true)
+    {:ok, owner} = Headless.start_link(Keyword.put(opts, :context, context))
+
+    source = """
+    // @exec: {"yield_time_ms": 1}
+    text('before');
+    const effect = await tools.echo({value: 42});
+    text('between');
+    yield 'generator';
+    text('after');
+    return effect;
+    """
+
+    assert {:ok, _} = Headless.execute(owner, source)
+    assert_receive {:echo_gate, gate}, 2_000
+    binding = Keyword.fetch!(opts, :session_binding)
+    {:ok, workers} = ResourceRegistry.worker_supervisor(binding.resource_registry)
+    [{_, worker, _, _}] = DynamicSupervisor.which_children(workers)
+    {:ok, identity} = CodeMode.Worker.os_identity(worker)
+    {caller, _} = :sys.get_state(worker).from
+    assert :erlang.suspend_process(caller)
+
+    try do
+      assert {_, 0} = System.cmd("kill", ["-STOP", to_string(identity.pid)])
+      send(gate, :release_echo)
+
+      eventually_value(fn ->
+        state = :sys.get_state(worker)
+        state.from == nil and state.active_tool == nil
+      end)
+
+      assert {_, 0} = System.cmd("kill", ["-CONT", to_string(identity.pid)])
+
+      eventually_value(fn ->
+        state = :sys.get_state(worker)
+        state.pending_yield != nil or state.terminal_result != nil
+      end)
+
+      assert {:generator, {:ok, %{value: "generator"}}} = :sys.get_state(worker).pending_yield
+    after
+      if Process.alive?(worker) and :sys.get_state(worker).os_cleanup_status != :ok,
+        do: System.cmd("kill", ["-CONT", to_string(identity.pid)])
+
+      :erlang.resume_process(caller)
+    end
+
+    assert_receive {:headless_result_checkpoint, writer}, 2_000
+    assert {:error, %Error{class: :timeout}} = Headless.await(owner, timeout: 0)
+    send(writer, :acknowledge)
+    assert {:ok, result} = Headless.await(owner, timeout: 3_000)
+    assert result.value == %{"value" => 42}
+    assert result.nested_invocations == 1
+
+    assert result.output ==
+             Enum.map(["before", "between", "after"], &%{"type" => "text", "text" => &1})
+
+    assert_receive {:echo_effect, _}
+    refute_receive {:echo_effect, _}, 0
+    refute_receive {:headless_commit, :provider_started}, 0
+    assert {:ok, %{run: record}} = EphemeralStore.load(store, "headless-slice-generator")
+    assert record.state == :completed
+    assert map_size(record.tool_results) == 2
+    assert :ok = CodeMode.Worker.cleanup_identity(identity)
+    refute Process.alive?(worker)
+  end
+
   test "cancel after raw result checkpoint never reports successful completion" do
     {opts, _} = options("headless-cancel-result")
     context = Map.put(opts[:context], :hold_result, true)
@@ -259,6 +327,13 @@ defmodule Backplane.AgentRuntime.HeadlessTest do
     end
   end
 
+  defmodule GatedEcho do
+    def execute(operation) do
+      send(operation.backend_context.test, {:echo_gate, self()})
+      receive do: (:release_echo -> Echo.execute(operation))
+    end
+  end
+
   defp options(run, settings \\ []) do
     session = start_supervised!({Session, owner_pid: self()})
 
@@ -280,7 +355,7 @@ defmodule Backplane.AgentRuntime.HeadlessTest do
         "required" => ["value"],
         "additionalProperties" => false
       },
-      backend: Echo,
+      backend: Keyword.get(settings, :echo_backend, Echo),
       backend_context: %{test: self()},
       revision: 1,
       strict: true,
