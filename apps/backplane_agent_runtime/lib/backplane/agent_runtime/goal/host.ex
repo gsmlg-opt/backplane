@@ -37,6 +37,18 @@ defmodule Backplane.AgentRuntime.Goal.Host do
   binding/delegation for a pending/settled run identity is fenced; deliberate
   reuse requires explicitly passing the new complete `:admission` to binding.
   The host's external seal remains authoritative across Goal process restart.
+
+  If a host hook already dispatched effects before Runtime admission, use the
+  separate `Goal.settle_host_admission/4` with exact ordered effect results and
+  terminal host result, confirmed executor DOWN and complete command/helper/pipe
+  cleanup. Seal the token/generation at the same admission gate, including queued
+  continuations and future starts. Cleanup does not undo visible effects.
+  `:host_stopped` retires only the reservation and preserves continuation policy;
+  ordinary hook vetoes must not use cancellation to force settlement. Settlement
+  never schedules new work. A later real ordinary prompt may complete, then the
+  host can make its normal idle decision for the same active Goal and a fresh
+  token. Cold recovery must re-establish the host seal and reconcile uncertain
+  Runtime/outbox activity; Goal persistence cannot recreate that external fence.
   """
   alias Backplane.AgentRuntime.Error
   @callback record_user_instruction(term(), binary(), map()) :: :ok | {:error, Error.t()}

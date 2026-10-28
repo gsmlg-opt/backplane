@@ -8,6 +8,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     Codex.Dynamic,
     Codex.ToolSearch,
     Codex.ResourceRequest,
+    Codex.EventRequest,
     Codex.ResourceScope,
     Codex.PluginInstallWait,
     ToolEffects,
@@ -42,6 +43,10 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
       contract("read_mcp_resource", mcp_read_schema(), runtime, true)
     )
     |> maybe_add(
+      capabilities.events?,
+      contract("mcp_events", mcp_events_schema(), runtime, true)
+    )
+    |> maybe_add(
       capabilities.plugins?,
       contract("list_available_plugins_to_install", empty_schema(), runtime, true)
     )
@@ -56,7 +61,12 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   @spec call(map()) :: {:ok, map()} | {:error, Error.t()}
   def call(%{tool_name: name, backend_context: %{runtime: runtime}} = operation)
       when is_pid(runtime) and
-             name in ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"] do
+             name in [
+               "list_mcp_resources",
+               "list_mcp_resource_templates",
+               "read_mcp_resource",
+               "mcp_events"
+             ] do
     adapter = GenServer.call(runtime, :resource_adapter)
 
     case execute(operation, %{mcp_adapter: adapter}) do
@@ -108,6 +118,18 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   """
   def resource_request_scope(operation, callback), do: ResourceScope.run(operation, callback)
 
+  @doc """
+  Runs one real caller-owned Events page under native lifecycle ownership.
+
+  The starter receives reserved tracking/deadline options and must return the
+  actual EventRequest. Full local retirement precedes the unchanged MCP result;
+  responsibility remains registered until the result Store acknowledgement.
+  """
+  def event_request(operation, starter), do: EventRequest.run(operation, starter)
+
+  @doc false
+  def cancel_event(operation), do: EventRequest.cancel(operation)
+
   @doc false
   def cancel_resource(operation), do: ResourceRequest.cancel(operation)
 
@@ -140,6 +162,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
          discovery_owners: %{},
          pending_publications: %{},
          resource_requests: %{},
+         event_requests: %{},
          plugin_calls: %{},
          plugin_retirements: [],
          runtime_id: unique_id("dynamic_runtime"),
@@ -151,6 +174,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   @impl true
+  def handle_call({:event_request, message}, from, state),
+    do: EventRequest.handle(message, from, state)
+
   def handle_call({:resource_scope, message}, from, state),
     do: ResourceScope.handle(message, from, state)
 
@@ -376,6 +402,8 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
      %{
        search?: state.candidates != [],
        mcp?: adapter?(state.mcp_adapter),
+       events?:
+         adapter?(state.mcp_adapter) and function_exported?(state.mcp_adapter, :list_events, 2),
        plugins?: adapter?(state.plugin_adapter)
      }, state}
   end
@@ -388,6 +416,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   @impl true
+  def handle_cast({:event_request_release, registration, identity}, state),
+    do: {:noreply, EventRequest.released(state, registration, identity)}
+
   def handle_cast({:release_plugin_wait, registration, identity}, state) do
     case find_plugin(state, registration) do
       %{operation: operation} = entry ->
@@ -430,7 +461,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, state) do
-    state = plugin_down(state, monitor)
+    state = state |> plugin_down(monitor) |> EventRequest.down(monitor)
 
     requests =
       Enum.reduce(state.resource_requests, %{}, fn {id, entry}, acc ->
@@ -593,6 +624,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
          state
        ),
        do: adapter_call(state, :mcp_adapter, :list_resource_templates, [arguments, operation])
+
+  defp execute(%{tool_name: "mcp_events", arguments: arguments} = operation, state),
+    do: adapter_call(state, :mcp_adapter, :list_events, [arguments, operation])
 
   defp execute(%{tool_name: "read_mcp_resource", arguments: arguments} = operation, state),
     do: adapter_call(state, :mcp_adapter, :read_resource, [arguments, operation])
@@ -892,6 +926,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   defp description("tool_search"),
     do: "Search deferred tool metadata and publish matching tools for the next model call."
 
+  defp description("mcp_events"),
+    do: "List one raw Events page from an explicit configured MCP server."
+
   defp description("list_mcp_resources"), do: "List resources provided by configured MCP servers."
   defp description("list_mcp_resource_templates"), do: "List MCP resource templates."
   defp description("read_mcp_resource"), do: "Read one resource from a configured MCP server."
@@ -913,6 +950,13 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
       object_schema(
         %{"server" => %{"type" => "string"}, "cursor" => %{"type" => "string"}},
         []
+      )
+
+  defp mcp_events_schema,
+    do:
+      object_schema(
+        %{"server" => %{"type" => "string", "minLength" => 1}, "cursor" => %{"type" => "string"}},
+        ["server"]
       )
 
   defp mcp_read_schema,

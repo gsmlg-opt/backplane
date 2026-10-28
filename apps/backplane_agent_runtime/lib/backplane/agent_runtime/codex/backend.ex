@@ -101,6 +101,9 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
       ),
       do: Backplane.AgentRuntime.Codex.PluginInstallWait.cancel(operation)
 
+  def cancel(%{tool_name: "mcp_events", backend_context: %{family: :dynamic}} = operation),
+    do: DynamicRuntime.cancel_event(operation)
+
   def cancel(%{backend_context: %{family: :dynamic}} = operation),
     do: DynamicRuntime.cancel_resource(operation)
 

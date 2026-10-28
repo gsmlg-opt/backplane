@@ -1120,6 +1120,55 @@ match the new reservation and use an unsettled token. Never infer admission from
 an unrelated parent. Unrelated bindings, accounting and elapsed time survive.
 Settlement does not launch work; the host makes a later ordinary idle decision.
 
+### Host effects ending before Runtime start
+
+`Goal.settle_host_admission(goal, admission, reason, attestation)` is the separate
+owner-only path for a released executor that performed host effects, such as a
+`UserPromptSubmit` command, and ended before any Runtime admission. Keep the
+no-effects API above strict. Supply the same exact admission, confirmed executor
+DOWN, `runtime_admission: :never_started` and `future_start: :fenced`, with:
+
+```elixir
+effects: %{
+  kind: :host_pre_runtime,
+  records: [
+    %{effect_id: "stable-command-id", kind: "UserPromptSubmit", result: actual_hook_result}
+  ],
+  result: actual_host_terminal_result,
+  cleanup: :confirmed
+}
+```
+
+The attestation, effects and record maps have exactly the shown fields. Preserve
+ordered records, actual results and the hook's stop reason. IDs and kinds must
+be nonempty UTF-8 strings; IDs must be unique. Results accept only JSON values:
+string-keyed objects, arrays, finite numbers, UTF-8 strings, booleans and nil.
+Supply 1–128 records, with total encoded effects at most 1 MiB. Invalid evidence
+is rejected, never truncated or coerced. Do not include secrets, implicit command
+output or live capabilities.
+
+The host must finish all command/helper/pipe cleanup and atomically seal the
+exact token/generation at the gate shared by admission, queued continuations and
+future starts. Cleanup does not undo externally visible effects. This is trusted
+host evidence; absent Runtime state, zero Provider calls or a UI end event does
+not establish it. Uncertain Runtime/outbox activity requires ordinary recovery.
+
+Reasons are `:host_stopped`, `:superseded` and `:cancelled`. `:host_stopped` preserves
+Goal status, budgets, usage, failure audit and continuation policy; cancellation
+uses the existing durable continuation deferral. Do not mark an ordinary hook
+veto cancelled merely to settle it. This call shares the no-start settlement
+ledger, full Store ACK checks, pending fence and historical retry semantics.
+Matching live bindings and fresh Runtime evidence, including failed accounting
+ACKs and Runtime-minted turn IDs, refuse settlement. Changed effects, reason or
+identity under the same saved or pending token conflict.
+
+Settlement creates no Runtime history, replays no hook and releases no work. A
+later real ordinary prompt may finish normally, then the host's normal idle
+decision can admit fresh automatic work for the same active Goal with a new
+identity/token. An acknowledgement is not a scheduling signal. Retain or
+re-establish the host seal across restart and reconcile unknown work before
+resubmission; Goal persistence cannot reconstruct the external execution seal.
+
 After ordinary run settlement, receipt reconciliation and Session readiness,
 the owner calls `Goal.idle(goal, current_host_generation)`. There is no polling
 loop. Busy, deferred, already-reserved or uncertain-accounting states return
@@ -1166,3 +1215,13 @@ Native Control returns these observed failures as ordinary JSON-safe
 values in both direct and nested execution. Argument errors, absent callbacks,
 actual timeout and cancellation keep their error-tuple behavior. Permission and
 authorization policy is unchanged.
+
+### Native Events adapter lifetime
+
+Implement `list_events/2` with `DynamicRuntime.event_request/2` to expose
+`mcp_events`. The host supplies source visibility and explicit server selection;
+the helper owns one page and preserves opaque cursors and ordinary MCP results.
+Use the one-argument starter's reserved tracking options unchanged. Full tracked
+request retirement is required on normal and cancelled paths; current-wire
+cancellation alone is insufficient. Shared MCP clients remain host-owned.
+See `CODEX.md` for registration, deadline and acknowledgement requirements.

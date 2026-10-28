@@ -4,7 +4,7 @@ defmodule Backplane.McpProtocol.Client.MRTR do
   alias Backplane.McpProtocol.Client.Request
   alias Backplane.McpProtocol.MCP.Error
 
-  @supported_methods ~w(tools/call prompts/get resources/read)
+  @supported_methods ~w(tools/call prompts/get resources/read events/list)
 
   @enforce_keys [
     :method,

@@ -64,6 +64,30 @@ defmodule Backplane.AgentRuntime.Goal do
   def settle_unstarted_admission(goal, admission, reason, attestation),
     do: GenServer.call(goal, {:settle_unstarted_admission, admission, reason, attestation})
 
+  @doc """
+  Settles an exact admission after host effects, before any Runtime admission.
+
+  The owner must observe executor DOWN, confirm command/helper/pipe cleanup and
+  atomically fence the exact token/generation against admission and future work.
+  The closed attestation uses `effects: %{kind: :host_pre_runtime, records: [...],
+  result: actual_host_result, cleanup: :confirmed}`. Each ordered record contains
+  only a unique nonempty UTF-8 `effect_id`, nonempty UTF-8 `kind` and JSON-compatible
+  `result`. Supply 1–128 records and at most 1 MiB of encoded effects, without
+  secrets or live capabilities. Cleanup does not undo externally visible effects.
+
+  Reasons are `:host_stopped`, `:superseded` and `:cancelled`. Only cancellation
+  durably defers automatic continuation. `:host_stopped` preserves Goal policy,
+  budgets, usage and failure audit. Return values and persistence/binding fences
+  match `settle_unstarted_admission/4`. Exact historical retries acknowledge the
+  saved result; changed effects, reason or identity conflict. Keep the host seal
+  on storage errors and across restart. Missing Runtime state is not evidence.
+
+  This call never releases work, replays effects or manufactures Runtime history.
+  The host owns any later ordinary idle decision, after real user work completes.
+  """
+  def settle_host_admission(goal, admission, reason, attestation),
+    do: GenServer.call(goal, {:settle_host_admission, admission, reason, attestation})
+
   @admission_identity ~w(run_id turn_id incarnation host_generation reservation_token)a
 
   @impl true
@@ -470,12 +494,18 @@ defmodule Backplane.AgentRuntime.Goal do
   end
 
   def handle_call(
-        {:settle_unstarted_admission, admission, reason, attestation},
+        {operation, admission, reason, attestation},
         {caller, _},
         state
-      ) do
+      )
+      when operation in [:settle_unstarted_admission, :settle_host_admission] do
     if caller == state.owner do
-      with {:ok, payload} <- Settlement.normalize(admission, reason, attestation) do
+      normalize =
+        if operation == :settle_host_admission,
+          do: &Settlement.normalize_host/3,
+          else: &Settlement.normalize/3
+
+      with {:ok, payload} <- normalize.(admission, reason, attestation) do
         settle_unstarted(state, payload)
       else
         {:error, error} -> {:reply, {:error, error}, state}

@@ -16,7 +16,7 @@ defmodule Backplane.McpProtocol.Client.OwnedRequest do
         reply_ref: make_ref()
       )
 
-    if module == ResourceRequest,
+    if module in [ResourceRequest, EventRequest],
       do: %{handle | cancellation_key: System.unique_integer([:positive, :monotonic])},
       else: handle
   end
@@ -41,8 +41,9 @@ defmodule Backplane.McpProtocol.Client.OwnedRequest do
   def monitor_owner(handle), do: Process.monitor(handle.owner)
   def owner_alive?(handle), do: Process.alive?(handle.owner)
 
-  def equal?(%ResourceRequest{} = left, %ResourceRequest{} = right),
-    do: Map.drop(left, [:identity]) == Map.drop(right, [:identity])
+  def equal?(%{__struct__: module} = left, %{__struct__: module} = right)
+      when module in [ResourceRequest, EventRequest],
+      do: Map.drop(left, [:identity]) == Map.drop(right, [:identity])
 
   def equal?(left, right), do: handle?(left) and left == right
 

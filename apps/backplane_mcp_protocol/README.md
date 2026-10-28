@@ -93,11 +93,42 @@ entry; owner/client lifecycle cleanup or connection teardown handles remaining
 obligations. Untracked starts retain their existing retention behavior.
 
 `Client.start_list_events/2`, `await_event_request/2` and
-`cancel_event_request/3` provide the same finite owned lifecycle for one raw
+`cancel_event_request/3` retain a distinct opaque `EventRequest` for one raw
 `events/list` page. They require a ready `2026-07-28` client advertising the
 `events` capability. Cursor and descriptor order, schema booleans/objects,
 `nextCursor` and extra result fields remain unchanged; no auto-pagination or
 webhook execution is performed.
+
+`event_request_identity/1` exposes the original registered Events identity to
+its owner. For a controlled wait create `event_cancellation_control/0` before
+starting, then use `await_event_request(handle, timeout, cancellation: control)`;
+`cancel_event_wait(control, reason, timeout: remaining_ms)` signals that owner.
+Events and resource controls cannot be interchanged. Controls stay bound to the
+first awaited request across observation timeouts. `cancel_event_request/3`
+also supports `verified: true` for current-wire cleanup evidence.
+
+Enroll Events with `track_retirement: true` and call `retire_event_request/2`
+after either ordinary terminal delivery or cancellation. Even a verified cancel
+report covers only the current wire; full retirement accounts for every original
+MRTR wire ID and worker. Events receipts use `schema: :event_retirement`,
+`version: 1`, and the same identity, terminal, ordered inventory, cleanup evidence
+and `remote: :unknown` fields described above. The original fixed enrollment
+and shorter query deadlines apply. Events expiry cannot renew the cleanup budget:
+expired or late-collected obligations retain their ledger entries and HTTP pins
+until connection teardown, and continue consuming tracked capacity. Owner-death
+collection before expiry still uses the original enrollment deadline. Resources
+and Events share the combined 256-entry bound; each logical request retains at most 256 wire obligations.
+Events report `:event_retirement_capacity`,
+`:event_retirement_obligation_capacity` and `:event_retirement_unavailable` at
+the corresponding typed boundary. Resource schemas and errors are unchanged.
+
+```elixir
+control = Client.event_cancellation_control()
+{:ok, request} = Client.start_list_events(client, cursor: "opaque", track_retirement: true)
+result = Client.await_event_request(request, 5_000, cancellation: control)
+{:ok, receipt} = Client.retire_event_request(request)
+# Publish the original terminal result only after confirmed local retirement.
+```
 
 ## Installation
 

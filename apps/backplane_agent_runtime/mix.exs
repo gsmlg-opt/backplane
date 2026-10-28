@@ -41,7 +41,7 @@ defmodule Backplane.AgentRuntime.MixProject do
     end
   end
 
-  defp protocol_requirement(:backplane_mcp_protocol), do: "~> 1.10.48"
+  defp protocol_requirement(:backplane_mcp_protocol), do: "~> 1.10.51"
   defp protocol_requirement(:backplane_plugin_protocol), do: "~> 1.10.32"
 
   defp umbrella_paths do

@@ -616,7 +616,7 @@ defmodule Backplane.AgentRuntime.Conversation do
          true <- cancellation_caller?(s, token, caller),
          true <- not Map.has_key?(s.cancellations, operation.invocation_id),
          :ok <-
-           Backplane.AgentRuntime.Codex.ResourceScope.register_admission(
+           register_cancellation_admission(
              operation,
              registration,
              self()
@@ -1093,7 +1093,8 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.nested && s.nested.task, do: kill_task(s.nested)
 
     Enum.each(s.cancellations, fn {_id, entry} ->
-      Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+      unless entry.operation.tool_name == "mcp_events",
+        do: Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
     end)
 
     if Process.alive?(s.supervisor), do: Supervisor.stop(s.supervisor)
@@ -1508,7 +1509,8 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp process(s, {:effect_result, {:tool, invocation, rest, catalog}, result}) do
     s = discard_failed_catalog(s, invocation, actual_outcome(result))
 
-    if tool_settlement(catalog, invocation, result) == :uncertain do
+    if unretired_events?(s, invocation) ||
+         tool_settlement(catalog, invocation, result) == :uncertain do
       stop(%{s | last_error: uncertain_error(result)}, :uncertain)
     else
       normalized = tool_result(result)
@@ -2934,6 +2936,26 @@ defmodule Backplane.AgentRuntime.Conversation do
       {:error,
        Error.new(:resource_conflict, "native async event requires a live tool invocation")}
 
+  defp register_cancellation_admission(
+         %{tool_name: "mcp_events"} = operation,
+         registration,
+         coordinator
+       ),
+       do:
+         Backplane.AgentRuntime.Codex.EventRequest.register_admission(
+           operation,
+           registration,
+           coordinator
+         )
+
+  defp register_cancellation_admission(operation, registration, coordinator),
+    do:
+      Backplane.AgentRuntime.Codex.ResourceScope.register_admission(
+        operation,
+        registration,
+        coordinator
+      )
+
   defp trusted_effect_context(s, token, catalog, owner, producer, boundary) do
     base_effect_context(s, owner, token)
     |> feedback_context(owner, token)
@@ -3005,12 +3027,29 @@ defmodule Backplane.AgentRuntime.Conversation do
         s
 
       {entry, remaining} ->
-        if entry.operation.tool_name == "request_plugin_install",
-          do: Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry),
-          else: Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+        case entry.operation.tool_name do
+          "request_plugin_install" ->
+            Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry)
+
+          "mcp_events" ->
+            Backplane.AgentRuntime.Codex.EventRequest.release(entry)
+
+          _ ->
+            Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+        end
 
         %{s | cancellations: remaining}
     end
+  end
+
+  # An uncertain terminal or storage failure cannot acknowledge Events retirement.
+  # Keep its exact registration until an authoritative acknowledgement or Runtime teardown.
+  defp release_stopped_cancellations(s, uncertain) do
+    Enum.reduce(s.cancellations, s, fn {invocation, entry}, current ->
+      if uncertain && entry.operation.tool_name == "mcp_events",
+        do: current,
+        else: release_cancellation(current, invocation)
+    end)
   end
 
   defp code_mode_owner(s, descriptor) do
@@ -3049,7 +3088,8 @@ defmodule Backplane.AgentRuntime.Conversation do
         "list_mcp_resources",
         "list_mcp_resource_templates",
         "read_mcp_resource",
-        "request_plugin_install"
+        "request_plugin_install",
+        "mcp_events"
       ] and
       Map.delete(ToolEffects.cancellation_identity(operation), :session_binding_identity) ===
         ToolEffects.cancellation_identity(invocation)
@@ -3089,6 +3129,7 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp retained_scope_task(s, invocation) do
     case s.cancellations[invocation] do
       %{operation: %{resource_scope_admission: _}, effect_task: task} -> task
+      %{operation: %{event_request_admission: _}, effect_task: task} -> task
       _ -> nil
     end
   end
@@ -3140,7 +3181,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       )
 
     Enum.each(entries, fn {_id, entry} ->
-      Backplane.AgentRuntime.Codex.ResourceScope.seal_admission(entry)
+      if entry.operation.tool_name == "mcp_events",
+        do: Backplane.AgentRuntime.Codex.EventRequest.seal_admission(entry),
+        else: Backplane.AgentRuntime.Codex.ResourceScope.seal_admission(entry)
     end)
 
     task =
@@ -3189,6 +3232,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           entry.operation
           |> Map.put(:cleanup_deadline, deadline)
           |> Map.put(:resource_registration, entry.registration)
+          |> Map.put(:event_registration, entry.registration)
           |> Map.put(:stop_generation, generation)
 
         with {:ok, assertion} <-
@@ -3198,7 +3242,9 @@ defmodule Backplane.AgentRuntime.Conversation do
            %{
              identity: ToolEffects.cancellation_identity(operation),
              report: public,
-             aggregate: match?(%ToolEffects.AggregateCancellation{}, assertion)
+             aggregate:
+               match?(%ToolEffects.AggregateCancellation{}, assertion) or
+                 match?(%ToolEffects.EventsCancellation{}, assertion)
            }}
         else
           _ -> :uncertain
@@ -3264,7 +3310,10 @@ defmodule Backplane.AgentRuntime.Conversation do
             stopping.evidence,
           do: proof
 
-    scope_proofs = resource_scope_retirements(s, stopping.evidence, not uncertain)
+    scope_proofs =
+      resource_scope_retirements(s, stopping.evidence, not uncertain) ++
+        event_request_retirements(s, stopping.evidence, not uncertain)
+
     proofs = plugin_proofs ++ scope_proofs
     retirement = outer_retirement(s, proofs, not uncertain)
 
@@ -3304,14 +3353,34 @@ defmodule Backplane.AgentRuntime.Conversation do
     })
   end
 
-  defp resource_scope_retirements(_s, _evidence, false), do: []
+  defp resource_scope_retirements(s, evidence, confirmed),
+    do:
+      request_retirements(
+        s,
+        evidence,
+        confirmed,
+        "resource_scope_cancellation",
+        :resource_scope_retirement
+      )
 
-  defp resource_scope_retirements(s, evidence, true) do
+  defp event_request_retirements(s, evidence, confirmed),
+    do:
+      request_retirements(
+        s,
+        evidence,
+        confirmed,
+        "event_request_cancellation",
+        :event_request_retirement
+      )
+
+  defp request_retirements(_s, _evidence, false, _report_type, _record_type), do: []
+
+  defp request_retirements(s, evidence, true, report_type, record_type) do
     alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
     for %{
           identity: identity,
-          report: %{"record_type" => "resource_scope_cancellation"} = report,
+          report: %{"record_type" => ^report_type} = report,
           effect_down: true
         } <- evidence,
         {:ok, operation} <- [retirement_invocation(s, identity)],
@@ -3319,7 +3388,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         {:ok, record} <- [
           Evidence.public(%{
             schema_version: 1,
-            record_type: :resource_scope_retirement,
+            record_type: record_type,
             identity: ToolEffects.cancellation_identity(operation),
             stop_generation: s.stopping.generation,
             provenance: %{session_binding_identity: operation[:session_binding_identity]},
@@ -3563,7 +3632,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
         # Keep the stop request until the cleanup commit has succeeded.
         commit(%{s | stopping: nil}, {:cleanup_settled, now(), settlement}, %{}, [], fn s, _ ->
-          s = Enum.reduce(Map.keys(s.cancellations), s, &release_cancellation(&2, &1))
+          s = release_stopped_cancellations(s, uncertain)
           s = %{s | phase: :terminal}
 
           unbind_goal(s, fn s ->
@@ -3593,7 +3662,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     reject_jobs(s.jobs)
     emit(s, %{type: :storage_failed, error: error, recovery_required: true})
 
-    s = Enum.reduce(Map.keys(s.cancellations), s, &release_cancellation(&2, &1))
+    s = release_stopped_cancellations(s, true)
     s = s |> discard_pending_catalog() |> cleanup_resources()
 
     %{
@@ -3738,10 +3807,21 @@ defmodule Backplane.AgentRuntime.Conversation do
     %{s | timer: nil, timer_generation: nil}
   end
 
+  defp unretired_events?(s, invocation) do
+    case s.cancellations[invocation.invocation_id] do
+      %{operation: %{tool_name: "mcp_events"}} = entry ->
+        not Backplane.AgentRuntime.Codex.EventRequest.retired?(entry)
+
+      _ ->
+        false
+    end
+  end
+
   defp complete_nested(%{nested: nested} = s, normalized) do
     s = discard_failed_catalog(s, nested.invocation, actual_outcome(normalized))
 
-    if tool_settlement(nested.catalog, nested.invocation, normalized) == :uncertain do
+    if unretired_events?(s, nested.invocation) ||
+         tool_settlement(nested.catalog, nested.invocation, normalized) == :uncertain do
       GenServer.reply(nested.from, normalized)
       stop(%{s | nested: nil, last_error: uncertain_error(normalized)}, :uncertain)
     else

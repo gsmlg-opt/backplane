@@ -708,7 +708,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
           stable
       end)
 
-    if proof["record_type"] == "resource_scope_retirement",
+    if proof["record_type"] in ["resource_scope_retirement", "event_request_retirement"],
       do: proof in same_invocation,
       else: same_invocation == [] or proof in same_invocation
   end
@@ -717,6 +717,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
        when type in [
               "native_plugin_wait_retirement",
               "resource_scope_retirement",
+              "event_request_retirement",
               "code_mode_retirement"
             ] do
     [record]
@@ -736,7 +737,11 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
          _facts,
          _records
        )
-       when type in ["native_plugin_wait_retirement", "resource_scope_retirement"],
+       when type in [
+              "native_plugin_wait_retirement",
+              "resource_scope_retirement",
+              "event_request_retirement"
+            ],
        do: true
 
   defp nested_retirement?(
@@ -775,7 +780,11 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
                  else: (_ -> false)
 
           %{"kind" => kind} = entry
-          when kind in ["native_plugin_wait_retirement", "resource_scope_retirement"] ->
+          when kind in [
+                 "native_plugin_wait_retirement",
+                 "resource_scope_retirement",
+                 "event_request_retirement"
+               ] ->
             fact = Enum.find(facts, &(&1["identity"]["invocation_id"] == operation.invocation_id))
 
             with true <- is_map(fact),

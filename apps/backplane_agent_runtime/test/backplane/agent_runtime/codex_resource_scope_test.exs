@@ -29,6 +29,42 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
   end
 
   defmodule Adapter do
+    def list_events(arguments, op) do
+      send(op.backend_context.test, {:events_owner, self()})
+
+      result =
+        DynamicRuntime.event_request(op, fn reserved ->
+          send(op.backend_context.test, {:events_reserved, reserved})
+
+          reserved =
+            if arguments["cursor"] == "untracked",
+              do: Keyword.put(reserved, :track_retirement, false),
+              else: reserved
+
+          if arguments["cursor"] == "wrong-family" do
+            {:ok, wrong} = Client.start_list_resources(hd(op.backend_context.client), reserved)
+            {:ok, _} = Client.await_resource_request(wrong, 1_000)
+            {:ok, wrong}
+          else
+            Client.start_list_events(
+              hd(op.backend_context.client),
+              Keyword.merge([cursor: arguments["cursor"]], reserved)
+            )
+          end
+        end)
+
+      case result do
+        {:ok, response} ->
+          {:ok, response.result}
+
+        {:error, %Error{} = error} ->
+          {:error, error}
+
+        {:error, error} ->
+          {:error, Error.new(:execution_failure, "Events failed", cause: error.reason)}
+      end
+    end
+
     def list_resources(arguments, op), do: request(arguments, op, :list)
     def list_resource_templates(arguments, op), do: request(arguments, op, :templates)
     def read_resource(arguments, op), do: request(arguments, op, :read)
@@ -1019,6 +1055,384 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     cleanup_context(context)
   end
 
+  defmodule EventAckStore do
+    defdelegate mode(), to: EphemeralStore
+    defdelegate capabilities(), to: EphemeralStore
+
+    def store(context, run, meta) do
+      kind = elem(meta.command, 0)
+
+      if kind in [:tool_invoked, :tool_completed] do
+        send(context.test, {:event_ack_pending, kind, self()})
+
+        receive do
+          :ack -> :ok
+        end
+      end
+
+      EphemeralStore.store(context.table, run, meta)
+    end
+  end
+
+  @tag native_events: true
+  test "Events tool advertisement requires the adapter callback and an explicit source" do
+    unavailable = start_supervised!({DynamicRuntime, []}, id: :no_events_adapter)
+
+    refute Enum.any?(
+             DynamicRuntime.contracts(%{dynamic_runtime: unavailable}),
+             &(&1.name == "mcp_events")
+           )
+
+    available = start_supervised!({DynamicRuntime, mcp_adapter: Adapter}, id: :events_adapter)
+
+    event =
+      Enum.find(
+        DynamicRuntime.contracts(%{dynamic_runtime: available}),
+        &(&1.name == "mcp_events")
+      )
+
+    assert event.schema["required"] == ["server"]
+    assert event.schema["properties"]["cursor"] == %{"type" => "string"}
+  end
+
+  @tag native_events: true
+  test "ordinary modern HTTP Events retains exact request retirement through both Store ACKs",
+       ctx do
+    client = start_event_client(ctx.tmp_dir)
+    dynamic = start_supervised!({DynamicRuntime, mcp_adapter: Adapter})
+    {:ok, table} = EphemeralStore.new(1)
+
+    context =
+      runtime([client], dynamic, store: EventAckStore, context: %{table: table, test: self()})
+
+    args = %{"server" => "explicit", "cursor" => "opaque/+page=汉字"}
+    send(context.provider, {:events, [call("mcp_events", args), done()]})
+    assert_receive {:event_ack_pending, :tool_invoked, intent_writer}, 2_000
+    refute Enum.any?(wires(ctx.tmp_dir), &(&1["method"] == "events/list"))
+    send(intent_writer, :ack)
+    assert_receive {:event_ack_pending, :tool_completed, result_writer}, 3_000
+    assert_receive {:events_owner, owner}
+    monitor = Process.monitor(owner)
+    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 1_000
+    refute_receive {:resource_provider, "root", _, _}, 30
+    # Read-only retention observation, not manufactured request/cleanup evidence.
+    [entry] = Map.values(:sys.get_state(dynamic).event_requests)
+    assert entry.phase == :retired && entry.receipt.schema == :event_retirement
+    assert entry.receipt.local_cleanup == :confirmed && entry.receipt.terminal == :completed
+    assert entry.identity.method == "events/list"
+    assert_receive {:events_reserved, opts}
+
+    assert opts[:track_retirement] &&
+             opts[:retirement_deadline] > System.monotonic_time(:millisecond)
+
+    [request] = Enum.filter(wires(ctx.tmp_dir), &(&1["method"] == "events/list"))
+    assert request["params"]["cursor"] == args["cursor"]
+    send(result_writer, :ack)
+    assert_receive {:resource_provider, "root", request, next}, 3_000
+    result = Enum.find(Enum.reverse(request.messages), &(&1[:role] == :tool)).result
+    assert result[:is_error] === false
+    assert Map.delete(result, :is_error) == events_page()
+    eventually(fn -> :sys.get_state(dynamic).event_requests == %{} end)
+    assert {:ok, again} = Client.start_list_events(client, cursor: "fresh")
+    assert {:ok, response} = Client.await_event_request(again, 1_000)
+    assert response.result == Map.delete(result, :is_error)
+    assert Enum.count(wires(ctx.tmp_dir), &(&1["method"] == "server/discover")) == 1
+    refute Enum.any?(wires(ctx.tmp_dir), &(&1["method"] == "notifications/cancelled"))
+    finish_context(context, next)
+  end
+
+  for mode <- [:direct, :deno] do
+    @tag mode: mode, native_events: true
+    test "#{mode} Events interruption retains the actual request through complete child retirement",
+         ctx do
+      client = start_event_client(ctx.tmp_dir)
+      dynamic = start_supervised!({DynamicRuntime, mcp_adapter: Adapter})
+      host = Host.new()
+      context = runtime([client], dynamic, recovery_host: host)
+
+      {parent, _} =
+        tool(context.provider, "root", "spawn_agent", %{
+          "task_name" => "worker",
+          "message" => "browse Events"
+        })
+
+      assert_receive {:resource_provider, child_run, _, provider}, 2_000
+
+      {name, input} =
+        if ctx.mode == :direct,
+          do: {"mcp_events", %{"server" => "explicit", "cursor" => "pending"}},
+          else:
+            {"exec", "return await tools.mcp_events({server: 'explicit', cursor: 'pending'});"}
+
+      send(provider, {:events, [call(name, input), done()]})
+      assert_receive {:events_owner, effect_owner}, 3_000
+      effect_monitor = Process.monitor(effect_owner)
+      eventually(fn -> Enum.any?(wires(ctx.tmp_dir), &pending?/1) end)
+      assert {:ok, other} = Client.start_read_resource(client, "mem://survivor-pending")
+      assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 10)
+      {parent, result} = tool(parent, "root", "interrupt_agent", %{"target" => "/root/worker"})
+      refute result[:is_error], inspect(result)
+      assert_receive {:DOWN, ^effect_monitor, :process, ^effect_owner, _}, 1_000
+      assert {:ok, snapshot} = MultiAgent.snapshot(context.manager)
+      [child] = snapshot.agents
+      assert child.run_id == child_run && child.cleanup == :confirmed
+      child_pid = :sys.get_state(context.manager).agents[child.name].pid
+      status = Conversation.status(child_pid)
+      assert status.run.state == :cancelled
+      proofs = status.retirement_evidence
+      event = Enum.find(proofs, &(&1["record_type"] == "event_request_retirement"))
+      assert is_map(event) && event["executor_down"] && event["resources"] == "confirmed"
+      assert event["outcome"] == "unknown" && event["local_cleanup"] == "confirmed"
+      receipt = event["cancellation"]["receipt"]
+      assert receipt["schema"] == "event_retirement" && receipt["terminal"] == "cancelled"
+      assert receipt["request_ids"] == [event["cancellation"]["request_identity"]["request_id"]]
+      assert {:ok, original} = EphemeralStore.load(host.store, child_run)
+      assert original.run == status.run
+      retained = retained_records(original.run.outcome["cleanup"]["evidence"])
+      assert Enum.all?(proofs, &(&1 in retained))
+
+      if ctx.mode == :deno do
+        outer = Enum.find(proofs, &(&1["record_type"] == "code_mode_retirement"))
+
+        assert Enum.any?(
+                 outer["nested"],
+                 &(&1["kind"] == "event_request_retirement" &&
+                     &1["evidence_digest"] == event["retirement_digest"])
+               )
+      end
+
+      cancellations =
+        Enum.filter(wires(ctx.tmp_dir), &(&1["method"] == "notifications/cancelled"))
+
+      assert Enum.map(cancellations, & &1["params"]["requestId"]) == receipt["request_ids"]
+      assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 10)
+      assert {:ok, release} = Client.start_read_resource(client, "mem://release")
+      assert {:ok, _} = Client.await_resource_request(release, 1_000)
+      assert {:ok, _} = Client.await_resource_request(other, 1_000)
+      assert {:ok, again} = Client.start_list_events(client, cursor: "fresh")
+      assert {:ok, response} = Client.await_event_request(again, 1_000)
+      assert response.result == events_page()
+      assert Enum.count(wires(ctx.tmp_dir), &(&1["method"] == "server/discover")) == 1
+      send(parent, {:events, [done()]})
+      eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
+      assert Conversation.status(context.conversation).run.state == :completed
+      monitor = Process.monitor(child_pid)
+      assert :ok = MultiAgent.close_session(context.manager)
+      assert_receive {:DOWN, ^monitor, :process, ^child_pid, _}, 2_000
+      refute Process.alive?(provider)
+      assert Session.status(context.child_session).phase == :closed
+      seal_actual_child_inventory(host, child, status.run)
+      assert {:ok, manifest} = MultiAgent.recovery_manifest(context.manager, child.name)
+
+      assert {:ok, %{"retirement" => "confirmed"} = reconciled} =
+               reconcile_actual(host, manifest, proofs, "events-child")
+
+      assert {:ok, %{status: :confirmed}} =
+               MultiAgent.reconcile_child(context.manager, reconciled["receipt_id"])
+
+      changed =
+        event
+        |> put_in(["cancellation", "request_identity", "client_incarnation"], "substitution")
+        |> put_in(["cancellation", "receipt", "client_incarnation"], "substitution")
+        |> Evidence.seal("retirement_digest")
+
+      replaced = Enum.map(proofs, fn p -> if p == event, do: changed, else: p end)
+
+      assert {:error, %Error{class: :unknown_outcome}} =
+               reconcile_actual(host, manifest, replaced, "events-substituted")
+
+      assert {:ok, manager_manifest} = MultiAgent.recovery_manifest(context.manager, :manager)
+
+      assert {:ok, %{"retirement" => "confirmed"} = manager_receipt} =
+               reconcile_actual(host, manager_manifest, proofs, "events-manager")
+
+      assert {:ok, %{status: :confirmed}} =
+               MultiAgent.reconcile_close(context.manager, manager_receipt["receipt_id"])
+
+      assert {:ok, %{status: :confirmed}} = Session.close(context.root_binding.session)
+      cleanup_context(context)
+    end
+  end
+
+  for mode <- [:direct, :deno] do
+    @tag mode: mode, native_events: true
+    test "#{mode} Events owner DOWN cannot acknowledge an unretired request", ctx do
+      client = start_event_client(ctx.tmp_dir)
+      dynamic = start_supervised!({DynamicRuntime, mcp_adapter: Adapter})
+      context = runtime([client], dynamic, cleanup_timeout: 100)
+
+      {name, args} =
+        if ctx.mode == :direct,
+          do: {"mcp_events", %{"server" => "explicit", "cursor" => "pending"}},
+          else:
+            {"exec", "return await tools.mcp_events({server: 'explicit', cursor: 'pending'});"}
+
+      send(context.provider, {:events, [call(name, args), done()]})
+      assert_receive {:events_owner, owner}, 2_000
+      eventually(fn -> Enum.any?(wires(ctx.tmp_dir), &pending?/1) end)
+      Process.exit(owner, :kill)
+      eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
+      status = Conversation.status(context.conversation)
+      assert status.run.state == :unknown_outcome
+      assert status.run.tool_results == %{}
+      assert status.retirement_evidence == []
+      [entry] = Map.values(:sys.get_state(dynamic).event_requests)
+      assert entry.receipt == nil
+      refute_receive {:resource_provider, "root", _, _}, 30
+      assert {:ok, again} = Client.start_list_events(client)
+      assert {:ok, _} = Client.await_event_request(again, 1_000)
+      cleanup_context(context)
+    end
+  end
+
+  @tag native_events: true
+  for cursor <- ["untracked", "wrong-family"] do
+    @tag cursor: cursor, native_events: true
+    test "#{cursor} Events retirement cannot publish the consumed page as normal success", ctx do
+      client = start_event_client(ctx.tmp_dir)
+      dynamic = start_supervised!({DynamicRuntime, mcp_adapter: Adapter})
+      context = runtime([client], dynamic, cleanup_timeout: 80)
+
+      send(
+        context.provider,
+        {:events, [call("mcp_events", %{"server" => "explicit", "cursor" => ctx.cursor}), done()]}
+      )
+
+      eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
+      status = Conversation.status(context.conversation)
+      assert status.run.state == :unknown_outcome
+      assert status.retirement_evidence == []
+      assert status.run.tool_results == %{}
+      [entry] = Map.values(:sys.get_state(dynamic).event_requests)
+      assert entry.phase == :uncertain
+      assert entry.receipt == nil
+      method = if ctx.cursor == "untracked", do: "events/list", else: "resources/list"
+      assert Enum.count(wires(ctx.tmp_dir), &(&1["method"] == method)) == 1
+      refute_receive {:resource_provider, "root", _, _}, 30
+      assert {:ok, another} = Client.start_list_events(client)
+      assert {:ok, response} = Client.await_event_request(another, 1_000)
+      assert response.result == events_page()
+      cleanup_context(context)
+    end
+  end
+
+  @tag native_events: true
+  test "lost Events result ACK retains exact terminal retirement and blocks provider continuation",
+       ctx do
+    client = start_event_client(ctx.tmp_dir)
+    dynamic = start_supervised!({DynamicRuntime, mcp_adapter: Adapter})
+    {:ok, table} = EphemeralStore.new(1)
+
+    context =
+      runtime([client], dynamic,
+        store: LostAckStore,
+        context: %{table: table, test: self(), kind: :tool_completed},
+        commit_timeout: 100
+      )
+
+    send(context.provider, {:events, [call("mcp_events", %{"server" => "explicit"}), done()]})
+    assert_receive {:scope_ack_lost, :tool_completed, "root"}, 2_000
+    [entry] = Map.values(:sys.get_state(dynamic).event_requests)
+    assert entry.phase == :retired && entry.receipt.local_cleanup == :confirmed
+    eventually(fn -> Conversation.status(context.conversation).phase == :storage_failed end)
+    [retained] = Map.values(:sys.get_state(dynamic).event_requests)
+
+    assert Map.drop(retained, [:monitor, :coordinator_monitor]) ==
+             Map.drop(entry, [:monitor, :coordinator_monitor])
+
+    refute_receive {:resource_provider, "root", _, _}, 30
+    assert {:ok, stored} = EphemeralStore.load(table, "root")
+    assert map_size(stored.run.tool_results) == 1
+    assert Enum.count(wires(ctx.tmp_dir), &(&1["method"] == "events/list")) == 1
+    cleanup_context(context)
+
+    eventually(fn ->
+      case Map.values(:sys.get_state(dynamic).event_requests) do
+        [%{coordinator_monitor: nil}] -> true
+        _ -> false
+      end
+    end)
+
+    [after_exit] = Map.values(:sys.get_state(dynamic).event_requests)
+    assert :atomics.get(after_exit.gate, 1) >= 2
+
+    assert Map.drop(after_exit, [:monitor, :coordinator_monitor]) ==
+             Map.drop(entry, [:monitor, :coordinator_monitor])
+  end
+
+  defp start_event_client(root) do
+    fixture = Path.expand("../../fixtures/events_http_mcp.py", __DIR__)
+    caller = self()
+
+    owner =
+      spawn(fn ->
+        port =
+          Port.open({:spawn_executable, System.find_executable("python3")}, [
+            :binary,
+            :exit_status,
+            args: [fixture, Path.join(root, "wire.jsonl")]
+          ])
+
+        receive do
+          {^port, {:data, data}} -> send(caller, {:event_http_port, self(), data})
+        end
+
+        receive do
+          :stop ->
+            Port.command(port, "stop\n")
+
+            receive do
+              {^port, {:exit_status, 0}} -> :ok
+              {^port, {:exit_status, code}} -> exit({:fixture_exit, code})
+            after
+              2_000 ->
+                Port.close(port)
+                exit(:fixture_exit_unconfirmed)
+            end
+        end
+      end)
+
+    on_exit(fn ->
+      monitor = Process.monitor(owner)
+      send(owner, :stop)
+      assert_receive {:DOWN, ^monitor, :process, ^owner, :normal}, 3_000
+    end)
+
+    assert_receive {:event_http_port, ^owner, data}, 2_000
+    {number, _} = Integer.parse(data)
+    name = String.to_atom("RuntimeEvents#{System.unique_integer([:positive])}")
+
+    start_supervised!(
+      {Client,
+       name: name,
+       transport: {:streamable_http, url: "http://127.0.0.1:#{number}/mcp"},
+       one_shot: true,
+       client_info: %{"name" => "native-events", "version" => "1"},
+       capabilities: %{},
+       protocol_version: "2026-07-28",
+       timeout: 3_000}
+    )
+
+    assert :ok = Client.await_ready(name, timeout: 3_000)
+    name
+  end
+
+  defp events_page,
+    do: %{
+      "events" => [
+        %{
+          "name" => "changed",
+          "title" => "Changed 汉字",
+          "description" => "first",
+          "schema" => %{"type" => "object", "properties" => %{"path" => %{"type" => "string"}}},
+          "_meta" => %{"fixture/order" => 1}
+        },
+        %{"name" => "deleted", "description" => "second", "schema" => %{"type" => "object"}}
+      ],
+      "nextCursor" => "opaque/+next=汉字",
+      "_meta" => %{"fixture/page" => [2, true, nil]}
+    }
+
   defp assert_retirement_records(store, status, mode) do
     proofs = status.retirement_evidence
     resource = Enum.find(proofs, &(&1["record_type"] == "resource_scope_retirement"))
@@ -1053,7 +1467,11 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
   end
 
   defp retained_records(%{"record_type" => type} = record)
-       when type in ["resource_scope_retirement", "code_mode_retirement"],
+       when type in [
+              "resource_scope_retirement",
+              "event_request_retirement",
+              "code_mode_retirement"
+            ],
        do: [record]
 
   defp retained_records(value) when is_map(value),
@@ -1293,7 +1711,7 @@ defmodule Backplane.AgentRuntime.CodexResourceScopeTest do
     on_exit(fn -> send(host, :stop) end)
     child = start_supervised!({Session, [owner_pid: host] ++ recovery}, id: :child_session)
     table = :ets.new(:resource_contracts, [:public])
-    names = @resources ++ @collaboration ++ ["exec", "wait"]
+    names = @resources ++ @collaboration ++ ["exec", "wait", "mcp_events"]
     authority = authority("root", names)
 
     manager =

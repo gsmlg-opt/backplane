@@ -334,6 +334,18 @@ cannot clear newer work or reapply old cancellation policy. Changed payloads
 under the same token conflict. Never infer acknowledgement from a missing
 reservation after restart.
 
+The same ledger recognizes two strict attestation forms without a migration,
+envelope change or new Store callback: `effects: :none_dispatched` for
+`settle_unstarted_admission/4`, and the closed `:host_pre_runtime` effects map for
+`settle_host_admission/4`. The latter retains the ordered effect records, actual
+hook results and host terminal result exactly. Its reasons are `:host_stopped`,
+`:cancelled` and `:superseded`; only cancellation applies durable deferral.
+Records require unique nonempty UTF-8 IDs, nonempty UTF-8 kinds and JSON-compatible
+results without runtime handles, with 1–128 records and at most 1 MiB of encoded
+effects. Old records still load; malformed new evidence fails closed. Never
+coerce numeric results or reorder records: exact historical retries compare the
+complete original payload, including effects, reason and identity.
+
 `runtime_receipt_counts`, keyed by run/incarnation, advances once per fresh
 accepted Runtime receipt ID. Reservation baselines distinguish old replay from
 new execution evidence even when several receipts share one event revision.
@@ -342,7 +354,10 @@ old records and rejecting malformed present fields. Forks start with empty maps.
 Do not prune these fences or drop unknown fields in an adapter.
 
 Settlement only acknowledges confirmed executor termination plus a trusted
-owner's permanent admission seal and no-effects attestation. Storage failure
+owner's permanent admission seal and the appropriate strict effects attestation.
+Host effects require confirmed command/helper/pipe cleanup; this does not undo
+visible effects. Settlement never dispatches work or creates Runtime receipts.
+Storage failure
 retains the local pending fence; a persisted-but-lost ACK can be reconciled by
 an exact retry. Same-process restore retains pending settlement fences, but a
 new process cannot recover uncommitted local observations. Retain host seals
@@ -351,6 +366,11 @@ restore nor a missing Runtime record proves no start. The sequential independent
 BEAM fixture `test/fixtures/run_goal_settlement_cold.py` demonstrates saved
 acknowledgement after Goal replacement without new work; it does not establish
 production multi-writer or power-loss durability.
+The corresponding host-effects fixture is
+`test/fixtures/run_goal_host_settlement_cold.py`; it confirms historical ACK
+recovery with a fresh reservation for the same active Goal and an unreplayed
+real command effect. Cold hosts must retain or re-establish the external start
+fence and reconcile uncertain Runtime/outbox activity before resubmission.
 
 Conversation checkpoints the Goal receipt outbox with the acknowledged
 provider/tool/turn transition. Goal CAS records the receipt and response before
@@ -509,3 +529,16 @@ or malformed evidence and unregistered legacy plugin waits remain unresolved.
 This extension does not invent `not_started`/`tool_completed`, change the cancelled
 or unknown historical outcome, rerun installation, or execute any cleanup callback
 inside reconciliation. Native proofs must be captured before source runtime loss.
+
+### Events retirement evidence
+
+`event_request_retirement` records retain the exact original Events cancellation
+report, including the typed request identity and complete ordered wire inventory.
+They are sealed only after confirmed local request retirement, effect process
+DOWN and Session cleanup. Result Store acknowledgement releases retained live
+responsibility. Missing or rejected acknowledgement preserves uncertainty.
+
+Cold reconciliation requires the byte-equal authoritative source Store record;
+a resealed substitute is insufficient. Code Mode references require matching
+nested and enclosing retirement evidence. These records neither replay an Events
+page nor create subscriptions, remote cleanup guarantees or host scheduling.

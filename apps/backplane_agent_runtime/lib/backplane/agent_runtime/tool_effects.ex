@@ -29,6 +29,13 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     @type t :: %__MODULE__{identity: map(), evidence: map()}
   end
 
+  defmodule EventsCancellation do
+    @moduledoc "Exact tracked Events retirement, independent of resource cancellation."
+    @enforce_keys [:identity, :evidence]
+    defstruct [:identity, :evidence]
+    @type t :: %__MODULE__{identity: map(), evidence: map()}
+  end
+
   defmodule Retirement do
     @moduledoc "Typed native observation retirement; business outcome remains unknown."
     @enforce_keys [:identity, :evidence]
@@ -60,7 +67,11 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @callback cancel(map()) ::
               :ok
-              | {:ok, Cancellation.t() | AggregateCancellation.t() | Retirement.t()}
+              | {:ok,
+                 Cancellation.t()
+                 | AggregateCancellation.t()
+                 | EventsCancellation.t()
+                 | Retirement.t()}
               | {:error, Error.t()}
 
   @default_output_limit 1_048_576
@@ -154,6 +165,33 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     end
   end
 
+  def validate_cancellation(
+        %EventsCancellation{identity: identity, evidence: evidence},
+        operation
+      ) do
+    alias Backplane.AgentRuntime.Codex.{EventRequest, Reconciliation.Evidence}
+
+    with true <- valid_identity?(identity),
+         true <- identity === cancellation_identity(operation),
+         true <- operation.tool_name === "mcp_events",
+         true <- is_map(evidence),
+         %{generation: generation, registration: registration} <-
+           operation[:event_request_admission],
+         true <- evidence[:request_generation] === generation,
+         true <- registration === operation[:event_registration],
+         true <- evidence[:registration_id] === registration,
+         true <- evidence[:stop_generation] === operation[:stop_generation],
+         true <- EventRequest.valid_receipt?(evidence[:receipt], evidence[:request_identity]),
+         {:ok, public} <- Evidence.public(evidence),
+         true <- public_event_cancellation?(public, operation[:stop_generation]),
+         {:ok, digest} <- EventRequest.sealed_report_digest(operation),
+         true <- digest === Evidence.digest(evidence) do
+      {:ok, public}
+    else
+      _ -> unverified_cancellation()
+    end
+  end
+
   def validate_cancellation(%Retirement{identity: identity, evidence: evidence}, operation) do
     with true <- identity === cancellation_identity(operation),
          {:ok, proof} <- validate_retirement_record(evidence, operation),
@@ -168,6 +206,16 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   end
 
   def validate_cancellation(_, _), do: unverified_cancellation()
+
+  @doc false
+  def confirm_events_cancellation(operation, evidence) do
+    assertion = %EventsCancellation{
+      identity: cancellation_identity(operation),
+      evidence: evidence
+    }
+
+    with {:ok, _} <- validate_cancellation(assertion, operation), do: {:ok, assertion}
+  end
 
   @doc false
   def confirm_aggregate_cancellation(operation, evidence) do
@@ -248,6 +296,18 @@ defmodule Backplane.AgentRuntime.ToolEffects do
       public_scope_cancellation?(proof["cancellation"], proof["stop_generation"])
   end
 
+  defp retirement_fields?(%{"record_type" => "event_request_retirement"} = proof, identity) do
+    exact_fields?(
+      proof,
+      ~w(schema_version record_type identity stop_generation provenance cancellation executor_down resources local_cleanup outcome retirement_digest)
+    ) and
+      exact_fields?(proof["provenance"], ~w(session_binding_identity)) and
+      proof["provenance"]["session_binding_identity"] === identity["session_binding_identity"] and
+      identity["tool_name"] === "mcp_events" and
+      proof["executor_down"] === true and proof["resources"] === "confirmed" and
+      public_event_cancellation?(proof["cancellation"], proof["stop_generation"])
+  end
+
   defp retirement_fields?(%{"record_type" => "code_mode_retirement"} = proof, identity) do
     exact_fields?(
       proof,
@@ -265,7 +325,8 @@ defmodule Backplane.AgentRuntime.ToolEffects do
           nested["kind"] in [
             "acknowledged_settlement",
             "native_plugin_wait_retirement",
-            "resource_scope_retirement"
+            "resource_scope_retirement",
+            "event_request_retirement"
           ]
       end) and
       length(Enum.uniq_by(proof["nested"], & &1["identity"]["invocation_id"])) ==
@@ -273,6 +334,25 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   end
 
   defp retirement_fields?(_, _), do: false
+
+  defp public_event_cancellation?(report, stop_generation) when is_map(report) do
+    exact_fields?(
+      report,
+      ~w(schema_version record_type registration_id request_generation stop_generation request_identity receipt local_cleanup remote)
+    ) and
+      report["schema_version"] === 1 and report["record_type"] === "event_request_cancellation" and
+      report["stop_generation"] === stop_generation and
+      Enum.all?(
+        ~w(registration_id request_generation stop_generation),
+        &(is_binary(report[&1]) and report[&1] != "")
+      ) and
+      report["local_cleanup"] === "confirmed" and report["remote"] === "unknown" and
+      is_map(report["request_identity"]) and
+      report["request_identity"]["method"] === "events/list" and
+      public_request_receipt?(report["receipt"], report["request_identity"], "event_retirement")
+  end
+
+  defp public_event_cancellation?(_, _), do: false
 
   defp public_scope_cancellation?(report, stop_generation) when is_map(report) do
     alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
@@ -305,14 +385,18 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     end) and Enum.uniq_by(slots, & &1["identity"]) === slots
   end
 
-  defp public_resource_receipt?(receipt, identity) when is_map(receipt) and is_map(identity) do
+  defp public_resource_receipt?(receipt, identity),
+    do: public_request_receipt?(receipt, identity, "resource_retirement")
+
+  defp public_request_receipt?(receipt, identity, schema)
+       when is_map(receipt) and is_map(identity) do
     exact_fields?(identity, ~w(logical_id request_id client_incarnation method)) and
       exact_fields?(
         receipt,
         ~w(schema version logical_id request_id request_ids client_incarnation method terminal local local_cleanup cleanup_evidence remote)
       ) and
       exact_fields?(receipt["cleanup_evidence"], ~w(workers_down worker_count transport)) and
-      receipt["schema"] === "resource_retirement" and receipt["version"] === 1 and
+      receipt["schema"] === schema and receipt["version"] === 1 and
       receipt["local"] === "retired" and receipt["local_cleanup"] === "confirmed" and
       receipt["remote"] === "unknown" and
       receipt["terminal"] in ~w(completed cancelled failed timed_out) and
@@ -332,7 +416,7 @@ defmodule Backplane.AgentRuntime.ToolEffects do
       )
   end
 
-  defp public_resource_receipt?(_, _), do: false
+  defp public_request_receipt?(_, _, _), do: false
 
   defp exact_fields?(value, fields) when is_map(value),
     do: Enum.sort(Map.keys(value)) == Enum.sort(fields)
@@ -519,7 +603,11 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @spec cancel(adapter(), map()) ::
           :ok
-          | {:ok, Cancellation.t() | AggregateCancellation.t() | Retirement.t()}
+          | {:ok,
+             Cancellation.t()
+             | AggregateCancellation.t()
+             | EventsCancellation.t()
+             | Retirement.t()}
           | {:error, Error.t()}
   def cancel(adapter, invocation) when is_atom(adapter) and is_map(invocation) do
     with {:ok, _} <- validate_invocation(invocation) do

@@ -7,6 +7,10 @@ defmodule Backplane.AgentRuntime.Goal.Settlement do
   @receipt ~w(thread_id expected_goal_id admission reason attestation response)a
   @payload ~w(admission reason attestation response)a
   @reasons [:preparation_failed, :cancelled, :superseded]
+  @host_reasons [:host_stopped, :cancelled, :superseded]
+  @effects ~w(kind records result cleanup)a
+  @effect_record ~w(effect_id kind result)a
+  @max_effect_bytes 1_048_576
 
   def identity(admission) when is_map(admission) do
     if Enum.all?(@identity, &Map.has_key?(admission, &1)) and
@@ -20,15 +24,23 @@ defmodule Backplane.AgentRuntime.Goal.Settlement do
   def identity(_), do: invalid()
 
   def normalize(admission, reason, attestation) do
+    normalize(admission, reason, attestation, @reasons, &(&1 == :none_dispatched))
+  end
+
+  def normalize_host(admission, reason, attestation) do
+    normalize(admission, reason, attestation, @host_reasons, &host_effects?/1)
+  end
+
+  defp normalize(admission, reason, attestation, reasons, effects?) do
     with {:ok, identity} <- identity(admission),
-         true <- reason in @reasons,
+         true <- reason in reasons,
          true <- closed?(attestation, @attestation),
          true <- closed?(attestation.admission, @identity),
          true <- attestation.admission === identity,
          true <- attestation.executor == :confirmed_down,
          true <- attestation.runtime_admission == :never_started,
          true <- attestation.future_start == :fenced,
-         true <- attestation.effects == :none_dispatched do
+         true <- effects?.(attestation.effects) do
       {:ok,
        %{
          admission: identity,
@@ -40,6 +52,47 @@ defmodule Backplane.AgentRuntime.Goal.Settlement do
       _ -> invalid()
     end
   end
+
+  defp host_effects?(effects) do
+    with true <- closed?(effects, @effects),
+         true <- effects.kind == :host_pre_runtime and effects.cleanup == :confirmed,
+         true <- is_list(effects.records),
+         true <- length(effects.records) in 1..128,
+         true <- Enum.all?(effects.records, &effect_record?/1),
+         ids = Enum.map(effects.records, & &1.effect_id),
+         true <- length(Enum.uniq(ids)) == length(ids),
+         true <- json_value?(effects.result) do
+      # Encode the fixed schema tags as strings; retain the original attestation
+      # unchanged in the ledger, including ordered records and numeric types.
+      encoded = JSON.encode!(%{effects | kind: "host_pre_runtime", cleanup: "confirmed"})
+      byte_size(encoded) <= @max_effect_bytes
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp effect_record?(record) do
+    closed?(record, @effect_record) and text?(record.effect_id) and text?(record.kind) and
+      json_value?(record.result)
+  end
+
+  defp json_value?(value) when is_binary(value), do: String.valid?(value)
+  defp json_value?(value) when is_number(value) or is_boolean(value) or is_nil(value), do: true
+
+  defp json_value?(value) when is_map(value) and not is_struct(value),
+    do:
+      Enum.all?(value, fn {key, item} ->
+        is_binary(key) and String.valid?(key) and json_value?(item)
+      end)
+
+  defp json_value?(value) when is_list(value), do: json_list?(value)
+  defp json_value?(_), do: false
+  defp json_list?([]), do: true
+  defp json_list?([head | tail]), do: json_value?(head) and json_list?(tail)
+  defp json_list?(_), do: false
+  defp text?(value), do: nonempty?(value) and String.valid?(value)
 
   def same_payload?(saved, payload), do: Map.take(saved, @payload) === payload
 
@@ -91,12 +144,18 @@ defmodule Backplane.AgentRuntime.Goal.Settlement do
     with true <- closed?(receipt, @receipt),
          true <- nonempty?(receipt.thread_id) and receipt.thread_id == thread,
          true <- nonempty?(receipt.expected_goal_id),
-         {:ok, normalized} <- normalize(receipt.admission, receipt.reason, receipt.attestation) do
+         {:ok, normalized} <- normalize_receipt(receipt) do
       receipt.admission.reservation_token == token and same_payload?(receipt, normalized)
     else
       _ -> false
     end
   end
+
+  defp normalize_receipt(%{attestation: %{effects: :none_dispatched}} = receipt),
+    do: normalize(receipt.admission, receipt.reason, receipt.attestation)
+
+  defp normalize_receipt(receipt),
+    do: normalize_host(receipt.admission, receipt.reason, receipt.attestation)
 
   defp closed?(value, keys),
     do:

@@ -8,12 +8,23 @@ defmodule Backplane.McpProtocol.Client.EventRequest do
   """
 
   @enforce_keys [:client, :logical_id, :owner, :reply_ref]
-  defstruct [:client, :logical_id, :owner, :reply_ref]
+  defstruct [
+    :client,
+    :logical_id,
+    :owner,
+    :reply_ref,
+    :identity,
+    :cancellation_key,
+    :retirement_deadline
+  ]
 
   @opaque t :: %__MODULE__{
             client: pid(),
             logical_id: String.t(),
             owner: pid(),
-            reply_ref: reference()
+            reply_ref: reference(),
+            identity: map() | nil,
+            cancellation_key: pos_integer() | nil,
+            retirement_deadline: integer() | nil
           }
 end

@@ -469,7 +469,7 @@ end)
 ```
 
 The helper preserves the public MCP success/error for the adapter to convert. It
-requires `backplane_mcp_protocol ~> 1.10.48` in this release. It registers the admitted operation
+requires `backplane_mcp_protocol ~> 1.10.51` in this release. It registers the admitted operation
 before starting and binds cancellation to that registration, the original MCP
 logical request and live client incarnation. A confirmed cleanup records exact
 local request retirement, actual effect Task termination, and Session/Registry
@@ -650,3 +650,32 @@ ownership/accessors must not be stored as artifact metadata. Standalone image
 calls and adapters ignoring the additive option remain supported. Paid requests
 are never automatically replayed; local Task termination does not prove remote
 cancellation. Web contracts retain their existing metadata.
+
+### Caller-owned MCP Events
+
+An adapter implementing `list_events/2` enables the native `mcp_events` tool.
+Its arguments require an explicit `server` and accept an optional opaque `cursor`.
+The host chooses visible sources and pagination policy. Each invocation reads one
+page; it creates no subscription or scheduled work.
+
+```elixir
+DynamicRuntime.event_request(operation, fn reserved ->
+  Client.start_list_events(client, Keyword.merge([cursor: cursor], reserved))
+end)
+```
+
+The starter runs in the actual effect caller and returns the original typed
+`EventRequest`. Reserved tracking options must take precedence. Registration
+precedes dispatch, and the helper awaits the request and its full tracked
+retirement before returning the ordinary MCP result. Verified cancellation of
+one current wire request alone cannot prove retirement of the full MRTR chain.
+The receipt retains every original ordered wire ID and confirms local worker and
+transport cleanup; remote effects remain unknown. Collection and acceptance use
+the original finite deadline, including during cancellation.
+
+The Runtime retains exact evidence until the result Store acknowledgement.
+Interruption requires the matching registration and request identity, actual
+effect process DOWN, and Session/Registry cleanup before recording
+`event_request_retirement`. Nested Code Mode additionally requires enclosing
+invocation and Deno cleanup. Missing proof or acknowledgement remains
+`unknown_outcome`; no normal page or provider continuation is published.
