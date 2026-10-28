@@ -8,6 +8,7 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
   @runtime_keys [
     :append_feedback,
     :catalog_snapshot,
+    :cancellation_coordinator,
     :effect_deadline,
     :emit,
     :interact,
@@ -198,6 +199,7 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
     assert Enum.sort(Map.keys(context)) ==
              Enum.sort(Map.keys(domain) ++ [:session_binding | @runtime_keys])
 
+    assert context.cancellation_coordinator == owner
     assert context.resource_owner_pid == owner
     assert context.catalog_snapshot == catalog
     assert operation.catalog_revision == catalog.revision
@@ -206,7 +208,8 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
     assert operation.tool_name == "fixture::read_file"
     assert operation.tool_revision == 1
 
-    for key <- @runtime_keys -- [:catalog_snapshot, :resource_owner_pid] do
+    for key <-
+          @runtime_keys -- [:catalog_snapshot, :resource_owner_pid, :cancellation_coordinator] do
       assert is_function(context[key])
     end
   end

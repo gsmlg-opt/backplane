@@ -104,6 +104,7 @@ defmodule Backplane.McpProtocol.Client do
     EventRequest,
     OwnedRequest,
     ResourceCancellation,
+    ResourceRetirement,
     ResourceRequest,
     ToolCall
   }
@@ -502,6 +503,19 @@ defmodule Backplane.McpProtocol.Client do
 
   def resource_request_identity(_), do: {:error, Error.transport(:request_owner_mismatch)}
 
+  @doc """
+  Retires an already terminal tracked resource request without replay or cancellation.
+
+  Tracking is opted into at start with `track_retirement: true`. The finite
+  `timeout` defaults to 5,000ms; `deadline` can further shorten the enrollment
+  deadline. Only confirmed cleanup releases tracked capacity. Remote outcome
+  remains unknown, and an unavailable receipt never proves cleanup.
+  """
+  @spec retire_resource_request(ResourceRequest.t(), keyword()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def retire_resource_request(%ResourceRequest{} = handle, opts \\ []),
+    do: ResourceRetirement.request(handle, opts)
+
   @doc "Creates a cancellation control in the actual resource request owner."
   @spec resource_cancellation_control() :: ResourceCancellation.t()
   def resource_cancellation_control, do: ResourceCancellation.new()
@@ -837,34 +851,48 @@ defmodule Backplane.McpProtocol.Client do
         {:error, Error.protocol(:invalid_params, %{field: "timeout"})}
 
       true ->
-        operation = Operation.new(operation_attrs)
-        deadline = System.monotonic_time(:millisecond) + registration_timeout
+        with {:ok, handle, retirement_deadline} <-
+               ResourceRetirement.prepare(handle, opts, operation_attrs.timeout) do
+          now = System.monotonic_time(:millisecond)
 
-        try do
-          case GenServer.call(
-                 client_pid,
-                 {:register_tool_call, handle, operation, deadline},
-                 registration_timeout
-               ) do
-            {:ok, registered_handle} = result ->
-              GenServer.cast(
-                OwnedRequest.client(registered_handle),
-                {:activate_tool_call, registered_handle}
-              )
+          operation_timeout =
+            if retirement_deadline,
+              do: min(operation_attrs.timeout, max(retirement_deadline - now, 1)),
+              else: operation_attrs.timeout
 
-              result
+          operation = Operation.new(%{operation_attrs | timeout: operation_timeout})
 
-            other ->
-              other
+          deadline =
+            min(retirement_deadline || now + registration_timeout, now + registration_timeout)
+
+          registration_timeout = max(deadline - now, 1)
+
+          try do
+            case GenServer.call(
+                   client_pid,
+                   {:register_tool_call, handle, operation, deadline},
+                   registration_timeout
+                 ) do
+              {:ok, registered_handle} = result ->
+                GenServer.cast(
+                  OwnedRequest.client(registered_handle),
+                  {:activate_tool_call, registered_handle}
+                )
+
+                result
+
+              other ->
+                other
+            end
+          catch
+            :exit, {:timeout, _call} ->
+              GenServer.cast(client_pid, {:abandon_tool_call, handle})
+              {:error, Error.transport(:registration_timeout)}
+
+            :exit, reason ->
+              GenServer.cast(client_pid, {:abandon_tool_call, handle})
+              {:error, Error.transport(:registration_failed, %{reason: reason})}
           end
-        catch
-          :exit, {:timeout, _call} ->
-            GenServer.cast(client_pid, {:abandon_tool_call, handle})
-            {:error, Error.transport(:registration_timeout)}
-
-          :exit, reason ->
-            GenServer.cast(client_pid, {:abandon_tool_call, handle})
-            {:error, Error.transport(:registration_failed, %{reason: reason})}
         end
     end
   end
@@ -1440,6 +1468,13 @@ defmodule Backplane.McpProtocol.Client do
       not OwnedRequest.owned_by?(handle, owner) ->
         {:reply, {:error, Error.transport(:request_owner_mismatch)}, state}
 
+      match?(
+        %ResourceRequest{retirement_deadline: retirement} when is_integer(retirement),
+        handle
+      ) and
+          handle.retirement_deadline <= System.monotonic_time(:millisecond) ->
+        {:reply, {:error, Error.transport(:resource_retirement_unavailable)}, state}
+
       System.monotonic_time(:millisecond) >= deadline ->
         {:reply, {:error, Error.transport(:registration_timeout)}, state}
 
@@ -1456,6 +1491,9 @@ defmodule Backplane.McpProtocol.Client do
         end
     end
   end
+
+  def handle_call({:retire_resource_request, handle, due}, {caller, _} = from, state),
+    do: ResourceRetirement.retire(state, handle, caller, due, from)
 
   def handle_call({:operation, %Operation{method: method}}, _from, %{era: :modern} = state)
       when method in ["ping", "logging/setLevel"] do
@@ -1665,6 +1703,7 @@ defmodule Backplane.McpProtocol.Client do
          true <- matching_tool_call?(request, handle) do
       delivery = request_delivery(request)
       {_request, next} = State.remove_request(state, request_id)
+      next = ResourceRetirement.mark(next, request, :cancelled)
       Request.reply(request, {:error, Error.transport(:request_cancelled, %{reason: reason})})
       timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
@@ -1767,6 +1806,7 @@ defmodule Backplane.McpProtocol.Client do
       {cancelled_requests, updated_state} =
         Enum.reduce(pending_requests, {[], state}, fn request, {cancelled, current_state} ->
           {_removed, current_state} = State.remove_request(current_state, request.id)
+          current_state = ResourceRetirement.mark(current_state, request, :cancelled)
           stop_request_dispatch(request)
           stop_request_resolver(request)
 
@@ -1972,6 +2012,15 @@ defmodule Backplane.McpProtocol.Client do
   defp dispatch_legacy_input_request(%{"method" => "elicitation/create"} = request, state),
     do: handle_legacy_elicitation_request(request, state)
 
+  def handle_info({:resource_retirement_result, id, token, report, from}, state),
+    do: {:noreply, ResourceRetirement.finish(state, id, token, report, from)}
+
+  def handle_info({:resource_retirement_timeout, id, token}, state),
+    do: {:noreply, ResourceRetirement.timeout(state, id, token)}
+
+  def handle_info({:resource_retirement_expired, id}, state),
+    do: {:noreply, ResourceRetirement.expired(state, id)}
+
   @impl true
   def handle_info({:DOWN, monitor, :process, owner, _reason}, state)
       when is_reference(monitor) and is_pid(owner) do
@@ -1980,7 +2029,16 @@ defmodule Backplane.McpProtocol.Client do
         {:noreply, cancel_owner_down_tool_call(state, request_id, request)}
 
       nil ->
-        handle_unmatched_down(monitor, owner, state)
+        case ResourceRetirement.owner_down(state, monitor) do
+          {true, next} ->
+            {:noreply, next}
+
+          {false, _} ->
+            case ResourceRetirement.cleanup_down(state, monitor) do
+              {true, next} -> {:noreply, next}
+              {false, _} -> handle_unmatched_down(monitor, owner, state)
+            end
+        end
     end
   end
 
@@ -1990,6 +2048,7 @@ defmodule Backplane.McpProtocol.Client do
         {:noreply, state}
 
       {request, updated_state} ->
+        updated_state = ResourceRetirement.mark(updated_state, request, :timed_out)
         stop_request_dispatch(request)
         stop_request_resolver(request)
         elapsed_ms = Request.elapsed_time(request)
@@ -2121,6 +2180,12 @@ defmodule Backplane.McpProtocol.Client do
       GenServer.reply(waiter, {:error, Error.transport(:client_terminated, %{reason: reason})})
     end
 
+    Backplane.McpProtocol.Client.Connection.release_workers(
+      ResourceRetirement.all_workers(state),
+      System.monotonic_time(:millisecond) + 1_000
+    )
+
+    ResourceRetirement.clear(state)
     Subscription.client_closing_all(reason)
     stop_tool_validator_task(state)
     Catalog.cleanup(catalog_key(state))
@@ -2190,6 +2255,7 @@ defmodule Backplane.McpProtocol.Client do
         state
 
       {request, updated_state} ->
+        updated_state = ResourceRetirement.mark(updated_state, request, :failed)
         stop_request_dispatch(request)
         stop_request_resolver(request)
 
@@ -2216,6 +2282,7 @@ defmodule Backplane.McpProtocol.Client do
         updated_state
 
       {request, updated_state} ->
+        updated_state = ResourceRetirement.mark(updated_state, request, :cancelled)
         stop_request_dispatch(request)
         stop_request_resolver(request)
 
@@ -2396,24 +2463,28 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp retry_request(request_id, request, input_responses, state) do
-    case Request.remaining_time(request) do
-      remaining when is_integer(remaining) and remaining > 0 ->
-        continuation = request.continuation
-        params = MRTR.retry_params(continuation, input_responses)
+    with :ok <- ResourceRetirement.continuation_admission(state, request) do
+      case Request.remaining_time(request) do
+        remaining when is_integer(remaining) and remaining > 0 ->
+          continuation = request.continuation
+          params = MRTR.retry_params(continuation, input_responses)
 
-        operation =
-          Operation.new(%{
-            method: request.method,
-            params: params,
-            extra_meta: request.extra_meta,
-            progress_opts: request.progress_opts,
-            timeout: remaining
-          })
+          operation =
+            Operation.new(%{
+              method: request.method,
+              params: params,
+              extra_meta: request.extra_meta,
+              progress_opts: request.progress_opts,
+              timeout: remaining
+            })
 
-        retry_with_fresh_id(request_id, request, operation, state)
+          retry_with_fresh_id(request_id, request, operation, state)
 
-      _expired ->
-        timeout_pending_request(request_id, request, state)
+        _expired ->
+          timeout_pending_request(request_id, request, state)
+      end
+    else
+      {:error, %Error{} = error} -> fail_pending_request(request_id, request, error, state)
     end
   end
 
@@ -2545,6 +2616,7 @@ defmodule Backplane.McpProtocol.Client do
     case State.get_request(state, request_id) do
       %Request{} ->
         {_request, updated_state} = State.remove_request(state, request_id)
+        updated_state = ResourceRetirement.mark(updated_state, request, :failed)
         stop_request_dispatch(request)
         stop_request_resolver(request)
         Request.reply(request, {:error, error})
@@ -3160,6 +3232,7 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp put_pending_request(state, request_id, request) do
+    state = ResourceRetirement.capture(state, request)
     %{state | pending_requests: Map.put(state.pending_requests, request_id, request)}
   end
 
@@ -3200,10 +3273,24 @@ defmodule Backplane.McpProtocol.Client do
   defp validate_owned_capability(state, method), do: State.validate_capability(state, method)
 
   defp register_tool_call(state, handle, %Operation{} = operation) do
+    operation =
+      case handle do
+        %ResourceRequest{retirement_deadline: deadline} when is_integer(deadline) ->
+          %{
+            operation
+            | timeout:
+                min(operation.timeout, max(deadline - System.monotonic_time(:millisecond), 1))
+          }
+
+        _ ->
+          operation
+      end
+
     logical_id = OwnedRequest.logical_id(handle)
 
     with true <- OwnedRequest.handle?(handle),
          :ok <- validate_owned_capability(state, operation.method),
+         :ok <- ResourceRetirement.admission(state, handle),
          false <- Map.has_key?(state.pending_requests, logical_id),
          {:ok, state, progress_owner} <-
            register_tool_call_progress(state, operation.progress_opts, logical_id) do
@@ -3241,6 +3328,7 @@ defmodule Backplane.McpProtocol.Client do
           progress_owner: progress_owner
         })
 
+      state = ResourceRetirement.enroll(state, handle)
       updated_state = put_pending_request(state, logical_id, request)
       {:ok, handle, updated_state}
     else
@@ -3274,7 +3362,8 @@ defmodule Backplane.McpProtocol.Client do
         timeout: Request.remaining_time(request) || request.timeout
       })
 
-    with {:ok, request_data, request_context} <-
+    with :ok <- ResourceRetirement.pin(state, request),
+         {:ok, request_data, request_context} <-
            prepare_request(operation, state, request.id),
          {:ok, task} <-
            start_operation_task(fn ->
@@ -3316,6 +3405,7 @@ defmodule Backplane.McpProtocol.Client do
 
   defp expire_registered_tool_call(state, request_id, request) do
     {_request, updated_state} = State.remove_request(state, request_id)
+    updated_state = ResourceRetirement.mark(updated_state, request, :timed_out)
     stop_request_dispatch(request)
     stop_request_resolver(request)
 
@@ -3454,6 +3544,7 @@ defmodule Backplane.McpProtocol.Client do
 
   defp settle_owned_tool_call(state, request_id, request, reason, notify_owner?) do
     {_request, updated_state} = State.remove_request(state, request_id)
+    updated_state = ResourceRetirement.mark(updated_state, request, :cancelled)
     stop_request_dispatch(request)
     stop_request_resolver(request)
 
@@ -3568,7 +3659,11 @@ defmodule Backplane.McpProtocol.Client do
 
     tasks = tasks ++ Enum.flat_map(requests, &[&1.dispatch_task, &1.resolver_task])
     pids = for %Task{pid: pid} <- tasks, do: pid
-    pids = pids ++ Enum.map(requests, & &1.resolver_supervisor) ++ Subscription.take_owned_pids()
+
+    pids =
+      pids ++
+        Enum.map(requests, & &1.resolver_supervisor) ++
+        Subscription.take_owned_pids() ++ ResourceRetirement.all_workers(state)
 
     report = Backplane.McpProtocol.Client.Connection.release_workers(pids, deadline)
 
@@ -3594,6 +3689,8 @@ defmodule Backplane.McpProtocol.Client do
       state.ready_waiters,
       &GenServer.reply(&1, {:error, Error.transport(:connection_closed)})
     )
+
+    state = ResourceRetirement.clear(state)
 
     {report,
      %{
@@ -3692,6 +3789,7 @@ defmodule Backplane.McpProtocol.Client do
 
   defp locally_cancel_request(state, request_id, request, reason) do
     {_request, updated_state} = State.remove_request(state, request_id)
+    updated_state = ResourceRetirement.mark(updated_state, request, :cancelled)
     stop_request_dispatch(request)
     stop_request_resolver(request)
 

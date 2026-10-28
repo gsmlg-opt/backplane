@@ -47,6 +47,51 @@ acceptance never proves remote rollback: `remote` remains `:unknown`.
 An ordinary result that wins the race remains an ordinary result and supplies no
 verified cleanup assertion.
 
+Resource adapters that require evidence after terminal delivery must enroll before
+start with `track_retirement: true`, then call
+`Client.retire_resource_request(handle, timeout: 5_000)` in the original owner.
+List, template-list and read still return the exact ordinary result through await;
+retirement neither replays the operation nor sends cancellation for a completed
+request. A live request returns `:request_not_terminal` and must first follow its
+existing owner cancellation path. Even a verified cancellation report must be
+followed by the distinct tracked receipt to account for all historical MRTR wires.
+
+```elixir
+{:ok, request} = Client.start_list_resources(client, track_retirement: true)
+result = Client.await_resource_request(request)
+{:ok, receipt} = Client.retire_resource_request(request)
+# result is unchanged; only receipt.local_cleanup == :confirmed proves retirement.
+```
+
+The receipt has `schema: :resource_retirement`, `version: 1`, the original
+`logical_id`, `request_id`, `client_incarnation` and `method`, ordered actual
+`request_ids`, and the actual terminal kind (`:completed`, `:cancelled`, `:failed`
+or `:timed_out`). `local: :retired` describes the retirement observation;
+`local_cleanup` and `cleanup_evidence` independently record whether every original
+dispatch/resolver worker and transport completion barrier was confirmed. Exact
+HTTP/SSE pins survive unrelated traffic and MRTR continuation IDs until resolution;
+STDIO uses its request barrier. `remote` is always `:unknown`.
+
+Tracking reserves one of at most 256 entries per Client before dispatch. Overflow
+returns `:resource_retirement_capacity`; entries are never evicted to admit new
+work. Each tracked logical request also admits at most 256 wire obligations;
+another MRTR continuation fails with `:resource_retirement_obligation_capacity`
+before its dispatch or pin, while preserving the admitted inventory for retirement.
+Untracked continuation behavior is unchanged. The optional tracked-start `retirement_deadline` is an absolute local
+monotonic millisecond value, fixed at the earlier of that value and start plus
+operation `timeout` (default 30,000ms). Registration and operation respect that
+same bound. Retirement uses the earliest of this enrollment bound, its positive
+finite `timeout` (default 5,000ms) and optional absolute `deadline`. No retry or
+cancellation renews enrollment.
+
+Wrong owners cannot obtain proof; foreign/stale handles, untracked requests,
+consumed capabilities and expired entries return
+`:resource_retirement_unavailable`. Uncertain or timed-out proof collection keeps
+the obligation, pins and capacity while closing public proof availability. Expiry
+triggers bounded cleanup, never a successful proof. Resolved retirement frees the
+entry; owner/client lifecycle cleanup or connection teardown handles remaining
+obligations. Untracked starts retain their existing retention behavior.
+
 `Client.start_list_events/2`, `await_event_request/2` and
 `cancel_event_request/3` provide the same finite owned lifecycle for one raw
 `events/list` page. They require a ready `2026-07-28` client advertising the

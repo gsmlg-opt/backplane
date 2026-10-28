@@ -8,6 +8,7 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
     Codex.Dynamic,
     Codex.ToolSearch,
     Codex.ResourceRequest,
+    Codex.ResourceScope,
     Codex.PluginInstallWait,
     ToolEffects,
     Error,
@@ -92,7 +93,20 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   returns the public MCP result for the adapter's usual result/error conversion.
   Additional untracked adapter effects cannot be confirmed by this helper.
   """
+  def resource_request(%ResourceScope{} = scope, starter),
+    do: ResourceScope.request(scope, starter)
+
   def resource_request(operation, starter), do: ResourceRequest.run(operation, starter)
+
+  @doc """
+  Runs explicit sequential MCP requests under one admitted invocation.
+
+  The callback may only perform scoped resource requests and pure result
+  aggregation. Each one-argument starter must preserve the supplied reserved
+  options and return its real caller-owned MCP handle. Untracked effects cannot
+  be confirmed by the scope. The callback's ordinary value is preserved.
+  """
+  def resource_request_scope(operation, callback), do: ResourceScope.run(operation, callback)
 
   @doc false
   def cancel_resource(operation), do: ResourceRequest.cancel(operation)
@@ -137,6 +151,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   @impl true
+  def handle_call({:resource_scope, message}, from, state),
+    do: ResourceScope.handle(message, from, state)
+
   def handle_call({:begin_plugin, operation}, {owner, _}, state) do
     with true <- map_size(state.plugin_calls) < 1_024,
          {:ok, receipt, dynamic} <-
@@ -291,6 +308,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   def handle_call({:coordinate_resource, registration, coordinator}, {owner, _}, state)
       when is_pid(coordinator) do
     case state.resource_requests[registration] do
+      %{kind: :scope, owner: ^owner, coordinator: ^coordinator} = entry ->
+        {:reply, :ok, put_in(state.resource_requests[registration], %{entry | managed: true})}
+
       %{owner: ^owner, coordinator_monitor: nil} = entry ->
         entry = %{entry | coordinator_monitor: Process.monitor(coordinator), managed: true}
         {:reply, :ok, put_in(state.resource_requests[registration], entry)}
@@ -301,33 +321,9 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
   end
 
   def handle_call({:cancel_resource, operation, deadline}, from, state) do
-    identity = Backplane.AgentRuntime.ToolEffects.cancellation_identity(operation)
-    entry = state.resource_requests[operation[:resource_registration]]
-
-    entry =
-      if entry &&
-           Backplane.AgentRuntime.ToolEffects.cancellation_identity(entry.operation) === identity &&
-           (entry.stop_generation == nil or entry.stop_generation === operation[:stop_generation]),
-         do: entry
-
-    case entry do
-      %{result: {:cancelled, report}} ->
-        {:reply, ResourceRequest.assertion(entry, report), state}
-
-      %{result: nil} ->
-        ResourceRequest.signal(entry.control, "runtime_cancelled", deadline)
-
-        entry = %{
-          entry
-          | waiters: [from | entry.waiters],
-            stop_generation: operation.stop_generation
-        }
-
-        {:noreply, put_in(state.resource_requests[entry.registration], entry)}
-
-      _ ->
-        {:reply, {:error, Error.new(:unknown_outcome, "resource cancellation is unconfirmed")},
-         state}
+    case state.resource_requests[operation[:resource_registration]] do
+      %{kind: :scope} -> ResourceScope.handle({:cancel, operation, deadline}, from, state)
+      _ -> cancel_single_resource(operation, deadline, from, state)
     end
   end
 
@@ -447,7 +443,8 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
           entry.monitor == monitor ->
             reply_resource_waiters(entry, "resource owner exited")
 
-            if entry.managed and entry.result != nil do
+            if (entry.managed and entry.result != nil) or
+                 (Map.get(entry, :kind) == :scope and ResourceScope.registered?(entry.scope)) do
               Map.put(acc, id, %{entry | monitor: nil, waiters: []})
             else
               retire_resource_monitors(entry)
@@ -460,6 +457,37 @@ defmodule Backplane.AgentRuntime.Codex.DynamicRuntime do
       end)
 
     {:noreply, %{state | resource_requests: requests}}
+  end
+
+  defp cancel_single_resource(operation, deadline, from, state) do
+    identity = Backplane.AgentRuntime.ToolEffects.cancellation_identity(operation)
+    entry = state.resource_requests[operation[:resource_registration]]
+
+    entry =
+      if entry &&
+           Backplane.AgentRuntime.ToolEffects.cancellation_identity(entry.operation) === identity &&
+           (entry.stop_generation == nil or entry.stop_generation === operation[:stop_generation]),
+         do: entry
+
+    case entry do
+      %{result: {:cancelled, report}} ->
+        {:reply, ResourceRequest.assertion(entry, report), state}
+
+      %{result: nil} ->
+        ResourceRequest.signal(entry.control, "runtime_cancelled", deadline)
+
+        entry = %{
+          entry
+          | waiters: [from | entry.waiters],
+            stop_generation: operation.stop_generation
+        }
+
+        {:noreply, put_in(state.resource_requests[entry.registration], entry)}
+
+      _ ->
+        {:reply, {:error, Error.new(:unknown_outcome, "resource cancellation is unconfirmed")},
+         state}
+    end
   end
 
   defp find_plugin(state, registration) when is_binary(registration),

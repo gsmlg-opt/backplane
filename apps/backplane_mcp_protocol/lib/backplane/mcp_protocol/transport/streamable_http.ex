@@ -204,6 +204,14 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     )
   end
 
+  @doc false
+  def pin_request(pid, id, opts),
+    do: GenServer.call(pid, {:pin_request, id}, Keyword.fetch!(opts, :timeout))
+
+  @doc false
+  def unpin_request(pid, id, _opts),
+    do: GenServer.cast(pid, {:unpin_request, id})
+
   @impl Transport
   def send_message(pid \\ __MODULE__, message, opts) when is_binary(message) do
     timeout = Keyword.get(opts, :timeout, 5000)
@@ -301,6 +309,7 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
         lifecycle: lifecycle,
         closing: false,
         pending: %{},
+        request_pins: MapSet.new(),
         request_jobs: %{},
         streams: []
       }
@@ -388,6 +397,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     end
   end
 
+  def handle_call({:pin_request, id}, _from, state),
+    do: {:reply, :ok, %{state | request_pins: MapSet.put(state.request_pins, id)}}
+
   def handle_call({:cancel_owned_request, request_id, opts}, from, state) do
     case Map.fetch(state.request_jobs, request_id) do
       {:ok, worker} ->
@@ -416,19 +428,23 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
     parent = self()
 
     {:ok, worker} =
-      Lifecycle.start(state.lifecycle, fn ->
-        timeout =
-          if deadline == :infinity,
-            do: :infinity,
-            else: max(deadline - System.monotonic_time(:millisecond), 0)
+      Lifecycle.start(
+        state.lifecycle,
+        fn ->
+          timeout =
+            if deadline == :infinity,
+              do: :infinity,
+              else: max(deadline - System.monotonic_time(:millisecond), 0)
 
-        result =
-          if timeout == 0,
-            do: {:error, :timeout},
-            else: send_http_request(state, message, timeout, request_context)
+          result =
+            if timeout == 0,
+              do: {:error, :timeout},
+              else: send_http_request(state, message, timeout, request_context)
 
-        send(parent, {:http_result, ref, result})
-      end)
+          send(parent, {:http_result, ref, result})
+        end,
+        if(tracked_wire?(state, message), do: :tracked_request, else: :request)
+      )
 
     request_jobs =
       case JSON.decode(message) do
@@ -438,7 +454,9 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
 
     request_jobs =
       if map_size(request_jobs) > 128 do
-        case Enum.find(request_jobs, fn {_id, pid} -> not Process.alive?(pid) end) do
+        case Enum.find(request_jobs, fn {id, pid} ->
+               not MapSet.member?(state.request_pins, id) and not Process.alive?(pid)
+             end) do
           {id, _pid} -> Map.delete(request_jobs, id)
           nil -> request_jobs
         end
@@ -451,6 +469,20 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   end
 
   @impl GenServer
+  def handle_cast({:unpin_request, id}, state) do
+    case state.request_jobs[id] do
+      nil -> :ok
+      worker -> Lifecycle.unpin_job(state.lifecycle, worker)
+    end
+
+    {:noreply,
+     %{
+       state
+       | request_pins: MapSet.delete(state.request_pins, id),
+         request_jobs: Map.delete(state.request_jobs, id)
+     }}
+  end
+
   def handle_cast(:close_connection, state) do
     parent = self()
 
@@ -941,4 +973,11 @@ defmodule Backplane.McpProtocol.Transport.StreamableHTTP do
   defp session_initialization?(%RequestContext{era: :legacy, method: "initialize"}), do: true
 
   defp session_initialization?(_request_context), do: false
+
+  defp tracked_wire?(state, message) do
+    case JSON.decode(message) do
+      {:ok, %{"id" => id}} -> MapSet.member?(state.request_pins, id)
+      _ -> false
+    end
+  end
 end

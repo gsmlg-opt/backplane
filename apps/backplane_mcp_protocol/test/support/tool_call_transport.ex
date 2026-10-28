@@ -7,7 +7,26 @@ defmodule Backplane.McpProtocol.ToolCallTransport do
   def start_link(_opts), do: {:ok, self()}
 
   @impl true
-  def cancel_request(_transport, _id, _opts), do: :ok
+  def cancel_request(transport, id, opts) do
+    {delay, result, suspend} =
+      Agent.get(transport, fn state ->
+        if Map.get(state, :observe_cleanup),
+          do: send(state.test_pid, {:resource_cleanup, id, opts})
+
+        {Map.get(state, :cleanup_delay, 0),
+         Map.get(Map.get(state, :cleanup_results, %{}), id, Map.get(state, :cleanup_result, :ok)),
+         Map.get(state, :cleanup_suspend)}
+      end)
+
+    if suspend do
+      {client, observer} = suspend
+      :ok = :sys.suspend(client)
+      send(observer, :cleanup_client_suspended)
+    end
+
+    Process.sleep(delay)
+    result
+  end
 
   @impl true
   def send_message(agent, encoded, opts) do

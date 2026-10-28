@@ -77,6 +77,23 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestSTDIOTest do
     assert {:ok, _} = Client.await_resource_request(other, 1_000)
   end
 
+  @tag :tmp_dir
+  test "completed tracked STDIO request retires through barrier without replay or cancellation",
+       %{tmp_dir: tmp_dir} do
+    {client, _transport, log} = start_client(tmp_dir)
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+    assert {:ok, response} = Client.await_resource_request(handle, 1_000)
+    assert response.result == %{"resultType" => "complete", "resources" => []}
+
+    assert {:ok, %{local_cleanup: :confirmed, terminal: :completed}} =
+             Client.retire_resource_request(handle)
+
+    assert Enum.count(messages(log), &(&1["method"] == "resources/list")) == 1
+    refute Enum.any?(messages(log), &(&1["method"] == "notifications/cancelled"))
+    {:ok, next} = Client.start_list_resources(client)
+    assert {:ok, _} = Client.await_resource_request(next, 1_000)
+  end
+
   defp start_client(tmp_dir) do
     log = Path.join(tmp_dir, "messages.jsonl")
     name = String.to_atom("ResourceSTDIO#{System.unique_integer([:positive])}")

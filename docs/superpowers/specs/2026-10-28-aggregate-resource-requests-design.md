@@ -2,7 +2,7 @@
 
 Date: 2026-10-28. Repository: `gsmlg-opt/backplane`, current `main` baseline
 `f9c50b9c9b5f748d98ebee57b0a650a4e1e2f7e9`. Request: #139. Target release:
-1.10.48. Status: proposed implementation contract, awaiting user approval.
+1.10.48. Status: approved by user; implemented and locally verified; publication and official-artifact verification pending.
 
 ## Problem and scope
 

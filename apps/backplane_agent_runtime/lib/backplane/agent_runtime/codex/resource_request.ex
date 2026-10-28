@@ -53,7 +53,7 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRequest do
       {:error, Error.new(:unknown_outcome, "MCP cancellation acknowledgement unavailable")}
   end
 
-  defp register_conversation(context, operation, registration) do
+  def register_conversation(context, operation, registration) do
     case context[:register_cancellation] do
       register when is_function(register, 2) ->
         case register.(operation, registration) do

@@ -356,6 +356,505 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestTest do
              Client.await_resource_request(handle, 1_000, cancellation: control)
   end
 
+  test "tracked list, templates and read retire exact completed results without cancellation" do
+    client = start_client()
+
+    for {start, method, result} <- [
+          {fn -> Client.start_list_resources(client, track_retirement: true) end,
+           "resources/list", %{"resources" => [], "nextCursor" => "raw"}},
+          {fn -> Client.start_list_resource_templates(client, track_retirement: true) end,
+           "resources/templates/list", %{"resourceTemplates" => []}},
+          {fn ->
+             Client.start_read_resource(client, "fixture://retire", track_retirement: true)
+           end, "resources/read", %{"contents" => []}}
+        ] do
+      {:ok, handle} = start.()
+      {worker, wire} = receive_wire(method)
+      respond(client, wire["id"], result)
+      assert {:ok, response} = Client.await_resource_request(handle, 1_000)
+      assert response.result === result
+      assert {:ok, receipt} = Client.retire_resource_request(handle)
+      assert receipt.schema == :resource_retirement
+      assert receipt.version == 1
+      assert receipt.local == :retired
+      assert receipt.terminal == :completed
+      assert receipt.logical_id == handle.logical_id
+      assert receipt.request_ids == [wire["id"]]
+      assert receipt.client_incarnation == handle.identity.client_incarnation
+      assert receipt.method == method
+      assert receipt.local_cleanup == :confirmed
+      assert receipt.cleanup_evidence.workers_down
+      assert receipt.cleanup_evidence.transport == :confirmed
+      assert receipt.remote == :unknown
+      refute Process.alive?(worker)
+
+      assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+               Client.retire_resource_request(handle)
+    end
+
+    refute_receive {:tool_call_send, _, _, _}, 20
+  end
+
+  test "retirement requires tracking, terminal delivery and the exact owner handle" do
+    client = start_client()
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+    {_worker, wire} = receive_wire("resources/list")
+
+    assert {:error, %Error{reason: :request_not_terminal}} =
+             Client.retire_resource_request(handle)
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(%{handle | reply_ref: make_ref()})
+
+    test = self()
+    spawn(fn -> send(test, {:foreign_retire, Client.retire_resource_request(handle)}) end)
+    assert_receive {:foreign_retire, {:error, %Error{reason: :request_owner_mismatch}}}
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+    assert {:ok, %{local_cleanup: :confirmed}} = Client.retire_resource_request(handle)
+    {:ok, ordinary} = Client.start_list_resources(client)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(ordinary, 1_000)
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(ordinary)
+  end
+
+  test "tracked capacity is reserved before dispatch and restored only by retirement" do
+    client = start_client()
+
+    handles =
+      for _ <- 1..256 do
+        {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+        {_worker, wire} = receive_wire("resources/list")
+        respond(client, wire["id"], %{"resources" => []})
+        assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+        handle
+      end
+
+    assert {:error, %Error{reason: :resource_retirement_capacity}} =
+             Client.start_list_resources(client, track_retirement: true)
+
+    refute_receive {:tool_call_send, _, _, _}, 20
+    assert {:ok, _} = Client.retire_resource_request(hd(handles))
+    assert {:ok, _} = Client.start_list_resources(client, track_retirement: true)
+  end
+
+  test "expired tracked enrollment refuses dispatch and cannot renew at retirement" do
+    client = start_client()
+    past = System.monotonic_time(:millisecond) - 1
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.start_list_resources(client,
+               track_retirement: true,
+               retirement_deadline: past
+             )
+
+    refute_receive {:tool_call_send, _, _, _}, 20
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true, timeout: 50)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+    Process.sleep(60)
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(handle, timeout: 5_000)
+  end
+
+  test "cancelled tracked request still requires its distinct retirement receipt" do
+    client = start_client([{:block, make_ref()}, :ok])
+    {:ok, handle} = Client.start_read_resource(client, "fixture://cancel", track_retirement: true)
+    {worker, _wire} = receive_wire("resources/read")
+    assert {:ok, %{local: :cancelled}} = Client.cancel_resource_request(handle)
+
+    assert {:error, %Error{reason: :request_cancelled}} =
+             Client.await_resource_request(handle, 1_000)
+
+    assert {:ok, %{terminal: :cancelled, local_cleanup: :confirmed}} =
+             Client.retire_resource_request(handle)
+
+    refute Process.alive?(worker)
+  end
+
+  test "uncertain barriers consume proof availability but retain the complete obligation and capacity" do
+    client = start_client()
+    transport = :sys.get_state(client).transport.name
+    Agent.update(transport, &Map.put(&1, :cleanup_result, {:error, :missing_completion_handle}))
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+
+    assert {:ok, %{local_cleanup: :uncertain, cleanup_evidence: %{transport: :uncertain}}} =
+             Client.retire_resource_request(handle)
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(handle)
+
+    assert map_size(:sys.get_state(client).resource_retirements) == 1
+    assert :sys.get_state(client).resource_retirements[handle.logical_id].obligations != []
+
+    for _ <- 1..255 do
+      {:ok, other} = Client.start_list_resources(client, track_retirement: true)
+      {_worker, wire} = receive_wire("resources/list")
+      respond(client, wire["id"], %{"resources" => []})
+      assert {:ok, _} = Client.await_resource_request(other, 1_000)
+    end
+
+    assert {:error, %Error{reason: :resource_retirement_capacity}} =
+             Client.start_list_resources(client, track_retirement: true)
+  end
+
+  test "retirement validates stale identity and finite budgets before consuming proof" do
+    client = start_client()
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(%{
+               handle
+               | identity: %{handle.identity | client_incarnation: "stale"}
+             })
+
+    other = start_client()
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(%{handle | client: other})
+
+    for timeout <- [:infinity, nil, 0, -1] do
+      assert {:error, %Error{reason: :invalid_params}} =
+               Client.retire_resource_request(handle, timeout: timeout)
+    end
+
+    assert {:error, %Error{reason: :invalid_params}} =
+             Client.retire_resource_request(handle, deadline: :infinity)
+
+    assert {:ok, %{local_cleanup: :confirmed}} = Client.retire_resource_request(handle)
+  end
+
+  test "tracked registration and operation keep the original absolute retirement bound" do
+    client = start_client()
+    :ok = :sys.suspend(client)
+    due = System.monotonic_time(:millisecond) + 20
+
+    assert {:error, %Error{reason: :registration_timeout}} =
+             Client.start_list_resources(client,
+               track_retirement: true,
+               timeout: 5_000,
+               registration_timeout: 1_000,
+               retirement_deadline: due
+             )
+
+    :ok = :sys.resume(client)
+    refute_receive {:tool_call_send, _, _, _}, 30
+    assert :sys.get_state(client).resource_retirements == %{}
+
+    due = System.monotonic_time(:millisecond) + 100
+
+    {:ok, handle} =
+      Client.start_list_resources(client,
+        track_retirement: true,
+        timeout: 5_000,
+        retirement_deadline: due
+      )
+
+    receive_wire("resources/list")
+    request = :sys.get_state(client).pending_requests[handle.logical_id]
+    assert request.deadline <= due
+    assert handle.retirement_deadline == due
+    assert {:error, %Error{reason: :request_timeout}} = Client.await_resource_request(handle, 300)
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(handle)
+  end
+
+  test "terminal tracked owner death and Client shutdown release retained bookkeeping" do
+    client = start_client()
+    test = self()
+
+    owner =
+      spawn(fn ->
+        {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+        send(test, {:tracked_owned, handle})
+        send(test, {:tracked_completed, Client.await_resource_request(handle, 1_000)})
+
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    assert_receive {:tracked_owned, handle}
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert_receive {:tracked_completed, {:ok, _}}
+    assert map_size(:sys.get_state(client).resource_retirements) == 1
+    send(owner, :finish)
+    await_retirements(client, 0)
+
+    assert {:error, %Error{reason: :request_owner_mismatch}} =
+             Client.retire_resource_request(handle)
+
+    {:ok, retained} = Client.start_list_resources(client, track_retirement: true)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(retained, 1_000)
+    GenServer.stop(client)
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(retained)
+  end
+
+  test "a late barrier cannot manufacture proof beyond the fixed retirement call deadline" do
+    client = start_client()
+    transport = :sys.get_state(client).transport.name
+    Agent.update(transport, &Map.put(&1, :cleanup_delay, 60))
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+
+    assert {:ok, %{local_cleanup: :uncertain}} =
+             Client.retire_resource_request(handle, timeout: 10)
+
+    Process.sleep(80)
+    assert map_size(:sys.get_state(client).resource_retirements) == 1
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(handle)
+  end
+
+  test "tracked failures and server cancellation preserve their actual terminal kinds" do
+    client = start_client()
+    {:ok, failed} = Client.start_read_resource(client, "fixture://failed", track_retirement: true)
+    {_worker, wire} = receive_wire("resources/read")
+
+    GenServer.cast(
+      client,
+      {:response,
+       JSON.encode!(%{
+         "jsonrpc" => "2.0",
+         "id" => wire["id"],
+         "error" => %{"code" => -32603, "message" => "fixture failure"}
+       })}
+    )
+
+    assert {:error, _} = Client.await_resource_request(failed, 1_000)
+
+    assert {:ok, %{terminal: :failed, local_cleanup: :confirmed}} =
+             Client.retire_resource_request(failed)
+
+    # Modern cancellation notifications belong to subscriptions; legacy request
+    # cancellation uses the ordinary pending-request notification handler.
+    :sys.replace_state(
+      client,
+      &%{&1 | era: :legacy, negotiated_version: "2025-11-25", protocol_version: "2025-11-25"}
+    )
+
+    {:ok, cancelled} =
+      Client.start_read_resource(client, "fixture://server-cancel", track_retirement: true)
+
+    {_worker, wire} = receive_wire("resources/read")
+
+    GenServer.cast(
+      client,
+      {:response,
+       JSON.encode!(%{
+         "jsonrpc" => "2.0",
+         "method" => "notifications/cancelled",
+         "params" => %{"requestId" => wire["id"], "reason" => "server stopped"}
+       })}
+    )
+
+    assert {:error, %Error{reason: :request_cancelled}} =
+             Client.await_resource_request(cancelled, 1_000)
+
+    assert {:ok, %{terminal: :cancelled, local_cleanup: :confirmed}} =
+             Client.retire_resource_request(cancelled)
+  end
+
+  test "current cancellation receipt cannot discharge an unknown historical MRTR barrier" do
+    client = start_client()
+
+    :ok =
+      Client.register_sampling_callback(client, fn _ ->
+        {:ok,
+         %{
+           "role" => "assistant",
+           "content" => %{"type" => "text", "text" => "resolved"},
+           "model" => "fixture"
+         }}
+      end)
+
+    {:ok, handle} =
+      Client.start_read_resource(client, "fixture://history", track_retirement: true)
+
+    {_worker, first} = receive_wire("resources/read")
+    transport = :sys.get_state(client).transport.name
+
+    Agent.update(
+      transport,
+      &Map.put(&1, :cleanup_results, %{first["id"] => {:error, :lost_barrier}})
+    )
+
+    respond(client, first["id"], %{
+      "resultType" => "input_required",
+      "inputRequests" => %{
+        "sample" => %{
+          "method" => "sampling/createMessage",
+          "params" => %{"messages" => [], "maxTokens" => 1}
+        }
+      }
+    })
+
+    {_worker, second} = receive_wire("resources/read")
+
+    assert {:ok, %{local_cleanup: :confirmed}} =
+             Client.cancel_resource_request(handle, "stop", verified: true)
+
+    assert {:error, %Error{reason: :request_cancelled}} =
+             Client.await_resource_request(handle, 1_000)
+
+    assert {:ok, receipt} = Client.retire_resource_request(handle)
+    assert receipt.request_ids == [first["id"], second["id"]]
+    assert receipt.terminal == :cancelled
+    assert receipt.local_cleanup == :uncertain
+    assert receipt.cleanup_evidence.transport == :uncertain
+    assert receipt.cleanup_evidence.worker_count >= 4
+    assert map_size(:sys.get_state(client).resource_retirements) == 1
+  end
+
+  test "a dead proof collector cannot release a retained tracked obligation" do
+    client = start_client()
+    transport = :sys.get_state(client).transport.name
+    Agent.update(transport, &Map.put(&1, :cleanup_delay, 1_000))
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+    test = self()
+
+    spawn(fn ->
+      Process.sleep(20)
+      entry = :sys.get_state(client).resource_retirements[handle.logical_id]
+      Process.exit(entry.cleanup.pid, :kill)
+      send(test, :collector_stopped)
+    end)
+
+    assert {:ok, %{local_cleanup: :uncertain}} =
+             Client.retire_resource_request(handle, timeout: 500)
+
+    assert_receive :collector_stopped
+    assert map_size(:sys.get_state(client).resource_retirements) == 1
+    assert :sys.get_state(client).resource_retirements[handle.logical_id].cleanup == nil
+  end
+
+  test "expired enrollment cannot retire a still-live MRTR inventory before terminal authority" do
+    client = start_client()
+    due = System.monotonic_time(:millisecond) + 100
+
+    {:ok, handle} =
+      Client.start_read_resource(client, "fixture://expiry-mrtr",
+        track_retirement: true,
+        retirement_deadline: due
+      )
+
+    {_worker, first} = receive_wire("resources/read")
+
+    respond(client, first["id"], %{"resultType" => "input_required", "requestState" => "continue"})
+
+    {_worker, second} = receive_wire("resources/read")
+    # Delay delivery of the operation timer to make the legitimate expiry-before-
+    # timeout ordering deterministic. Keep its authoritative deadline unchanged.
+    :sys.replace_state(client, fn state ->
+      request = state.pending_requests[second["id"]]
+      Process.cancel_timer(request.timer_ref)
+      timer = Process.send_after(self(), {:request_timeout, request.id}, 250)
+      put_in(state.pending_requests[request.id].timer_ref, timer)
+    end)
+
+    Process.sleep(130)
+    state = :sys.get_state(client)
+    assert state.pending_requests[second["id"]] != nil
+    assert state.resource_retirements[handle.logical_id] != nil
+
+    assert {:error, %Error{reason: :resource_retirement_unavailable}} =
+             Client.retire_resource_request(handle)
+
+    assert {:error, %Error{reason: :request_timeout}} = Client.await_resource_request(handle, 500)
+  end
+
+  test "collector result delayed in the Client mailbox cannot confirm past its exact due" do
+    client = start_client()
+    transport = :sys.get_state(client).transport.name
+    {:ok, handle} = Client.start_list_resources(client, track_retirement: true)
+    {_worker, wire} = receive_wire("resources/list")
+    respond(client, wire["id"], %{"resources" => []})
+    assert {:ok, _} = Client.await_resource_request(handle, 1_000)
+    observer = self()
+    Agent.update(transport, &Map.put(&1, :cleanup_suspend, {client, observer}))
+
+    spawn(fn ->
+      receive do
+        :resume -> :ok
+      after
+        60 -> :ok
+      end
+
+      :sys.resume(client)
+    end)
+
+    assert {:ok, %{local_cleanup: :uncertain}} =
+             Client.retire_resource_request(handle, timeout: 20)
+
+    assert_receive :cleanup_client_suspended
+    assert map_size(:sys.get_state(client).resource_retirements) == 1
+  end
+
+  test "tracked MRTR bounds each logical inventory before admitting another wire" do
+    client = start_client()
+
+    {:ok, handle} =
+      Client.start_read_resource(client, "fixture://bounded-mrtr",
+        track_retirement: true,
+        timeout: 20_000
+      )
+
+    ids =
+      for index <- 1..256 do
+        {_worker, wire} = receive_wire("resources/read")
+
+        respond(client, wire["id"], %{
+          "resultType" => "input_required",
+          "requestState" => "continuation-#{index}"
+        })
+
+        wire["id"]
+      end
+
+    assert {:error, %Error{reason: :resource_retirement_obligation_capacity}} =
+             Client.await_resource_request(handle, 1_000)
+
+    refute_receive {:tool_call_send, _, %{"method" => "resources/read"}, _}, 20
+
+    assert {:ok, %{local_cleanup: :confirmed, terminal: :failed, request_ids: ^ids}} =
+             Client.retire_resource_request(handle)
+  end
+
+  defp await_retirements(client, count, attempts \\ 100)
+  defp await_retirements(_client, _count, 0), do: flunk("tracked cleanup did not finish")
+
+  defp await_retirements(client, count, attempts) do
+    if map_size(:sys.get_state(client).resource_retirements) == count do
+      :ok
+    else
+      Process.sleep(5)
+      await_retirements(client, count, attempts - 1)
+    end
+  end
+
   defp start_client(actions \\ []) do
     test_pid = self()
 

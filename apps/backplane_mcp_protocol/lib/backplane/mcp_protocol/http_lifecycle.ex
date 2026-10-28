@@ -31,6 +31,8 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
     :exit, _ -> {:error, :request_cleanup_unavailable}
   end
 
+  def unpin_job(pid, worker), do: GenServer.cast(pid, {:unpin_job, worker})
+
   def status(pid), do: GenServer.call(pid, :status)
 
   def close(pid, opts) do
@@ -201,6 +203,18 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
   end
 
   @impl true
+  def handle_cast({:unpin_job, worker}, state) do
+    case Enum.find(state.jobs, fn {_id, job} -> job.pid == worker end) do
+      {id, _job} ->
+        state = put_in(state.jobs[id].pinned, false)
+        {:noreply, compact_job(state, id)}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info({:finished, id}, state) do
     state =
       if Map.has_key?(state.jobs, id), do: put_in(state.jobs[id].finished, true), else: state
@@ -322,7 +336,8 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
       scope: scope,
       requests: MapSet.new(),
       had_requests: false,
-      releasing: false
+      releasing: false,
+      pinned: scope == :tracked_request
     }
 
     %{
@@ -428,7 +443,7 @@ defmodule Backplane.McpProtocol.HTTP.Lifecycle do
   defp compact_job(state, id) do
     job = state.jobs[id]
 
-    if job.down and not job.releasing and MapSet.size(job.requests) == 0 and
+    if job.down and not job.releasing and not job.pinned and MapSet.size(job.requests) == 0 and
          worker_confirmed?(job) do
       state = remember(state, worker_resource(state, id, job))
       completed = Map.put(state.completed_jobs, job.pid, true)

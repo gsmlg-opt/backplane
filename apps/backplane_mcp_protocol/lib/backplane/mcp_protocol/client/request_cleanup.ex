@@ -8,7 +8,9 @@ defmodule Backplane.McpProtocol.Client.RequestCleanup do
           match?(%Task{}, task),
           do: task.pid
 
-    pids = pids ++ List.wrap(request.resolver_supervisor)
+    pids =
+      pids ++ List.wrap(request.resolver_supervisor) ++ Map.get(request, :retirement_workers, [])
+
     workers = Connection.release_workers(pids, deadline)
     transport_result = release_transport(transport, request, deadline)
 

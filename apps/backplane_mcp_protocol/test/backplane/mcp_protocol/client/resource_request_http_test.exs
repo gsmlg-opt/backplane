@@ -43,7 +43,7 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
            one_shot: true,
            activation_id: "resource-http-#{mode}",
            client_info: %{"name" => to_string(name), "version" => "1"},
-           capabilities: %{},
+           capabilities: %{"sampling" => %{}},
            protocol_version: version,
            timeout: 3_000}
         )
@@ -58,6 +58,7 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
         assert {:ok, handle} =
                  start.(name,
                    cursor: "second",
+                   track_retirement: true,
                    meta: %{"fixture/request" => %{"label" => "汉字\r\n", "nested" => [1, true]}},
                    progress: [token: "resource-progress", callback: fn _, _, _ -> :ok end]
                  )
@@ -68,11 +69,15 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
         assert_receive {:resource_http, ^method, %{"cursor" => "second", "_meta" => meta}, _}
         assert meta["progressToken"] == "resource-progress"
         assert meta["fixture/request"] == %{"label" => "汉字\r\n", "nested" => [1, true]}
+
+        assert {:ok, %{local_cleanup: :confirmed, terminal: :completed}} =
+                 Client.retire_resource_request(handle)
       end
 
       assert {:ok, handle} =
                Client.start_read_resource(name, "fixture://contents",
-                 meta: %{"fixture/read" => ["汉字", 1]}
+                 meta: %{"fixture/read" => ["汉字", 1]},
+                 track_retirement: true
                )
 
       assert {:ok, response} = Client.await_resource_request(handle, 2_000)
@@ -82,6 +87,64 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
                       %{"uri" => "fixture://contents", "_meta" => read_meta}, headers}
 
       assert read_meta["fixture/read"] == ["汉字", 1]
+      assert {:ok, %{local_cleanup: :confirmed}} = Client.retire_resource_request(handle)
+
+      # This retained request must outlive both opportunistic 128-job caches.
+      {:ok, retained} = Client.start_list_resources(name, track_retirement: true)
+      assert {:ok, _} = Client.await_resource_request(retained, 2_000)
+
+      for _ <- 1..140 do
+        {:ok, unrelated} = Client.start_list_resources(name)
+        assert {:ok, _} = Client.await_resource_request(unrelated, 2_000)
+      end
+
+      assert {:ok, %{local_cleanup: :confirmed, request_ids: ids}} =
+               Client.retire_resource_request(retained)
+
+      assert ids == [retained.logical_id]
+
+      if mode == :modern_http do
+        :ok =
+          Client.register_sampling_callback(name, fn _ ->
+            {:ok,
+             %{
+               "role" => "assistant",
+               "content" => %{"type" => "text", "text" => "resolved"},
+               "model" => "fixture"
+             }}
+          end)
+
+        {:ok, mrtr} = Client.start_read_resource(name, "fixture://mrtr", track_retirement: true)
+        assert {:ok, mrtr_response} = Client.await_resource_request(mrtr, 2_000)
+        assert mrtr_response.result["contents"] == contents()
+        assert_receive {:mrtr_wire, first_wire}, 1_000
+        assert_receive {:mrtr_wire, second_wire}, 1_000
+        assert first_wire != second_wire
+
+        assert {:ok, %{local_cleanup: :confirmed, request_ids: [^first_wire, ^second_wire]}} =
+                 Client.retire_resource_request(mrtr)
+
+        {:ok, mrtr_cancel} =
+          Client.start_read_resource(name, "fixture://mrtr-cancel", track_retirement: true)
+
+        assert_receive {:mrtr_wire, first_cancel_wire}, 1_000
+        assert_receive {:mrtr_wire, second_cancel_wire}, 1_000
+        assert_receive {:resource_blocked, ^second_cancel_wire, "fixture://mrtr-cancel"}, 1_000
+
+        assert {:ok, %{local_cleanup: :confirmed}} =
+                 Client.cancel_resource_request(mrtr_cancel, "stop", verified: true)
+
+        assert {:error, %{reason: :request_cancelled}} =
+                 Client.await_resource_request(mrtr_cancel, 1_000)
+
+        assert {:ok,
+                %{
+                  terminal: :cancelled,
+                  local_cleanup: :confirmed,
+                  request_ids: [^first_cancel_wire, ^second_cancel_wire]
+                }} =
+                 Client.retire_resource_request(mrtr_cancel)
+      end
 
       if mode == :modern_http do
         assert headers["mcp-method"] == "resources/read"
@@ -106,7 +169,9 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
 
       owner =
         spawn(fn ->
-          {:ok, request} = Client.start_read_resource(name, "fixture://blocked")
+          {:ok, request} =
+            Client.start_read_resource(name, "fixture://blocked", track_retirement: true)
+
           send(test, {:resource_owner_ready, self()})
 
           receive do
@@ -119,6 +184,7 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
           end
 
           send(test, {:resource_cancel_result, Client.await_resource_request(request, 1_000)})
+          send(test, {:resource_retired_cancelled, Client.retire_resource_request(request)})
         end)
 
       assert_receive {:resource_owner_ready, ^owner}, 1_000
@@ -136,6 +202,11 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
       assert report.cleanup_evidence.workers_down
       assert report.cleanup_evidence.transport == :confirmed
       assert_receive {:resource_cancel_result, {:error, %{reason: :request_cancelled}}}, 2_000
+
+      assert_receive {:resource_retired_cancelled,
+                      {:ok, %{terminal: :cancelled, local_cleanup: :confirmed}}},
+                     2_000
+
       assert {:error, %{reason: :request_timeout}} = Client.await_resource_request(other, 1)
       other_worker = Agent.get(state, & &1.blocked[other_id])
       assert Process.alive?(other_worker)
@@ -293,7 +364,46 @@ defmodule Backplane.McpProtocol.Client.ResourceRequestHTTPTest do
             end
           end
 
-          %{"contents" => contents()}
+          if wire["params"]["uri"] in ["fixture://mrtr", "fixture://mrtr-cancel"] do
+            send(test, {:mrtr_wire, id})
+
+            count =
+              Agent.get_and_update(state, fn value ->
+                uri = wire["params"]["uri"]
+                counts = Map.get(value, :mrtr_counts, %{})
+
+                {Map.get(counts, uri, 0),
+                 Map.put(value, :mrtr_counts, Map.update(counts, uri, 1, &(&1 + 1)))}
+              end)
+
+            if count == 0 do
+              %{
+                "resultType" => "input_required",
+                "inputRequests" => %{
+                  "sample" => %{
+                    "method" => "sampling/createMessage",
+                    "params" => %{"messages" => [], "maxTokens" => 1}
+                  }
+                }
+              }
+            else
+              if wire["params"]["uri"] == "fixture://mrtr-cancel" do
+                worker = self()
+                Agent.update(state, &put_in(&1.blocked[id], worker))
+                send(test, {:resource_blocked, id, "fixture://mrtr-cancel"})
+
+                receive do
+                  :release -> :ok
+                after
+                  5_000 -> raise "MRTR fixture not cancelled"
+                end
+              end
+
+              %{"contents" => contents()}
+            end
+          else
+            %{"contents" => contents()}
+          end
       end
 
     result =

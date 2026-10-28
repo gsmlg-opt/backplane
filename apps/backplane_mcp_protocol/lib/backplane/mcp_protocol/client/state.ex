@@ -59,6 +59,7 @@ defmodule Backplane.McpProtocol.Client.State do
     :protocol_version,
     :transport,
     pending_requests: %{},
+    resource_retirements: %{},
     progress_callbacks: %{},
     managed_progress_tokens: %{},
     cancellation_workers: %{},
@@ -226,6 +227,7 @@ defmodule Backplane.McpProtocol.Client.State do
         if request.owner_monitor, do: Process.demonitor(request.owner_monitor, [:flush])
 
         state = %{state | pending_requests: updated_requests}
+        state = Backplane.McpProtocol.Client.ResourceRetirement.terminal(state, request)
         {request, release_managed_progress(state, request)}
     end
   end
@@ -253,6 +255,7 @@ defmodule Backplane.McpProtocol.Client.State do
         if request.owner_monitor, do: Process.demonitor(request.owner_monitor, [:flush])
 
         state = %{state | pending_requests: updated_requests}
+        state = Backplane.McpProtocol.Client.ResourceRetirement.terminal(state, request)
         {request, release_managed_progress(state, request)}
     end
   end

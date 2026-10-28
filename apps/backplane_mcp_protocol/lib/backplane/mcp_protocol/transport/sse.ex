@@ -181,6 +181,14 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     )
   end
 
+  @doc false
+  def pin_request(pid, id, opts),
+    do: GenServer.call(pid, {:pin_request, id}, Keyword.fetch!(opts, :timeout))
+
+  @doc false
+  def unpin_request(pid, id, _opts),
+    do: GenServer.cast(pid, {:unpin_request, id})
+
   @impl Transport
   def send_message(pid, message, opts) when is_binary(message) do
     timeout = Keyword.get(opts, :timeout, 5000)
@@ -256,6 +264,7 @@ defmodule Backplane.McpProtocol.Transport.SSE do
           lifecycle: lifecycle,
           closing: false,
           pending: %{},
+          request_pins: MapSet.new(),
           request_jobs: %{}
         })
         |> Map.put(:http_options, Keyword.merge(opts.transport_opts, opts.http_options))
@@ -384,6 +393,9 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     {:reply, {:error, :not_connected}, state}
   end
 
+  def handle_call({:pin_request, id}, _from, state),
+    do: {:reply, :ok, %{state | request_pins: MapSet.put(state.request_pins, id)}}
+
   def handle_call({:cancel_owned_request, request_id, opts}, from, state) do
     case Map.fetch(state.request_jobs, request_id) do
       {:ok, worker} ->
@@ -410,24 +422,28 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     ref = make_ref()
 
     {:ok, worker} =
-      Lifecycle.start(state.lifecycle, fn ->
-        result =
-          case remaining(deadline) do
-            0 ->
-              {:error, :timeout}
+      Lifecycle.start(
+        state.lifecycle,
+        fn ->
+          result =
+            case remaining(deadline) do
+              0 ->
+                {:error, :timeout}
 
-            timeout ->
-              {request, options} = make_message_request(message, state, timeout)
+              timeout ->
+                {request, options} = make_message_request(message, state, timeout)
 
-              case HTTP.follow_redirect(request, options) do
-                {:ok, %{status: status}} when status in 200..299 -> :ok
-                {:ok, %{status: status, body: body}} -> {:error, {:http_error, status, body}}
-                {:error, reason} -> {:error, reason}
-              end
-          end
+                case HTTP.follow_redirect(request, options) do
+                  {:ok, %{status: status}} when status in 200..299 -> :ok
+                  {:ok, %{status: status, body: body}} -> {:error, {:http_error, status, body}}
+                  {:error, reason} -> {:error, reason}
+                end
+            end
 
-        send(parent, {:http_result, ref, result})
-      end)
+          send(parent, {:http_result, ref, result})
+        end,
+        if(tracked_wire?(state, message), do: :tracked_request, else: :request)
+      )
 
     request_jobs =
       case JSON.decode(message) do
@@ -437,7 +453,9 @@ defmodule Backplane.McpProtocol.Transport.SSE do
 
     request_jobs =
       if map_size(request_jobs) > 128 do
-        case Enum.find(request_jobs, fn {_id, pid} -> not Process.alive?(pid) end) do
+        case Enum.find(request_jobs, fn {id, pid} ->
+               not MapSet.member?(state.request_pins, id) and not Process.alive?(pid)
+             end) do
           {id, _pid} -> Map.delete(request_jobs, id)
           nil -> request_jobs
         end
@@ -518,6 +536,20 @@ defmodule Backplane.McpProtocol.Transport.SSE do
   end
 
   @impl GenServer
+  def handle_cast({:unpin_request, id}, state) do
+    case state.request_jobs[id] do
+      nil -> :ok
+      worker -> Lifecycle.unpin_job(state.lifecycle, worker)
+    end
+
+    {:noreply,
+     %{
+       state
+       | request_pins: MapSet.delete(state.request_pins, id),
+         request_jobs: Map.delete(state.request_jobs, id)
+     }}
+  end
+
   def handle_cast(:close_connection, state) do
     {:stop, :normal, state}
   end
@@ -587,5 +619,12 @@ defmodule Backplane.McpProtocol.Transport.SSE do
     base
     |> URI.merge(uri)
     |> URI.to_string()
+  end
+
+  defp tracked_wire?(state, message) do
+    case JSON.decode(message) do
+      {:ok, %{"id" => id}} -> MapSet.member?(state.request_pins, id)
+      _ -> false
+    end
   end
 end

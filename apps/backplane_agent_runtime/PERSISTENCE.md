@@ -212,6 +212,32 @@ the `:interrupted` observer event, with no guarantee of persisted reason history
 An `EphemeralStore` acknowledgement supplies only its local ETS guarantee;
 durability still depends on the host adapter's documented boundary.
 
+Sequential MCP resource scopes retain one ephemeral Conversation cancellation
+registration and an ordered inventory of at most 128 admitted slots. The scope's
+opaque token, atomic admission gate, actual owner/coordinator monitors, per-slot
+controls and live deadline accessor are runtime capabilities, never portable
+Store data. Callback return closes the capability; owner DOWN does not erase an
+unacknowledged inventory. Existing acknowledged-result/cleanup, storage-failure
+and coordinator teardown hooks release those records.
+
+Aggregate cancellation uses a distinct typed assertion rather than weakening the
+single-request cancellation schema. Its public bounded JSON evidence identifies
+the full invocation/Session, registration, scope generation and fixed stop
+generation, plus inventory digest/count and every ordered slot's exact logical
+request, Client incarnation, initial and continuation wire IDs, terminal kind and
+confirmed worker/transport retirement receipt. Runtime publishes a frozen digest
+only from its original sealed, fully retired ordered ledger; validation compares
+that digest and count as well as recomputing the supplied inventory digest.
+Self-consistent receipt-pair substitution or reordering cannot prove the original
+inventory. An empty sealed inventory records
+zero requests without a fictitious cancellation. Business results and remote
+outcomes remain separate: completion stays completion, remote outcome is unknown,
+and an uncertain/missing/expired receipt or Store ACK cannot settle cleanup.
+Conversation still requires observed effect Task DOWN and its original
+Session/Registry obligations; nested Code Mode additionally requires the exact
+enclosing invocation and actual Deno cleanup. No stage renews the original
+operation or cleanup deadline, and no scope evidence authorizes automatic replay.
+
 LocalCommand separates active/output records, unresolved session obligations,
 and recent confirmed-release receipts. An obligation's confirmed evidence stays
 pinned until the ResourceRegistry consumes it; only then may it enter the bounded

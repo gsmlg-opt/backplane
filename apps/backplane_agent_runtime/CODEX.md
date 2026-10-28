@@ -469,7 +469,7 @@ end)
 ```
 
 The helper preserves the public MCP success/error for the adapter to convert. It
-requires `backplane_mcp_protocol ~> 1.10.46`. It registers the admitted operation
+requires `backplane_mcp_protocol ~> 1.10.48` in this release. It registers the admitted operation
 before starting and binds cancellation to that registration, the original MCP
 logical request and live client incarnation. A confirmed cleanup records exact
 local request retirement, actual effect Task termination, and Session/Registry
@@ -479,6 +479,72 @@ insufficient. Missing acknowledgements or an expired cleanup deadline retain
 uncertain obligations, and cancellation never synthesizes a successful tool result.
 If ordinary completion wins the cancellation race, its result alone does not prove
 local cleanup; interruption remains uncertain without that separate evidence.
+
+For several explicit sequential resource requests, use one scope rather than
+registering the single-request helper repeatedly:
+
+```elixir
+DynamicRuntime.resource_request_scope(operation, fn scope ->
+  first = DynamicRuntime.resource_request(scope, fn request_opts ->
+    Client.start_list_resources(client_a, Keyword.merge(source_a_opts, request_opts))
+  end)
+
+  second = DynamicRuntime.resource_request(scope, fn request_opts ->
+    Client.start_read_resource(client_b, uri, Keyword.merge(source_b_opts, request_opts))
+  end)
+
+  combine_for_host(first, second)
+end)
+```
+
+The scope returns the callback's ordinary value. Each request returns the raw MCP
+success/error; the host owns source selection, pagination, opaque cursors and
+result combination. The callback may use only scoped resource helpers and pure
+result aggregation; additional untracked effects cannot be covered by its cleanup
+assertion. The one-argument starter runs in the actual effect caller,
+starts only its resource request and returns its real handle. Its reserved options
+must take precedence over source options: `track_retirement: true`, finite
+`timeout` (up to 30,000ms), `registration_timeout` (up to 5,000ms), and absolute
+`retirement_deadline`, all clamped to the original live effect deadline.
+Missing, paused, expired or stale deadline context refuses dispatch.
+
+One scope registers one Conversation cancellation entry. Its opaque capability is
+bound to the actual caller, admitted invocation, Session and scope generation.
+Nested/reentrant/concurrent requests and use after callback return are refused
+before their starters. A scope admits at most 128 sequential slots; slot 129
+returns `:budget_exceeded`. Empty scopes are valid and dispatch nothing.
+
+After every terminal request, the helper collects the public MCP tracked
+retirement receipt before another slot can start. A raw result is preserved even
+if retirement is unavailable; the unresolved inventory then seals future starts.
+An ordinary error with confirmed retirement allows the host to continue. A failed
+starter without a real handle retains an uncertain admitted slot. Neither
+`request_not_found`, callback return nor owner DOWN manufactures cleanup proof.
+
+Conversation atomically closes the invocation-bound admission gate during its
+stop transition. Runtime reservations use compare-and-exchange on that same gate,
+so an earlier deadline read cannot admit a new request after the stop fence. A
+slot reserved before closure remains an obligation through a pending starter or
+handle attachment. Each slot has its own cancellation control. Even a cancelled
+request must provide tracked retirement for its complete worker/wire ledger,
+including MRTR continuations. Only a sealed exact inventory with every slot
+retired produces the separate typed aggregate assertion. Runtime freezes the
+count and digest from its original ordered ledger; validation rejects omitted,
+reordered or substituted real receipt/identity pairs even if their submitted
+digest is self-consistent. Conversation marks registration during its validated
+admission transition, before the helper receives the coordination acknowledgement.
+The exact coordinator is prebound independently of Session resource ownership,
+so that acknowledgement gap cannot drop the registered inventory on owner DOWN.
+Empty inventory evidence
+has no representative request ID or fictitious cancelled request.
+
+After validating aggregate proof, Conversation stops the original effect Task
+and observes DOWN under the same cleanup deadline, including callback computation
+between requests. Session/Registry cleanup and, for nested Code Mode, exact outer
+invocation and real Deno cleanup remain mandatory. Scope records survive callback
+return and owner DOWN until authoritative result/cleanup Store acknowledgement,
+storage-failure release or coordinator teardown. Missing proof or acknowledgement
+keeps recovery requirements; it cannot authorize replay or create tool output.
 
 ### Headless native Code Mode
 

@@ -22,6 +22,13 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     @type t :: %__MODULE__{identity: map(), evidence: map()}
   end
 
+  defmodule AggregateCancellation do
+    @moduledoc "Exact sealed sequential resource inventory, independent of single-request cancellation."
+    @enforce_keys [:identity, :evidence]
+    defstruct [:identity, :evidence]
+    @type t :: %__MODULE__{identity: map(), evidence: map()}
+  end
+
   defmodule Retirement do
     @moduledoc "Typed native observation retirement; business outcome remains unknown."
     @enforce_keys [:identity, :evidence]
@@ -51,7 +58,10 @@ defmodule Backplane.AgentRuntime.ToolEffects do
 
   @callback execute(map()) :: result()
 
-  @callback cancel(map()) :: :ok | {:ok, Cancellation.t() | Retirement.t()} | {:error, Error.t()}
+  @callback cancel(map()) ::
+              :ok
+              | {:ok, Cancellation.t() | AggregateCancellation.t() | Retirement.t()}
+              | {:error, Error.t()}
 
   @default_output_limit 1_048_576
 
@@ -94,6 +104,56 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     end
   end
 
+  def validate_cancellation(
+        %AggregateCancellation{identity: identity, evidence: evidence},
+        operation
+      ) do
+    alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
+
+    with true <- valid_identity?(identity),
+         true <- identity === cancellation_identity(operation),
+         true <- is_map(evidence),
+         true <-
+           exact_fields?(
+             evidence,
+             ~w(schema_version record_type registration_id scope_generation stop_generation gate inventory_count inventory_digest slots local_cleanup remote)a
+           ),
+         true <-
+           evidence[:schema_version] === 1 &&
+             evidence[:record_type] === :resource_scope_cancellation,
+         true <- evidence[:registration_id] === operation[:resource_registration],
+         %{registration: registration, generation: scope_generation} <-
+           operation[:resource_scope_admission],
+         true <-
+           registration === evidence[:registration_id] &&
+             scope_generation === evidence[:scope_generation],
+         true <- evidence[:stop_generation] === operation[:stop_generation],
+         true <-
+           Enum.all?(
+             [:registration_id, :scope_generation, :stop_generation],
+             &(is_binary(evidence[&1]) && evidence[&1] != "")
+           ),
+         true <-
+           evidence[:gate] === :sealed && evidence[:local_cleanup] === :confirmed &&
+             evidence[:remote] === :unknown,
+         slots when is_list(slots) <- evidence[:slots],
+         count when is_integer(count) and count >= 0 and count <= 128 <-
+           evidence[:inventory_count],
+         true <- length(slots) === count,
+         {:ok, ^count} <-
+           Backplane.AgentRuntime.Codex.ResourceScope.sealed_inventory_count(operation),
+         true <- valid_aggregate_slots?(slots),
+         {:ok, original_digest} <-
+           Backplane.AgentRuntime.Codex.ResourceScope.sealed_inventory_digest(operation),
+         true <- original_digest === evidence[:inventory_digest],
+         {:ok, public} <- Evidence.public(evidence),
+         true <- evidence[:inventory_digest] === Evidence.digest(slots) do
+      {:ok, public}
+    else
+      _ -> unverified_cancellation()
+    end
+  end
+
   def validate_cancellation(%Retirement{identity: identity, evidence: evidence}, operation) do
     with true <- identity === cancellation_identity(operation),
          {:ok, proof} <- validate_retirement_record(evidence, operation),
@@ -108,6 +168,31 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   end
 
   def validate_cancellation(_, _), do: unverified_cancellation()
+
+  @doc false
+  def confirm_aggregate_cancellation(operation, evidence) do
+    assertion = %AggregateCancellation{
+      identity: cancellation_identity(operation),
+      evidence: evidence
+    }
+
+    with {:ok, _} <- validate_cancellation(assertion, operation), do: {:ok, assertion}
+  end
+
+  defp valid_aggregate_slots?(slots) do
+    valid =
+      Enum.with_index(slots, 1)
+      |> Enum.all?(fn {slot, index} ->
+        exact_fields?(slot, ~w(index identity receipt phase)a) && slot[:index] === index &&
+          slot[:phase] === :retired &&
+          Backplane.AgentRuntime.Codex.ResourceScope.valid_receipt?(
+            slot[:receipt],
+            slot[:identity]
+          )
+      end)
+
+    valid && Enum.uniq_by(slots, & &1[:identity]) === slots
+  end
 
   @doc false
   def confirm_retirement(operation, proof) do
@@ -358,7 +443,9 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   end
 
   @spec cancel(adapter(), map()) ::
-          :ok | {:ok, Cancellation.t() | Retirement.t()} | {:error, Error.t()}
+          :ok
+          | {:ok, Cancellation.t() | AggregateCancellation.t() | Retirement.t()}
+          | {:error, Error.t()}
   def cancel(adapter, invocation) when is_atom(adapter) and is_map(invocation) do
     with {:ok, _} <- validate_invocation(invocation) do
       adapter.cancel(invocation)

@@ -568,8 +568,19 @@ defmodule Backplane.AgentRuntime.Conversation do
          {:ok, invocation} <- async_event_invocation(s, token),
          true <- cancellation_operation?(s, operation, invocation),
          true <- cancellation_caller?(s, token, caller),
-         true <- not Map.has_key?(s.cancellations, operation.invocation_id) do
-      entry = %{operation: operation, registration: registration}
+         true <- not Map.has_key?(s.cancellations, operation.invocation_id),
+         :ok <-
+           Backplane.AgentRuntime.Codex.ResourceScope.register_admission(
+             operation,
+             registration,
+             self()
+           ) do
+      entry = %{
+        operation: operation,
+        registration: registration,
+        effect_task: cancellation_task(s, token)
+      }
+
       {:reply, {:ok, self()}, put_in(s.cancellations[operation.invocation_id], entry)}
     else
       _ ->
@@ -2006,6 +2017,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :request_new_context,
         :nested_dispatch,
         :register_cancellation,
+        :cancellation_coordinator,
         :stage_catalog,
         :dispatch,
         :publication,
@@ -2472,6 +2484,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         :request_new_context,
         :nested_dispatch,
         :register_cancellation,
+        :cancellation_coordinator,
         :resource_owner_pid
       ])
     )
@@ -2874,6 +2887,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     |> Map.put(:nested_dispatch, fn request ->
       GenServer.call(owner, {:nested_tool, token, request}, :infinity)
     end)
+    |> Map.put(:cancellation_coordinator, owner)
     |> Map.put(:register_cancellation, fn operation, registration ->
       GenServer.call(owner, {:register_cancellation, token, operation, registration}, :infinity)
     end)
@@ -2963,6 +2977,36 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp cancellation_caller?(_, _, _), do: false
 
+  defp cancellation_task(%{nested: %{token: token, task: task}}, token), do: task
+  defp cancellation_task(%{effect: %{token: token, task: task}}, token), do: task
+  defp cancellation_task(_, _), do: nil
+
+  defp cooperative_target(%{nested: nested} = s) when is_map(nested) do
+    nested.task || retained_scope_task(s, nested.invocation.invocation_id)
+  end
+
+  defp cooperative_target(%{effect: %{task: task}}), do: task
+
+  defp cooperative_target(s) do
+    tasks =
+      for requirement <- RunKernel.cleanup_requirements(s.run).tools,
+          task = retained_scope_task(s, requirement.invocation_id),
+          not is_nil(task),
+          do: task
+
+    case Enum.uniq_by(tasks, & &1.pid) do
+      [task] -> task
+      _ -> nil
+    end
+  end
+
+  defp retained_scope_task(s, invocation) do
+    case s.cancellations[invocation] do
+      %{operation: %{resource_scope_admission: _}, effect_task: task} -> task
+      _ -> nil
+    end
+  end
+
   defp cooperative_cancellation?(%{stopping: nil} = s) do
     requirements = RunKernel.cleanup_requirements(s.run)
     active = Enum.map(requirements.tools, & &1.invocation_id)
@@ -2970,7 +3014,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     outer = cooperative_outer(s)
     covered = if outer && registered != [], do: [outer | registered], else: registered
 
-    live = if s.nested, do: s.nested.task, else: s.effect && s.effect.task
+    live = cooperative_target(s)
 
     live != nil and active != [] and Enum.sort(active) == Enum.sort(Enum.uniq(covered)) and
       requirements.provider == nil and requirements.children == [] and
@@ -3014,6 +3058,10 @@ defmodule Backplane.AgentRuntime.Conversation do
         s.cancellations,
         Enum.map(RunKernel.cleanup_requirements(s.run).tools, & &1.invocation_id)
       )
+
+    Enum.each(entries, fn {_id, entry} ->
+      Backplane.AgentRuntime.Codex.ResourceScope.seal_admission(entry)
+    end)
 
     task =
       Task.Supervisor.async_nolink(s.supervisor, fn ->
@@ -3066,20 +3114,36 @@ defmodule Backplane.AgentRuntime.Conversation do
         with {:ok, assertion} <-
                ToolEffects.cancel(Backplane.AgentRuntime.Codex.Backend, operation),
              {:ok, public} <- ToolEffects.validate_cancellation(assertion, operation) do
-          {:ok, %{identity: ToolEffects.cancellation_identity(operation), report: public}}
+          {:ok,
+           %{
+             identity: ToolEffects.cancellation_identity(operation),
+             report: public,
+             aggregate: match?(%ToolEffects.AggregateCancellation{}, assertion)
+           }}
         else
           _ -> :uncertain
         end
       end)
 
-    target = if s.nested, do: s.nested, else: s.effect
-    target_down = await_task_exit(target.task.pid, deadline)
+    target = cooperative_target(s)
+
+    if Enum.any?(evidence, &match?({:ok, %{aggregate: true}}, &1)) &&
+         Enum.all?(evidence, &match?({:ok, _}, &1)) &&
+         System.monotonic_time(:millisecond) < deadline do
+      Process.exit(target.pid, :kill)
+    end
+
+    target_down = await_task_exit(target.pid, deadline)
 
     if s.nested,
       do: GenServer.reply(s.nested.from, {:error, Error.new(:cancelled, "run cancelled")})
 
     confirmed = target_down == :ok and Enum.all?(evidence, &match?({:ok, _}, &1))
-    public = for {:ok, entry} <- evidence, do: Map.put(entry, :effect_down, target_down == :ok)
+
+    public =
+      for {:ok, entry} <- evidence,
+          do: entry |> Map.delete(:aggregate) |> Map.put(:effect_down, target_down == :ok)
+
     {if(confirmed, do: :confirmed, else: :uncertain), public}
   end
 

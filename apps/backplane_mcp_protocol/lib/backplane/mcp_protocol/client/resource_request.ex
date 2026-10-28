@@ -8,7 +8,15 @@ defmodule Backplane.McpProtocol.Client.ResourceRequest do
   """
 
   @enforce_keys [:client, :logical_id, :owner, :reply_ref]
-  defstruct [:client, :logical_id, :owner, :reply_ref, :identity, :cancellation_key]
+  defstruct [
+    :client,
+    :logical_id,
+    :owner,
+    :reply_ref,
+    :identity,
+    :cancellation_key,
+    :retirement_deadline
+  ]
 
   @opaque t :: %__MODULE__{
             client: pid(),
@@ -16,7 +24,8 @@ defmodule Backplane.McpProtocol.Client.ResourceRequest do
             owner: pid(),
             reply_ref: reference(),
             identity: map() | nil,
-            cancellation_key: pos_integer() | nil
+            cancellation_key: pos_integer() | nil,
+            retirement_deadline: integer() | nil
           }
 
   @doc false

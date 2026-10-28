@@ -6,6 +6,7 @@ defmodule Backplane.AgentRuntime.ConversationBackendContextTest do
   @runtime_keys [
     :append_feedback,
     :catalog_snapshot,
+    :cancellation_coordinator,
     :emit,
     :effect_deadline,
     :interact,
@@ -189,11 +190,13 @@ defmodule Backplane.AgentRuntime.ConversationBackendContextTest do
     assert selected.arguments == operation.arguments
     assert Map.take(context, Map.keys(domain)) == domain
     assert Enum.sort(Map.keys(context)) == Enum.sort(Enum.uniq(Map.keys(domain) ++ @runtime_keys))
+    assert context.cancellation_coordinator == owner
     assert context.resource_owner_pid == owner
     assert context.catalog_snapshot == catalog
     assert operation.catalog_revision == catalog.revision
 
-    for key <- @runtime_keys -- [:catalog_snapshot, :resource_owner_pid] do
+    for key <-
+          @runtime_keys -- [:catalog_snapshot, :resource_owner_pid, :cancellation_coordinator] do
       assert is_function(context[key])
     end
   end
