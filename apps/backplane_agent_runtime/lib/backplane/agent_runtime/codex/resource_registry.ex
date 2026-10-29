@@ -21,6 +21,10 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   def register(pid, owner, kind, value, opts \\ []),
     do: GenServer.call(pid, {:register, owner, kind, value, opts})
 
+  @doc false
+  def start_clock_wait(pid, owner, value, opts),
+    do: GenServer.call(pid, {:start_clock_wait, owner, value, opts})
+
   def fetch(pid, handle, owner), do: GenServer.call(pid, {:fetch, handle, owner})
   def release(pid, handle, owner), do: GenServer.call(pid, {:release, handle, owner}, :infinity)
   def cancel_owner(pid, owner), do: GenServer.call(pid, {:cancel_owner, owner}, :infinity)
@@ -37,6 +41,9 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
           false
         else
           case entry.handle do
+            %{kind: :clock_wait} ->
+              false
+
             %{kind: :continuation} ->
               try do
                 Backplane.AgentRuntime.Codex.CodeMode.Worker.ready_for_detach(entry.value) == true
@@ -256,6 +263,30 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
 
   def handle_call(:worker_supervisor, _from, state),
     do: {:reply, {:ok, state.worker_supervisor}, state}
+
+  def handle_call({:start_clock_wait, owner, value, opts}, _from, state) do
+    incarnation = Keyword.get(opts, :incarnation, 1)
+
+    with :ok <- owner_open(state, owner),
+         :ok <- recovery_capacity(state),
+         :ok <- clock_capacity(state, owner),
+         :ok <- validate_incarnation(incarnation),
+         {:ok, waiter} <-
+           DynamicSupervisor.start_child(
+             state.worker_supervisor,
+             {Backplane.AgentRuntime.Codex.ClockWait.Worker, value}
+           ) do
+      id = "res_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+      handle = %{resource_id: id, owner_id: owner, incarnation: incarnation, kind: :clock_wait}
+      value = Map.put(value, :waiter, waiter)
+      timeout = state.cleanup_timeout
+      cleanup = fn -> Backplane.AgentRuntime.Codex.ClockWait.cleanup(value, timeout) end
+      entry = entry(handle, value, cleanup, Keyword.get(opts, :owner_pid))
+      {:reply, {:ok, handle, value}, put_entry(state, {:resource, id}, entry)}
+    else
+      error -> {:reply, error, state}
+    end
+  end
 
   def handle_call({:register, owner, kind, value, opts}, _from, state)
       when is_binary(owner) and owner != "" and is_atom(kind) do
@@ -596,6 +627,17 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   end
 
   defp resource_capacity(_state, _kind), do: :ok
+
+  defp clock_capacity(state, owner) do
+    count =
+      Enum.count(state.resources, fn {_, entry} ->
+        entry.handle.kind == :clock_wait and entry.owner_id == owner
+      end)
+
+    if count < 128,
+      do: :ok,
+      else: {:error, Error.new(:overloaded, "native clock wait capacity reached")}
+  end
 
   defp owner_open(state, owner) do
     if MapSet.member?(state.closed_owners, owner),

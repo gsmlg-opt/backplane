@@ -39,6 +39,16 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
         %{backend_context: %{family: :local, context: context} = backend_context} = operation
       ) do
     context =
+      Map.merge(
+        context,
+        Map.take(backend_context, [
+          :register_cancellation,
+          :cancellation_coordinator,
+          :effect_deadline
+        ])
+      )
+
+    context =
       case Map.get(backend_context, :resource_owner_pid) do
         pid when is_pid(pid) -> Map.put(context, :owner_pid, pid)
         _ -> context
@@ -95,6 +105,9 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
 
   def execute(_operation),
     do: {:error, Error.new(:unsupported_capability, "Codex backend context is unavailable")}
+
+  def cancel(%{tool_name: "clock::sleep", backend_context: %{family: :local}} = operation),
+    do: Backplane.AgentRuntime.Codex.ClockWait.cancel(operation)
 
   def cancel(
         %{tool_name: "request_plugin_install", backend_context: %{family: :dynamic}} = operation

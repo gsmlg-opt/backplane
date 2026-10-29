@@ -708,9 +708,13 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
           stable
       end)
 
-    if proof["record_type"] in ["resource_scope_retirement", "event_request_retirement"],
-      do: proof in same_invocation,
-      else: same_invocation == [] or proof in same_invocation
+    if proof["record_type"] in [
+         "resource_scope_retirement",
+         "event_request_retirement",
+         "native_clock_wait_retirement"
+       ],
+       do: proof in same_invocation,
+       else: same_invocation == [] or proof in same_invocation
   end
 
   defp retirement_records(%{"record_type" => type} = record)
@@ -718,6 +722,7 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
               "native_plugin_wait_retirement",
               "resource_scope_retirement",
               "event_request_retirement",
+              "native_clock_wait_retirement",
               "code_mode_retirement"
             ] do
     [record]
@@ -740,7 +745,8 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
        when type in [
               "native_plugin_wait_retirement",
               "resource_scope_retirement",
-              "event_request_retirement"
+              "event_request_retirement",
+              "native_clock_wait_retirement"
             ],
        do: true
 
@@ -783,7 +789,8 @@ defmodule Backplane.AgentRuntime.Codex.Reconciliation do
           when kind in [
                  "native_plugin_wait_retirement",
                  "resource_scope_retirement",
-                 "event_request_retirement"
+                 "event_request_retirement",
+                 "native_clock_wait_retirement"
                ] ->
             fact = Enum.find(facts, &(&1["identity"]["invocation_id"] == operation.invocation_id))
 

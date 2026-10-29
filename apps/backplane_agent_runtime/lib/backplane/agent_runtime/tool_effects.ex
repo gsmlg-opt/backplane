@@ -36,6 +36,13 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     @type t :: %__MODULE__{identity: map(), evidence: map()}
   end
 
+  defmodule ClockCancellation do
+    @moduledoc "Exact owned native clock wait retirement."
+    @enforce_keys [:identity, :evidence]
+    defstruct [:identity, :evidence]
+    @type t :: %__MODULE__{identity: map(), evidence: map()}
+  end
+
   defmodule Retirement do
     @moduledoc "Typed native observation retirement; business outcome remains unknown."
     @enforce_keys [:identity, :evidence]
@@ -71,6 +78,7 @@ defmodule Backplane.AgentRuntime.ToolEffects do
                  Cancellation.t()
                  | AggregateCancellation.t()
                  | EventsCancellation.t()
+                 | ClockCancellation.t()
                  | Retirement.t()}
               | {:error, Error.t()}
 
@@ -192,6 +200,29 @@ defmodule Backplane.AgentRuntime.ToolEffects do
     end
   end
 
+  def validate_cancellation(%ClockCancellation{identity: identity, evidence: evidence}, operation) do
+    alias Backplane.AgentRuntime.Codex.{ClockWait, Reconciliation.Evidence}
+
+    with true <- valid_identity?(identity),
+         true <- identity === cancellation_identity(operation),
+         true <- operation.tool_name === "clock::sleep",
+         true <- get_in(operation, [:backend_context, :family]) === :local,
+         true <- is_map(evidence),
+         %{generation: generation, registration: registration} <-
+           operation[:clock_wait_admission],
+         true <- registration === operation[:clock_registration],
+         true <- evidence[:registration_id] === registration,
+         true <- evidence[:wait_generation] === generation,
+         {:ok, public} <- Evidence.public(evidence),
+         true <- public_clock_cancellation?(public, operation[:stop_generation]),
+         {:ok, digest} <- ClockWait.sealed_report_digest(operation),
+         true <- digest === Evidence.digest(evidence) do
+      {:ok, public}
+    else
+      _ -> unverified_cancellation()
+    end
+  end
+
   def validate_cancellation(%Retirement{identity: identity, evidence: evidence}, operation) do
     with true <- identity === cancellation_identity(operation),
          {:ok, proof} <- validate_retirement_record(evidence, operation),
@@ -206,6 +237,12 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   end
 
   def validate_cancellation(_, _), do: unverified_cancellation()
+
+  @doc false
+  def confirm_clock_cancellation(operation, evidence) do
+    assertion = %ClockCancellation{identity: cancellation_identity(operation), evidence: evidence}
+    with {:ok, _} <- validate_cancellation(assertion, operation), do: {:ok, assertion}
+  end
 
   @doc false
   def confirm_events_cancellation(operation, evidence) do
@@ -308,6 +345,18 @@ defmodule Backplane.AgentRuntime.ToolEffects do
       public_event_cancellation?(proof["cancellation"], proof["stop_generation"])
   end
 
+  defp retirement_fields?(%{"record_type" => "native_clock_wait_retirement"} = proof, identity) do
+    exact_fields?(
+      proof,
+      ~w(schema_version record_type identity stop_generation provenance cancellation executor_down resources local_cleanup outcome retirement_digest)
+    ) and
+      exact_fields?(proof["provenance"], ~w(session_binding_identity)) and
+      proof["provenance"]["session_binding_identity"] === identity["session_binding_identity"] and
+      identity["tool_name"] === "clock::sleep" and proof["executor_down"] === true and
+      proof["resources"] === "confirmed" and
+      public_clock_cancellation?(proof["cancellation"], proof["stop_generation"])
+  end
+
   defp retirement_fields?(%{"record_type" => "code_mode_retirement"} = proof, identity) do
     exact_fields?(
       proof,
@@ -326,7 +375,8 @@ defmodule Backplane.AgentRuntime.ToolEffects do
             "acknowledged_settlement",
             "native_plugin_wait_retirement",
             "resource_scope_retirement",
-            "event_request_retirement"
+            "event_request_retirement",
+            "native_clock_wait_retirement"
           ]
       end) and
       length(Enum.uniq_by(proof["nested"], & &1["identity"]["invocation_id"])) ==
@@ -334,6 +384,24 @@ defmodule Backplane.AgentRuntime.ToolEffects do
   end
 
   defp retirement_fields?(_, _), do: false
+
+  defp public_clock_cancellation?(report, stop_generation) when is_map(report) do
+    exact_fields?(
+      report,
+      ~w(schema_version record_type registration_id wait_generation stop_generation completion_gate timer_retired waiter_down local_cleanup)
+    ) and
+      report["schema_version"] === 1 and
+      report["record_type"] === "native_clock_cancellation" and
+      report["stop_generation"] === stop_generation and
+      Enum.all?(
+        ~w(registration_id wait_generation stop_generation),
+        &(is_binary(report[&1]) and report[&1] != "")
+      ) and
+      report["completion_gate"] === "closed" and report["timer_retired"] === true and
+      report["waiter_down"] === true and report["local_cleanup"] === "confirmed"
+  end
+
+  defp public_clock_cancellation?(_, _), do: false
 
   defp public_event_cancellation?(report, stop_generation) when is_map(report) do
     exact_fields?(
@@ -607,6 +675,7 @@ defmodule Backplane.AgentRuntime.ToolEffects do
              Cancellation.t()
              | AggregateCancellation.t()
              | EventsCancellation.t()
+             | ClockCancellation.t()
              | Retirement.t()}
           | {:error, Error.t()}
   def cancel(adapter, invocation) when is_atom(adapter) and is_map(invocation) do

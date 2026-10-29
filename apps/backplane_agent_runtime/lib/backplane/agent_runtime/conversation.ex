@@ -2937,6 +2937,18 @@ defmodule Backplane.AgentRuntime.Conversation do
        Error.new(:resource_conflict, "native async event requires a live tool invocation")}
 
   defp register_cancellation_admission(
+         %{tool_name: "clock::sleep", backend_context: %{family: :local}} = operation,
+         registration,
+         coordinator
+       ),
+       do:
+         Backplane.AgentRuntime.Codex.ClockWait.register_admission(
+           operation,
+           registration,
+           coordinator
+         )
+
+  defp register_cancellation_admission(
          %{tool_name: "mcp_events"} = operation,
          registration,
          coordinator
@@ -3031,6 +3043,9 @@ defmodule Backplane.AgentRuntime.Conversation do
           "request_plugin_install" ->
             Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry)
 
+          "clock::sleep" ->
+            Backplane.AgentRuntime.Codex.ClockWait.release(entry)
+
           "mcp_events" ->
             Backplane.AgentRuntime.Codex.EventRequest.release(entry)
 
@@ -3042,11 +3057,11 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  # An uncertain terminal or storage failure cannot acknowledge Events retirement.
+  # An uncertain terminal or storage failure cannot acknowledge Events or clock retirement.
   # Keep its exact registration until an authoritative acknowledgement or Runtime teardown.
   defp release_stopped_cancellations(s, uncertain) do
     Enum.reduce(s.cancellations, s, fn {invocation, entry}, current ->
-      if uncertain && entry.operation.tool_name == "mcp_events",
+      if uncertain && entry.operation.tool_name in ["mcp_events", "clock::sleep"],
         do: current,
         else: release_cancellation(current, invocation)
     end)
@@ -3089,7 +3104,8 @@ defmodule Backplane.AgentRuntime.Conversation do
         "list_mcp_resource_templates",
         "read_mcp_resource",
         "request_plugin_install",
-        "mcp_events"
+        "mcp_events",
+        "clock::sleep"
       ] and
       Map.delete(ToolEffects.cancellation_identity(operation), :session_binding_identity) ===
         ToolEffects.cancellation_identity(invocation)
@@ -3130,6 +3146,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     case s.cancellations[invocation] do
       %{operation: %{resource_scope_admission: _}, effect_task: task} -> task
       %{operation: %{event_request_admission: _}, effect_task: task} -> task
+      %{operation: %{clock_wait_admission: _}, effect_task: task} -> task
       _ -> nil
     end
   end
@@ -3181,9 +3198,11 @@ defmodule Backplane.AgentRuntime.Conversation do
       )
 
     Enum.each(entries, fn {_id, entry} ->
-      if entry.operation.tool_name == "mcp_events",
-        do: Backplane.AgentRuntime.Codex.EventRequest.seal_admission(entry),
-        else: Backplane.AgentRuntime.Codex.ResourceScope.seal_admission(entry)
+      case entry.operation.tool_name do
+        "clock::sleep" -> Backplane.AgentRuntime.Codex.ClockWait.seal_admission(entry)
+        "mcp_events" -> Backplane.AgentRuntime.Codex.EventRequest.seal_admission(entry)
+        _ -> Backplane.AgentRuntime.Codex.ResourceScope.seal_admission(entry)
+      end
     end)
 
     task =
@@ -3233,6 +3252,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           |> Map.put(:cleanup_deadline, deadline)
           |> Map.put(:resource_registration, entry.registration)
           |> Map.put(:event_registration, entry.registration)
+          |> Map.put(:clock_registration, entry.registration)
           |> Map.put(:stop_generation, generation)
 
         with {:ok, assertion} <-
@@ -3244,7 +3264,8 @@ defmodule Backplane.AgentRuntime.Conversation do
              report: public,
              aggregate:
                match?(%ToolEffects.AggregateCancellation{}, assertion) or
-                 match?(%ToolEffects.EventsCancellation{}, assertion)
+                 match?(%ToolEffects.EventsCancellation{}, assertion) or
+                 match?(%ToolEffects.ClockCancellation{}, assertion)
            }}
         else
           _ -> :uncertain
@@ -3312,7 +3333,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     scope_proofs =
       resource_scope_retirements(s, stopping.evidence, not uncertain) ++
-        event_request_retirements(s, stopping.evidence, not uncertain)
+        event_request_retirements(s, stopping.evidence, not uncertain) ++
+        clock_wait_retirements(s, stopping.evidence, not uncertain)
 
     proofs = plugin_proofs ++ scope_proofs
     retirement = outer_retirement(s, proofs, not uncertain)
@@ -3371,6 +3393,16 @@ defmodule Backplane.AgentRuntime.Conversation do
         confirmed,
         "event_request_cancellation",
         :event_request_retirement
+      )
+
+  defp clock_wait_retirements(s, evidence, confirmed),
+    do:
+      request_retirements(
+        s,
+        evidence,
+        confirmed,
+        "native_clock_cancellation",
+        :native_clock_wait_retirement
       )
 
   defp request_retirements(_s, _evidence, false, _report_type, _record_type), do: []

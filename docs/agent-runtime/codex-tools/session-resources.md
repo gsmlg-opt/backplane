@@ -219,3 +219,29 @@ and allocations made by a callback that raises before returning its options,
 remain the host's responsibility. Closing resources leaves the host-supervised
 Session infrastructure alive for inspection; normal infrastructure shutdown still
 tears down its own Registry and supervisors.
+
+## Native clock waits
+
+Runtime-bound `clock::sleep` registers an invocation-owned `ClockWait` in the
+existing ResourceRegistry before arming its timer. Its temporary waiter uses the
+Registry worker supervisor. The registration retains exact Session/run/incarnation
+and invocation identity, and blocks owner transfer until the tool-result Store ACK.
+At most 128 clock registrations, including retained unacknowledged registrations,
+are admitted per owner. Standalone `Codex.call/3` sleep remains synchronous and
+makes no Runtime retirement claim.
+
+Cancellation closes the completion gate and joins the actual waiter and tool
+executor. Confirmed Session/Registry cleanup is independently required before
+Conversation publishes `native_clock_wait_retirement` in status and terminal
+Store cleanup evidence. This record proves retirement of that exact local wait;
+it preserves the original cancelled or unknown tool outcome and does not discharge
+other work. Timer completion racing cancellation cannot publish a late normal
+result. Missing or failed Store acknowledgements retain the registration.
+
+Public reconciliation checks the original authoritative intent and retained
+source record. Code Mode retirement names each nested clock proof by exact identity
+and digest. A closed Session, executor DOWN, empty effects, or a newly computed
+receipt alone cannot replace this evidence. Hosts must retain the original Store
+records, complete their existing public reconciliation sequence, retire the old
+Session and bind fresh resources before admitting replacement work. No old call
+is replayed, and no host reconciliation or scheduling is performed implicitly.

@@ -2,7 +2,8 @@
 
 Date: 2026-10-29. Baseline: main `389b0956a2cce9a51c1782327a806b299f94c5a5`.
 Latest published version: 1.10.51. Target: 1.10.52. Request: #146.
-Status: proposed for user review; implementation has not begun.
+Status: approved by the user on 2026-10-29; implemented and locally verified.
+Publication is subject to exact-commit CI and the unified release workflow.
 
 ## Problem and choice
 

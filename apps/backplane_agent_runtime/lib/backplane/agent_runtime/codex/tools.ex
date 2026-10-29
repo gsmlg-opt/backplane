@@ -54,7 +54,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   def call(context, "update_plan", args) when is_map(args), do: update_plan(context, args)
   def call(context, "view_image", args) when is_map(args), do: view_image(context, args)
   def call(_context, "clock::curr_time", args) when is_map(args), do: current_time()
-  def call(_context, "clock::sleep", args) when is_map(args), do: sleep(args)
+  def call(context, "clock::sleep", args) when is_map(args), do: sleep(context, args)
 
   # Explicit Backplane compatibility aliases retained for existing embedders.
   def call(context, "clock", args), do: call(context, "clock::curr_time", args)
@@ -252,14 +252,17 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     {:ok, %{current_time: Calendar.strftime(DateTime.utc_now(), "%Y-%m-%d %H:%M:%S UTC")}}
   end
 
-  defp sleep(args) do
+  defp sleep(context, args) do
     duration = Map.get(args, "duration_ms", Map.get(args, :duration_ms))
 
     if is_integer(duration) and duration in 1..@max_sleep_ms do
-      started = System.monotonic_time(:microsecond)
-      Process.sleep(duration)
-
-      {:ok, %{wall_time_seconds: (System.monotonic_time(:microsecond) - started) / 1_000_000}}
+      if Map.has_key?(context, :runtime_operation) do
+        Backplane.AgentRuntime.Codex.ClockWait.run(context, duration)
+      else
+        started = System.monotonic_time(:microsecond)
+        Process.sleep(duration)
+        {:ok, %{wall_time_seconds: (System.monotonic_time(:microsecond) - started) / 1_000_000}}
+      end
     else
       {:error, Error.new(:validation, "duration_ms must be between 1 and #{@max_sleep_ms}")}
     end
