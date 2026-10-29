@@ -7,6 +7,10 @@ end
 defmodule Backplane.Memory.M18MigrationChainTest do
   use Backplane.Memory.DataCase, async: false
 
+  # Each case applies the complete repository migration history to isolated schemas.
+  # Keep a bounded integration budget independent of ExUnit's 60s unit-test default.
+  @moduletag timeout: 180_000
+
   @last_pre_m18_version 20_260_811_000_002
   @first_m18_version 20_260_812_000_001
   @last_m18_version 20_260_812_000_022
