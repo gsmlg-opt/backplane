@@ -6,6 +6,13 @@ defmodule Backplane.AiProtocol.StreamEvent do
   `native_id` preserves a distinct provider identity. Argument deltas remain raw input bytes. Responses custom deltas carry
   `extensions["openai_responses::input_kind"] == "custom"`; completed calls retain
   the `{:custom, text}` argument tag.
+
+  `resolved_model` is the latest non-empty model/version string observed in this
+  provider stream, or `nil` until supplied by the provider. It is copied to each
+  subsequent emitted event, including the terminal event; request model affinity
+  never supplies it. Observations are scoped to one `Codec.stream_new/2` state.
+  Hosts should consume events through `stream_finish/3` before finalizing a result,
+  and keep protocol completion separate from provenance and transport ownership.
   """
 
   defstruct [
@@ -22,6 +29,7 @@ defmodule Backplane.AiProtocol.StreamEvent do
     :usage,
     :stop_reason,
     :completeness,
+    :resolved_model,
     :error,
     extensions: %{}
   ]
@@ -38,5 +46,5 @@ defmodule Backplane.AiProtocol.StreamEvent do
           | :terminal
           | :error
 
-  @type t :: %__MODULE__{type: kind()}
+  @type t :: %__MODULE__{type: kind(), resolved_model: String.t() | nil}
 end

@@ -59,6 +59,59 @@ The OpenAI Responses observer remains a separate observation helper for Backplan
 native proxy path. `:openai_responses` selects the client codec; `:responses` is
 not an alias.
 
+## Observed stream model metadata
+
+`StreamEvent.resolved_model` carries the latest non-empty provider-observed model
+string: OpenAI Chat Completions `model`, Anthropic `message_start.message.model`,
+Google `modelVersion`, or OpenAI Responses `response.model`. The codec retains it
+within that stream state and copies it to subsequent events, including terminal
+and trailing usage events. Omitted metadata retains an earlier observation;
+without any observation the field stays `nil`, even when `stream_new/2` receives a
+requested model alias. A fresh stream starts with unknown observed identity.
+
+No extra event kind is emitted solely for metadata. A frame containing only model
+metadata updates the stream; the next emitted event carries that observation.
+Earlier events are never retroactively changed. If the provider reports a new
+model string later, later events carry the newer observation. Hosts should read
+all events through successful `stream_finish/3` before finalizing their result,
+retain the last non-nil observation, and preserve `nil` as unknown. This is provider
+response metadata, not verified routing provenance or evidence of downstream
+runtime adoption. For example, a request for `requested-alias` may produce a
+terminal event with `resolved_model: "resolved-model-v1"`; the alias is never used
+as a fallback.
+
+## Google thinking configuration
+
+A caller can express its already-resolved Google thinking configuration through
+`Request.settings.thinking_config`. Atom or string snake-case keys are accepted:
+
+```elixir
+settings: %{
+  max_output_tokens: 4096,
+  thinking_config: %{include_thoughts: true, thinking_budget: 1024}
+}
+# generationConfig: %{
+#   "maxOutputTokens" => 4096,
+#   "thinkingConfig" => %{"includeThoughts" => true, "thinkingBudget" => 1024}
+# }
+```
+
+The supported nested keys are `include_thoughts` (boolean), `thinking_budget`
+(integer, including caller-selected `0` or `-1`), and `thinking_level` (non-empty
+native string, preserved exactly, for example `"HIGH"` or `"MINIMAL"`). Unknown
+keys and wrong primitive types return a structured incompatibility error.
+Backplane does not infer model families, select budgets or levels, combine
+reasoning intent with model capabilities, or impose a universal off policy.
+Callers own model-specific ranges, level spelling/support and whether a given
+combination is valid for the selected provider model.
+
+Omit `thinking_config` to omit `generationConfig.thinkingConfig`. An explicit
+empty map remains an explicit empty native object; explicit `false`, `0` and `-1`
+are preserved. `nil` is not an omission marker and is rejected. Both
+`Codec.encode_request(:google, ...)` and `Codec.encode_rest_request(:google, ...)`
+use this mapping. The REST body still excludes model/operation/stream transport
+metadata, which stays in its existing `target` map.
+
 ## Custom tool input and canonical namespaces
 
 JSON tools retain the default `input_kind: :function`, `input_schema` map and

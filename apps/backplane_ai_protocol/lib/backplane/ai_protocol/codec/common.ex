@@ -54,9 +54,15 @@ defmodule Backplane.AiProtocol.Codec.Common do
       terminal?: false,
       done?: false,
       tool_calls: %{},
+      resolved_model: nil,
       opts: opts
     }
   end
+
+  def observe_model(state, model) when is_binary(model) and model != "",
+    do: %{state | resolved_model: model}
+
+  def observe_model(state, _model), do: state
 
   def feed(state, bytes, decoder) when is_binary(bytes) do
     case SSE.feed(state.sse, bytes) do
@@ -234,9 +240,15 @@ defmodule Backplane.AiProtocol.Codec.Common do
 
   defp decode_frames(state, [frame | rest], decoder, acc) do
     case decoder.(state, frame) do
-      {:ok, state, events} -> decode_frames(state, rest, decoder, Enum.reverse(events, acc))
-      {:error, error, state} -> {:error, error, state}
-      {:error, error} -> {:error, error, state}
+      {:ok, state, events} ->
+        events = Enum.map(events, &%{&1 | resolved_model: state.resolved_model})
+        decode_frames(state, rest, decoder, Enum.reverse(events, acc))
+
+      {:error, error, state} ->
+        {:error, error, state}
+
+      {:error, error} ->
+        {:error, error, state}
     end
   end
 

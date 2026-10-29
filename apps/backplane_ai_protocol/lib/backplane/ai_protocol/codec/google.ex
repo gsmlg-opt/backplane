@@ -384,6 +384,8 @@ defmodule Backplane.AiProtocol.Codec.Google do
   end
 
   defp google_event(state, event) do
+    state = Common.observe_model(state, event["modelVersion"])
+
     case reject_provider_failure(event) do
       :ok ->
         if state.content_finished? and candidate_content?(event["candidates"] || []) do
@@ -744,7 +746,8 @@ defmodule Backplane.AiProtocol.Codec.Google do
     "stop_sequences" => "stopSequences",
     "presence_penalty" => "presencePenalty",
     "frequency_penalty" => "frequencyPenalty",
-    "seed" => "seed"
+    "seed" => "seed",
+    "thinking_config" => "thinkingConfig"
   }
   @output_constraints %{
     "candidate_count" => "candidateCount",
@@ -771,11 +774,41 @@ defmodule Backplane.AiProtocol.Codec.Google do
       canonical = to_string(key)
 
       case Map.fetch(allowed, canonical) do
-        {:ok, google_key} -> {:cont, {:ok, Map.put(mapped, google_key, value)}}
-        :error -> {:halt, option_error(source, canonical, "unsupported_google_mapping")}
+        {:ok, "thinkingConfig"} ->
+          case thinking_config(value) do
+            {:ok, config} -> {:cont, {:ok, Map.put(mapped, "thinkingConfig", config)}}
+            error -> {:halt, error}
+          end
+
+        {:ok, google_key} ->
+          {:cont, {:ok, Map.put(mapped, google_key, value)}}
+
+        :error ->
+          {:halt, option_error(source, canonical, "unsupported_google_mapping")}
       end
     end)
   end
+
+  defp thinking_config(options) when is_map(options) do
+    Enum.reduce_while(options, {:ok, %{}}, fn {key, value}, {:ok, config} ->
+      case {to_string(key), value} do
+        {"include_thoughts", value} when is_boolean(value) ->
+          {:cont, {:ok, Map.put(config, "includeThoughts", value)}}
+
+        {"thinking_budget", value} when is_integer(value) ->
+          {:cont, {:ok, Map.put(config, "thinkingBudget", value)}}
+
+        {"thinking_level", value} when is_binary(value) and value != "" ->
+          {:cont, {:ok, Map.put(config, "thinkingLevel", value)}}
+
+        {field, _} ->
+          {:halt, option_error(:settings, "thinking_config.#{field}", "invalid_thinking_option")}
+      end
+    end)
+  end
+
+  defp thinking_config(_),
+    do: option_error(:settings, "thinking_config", "expected_thinking_options_map")
 
   defp validate_candidate_count(%{"candidateCount" => 1}), do: :ok
 
@@ -874,7 +907,8 @@ defmodule Backplane.AiProtocol.Codec.Google do
         terminal = %StreamEvent{
           type: :terminal,
           stop_reason: state.stop_reason,
-          completeness: :complete
+          completeness: :complete,
+          resolved_model: state.resolved_model
         }
 
         {:ok, %{state | terminal?: true, protocol_complete?: true}, events ++ [terminal]}

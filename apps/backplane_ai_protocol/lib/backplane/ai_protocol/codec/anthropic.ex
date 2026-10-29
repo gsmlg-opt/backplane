@@ -256,6 +256,8 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
        do: {:error, Error.incompatible!("Anthropic emitted content after terminal state"), state}
 
   defp anthropic_event(state, %{"type" => "message_start", "message" => message}) do
+    state = Common.observe_model(state, message["model"])
+
     case usage(message["usage"]) do
       {:ok, nil} -> {:ok, state, []}
       {:ok, usage} -> {:ok, state, [%StreamEvent{type: :usage, usage: usage}]}

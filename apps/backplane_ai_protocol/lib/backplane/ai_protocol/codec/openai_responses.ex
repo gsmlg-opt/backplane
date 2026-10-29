@@ -343,6 +343,13 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   defp decode_frame(state, %{data: data}) do
     with {:ok, event} <- Common.decode_json(data),
          :ok <- Validation.term(event, Keyword.get(state.opts, :limits, %{})) do
+      model =
+        case event do
+          %{"response" => %{"model" => model}} -> model
+          _ -> nil
+        end
+
+      state = Common.observe_model(state, model)
       decode_event(state, event)
     else
       {:error, error} -> {:error, error, state}

@@ -336,6 +336,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
     do: {:error, stream_error("OpenAI"), state}
 
   defp openai_event(state, event) do
+    state = Common.observe_model(state, event["model"])
+
     if state.terminal? and (event["choices"] || []) != [] do
       {:error, Error.incompatible!("OpenAI emitted content after terminal state"), state}
     else
