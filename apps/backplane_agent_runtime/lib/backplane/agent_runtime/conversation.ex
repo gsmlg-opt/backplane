@@ -614,12 +614,13 @@ defmodule Backplane.AgentRuntime.Conversation do
          {:ok, invocation} <- async_event_invocation(s, token),
          true <- cancellation_operation?(s, operation, invocation),
          true <- cancellation_caller?(s, token, caller),
-         true <- not Map.has_key?(s.cancellations, operation.invocation_id),
+         :ok <- existing_cancellation(s, operation, registration, token),
          :ok <-
            register_cancellation_admission(
              operation,
              registration,
-             self()
+             self(),
+             cancellation_registration_timeout(s, token, operation)
            ) do
       entry = %{
         operation: operation,
@@ -658,7 +659,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     next = fn next_state, prepared ->
       task =
-        owned_task(next_state.supervisor, fn ->
+        owned_task(next_state.supervisor, fn startup_context ->
           prepared = %{
             prepared
             | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
@@ -674,6 +675,7 @@ defmodule Backplane.AgentRuntime.Conversation do
                     invocation,
                     outer_invocation(invocation, next_state)
                   )
+                  |> Map.merge(startup_context)
                 )
           }
 
@@ -697,9 +699,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           live_deadline - System.monotonic_time(:millisecond)
         )
 
-      send(self(), {:release_owned_effect, nested_token})
-
-      %{
+      next_state = %{
         next_state
         | nested_admission: nil,
           nested: %{
@@ -711,9 +711,35 @@ defmodule Backplane.AgentRuntime.Conversation do
             token: nested_token,
             selected_timeout_ms: selected_timeout,
             invocation: invocation,
-            catalog: catalog
+            catalog: catalog,
+            startup_context: %{}
           }
       }
+
+      context =
+        trusted_effect_context(
+          next_state,
+          nested_token,
+          catalog,
+          resource_owner_pid,
+          invocation,
+          outer_invocation(invocation, next_state)
+        )
+
+      case prepare_clock_startup(next_state, prepared, task, context, live_deadline) do
+        {:ok, next_state, startup_context} ->
+          next_state = put_in(next_state.nested.startup_context, startup_context)
+
+          if live_deadline > System.monotonic_time(:millisecond) do
+            send(self(), {:release_owned_effect, nested_token})
+            next_state
+          else
+            stop(next_state, :deadline_exceeded)
+          end
+
+        {:error, next_state} ->
+          stop(next_state, :execution_failure)
+      end
     end
 
     s = %{s | nested_admission: invocation}
@@ -923,10 +949,12 @@ defmodule Backplane.AgentRuntime.Conversation do
         true -> nil
       end
 
-    if entry && entry.task && is_reference(entry.timer) && is_reference(entry.timer_generation) &&
+    if s.stopping == nil && s.phase == :running && entry && entry.task &&
+         is_reference(entry.timer) && is_reference(entry.timer_generation) &&
          ((entry == s.effect && s.effect_live_deadline > System.monotonic_time(:millisecond)) ||
             (entry == s.nested && entry.live_deadline > System.monotonic_time(:millisecond))),
-       do: send(entry.task.pid, {:run_owned_effect, self()})
+       do:
+         send(entry.task.pid, {:run_owned_effect, self(), Map.get(entry, :startup_context, %{})})
 
     {:noreply, s}
   end
@@ -2191,28 +2219,31 @@ defmodule Backplane.AgentRuntime.Conversation do
         approval
 
     commit(s, {:tool_invoked, now(), invocation}, %{}, opts, fn s, prepared ->
-      emit(s, %{type: :tool_started, invocation: invocation})
+      next =
+        start_effect(
+          s,
+          {:tool, invocation, rest, catalog},
+          fn context ->
+            prepared = %{
+              prepared
+              | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
+                host_context: tool_backend_context(s, prepared.host_context, context)
+            }
 
-      start_effect(
-        s,
-        {:tool, invocation, rest, catalog},
-        fn context ->
-          prepared = %{
-            prepared
-            | operation: Map.put(prepared.operation, :effective_authority, catalog.authority),
-              host_context: tool_backend_context(s, prepared.host_context, context)
-          }
+            case Execution.dispatch(
+                   prepared,
+                   Keyword.merge(s.opts, registry: catalog.registry, authority: catalog.authority)
+                 ) do
+              {:ok, [result]} -> {:ok, result}
+              error -> error
+            end
+          end,
+          selected_timeout,
+          prepared
+        )
 
-          case Execution.dispatch(
-                 prepared,
-                 Keyword.merge(s.opts, registry: catalog.registry, authority: catalog.authority)
-               ) do
-            {:ok, [result]} -> {:ok, result}
-            error -> error
-          end
-        end,
-        selected_timeout
-      )
+      if next.phase == :running, do: emit(next, %{type: :tool_started, invocation: invocation})
+      next
     end)
   end
 
@@ -2523,6 +2554,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp tool_backend_context(s, configured, context) do
     configured
+    |> Map.delete(:clock_wait_admission)
     |> Map.merge(
       Map.take(context, [
         :interact,
@@ -2536,7 +2568,8 @@ defmodule Backplane.AgentRuntime.Conversation do
         :register_cancellation,
         :register_code_mode,
         :cancellation_coordinator,
-        :resource_owner_pid
+        :resource_owner_pid,
+        :clock_wait_admission
       ])
     )
     |> Map.merge(goal_tool_context(s))
@@ -2791,7 +2824,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     %{s | commit: %{task: task, timer: timer, timer_generation: generation, next: next}}
   end
 
-  defp start_effect(s, role, function, selected_timeout \\ nil) do
+  defp start_effect(s, role, function, selected_timeout \\ nil, prepared \\ nil) do
     owner = self()
     token = make_ref()
 
@@ -2824,7 +2857,7 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     task =
       if selected_timeout,
-        do: owned_task(s.supervisor, fn -> function.(context) end),
+        do: owned_task(s.supervisor, fn startup -> function.(Map.merge(context, startup)) end),
         else: Task.Supervisor.async_nolink(s.supervisor, fn -> function.(context) end)
 
     configured =
@@ -2855,9 +2888,7 @@ defmodule Backplane.AgentRuntime.Conversation do
           ),
         else: Process.send_after(self(), {:timeout, task.ref, generation}, timeout)
 
-    if selected_timeout, do: send(self(), {:release_owned_effect, token})
-
-    %{
+    s = %{
       s
       | effect: %{
           task: task,
@@ -2865,11 +2896,103 @@ defmodule Backplane.AgentRuntime.Conversation do
           timer_generation: generation,
           role: role,
           selected_timeout_ms: selected_timeout,
-          token: token
+          token: token,
+          startup_context: %{}
         },
         effect_live_deadline: live_deadline,
         phase: :running
     }
+
+    case prepare_clock_startup(s, prepared, task, context, live_deadline) do
+      {:ok, s, startup_context} ->
+        s = put_in(s.effect.startup_context, startup_context)
+
+        if live_deadline > System.monotonic_time(:millisecond) do
+          if selected_timeout, do: send(self(), {:release_owned_effect, token})
+          s
+        else
+          stop(s, :deadline_exceeded)
+        end
+
+      {:error, s} ->
+        stop(s, :execution_failure)
+    end
+  end
+
+  defp prepare_clock_startup(
+         s,
+         %{
+           operation:
+             %{tool_name: "clock::sleep", arguments: %{"duration_ms" => duration}} = operation,
+           host_context:
+             %{family: :local, clock_wait_contract: :native_clock_wait_v1} = configured
+         },
+         task,
+         context,
+         deadline
+       )
+       when is_integer(duration) and duration in 1..43_200_000 do
+    backend = tool_backend_context(s, configured, context)
+    operation = Map.put(operation, :backend_context, backend)
+
+    with %{session: session} = binding when is_pid(session) <- backend[:session_binding],
+         {:ok, owner} <-
+           GenServer.call(
+             binding.session,
+             {:validate, binding, operation},
+             max(1, deadline - System.monotonic_time(:millisecond))
+           ),
+         operation =
+           Map.put(
+             operation,
+             :session_binding_identity,
+             Map.take(binding, [:run_id, :owner_id, :incarnation, :run_incarnation])
+           ),
+         {:ok, admitted} <-
+           Backplane.AgentRuntime.Codex.ClockWait.prepare(
+             operation,
+             owner,
+             self(),
+             task.pid,
+             deadline
+           ) do
+      entry = %{
+        operation: admitted,
+        registration: admitted.clock_wait_admission.registration,
+        effect_task: task
+      }
+
+      {:ok, put_in(s.cancellations[operation.invocation_id], entry),
+       %{clock_wait_admission: admitted.clock_wait_admission}}
+    else
+      _ -> {:error, s}
+    end
+  catch
+    :exit, _ -> {:error, s}
+  end
+
+  defp prepare_clock_startup(s, _prepared, _task, _context, _deadline), do: {:ok, s, %{}}
+
+  defp existing_cancellation(s, operation, registration, token) do
+    case s.cancellations[operation.invocation_id] do
+      nil ->
+        :ok
+
+      %{
+        operation: %{clock_wait_admission: admission} = original,
+        registration: ^registration,
+        effect_task: task
+      } ->
+        if original.clock_wait_admission === operation[:clock_wait_admission] and
+             ToolEffects.cancellation_identity(original) ===
+               ToolEffects.cancellation_identity(operation) and
+             task === cancellation_task(s, token) and :atomics.get(admission.gate, 1) < 2,
+           do: :ok,
+           else: {:error, :stale}
+
+      _ ->
+        {:error, :stale}
+    end
   end
 
   defp hook(s, function, args, default) do
@@ -2890,6 +3013,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         else: tool_host_context(s)
 
     context
+    |> Map.delete(:clock_wait_admission)
     |> Map.put(:interact, fn request ->
       GenServer.call(owner, {:interact, token, request}, :infinity)
     end)
@@ -2939,19 +3063,22 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp register_cancellation_admission(
          %{tool_name: "clock::sleep", backend_context: %{family: :local}} = operation,
          registration,
-         coordinator
+         coordinator,
+         timeout
        ),
        do:
          Backplane.AgentRuntime.Codex.ClockWait.register_admission(
            operation,
            registration,
-           coordinator
+           coordinator,
+           timeout
          )
 
   defp register_cancellation_admission(
          %{tool_name: "mcp_events"} = operation,
          registration,
-         coordinator
+         coordinator,
+         _timeout
        ),
        do:
          Backplane.AgentRuntime.Codex.EventRequest.register_admission(
@@ -2960,13 +3087,31 @@ defmodule Backplane.AgentRuntime.Conversation do
            coordinator
          )
 
-  defp register_cancellation_admission(operation, registration, coordinator),
+  defp register_cancellation_admission(operation, registration, coordinator, _timeout),
     do:
       Backplane.AgentRuntime.Codex.ResourceScope.register_admission(
         operation,
         registration,
         coordinator
       )
+
+  defp cancellation_registration_timeout(
+         s,
+         token,
+         %{tool_name: "clock::sleep", backend_context: %{family: :local}}
+       ),
+       do: clock_registration_timeout(s, token)
+
+  defp cancellation_registration_timeout(_s, _token, _operation), do: 5_000
+
+  defp clock_registration_timeout(
+         %{nested: %{token: token, live_deadline: deadline}},
+         token
+       ),
+       do: max(1, deadline - System.monotonic_time(:millisecond))
+
+  defp clock_registration_timeout(s, _token),
+    do: max(1, s.effect_live_deadline - System.monotonic_time(:millisecond))
 
   defp trusted_effect_context(s, token, catalog, owner, producer, boundary) do
     base_effect_context(s, owner, token)
@@ -4008,9 +4153,9 @@ defmodule Backplane.AgentRuntime.Conversation do
       monitor = Process.monitor(owner)
 
       receive do
-        {:run_owned_effect, ^owner} ->
+        {:run_owned_effect, ^owner, startup_context} ->
           Process.demonitor(monitor, [:flush])
-          function.()
+          function.(startup_context)
 
         {:DOWN, ^monitor, :process, ^owner, _} ->
           exit(:shutdown)

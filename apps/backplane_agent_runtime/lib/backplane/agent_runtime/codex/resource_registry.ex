@@ -23,9 +23,16 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
 
   @doc false
   def start_clock_wait(pid, owner, value, opts),
-    do: GenServer.call(pid, {:start_clock_wait, owner, value, opts})
+    do:
+      GenServer.call(
+        pid,
+        {:start_clock_wait, owner, value, opts},
+        Keyword.get(opts, :timeout, 5_000)
+      )
 
-  def fetch(pid, handle, owner), do: GenServer.call(pid, {:fetch, handle, owner})
+  def fetch(pid, handle, owner, timeout \\ 5_000),
+    do: GenServer.call(pid, {:fetch, handle, owner}, timeout)
+
   def release(pid, handle, owner), do: GenServer.call(pid, {:release, handle, owner}, :infinity)
   def cancel_owner(pid, owner), do: GenServer.call(pid, {:cancel_owner, owner}, :infinity)
 
@@ -267,7 +274,8 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   def handle_call({:start_clock_wait, owner, value, opts}, _from, state) do
     incarnation = Keyword.get(opts, :incarnation, 1)
 
-    with :ok <- owner_open(state, owner),
+    with :ok <- clock_start_deadline(opts),
+         :ok <- owner_open(state, owner),
          :ok <- recovery_capacity(state),
          :ok <- clock_capacity(state, owner),
          :ok <- validate_incarnation(incarnation),
@@ -627,6 +635,21 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   end
 
   defp resource_capacity(_state, _kind), do: :ok
+
+  defp clock_start_deadline(opts) do
+    case Keyword.get(opts, :deadline) do
+      nil ->
+        :ok
+
+      deadline when is_integer(deadline) ->
+        if deadline > System.monotonic_time(:millisecond),
+          do: :ok,
+          else: {:error, Error.new(:timeout, "native clock startup deadline expired")}
+
+      _ ->
+        {:error, Error.new(:validation, "invalid native clock startup deadline")}
+    end
+  end
 
   defp clock_capacity(state, owner) do
     count =

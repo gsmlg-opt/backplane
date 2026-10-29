@@ -222,16 +222,28 @@ tears down its own Registry and supervisors.
 
 ## Native clock waits
 
-Runtime-bound `clock::sleep` registers an invocation-owned `ClockWait` in the
-existing ResourceRegistry before arming its timer. Its temporary waiter uses the
-Registry worker supervisor. The registration retains exact Session/run/incarnation
-and invocation identity, and blocks owner transfer until the tool-result Store ACK.
+For Conversation-managed `clock::sleep`, Conversation parks the actual executor
+after the tool-intent Store ACK, allocates an unarmed invocation-owned `ClockWait`
+in the existing ResourceRegistry and retains its cancellation entry before
+publishing `tool_started` or releasing backend work. Its temporary waiter uses the
+Registry worker supervisor. The backend consumes that same trusted admission;
+only the original callback ACK and live effect deadline permit timer arming.
+The registration retains exact Session/run/incarnation and invocation identity,
+and blocks owner transfer until the tool-result Store ACK.
 At most 128 clock registrations, including retained unacknowledged registrations,
 are admitted per owner. Standalone `Codex.call/3` sleep remains synchronous and
 makes no Runtime retirement claim.
 
 Cancellation closes the completion gate and joins the actual waiter and tool
-executor. Confirmed Session/Registry cleanup is independently required before
+executor, including cancellation before backend execution or callback ACK. A
+transparent delegating adapter may pause at either boundary without losing this
+responsibility. Wrappers preserve the native clock lifecycle marker supplied by
+`Tools.contracts/1`; an unrelated host tool with only the same name and local
+family does not acquire native clock retirement coverage. Late callbacks or
+release messages cannot create another waiter
+or rearm a sealed one. Runtime execution missing its original startup admission
+fails closed; it does not fall back to synchronous sleep. Confirmed
+Session/Registry cleanup is independently required before
 Conversation publishes `native_clock_wait_retirement` in status and terminal
 Store cleanup evidence. This record proves retirement of that exact local wait;
 it preserves the original cancelled or unknown tool outcome and does not discharge

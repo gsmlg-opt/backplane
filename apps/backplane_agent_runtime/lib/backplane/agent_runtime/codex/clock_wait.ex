@@ -5,14 +5,11 @@ defmodule Backplane.AgentRuntime.Codex.ClockWait do
   alias Backplane.AgentRuntime.Codex.ResourceRegistry
   alias Backplane.AgentRuntime.Codex.Reconciliation.Evidence
 
-  def run(context, duration) do
-    with {:ok, operation, owner, coordinator, deadline} <- live_context(context),
-         {:ok, handle, value} <- allocate(operation, owner, coordinator) do
-      admission =
-        Map.merge(value, %{
-          registry: owner.resource_registry,
-          handle: handle
-        })
+  def prepare(operation, owner, coordinator, executor, deadline) do
+    with true <- coordinator === self() and Process.alive?(executor),
+         true <- deadline > now(),
+         {:ok, handle, value} <- allocate(operation, owner, coordinator, executor, deadline) do
+      admission = Map.merge(value, %{registry: owner.resource_registry, handle: handle})
 
       publish_words(
         admission.gate,
@@ -21,32 +18,69 @@ defmodule Backplane.AgentRuntime.Codex.ClockWait do
 
       admitted = Map.put(operation, :clock_wait_admission, admission)
 
-      case context.register_cancellation.(admitted, admission.registration) do
-        {:ok, ^coordinator} ->
-          await(admission, duration, deadline)
-
-        error ->
-          ResourceRegistry.release(owner.resource_registry, handle, owner.owner_id)
-          error
+      with :ok <-
+             register_admission(
+               admitted,
+               admission.registration,
+               coordinator,
+               remaining(deadline)
+             ) do
+        {:ok, admitted}
+      else
+        _ -> unavailable("native clock startup admission is unconfirmed")
       end
+    else
+      {:error, _} = error -> error
+      _ -> unavailable("native clock startup authority is unavailable")
     end
+  catch
+    :exit, _ -> unavailable("native clock startup acknowledgement unavailable")
+  end
+
+  def run(context, duration) do
+    with {:ok, operation, owner, coordinator, deadline} <- live_context(context),
+         %{clock_wait_admission: admission} <- operation,
+         true <- admission.executor === self() and admission.coordinator === coordinator,
+         true <- admission.identity === ToolEffects.cancellation_identity(operation),
+         true <- admission.registry === owner.resource_registry,
+         true <- admission.handle.owner_id === owner.owner_id,
+         true <- admission.handle.incarnation === owner.incarnation,
+         {:ok, value} <-
+           ResourceRegistry.fetch(
+             admission.registry,
+             admission.handle,
+             owner.owner_id,
+             remaining(deadline)
+           ),
+         true <- Map.take(admission, Map.keys(value)) === value,
+         {:ok, ^coordinator} <- context.register_cancellation.(operation, admission.registration) do
+      await(admission, duration, deadline)
+    else
+      {:error, _} = error -> error
+      _ -> unavailable("native clock requires its original startup admission")
+    end
+  rescue
+    _error in [ArgumentError, KeyError, BadMapError] ->
+      unavailable("native clock startup admission is invalid")
   catch
     :exit, _ -> unavailable("native clock lifetime acknowledgement unavailable")
   end
 
-  defp allocate(operation, owner, coordinator) do
+  defp allocate(operation, owner, coordinator, executor, deadline) do
     value = %{
       registration: unique_id(),
       generation: unique_id(),
       identity: ToolEffects.cancellation_identity(operation),
       gate: :atomics.new(8, signed: false),
       coordinator: coordinator,
-      executor: self()
+      executor: executor
     }
 
     ResourceRegistry.start_clock_wait(owner.resource_registry, owner.owner_id, value,
       incarnation: owner.incarnation,
-      owner_pid: owner.owner_pid
+      owner_pid: owner.owner_pid,
+      deadline: deadline,
+      timeout: remaining(deadline)
     )
   end
 
@@ -69,22 +103,30 @@ defmodule Backplane.AgentRuntime.Codex.ClockWait do
     end
   end
 
+  def register_admission(operation, registration, coordinator, timeout \\ 5_000)
+
   def register_admission(
         %{clock_wait_admission: admission} = operation,
         registration,
-        coordinator
+        coordinator,
+        timeout
       ) do
     with true <- coordinator === self(),
          %{registration: ^registration, coordinator: ^coordinator} <- admission,
          true <- get_in(operation, [:backend_context, :cancellation_coordinator]) === coordinator,
          true <- admission.identity === ToolEffects.cancellation_identity(operation),
          {:ok, value} <-
-           ResourceRegistry.fetch(admission.registry, admission.handle, admission.handle.owner_id),
+           ResourceRegistry.fetch(
+             admission.registry,
+             admission.handle,
+             admission.handle.owner_id,
+             timeout
+           ),
          true <- Map.take(admission, Map.keys(value)) === value,
          true <-
            read_words(admission.gate) ===
              registration_digest(operation, registration, admission.generation, coordinator),
-         :ok <- :atomics.compare_exchange(admission.gate, 6, 0, 1) do
+         phase when phase in [:ok, 1] <- :atomics.compare_exchange(admission.gate, 6, 0, 1) do
       :ok
     else
       _ -> unavailable("native clock cancellation admission is stale")
@@ -95,7 +137,7 @@ defmodule Backplane.AgentRuntime.Codex.ClockWait do
     :exit, _ -> unavailable("native clock registry is unavailable")
   end
 
-  def register_admission(_, _, _), do: unavailable("native clock admission is missing")
+  def register_admission(_, _, _, _), do: unavailable("native clock admission is missing")
 
   def seal_admission(%{operation: %{clock_wait_admission: %{gate: gate}}}), do: seal_gate(gate)
 

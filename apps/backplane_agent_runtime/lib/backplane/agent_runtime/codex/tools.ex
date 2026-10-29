@@ -584,7 +584,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
         "clock::sleep",
         "Pause execution for a specified duration.",
         sleep_schema(),
-        backend_context,
+        Map.put(backend_context, :clock_wait_contract, :native_clock_wait_v1),
         false
       )
     ]

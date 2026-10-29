@@ -2,7 +2,8 @@
 
 Date: 2026-10-29. Request: #147. Baseline: main
 `4e7a2a198cd9ee0f73fe019a0d457089dc95b229`, published 1.10.52.
-Target: 1.10.53. Status: proposed; awaiting user approval before implementation.
+Target: 1.10.53. Status: approved by the user on 2026-10-29; implemented and locally verified on 2026-10-30; publication awaits exact-commit
+CI and official artifact verification.
 
 ## Reproduced problem
 
@@ -80,6 +81,13 @@ The admission is selected from the trusted local clock operation, its owning
 Session and actual task; a tool name or family label alone is not retirement
 authority. Do not grant unrelated host tools clock cancellation coverage. Preserve
 existing support for transparent wrappers that delegate to the native Backend.
+The implementation uses the native lifecycle marker in `Tools.contracts/1` for
+this contract discrimination. Transparent wrappers retain it; a host descriptor
+with only the clock name and local family does not opt into native retirement.
+The marker describes a trusted native contract, not a cryptographic permission
+boundary. Startup capabilities are still generated and checked by the coordinator.
+Queued release messages are ignored while stopping, so even a wrapper preceding
+the native Backend cannot start from a late release after cancellation.
 
 ## Cancellation, failures and resource bounds
 

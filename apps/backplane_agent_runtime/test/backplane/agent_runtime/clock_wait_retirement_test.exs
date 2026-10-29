@@ -42,11 +42,30 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       original = operation.backend_context.register_cancellation
       test = operation.backend_context.test
 
+      gate = Map.get(operation.backend_context, :startup_gate, :after_ack)
+
+      if operation.tool_name == "clock::sleep" and gate == :before_backend do
+        send(test, {:clock_startup_pending, operation, self()})
+        receive do: (:continue_clock_startup -> :ok)
+      end
+
       register = fn admitted, registration ->
+        if gate == :before_ack do
+          send(test, {:clock_registration_pending, admitted, registration, self()})
+          send(test, {:clock_registration_callback, admitted.invocation_id, original})
+          receive do: (:continue_clock_registration -> :ok)
+        end
+
         result = original.(admitted, registration)
 
-        if match?({:ok, _}, result),
-          do: send(test, {:clock_registered, admitted, registration, self()})
+        if match?({:ok, _}, result) do
+          send(test, {:clock_registered, admitted, registration, self()})
+
+          if gate == :before_backend do
+            repeated = original.(admitted, registration)
+            send(test, {:clock_registration_repeated, admitted, registration, repeated})
+          end
+        end
 
         result
       end
@@ -55,6 +74,13 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       result = Backend.execute(operation)
       send(test, {:clock_returned, operation.invocation_id, result})
       result
+    end
+  end
+
+  defmodule UnrelatedBackend do
+    def execute(operation) do
+      send(operation.backend_context.test, {:unrelated_clock_started, operation, self()})
+      receive do: (:never_finish_unrelated_work -> {:ok, %{effect: "unrelated"}})
     end
   end
 
@@ -113,6 +139,73 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
         end
       else
         EphemeralStore.store(context.table, run, meta)
+      end
+    end
+  end
+
+  @tag invalid_clock_duration: true
+  test "invalid clock durations keep validation errors without allocating a startup waiter" do
+    for {duration, index} <- Enum.with_index([0, -1, 1.5, 43_200_001]) do
+      host = Host.new()
+      run = "invalid-clock-#{index}"
+
+      context =
+        start_root(host, run,
+          startup_gate: :before_backend,
+          store: AckStore,
+          context: %{table: host.store, test: self()}
+        )
+
+      registry = context.binding.resource_registry
+      assert 1 == :erlang.trace(registry, true, [:receive, {:tracer, self()}])
+
+      try do
+        provider = prompt(context, "validate the native clock duration")
+        send(provider, {:events, [call("clock::sleep", %{"duration_ms" => duration}), done()]})
+        assert_receive {:clock_ack_pending, :tool_invoked, intent_writer}, 1_000
+        send(intent_writer, :ack)
+        assert_receive {:clock_startup_pending, operation, executor}, 1_000
+        refute Map.has_key?(operation.backend_context, :clock_wait_admission)
+
+        assert {:ok, inventory} =
+                 ResourceRegistry.owner_status(registry, context.binding.owner_id)
+
+        refute Enum.any?(inventory, &(&1.kind == :resource))
+
+        send(executor, :continue_clock_startup)
+        invocation = operation.invocation_id
+
+        assert_receive {:clock_returned, ^invocation,
+                        {:error, %Error{class: :validation, message: message} = error}},
+                       1_000
+
+        assert message == "duration_ms must be between 1 and 43200000"
+        eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
+        status = Conversation.status(context.conversation)
+        assert status.error == error
+        assert status.run.state == :unknown_outcome
+        assert status.run.tool_results == %{}
+        assert status.retirement_evidence == []
+        assert {:ok, stored} = EphemeralStore.load(host.store, run)
+        assert stored.run == status.run
+
+        assert Enum.any?(stored.run.execution_intents, fn {_key, intent} ->
+                 intent.type == :tool and intent.operation.invocation_id == invocation and
+                   intent.status == :uncertain
+               end)
+
+        refute_receive {:clock_registered, _, _, _}, 30
+        refute_receive {:clock_ack_pending, :tool_completed, _}, 30
+        refute_receive {:clock_provider, ^run, _, _}, 30
+        assert 1 == :erlang.trace(registry, false, [:receive])
+        delivered = :erlang.trace_delivered(registry)
+        assert_receive {:trace_delivered, ^registry, ^delivered}, 1_000
+
+        refute_receive {:trace, ^registry, :receive,
+                        {:"$gen_call", _, {:start_clock_wait, _, _, _}}},
+                       30
+      after
+        if Process.alive?(registry), do: :erlang.trace(registry, false, [:receive])
       end
     end
   end
@@ -191,20 +284,177 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     end
   end
 
-  for mode <- [:direct, :deno] do
-    @tag mode: mode
-    test "#{mode} clock cancellation survives cold reconciliation and admits a real fresh prompt",
-         %{mode: mode} do
+  test "clock name and local family do not grant unrelated backend retirement authority" do
+    host = Host.new()
+
+    context =
+      start_root(host, "unrelated-clock",
+        startup_gate: :unrelated,
+        host_context: %{clock_wait_admission: %{forged: true}}
+      )
+
+    provider = prompt(context, "invoke the unrelated host tool")
+    send(provider, {:events, [call("clock::sleep", %{"duration_ms" => 60_000}), done()]})
+    assert_receive {:unrelated_clock_started, operation, executor}, 1_000
+    refute Map.has_key?(operation.backend_context, :clock_wait_admission)
+
+    assert {:ok, inventory} =
+             ResourceRegistry.owner_status(
+               context.binding.resource_registry,
+               context.binding.owner_id
+             )
+
+    refute Enum.any?(inventory, &(&1.kind == :resource))
+    monitor = Process.monitor(executor)
+    assert :ok = Conversation.cancel(context.conversation)
+    eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
+    assert_receive {:DOWN, ^monitor, :process, ^executor, _}, 1_000
+    status = Conversation.status(context.conversation)
+    assert status.run.state == :unknown_outcome
+    assert status.retirement_evidence == []
+    assert {:ok, original} = EphemeralStore.load(host.store, context.run)
+
+    refute Enum.any?(
+             retained_records(original.run.outcome["cleanup"]["evidence"]),
+             &(&1["record_type"] == "native_clock_wait_retirement")
+           )
+
+    refute_receive {:clock_provider, "unrelated-clock", _, _}, 30
+  end
+
+  test "cancel queued during admission prevents a later owned-executor release" do
+    host = Host.new()
+
+    context =
+      start_root(host, "queued-stop",
+        startup_gate: :before_backend,
+        store: AckStore,
+        context: %{table: host.store, test: self()}
+      )
+
+    provider = prompt(context, "stop before backend release")
+    send(provider, {:events, [call("clock::sleep", %{"duration_ms" => 60_000}), done()]})
+    assert_receive {:clock_ack_pending, :tool_invoked, intent_writer}, 1_000
+    registry = context.binding.resource_registry
+    conversation = context.conversation
+    :ok = :sys.suspend(registry)
+
+    try do
+      send(intent_writer, :ack)
+      eventually(fn -> queued_clock_start(registry) != nil end)
+      {executor, _value} = queued_clock_start(registry)
+      assert 1 == :erlang.trace(conversation, true, [:send, {:tracer, self()}])
+      cancellation = Task.async(fn -> Conversation.cancel(conversation) end)
+      eventually(fn -> queued_call?(conversation, :cancel) end)
+      :ok = :sys.resume(registry)
+      assert :ok = Task.await(cancellation, 3_000)
+      eventually(fn -> Conversation.status(conversation).phase == :terminal end)
+      assert 1 == :erlang.trace(conversation, false, [:send])
+      delivered = :erlang.trace_delivered(conversation)
+      assert_receive {:trace_delivered, ^conversation, ^delivered}, 1_000
+      status = Conversation.status(conversation)
+      assert status.run.state == :cancelled
+      {operation, nil} = await_startup_boundary(context, :immediate)
+      assert_proofs(status, operation, :direct)
+      refute Process.alive?(executor)
+      refute_receive {:clock_startup_pending, _, ^executor}, 30
+
+      refute_receive {:trace, ^conversation, :send, {:run_owned_effect, ^conversation, _},
+                      ^executor},
+                     30
+
+      refute_receive {:trace, ^conversation, :send_to_non_existing_process,
+                      {:run_owned_effect, ^conversation, _}, ^executor},
+                     30
+    after
+      if Process.alive?(registry), do: :sys.resume(registry)
+      if Process.alive?(conversation), do: :erlang.trace(conversation, false, [:send])
+    end
+  end
+
+  test "startup admission is reused by Backend and exact repeated registration ACK" do
+    host = Host.new()
+
+    context =
+      start_root(host, "single-startup",
+        startup_gate: :before_backend,
+        store: AckStore,
+        context: %{table: host.store, test: self()}
+      )
+
+    provider = prompt(context, "complete one admitted clock")
+    send(provider, {:events, [call("clock::sleep", %{"duration_ms" => 10}), done()]})
+    assert_receive {:clock_ack_pending, :tool_invoked, intent_writer}, 1_000
+    send(intent_writer, :ack)
+    {operation, executor} = await_startup_boundary(context, :before_backend)
+    admission = operation.clock_wait_admission
+
+    assert {:ok, before} =
+             ResourceRegistry.owner_status(admission.registry, admission.handle.owner_id)
+
+    assert Enum.count(before, &(&1.kind == :resource)) == 1
+
+    send(executor, :continue_clock_startup)
+    assert_receive {:clock_registered, consumed, registration, ^executor}, 1_000
+    assert consumed.clock_wait_admission == admission
+    assert registration == admission.registration
+
+    assert_receive {:clock_registration_repeated, ^consumed, ^registration, {:ok, coordinator}},
+                   1_000
+
+    assert coordinator == context.conversation
+    assert_receive {:clock_ack_pending, :tool_completed, result_writer}, 1_000
+
+    assert {:ok, after_completion} =
+             ResourceRegistry.owner_status(admission.registry, admission.handle.owner_id)
+
+    assert Enum.count(after_completion, &(&1.kind == :resource)) == 1
+
+    assert {:ok, value} =
+             ResourceRegistry.fetch(
+               admission.registry,
+               admission.handle,
+               admission.handle.owner_id
+             )
+
+    assert value.waiter == admission.waiter
+    refute Process.alive?(admission.waiter)
+    send(result_writer, :ack)
+    assert_receive {:clock_provider, "single-startup", _, next}, 1_000
+
+    assert :ok =
+             ResourceRegistry.owner_transfer_ready(admission.registry, admission.handle.owner_id)
+
+    finish(context, next)
+  end
+
+  for {mode, gate} <-
+        for(
+          mode <- [:direct, :deno],
+          gate <- [:after_ack, :before_backend, :before_ack],
+          do: {mode, gate}
+        ) ++ [{:direct, :immediate}] do
+    @tag mode: mode, startup_gate: gate
+    test "#{mode} #{gate} clock cancellation survives cold reconciliation and admits a real fresh prompt",
+         %{mode: mode, startup_gate: gate} do
       host = Host.new()
-      context = start_root(host, "old-#{mode}")
+      context = start_root(host, "old-#{mode}", startup_gate: gate)
       provider = prompt(context, "wait")
       {name, arguments} = clock_call(mode)
       send(provider, {:events, [call(name, arguments), done()]})
-      assert_receive {:clock_registered, operation, _, executor}, 3_000
-      executor_ref = Process.monitor(executor)
+      {operation, executor} = await_startup_boundary(context, gate)
+      executor_ref = if executor, do: Process.monitor(executor)
       assert :ok = Conversation.cancel(context.conversation)
       eventually(fn -> Conversation.status(context.conversation).phase == :terminal end)
-      assert_receive {:DOWN, ^executor_ref, :process, ^executor, _}, 2_000
+
+      if executor_ref do
+        assert_receive {:DOWN, ^executor_ref, :process, ^executor, _}, 2_000
+        assert_clock_waiter_retired(operation)
+        send(executor, :continue_clock_startup)
+        send(executor, :continue_clock_registration)
+        refute Process.alive?(executor)
+      end
+
       status = Conversation.status(context.conversation)
       assert status.run.state == :cancelled
       proofs = assert_proofs(status, operation, mode)
@@ -272,11 +522,13 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     end
   end
 
-  for mode <- [:direct, :deno] do
-    @tag mode: mode
-    test "#{mode} managed child retains exact clock proof through manager reconciliation", %{
-      mode: mode
-    } do
+  for mode <- [:direct, :deno], gate <- [:after_ack, :before_backend, :before_ack] do
+    @tag mode: mode, startup_gate: gate
+    test "#{mode} #{gate} managed child retains exact clock proof through manager reconciliation",
+         %{
+           mode: mode,
+           startup_gate: gate
+         } do
       host = Host.new()
       test = self()
       names = @names ++ @collaboration
@@ -309,7 +561,8 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
                  parent.child.incarnation,
                  names,
                  :ets.lookup_element(contracts_table, :contracts, 2),
-                 test
+                 test,
+                 gate
                )
 
              {:ok, recovery_admission(host, request, parent, options)}
@@ -328,11 +581,15 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       assert_receive {:clock_provider, child_run, _, child_provider}, 2_000
       {name, arguments} = clock_call(mode)
       send(child_provider, {:events, [call(name, arguments), done()]})
-      assert_receive {:clock_registered, operation, _, executor}, 3_000
+      {operation, executor} = await_startup_boundary(%{run: child_run}, gate)
       ref = Process.monitor(executor)
       {parent, result} = tool(parent, "parent", "interrupt_agent", %{"target" => "/root/worker"})
       refute result[:is_error], inspect(result)
       assert_receive {:DOWN, ^ref, :process, ^executor, _}, 1_000
+      assert_clock_waiter_retired(operation)
+      send(executor, :continue_clock_startup)
+      send(executor, :continue_clock_registration)
+      refute Process.alive?(executor)
       assert {:ok, snapshot} = MultiAgent.snapshot(manager)
       [child] = snapshot.agents
       assert child.run_id == child_run
@@ -346,11 +603,12 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       child_ref = Process.monitor(child_pid)
       assert :ok = MultiAgent.close_session(manager)
       assert_receive {:DOWN, ^child_ref, :process, ^child_pid, _}, 2_000
+      assert {:ok, ^original} = EphemeralStore.load(host.store, child_run)
       refute Process.alive?(child_provider)
       assert Session.status(child_session).phase == :closed
       seal_child_inventory(host, child, status.run)
-      assert {:ok, manifest} = MultiAgent.recovery_manifest(manager, child.name)
-      assert {:ok, receipt} = reconcile_actual(host, manifest, proofs, "child-#{mode}")
+      assert {:ok, child_manifest} = MultiAgent.recovery_manifest(manager, child.name)
+      assert {:ok, receipt} = reconcile_actual(host, child_manifest, proofs, "child-#{mode}")
 
       assert {:ok, %{status: :confirmed}} =
                MultiAgent.reconcile_child(manager, receipt["receipt_id"])
@@ -361,7 +619,114 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       assert {:ok, %{status: :confirmed}} =
                MultiAgent.reconcile_close(manager, receipt["receipt_id"])
 
+      assert_rejects_substitution(host, child_manifest, proofs, mode)
       assert {:ok, ^original} = EphemeralStore.load(host.store, child_run)
+      child_session_ref = Process.monitor(child_session)
+      stop_supervised!(:child_session)
+      assert_receive {:DOWN, ^child_session_ref, :process, ^child_session, _}, 1_000
+      fresh = start_root(host, "fresh-child-#{mode}-#{gate}")
+      refute fresh.binding.owner_id == operation.session_binding_identity.owner_id
+      refute fresh.binding.resource_registry == operation.clock_wait_admission.registry
+      next = prompt(fresh, "continue after the retired child wait")
+      finish(fresh, next)
+      assert {:ok, ^original} = EphemeralStore.load(host.store, child_run)
+    end
+  end
+
+  defp queued_clock_start(registry) do
+    {:messages, messages} = Process.info(registry, :messages)
+
+    Enum.find_value(messages, fn
+      {:"$gen_call", _, {:start_clock_wait, _, value, _}} -> {value.executor, value}
+      _ -> nil
+    end)
+  end
+
+  defp queued_call?(process, request) do
+    {:messages, messages} = Process.info(process, :messages)
+    Enum.any?(messages, &match?({:"$gen_call", _, ^request}, &1))
+  end
+
+  defp await_startup_boundary(%{run: run, binding: binding}, :immediate) do
+    assert_receive {:agent_runtime, ^run, %{type: :tool_started, invocation: invocation}}, 3_000
+
+    operation =
+      Map.put(
+        invocation,
+        :session_binding_identity,
+        Map.take(binding, [:run_id, :owner_id, :incarnation, :run_incarnation])
+      )
+
+    {operation, nil}
+  end
+
+  defp await_startup_boundary(_context, :before_backend) do
+    assert_receive {:clock_startup_pending, operation, executor}, 3_000
+    admission = operation.backend_context[:clock_wait_admission]
+    assert is_map(admission), "clock must have an exact admission before backend execution"
+    binding = operation.backend_context.session_binding
+
+    operation =
+      operation
+      |> Map.put(:clock_wait_admission, admission)
+      |> Map.put(
+        :test_late_registration_callback,
+        operation.backend_context.register_cancellation
+      )
+      |> Map.put(
+        :session_binding_identity,
+        Map.take(binding, [:run_id, :owner_id, :incarnation, :run_incarnation])
+      )
+
+    assert_unarmed_clock(operation)
+    {operation, executor}
+  end
+
+  defp await_startup_boundary(_context, :before_ack) do
+    assert_receive {:clock_registration_pending, operation, _registration, executor}, 3_000
+    invocation = operation.invocation_id
+    assert_receive {:clock_registration_callback, ^invocation, callback}, 1_000
+    operation = Map.put(operation, :test_late_registration_callback, callback)
+    assert_unarmed_clock(operation)
+    {operation, executor}
+  end
+
+  defp await_startup_boundary(_context, :after_ack) do
+    assert_receive {:clock_registered, operation, _, executor}, 3_000
+    {operation, executor}
+  end
+
+  defp assert_unarmed_clock(operation) do
+    admission = operation.clock_wait_admission
+
+    assert {:ok, value} =
+             ResourceRegistry.fetch(
+               admission.registry,
+               admission.handle,
+               admission.handle.owner_id
+             )
+
+    assert value.waiter == admission.waiter
+    assert value.executor == admission.executor
+    assert :atomics.get(admission.gate, 1) == 0
+    assert Process.alive?(admission.waiter)
+  end
+
+  defp assert_clock_waiter_retired(operation) do
+    admission = operation.clock_wait_admission
+    refute Process.alive?(admission.waiter)
+    assert :atomics.get(admission.gate, 1) in [2, 3]
+    assert :atomics.get(admission.gate, 7) == 1
+    assert :atomics.get(admission.gate, 8) == 1
+
+    if callback = operation[:test_late_registration_callback] do
+      phase = :atomics.get(admission.gate, 1)
+
+      assert {:error, %Error{class: :resource_conflict}} =
+               callback.(operation, admission.registration)
+
+      assert :atomics.get(admission.gate, 1) == phase
+      refute Process.alive?(admission.waiter)
     end
   end
 
@@ -493,6 +858,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
   defp start_root(host, run, overrides \\ []) do
     {names, overrides} = Keyword.pop(overrides, :names, @names)
     {contracts, overrides} = Keyword.pop(overrides, :contracts, [])
+    {gate, overrides} = Keyword.pop(overrides, :startup_gate, :after_ack)
 
     session =
       start_supervised!(
@@ -500,12 +866,14 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
         id: {:session, run}
       )
 
-    options = options(session, host, run, 1, names, contracts, self()) |> Keyword.merge(overrides)
+    options =
+      options(session, host, run, 1, names, contracts, self(), gate) |> Keyword.merge(overrides)
+
     conversation = start_supervised!({Conversation, options}, id: {:conversation, run})
     %{conversation: conversation, session: session, binding: options[:session_binding], run: run}
   end
 
-  defp options(session, host, run, incarnation, names, extra_contracts, test) do
+  defp options(session, host, run, incarnation, names, extra_contracts, test, gate) do
     bindings =
       Map.new(
         for contract <- extra_contracts,
@@ -525,8 +893,20 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       |> Enum.map(fn contract ->
         %{
           contract
-          | backend: ProbeBackend,
-            backend_context: Map.put(contract.backend_context, :test, test)
+          | backend:
+              case gate do
+                :immediate -> Backend
+                :unrelated -> UnrelatedBackend
+                _ -> ProbeBackend
+              end,
+            backend_context:
+              contract.backend_context
+              |> Map.merge(%{test: test, startup_gate: gate})
+              |> then(fn context ->
+                if gate == :unrelated,
+                  do: Map.delete(context, :clock_wait_contract),
+                  else: context
+              end)
         }
       end)
 
@@ -549,6 +929,7 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
       context: host.store,
       provider: Provider,
       provider_context: %{test: test},
+      subscriber: test,
       run_timeout: 20_000,
       effect_timeout: 10_000,
       cleanup_timeout: 2_000

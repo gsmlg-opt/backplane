@@ -38,6 +38,16 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
   def execute(
         %{backend_context: %{family: :local, context: context} = backend_context} = operation
       ) do
+    operation =
+      operation
+      |> Map.delete(:clock_wait_admission)
+      |> then(fn current ->
+        case Map.fetch(backend_context, :clock_wait_admission) do
+          {:ok, admission} -> Map.put(current, :clock_wait_admission, admission)
+          :error -> current
+        end
+      end)
+
     context =
       Map.merge(
         context,

@@ -12,6 +12,9 @@ defmodule Backplane.AgentRuntime.CodexClockWaitTest do
 
     def handle_call({:register, operation, registration}, _from, state),
       do: {:reply, ClockWait.register_admission(operation, registration, self()), state}
+
+    def handle_call({:prepare, operation, owner, executor, deadline}, _from, state),
+      do: {:reply, ClockWait.prepare(operation, owner, self(), executor, deadline), state}
   end
 
   test "normal completion joins waiter but retains registration until result acknowledgement" do
@@ -202,6 +205,58 @@ defmodule Backplane.AgentRuntime.CodexClockWaitTest do
     assert {:ok, :ok} = ClockWait.release(%{operation: operation})
   end
 
+  test "missing or substituted runtime admission fails closed without another allocation" do
+    {registry, task, operation, registration} = waiting(60_000)
+    observer = self()
+    {:ok, supervisor} = ResourceRegistry.worker_supervisor(registry)
+    before = DynamicSupervisor.count_children(supervisor)
+
+    for variant <- [:missing, :substituted] do
+      invalid =
+        Task.async(fn ->
+          forged =
+            case variant do
+              :missing ->
+                Map.delete(operation, :clock_wait_admission)
+
+              :substituted ->
+                admission = %{
+                  operation.clock_wait_admission
+                  | executor: self(),
+                    generation: "different"
+                }
+
+                Map.put(operation, :clock_wait_admission, admission)
+            end
+
+          ClockWait.run(
+            %{
+              runtime_operation: forged,
+              resource_owner: %{resource_registry: registry, owner_id: "owner", incarnation: 1},
+              cancellation_coordinator: observer,
+              effect_deadline: fn ->
+                {:ok, %{deadline_ms: System.monotonic_time(:millisecond) + 1_000, paused: false}}
+              end,
+              register_cancellation: fn _, _ ->
+                send(observer, :invalid_clock_ack)
+                {:ok, observer}
+              end
+            },
+            60_000
+          )
+        end)
+
+      assert {:error, %Error{class: :unknown_outcome}} = Task.await(invalid)
+      refute_receive :invalid_clock_ack, 10
+      assert DynamicSupervisor.count_children(supervisor) == before
+    end
+
+    assert :ok = ClockWait.register_admission(operation, registration, self())
+    assert {:ok, :ok} = ClockWait.release(%{operation: operation})
+    send(task.pid, {:registered, self()})
+    assert {:error, %Error{class: :unknown_outcome}} = Task.await(task)
+  end
+
   test "capacity rejects before allocating another waiter and is scoped to owner" do
     registry = start_supervised!(ResourceRegistry)
     gate = :atomics.new(8, signed: false)
@@ -288,19 +343,36 @@ defmodule Backplane.AgentRuntime.CodexClockWaitTest do
 
     task =
       Task.async(fn ->
-        result = ClockWait.run(context, duration)
-
-        if Keyword.get(opts, :hold_result, false) do
-          send(observer, {:clock_result, self(), result})
-          receive do: (:release_result -> :ok)
+        receive do
+          {:admitted, admitted} ->
+            run_wait(Map.put(context, :runtime_operation, admitted), duration, opts, observer)
         end
-
-        result
       end)
 
+    {:ok, admitted} =
+      if coordinator == self(),
+        do: ClockWait.prepare(operation, context.resource_owner, coordinator, task.pid, deadline),
+        else:
+          GenServer.call(
+            coordinator,
+            {:prepare, operation, context.resource_owner, task.pid, deadline}
+          )
+
+    send(task.pid, {:admitted, admitted})
     assert_receive {:registration, task_pid, admitted, registration}, 1_000
     assert task_pid == task.pid
     {registry, task, admitted, registration}
+  end
+
+  defp run_wait(context, duration, opts, observer) do
+    result = ClockWait.run(context, duration)
+
+    if Keyword.get(opts, :hold_result, false) do
+      send(observer, {:clock_result, self(), result})
+      receive do: (:release_result -> :ok)
+    end
+
+    result
   end
 
   defp cancellation(operation, registration) do
