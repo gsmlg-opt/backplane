@@ -135,7 +135,7 @@ result = Client.await_event_request(request, 5_000, cancellation: control)
 ```elixir
 def deps do
   [
-    {:backplane_mcp_protocol, "~> 1.10.38"}
+    {:backplane_mcp_protocol, "~> 1.10.53"}
   ]
 end
 ```
