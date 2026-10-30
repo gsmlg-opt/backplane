@@ -1,4 +1,6 @@
 ExUnit.start()
+Code.require_file("openclaw_capture_barrier_test.exs", __DIR__)
+Code.require_file("openclaw_owned_process_test.exs", __DIR__)
 
 defmodule Backplane.CIWorkflowTest do
   use ExUnit.Case, async: true

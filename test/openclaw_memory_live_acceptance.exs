@@ -9,6 +9,8 @@
 defmodule Backplane.OpenClawLiveAcceptance do
   import Ecto.Query
   Code.require_file("support/hermes_semantic_oracle.exs", __DIR__)
+  Code.require_file("support/openclaw_capture_barrier.exs", __DIR__)
+  Code.require_file("support/openclaw_owned_process.exs", __DIR__)
   alias Backplane.{Repo, Settings}
   alias Backplane.HostAgent.{Config, MemoryProxy, MemoryRouter, Worker}
   alias Backplane.HostAgent.Memory.Access
@@ -426,31 +428,39 @@ defmodule Backplane.OpenClawLiveAcceptance do
   end
 
   defp run_scenarios!(fixture) do
-    first =
-      node!("turn", %{
-        prompt: "My durable deployment status color is amber. Fixture #{fixture.marker}",
-        responseText: "I guessed cobalt as your deployment status color."
-      })
+    first_input = %{
+      prompt: "My durable deployment status color is amber. Fixture #{fixture.marker}",
+      responseText: "I guessed cobalt as your deployment status color."
+    }
 
+    first = node!("turn", first_input)
     put_resource(:first_turn, first)
     gate("T02_real_context_identity", fn -> verify_turn_identity!(fixture, first) end)
 
-    second =
-      node!("turn", %{
-        prompt: "Correction: amber is correct. Cobalt was your mistake, not my preference.",
-        responseText: ""
-      })
+    second_input = %{
+      prompt: "Correction: amber is correct. Cobalt was your mistake, not my preference.",
+      responseText: ""
+    }
 
-    third =
-      node!("turn", %{
-        prompt: "My durable deployment status color is amber. Fixture #{fixture.marker}",
-        responseText: "Acknowledged: amber is your deployment status color."
-      })
+    second = node!("turn", second_input)
 
-    fourth =
-      node!("turn", %{prompt: "Unrelated chat: the weather today is cloudy.", responseText: ""})
+    third_input = %{
+      prompt: "My durable deployment status color is amber. Fixture #{fixture.marker}",
+      responseText: "Acknowledged: amber is your deployment status color."
+    }
 
-    gate("T03_turn_delta", fn -> verify_turns!(fixture, [first, second, third, fourth]) end)
+    third = node!("turn", third_input)
+    fourth_input = %{prompt: "Unrelated chat: the weather today is cloudy.", responseText: ""}
+    fourth = node!("turn", fourth_input)
+
+    gate("T03_turn_delta", fn ->
+      verify_turns!(
+        fixture,
+        [first, second, third, fourth],
+        [first_input, second_input, third_input, fourth_input]
+      )
+    end)
+
     node!("reset")
     session_id = first["sessionId"]
 
@@ -669,7 +679,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
     %{session_id: session, run_id: run, captured_events: length(events)}
   end
 
-  defp verify_turns!(fixture, turns) do
+  defp verify_turns!(fixture, turns, inputs) do
     session = hd(turns)["sessionId"]
     runs = Enum.map(turns, & &1["runId"])
 
@@ -690,6 +700,25 @@ defmodule Backplane.OpenClawLiveAcceptance do
         ) == 4
       end,
       "turn_delta_user_count_wrong"
+    )
+
+    # Public chat final/history do not await asynchronous agent_end capture or
+    # canonical host delivery. Observe both before asserting absence of records.
+    initial = node!("snapshot")
+    pending_after_chat = not Backplane.OpenClawCaptureBarrier.settled?(initial, turns)
+
+    assistant_count_after_chat =
+      Repo.aggregate(
+        from(e in Event,
+          where:
+            e.host_id == ^fixture.host.id and e.session_id == ^session and e.role == "assistant"
+        ),
+        :count
+      )
+
+    wait!(
+      fn -> Backplane.OpenClawCaptureBarrier.settled?(node!("snapshot"), turns) end,
+      "turn_capture_completion_unconfirmed"
     )
 
     events =
@@ -713,7 +742,30 @@ defmodule Backplane.OpenClawLiveAcceptance do
       "cross_turn_source_identity"
     )
 
-    %{user_occurrences: 4, assistant_occurrences: 2, real_session: session, real_runs: runs}
+    for {turn, input} <- Enum.zip(turns, inputs) do
+      actual =
+        events
+        |> Enum.filter(&(get_in(&1.payload, ["source", "run_id"]) == turn["runId"]))
+        |> Enum.map(&{&1.role, &1.content})
+        |> Enum.sort()
+
+      expected =
+        [{"user", input.prompt}] ++
+          if(input.responseText == "", do: [], else: [{"assistant", input.responseText}])
+
+      assert!(actual == Enum.sort(expected), "turn_original_content_or_occurrence_changed")
+    end
+
+    %{
+      user_occurrences: 4,
+      assistant_occurrences: 2,
+      real_session: session,
+      real_runs: runs,
+      capture_pending_after_chat: pending_after_chat,
+      assistant_occurrences_after_chat: assistant_count_after_chat,
+      exact_turns_completed_and_canonical_acknowledged: true,
+      exact_original_content: true
+    }
   end
 
   defp verify_projection!(fixture, session) do
@@ -1770,7 +1822,45 @@ defmodule Backplane.OpenClawLiveAcceptance do
     error in Error ->
       reraise %{error | diagnostics: Map.put(error.diagnostics, "scenario", scenario)},
               __STACKTRACE__
+  catch
+    kind, reason ->
+      fail!("recovery_step_#{kind}", %{
+        scenario: scenario,
+        failure: safe_exit_diagnostic(reason),
+        stack:
+          Enum.map(__STACKTRACE__, fn {module, function, arity, location} ->
+            %{
+              module: inspect(module),
+              function: Atom.to_string(function),
+              arity: if(is_integer(arity), do: arity, else: length(arity)),
+              file: location |> Keyword.get(:file, ~c"unknown") |> to_string() |> Path.basename(),
+              line: Keyword.get(location, :line)
+            }
+          end)
+      })
   end
+
+  defp safe_exit_diagnostic({reason, {module, function, args}})
+       when is_atom(reason) and is_atom(module) and is_atom(function) and is_list(args) do
+    target = List.first(args)
+
+    %{
+      reason: Atom.to_string(reason),
+      module: inspect(module),
+      function: Atom.to_string(function),
+      arity: length(args),
+      target_alive: is_pid(target) and Process.alive?(target),
+      target_role:
+        cond do
+          target == resource(:worker) -> "worker"
+          target in (resource(:host_pids) || []) -> "host_runtime_child"
+          true -> "other"
+        end
+    }
+  end
+
+  defp safe_exit_diagnostic(reason) when is_atom(reason), do: %{reason: Atom.to_string(reason)}
+  defp safe_exit_diagnostic(_), do: %{reason: "unclassified"}
 
   defp guard_environment! do
     assert!(Mix.env() == :test, "BLOCKED_ENV:requires_MIX_ENV_test")
@@ -2521,15 +2611,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
     end
   end
 
-  defp stop_pid!(pid) when is_pid(pid) do
-    if Process.alive?(pid) do
-      Process.unlink(pid)
-      GenServer.stop(pid, :normal, 10_000)
-      assert!(not Process.alive?(pid), "owned_process_shutdown_incomplete")
-    end
-
-    :ok
-  end
+  defp stop_pid!(pid) when is_pid(pid), do: Backplane.OpenClawOwnedProcess.stop(pid)
 
   defp stop_pid!(_), do: :ok
 
