@@ -27,7 +27,7 @@ defmodule Backplane.ReleaseConfigTest do
             assert plugin_version(path, contents) == "9.8.7"
 
           String.ends_with?(path, "mix.exs") ->
-            assert contents =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+            assert contents =~ ~r/@version\s+"9\.8\.7"/
 
           true ->
             assert contents =~ ~s({:backplane_mcp_protocol, "~> 9.8.7"})
@@ -54,7 +54,7 @@ defmodule Backplane.ReleaseConfigTest do
 
         path in selected ->
           assert after_snapshot[path] != contents
-          assert after_snapshot[path] =~ ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+          assert after_snapshot[path] =~ ~r/@version\s+"9\.8\.7"/
 
         true ->
           assert after_snapshot[path] == contents, "unexpected change to #{path}"
@@ -1396,6 +1396,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "GATED_SHA: ${{ needs.qualify-memory-v2.outputs.gated_sha }}"
     assert workflow =~ "ref: ${{ needs.qualify-memory-v2.outputs.gated_sha }}"
     assert workflow =~ "target_commitish: ${{ needs.qualify-memory-v2.outputs.gated_sha }}"
+    assert workflow =~ "git push origin HEAD:refs/heads/main"
     assert workflow =~ ~s([[ "$sha" != "$main_sha" ]])
     assert workflow =~ "^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"
   end

@@ -121,7 +121,7 @@ defmodule Backplane.DockerfileTest do
       for path <- ["mix.exs" | Path.wildcard("apps/*/mix.exs", match_dot: true)] do
         unless ignored_app_manifest?(path) do
           assert File.read!(Path.join(directory, path)) =~
-                   ~r/(?:@version\s+|version:\s*)"9\.8\.7"/
+                   ~r/@version\s+"9\.8\.7"/
         end
       end
 
@@ -151,7 +151,7 @@ defmodule Backplane.DockerfileTest do
     {output, status} = verify_docker_versions(verify, directory)
     assert status == 0, output
 
-    write_app_spec(directory, :backplane_admin, "1.10.38")
+    write_app_spec(directory, :backplane_admin, "1.10.53")
     {output, status} = verify_docker_versions(verify, directory)
     assert status != 0
     assert output =~ "assembled application version mismatch"
