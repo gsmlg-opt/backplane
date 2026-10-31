@@ -3,7 +3,7 @@
   "kind": "memory",
   "name": "backplane-memory",
   "description": "Persistent cross-session memory for OpenClaw via the Backplane host agent.",
-  "version": "1.10.54",
+  "version": "1.10.55",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
