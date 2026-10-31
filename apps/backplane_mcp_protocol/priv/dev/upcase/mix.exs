@@ -24,7 +24,7 @@ defmodule Upcase.MixProject do
     [
       {:backplane_mcp_protocol, path: "../../../"},
       {:plug, "~> 1.18"},
-      {:gaoxy_http, "~> 0.12.1"}
+      {:gaoxy_http, "~> 0.14.0"}
     ]
   end
 end

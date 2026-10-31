@@ -48,13 +48,13 @@ defmodule BackplaneApi.MixProject do
       {:phoenix_ecto, "~> 4.6"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_duskmoon, "~> 10.0.4"},
-      {:gaoxy_http, "~> 0.12.1"},
+      {:gaoxy_http, "~> 0.14.0"},
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 10.0.4"},
       {:duskmoon_bundler, "~> 10.0.4", runtime: Mix.env() != :prod},
       # TODO(upstream): gsmlg-dev/phoenix_socket_client#107
       # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#107 - align the test host-agent transport.
-      {:http_web_socket, "~> 0.21.2", only: :test, override: true},
+      {:http_web_socket, "~> 0.21.19", only: :test, override: true},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0", only: :test},
       {:lazy_html, ">= 0.1.0"}

@@ -39,7 +39,7 @@ defmodule BackplaneSystem.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:bcrypt_elixir, "~> 3.0"},
       {:req, "~> 0.5", override: true},
-      {:websock_adapter, "~> 0.12.1", hex: :gaoxy_websock_adapter, override: true},
+      {:websock_adapter, "~> 0.14.0", hex: :gaoxy_websock_adapter, override: true},
       {:styx, "~> 0.1.1"},
       {:tzdata, "~> 1.1"},
       {:boruta, "~> 2.3"},
@@ -49,7 +49,7 @@ defmodule BackplaneSystem.MixProject do
       {:toml, "~> 0.7"},
       {:telemetry_poller, "~> 1.1"},
       {:plug, "~> 1.16"},
-      {:gaoxy_http, "~> 0.12.1", only: :test},
+      {:gaoxy_http, "~> 0.14.0", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]

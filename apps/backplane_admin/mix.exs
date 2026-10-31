@@ -50,7 +50,7 @@ defmodule BackplaneAdmin.MixProject do
       {:phoenix_live_dashboard, "~> 0.8"},
       {:phoenix_duskmoon, "~> 10.0.4"},
       {:phoenix_session_process, "~> 1.0.1"},
-      {:gaoxy_http, "~> 0.12.1"},
+      {:gaoxy_http, "~> 0.14.0"},
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 10.0.4"},
       {:duskmoon_bundler, "~> 10.0.4", runtime: Mix.env() != :prod},

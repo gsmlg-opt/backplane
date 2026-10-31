@@ -37,7 +37,7 @@ defmodule Backplane.HostAgent.MixProject do
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},
       {:plug, "~> 1.16"},
-      {:gaoxy_http, "~> 0.12.1"},
+      {:gaoxy_http, "~> 0.14.0"},
       {:telemetry, "~> 1.2"},
       {:backplane_memory_contract, in_umbrella: true},
       {:backplane_memory, in_umbrella: true, only: [:dev, :test], runtime: false},

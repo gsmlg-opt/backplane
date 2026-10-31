@@ -53,7 +53,7 @@ defmodule Ascii.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.1.1"},
-      {:gaoxy_http, "~> 0.12.1"},
+      {:gaoxy_http, "~> 0.14.0"},
       {:websock_adapter, "~> 0.12.1", hex: :gaoxy_websock_adapter, override: true},
       {:backplane_mcp_protocol, path: "../../../"}
     ]

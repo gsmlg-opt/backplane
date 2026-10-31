@@ -26,7 +26,7 @@ defmodule Echo.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.7.21"},
-      {:gaoxy_http, "~> 0.12.1"},
+      {:gaoxy_http, "~> 0.14.0"},
       {:websock_adapter, "~> 0.12.1", hex: :gaoxy_websock_adapter, override: true},
       {:backplane_mcp_protocol, path: "../../../"}
     ]

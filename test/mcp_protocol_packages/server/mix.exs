@@ -14,6 +14,6 @@ defmodule McpServerConsumer.MixProject do
         path -> {:backplane_mcp_protocol, path: path}
       end
 
-    [protocol, {:plug, "~> 1.18"}, {:gaoxy_http, "~> 0.12.1"}]
+    [protocol, {:plug, "~> 1.18"}, {:gaoxy_http, "~> 0.14.0"}]
   end
 end

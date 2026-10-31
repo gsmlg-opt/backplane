@@ -41,7 +41,7 @@ defmodule BackplaneMcp.MixProject do
       {:math_ex, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:phoenix, "~> 1.8"},
-      {:gaoxy_http, "~> 0.12.1"},
+      {:gaoxy_http, "~> 0.14.0"},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
       {:req, "~> 0.5", override: true},
