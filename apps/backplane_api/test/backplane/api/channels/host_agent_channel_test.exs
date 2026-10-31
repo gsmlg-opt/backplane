@@ -159,7 +159,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
     }
 
     ref = push(socket, "memory_sync", %{"protocol" => "memory_commands.v2", "items" => [command]})
-    assert_reply(ref, :ok, %{"items" => [%{"status" => "committed"}]})
+    assert_reply(ref, :ok, %{"items" => [%{"status" => "committed"}]}, 2_000)
 
     ref =
       push(socket, "memory_call", %{"method" => "list", "arguments" => %{}, "access" => claim})

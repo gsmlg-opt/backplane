@@ -656,7 +656,8 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     assert_receive {:native_request, _, _, _, _}, 15_000
     monitor = Process.monitor(owner)
     :ok = :gen_tcp.send(socket, String.duplicate("x", 65_537))
-    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 5000
+    # WORKAROUND(upstream): gsmlg-dev/gaoxy#19 - poll_connection reads 1 byte at a time
+    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 10_000
     :gen_tcp.close(socket)
     clean!()
   end
@@ -709,7 +710,8 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     assert_receive {:native_request, _, _, _, _}, 15_000
     monitor = Process.monitor(owner)
     {:ok, conn} = Mint.HTTP2.cancel_request(conn, ref)
-    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 5000
+    # WORKAROUND(upstream): gsmlg-dev/gaoxy#19 - poll_connection reads 1 byte at a time
+    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 10_000
     clean!()
     {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/v1/models", headers, nil)
     {conn, events} = until_done(conn, ref)

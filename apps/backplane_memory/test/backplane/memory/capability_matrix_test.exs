@@ -4,7 +4,7 @@ defmodule Backplane.Memory.CapabilityMatrixTest do
   alias Backplane.Memory.Service
 
   @matrix_path Path.expand(
-                 "../../../../../docs/qualification/memory-v2-capability-matrix.md",
+                 "../../../../../docs/qualification/memory-capability-matrix.md",
                  __DIR__
                )
 

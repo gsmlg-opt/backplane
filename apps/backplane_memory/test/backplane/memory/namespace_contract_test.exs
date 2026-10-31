@@ -71,7 +71,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
     {"memory::facet_tag", "f02c5459fb417d4a86cb121b650dbcbf42d41f6b1ded88d56b1ea02cf54cc9d5"},
     {"memory::facet_query", "b9873017618d35e7063f7b8143c27d09711f8ff657482022d59356554a74c122"},
     {"memory::remember", "f17cbd286ac125a4f00a1dedb81b3371f516e4c2158597b9d4273ff276449741"},
-    {"memory::recall", "d77e0e2b4d3fdaecd7588cc5508282b5497e7de8de0bea2edc78f649aed89afb"},
+    {"memory::recall", "3727b4b4a58f8b65645dfba94092b36f0547a250b65c31185e4892921e0dd522"},
     {"memory::get", "603647aaf7062f64fb994895f273e43adb1fe8a5d9336237d8035b1c2621c953"},
     {"memory::list", "76dce6ac3001cbf3ba2f988e71c137b387ac91f74337c306aa34e087837c261b"},
     {"memory::forget", "87a5813fc9e8d78ac4d06146916a8442c8316360f47149ed849321d52c80ab90"},

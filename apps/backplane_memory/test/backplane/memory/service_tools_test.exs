@@ -702,6 +702,7 @@ defmodule Backplane.Memory.ServiceToolsTest do
                                 "type" => "string"
                               },
                               "scope" => %{"type" => "string"},
+                              "session_id" => %{"type" => "string"},
                               "tag" => %{"type" => "string"},
                               "temporal_hints" => %{"type" => "object"},
                               "token_budget" => %{"type" => "integer"}

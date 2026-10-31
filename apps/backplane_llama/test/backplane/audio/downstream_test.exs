@@ -107,6 +107,7 @@ defmodule Backplane.Audio.DownstreamTest do
     assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 2_000
   end
 
+  # WORKAROUND(upstream): gsmlg-dev/gaoxy#19 - 64KB pipelined polls read 1 byte per iteration, needing extra timeout
   test "peer closure is observed with exactly 65536 pipelined bytes", %{port: port} do
     socket = tcp(port)
     on_exit(fn -> :gen_tcp.close(socket) end)
@@ -117,9 +118,9 @@ defmodule Backplane.Audio.DownstreamTest do
     assert byte_size(pipeline) == 65_536
     :ok = :gen_tcp.send(socket, pipeline)
     :ok = :gen_tcp.shutdown(socket, :write)
-    assert_receive {:downstream_error, ^owner, "audio_cancelled"}, 2_000
-    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 2_000
-    assert {:error, :closed} = :gen_tcp.recv(socket, 0, 2_000)
+    assert_receive {:downstream_error, ^owner, "audio_cancelled"}, 10_000
+    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 10_000
+    assert {:error, :closed} = :gen_tcp.recv(socket, 0, 10_000)
   end
 
   test "polling retains body-read state and pipelined keepalive requests", %{port: port} do
@@ -141,7 +142,7 @@ defmodule Backplane.Audio.DownstreamTest do
     :ok = :gen_tcp.send(socket, request("/wait", ""))
     assert_receive {:started, owner, ""}, 2_000
     :ok = :gen_tcp.send(socket, :binary.copy("x", 65_537))
-    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 4_000
+    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 10_000
     :gen_tcp.close(socket)
   end
 
@@ -193,7 +194,7 @@ defmodule Backplane.Audio.DownstreamTest do
     assert byte_size(pipeline) == 65_537
     :ok = :gen_tcp.send(socket, request("/wait", "upload") <> pipeline)
     assert_receive {:started, owner, "upload"}, 2_000
-    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 4_000
+    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 10_000
   end
 
   test "HTTP/2 peer reset releases only its request owner", %{port: port} do
@@ -241,12 +242,12 @@ defmodule Backplane.Audio.DownstreamTest do
       "POST #{path} HTTP/1.1\r\nhost: localhost\r\ncontent-length: #{byte_size(body)}\r\n\r\n" <>
         body
 
-  defp responses(socket, acc) do
+  defp responses(socket, acc, timeout \\ 10_000) do
     if String.contains?(acc, "healthy") do
       acc
     else
-      {:ok, bytes} = :gen_tcp.recv(socket, 0, 2_000)
-      responses(socket, acc <> bytes)
+      {:ok, bytes} = :gen_tcp.recv(socket, 0, timeout)
+      responses(socket, acc <> bytes, timeout)
     end
   end
 

@@ -107,8 +107,6 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  defp access_offered?(_), do: false
-
   defp join_partition(host, negotiation) do
     case MemorySpaces.resolve_host_partition(host, nil, "private") do
       {:ok, partition} ->
@@ -145,8 +143,6 @@ defmodule Backplane.Api.HostAgentChannel do
         validate_encoded_payload(payload, @max_memory_event_payload_bytes) == :ok
     end
   end
-
-  defp valid_memory_offer?(_), do: false
 
   @impl true
   def handle_in("heartbeat", payload, socket) when is_map(payload) do
@@ -746,10 +742,6 @@ defmodule Backplane.Api.HostAgentChannel do
       true ->
         :ok
     end
-  end
-
-  defp selected_memory_protocol(socket, protocol) do
-    selected_memory_protocol(socket, [protocol, "host_memory", "host_memory.v2"] |> Enum.uniq())
   end
 
   defp memory_reply({:ok, result}, socket), do: {:reply, {:ok, json_shape(result)}, socket}
