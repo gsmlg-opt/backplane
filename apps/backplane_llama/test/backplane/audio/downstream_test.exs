@@ -31,7 +31,8 @@ defmodule Backplane.Audio.DownstreamTest do
           end)
 
         _ ->
-          deadline = System.monotonic_time(:millisecond) + 5_000
+          # WORKAROUND(upstream): gsmlg-dev/gaoxy#19 - 64KB pipelined polls read 1 byte per iteration, needing extra deadline
+          deadline = System.monotonic_time(:millisecond) + 30_000
           {:ok, downstream} = Downstream.start(conn, deadline)
           send(owner, {:started, self(), body})
           wait(conn, downstream, owner)
@@ -112,22 +113,22 @@ defmodule Backplane.Audio.DownstreamTest do
     socket = tcp(port)
     on_exit(fn -> :gen_tcp.close(socket) end)
     :ok = :gen_tcp.send(socket, request("/wait", ""))
-    assert_receive {:started, owner, ""}, 2_000
+    assert_receive {:started, owner, ""}, 10_000
     monitor = Process.monitor(owner)
     pipeline = request("/health", :binary.copy("x", 65_471))
     assert byte_size(pipeline) == 65_536
     :ok = :gen_tcp.send(socket, pipeline)
     :ok = :gen_tcp.shutdown(socket, :write)
-    assert_receive {:downstream_error, ^owner, "audio_cancelled"}, 10_000
-    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 10_000
-    assert {:error, :closed} = :gen_tcp.recv(socket, 0, 10_000)
+    assert_receive {:downstream_error, ^owner, "audio_cancelled"}, 30_000
+    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 30_000
+    assert {:error, :closed} = :gen_tcp.recv(socket, 0, 30_000)
   end
 
   test "polling retains body-read state and pipelined keepalive requests", %{port: port} do
     socket = tcp(port)
     upload = :binary.copy("upload", 12_000)
     :ok = :gen_tcp.send(socket, request("/wait", upload))
-    assert_receive {:started, owner, ^upload}, 2_000
+    assert_receive {:started, owner, ^upload}, 10_000
     :ok = :gen_tcp.send(socket, request("/health", ""))
     send(owner, :finish)
     bytes = responses(socket, "")
@@ -140,9 +141,9 @@ defmodule Backplane.Audio.DownstreamTest do
   test "excess pipelined input is bounded at 65536 bytes", %{port: port} do
     socket = tcp(port)
     :ok = :gen_tcp.send(socket, request("/wait", ""))
-    assert_receive {:started, owner, ""}, 2_000
+    assert_receive {:started, owner, ""}, 10_000
     :ok = :gen_tcp.send(socket, :binary.copy("x", 65_537))
-    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 10_000
+    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 30_000
     :gen_tcp.close(socket)
   end
 
@@ -150,7 +151,7 @@ defmodule Backplane.Audio.DownstreamTest do
     socket = tcp(port)
     on_exit(fn -> :gen_tcp.close(socket) end)
     :ok = :gen_tcp.send(socket, request("/wait", ""))
-    assert_receive {:started, owner, ""}, 2_000
+    assert_receive {:started, owner, ""}, 10_000
 
     body = :binary.copy("x", 65_471)
     pipeline = request("/health", body)
@@ -158,7 +159,7 @@ defmodule Backplane.Audio.DownstreamTest do
     :ok = :gen_tcp.send(socket, pipeline)
     send(owner, :finish)
 
-    bytes = responses(socket, "")
+    bytes = responses(socket, "", 30_000)
     assert length(:binary.matches(bytes, "HTTP/1.1 200")) == 2
     assert bytes =~ "first"
     assert bytes =~ "healthy"
@@ -194,7 +195,7 @@ defmodule Backplane.Audio.DownstreamTest do
     assert byte_size(pipeline) == 65_537
     :ok = :gen_tcp.send(socket, request("/wait", "upload") <> pipeline)
     assert_receive {:started, owner, "upload"}, 2_000
-    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 10_000
+    assert_receive {:downstream_error, ^owner, "audio_pipeline_too_large"}, 30_000
   end
 
   test "HTTP/2 peer reset releases only its request owner", %{port: port} do
@@ -242,7 +243,7 @@ defmodule Backplane.Audio.DownstreamTest do
       "POST #{path} HTTP/1.1\r\nhost: localhost\r\ncontent-length: #{byte_size(body)}\r\n\r\n" <>
         body
 
-  defp responses(socket, acc, timeout \\ 10_000) do
+  defp responses(socket, acc, timeout \\ 30_000) do
     if String.contains?(acc, "healthy") do
       acc
     else
