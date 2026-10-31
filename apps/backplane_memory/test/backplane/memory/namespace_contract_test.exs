@@ -61,6 +61,9 @@ defmodule Backplane.Memory.NamespaceContractTest do
      "0b3809dcc7c10407f451f190c3745075a626efdd3c350dfa5a982e070acd88f0"},
     {"memory::recall_explain",
      "9964a85e2340b7e62cf28fb4f722e66b300e77d4bf5bd887536e2aaa2b9cab82"},
+    {"memory::replay_sessions",
+     "feb504a8dc0dd4f0081426366d656d3ba32a16166e74ed7247e1d0326d5ef642"},
+    {"memory::replay_load", "ee3448b07e5761a199629e73060cae74241d00aeb046f3673177b372f8ac4782"},
     {"memory::crystal_get", "9b6388dece3f7d051cf8f31f8e9e5b2019f9bb25573c92cd5147971e6ddb04d6"},
     {"memory::crystal_list", "c9784a879492c7dedf8b8b2b5ce2f0e43b9e97f93f4fe01305a8c7715767bf3f"},
     {"memory::crystal_search",
@@ -121,15 +124,7 @@ defmodule Backplane.Memory.NamespaceContractTest do
     {"memory::access_log", "c37839c4060e4d6590ba406b2f498ae4c267fee2f17d0453d6945a2398210887"}
   ]
 
-  @replay_tool_contracts [
-    {"memory::replay_sessions",
-     "feb504a8dc0dd4f0081426366d656d3ba32a16166e74ed7247e1d0326d5ef642"},
-    {"memory::replay_load", "ee3448b07e5761a199629e73060cae74241d00aeb046f3673177b372f8ac4782"}
-  ]
-
-  @full_tool_contracts Enum.take(@core_tool_contracts, 2) ++
-                         @replay_tool_contracts ++
-                         Enum.drop(@core_tool_contracts, 2) ++ @extended_tool_contracts
+  @full_tool_contracts @core_tool_contracts ++ @extended_tool_contracts
 
   @worker_options [
     {Backplane.Memory.Workers.AccessWritebackWorker, memory: 3},
@@ -179,9 +174,17 @@ defmodule Backplane.Memory.NamespaceContractTest do
     end
 
     test "exposes the exact default tool names and schemas" do
-      saved_setting = preserve_ets_key(:backplane_settings, "memory.tools")
-      on_exit(fn -> restore_ets_key(:backplane_settings, "memory.tools", saved_setting) end)
+      saved =
+        preserve_settings(
+          ~w(memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
+        )
+
+      on_exit(fn -> restore_settings(saved) end)
+
       :ets.delete(:backplane_settings, "memory.tools")
+      :ets.delete(:backplane_settings, "memory.pipeline.enabled")
+      :ets.delete(:backplane_settings, "memory.replay_enabled")
+      :ets.delete(:backplane_settings, "memory.replay_import_enabled")
 
       assert tool_contract(Service.tools()) == @core_tool_contracts
     end
@@ -230,14 +233,17 @@ defmodule Backplane.Memory.NamespaceContractTest do
     test "application lifecycle registers tools when enabled and cleans up memory prompts" do
       sandbox_auto!()
       registry_snapshot = :ets.tab2list(:backplane_tools)
-      enabled_snapshot = preserve_ets_key(:backplane_settings, "services.memory.enabled")
-      tools_snapshot = preserve_ets_key(:backplane_settings, "memory.tools")
+
+      saved =
+        preserve_settings(
+          ~w(services.memory.enabled memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
+        )
+
       was_started? = application_started?(:backplane_memory)
 
       on_exit(fn ->
         _ = Application.stop(:backplane_memory)
-        restore_ets_key(:backplane_settings, "services.memory.enabled", enabled_snapshot)
-        restore_ets_key(:backplane_settings, "memory.tools", tools_snapshot)
+        restore_settings(saved)
 
         if was_started? do
           {:ok, _} = Application.ensure_all_started(:backplane_memory)
@@ -250,6 +256,9 @@ defmodule Backplane.Memory.NamespaceContractTest do
       :ok = Application.stop(:backplane_memory)
       :ets.insert(:backplane_settings, {"services.memory.enabled", true})
       :ets.delete(:backplane_settings, "memory.tools")
+      :ets.delete(:backplane_settings, "memory.pipeline.enabled")
+      :ets.delete(:backplane_settings, "memory.replay_enabled")
+      :ets.delete(:backplane_settings, "memory.replay_import_enabled")
       :ets.delete_all_objects(:backplane_tools)
 
       assert {:ok, _started} = Application.ensure_all_started(:backplane_memory)

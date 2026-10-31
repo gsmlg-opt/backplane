@@ -32,6 +32,9 @@ defmodule Backplane.Admin.AudioLiveTest do
     :ok = Backplane.Settings.set(ModelAlias.provider_setting_key(), [])
 
     on_exit(fn ->
+      Config.set_enabled(false)
+      Config.set_voices(%{})
+      Config.set_policy(%{})
       Application.delete_env(:backplane_llama, :audio_allow_http_loopback)
     end)
 

@@ -80,6 +80,7 @@ defmodule Backplane.Audio.BindingResolverTest do
     assert {:error, :invalid_policy} = Config.set_policy(%{"input_duration_seconds" => 501})
     :ok = Backplane.Settings.set("llm.audio.policy", %{"upload_bytes" => "huge"})
     assert Config.policy()["upload_bytes"] == 25_000_000
+    :ok = Config.set_policy(%{})
   end
 
   test "capabilities enforce native values, ordered speeds and operation changes" do
