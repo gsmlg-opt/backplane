@@ -6,8 +6,9 @@ defmodule Backplane.Api.HostAgentMemorySync do
   @max_command_bytes 524_288
 
   @doc "Settle a bounded batch of immutable shared commands without disclosing Memory content."
-  def settle_commands(auth, %{"protocol" => "memory_commands.v2", "items" => items} = payload)
-      when map_size(payload) == 2 and is_list(items) do
+  def settle_commands(auth, %{"protocol" => protocol, "items" => items} = payload)
+      when protocol in ["memory_commands", "memory_commands.v2"] and map_size(payload) == 2 and
+             is_list(items) do
     cond do
       length(items) > 50 or byte_size(Jason.encode!(payload)) > @max_command_bytes ->
         {:error, :payload_too_large}
@@ -50,7 +51,7 @@ defmodule Backplane.Api.HostAgentMemorySync do
         end)
         |> case do
           {:ok, acknowledgements} ->
-            {:ok, %{protocol: "memory_commands.v2", items: Enum.reverse(acknowledgements)}}
+            {:ok, %{protocol: protocol, items: Enum.reverse(acknowledgements)}}
 
           error ->
             error

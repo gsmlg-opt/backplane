@@ -571,7 +571,7 @@ remote changes that have not reached the host.
 ## Rollout and operational limits
 
 Roll out canonical migrations/capabilities, then the host, then the packaged
-provider. Follow [the Memory release gates](../deploy/memory-v2-release.md).
+provider. Follow [the Memory release gates](../deploy/memory-release.md).
 Installation must explicitly update the user's Hermes plugin; a changed
 repository or packaged archive does not establish that an installed plugin is
 running the new code.

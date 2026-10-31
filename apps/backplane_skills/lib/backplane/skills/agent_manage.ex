@@ -621,7 +621,7 @@ defmodule Backplane.Skills.AgentManage do
   defp valid_negotiation?(nil), do: true
 
   defp valid_negotiation?(report) when is_map(report) do
-    report["selected"] == "host_memory.v2" and timestamp?(report["applied_at"]) and
+    report["selected"] in ["host_memory", "host_memory.v2"] and timestamp?(report["applied_at"]) and
       partitions?(report["partitions"] || [])
   end
 

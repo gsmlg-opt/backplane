@@ -121,7 +121,7 @@ completed projection and replay in bounded batches, observed 101 durable
 frontier generations, and only one pending repair job at the measured point.
 Record exact test command/results and migration versions with the release;
 these measurements are correctness fixtures, not production performance
-throughput. See [protocol](../memory/host-memory-v2-protocol.md) and
+throughput. See [protocol](../memory/host-memory-protocol.md) and
 [runbook](../operations/host-memory-edge-runbook.md). Production plaintext
 edge qualification is prohibited while
 [concord#91](https://github.com/gsmlg-dev/concord/issues/91) remains open.

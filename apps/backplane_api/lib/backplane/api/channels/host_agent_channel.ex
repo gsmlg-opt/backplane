@@ -36,7 +36,7 @@ defmodule Backplane.Api.HostAgentChannel do
            ) do
       PubSubBroadcaster.subscribe(PubSubBroadcaster.mcp_notifications_topic())
 
-      if negotiation.selected == "host_memory.v2",
+      if negotiation.selected in ["host_memory", "host_memory.v2"],
         do: Backplane.Memory.EdgeSync.Notifier.subscribe()
 
       # Phoenix.Channel subscribes this process to its host topic after join.
@@ -95,8 +95,17 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp negotiate_memory(_, _), do: {:error, %{code: :invalid_request, retryable: false}}
 
-  defp access_offered?(%{"memory_v2" => %{"extensions" => extensions}}) when is_list(extensions),
-    do: "memory_access.v1" in extensions
+  defp access_offered?(payload) when is_map(payload) do
+    offer = payload["memory"] || payload["memory_v2"]
+
+    case offer do
+      %{"extensions" => extensions} when is_list(extensions) ->
+        "memory_access.v1" in extensions
+
+      _ ->
+        false
+    end
+  end
 
   defp access_offered?(_), do: false
 
@@ -115,10 +124,29 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  defp valid_memory_offer?(payload),
-    do:
-      not Map.has_key?(payload, "memory") and
+  defp valid_memory_offer?(payload) when is_map(payload) do
+    offer = payload["memory"] || payload["memory_v2"]
+
+    cond do
+      is_nil(offer) and not Map.has_key?(payload, "selected") ->
+        false
+
+      not is_map(offer) ->
+        false
+
+      Map.has_key?(offer, "protocol") and offer["protocol"] == "host_memory.v1" ->
+        false
+
+      not Map.has_key?(offer, "offers") and not Map.has_key?(offer, "partitions") and
+          not Map.has_key?(offer, "extensions") ->
+        false
+
+      true ->
         validate_encoded_payload(payload, @max_memory_event_payload_bytes) == :ok
+    end
+  end
+
+  defp valid_memory_offer?(_), do: false
 
   @impl true
   def handle_in("heartbeat", payload, socket) when is_map(payload) do
@@ -254,12 +282,12 @@ defmodule Backplane.Api.HostAgentChannel do
           socket.assigns.memory_limits
           |> Map.new(fn {k, v} -> {to_string(k), v} end)
           |> Map.merge(%{
-            "offers" => ["host_memory.v2"],
+            "offers" => ["host_memory", "host_memory.v2"],
             "partitions" => [],
             "extensions" => socket.assigns.memory_extensions
           })
 
-        EdgeSync.negotiate(shared_auth(socket), %{"memory_v2" => offer})
+        EdgeSync.negotiate(shared_auth(socket), %{"memory" => offer, "memory_v2" => offer})
       end
 
     memory_reply(result, socket)
@@ -513,7 +541,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp selected_extension(socket, extension) do
     cond do
-      socket.assigns.memory_protocol == "host_memory.v2" and
+      socket.assigns.memory_protocol in ["host_memory", "host_memory.v2"] and
           extension in socket.assigns.memory_extensions ->
         :ok
 
@@ -523,7 +551,7 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   defp valid_memory_hint?(hint, socket) when is_map(hint) do
-    with :ok <- selected_memory_protocol(socket, "host_memory.v2"),
+    with :ok <- selected_memory_protocol(socket, ["host_memory", "host_memory.v2"]),
          true <- Config.host_sync_enabled?(),
          true <-
            Enum.sort(Map.keys(hint)) == ~w(current_revision memory_space_id namespace scope),
@@ -545,8 +573,8 @@ defmodule Backplane.Api.HostAgentChannel do
   defp memory_hint_inventory(socket) do
     if "memory_access.v1" in socket.assigns.memory_extensions do
       offer = %{
-        "memory_v2" => %{
-          "offers" => ["host_memory.v2"],
+        "memory" => %{
+          "offers" => ["host_memory", "host_memory.v2"],
           "partitions" => [],
           "extensions" => ["memory_access.v1"]
         }
@@ -653,7 +681,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp edge_request(operation, payload, socket) do
     result =
-      with :ok <- selected_memory_protocol(socket, "host_memory.v2"),
+      with :ok <- selected_memory_protocol(socket, ["host_memory", "host_memory.v2"]),
            :ok <- edge_access_mode(socket, payload) do
         apply(EdgeSync, operation, [
           shared_auth(socket),
@@ -704,7 +732,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp bound_edge_request(_, payload, _), do: payload
 
-  defp selected_memory_protocol(socket, protocol) do
+  defp selected_memory_protocol(socket, protocols) when is_list(protocols) do
     cond do
       not authorized?("host_agent.recall", host_agent_scopes()) ->
         {:error, %{code: :unauthorized, retryable: false}}
@@ -712,12 +740,16 @@ defmodule Backplane.Api.HostAgentChannel do
       not Config.host_sync_enabled?() ->
         {:error, %{code: :protocol_disabled, retryable: false}}
 
-      socket.assigns.memory_protocol != protocol ->
+      socket.assigns.memory_protocol not in protocols ->
         {:error, %{code: :unsupported_protocol, retryable: false}}
 
       true ->
         :ok
     end
+  end
+
+  defp selected_memory_protocol(socket, protocol) do
+    selected_memory_protocol(socket, [protocol, "host_memory", "host_memory.v2"] |> Enum.uniq())
   end
 
   defp memory_reply({:ok, result}, socket), do: {:reply, {:ok, json_shape(result)}, socket}

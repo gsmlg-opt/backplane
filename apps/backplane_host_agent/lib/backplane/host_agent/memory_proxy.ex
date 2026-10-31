@@ -583,11 +583,11 @@ defmodule Backplane.HostAgent.MemoryProxy do
   end
 
   defp private_scopes(%{
-         "selected" => "host_memory.v2",
+         "selected" => selected,
          "default_access_id" => id,
          "accesses" => accesses
        })
-       when is_list(accesses) do
+       when selected in ["host_memory", "host_memory.v2"] and is_list(accesses) do
     case Enum.find(accesses, &(&1["access_id"] == id)) do
       %{"partition" => %{"namespace" => "private", "scope" => scope}} -> [scope]
       _ -> []

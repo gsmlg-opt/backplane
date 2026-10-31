@@ -1360,10 +1360,10 @@ defmodule Backplane.ReleaseConfigTest do
              ~r/publish:.*needs:\s+- qualify-memory-v2\s+- build\s+- installed-release-migration-smoke/s
 
     for path <- [
-          "docs/operations/memory-v2.md",
-          "docs/deploy/memory-v2-release.md",
-          "docs/qualification/memory-v2.md",
-          "docs/memory/host-memory-v2-protocol.md",
+          "docs/operations/memory.md",
+          "docs/deploy/memory-release.md",
+          "docs/qualification/memory.md",
+          "docs/memory/host-memory-protocol.md",
           "docs/operations/host-memory-edge-runbook.md"
         ] do
       assert File.regular?(path), "missing release runbook #{path}"

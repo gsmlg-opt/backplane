@@ -208,6 +208,7 @@ defmodule Backplane.HostAgent.Worker do
   defp terminate_worker(_reason, state) do
     _state = retire_connection(state)
     memory_proxy_module = Map.get(state, :memory_proxy_module, MemoryProxy)
+    _ = Code.ensure_loaded(memory_proxy_module)
 
     if Map.get(state, :owns_connection?, false) and
          function_exported?(memory_proxy_module, :clear_connection_owner, 1),
@@ -387,7 +388,7 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp worker_negotiation(%{memory: %{"selected" => selected} = memory})
-       when selected == "host_memory.v2" do
+       when selected in ["host_memory", "host_memory.v2"] do
     partitions =
       case memory do
         %{"partitions" => partitions} when is_list(partitions) -> partitions
@@ -484,6 +485,7 @@ defmodule Backplane.HostAgent.Worker do
 
   defp publish_connection_error(state, reason) do
     proxy = state.memory_proxy_module
+    _ = Code.ensure_loaded(proxy)
 
     if function_exported?(proxy, :set_connection_error, 2),
       do: proxy.set_connection_error(reason, self())
@@ -558,6 +560,8 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp set_memory_connection(memory_proxy_module, connection, config) do
+    _ = Code.ensure_loaded(memory_proxy_module)
+
     if function_exported?(memory_proxy_module, :set_connection, 2) do
       memory_proxy_module.set_connection(connection, config)
     else
@@ -566,6 +570,8 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp set_memory_config(memory_proxy_module, config) do
+    _ = Code.ensure_loaded(memory_proxy_module)
+
     owner_result =
       if function_exported?(memory_proxy_module, :set_connection_owner, 1),
         do: memory_proxy_module.set_connection_owner(self()),
@@ -581,15 +587,16 @@ defmodule Backplane.HostAgent.Worker do
   end
 
   defp set_edge_connection(
-         %{memory: %{"selected" => "host_memory.v2"}} = connection,
+         %{memory: %{"selected" => selected}} = connection,
          config,
          state
-       ) do
+       )
+       when selected in ["host_memory", "host_memory.v2"] do
     edge_config = Map.get(Map.get(config, :memory) || %{}, :host_sync) || %{}
 
     opts = [
       channel: connection.channel,
-      selected: "host_memory.v2",
+      selected: selected,
       partitions: Map.get(connection.memory, "partitions", []),
       generation: connection[:memory_generation],
       extensions: Map.get(connection.memory, "extensions", []),

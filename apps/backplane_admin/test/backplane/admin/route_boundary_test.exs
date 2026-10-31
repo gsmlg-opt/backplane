@@ -1,7 +1,7 @@
 defmodule Backplane.Admin.RouteBoundaryTest do
   use Backplane.Admin.LiveCase, async: false
 
-  @memory_v2_top_paths [
+  @memory_top_paths [
     "/memory",
     "/memory/search",
     "/memory/streams",
@@ -56,8 +56,8 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     assert get(recycle(conn), "/memory") |> html_response(200) =~ "Memory"
   end
 
-  test "Memory V2 top-level routes are accessible without authentication", %{conn: conn} do
-    for path <- @memory_v2_top_paths do
+  test "Memory top-level routes are accessible without authentication", %{conn: conn} do
+    for path <- @memory_top_paths do
       assert conn
              |> recycle()
              |> get(path)
@@ -165,8 +165,8 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     assert has_element?(view, ~s(#memory-mobile-navigation a[aria-current="page"]), "Search")
   end
 
-  test "Memory V2 pages accept client theme changes without disconnecting", %{conn: conn} do
-    for path <- @memory_v2_top_paths do
+  test "Memory pages accept client theme changes without disconnecting", %{conn: conn} do
+    for path <- @memory_top_paths do
       {:ok, view, _html} = live(recycle(conn), path)
 
       refute has_element?(view, "#admin-theme-switcher[data-theme=moonlight]")

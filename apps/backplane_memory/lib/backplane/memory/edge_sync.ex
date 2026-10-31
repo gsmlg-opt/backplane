@@ -17,17 +17,17 @@ defmodule Backplane.Memory.EdgeSync do
 
   defp do_negotiate(host, offer) when is_map(offer) do
     with {:ok, _} <- subject_host(host), :ok <- valid_offer(offer) do
-      v2 = offer["memory_v2"]
+      memory = offer["memory"] || offer["memory_v2"]
 
       cond do
-        not is_map(v2) or "host_memory.v2" not in v2["offers"] ->
+        not is_map(memory) or not valid_protocol_offered?(memory["offers"]) ->
           {:error, :unsupported_protocol}
 
-        offer["selected"] not in [nil, "host_memory.v2"] ->
+        offer["selected"] not in [nil, "host_memory", "host_memory.v2"] ->
           {:error, :unsupported_protocol}
 
-        Config.host_sync_enabled?() or "memory_access.v1" in Map.get(v2, "extensions", []) ->
-          store().negotiate(host, v2)
+        Config.host_sync_enabled?() or "memory_access.v1" in Map.get(memory, "extensions", []) ->
+          store().negotiate(host, memory)
 
         true ->
           {:error, :protocol_disabled}
@@ -36,6 +36,12 @@ defmodule Backplane.Memory.EdgeSync do
   end
 
   defp do_negotiate(_, _), do: {:error, :invalid_request}
+
+  defp valid_protocol_offered?(offers) when is_list(offers) do
+    "host_memory" in offers or "host_memory.v2" in offers
+  end
+
+  defp valid_protocol_offered?(_), do: false
 
   @spec next(subject(), map()) :: {:ok, map()} | {:error, map()}
   def next(host, request) do
@@ -82,11 +88,20 @@ defmodule Backplane.Memory.EdgeSync do
   defp request_valid(host, request) when is_map(request) do
     with {:ok, _} <- subject_host(host) do
       cond do
-        is_nil(request["protocol"]) -> {:error, :invalid_request}
-        request["protocol"] != "host_memory.v2" -> {:error, :unsupported_protocol}
-        not Config.host_sync_enabled?() -> {:error, :protocol_disabled}
-        not is_map(request["partition"]) -> {:error, :invalid_request}
-        true -> :ok
+        is_nil(request["protocol"]) ->
+          {:error, :invalid_request}
+
+        request["protocol"] not in ["host_memory", "host_memory.v2"] ->
+          {:error, :unsupported_protocol}
+
+        not Config.host_sync_enabled?() ->
+          {:error, :protocol_disabled}
+
+        not is_map(request["partition"]) ->
+          {:error, :invalid_request}
+
+        true ->
+          :ok
       end
     end
   end
@@ -107,31 +122,31 @@ defmodule Backplane.Memory.EdgeSync do
   end
 
   defp valid_offer(offer) do
-    v2 = offer["memory_v2"]
+    memory = offer["memory"] || offer["memory_v2"]
 
     cond do
-      Map.has_key?(offer, "memory") ->
+      is_nil(memory) ->
         {:error, :unsupported_protocol}
 
-      is_nil(v2) ->
+      is_map(memory) and memory["protocol"] == "host_memory.v1" ->
         {:error, :unsupported_protocol}
 
-      not is_map(v2) ->
+      not is_map(memory) ->
         {:error, :invalid_request}
 
-      not is_list(v2["offers"]) or not Enum.all?(v2["offers"], &is_binary/1) ->
+      not is_list(memory["offers"]) or not Enum.all?(memory["offers"], &is_binary/1) ->
         {:error, :invalid_request}
 
-      not is_list(v2["partitions"]) or length(v2["partitions"]) > 1000 ->
+      not is_list(memory["partitions"]) or length(memory["partitions"]) > 1000 ->
         {:error, :invalid_request}
 
-      not is_nil(v2["extensions"]) and
-          (not is_list(v2["extensions"]) or length(v2["extensions"]) > 20 or
-             not Enum.all?(v2["extensions"], &is_binary/1)) ->
+      not is_nil(memory["extensions"]) and
+          (not is_list(memory["extensions"]) or length(memory["extensions"]) > 20 or
+             not Enum.all?(memory["extensions"], &is_binary/1)) ->
         {:error, :invalid_request}
 
       true ->
-        case limits(v2) do
+        case limits(memory) do
           {:ok, _} -> :ok
           error -> error
         end

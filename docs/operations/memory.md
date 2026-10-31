@@ -1,4 +1,4 @@
-# Memory V2 Operations Runbook
+# Memory Operations Runbook
 
 ## Browse central memory
 
@@ -6,7 +6,7 @@ Open `/memory` or `/memory/memories` on the trusted admin endpoint (development:
 
 Host identity records authenticated ingress, not a payload's claimed host name. Repository identity describes the source Git remote, while checkout root, working directory, and historical `project` values describe local source paths. A missing remote remains unknown and does not prevent capture or an explicit write. Do not infer repository identity from a basename, register a project to browse, or recreate memory tables to upgrade. Record-specific actions keep the selected record's stored canonical target. See [the correction report](../memory/provenance-correction.md) for actual validation and delivery status.
 
-This runbook covers the production Memory V2 data plane. Canonical
+This runbook covers the production Memory data plane. Canonical
 `bpm_events` rows are the accepted history; projections, summaries, activity,
 lessons, and crystals are derived or governed records. Never delete or rewrite
 canonical events as a repair shortcut.
@@ -30,16 +30,16 @@ Set a connection URL without embedding it in shell history, then take a
 consistent custom-format backup:
 
 ```sh
-pg_dump --format=custom --file=backplane-pre-memory-v2.dump "$DATABASE_URL"
-pg_restore --list backplane-pre-memory-v2.dump > backplane-pre-memory-v2.list
-test -s backplane-pre-memory-v2.list
+pg_dump --format=custom --file=backplane-pre-memory.dump "$DATABASE_URL"
+pg_restore --list backplane-pre-memory.dump > backplane-pre-memory.list
+test -s backplane-pre-memory.list
 ```
 
 Record the backup checksum, database server version, pgvector version, current
 application revision, and highest migration version with the release record:
 
 ```sh
-sha256sum backplane-pre-memory-v2.dump
+sha256sum backplane-pre-memory.dump
 psql "$DATABASE_URL" -Atc "show server_version"
 psql "$DATABASE_URL" -Atc "select extversion from pg_extension where extname='vector'"
 psql "$DATABASE_URL" -Atc "select max(version) from schema_migrations"
@@ -64,7 +64,7 @@ not rollback evidence.
    ```sh
    psql "$DATABASE_URL" -Atc \
      "select coalesce(max(inserted_at)::text,'epoch') from bpm_events" \
-     > memory-v2-pre-upgrade.watermark
+     > memory-pre-upgrade.watermark
    ```
 
 6. For backward-compatible additive migrations, the old release may continue
@@ -73,7 +73,7 @@ not rollback evidence.
    other process that produces or executes gateway jobs before migrating.
    Run the new packaged release's `bin/backplane migrate` command without
    starting its application, as described in
-   `docs/deploy/memory-v2-release.md`. Do not run old Oban processes against the
+   `docs/deploy/memory-release.md`. Do not run old Oban processes against the
    renamed Styx storage. Host agents may continue capturing into local spools.
 7. Run consistency checks and a projection dry run. Only then switch the
    application process/image to the new version.
@@ -81,7 +81,7 @@ not rollback evidence.
    counts, projection lag, queue depth, and dead letters through the trusted
    admin Overview and Activity pages.
 
-Do not run `mix ecto.rollback` blindly across the Memory V2 chain. Migration
+Do not run `mix ecto.rollback` blindly across the Memory migration chain. Migration
 00006 has `down/0`, but 00007 is explicitly irreversible; crossing it requires
 the restore-plus-event-replay plan.
 
@@ -187,11 +187,10 @@ input/output, and errors are never included in telemetry metadata.
 
 ## Host spool recovery and resynchronization
 
-For V2 cursor, snapshot, dead-letter command, stale mirror, retention, and
+For cursor, snapshot, dead-letter command, stale mirror, retention, and
 protection procedures, use the
 [host edge runbook](host-memory-edge-runbook.md). Capture spool, command
-outbox, and edge mirror are independent stores. A V1 fact-set hash is not a V2
-cursor; never delete a mirror or reset a cursor as a spool recovery shortcut.
+outbox, and edge mirror are independent stores. Never delete a mirror or reset a cursor as a spool recovery shortcut.
 
 The capture spool is the host-local durability boundary. Its default path is
 `<work_dir>/memory/capture_spool.db`; do not copy, delete, or edit it while the

@@ -9,8 +9,8 @@ is a second canonical memory database.
 | Operation | Connected route and authority | Disconnected behavior |
 |---|---|---|
 | `memory::remember` / `memory::forget` | Authenticated default or selected Access authority and immutable `memory_commands.v2` upload; Backplane resolves the canonical ID and applies canonical forget | Queue under the authenticated access/version/partition; report command identity and pending canonical ACK |
-| `memory::recall`, `list`, `stats` | Authenticated `memory_call` to Backplane and canonical partition; recall uses Recall V2 | Only allowlisted transport failures may read the authorized active V2 mirror plus command overlay; cold authority and unavailable mirror fail closed |
-| `lifecycle_context` | Bounded `MemoryProxy` call to Backplane | The injection path uses its separate `RecallCache` fallback/fail-open policy; it does not read the V2 mirror |
+| `memory::recall`, `list`, `stats` | Authenticated `memory_call` to Backplane and canonical partition | Only allowlisted transport failures may read the authorized active mirror plus command overlay; cold authority and unavailable mirror fail closed |
+| `lifecycle_context` | Bounded `MemoryProxy` call to Backplane | The injection path uses its separate `RecallCache` fallback/fail-open policy; it does not read the edge mirror |
 | `facet_tag` / `facet_query` | Canonical-only authenticated HubProxy operations; no provisional local facet store | Return connection error; no local fallback |
 | Slots | Explicitly device-local `memory::*` operations | Device-local; no claim of canonical authority |
 | Capture events | Durable capture spool, optionally encrypted when configured, then authenticated batch ingest | Spool until accepted/duplicate ACK; permanent rejects remain evidence |
@@ -55,16 +55,16 @@ until negotiation. See the design for complete envelopes, persistence and races.
 
 ## Negotiation and wire events
 
-The host offers `memory_v2: {offers: ["host_memory.v2"],
+The host offers `memory: {offers: ["host_memory"],
 max_frame_bytes: 524288, partitions: [...],
-extensions: ["memory_access.v1", "memory_commands.v2"]}` on join.
-The retired V1 `memory` offer is rejected. Each partition claim carries exact space/scope/namespace,
+extensions: ["memory_access.v1", "memory_commands"]}` on join (the legacy `"host_memory.v2"` offer is also accepted for backward compatibility).
+Each partition claim carries exact space/scope/namespace,
 `applied_revision`, and optional snapshot continuation. A new host may offer
-none. The server selects exactly one protocol and returns its canonical
-entitlement inventory, current revisions, status, and negotiated limits
+none. The server selects the canonical protocol and returns its entitlement inventory,
+current revisions, status, and negotiated limits
 (`max_changes <= 100`, `max_frame_bytes <= 524288`). A missing space ID is
 resolved only when the other fields identify one active entitlement; ambiguous,
-revoked, foreign, or conflicting claims are rejected. The runtime has no V1 fallback.
+revoked, foreign, or conflicting claims are rejected.
 
 `memory_next` requests a partition and host `applied_revision` and returns
 `current`, `delta`, or `snapshot_chunk`. Each materialized delivery has a
@@ -77,14 +77,14 @@ its cursor; stale, future, invented, or conflicting ACKs cannot advance it.
 
 The JSON wire shape below uses a canonical partition object
 `{"memory_space_id":"uuid","scope":"proj_local","namespace":"private"}`.
-`memory_next` sends `{"protocol":"host_memory.v2","partition":P,
+`memory_next` sends `{"protocol":"host_memory","partition":P,
 "applied_revision":N}`; it may add `snapshot_id` and `next_chunk_index`
 for continuation, and positive `max_changes`/`max_frame_bytes` requests.
-A delta reply is `{"protocol":"host_memory.v2","status":"batch",
+A delta reply is `{"protocol":"host_memory","status":"batch",
 "kind":"delta","batch_id":"uuid","partition":P,
 "from_revision":N+1,"to_revision":R,"changes":[{"revision":N+1,
 "op":"upsert|delete","memory_id":"uuid","payload":{...}}]}`.
-A snapshot reply is `{"protocol":"host_memory.v2","status":"batch",
+A snapshot reply is `{"protocol":"host_memory","status":"batch",
 "kind":"snapshot_chunk","batch_id":"uuid","partition":P,
 "snapshot_id":"uuid","chunk_index":I,"chunk_count":C,
 "item_count":T,"base_revision":N,"to_revision":R,

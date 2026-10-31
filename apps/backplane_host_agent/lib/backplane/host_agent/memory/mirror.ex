@@ -114,7 +114,7 @@ defmodule Backplane.HostAgent.Memory.Mirror do
       byte_size(Jason.encode!(d)) > max_bytes ->
         {:error, :payload_too_large}
 
-      d["protocol"] != "host_memory.v2" or d["status"] != "batch" ->
+      d["protocol"] not in ["host_memory", "host_memory.v2"] or d["status"] != "batch" ->
         {:error, :invalid_delivery}
 
       not partition?(d["partition"]) or not text?(d["batch_id"]) ->

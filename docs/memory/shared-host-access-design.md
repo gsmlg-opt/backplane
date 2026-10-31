@@ -18,7 +18,7 @@ capture, canonical IDs, tombstones, and the permanent-denial/no-fallback invaria
 The [partition ADR](adr-memory-space-partition.md) deliberately postponed sharing
 until membership, operations, delivery, revocation, audit, and rollback were defined.
 This decision supplies those definitions without replacing the ADR's identity model.
-The [V2 protocol](host-memory-v2-protocol.md) remains the base transport contract;
+The [host memory protocol](host-memory-protocol.md) remains the base transport contract;
 the explicitly negotiated extensions below are additive to it.
 
 | Inspected source and symbol | Existing behavior / implementation seam |
@@ -586,7 +586,7 @@ integration proceeds in the dependency order shown.
 6. **S6 coordinator integration/live/docs** after relevant packages pass; owns
    `scripts/memory_local_acceptance.py`, new `scripts/memory_local_shared_access.py`,
    new `scripts/tests/test_memory_local_shared_access.py`,
-   `docs/memory/{host-memory-v2-protocol,local-dev-runbook,local-dev-checklist,local-e2e-acceptance,local-implementation-notes}.md`.
+   `docs/memory/{host-memory-protocol,local-dev-runbook,local-dev-checklist,local-e2e-acceptance,local-implementation-notes}.md`.
    Coordinator exclusively owns services/DB/browser/provider settings and new local
    host process, integration/restarts and evidence. This architecture document is
    handed back to the coordinator on Task58 completion.

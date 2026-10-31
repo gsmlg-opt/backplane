@@ -353,6 +353,6 @@ These workflows run only when their owning app directories, workflow files, or p
 - `docs/proxy-llm/backplane-openai-codex-direct-proxy-task.md`: provider-scoped Codex Responses proxy design
 - `docs/usage/openai-codex.md`: direct-token Codex usage polling and stability caveats
 - `docs/skill-protocol/contract-v1.md`: skill protocol compatibility contract
-- `docs/operations/memory-v2.md`: memory operations and security boundary
-- `docs/deploy/memory-v2-release.md`: memory migration and release safety
+- `docs/operations/memory.md`: memory operations and security boundary
+- `docs/deploy/memory-release.md`: memory migration and release safety
 - `docs/observability/verification-and-production-rollout.md`: observability validation and rollout

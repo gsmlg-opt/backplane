@@ -63,8 +63,15 @@ defmodule Backplane.Memory.EdgeSync.PostgresStore do
           })
         end)
 
+      selected =
+        cond do
+          "host_memory.v2" in Map.get(offer, "offers", []) -> "host_memory.v2"
+          "host_memory" in Map.get(offer, "offers", []) -> "host_memory"
+          true -> "host_memory"
+        end
+
       response = %{
-        selected: "host_memory.v2",
+        selected: selected,
         limits: limits,
         partitions: partitions,
         claims: claims
@@ -182,8 +189,15 @@ defmodule Backplane.Memory.EdgeSync.PostgresStore do
           :read in access.capabilities and :deliver in access.capabilities,
           do: access.partition
 
+    selected =
+      cond do
+        "host_memory.v2" in Map.get(offer, "offers", []) -> "host_memory.v2"
+        "host_memory" in Map.get(offer, "offers", []) -> "host_memory"
+        true -> "host_memory"
+      end
+
     response = %{
-      selected: "host_memory.v2",
+      selected: selected,
       limits: limits,
       extensions: extensions,
       accesses: accesses,

@@ -3,7 +3,7 @@
 **Status:** Accepted, implementation-ready after PR0 verification on 2026-06-17.
 **Authority update (Memory V2):** The local-first `memory::*` routing and
 long-term host authority in this historical design are superseded by
-[`host-memory-v2-protocol.md`](memory/host-memory-v2-protocol.md). Retain this
+[`host-memory-protocol.md`](memory/host-memory-protocol.md). Retain this
 document for command-store, outbox, slots/facets, and V1 compatibility details;
 do not use its `facts`/hash model as the V2 edge cursor or claim local recall is
 the online canonical path. Backplane owns canonical memory and partition

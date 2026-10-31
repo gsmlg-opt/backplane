@@ -108,7 +108,7 @@ defmodule Backplane.Admin.Router do
     # The admin endpoint is an intentionally open trusted-operator surface. Replay still
     # receives two explicit server-owned capabilities so its LiveView fails closed when
     # mounted outside this router and payload detail can be restricted independently later.
-    live_session :memory_v2,
+    live_session :memory,
       on_mount: [Backplane.Admin.MemoryOperatorHook],
       session: %{
         "memory_replay_authorized" => true,

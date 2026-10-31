@@ -35,7 +35,8 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
   @doc "Resolves offline authority from the last authenticated negotiation, never the caller."
   def read_context(args, server \\ __MODULE__) do
     case GenServer.call(server, :status, 500) do
-      %{selected: "host_memory.v2", inventory: partitions} = state when is_list(partitions) ->
+      %{selected: selected, inventory: partitions} = state
+      when selected in ["host_memory", "host_memory.v2"] and is_list(partitions) ->
         keys = ["memory_space_id", "scope", "namespace"]
 
         partitions =
@@ -238,9 +239,9 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
 
   def handle_info(
         {:poll, token},
-        %{poll_token: token, selected: "host_memory.v2", channel: channel} = state
+        %{poll_token: token, selected: selected, channel: channel} = state
       )
-      when is_pid(channel) do
+      when selected in ["host_memory", "host_memory.v2"] and is_pid(channel) do
     # Keep only classified metadata while polling; operation results still reach
     # authority/fencing code unchanged. The first failure identifies its source.
     Process.delete({__MODULE__, :poll_diagnostic})
@@ -470,7 +471,7 @@ defmodule Backplane.HostAgent.Memory.Edge.Syncer do
       partition ->
         request =
           %{
-            "protocol" => "host_memory.v2",
+            "protocol" => state.selected || "host_memory",
             "partition" => Map.take(partition, ["memory_space_id", "scope", "namespace"]),
             "applied_revision" => partition["applied_revision"]
           }

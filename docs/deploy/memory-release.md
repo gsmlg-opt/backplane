@@ -1,6 +1,6 @@
-# Memory V2 Release and Rollback Plan
+# Memory Release and Rollback Plan
 
-This plan is required for a release that contains Memory V2 migrations. The
+This plan is required for a release that contains Memory migrations. The
 canonical `bpm_events` stream is the rollback boundary. Schema rollback alone
 is unsafe because migrations 00007 and 00011 are explicitly irreversible.
 Migration 00006 has `down/0`, but that does not make an unreviewed chain rollback
@@ -14,14 +14,14 @@ container, and GitHub release target must use that same gated SHA.
 
 Do not publish until the release workflow has produced both:
 
-- `memory-v2-qualification`: focused migration, outage, privacy, adapter, and
-  Recall V2 CI-smoke artifacts whose reports declare `profile=ci` and
+- `memory-qualification`: focused migration, outage, privacy, adapter, and
+  Recall CI-smoke artifacts whose reports declare `profile=ci` and
   `performance_authoritative=false`; and
 - `installed-release-migration-smoke`: a Linux x64 release extracted from its
   tarball and used to migrate a fresh PostgreSQL/pgvector database twice (apply
   and idempotent no-op).
 
-Follow `docs/operations/memory-v2.md` for backup, preflight, consistency, and
+Follow `docs/operations/memory.md` for backup, preflight, consistency, and
 host-spool checks.
 
 GitHub-hosted performance smoke gates use 10% of the authoritative hardware
@@ -98,7 +98,7 @@ explicitly proven. To return from Styx to an old Oban binary, stop all new
 gateway instances and job producers/executors first. Reverse only migration
 `20261016000001` with the new release while those processes remain stopped,
 then start the old binary against the restored Oban storage names. This
-reversal preserves queued jobs and does not require reversing the Memory V2
+reversal preserves queued jobs and does not require reversing the Memory
 chain.
 
 For any rollback crossing an irreversible migration:
@@ -110,12 +110,12 @@ For any rollback crossing an irreversible migration:
    events reference:
 
    ```sh
-   watermark="$(cat memory-v2-pre-upgrade.watermark)"
+   watermark="$(cat memory-pre-upgrade.watermark)"
    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-     -c "\\copy (select stream.* from bpm_streams stream where exists (select 1 from bpm_events event where event.stream_id = stream.stream_id and event.inserted_at > '$watermark'::timestamptz)) to 'memory-v2-rollback-streams.csv' with (format csv, header true)"
+     -c "\\copy (select stream.* from bpm_streams stream where exists (select 1 from bpm_events event where event.stream_id = stream.stream_id and event.inserted_at > '$watermark'::timestamptz)) to 'memory-rollback-streams.csv' with (format csv, header true)"
    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-     -c "\\copy (select * from bpm_events where inserted_at > '$watermark'::timestamptz order by inserted_at,id) to 'memory-v2-rollback-events.csv' with (format csv, header true)"
-   sha256sum memory-v2-rollback-streams.csv memory-v2-rollback-events.csv
+     -c "\\copy (select * from bpm_events where inserted_at > '$watermark'::timestamptz order by inserted_at,id) to 'memory-rollback-events.csv' with (format csv, header true)"
+   sha256sum memory-rollback-streams.csv memory-rollback-events.csv
    ```
 
 3. Preserve the failed database and take an additional full dump. Never run a
@@ -129,8 +129,8 @@ For any rollback crossing an irreversible migration:
    BEGIN;
    CREATE TEMP TABLE rollback_bpm_streams (LIKE bpm_streams INCLUDING DEFAULTS);
    CREATE TEMP TABLE rollback_bpm_events (LIKE bpm_events INCLUDING DEFAULTS);
-   \copy rollback_bpm_streams FROM 'memory-v2-rollback-streams.csv' WITH (FORMAT csv, HEADER true)
-   \copy rollback_bpm_events FROM 'memory-v2-rollback-events.csv' WITH (FORMAT csv, HEADER true)
+   \copy rollback_bpm_streams FROM 'memory-rollback-streams.csv' WITH (FORMAT csv, HEADER true)
+   \copy rollback_bpm_events FROM 'memory-rollback-events.csv' WITH (FORMAT csv, HEADER true)
    INSERT INTO bpm_streams AS current_stream
    SELECT * FROM rollback_bpm_streams
    ON CONFLICT (stream_id) DO UPDATE SET

@@ -822,10 +822,10 @@ jobs:
 
           sed "s/{{VERSION}}/$version/g" docs/deploy/backplane.md > "dist/backplane-$version-deploy.md"
           sed "s/{{VERSION}}/$version/g" docs/deploy/host_agent.md > "dist/host_agent-$version-deploy.md"
-          cp docs/operations/memory-v2.md "dist/memory-v2-operations.md"
-          cp docs/deploy/memory-v2-release.md "dist/memory-v2-release.md"
-          cp docs/qualification/memory-v2.md "dist/memory-v2-qualification.md"
-          cp docs/memory/host-memory-v2-protocol.md "dist/host-memory-v2-protocol.md"
+          cp docs/operations/memory.md "dist/memory-operations.md"
+          cp docs/deploy/memory-release.md "dist/memory-release.md"
+          cp docs/qualification/memory.md "dist/memory-qualification.md"
+          cp docs/memory/host-memory-protocol.md "dist/host-memory-protocol.md"
           cp docs/operations/host-memory-edge-runbook.md "dist/host-memory-edge-runbook.md"
 
           cat > release-notes-header.md <<EOF
@@ -833,7 +833,7 @@ jobs:
 
           - **Backplane server** — see the attached \`backplane-$version-deploy.md\` (Docker and OTP release instructions).
           - **Host agent** — see the attached \`host_agent-$version-deploy.md\` (per-platform tarballs and YAML config).
-          - **Memory V2** — see the attached operations, release/rollback, and qualification runbooks.
+          - **Memory** — see the attached operations, release/rollback, and qualification runbooks.
 
           Docker image details are appended to these notes after the image is published.
           EOF

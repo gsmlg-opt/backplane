@@ -21,7 +21,7 @@ capability; disabling it does not select an older writer. Offline reads require
 valid authority and an available protected mirror. No retired facts cache supplies
 canonical authority. Device-local slots keep their explicit local contract.
 
-See [the host protocol](host-memory-v2-protocol.md) and its linked recovery runbook
+See [the host protocol](host-memory-protocol.md) and its linked recovery runbook
 for command settlement, mirror delivery and quarantined-history boundaries. These
 source changes require the database/host migrations; the historical release
 acceptance below does not verify this retirement or its deployment.

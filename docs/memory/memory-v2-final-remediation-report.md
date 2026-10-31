@@ -2,7 +2,7 @@
 
 Historical verification record: its version-selectable configuration and
 fact/wipe compatibility description are superseded by the single-feature
-configuration in [the current protocol document](host-memory-v2-protocol.md#configuration-and-protection).
+configuration in [the current protocol document](host-memory-protocol.md#configuration-and-protection).
 No compatibility settings or configuration migration remain in the current implementation.
 
 Date: 2026-09-23 (verification and approval evidence through 2026-09-22).
@@ -65,7 +65,7 @@ flowchart LR
 | Capture | `host_events.v1` batch to canonical ingest | Durable spool, later partial ACK/retry |
 | Slots/facets | Device-local | Device-local |
 
-The [host protocol](host-memory-v2-protocol.md) defines the exact wire fields,
+The [host protocol](host-memory-protocol.md) defines the exact wire fields,
 hashes, limits, error taxonomy, and ACK transaction boundaries. The
 [capability matrix](../qualification/memory-v2-capability-matrix.md) inventories
 the public REST, MCP, UI, and test surfaces.
@@ -96,7 +96,7 @@ Rollback is flag-first: disable V2 and host edge, retain V1 command upload,
 and preserve capture spool, outbox, mirror, server cursors, and issued deliveries.
 Migrations 00007 and 00011 are irreversible; crossing that schema boundary
 requires restore of a tested backup plus replay of accepted canonical events,
-not a blind `ecto.rollback`. The [release plan](../deploy/memory-v2-release.md)
+not a blind `ecto.rollback`. The [release plan](../deploy/memory-release.md)
 gives the exact export/replay and cutover sequence.
 
 ## Acceptance evidence and measured bounds

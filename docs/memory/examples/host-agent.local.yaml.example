@@ -20,7 +20,7 @@ memory:
   sync_batch_size: 50
   max_attempts: 5
   tombstone_relearn: block
-  host_sync_v2:
+  host_sync:
     enabled: true
     db_path: /ABSOLUTE/LOCAL/RUN/host/mirror.db
     # Supported dev/test plaintext opt-in; NEVER use for production.

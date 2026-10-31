@@ -7,7 +7,7 @@ Authority and routing sections updated for the current implementation. Earlier
 dual-write and compatibility stages below describe the original rollout, not
 available runtime modes. Current source/capture and command contracts are in the
 [Hermes integration review](../memory/hermes-memory-integration.md) and
-[host protocol](../memory/host-memory-v2-protocol.md).
+[host protocol](../memory/host-memory-protocol.md).
 
 ## Runtime identity and boundary
 
@@ -223,7 +223,7 @@ boot-time tool-catalog selector. Neither is replaced by the processing master ga
 ## Authority and routing
 
 The current host authority and routing contract is
-[`host-memory-v2-protocol.md`](../memory/host-memory-v2-protocol.md). Backplane
+[`host-memory-protocol.md`](../memory/host-memory-protocol.md). Backplane
 owns canonical events, memories, partition/entitlement, governance, and edge
 revisions; host capture, provisional commands, and the bounded edge mirror are
 separate stores. Connected `memory::recall` uses the authorized canonical recall

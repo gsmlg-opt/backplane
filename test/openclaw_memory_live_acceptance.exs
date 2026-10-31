@@ -1973,6 +1973,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
   defp safe_exit_diagnostic(reason) when is_atom(reason), do: %{reason: Atom.to_string(reason)}
   defp safe_exit_diagnostic(_), do: %{reason: "unclassified"}
+
   defp guard_environment! do
     assert!(Mix.env() == :test, "BLOCKED_ENV:requires_MIX_ENV_test")
 
