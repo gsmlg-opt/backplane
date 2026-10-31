@@ -58,7 +58,7 @@ defmodule Backplane.Memory.Events.Store do
     tagged_result =
       Ecto.Multi.new()
       |> append_multi(:event, attrs)
-      |> transact_append(repo, :event)
+      |> transact_append(repo, :event, opts)
 
     if telemetry?, do: emit_telemetry(tagged_result, started_at)
     tagged_result
@@ -96,7 +96,7 @@ defmodule Backplane.Memory.Events.Store do
 
     tagged_result =
       with {:ok, events} <- Preparation.prepare_batch(attrs_list) do
-        transact_batch(repo, events, idempotency_count(events) + 1)
+        transact_batch(repo, events, idempotency_count(events) + 1, opts)
       end
 
     if telemetry?, do: emit_batch_telemetry(tagged_result, started_at)
@@ -165,8 +165,10 @@ defmodule Backplane.Memory.Events.Store do
     end
   end
 
-  defp transact_append(multi, repo, name) do
-    case repo.transaction(multi) do
+  defp transact_append(multi, repo, name, opts) do
+    timeout = Keyword.get(opts, :timeout, 60_000)
+
+    case repo.transaction(multi, timeout: timeout) do
       {:ok, %{^name => tagged}} ->
         {:ok, tagged}
 
@@ -184,17 +186,19 @@ defmodule Backplane.Memory.Events.Store do
     end
   end
 
-  defp transact_batch(_repo, _events, attempts_left) when attempts_left <= 0,
+  defp transact_batch(_repo, _events, attempts_left, _opts) when attempts_left <= 0,
     do: {:error, :idempotency_race_retry_exhausted}
 
-  defp transact_batch(repo, events, attempts_left) do
-    case repo.transaction(fn -> batch_locked(repo, events) end) do
+  defp transact_batch(repo, events, attempts_left, opts) do
+    timeout = Keyword.get(opts, :timeout, 60_000)
+
+    case repo.transaction(fn -> batch_locked(repo, events) end, timeout: timeout) do
       {:ok, tagged} ->
         {:ok, tagged}
 
       {:error, {:idempotency_race, _marker} = race} ->
         case resolve_idempotency_race(race, repo: repo) do
-          {:ok, {:duplicate, _event}} -> transact_batch(repo, events, attempts_left - 1)
+          {:ok, {:duplicate, _event}} -> transact_batch(repo, events, attempts_left - 1, opts)
           {:error, reason} -> {:error, reason}
         end
 

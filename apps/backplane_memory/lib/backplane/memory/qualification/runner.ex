@@ -83,7 +83,7 @@ defmodule Backplane.Memory.Qualification.Runner do
   end
 
   def sandboxed_run(opts \\ []) do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(repo())
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(repo(), ownership_timeout: 120_000)
     Ecto.Adapters.SQL.Sandbox.mode(repo(), {:shared, self()})
     opts = Keyword.put(opts, :ingest_max_concurrency, @sandbox_ingest_concurrency)
 
@@ -125,7 +125,7 @@ defmodule Backplane.Memory.Qualification.Runner do
         |> Keyword.get(:max_concurrency, @default_ingest_concurrency)
         |> min(length(batches))
 
-      ingest_batch = Keyword.get(opts, :ingest_batch, &Ingest.ingest_batch/2)
+      ingest_batch = Keyword.get(opts, :ingest_batch, &Ingest.ingest_batch/3)
 
       results =
         with_projection_repair(fn ->
@@ -134,18 +134,44 @@ defmodule Backplane.Memory.Qualification.Runner do
             |> Task.async_stream(
               fn batch ->
                 Styx.Testing.with_testing_mode(:manual, fn ->
-                  ingest_batch.(auth, %{
+                  payload = %{
                     "batch_id" => Ecto.UUID.generate(),
                     "host_id" => host_id,
                     "events" => batch
-                  })
+                  }
+
+                  run_batch = fn ->
+                    case ingest_batch do
+                      fun when is_function(fun, 3) -> fun.(auth, payload, timeout: 60_000)
+                      fun when is_function(fun, 2) -> fun.(auth, payload)
+                      nil -> Ingest.ingest_batch(auth, payload, timeout: 60_000)
+                    end
+                  end
+
+                  case run_batch.() do
+                    {:ok, %{"results" => batch_results}} ->
+                      if Enum.all?(
+                           batch_results,
+                           &(&1["status"] in ["failed", "rejected"] and &1["retryable"] == true)
+                         ) do
+                        case run_batch.() do
+                          {:ok, %{"results" => retried}} -> retried
+                          _ -> batch_results
+                        end
+                      else
+                        batch_results
+                      end
+
+                    _other ->
+                      []
+                  end
                 end)
               end,
               max_concurrency: concurrency,
               ordered: true,
               timeout: 60_000
             )
-            |> Enum.flat_map(fn {:ok, {:ok, %{"results" => batch_results}}} -> batch_results end)
+            |> Enum.flat_map(fn {:ok, batch_results} -> batch_results end)
           end)
         end)
 

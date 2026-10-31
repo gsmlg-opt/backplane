@@ -131,7 +131,7 @@ defmodule Backplane.Memory.Ingest do
   defp persist_prepared_batch(prepared, store, opts) do
     entries = Enum.filter(prepared, &match?({:persist, _, _}, &1))
     attrs = Enum.map(entries, &elem(&1, 2))
-    store_opts = Keyword.take(opts, [:repo, :telemetry])
+    store_opts = Keyword.take(opts, [:repo, :telemetry, :timeout])
 
     persisted_replies =
       case safe_append_batch(store, attrs, store_opts) do
@@ -309,7 +309,7 @@ defmodule Backplane.Memory.Ingest do
 
   defp persist(event_id, attrs, opts) do
     store = Keyword.get(opts, :store, Store)
-    store_opts = Keyword.take(opts, [:repo, :telemetry])
+    store_opts = Keyword.take(opts, [:repo, :telemetry, :timeout])
 
     case store.append_tagged(attrs, store_opts) do
       {:ok, {:inserted, event}} ->
