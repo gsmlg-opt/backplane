@@ -77,7 +77,7 @@ docker run --rm --network <database-network> --env-file <gateway-env-file> \
 
 Start the new gateway only after migration succeeds. For a binary rollback,
 stop new job producers/executors and reverse only the Styx migration using the
-new release before starting old Oban binaries; see `memory-v2-release.md`.
+new release before starting old Oban binaries; see `memory-release.md`.
 
 ## Option 2 — OTP release tarball
 
@@ -134,9 +134,9 @@ expose `4101` directly to the Internet. Bind it to loopback, a private overlay,
 or a reverse proxy that is reachable only from a trusted network. The split
 public/admin Caddy example lives in `docs/deploy/caddy.md`.
 
-For Memory V2 migration, recovery, and qualification procedures, see the
-attached `memory-v2-operations.md`, `memory-v2-release.md`, and
-`memory-v2-qualification.md` release documents.
+For Memory migration, recovery, and qualification procedures, see the
+attached `memory-operations.md`, `memory-release.md`, and
+`memory-qualification.md` release documents.
 
 ### Figma remote MCP OAuth
 

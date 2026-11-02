@@ -92,7 +92,7 @@ defmodule Backplane.Memory.Qualification do
 
     %{
       schema_version: 1,
-      suite: "memory-v2-m18-qualification",
+      suite: "memory-m18-qualification",
       profile: profile,
       performance_authoritative: Profile.authoritative?(profile),
       generated_at: DateTime.to_iso8601(generated_at),

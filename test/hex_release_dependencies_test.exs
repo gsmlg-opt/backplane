@@ -75,10 +75,10 @@ defmodule Backplane.HexReleaseDependenciesTest do
     assert jobs["hex-plugin-protocol"]["if"] == "needs.publish.outputs.release_apps == 'all'"
     assert "hex-packages" in jobs["docker-image"]["needs"]
 
-    gate = Enum.find(jobs["qualify-memory-v2"]["steps"], &(&1["id"] == "gate"))
+    gate = Enum.find(jobs["qualify-memory"]["steps"], &(&1["id"] == "gate"))
     assert gate["run"] =~ "backplane_plugin_protocol|"
 
-    assert Enum.any?(jobs["qualify-memory-v2"]["steps"], fn step ->
+    assert Enum.any?(jobs["qualify-memory"]["steps"], fn step ->
              step["run"] == "mix run --no-start test/hex_release_dependencies_test.exs"
            end)
   end

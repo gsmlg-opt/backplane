@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Memory.Replay.BrowserQualify do
 
     if rest != [] or invalid != [], do: Mix.raise("invalid arguments")
 
-    report_path = Keyword.get(opts, :report, "memory-v2-replay-browser.json")
+    report_path = Keyword.get(opts, :report, "memory-replay-browser.json")
     admin_port = free_port()
     debugging_port = free_port()
     configure_admin_endpoint(admin_port)

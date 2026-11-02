@@ -7,8 +7,8 @@ defmodule Backplane.Memory.EventNotifier do
 
   alias Backplane.Memory.Events.Event
 
-  @database_channel "backplane_memory_v2_events"
-  @topic "memory:v2:events"
+  @database_channel "backplane_memory_events"
+  @topic "memory:events"
   @notification_server Backplane.Memory.EventNotifications
   @summary_fields [
     :id,

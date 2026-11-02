@@ -1,4 +1,4 @@
-# Memory V2 Qualification and Evaluation
+# Memory Qualification and Evaluation
 
 The release workflow runs the reproducible `ci` smoke profile on Ubuntu with
 Elixir 1.18, OTP 28, PostgreSQL 17, and pgvector. GitHub-hosted hardware is not
@@ -6,16 +6,16 @@ an authoritative performance baseline: minimum throughput gates use 10% of the
 `performance` requirement and maximum latency gates use 10 times its ceiling.
 All correctness, durability, quality, outage, provenance, and migration gates
 remain unchanged. The downloadable artifact is named
-`memory-v2-qualification` and contains:
+`memory-qualification` and contains:
 
-- `memory-v2-m18-ci-smoke.json`: measured ingest, projection, consolidation,
+- `memory-m18-ci-smoke.json`: measured ingest, projection, consolidation,
   outage, and retry/contention smoke gates;
-- `memory-v2-eval-ci-smoke.json`: Backplane's coding-corpus metrics and CI
+- `memory-eval-ci-smoke.json`: Backplane's coding-corpus metrics and CI
   threshold data;
-- `memory-v2-longmemeval.jsonl`: LongMemEval-shaped, explicitly non-comparable
+- `memory-longmemeval.jsonl`: LongMemEval-shaped, explicitly non-comparable
   retrieval export;
-- `memory-v2-longmemeval-sidecar.json`: Backplane provenance/format metadata;
-- `memory-v2-replay-browser.json`: real headless-Chrome evidence for paginated
+- `memory-longmemeval-sidecar.json`: Backplane provenance/format metadata;
+- `memory-replay-browser.json`: real headless-Chrome evidence for paginated
   replay, controls, cursor movement, disconnect/reconnect state, and live PubSub;
   and
 - `qualification-manifest.txt`: git revision and SHA-256 digests.
@@ -34,7 +34,7 @@ Use a disposable `backplane_test` database. The evaluation task is deliberately
 restricted to `MIX_ENV=test` and rolls back its seeded corpus:
 
 ```sh
-mkdir -p artifacts/memory-v2
+mkdir -p artifacts/memory
 MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix ecto.create
 
@@ -69,11 +69,11 @@ MIX_ENV=test BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true \
   MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.qualify \
     --profile performance \
-    --report artifacts/memory-v2/memory-v2-m18-performance.json
+    --report artifacts/memory/memory-m18-performance.json
 
 MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.replay.browser_qualify \
-    --report artifacts/memory-v2/memory-v2-replay-browser.json
+    --report artifacts/memory/memory-replay-browser.json
 
 MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.seed_bench
@@ -81,9 +81,9 @@ MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
 MIX_ENV=test MIX_DEPS_PATH=/home/gao/Workspace/gsmlg-opt/backplane/deps \
   devenv shell -- mix memory.eval \
     --profile performance \
-    --report artifacts/memory-v2/memory-v2-eval-performance.json \
-    --longmemeval artifacts/memory-v2/memory-v2-longmemeval.jsonl \
-    --sidecar artifacts/memory-v2/memory-v2-longmemeval-sidecar.json
+    --report artifacts/memory/memory-eval-performance.json \
+    --longmemeval artifacts/memory/memory-longmemeval.jsonl \
+    --sidecar artifacts/memory/memory-longmemeval-sidecar.json
 ```
 
 The evaluator exits non-zero if its guarded thresholds fail. Inspect the report

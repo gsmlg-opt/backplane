@@ -41,7 +41,7 @@ defmodule Backplane.Memory.QualificationTest do
     report = Qualification.evaluate(measurements, generated_at: ~U[2026-08-12 00:00:00Z])
 
     assert report.schema_version == 1
-    assert report.suite == "memory-v2-m18-qualification"
+    assert report.suite == "memory-m18-qualification"
     assert report.generated_at == "2026-08-12T00:00:00Z"
 
     assert report.thresholds == %{

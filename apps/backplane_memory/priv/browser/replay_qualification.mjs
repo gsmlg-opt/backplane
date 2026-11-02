@@ -207,7 +207,7 @@ async function main() {
 
   const browserVersion = await cdp.send("Browser.getVersion")
   const report = {
-    suite: "memory-v2-replay-browser-qualification",
+    suite: "memory-replay-browser-qualification",
     passed: true,
     started_at: startedAt,
     completed_at: new Date().toISOString(),
@@ -232,7 +232,7 @@ try {
   await main()
 } catch (error) {
   const report = {
-    suite: "memory-v2-replay-browser-qualification",
+    suite: "memory-replay-browser-qualification",
     passed: false,
     started_at: startedAt,
     completed_at: new Date().toISOString(),

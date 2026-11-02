@@ -167,6 +167,6 @@ host edge config. Commands continue through authenticated `memory_commands.v2`.
 Do not restore V1 upload or replay quarantined rows. Stop/restart hosts under a
 schema-compatible binary
 after backing up all three stores. Preserve canonical accepted events and
-issued delivery evidence. Follow the [release rollback procedure](../deploy/memory-v2-release.md)
+issued delivery evidence. Follow the [release rollback procedure](../deploy/memory-release.md)
 for a schema boundary; migrations 00007 and 00011 have no down path. Do not run
 a blind `ecto.rollback` or discard an unacknowledged spool.

@@ -437,7 +437,7 @@ defmodule Backplane.Memory.CrystalActionChainTest do
           "description" => description,
           "status" => status,
           "created_by" => "tester",
-          "project" => "memory-v2"
+          "project" => "memory"
         },
         [],
         @partition
@@ -489,7 +489,7 @@ defmodule Backplane.Memory.CrystalActionChainTest do
           status: "done",
           priority: 0,
           created_by: "tester",
-          project: "memory-v2",
+          project: "memory",
           tags: [],
           source_observation_ids: [],
           source_memory_ids: [],

@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Memory.EvalTest do
   @moduletag timeout: 120_000
 
   test "writes a CI smoke evaluation report", %{tmp_dir: tmp_dir} do
-    report_path = Path.join(tmp_dir, "memory-v2-eval-ci-smoke.json")
+    report_path = Path.join(tmp_dir, "memory-eval-ci-smoke.json")
 
     Mix.Task.reenable("memory.eval")
     Mix.Tasks.Memory.Eval.run(["--profile", "ci", "--report", report_path])

@@ -7,14 +7,14 @@ defmodule Mix.Tasks.Memory.QualifyTest do
   @moduletag timeout: 120_000
 
   test "writes the complete CI smoke qualification artifact", %{tmp_dir: tmp_dir} do
-    report_path = Path.join(tmp_dir, "memory-v2-m18-ci-smoke.json")
+    report_path = Path.join(tmp_dir, "memory-m18-ci-smoke.json")
 
     Mix.Task.reenable("memory.qualify")
     Mix.Tasks.Memory.Qualify.run(["--profile", "ci", "--report", report_path])
 
     assert {:ok, report} = report_path |> File.read!() |> Jason.decode()
     assert report["schema_version"] == 1
-    assert report["suite"] == "memory-v2-m18-qualification"
+    assert report["suite"] == "memory-m18-qualification"
     assert report["profile"] == "ci"
     assert report["performance_authoritative"] == false
     assert report["thresholds"]["ingest_events_per_second_min"] == 50.0

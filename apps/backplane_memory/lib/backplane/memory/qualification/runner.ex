@@ -538,8 +538,8 @@ defmodule Backplane.Memory.Qualification.Runner do
       "agent_id" => "m18-qualification",
       "client_id" => "qualification-runner",
       "integration" => "codex",
-      "project" => "/qualification/memory-v2",
-      "scope" => "project:memory-v2-qualification",
+      "project" => "/qualification/memory",
+      "scope" => "project:memory-qualification",
       "session_id" => session_id,
       "run_id" => run_id,
       "sequence" => source_sequence,
@@ -566,7 +566,7 @@ defmodule Backplane.Memory.Qualification.Runner do
         host_id: host_id,
         source_client_id: "qualification-runner",
         partition_id: "host:#{host_id}",
-        scope: "project:memory-v2-qualification",
+        scope: "project:memory-qualification",
         namespace: "private"
       }
     }

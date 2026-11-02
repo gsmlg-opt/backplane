@@ -117,7 +117,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ ~r/release_apps:.*?type: string.*?default: all/s
     assert workflow =~ "RELEASE_APPS_INPUT: ${{ inputs.release_apps }}"
     assert workflow =~ "release_apps: ${{ steps.gate.outputs.release_apps }}"
-    assert workflow =~ "release_apps: ${{ needs.qualify-memory-v2.outputs.release_apps }}"
+    assert workflow =~ "release_apps: ${{ needs.qualify-memory.outputs.release_apps }}"
     assert workflow =~ "Selective runtime releases must include backplane_host_agent"
     assert workflow =~ "Selective runtime releases cannot publish Hex packages"
     assert workflow =~ ~s(IFS=',' read -r -a release_apps <<< "$RELEASE_APPS")
@@ -132,7 +132,7 @@ defmodule Backplane.ReleaseConfigTest do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
 
     gate =
-      workflow["jobs"]["qualify-memory-v2"]["steps"]
+      workflow["jobs"]["qualify-memory"]["steps"]
       |> Enum.find(&(&1["id"] == "gate"))
 
     directory = version_fixture()
@@ -914,7 +914,7 @@ defmodule Backplane.ReleaseConfigTest do
 
   test "qualified assets are built on Ubuntu 26 and imported by the original release targets" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
-    qualification = workflow["jobs"]["qualify-memory-v2"]
+    qualification = workflow["jobs"]["qualify-memory"]
     build = workflow["jobs"]["build"]
 
     producer =
@@ -946,14 +946,14 @@ defmodule Backplane.ReleaseConfigTest do
       )
 
     assert publish_download["with"] == %{
-             "pattern" => "{backplane-*,host_agent-*,memory-v2-qualification}",
+             "pattern" => "{backplane-*,host_agent-*,memory-qualification}",
              "path" => "dist",
              "merge-multiple" => true
            }
 
     refute publish_download["with"]["pattern"] =~ upload["with"]["name"]
     assert consume["run"] =~ ~s(--import artifacts/web-assets . "$GATED_SHA" "$RELEASE_VERSION")
-    assert build["needs"] == "qualify-memory-v2"
+    assert build["needs"] == "qualify-memory"
     refute Enum.any?(build["steps"], &String.contains?(&1["run"] || "", "mix assets.deploy"))
 
     assert Enum.map(build["strategy"]["matrix"]["include"], & &1["target"]["runner"]) ==
@@ -1105,7 +1105,7 @@ defmodule Backplane.ReleaseConfigTest do
 
   test "release qualification gates the Hermes semantic oracle before database setup" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
-    steps = workflow["jobs"]["qualify-memory-v2"]["steps"]
+    steps = workflow["jobs"]["qualify-memory"]["steps"]
     name = "Verify Hermes live semantic oracle"
 
     assert [step] = Enum.filter(steps, &(&1["name"] == name))
@@ -1124,7 +1124,7 @@ defmodule Backplane.ReleaseConfigTest do
 
   test "OpenClaw contracts and installed helpers use the qualified Node runtime before archiving" do
     jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
-    qualification = jobs["qualify-memory-v2"]["steps"]
+    qualification = jobs["qualify-memory"]["steps"]
     build = jobs["build"]["steps"]
 
     for {steps, condition} <- [
@@ -1169,9 +1169,9 @@ defmodule Backplane.ReleaseConfigTest do
 
   test "OpenClaw logs preserve the qualified Hex archive and release asset inventory" do
     jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
-    steps = jobs["qualify-memory-v2"]["steps"]
+    steps = jobs["qualify-memory"]["steps"]
     live = Enum.find(steps, &(&1["name"] == "Verify real OpenClaw canonical path"))
-    memory = Enum.find(steps, &(&1["with"]["name"] == "memory-v2-qualification"))
+    memory = Enum.find(steps, &(&1["with"]["name"] == "memory-qualification"))
     [_, log_path] = Regex.run(~r/>\s+(\S+openclaw-live\.log)/, live["run"])
 
     verification = ~S"""
@@ -1183,7 +1183,7 @@ defmodule Backplane.ReleaseConfigTest do
         "revision=" + revision,
         "qualification_tests=apps/backplane_memory/test/backplane/memory/qualification_test.exs",
         "outage_test=apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs",
-    ] + [hashlib.sha256(files[name]).hexdigest() + "  artifacts/memory-v2/" + name
+    ] + [hashlib.sha256(files[name]).hexdigest() + "  artifacts/memory/" + name
          for name in sorted(files)]
     files["qualification-manifest.txt"] = ("\n".join(manifest) + "\n").encode()
     try:
@@ -1232,7 +1232,7 @@ defmodule Backplane.ReleaseConfigTest do
     download =
       Enum.find(jobs["publish"]["steps"], &(&1["name"] == "Download release artifacts"))
 
-    assert download["with"]["pattern"] == "{backplane-*,host_agent-*,memory-v2-qualification}"
+    assert download["with"]["pattern"] == "{backplane-*,host_agent-*,memory-qualification}"
   end
 
   @tag :tmp_dir
@@ -1240,7 +1240,7 @@ defmodule Backplane.ReleaseConfigTest do
     tmp_dir: directory
   } do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
-    steps = workflow["jobs"]["qualify-memory-v2"]["steps"]
+    steps = workflow["jobs"]["qualify-memory"]["steps"]
     setup = Enum.find(steps, &(&1["name"] == "Start PostgreSQL 17 with pgvector"))
 
     commands =
@@ -1290,7 +1290,7 @@ defmodule Backplane.ReleaseConfigTest do
     workflow = File.read!(".github/workflows/release.yml")
 
     assert workflow =~ "mix run --no-start test/release_config_test.exs"
-    assert workflow =~ "qualify-memory-v2:"
+    assert workflow =~ "qualify-memory:"
     assert workflow =~ "m18_migration_chain_test.exs"
     assert workflow =~ "memory_v2_upgrade_test.exs"
     assert workflow =~ "v1_to_v2_upgrade_test.exs"
@@ -1320,12 +1320,12 @@ defmodule Backplane.ReleaseConfigTest do
     refute workflow =~ "capture_performance_test.exs"
     assert workflow =~ "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify"
     assert workflow =~ ~r/mix memory\.qualify \\\s+--profile ci/
-    assert workflow =~ "memory-v2-m18-ci-smoke.json"
+    assert workflow =~ "memory-m18-ci-smoke.json"
     assert workflow =~ "mix memory.replay.browser_qualify"
-    assert workflow =~ "memory-v2-replay-browser.json"
+    assert workflow =~ "memory-replay-browser.json"
     assert workflow =~ "mix memory.eval"
     assert workflow =~ ~r/mix memory\.eval \\\s+--profile ci/
-    assert workflow =~ "memory-v2-eval-ci-smoke.json"
+    assert workflow =~ "memory-eval-ci-smoke.json"
 
     {seed_offset, _} = :binary.match(workflow, "mix memory.seed_bench")
 
@@ -1336,8 +1336,9 @@ defmodule Backplane.ReleaseConfigTest do
 
     [qualification_job, _rest] = String.split(workflow, "  build:", parts: 2)
     refute qualification_job =~ "_build/test"
-    assert qualification_job =~ "release-memory-v2-qualification-ubuntu26-v3-"
-    refute qualification_job =~ "release-memory-v2-qualification-v2-"
+    assert qualification_job =~ "release-memory-qualification-ubuntu26-v3-"
+    refute qualification_job =~ "release-memory-qualification-v2-"
+    refute qualification_job =~ "release-memory-v2-qualification-"
 
     assert Backplane.Repo.config()[:pool_size] >= 10
 
@@ -1357,7 +1358,7 @@ defmodule Backplane.ReleaseConfigTest do
     end
 
     assert workflow =~
-             ~r/publish:.*needs:\s+- qualify-memory-v2\s+- build\s+- installed-release-migration-smoke/s
+             ~r/publish:.*needs:\s+- qualify-memory\s+- build\s+- installed-release-migration-smoke/s
 
     for path <- [
           "docs/operations/memory.md",
@@ -1393,9 +1394,9 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ "RELEASE_VERSION_INPUT: ${{ inputs.version }}"
     assert workflow =~ "WORKFLOW_REF: ${{ github.ref }}"
     assert workflow =~ ~s([[ "$WORKFLOW_REF" != "refs/heads/main" ]])
-    assert workflow =~ "GATED_SHA: ${{ needs.qualify-memory-v2.outputs.gated_sha }}"
-    assert workflow =~ "ref: ${{ needs.qualify-memory-v2.outputs.gated_sha }}"
-    assert workflow =~ "target_commitish: ${{ needs.qualify-memory-v2.outputs.gated_sha }}"
+    assert workflow =~ "GATED_SHA: ${{ needs.qualify-memory.outputs.gated_sha }}"
+    assert workflow =~ "ref: ${{ needs.qualify-memory.outputs.gated_sha }}"
+    assert workflow =~ "target_commitish: ${{ needs.qualify-memory.outputs.gated_sha }}"
     assert workflow =~ "git push origin HEAD:refs/heads/main"
     assert workflow =~ ~s([[ "$sha" != "$main_sha" ]])
     assert workflow =~ "^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"

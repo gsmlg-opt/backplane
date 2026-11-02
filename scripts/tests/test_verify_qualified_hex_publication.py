@@ -34,7 +34,7 @@ def evidence():
                     "assets": [{"name": name, "state": "uploaded", "size": 100}
                                for name in sorted(gate.release_assets(VERSION))]},
         "artifacts": {"total_count": 1, "artifacts": [
-            {"id": 123, "name": "memory-v2-qualification", "expired": False,
+            {"id": 123, "name": "memory-qualification", "expired": False,
              "digest": "sha256:" + "a" * 64,
              "workflow_run": {"id": int(RUN_ID), "head_sha": SHA}}
         ]},
@@ -50,10 +50,10 @@ def qualification(revision=SHA, corrupt_report=False):
     manifest = [f"revision={revision}",
                 "qualification_tests=apps/backplane_memory/test/backplane/memory/qualification_test.exs",
                 "outage_test=apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs"]
-    manifest += [f"{hashlib.sha256(data).hexdigest()}  artifacts/memory-v2/{name}"
+    manifest += [f"{hashlib.sha256(data).hexdigest()}  artifacts/memory/{name}"
                  for name, data in sorted(reports.items())]
     if corrupt_report:
-        reports["memory-v2-m18-ci-smoke.json"] = b"changed after qualification"
+        reports["memory-m18-ci-smoke.json"] = b"changed after qualification"
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
         for name, data in reports.items():

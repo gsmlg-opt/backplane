@@ -16,15 +16,15 @@ TARGETS = {
     "host_agent": ("linux-x64", "linux-arm64", "macos-x64", "macos-arm64"),
 }
 REPORTS = {
-    "memory-v2-replay-browser.json",
-    "memory-v2-eval-ci-smoke.json",
-    "memory-v2-longmemeval.jsonl",
-    "memory-v2-longmemeval-sidecar.json",
-    "memory-v2-m18-ci-smoke.json",
+    "memory-replay-browser.json",
+    "memory-eval-ci-smoke.json",
+    "memory-longmemeval.jsonl",
+    "memory-longmemeval-sidecar.json",
+    "memory-m18-ci-smoke.json",
 }
 QUALIFICATION_FILES = REPORTS | {"qualification-manifest.txt"}
 REQUIRED_JOBS = {
-    "Qualify Memory V2",
+    "Qualify Memory",
     "Installed release database migration smoke",
 } | {f"{release} ({target})" for release, targets in TARGETS.items() for target in targets}
 
@@ -57,8 +57,8 @@ def release_assets(version):
     }
     return archives | {name + ".sha256" for name in archives} | QUALIFICATION_FILES | {
         f"backplane-{version}-deploy.md", f"host_agent-{version}-deploy.md",
-        "memory-v2-operations.md", "memory-v2-release.md", "memory-v2-qualification.md",
-        "host-memory-v2-protocol.md", "host-memory-edge-runbook.md",
+        "memory-operations.md", "memory-release.md", "memory-qualification.md",
+        "host-memory-protocol.md", "host-memory-edge-runbook.md",
     }
 
 
@@ -93,7 +93,7 @@ def validate_evidence(repo, revision, version, source_run_id, run, jobs, tag_sha
             "release contains incomplete assets")
     require(artifacts["total_count"] == len(artifacts["artifacts"]), "incomplete source artifact listing")
     matches = [artifact for artifact in artifacts["artifacts"]
-               if artifact["name"] == "memory-v2-qualification"]
+               if artifact["name"] == "memory-qualification"]
     require(len(matches) == 1, "missing or duplicate qualification artifact")
     artifact = matches[0]
     require(artifact["expired"] is False and artifact["workflow_run"]["id"] == run["id"]
@@ -118,7 +118,7 @@ def verify_qualification(blob, digest, revision):
         ], "qualification manifest revision or source tests mismatch")
         checked = set()
         for line in manifest[3:]:
-            match = re.fullmatch(r"([0-9a-f]{64})  artifacts/memory-v2/([^/]+)", line)
+            match = re.fullmatch(r"([0-9a-f]{64})  artifacts/memory/([^/]+)", line)
             require(match is not None, "invalid qualification report checksum")
             checksum, name = match.groups()
             require(name in REPORTS and name not in checked, "unexpected qualification report")

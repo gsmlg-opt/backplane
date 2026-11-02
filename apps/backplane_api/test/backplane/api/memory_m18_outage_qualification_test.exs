@@ -233,7 +233,7 @@ defmodule Backplane.Api.MemoryM18OutageQualificationTest do
       agent_id: "m18-outage-agent",
       client_id: "codex-cli",
       integration: "codex",
-      project: "/qualification/memory-v2",
+      project: "/qualification/memory",
       scope: host.memory_scope,
       session_id: "m18-outage-session-#{sequence}",
       parent_session_id: nil,
