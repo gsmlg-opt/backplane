@@ -68,16 +68,44 @@ defmodule Backplane.Admin.MemoryTimelineLive do
       <.dm_alert :if={@error} id="timeline-error" variant="error" title="Timeline unavailable">The bounded projection query failed.</.dm_alert>
       <p :if={!@error} id="timeline-count" class="mb-3 text-sm">{@total} matching observations</p>
       <.dm_card :if={@rows == [] and !@error} id="timeline-empty" variant="bordered" padding="lg"><h2 class="text-lg font-semibold">No projected observations</h2><p class="mt-1 text-sm text-on-surface-variant">The session may be pending, skipped, or have no accepted observations.</p></.dm_card>
-      <ol :if={@rows != []} id="memory-timeline-list" class="space-y-3">
-        <li :for={row <- @rows} class="rounded-xl border border-outline-variant bg-surface-container p-4 text-on-surface">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <strong>{row.event_type}</strong>
-            <.dm_badge variant={status_variant(row.processing_status)} size="sm">{row.processing_status}</.dm_badge>
+      <.dm_timeline :if={@rows != []} id="memory-timeline-list" class="mt-4">
+        <:item
+          :for={row <- @rows}
+          title={timeline_title(row)}
+          time={format_datetime(row.occurred_at)}
+          color={timeline_color(row)}
+          icon={timeline_icon(row)}
+          completed={row.processing_status in ["complete", "done"]}
+        >
+          <div class="mb-1.5 flex flex-wrap items-center gap-2">
+            <.dm_badge variant={status_variant(row.processing_status)} size="sm">
+              {row.processing_status}
+            </.dm_badge>
+            <span :if={row.is_error} class="text-xs font-medium text-error">Error</span>
+            <span :if={row.importance} class="text-xs text-on-surface-variant">
+              Importance: {row.importance}
+            </span>
+            <span :if={row.commit_hash} class="font-mono text-xs text-on-surface-variant">
+              {String.slice(row.commit_hash, 0, 8)}
+            </span>
           </div>
-          <p class="mt-2 whitespace-pre-wrap">{row.content || row.message || "No display content"}</p>
-          <p class="mt-2 text-xs text-on-surface-variant">Session {row.session_id} · {format_datetime(row.occurred_at)}</p>
-        </li>
-      </ol>
+          <p class="whitespace-pre-wrap text-sm text-on-surface">
+            {row.content || row.message || "No display content"}
+          </p>
+          <div :if={row.file_paths && row.file_paths != []} class="mt-2 flex flex-wrap gap-1">
+            <span
+              :for={file <- row.file_paths}
+              class="inline-block rounded bg-surface-container-high px-1.5 py-0.5 font-mono text-xs text-on-surface-variant"
+            >
+              {file}
+            </span>
+          </div>
+          <p class="mt-2 text-xs text-on-surface-variant">
+            Session {row.session_id}
+            <span :if={row.agent_id}> · Agent {row.agent_id}</span>
+          </p>
+        </:item>
+      </.dm_timeline>
       <nav :if={!@error} aria-label="Timeline pagination" class="mt-4 flex justify-end gap-2">
         <.memory_link_button :if={@offset > 0} id="timeline-previous" patch={page_path(@partition, @session, @filters, max(0, @offset - @page_size))}>Previous</.memory_link_button>
         <.memory_link_button :if={@next_offset != nil} id="timeline-next" patch={page_path(@partition, @session, @filters, @offset + @page_size)}>Next</.memory_link_button>
@@ -177,4 +205,60 @@ defmodule Backplane.Admin.MemoryTimelineLive do
 
   defp blank_nil(nil), do: nil
   defp blank_nil(value), do: if(String.trim(value) == "", do: nil, else: String.trim(value))
+
+  defp timeline_title(row) do
+    cond do
+      row.event_type && row.tool_name && row.tool_name != "" ->
+        "#{row.event_type} · #{row.tool_name}"
+
+      row.event_type ->
+        row.event_type
+
+      row.tool_name ->
+        row.tool_name
+
+      true ->
+        "Observation"
+    end
+  end
+
+  defp timeline_color(row) do
+    cond do
+      row.is_error || row.processing_status in ["failed", "dead_letter"] -> "error"
+      row.processing_status in ["complete", "done"] -> "success"
+      row.processing_status in ["pending", "running", "in_progress"] -> "warning"
+      true -> "primary"
+    end
+  end
+
+  defp timeline_icon(row) do
+    cond do
+      row.is_error || row.processing_status in ["failed", "dead_letter"] ->
+        "alert-circle"
+
+      is_binary(row.event_type) && String.starts_with?(row.event_type, "agent.tool") ->
+        "wrench"
+
+      is_binary(row.event_type) && String.starts_with?(row.event_type, "agent.prompt") ->
+        "message-text"
+
+      is_binary(row.event_type) && String.starts_with?(row.event_type, "agent.session") ->
+        "account-clock"
+
+      is_binary(row.event_type) && String.starts_with?(row.event_type, "agent.file") ->
+        "file-document"
+
+      is_binary(row.event_type) && String.starts_with?(row.event_type, "agent.commit") ->
+        "source-commit"
+
+      row.tool_name && row.tool_name != "" ->
+        "wrench"
+
+      row.processing_status in ["complete", "done"] ->
+        "check-circle"
+
+      true ->
+        nil
+    end
+  end
 end
