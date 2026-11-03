@@ -13,7 +13,7 @@ defmodule Backplane.Memory.Memories.Verification do
   @audit_limit 100
   @source_limit 200
   @graph_node_limit 100
-  @graph_query_timeout 2_000
+  @default_graph_query_timeout 15_000
   @depth 2
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
@@ -636,8 +636,16 @@ defmodule Backplane.Memory.Memories.Verification do
     end
   end
 
+  defp graph_query_timeout do
+    Application.get_env(
+      :backplane_memory,
+      :verification_graph_query_timeout,
+      @default_graph_query_timeout
+    )
+  end
+
   defp graph_query(sql, params) do
-    case graph_query_fun().(sql, params, timeout: @graph_query_timeout) do
+    case graph_query_fun().(sql, params, timeout: graph_query_timeout()) do
       {:ok, result} -> {:ok, result}
       {:error, _reason} -> {:error, :verification_timeout}
     end

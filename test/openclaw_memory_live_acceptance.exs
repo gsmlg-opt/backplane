@@ -763,8 +763,30 @@ defmodule Backplane.OpenClawLiveAcceptance do
       )
 
     wait!(
-      fn -> Backplane.OpenClawCaptureBarrier.settled?(node!("snapshot"), turns) end,
+      fn ->
+        snapshot = node!("snapshot")
+
+        if Backplane.OpenClawCaptureBarrier.settled?(snapshot, turns) do
+          true
+        else
+          {:retry, %{turns: capture_turn_diagnostics(turns, snapshot)}}
+        end
+      end,
       "turn_capture_completion_unconfirmed"
+    )
+
+    wait!(
+      fn ->
+        Repo.aggregate(
+          from(e in Event,
+            where:
+              e.host_id == ^fixture.host.id and e.session_id == ^session and
+                e.event_type == "conversation.agent_message" and e.role == "assistant"
+          ),
+          :count
+        ) == 2
+      end,
+      "empty_assistant_fabricated_or_lost_messages"
     )
 
     events =
@@ -778,12 +800,10 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
     assert!(Enum.count(events, &(&1.role == "user")) == 4, "cumulative_history_duplicated")
 
-    unless Enum.count(events, &(&1.role == "assistant")) == 2 do
-      fail!("empty_assistant_fabricated_or_lost_messages", %{
-        captured_roles: Enum.frequencies_by(events, & &1.role),
-        turns: capture_turn_diagnostics(turns, node!("snapshot"))
-      })
-    end
+    assert!(
+      Enum.count(events, &(&1.role == "assistant")) == 2,
+      "empty_assistant_fabricated_or_lost_messages"
+    )
 
     assert!(
       Enum.all?(events, &(get_in(&1.payload, ["source", "run_id"]) in runs)),
@@ -2612,20 +2632,29 @@ defmodule Backplane.OpenClawLiveAcceptance do
   end
 
   defp wait!(fun, code, timeout \\ @timeout) do
-    wait_until!(fun, code, System.monotonic_time(:millisecond) + timeout)
+    wait_until!(fun, code, System.monotonic_time(:millisecond) + timeout, %{})
   end
 
-  defp wait_until!(fun, code, deadline) do
-    cond do
-      fun.() ->
+  defp wait_until!(fun, code, deadline, last_diagnostics) do
+    case fun.() do
+      true ->
         :ok
 
-      System.monotonic_time(:millisecond) >= deadline ->
-        fail!(code)
+      {:retry, diagnostics} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          fail!(code, diagnostics)
+        else
+          Process.sleep(250)
+          wait_until!(fun, code, deadline, diagnostics)
+        end
 
-      true ->
-        Process.sleep(100)
-        wait_until!(fun, code, deadline)
+      false ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          fail!(code, last_diagnostics)
+        else
+          Process.sleep(250)
+          wait_until!(fun, code, deadline, last_diagnostics)
+        end
     end
   end
 
