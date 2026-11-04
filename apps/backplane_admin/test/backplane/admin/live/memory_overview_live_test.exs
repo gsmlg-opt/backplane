@@ -86,8 +86,11 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
              event.stream_id
            )
 
-    assert has_element?(view, "#memory-recent-events[phx-mounted]")
-    assert has_element?(view, "#memory-active-streams[phx-mounted]")
+    for table <- ~w(memory-recent-events memory-active-streams), group <- ~w(thead tbody) do
+      assert has_element?(view, "##{table} #{group}")
+      refute has_element?(view, "##{table} #{group}[role]:not([role=rowgroup])")
+    end
+
     refute has_element?(view, "#memory-recent-events a.text-primary")
     refute has_element?(view, "#memory-active-streams a.text-primary")
 

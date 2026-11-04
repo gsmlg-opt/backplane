@@ -17,7 +17,11 @@ defmodule Backplane.Admin.MemoryStreamsLiveTest do
       assert has_element?(view, "#memory-streams-table th", label)
     end
 
-    assert has_element?(view, "#memory-streams-table[phx-mounted]")
+    for group <- ~w(thead tbody) do
+      assert has_element?(view, "#memory-streams-table #{group}")
+      refute has_element?(view, "#memory-streams-table #{group}[role]:not([role=rowgroup])")
+    end
+
     assert html =~ "No streams match these filters"
     assert html =~ "Captured events appear here after the first memory activity"
     assert html =~ "Background processing is paused"

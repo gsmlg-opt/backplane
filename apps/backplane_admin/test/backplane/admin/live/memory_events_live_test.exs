@@ -23,7 +23,11 @@ defmodule Backplane.Admin.MemoryEventsLiveTest do
       assert has_element?(view, "#memory-events-table th", label)
     end
 
-    assert has_element?(view, "#memory-events-table[phx-mounted]")
+    for group <- ~w(thead tbody) do
+      assert has_element?(view, "#memory-events-table #{group}")
+      refute has_element?(view, "#memory-events-table #{group}[role]:not([role=rowgroup])")
+    end
+
     assert html =~ "No events match these filters"
     assert html =~ "Captured events appear here after the first memory activity"
     assert html =~ "Background processing is paused"
