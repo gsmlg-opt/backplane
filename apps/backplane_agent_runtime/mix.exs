@@ -27,7 +27,7 @@ defmodule Backplane.AgentRuntime.MixProject do
     [
       protocol_dependency(:backplane_plugin_protocol),
       protocol_dependency(:backplane_mcp_protocol),
-      {:jsonschex, "~> 0.10.0"},
+      {:jsonschex, "~> 0.11"},
       {:decimal, "~> 3.0"},
       {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
     ]

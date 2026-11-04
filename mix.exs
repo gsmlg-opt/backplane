@@ -23,8 +23,6 @@ defmodule Backplane.Umbrella.MixProject do
 
   defp deps do
     [
-      # TODO(upstream): gsmlg-dev/phoenix_socket_client#107
-      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#107 - align the shared WebSocket transport.
       {:http_web_socket, "~> 0.21.19", override: true},
       {:websock_adapter, "~> 0.14.0", hex: :gaoxy_websock_adapter, override: true}
     ]
