@@ -1,7 +1,7 @@
 # Tool Input Schemas
 
 `Backplane.AgentRuntime.InputSchema` is the MCP tool-call boundary. Schema
-semantics are provided by `jsonschex 0.10.0`, whose target is JSON Schema Draft
+semantics are provided by `jsonschex ~> 0.11`, whose target is JSON Schema Draft
 2020-12. The runtime keeps the existing `validate_schema/1` and `validate/2`
 contracts and adds optional `opts` forms for explicit external schema
 registries/loaders.

@@ -175,7 +175,7 @@ MANIFEST_GUARD
 elixir "$manifest_guard" "$unpacked"
 
 dependencies="$(cd "$unpacked" && MIX_ENV=prod "${mix_command[@]}" deps.tree --only prod)"
-if ! grep -q 'jsonschex ~> 0.10.0' <<<"$dependencies"; then
+if ! grep -q 'jsonschex ~> 0.11' <<<"$dependencies"; then
   printf 'The artifact is missing its required JSON Schema production dependency:\n%s\n' "$dependencies" >&2
   exit 1
 fi

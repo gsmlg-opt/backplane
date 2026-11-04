@@ -82,7 +82,7 @@ host adapters convert arguments and results without rewriting admitted invocatio
 identities. See [host-named collaboration contracts](EMBEDDING.md#host-named-collaboration-contracts)
 and the packaged `examples/host_collaboration.exs` example.
 
-The package uses `jsonschex 0.10.0` as its production JSON Schema Draft
+The package uses `jsonschex ~> 0.11` as its production JSON Schema Draft
 2020-12 engine; it is intentionally not dependency-free.
 
 Embeddings can set `provider_output_limit: :infinity` for unlimited generated

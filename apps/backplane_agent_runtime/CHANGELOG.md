@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.10.58
+
+- Upgrade the production JSON Schema engine to `jsonschex ~> 0.11` and align
+  standalone package verification with the supported dependency range.
+
 ## 1.10.47
 
 - Stage bounded child export evidence before manager loss and complete offline
