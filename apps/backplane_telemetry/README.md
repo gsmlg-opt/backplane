@@ -1,21 +1,15 @@
 # BackplaneTelemetry
 
-**TODO: Add description**
+Shared Observability v2 infrastructure for the Backplane umbrella: event
+envelopes, correlation context, redaction, bounded buffers, runtime diagnostic
+sinks, and health snapshots through `Backplane.Observability.health/0`.
 
-## Installation
+`BackplaneTelemetry.Supervisor` owns observability settings and the runtime sink
+when enabled. Operational policy is stored under `observability.*` in the shared
+Settings store. LLM, MCP, and audit persistence writers remain in their owning
+domain apps.
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `backplane_telemetry` to your list of dependencies in `mix.exs`:
-
-```elixir
-def deps do
-  [
-    {:backplane_telemetry, "~> 0.1.0"}
-  ]
-end
-```
-
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/backplane_telemetry>.
+The legacy `BackplaneTelemetry.TelemetryLogger` remains available for rollback.
+See the repository's [observability guidance](../../AGENTS.md#observability-v2)
+for configuration and ownership boundaries.
 
