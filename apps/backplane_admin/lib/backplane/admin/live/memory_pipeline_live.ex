@@ -176,8 +176,7 @@ defmodule Backplane.Admin.MemoryPipelineLive do
           <.dm_alert :if={@stage_error} id="pipeline-states-error" variant="error" title="Processing unavailable">{@stage_error}</.dm_alert>
           <.dm_card :if={!@stage_error && @stage_rows == []} id="pipeline-states-empty" variant="bordered" padding="lg">No processing states match.</.dm_card>
           <div :if={@stage_rows != []} class="overflow-x-auto">
-            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
-            <.dm_table id="pipeline-states" data={@stage_rows} compact hover zebra class="min-w-[60rem]" phx-mounted={fix_dm_table_rowgroup_roles("pipeline-states")}>
+            <.dm_table id="pipeline-states" data={@stage_rows} compact hover zebra class="min-w-[60rem]">
               <:col :let={row} label="Stage"><span id={"pipeline-state-#{row.id}"}>{row.projector}</span></:col>
               <:col :let={row} label="Subject"><span class="block text-xs text-on-surface-variant">{row.subject_type}</span><code class="break-all text-xs">{row.subject_id}</code></:col>
               <:col :let={row} label="Status"><.status_badge status={row.status} /></:col>

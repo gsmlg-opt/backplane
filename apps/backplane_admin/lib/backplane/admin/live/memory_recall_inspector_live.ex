@@ -244,7 +244,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLive do
           </form>
           <p :if={@candidates == []} id="recall-no-candidates">No candidates recorded for this run.</p>
           <div class="overflow-x-auto">
-            <table id="recall-candidates-table" class="table" phx-mounted={fix_dm_table_rowgroup_roles("recall-candidates-table")}>
+            <table id="recall-candidates-table" class="table">
               <thead><tr><th>Candidate</th><th>Decision</th><th>Scores</th><th>Rank movement</th><th>Budget</th><th>Provenance</th></tr></thead>
               <tbody>
                 <tr :for={candidate <- @candidates} id={"recall-candidate-#{candidate.id}"}>

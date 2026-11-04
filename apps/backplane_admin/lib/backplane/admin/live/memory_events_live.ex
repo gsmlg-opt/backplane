@@ -294,7 +294,6 @@ defmodule Backplane.Admin.MemoryEventsLive do
       ]}>
         <section class="min-w-0">
           <div class="overflow-x-auto">
-            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-events-table"
               data={@page.events}
@@ -302,7 +301,6 @@ defmodule Backplane.Admin.MemoryEventsLive do
               hover
               zebra
               class="min-w-[72rem]"
-              phx-mounted={fix_dm_table_rowgroup_roles("memory-events-table")}
             >
               <:col :let={event} label="Event">
                 <.link

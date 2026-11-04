@@ -106,7 +106,8 @@ backplane_root = Path.expand("..", __DIR__)
 
 # TODO(upstream): duskmoon-dev/duskmoon-bundler#3
 # WORKAROUND(upstream): duskmoon-dev/duskmoon-bundler#3
-# Dev watchers share a Tailwind scanner and scan watch_dirs instead of tailwind.sources.
+# Bundler 10.0.9 fixes source scanning and gives each watcher its own scanner.
+# Remove this union after verifying startup and incremental CSS rebuilds for both profiles.
 web_asset_watch_dirs =
   Enum.map(
     [

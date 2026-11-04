@@ -252,8 +252,6 @@ defmodule Backplane.McpProtocol.Transport.STDIO do
   @impl Transport
   def supported_protocol_versions, do: :all
 
-  # credo:disable-for-next-line Credo.Check.Design.TagTODO
-  # TODO(upstream): gsmlg-opt/backplane#78
   @impl GenServer
   def format_status(status) do
     Map.update!(status, :state, fn state ->

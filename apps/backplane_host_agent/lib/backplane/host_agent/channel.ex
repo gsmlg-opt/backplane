@@ -26,10 +26,8 @@ defmodule Backplane.HostAgent.Channel do
       reconnect?: false,
       reconnect_interval: min(Map.get(config, :interval_ms, 60_000), 60_000),
       default_channel_module: channel_module,
-      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#96
-      auto_connect: false,
-      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#95
-      transport_opts: [headers: headers]
+      # Connect explicitly below so Worker controls the connection lifecycle.
+      auto_connect: false
     ]
 
     with {:ok, socket} <- start_or_reuse_socket(socket_client_module, opts) do

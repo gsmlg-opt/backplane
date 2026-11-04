@@ -309,7 +309,8 @@ defmodule Backplane.Admin.LogsLlmLive do
 
   # credo:disable-for-next-line Credo.Check.Design.TagTODO
   # TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#173
-  # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#173 use native tooltips until core popovers are supported.
+  # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#173
+  # Migrate these fallback spans to dm_tooltip; the installed release supports popovers.
   defp ttft_label(assigns) do
     ~H"""
     <span title="Time from request start to first generated content." aria-label="TTFT: Time from request start to first generated content." tabindex="0" class="cursor-help">

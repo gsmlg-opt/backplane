@@ -155,7 +155,7 @@ defmodule Backplane.Admin.MemoryLessonsLive do
         <.memory_blank_state :if={!@query_error && @page.entries == []} id="lessons-empty" title="No lessons match" description="Change the state or project filter to inspect other lessons." icon="school-outline" />
 
         <div class="mt-4 overflow-x-auto">
-          <.dm_table :if={@page.entries != []} id="memory-lessons-table" data={@page.entries} compact hover zebra class="min-w-[52rem]" phx-mounted={fix_dm_table_rowgroup_roles("memory-lessons-table")}>
+          <.dm_table :if={@page.entries != []} id="memory-lessons-table" data={@page.entries} compact hover zebra class="min-w-[52rem]">
             <:col :let={entry} label="Rule"><.link href={lesson_detail_path(entry.lesson.memory_id, @partition, @filters)} class="line-clamp-3 font-medium text-primary underline underline-offset-2">{entry.memory.content}</.link><p class="mt-2 text-xs text-on-surface-variant">{entry.project || "All projects"} · {entry.memory.scope}</p></:col>
             <:col :let={entry} label="Source host / repository"><.source_identity record={entry.memory} /></:col>
             <:col :let={entry} label="State"><.dm_badge variant={state_variant(entry.lesson.status)} size="sm"><span id={"lesson-row-state-#{entry.lesson.memory_id}"}>{entry.lesson.status}</span></.dm_badge><p class="mt-2 text-xs text-on-surface-variant">{entry.lesson.reinforcement_count} reinforcements · {entry.lesson.contradiction_count} contradictions</p></:col>

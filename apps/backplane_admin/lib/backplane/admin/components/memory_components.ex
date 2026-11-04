@@ -209,11 +209,6 @@ defmodule Backplane.Admin.MemoryComponents do
 
   def datetime_local_value(_value), do: ""
 
-  def fix_dm_table_rowgroup_roles(table_id) do
-    JS.set_attribute({"role", "rowgroup"}, to: "##{table_id} thead")
-    |> JS.set_attribute({"role", "rowgroup"}, to: "##{table_id} tbody")
-  end
-
   def format_json(payload), do: Jason.encode!(payload || %{}, pretty: true)
 
   def event_color(%{status: status}) when status in ["failed", "error"], do: "error"

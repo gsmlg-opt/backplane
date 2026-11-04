@@ -52,8 +52,6 @@ defmodule BackplaneApi.MixProject do
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 10.0.4"},
       {:duskmoon_bundler, "~> 10.0.4", runtime: Mix.env() != :prod},
-      # TODO(upstream): gsmlg-dev/phoenix_socket_client#107
-      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#107 - align the test host-agent transport.
       {:http_web_socket, "~> 0.21.19", only: :test, override: true},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0", only: :test},

@@ -284,7 +284,6 @@ defmodule Backplane.Admin.MemoryStreamsLive do
       ]}>
         <section class="min-w-0">
           <div class="overflow-x-auto">
-            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-streams-table"
               data={@page.streams}
@@ -292,7 +291,6 @@ defmodule Backplane.Admin.MemoryStreamsLive do
               hover
               zebra
               class="min-w-[64rem]"
-              phx-mounted={fix_dm_table_rowgroup_roles("memory-streams-table")}
             >
               <:col :let={stream} label="Stream">
                 <.link

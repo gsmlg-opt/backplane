@@ -627,11 +627,7 @@ defmodule Backplane.HostAgent.MemoryProxy do
         socket_client_module.disconnect(socket)
       end
 
-      # WORKAROUND(upstream): gsmlg-dev/phoenix_socket_client#97
-      # disconnect/1 marks the client disconnected but can leave the websocket
-      # transport process/socket open. Stop the old socket supervisor when a
-      # replacement socket has been installed so the linked transport releases
-      # its file descriptor.
+      # Retire the replaced client's supervision tree as well as its connection.
       stop_socket_supervisor(socket)
     end
 

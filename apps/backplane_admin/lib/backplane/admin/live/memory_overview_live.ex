@@ -168,7 +168,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
         >
           <p :if={events == []} class="memory-toolbar text-sm text-on-surface-variant">No recent events.</p>
           <div :if={events != []} class="overflow-x-auto">
-            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-recent-events"
               data={events}
@@ -176,7 +175,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
               hover
               zebra
               class="min-w-[48rem]"
-              phx-mounted={fix_dm_table_rowgroup_roles("memory-recent-events")}
             >
               <:col :let={event} label="Event">
                 <.link
@@ -202,7 +200,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
         >
           <p :if={streams == []} class="memory-toolbar text-sm text-on-surface-variant">No active streams.</p>
           <div :if={streams != []} class="overflow-x-auto">
-            <%!-- WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#91 --%>
             <.dm_table
               id="memory-active-streams"
               data={streams}
@@ -210,7 +207,6 @@ defmodule Backplane.Admin.MemoryOverviewLive do
               hover
               zebra
               class="min-w-[48rem]"
-              phx-mounted={fix_dm_table_rowgroup_roles("memory-active-streams")}
             >
               <:col :let={stream} label="Stream">
                 <.link

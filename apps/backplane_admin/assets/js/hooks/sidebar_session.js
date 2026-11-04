@@ -2,7 +2,8 @@ import {DuskmoonLeftMenu} from "phoenix_duskmoon/hooks"
 
 // TODO(upstream): duskmoon-dev/phoenix-duskmoon-ui#204
 // WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#204
-// Bridge session state until the menu exposes public collapse change/restore events.
+// Migrate this bridge to collapse_event and duskmoon:left-menu:set-collapsed,
+// available since 10.0.5, preserving session acknowledgements and reconnect behavior.
 export const SessionLeftMenu = {
   ...DuskmoonLeftMenu,
 

@@ -125,7 +125,7 @@ defmodule Backplane.HostAgent.ChannelTest do
     assert opts[:auto_connect] == false
     assert opts[:reconnect?] == false
     assert opts[:default_channel_module] == Backplane.HostAgent.AgentChannel
-    assert opts[:transport_opts] == [headers: [{"X-Backplane-Host-Token", "host-token"}]]
+    assert opts[:headers] == [{"X-Backplane-Host-Token", "host-token"}]
 
     assert_receive {:connect, ^socket}
     refute_receive {:connect, ^socket}
