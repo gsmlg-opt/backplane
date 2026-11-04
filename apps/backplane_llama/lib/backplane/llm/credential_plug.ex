@@ -14,6 +14,7 @@ defmodule Backplane.LLM.CredentialPlug do
 
   alias Backplane.LLM.{OpenAICodex, Provider}
   alias Backplane.Settings.Credentials
+  alias Backplane.Settings.{Credential, Encryption}
   import Plug.Conn
 
   @default_anthropic_version "2023-06-01"
@@ -79,6 +80,21 @@ defmodule Backplane.LLM.CredentialPlug do
   end
 
   def build_auth_headers(%Provider{}, _api_type), do: {:error, :api_surface_required}
+
+  @doc "Build native Responses API-key headers from an already verified immutable snapshot."
+  def build_responses_auth_headers(%Provider{} = provider, %Credential{} = credential) do
+    auth_type = Map.get(credential.metadata || %{}, "auth_type")
+
+    if credential.name == provider.credential and auth_type in [nil, "api_key"] do
+      with {:ok, token} <- Encryption.decrypt(credential.encrypted_value) do
+        {:ok,
+         base_headers(provider, :openai, auth_type, token) ++
+           safe_default_headers(provider.default_headers, :openai)}
+      end
+    else
+      {:error, :responses_lifecycle_unsupported}
+    end
+  end
 
   @spec build_auth_headers(Provider.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
   def build_auth_headers(%Provider{api_type: api_type} = provider)

@@ -11,6 +11,9 @@ defmodule Backplane.LLM.Router do
   - POST /v1/embeddings                — OpenAI-compatible Embeddings API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
   - POST /v1/responses                 — OpenAI Responses API
+  - GET /v1/responses/:id              — opt-in owned retrieval / stream resume
+  - POST /v1/responses/:id/cancel      — opt-in owned background cancellation
+  - DELETE /v1/responses/:id           — opt-in owned deletion
   - POST _                             — supported repeated-prefix compatibility routes
   """
 
@@ -116,6 +119,18 @@ defmodule Backplane.LLM.Router do
 
   post "/v1/responses" do
     proxy_request(conn, :openai_responses)
+  end
+
+  get "/v1/responses/:response_id" do
+    Backplane.LLM.ResponsesLifecycle.call(conn, response_id, :retrieve)
+  end
+
+  post "/v1/responses/:response_id/cancel" do
+    Backplane.LLM.ResponsesLifecycle.call(conn, response_id, :cancel)
+  end
+
+  delete "/v1/responses/:response_id" do
+    Backplane.LLM.ResponsesLifecycle.call(conn, response_id, :delete)
   end
 
   post _ do
@@ -524,7 +539,8 @@ defmodule Backplane.LLM.Router do
              :ok <- check_rate_limit(provider),
              {:ok, rewritten_body} <-
                ModelExtractor.replace_model(raw_body, model_string, raw_model),
-             {:ok, auth_headers} <- CredentialPlug.build_auth_headers(provider, api_type) do
+             {:ok, auth_headers} <-
+               proxy_auth_headers(provider, provider_api, client_protocol, api_type) do
           conn = upstream_request_conn(conn, api_type, provider_api)
           upstream = build_upstream(provider_api, auth_headers)
 
@@ -535,8 +551,8 @@ defmodule Backplane.LLM.Router do
             {model_string, raw_model},
             rewritten_body,
             client_protocol,
-            api_type,
-            access
+            access,
+            provider_api
           )
         else
           {:error, :no_provider} ->
@@ -754,6 +770,12 @@ defmodule Backplane.LLM.Router do
     }
   end
 
+  defp proxy_auth_headers(_provider, %{responses_lifecycle: true}, :openai_responses, _api_type),
+    do: {:ok, []}
+
+  defp proxy_auth_headers(provider, _provider_api, _client_protocol, api_type),
+    do: CredentialPlug.build_auth_headers(provider, api_type)
+
   defp build_embedding_upstream(%Embedding.Provider{} = provider, auth_headers) do
     uri = URI.parse(provider.base_url)
 
@@ -789,9 +811,10 @@ defmodule Backplane.LLM.Router do
          {requested_model, raw_model},
          rewritten_body,
          client_protocol,
-         api_type,
-         access
+         access,
+         provider_api
        ) do
+    api_type = api_type(client_protocol)
     stream? = is_stream_request?(rewritten_body)
 
     access =
@@ -821,7 +844,12 @@ defmodule Backplane.LLM.Router do
 
     conn = strip_client_authentication(conn)
 
-    result_conn = HttpPlug.call(conn, upstream, opts)
+    result_conn =
+      if client_protocol == :openai_responses do
+        Backplane.LLM.ResponsesLifecycle.create(conn, upstream, provider, provider_api, opts)
+      else
+        HttpPlug.call(conn, upstream, opts)
+      end
 
     finalize_access(access, result_conn, outcome_for_conn(result_conn),
       api_surface: api_type,

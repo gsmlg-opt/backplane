@@ -348,6 +348,8 @@ These workflows run only when their owning app directories, workflow files, or p
 
 ## Further Documentation
 
+- [Responses lifecycle and client stream recovery](docs/responses-lifecycle.md)
+
 - `docs/deploy/backplane.md`: gateway deployment and release configuration
 - `docs/deploy/host_agent.md`: host-agent deployment
 - `docs/proxy-llm/backplane-openai-codex-direct-proxy-task.md`: provider-scoped Codex Responses proxy design

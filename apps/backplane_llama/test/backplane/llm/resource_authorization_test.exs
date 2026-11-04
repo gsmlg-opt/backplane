@@ -50,6 +50,20 @@ defmodule Backplane.LLM.ResourceAuthorizationTest do
     assert Jason.decode!(conn.resp_body) == %{"error" => "insufficient_scope"}
   end
 
+  test "Responses retrieval, resume, cancellation and deletion require invocation scope" do
+    for kind <- [:oauth, :client_token],
+        {method, path} <- [
+          {:get, "/v1/responses/resp_1"},
+          {:get, "/v1/responses/resp_1?stream=true&starting_after=7"},
+          {:post, "/v1/responses/resp_1/cancel"},
+          {:delete, "/v1/responses/resp_1"}
+        ] do
+      assert ResourceAuthorization.required_scope(conn(method, path)) == "llm::invoke"
+      assert authorize(method, path, kind, ["llm::models"]).status == 403
+      refute authorize(method, path, kind, ["llm::invoke"]).halted
+    end
+  end
+
   test "voice discovery requires model scope for OAuth and DB clients" do
     for kind <- [:oauth, :client_token] do
       denied = authorize(:get, "/v1/audio/voices", kind, ["llm::invoke"])
