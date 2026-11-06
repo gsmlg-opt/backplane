@@ -124,6 +124,7 @@ defmodule Backplane.LLM.Router do
 
   get "/v1/responses" do
     # The upstream capability declaration is not a runtime availability promise.
+    # credo:disable-for-next-line Credo.Check.Design.TagTODO
     # TODO(upstream): gsmlg-dev/http_fetch#155 — adopt with a compatible published dependency graph.
     # See docs/responses-websocket.md for the transport acceptance gates.
     send_json(conn, 501, %{

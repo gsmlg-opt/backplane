@@ -203,6 +203,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
   defp expand_additional_keys(schema, _value), do: schema
 
+  @dialyzer {:nowarn_function, list_validator: 2}
   defp list_validator(item_type, opts) do
     item_validator = validator(item_type)
 

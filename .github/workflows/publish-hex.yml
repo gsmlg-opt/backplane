@@ -23,6 +23,7 @@ on:
         options:
           - all
           - backplane_agent_runtime
+          - backplane_json_schema
 
 permissions:
   contents: read
@@ -82,10 +83,13 @@ jobs:
         run: |
           case "$PACKAGE_SELECTION" in
             all)
-              packages='["backplane_agent_runtime","backplane_ai_protocol","backplane_skill_protocol","backplane_mcp_protocol"]'
+              packages='["backplane_json_schema","backplane_agent_runtime","backplane_ai_protocol","backplane_skill_protocol","backplane_mcp_protocol"]'
               ;;
             backplane_agent_runtime)
               packages='["backplane_agent_runtime"]'
+              ;;
+            backplane_json_schema)
+              packages='["backplane_json_schema"]'
               ;;
             *)
               echo "Unsupported package selection: $PACKAGE_SELECTION" >&2

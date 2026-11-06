@@ -1406,7 +1406,8 @@ defmodule Backplane.HermesLiveAcceptance do
         end)
 
       assert!(
-        actual_refs == expected_refs and Enum.all?(policy["source_refs"], &(&1["active"] == true)),
+        actual_refs == expected_refs and
+          Enum.all?(policy["source_refs"], &(&1["active"] == true)),
         "final_context_source_memberships_wrong"
       )
 

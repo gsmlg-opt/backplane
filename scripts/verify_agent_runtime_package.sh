@@ -24,8 +24,20 @@ if [[ -n "$candidate_mcp" ]]; then
   export MCP_PROTOCOL_SOURCE="$work_root/mcp-package"
 fi
 
+candidate_json_schema="${JSON_SCHEMA_SOURCE-$script_dir/../apps/backplane_json_schema}"
+if [[ -n "$candidate_json_schema" ]]; then
+  test -f "$candidate_json_schema/mix.exs"
+  mkdir -p "$work_root/json-schema-source" "$work_root/json-schema-package"
+  tar -C "$candidate_json_schema" --exclude='./_build' --exclude='./deps' --exclude='./doc' \
+    --exclude='./tmp' --exclude='*.tar' -cf - . \
+    | tar -xf - -C "$work_root/json-schema-source"
+  (cd "$work_root/json-schema-source" && MIX_ENV=prod mix hex.build --output "$work_root/json_schema.tar")
+  tar -xf "$work_root/json_schema.tar" -O contents.tar.gz | tar -xz -C "$work_root/json-schema-package"
+  export JSON_SCHEMA_SOURCE="$work_root/json-schema-package"
+fi
+
 use_candidate_mcp() {
-  if [[ -z "$candidate_mcp" ]]; then return; fi
+  if [[ -z "$candidate_mcp" && -z "$candidate_json_schema" ]]; then return; fi
   python3 - "$1" "$2" <<'PY'
 from pathlib import Path
 import sys
@@ -33,14 +45,17 @@ path = Path(sys.argv[1])
 text = path.read_text()
 if sys.argv[2] == "source":
     needle = '      {app, protocol_requirement(app)}'
-    replacement = '''      if app == :backplane_mcp_protocol do
-        {app, path: System.fetch_env!("MCP_PROTOCOL_SOURCE"), override: true}
-      else
-        {app, protocol_requirement(app)}
+    replacement = '''      cond do
+        app == :backplane_mcp_protocol and System.get_env("MCP_PROTOCOL_SOURCE") != nil ->
+          {app, path: System.fetch_env!("MCP_PROTOCOL_SOURCE"), override: true}
+        app == :backplane_json_schema and System.get_env("JSON_SCHEMA_SOURCE") != nil ->
+          {app, path: System.fetch_env!("JSON_SCHEMA_SOURCE"), override: true}
+        true ->
+          {app, protocol_requirement(app)}
       end'''
 else:
     needle = '{:backplane_agent_runtime, path: System.fetch_env!("AGENT_RUNTIME_PATH")}'
-    replacement = needle + ',\n      {:backplane_mcp_protocol, path: System.fetch_env!("MCP_PROTOCOL_SOURCE"), override: true}'
+    replacement = needle + ',\n      {:backplane_mcp_protocol, path: System.fetch_env!("MCP_PROTOCOL_SOURCE"), override: true},\n      {:backplane_json_schema, path: System.fetch_env!("JSON_SCHEMA_SOURCE"), override: true}'
 if text.count(needle) != 1:
     raise SystemExit("candidate MCP qualification marker is missing or ambiguous")
 path.write_text(text.replace(needle, replacement))
@@ -85,7 +100,7 @@ cd "$source_dir"
 MIX_ENV=dev "${mix_command[@]}" hex.build --output "$artifact"
 use_candidate_mcp "$source_dir/mix.exs" source
 MIX_ENV=dev "${mix_command[@]}" deps.get
-if [[ -n "$candidate_mcp" ]]; then MIX_ENV=dev "${mix_command[@]}" format mix.exs; fi
+if [[ -n "$candidate_mcp" || -n "$candidate_json_schema" ]]; then MIX_ENV=dev "${mix_command[@]}" format mix.exs; fi
 if [[ "$pty_package_only" == "1" ]]; then
   MIX_ENV=dev "${mix_command[@]}" format --check-formatted \
     lib/backplane/agent_runtime/tools/local_command.ex \
