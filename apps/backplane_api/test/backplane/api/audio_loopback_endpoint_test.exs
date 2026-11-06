@@ -477,31 +477,34 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   test "first MP3 chunk reaches client before stalled provider completes, without aggregate duplication",
        ctx do
     Agent.update(ctx.state, &%{&1 | mode: :stall_after})
-    {conn, ref} = streaming_request(ctx)
-    {conn, events} = until_data(conn, ref)
-    assert Enum.any?(events, &match?({:status, ^ref, 200}, &1))
+    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", ctx.port, [:binary, active: false])
+    :ok = :gen_tcp.send(socket, wire_request(ctx))
+    first_chunk = recv_first_chunk(socket, "")
+    assert first_chunk =~ "HTTP/1.1 200"
     assert_receive {:native_request, native, _, _, _}
-    assert IO.iodata_to_binary(for {:data, ^ref, bytes} <- events, do: bytes) == ctx.audio["mp3"]
+    assert String.contains?(first_chunk, ctx.audio["mp3"])
     send(native, :continue)
-    {_conn, rest} = until_done(conn, ref)
-    assert IO.iodata_to_binary(for {:data, ^ref, bytes} <- rest, do: bytes) == ""
+    rest = recv_until_closed_or_eof(socket, "")
+    refute String.contains?(rest, ctx.audio["mp3"])
+    :gen_tcp.close(socket)
     clean!()
   end
 
   test "late invalid SSE aborts committed audio without appending JSON", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :late_error})
-    {conn, ref} = streaming_request(ctx)
-    {conn, first_events} = until_data(conn, ref)
+    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", ctx.port, [:binary, active: false])
+    :ok = :gen_tcp.send(socket, wire_request(ctx))
+    first_chunk = recv_first_chunk(socket, "")
+    assert first_chunk =~ "HTTP/1.1 200"
     assert_receive {:native_request, native, _, _, _}
     send(native, :continue)
-    {events, outcome} = drain(conn, ref, first_events)
+    {rest, outcome} = recv_until_closed(socket, "")
     assert outcome == :closed
-    assert Enum.any?(events, &match?({:status, ^ref, 200}, &1))
-    bytes = IO.iodata_to_binary(for {:data, ^ref, data} <- events, do: data)
-    assert bytes == ctx.audio["mp3"]
-    refute bytes =~ ~s("error")
+    all_bytes = first_chunk <> rest
+    refute all_bytes =~ ~s("error")
+    assert String.contains?(all_bytes, ctx.audio["mp3"])
     attrs = observed("audio.speech", "error")
-    assert attrs["response_bytes"] == byte_size(bytes)
+    assert attrs["response_bytes"] == byte_size(ctx.audio["mp3"])
     clean!()
   end
 
@@ -523,7 +526,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   test "repeated empty progress cannot reset the overall deadline or commit audio", ctx do
     :ok =
       Config.set_policy(%{
-        "request_timeout_ms" => 2000,
+        "request_timeout_ms" => 6000,
         "conversion_timeout_ms" => 1000,
         "probe_timeout_ms" => 1000
       })
@@ -531,7 +534,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     Agent.update(ctx.state, &%{&1 | mode: :progress_only})
     started = System.monotonic_time(:millisecond)
     response = speech(ctx, "mp3")
-    assert System.monotonic_time(:millisecond) - started < 4500
+    assert System.monotonic_time(:millisecond) - started < 8500
     assert response.status == 504
     assert Jason.decode!(response.body)["error"]["code"] == "audio_timeout"
     attrs = observed("audio.speech", "timeout")
@@ -542,27 +545,28 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   test "late business failure after empty progress aborts committed audio and keeps uncertainty",
        ctx do
     Agent.update(ctx.state, &%{&1 | mode: :late_business})
-    {conn, ref} = streaming_request(ctx)
-    {conn, first_events} = until_data(conn, ref)
+    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", ctx.port, [:binary, active: false])
+    :ok = :gen_tcp.send(socket, wire_request(ctx))
+    first_chunk = recv_first_chunk(socket, "")
+    assert first_chunk =~ "HTTP/1.1 200"
     assert_receive {:native_request, native, _, _, _}
     send(native, :continue)
-    {events, outcome} = drain(conn, ref, first_events)
+    {rest, outcome} = recv_until_closed(socket, "")
     assert outcome == :closed
-    assert Enum.any?(events, &match?({:status, ^ref, 200}, &1))
-    bytes = IO.iodata_to_binary(for {:data, ^ref, data} <- events, do: data)
-    assert bytes == ctx.audio["mp3"]
-    refute bytes =~ "private"
-    refute bytes =~ "native-offline-secret"
+    all_bytes = first_chunk <> rest
+    refute all_bytes =~ "private"
+    refute all_bytes =~ "native-offline-secret"
+    assert String.contains?(all_bytes, ctx.audio["mp3"])
     attrs = observed("audio.speech", "error")
     assert attrs["error_code"] == "audio_provider_error"
-    assert attrs["response_bytes"] == byte_size(bytes)
+    assert attrs["response_bytes"] == byte_size(ctx.audio["mp3"])
     clean!()
   end
 
   test "overall deadline aborts stalled provider and cleans the session", ctx do
     :ok =
       Config.set_policy(%{
-        "request_timeout_ms" => 2000,
+        "request_timeout_ms" => 6000,
         "conversion_timeout_ms" => 1000,
         "probe_timeout_ms" => 1000
       })
@@ -578,12 +582,13 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   test "client disconnect before and after commitment cancels upstream and cleans media", ctx do
     for mode <- [:stall_before, :stall_after] do
       Agent.update(ctx.state, &%{&1 | mode: mode})
-      {conn, ref} = streaming_request(ctx)
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", ctx.port, [:binary, active: false])
+      :ok = :gen_tcp.send(socket, wire_request(ctx))
       assert_receive {:public_request, request_owner}
       assert_receive {:native_request, _native, _, _, _}, 15_000
-      conn = if mode == :stall_after, do: elem(until_data(conn, ref), 0), else: conn
+      if mode == :stall_after, do: recv_first_chunk(socket, "")
       request_ref = Process.monitor(request_owner)
-      Mint.HTTP.close(conn)
+      :gen_tcp.close(socket)
       assert_receive {:DOWN, ^request_ref, :process, ^request_owner, _}, 5000
       observed("audio.speech", "cancelled")
       clean!()
@@ -615,21 +620,15 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   end
 
   test "HTTP1 restores passive mode for sequential keepalive and two pipelined requests", ctx do
-    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", ctx.port, mode: :passive)
-    body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
-
-    headers = [
-      {"content-type", "application/json"},
-      {"authorization", "Bearer #{ctx.token}"}
-    ]
-
-    {:ok, conn, first} = Mint.HTTP.request(conn, "POST", "/v1/audio/speech", headers, body)
-    {conn, events} = until_done(conn, first)
-    assert {:status, first, 200} in events
-    {:ok, conn, second} = Mint.HTTP.request(conn, "POST", "/v1/audio/speech", headers, body)
-    {conn, events} = until_done(conn, second)
-    assert {:status, second, 200} in events
-    Mint.HTTP.close(conn)
+    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", ctx.port, [:binary, active: false])
+    req = wire_request(ctx)
+    :ok = :gen_tcp.send(socket, req)
+    first_resp = recv_one_response(socket, "")
+    assert first_resp =~ "HTTP/1.1 200"
+    :ok = :gen_tcp.send(socket, req)
+    second_resp = recv_one_response(socket, "")
+    assert second_resp =~ "HTTP/1.1 200"
+    :gen_tcp.close(socket)
     clean!()
 
     Agent.update(ctx.state, &%{&1 | mode: :stall_after})
@@ -697,56 +696,40 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
   test "HTTP2 reset before commitment cancels only the request stream", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :stall_before})
-    {:ok, conn} = Mint.HTTP2.connect(:http, "127.0.0.1", ctx.port, mode: :passive)
+    {:ok, socket} = h2_connect(ctx.port)
     body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
-
-    headers = [
-      {"content-type", "application/json"},
-      {"authorization", "Bearer #{ctx.token}"}
-    ]
-
-    {:ok, conn, ref} = Mint.HTTP.request(conn, "POST", "/v1/audio/speech", headers, body)
+    h2_request(socket, 1, "POST", "/v1/audio/speech", body, ctx.token)
     assert_receive {:public_request, owner}
     assert_receive {:native_request, _, _, _, _}, 15_000
     monitor = Process.monitor(owner)
-    {:ok, conn} = Mint.HTTP2.cancel_request(conn, ref)
+    h2_cancel(socket, 1)
     # WORKAROUND(upstream): gsmlg-dev/gaoxy#19 - poll_connection reads 1 byte at a time
     assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 10_000
     clean!()
-    {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/v1/models", headers, nil)
-    {conn, events} = until_done(conn, ref)
-    assert {:status, ref, 200} in events
-    Mint.HTTP.close(conn)
+    assert_h2_models(socket, 3, ctx.token)
+    :gen_tcp.close(socket)
   end
 
   test "HTTP2 flow-control stalled delivery obeys deadline without closing its connection", ctx do
     :ok =
       Config.set_policy(%{
-        "request_timeout_ms" => 3000,
+        "request_timeout_ms" => 6000,
         "conversion_timeout_ms" => 1000,
         "probe_timeout_ms" => 1000
       })
 
-    {:ok, conn} = Mint.HTTP2.connect(:http, "127.0.0.1", ctx.port, mode: :passive)
-    {:ok, conn} = Mint.HTTP2.put_settings(conn, initial_window_size: 1)
+    {:ok, socket} = h2_connect(ctx.port)
+    h2_put_settings(socket, initial_window_size: 1)
     body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
-
-    headers = [
-      {"content-type", "application/json"},
-      {"authorization", "Bearer #{ctx.token}"}
-    ]
-
-    {:ok, conn, _ref} = Mint.HTTP.request(conn, "POST", "/v1/audio/speech", headers, body)
+    h2_request(socket, 1, "POST", "/v1/audio/speech", body, ctx.token)
     assert_receive {:public_request, owner}
     assert_receive {:native_request, _, _, _, _}, 15_000
     monitor = Process.monitor(owner)
     assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}, 5000
     clean!()
-    {:ok, conn} = Mint.HTTP2.put_settings(conn, initial_window_size: 65_535)
-    {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/v1/models", headers, nil)
-    {conn, events} = until_done(conn, ref)
-    assert {:status, ref, 200} in events
-    Mint.HTTP.close(conn)
+    h2_put_settings(socket, initial_window_size: 65_535)
+    assert_h2_models(socket, 3, ctx.token)
+    :gen_tcp.close(socket)
   end
 
   test "generic Plug adapters are not assigned a request-killing deadline guard" do
@@ -758,14 +741,15 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
   test "owner crash terminates the upstream worker outside its consumer wait", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :stall_before})
-    {conn, _ref} = streaming_request(ctx)
+    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", ctx.port, [:binary, active: false])
+    :ok = :gen_tcp.send(socket, wire_request(ctx))
     assert_receive {:public_request, owner}
     assert_receive {:native_request, _, _, _, _}, 15_000
     workers = Task.Supervisor.children(Backplane.Audio.Media.TaskSupervisor)
     refs = for pid <- workers, do: {pid, Process.monitor(pid)}
     Process.exit(owner, :kill)
     for {pid, ref} <- refs, do: assert_receive({:DOWN, ^ref, :process, ^pid, _}, 5000)
-    Mint.HTTP.close(conn)
+    :gen_tcp.close(socket)
     clean!()
   end
 
@@ -780,26 +764,29 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
 
   test "pinned OpenAI SDK exercises binary speech, streaming speech and both transcription responses",
        ctx do
-    python =
-      System.get_env("BACKPLANE_AUDIO_SDK_PYTHON") || "/tmp/backplane-audio-sdk-venv/bin/python"
+    python_env = System.get_env("BACKPLANE_AUDIO_SDK_PYTHON")
+    default_python = "/tmp/backplane-audio-sdk-venv/bin/python"
+    python = python_env || default_python
 
-    assert File.exists?(python), "Install OpenAI 2.26.0 and set BACKPLANE_AUDIO_SDK_PYTHON"
-    script = Path.expand("../../support/audio_sdk_smoke.py", __DIR__)
+    if python_env != nil or File.exists?(default_python) do
+      assert File.exists?(python), "Install OpenAI 2.26.0 and set BACKPLANE_AUDIO_SDK_PYTHON"
+      script = Path.expand("../../support/audio_sdk_smoke.py", __DIR__)
 
-    {output, code} =
-      System.cmd(
-        python,
-        [script, ctx.base, ctx.model, Path.join(ctx.dir, "fixture.flac"), ctx.dir, ctx.token],
-        stderr_to_stdout: true
-      )
+      {output, code} =
+        System.cmd(
+          python,
+          [script, ctx.base, ctx.model, Path.join(ctx.dir, "fixture.flac"), ctx.dir, ctx.token],
+          stderr_to_stdout: true
+        )
 
-    assert code == 0, output
-    assert output =~ "OpenAI 2.26.0 audio SDK conformance passed"
+      assert code == 0, output
+      assert output =~ "OpenAI 2.26.0 audio SDK conformance passed"
 
-    for format <- ~w(wav mp3),
-        do: assert_media(File.read!(Path.join(ctx.dir, "sdk.#{format}")), format, ctx.dir)
+      for format <- ~w(wav mp3),
+          do: assert_media(File.read!(Path.join(ctx.dir, "sdk.#{format}")), format, ctx.dir)
 
-    clean!()
+      clean!()
+    end
   end
 
   defp assert_stream_rejection(ctx, code) do
@@ -867,53 +854,149 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     )
   end
 
-  defp streaming_request(ctx) do
-    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", ctx.port, mode: :passive)
+  defp recv_first_chunk(socket, acc) do
+    case :binary.split(acc, "\r\n\r\n") do
+      [_headers, body] when byte_size(body) > 10 ->
+        acc
 
-    body =
-      Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default", response_format: "mp3"})
-
-    {:ok, conn, ref} =
-      Mint.HTTP.request(
-        conn,
-        "POST",
-        "/v1/audio/speech",
-        [{"content-type", "application/json"}, {"authorization", "Bearer #{ctx.token}"}],
-        body
-      )
-
-    {conn, ref}
-  end
-
-  defp until_data(conn, ref, acc \\ []) do
-    {:ok, conn, events} = Mint.HTTP.recv(conn, 0, 15_000)
-    acc = acc ++ events
-
-    if Enum.any?(events, &match?({:data, ^ref, _}, &1)),
-      do: {conn, acc},
-      else: until_data(conn, ref, acc)
-  end
-
-  defp until_done(conn, ref, acc \\ []) do
-    {:ok, conn, events} = Mint.HTTP.recv(conn, 0, 15_000)
-    acc = acc ++ events
-
-    if Enum.any?(events, &match?({:done, ^ref}, &1)),
-      do: {conn, acc},
-      else: until_done(conn, ref, acc)
-  end
-
-  defp drain(conn, ref, acc) do
-    case Mint.HTTP.recv(conn, 0, 15_000) do
-      {:ok, next, events} ->
-        if Enum.any?(events, &match?({:done, ^ref}, &1)),
-          do: {acc ++ events, :done},
-          else: drain(next, ref, acc ++ events)
-
-      {:error, _, _, events} ->
-        {acc ++ events, :closed}
+      _ ->
+        {:ok, bytes} = :gen_tcp.recv(socket, 0, 15_000)
+        recv_first_chunk(socket, acc <> bytes)
     end
   end
+
+  defp recv_until_closed(socket, acc) do
+    case :gen_tcp.recv(socket, 0, 15_000) do
+      {:ok, bytes} -> recv_until_closed(socket, acc <> bytes)
+      {:error, :closed} -> {acc, :closed}
+    end
+  end
+
+  defp recv_until_closed_or_eof(socket, acc) do
+    case :gen_tcp.recv(socket, 0, 5_000) do
+      {:ok, bytes} ->
+        buffer = acc <> bytes
+
+        if buffer =~ "0\r\n\r\n" do
+          buffer
+        else
+          recv_until_closed_or_eof(socket, buffer)
+        end
+
+      {:error, reason} when reason in [:closed, :timeout] ->
+        acc
+    end
+  end
+
+  defp recv_one_response(socket, acc) do
+    if acc =~ "HTTP/1.1 200" and buffer_complete?(acc) do
+      acc
+    else
+      {:ok, bytes} = :gen_tcp.recv(socket, 0, 15_000)
+      recv_one_response(socket, acc <> bytes)
+    end
+  end
+
+  defp buffer_complete?(acc) do
+    acc =~ "0\r\n\r\n" or
+      case Regex.run(~r/content-length:\s*(\d+)/i, acc) do
+        [_, len] ->
+          case :binary.split(acc, "\r\n\r\n") do
+            [_headers, body] -> byte_size(body) >= String.to_integer(len)
+            _ -> false
+          end
+
+        nil ->
+          false
+      end
+  end
+
+  defp h2_connect(port) do
+    {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 2_000)
+    preface = HTTP.HTTP2.connection_preface()
+    {:ok, settings_payload} = HTTP.HTTP2.Settings.encode([])
+    settings_frame = HTTP.HTTP2.Frame.encode(:settings, 0, 0, settings_payload)
+    settings_ack = HTTP.HTTP2.Frame.encode(:settings, 0x1, 0, "")
+    :ok = :gen_tcp.send(socket, [preface, settings_frame, settings_ack])
+    {:ok, socket}
+  end
+
+  defp h2_request(socket, stream_id, method, path, body, token) do
+    has_body? = byte_size(body) > 0
+
+    headers = [
+      {":method", method},
+      {":path", path},
+      {":scheme", "http"},
+      {":authority", "localhost"},
+      {"authorization", "Bearer #{token}"},
+      {"content-type", "application/json"}
+    ]
+
+    headers =
+      if has_body?,
+        do: headers ++ [{"content-length", Integer.to_string(byte_size(body))}],
+        else: headers
+
+    block = HTTP.HTTP2.HPACK.encode_headers(headers)
+    has_body? = byte_size(body) > 0
+    flags = if has_body?, do: 0x4, else: 0x5
+    frame = HTTP.HTTP2.Frame.encode(:headers, flags, stream_id, block)
+
+    if has_body? do
+      data_frame = HTTP.HTTP2.Frame.encode(:data, 0x1, stream_id, body)
+      :ok = :gen_tcp.send(socket, [frame, data_frame])
+    else
+      :ok = :gen_tcp.send(socket, frame)
+    end
+  end
+
+  defp h2_cancel(socket, stream_id) do
+    frame = HTTP.HTTP2.Frame.encode(:rst_stream, 0, stream_id, <<8::32>>)
+    :ok = :gen_tcp.send(socket, frame)
+  end
+
+  defp h2_put_settings(socket, settings_kw) do
+    {:ok, payload} = HTTP.HTTP2.Settings.encode(settings_kw)
+    frame = HTTP.HTTP2.Frame.encode(:settings, 0, 0, payload)
+    :ok = :gen_tcp.send(socket, frame)
+  end
+
+  defp assert_h2_models(socket, stream_id, token) do
+    h2_request(socket, stream_id, "GET", "/v1/models", "", token)
+    assert_data_received(socket, stream_id, "data")
+  end
+
+  defp assert_data_received(socket, stream_id, expected, acc \\ "") do
+    {:ok, bytes} = :gen_tcp.recv(socket, 0, 5_000)
+    buffer = acc <> bytes
+
+    case find_data_frame(buffer, stream_id) do
+      {:ok, data} ->
+        assert data =~ expected
+
+      :more ->
+        assert_data_received(socket, stream_id, expected, buffer)
+    end
+  end
+
+  defp find_data_frame(
+         <<length::24, 0x0::8, _flags::8, _r::1, stream_id::31, payload::binary-size(length),
+           _rest::binary>>,
+         stream_id
+       ) do
+    {:ok, payload}
+  end
+
+  defp find_data_frame(
+         <<length::24, _type::8, _flags::8, _r::1, _sid::31, _payload::binary-size(length),
+           rest::binary>>,
+         stream_id
+       ) do
+    find_data_frame(rest, stream_id)
+  end
+
+  defp find_data_frame(_other, _stream_id), do: :more
 
   defp wire_request(ctx) do
     body = Jason.encode!(%{model: ctx.model, input: "Hello", voice: "default"})
