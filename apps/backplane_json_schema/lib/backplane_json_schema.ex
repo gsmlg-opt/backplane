@@ -151,7 +151,8 @@ defmodule Backplane.JsonSchema do
       iex> Backplane.JsonSchema.validate(schema, "Ada")
       :ok
   """
-  @spec bundle_fragment(map() | boolean(), keyword()) :: {:ok, map() | boolean()} | {:error, Error.t()}
+  @spec bundle_fragment(map() | boolean(), keyword()) ::
+          {:ok, map() | boolean()} | {:error, Error.t()}
   defdelegate bundle_fragment(document, opts), to: Compiler
 
   @doc """

@@ -1,7 +1,10 @@
 defmodule Backplane.JsonSchema.ConformanceTest do
   use ExUnit.Case, async: false
 
-  @suite_root Path.expand("../../../../backplane_agent_runtime/test/fixtures/json_schema_test_suite", __DIR__)
+  @suite_root Path.expand(
+                "../../../../backplane_agent_runtime/test/fixtures/json_schema_test_suite",
+                __DIR__
+              )
   @suite_commit "5b0ee1613e45fcc2bddac00e07c19cd49b00d8a8"
   @draft_root Path.join(@suite_root, "draft2020-12")
   @remote_root Path.join(@suite_root, "remotes/draft2020-12")
@@ -59,7 +62,8 @@ defmodule Backplane.JsonSchema.ConformanceTest do
   end
 
   defp run_group(%{"schema" => schema, "tests" => tests, "description" => group}, file, opts) do
-    {:ok, compiled} = Backplane.JsonSchema.compile(schema, Keyword.put(opts, :loader, &load_remote/1))
+    {:ok, compiled} =
+      Backplane.JsonSchema.compile(schema, Keyword.put(opts, :loader, &load_remote/1))
 
     Enum.each(tests, fn %{"data" => data, "valid" => expected, "description" => description} ->
       actual = Backplane.JsonSchema.validate(compiled, data) == :ok

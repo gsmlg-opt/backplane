@@ -59,7 +59,8 @@ defmodule Backplane.AgentRuntime.JSONSchemaDraft202012Test do
   end
 
   defp run_group(%{"schema" => schema, "tests" => tests, "description" => group}, file, opts) do
-    {:ok, compiled} = Backplane.JsonSchema.compile(schema, Keyword.put(opts, :loader, &load_remote/1))
+    {:ok, compiled} =
+      Backplane.JsonSchema.compile(schema, Keyword.put(opts, :loader, &load_remote/1))
 
     Enum.each(tests, fn %{"data" => data, "valid" => expected, "description" => description} ->
       actual = Backplane.JsonSchema.validate(compiled, data) == :ok
