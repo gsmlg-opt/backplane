@@ -45,6 +45,123 @@ defmodule Backplane.AgentRuntime.ConversationCodeModeContextTest do
     end
   end
 
+  defmodule ImageReader do
+    def execute(operation) do
+      send(operation.backend_context.test, {:image_read, operation})
+      {:ok, operation.backend_context.result}
+    end
+  end
+
+  test "selected image results remain exact through direct and native nested execution" do
+    assert is_binary(System.find_executable("deno"))
+    assert CodeMode.lifecycle_capability(%{}) == :verified
+
+    result = %{
+      content: [%{type: "image", mimeType: "image/png", data: String.duplicate("A", 1_100_000)}],
+      details: %{path: "image.png", original: true}
+    }
+
+    names = ["exec", "fixture::image"]
+    authority = %{caller: "host", run_id: "scoped-image", grants: names, tool_revision: 1}
+    session = start_supervised!({Session, owner_pid: self()})
+    assert {:ok, binding} = Session.bind(session, authority)
+
+    descriptor = %{
+      name: "image",
+      namespace: "fixture",
+      description: "Return one canonical image result",
+      revision: 1,
+      backend: ImageReader,
+      backend_context: %{test: self(), result: result},
+      schema: %{"type" => "object", "additionalProperties" => false},
+      safety: %{read_only: true, retry_safe: true, parallel_safe: false}
+    }
+
+    assert {:ok, profile} =
+             Codex.profile(
+               :mixed,
+               %{session_binding: binding, code_mode_contracts: [descriptor]},
+               authority,
+               tools: names
+             )
+
+    assert {:ok, store} = EphemeralStore.new(binding.run_incarnation)
+    test = self()
+    json_limit = result |> JSON.encode!() |> byte_size()
+
+    selector = fn selected, identity ->
+      if selected.backend == ImageReader do
+        refute Map.has_key?(identity, :arguments)
+        send(test, {:selected_contract, identity.invocation_id})
+        {:ok, %{output_limit: 1_200_000, json_limit: json_limit}}
+      else
+        :default
+      end
+    end
+
+    conversation =
+      start_supervised!(
+        {Conversation,
+         run_id: authority.run_id,
+         incarnation: binding.run_incarnation,
+         store: EphemeralStore,
+         context: store,
+         provider: Provider,
+         provider_context: %{test: self()},
+         subscriber: self(),
+         registry: profile.registry,
+         tools: profile.tools,
+         authority: profile.authority,
+         session_binding: binding,
+         tool_result_contract: selector,
+         schema_admission: :strict,
+         run_timeout: 15_000,
+         effect_timeout: 5_000}
+      )
+
+    assert {:ok, _} = Conversation.prompt(conversation, "read image")
+    assert_receive {:provider, _, catalog, provider}, 3_000
+    call(provider, "direct-image", "fixture::image", %{})
+    assert_receive {:image_read, direct}, 3_000
+    assert_receive {:selected_contract, direct_id}
+    assert direct_id == direct.invocation_id
+    assert_receive {:provider, %{messages: messages}, ^catalog, provider}, 3_000
+    assert List.last(messages).result == Map.put(result, :is_error, false)
+
+    call(provider, "nested-image", "exec", """
+    const read = await tools.fixture__image({});
+    return {exact: read.content[0].data === 'A'.repeat(1100000),
+      mime: read.content[0].mimeType, details: read.details};
+    """)
+
+    assert_receive {:image_read, nested}, 3_000
+    assert_receive {:selected_contract, nested_id}
+    assert nested_id == nested.invocation_id
+    assert_receive {:provider, %{messages: messages}, ^catalog, provider}, 5_000
+    assert %{is_error: false, status: :completed, value: value} = List.last(messages).result
+
+    assert value == %{
+             "exact" => true,
+             "mime" => "image/png",
+             "details" => %{"path" => "image.png", "original" => true}
+           }
+
+    assert direct.result_contract == nested.result_contract
+    assert nested.enclosing_invocation_id != nested.invocation_id
+
+    send(provider, {:events, [done()]})
+    assert_receive {:agent_runtime, "scoped-image", %{type: :run_completed}}, 5_000
+    assert {:ok, %{run: run}} = EphemeralStore.load(store, authority.run_id)
+    assert run.active_tools == %{}
+
+    for operation <- [direct, nested] do
+      assert run.tool_results[operation.invocation_id] == Map.put(result, :is_error, false)
+      assert run.execution_intents["tool:#{operation.invocation_id}"].status == :consumed
+    end
+
+    assert {:ok, %{status: :confirmed}} = Session.close(session)
+  end
+
   test "ordinary host reads preserve direct context through real Deno and continue", ctx do
     assert is_binary(System.find_executable("deno")), "this regression requires real Deno"
     assert CodeMode.lifecycle_capability(%{}) == :verified

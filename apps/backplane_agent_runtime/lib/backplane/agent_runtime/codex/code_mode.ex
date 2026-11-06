@@ -948,7 +948,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       Process.demonitor(ref, [:flush])
 
       case normalize_dispatch_result(result, state.context) do
-        {:ok, value, context} ->
+        {:ok, value, context, contract} ->
           command = %{
             type: "tool_result",
             id: state.active_tool.id,
@@ -958,7 +958,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
           # Dispatch has already settled. Presentation failure must retain its
           # context and must not turn the completed effect into uncertainty.
-          deliver_tool_result(%{state | active_tool: nil, context: context}, command)
+          deliver_tool_result(%{state | active_tool: nil, context: context}, command, contract)
 
         {:error, %Error{class: :unknown_outcome} = error} ->
           fail(%{state | active_tool: nil}, error)
@@ -1174,11 +1174,11 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     defp tool_call(_message, state),
       do: fail(state, Error.new(:validation, "invalid nested tool call"))
 
-    defp normalize_dispatch_result({:ok, value}, context), do: {:ok, value, context}
+    defp normalize_dispatch_result({:ok, value}, context), do: dispatch_value(value, context)
 
     defp normalize_dispatch_result({:ok, value, next_context}, _context)
          when is_map(next_context),
-         do: {:ok, value, next_context}
+         do: dispatch_value(value, next_context)
 
     defp normalize_dispatch_result({:error, %Error{} = error}, _context), do: {:error, error}
 
@@ -1189,9 +1189,25 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
            cause: other
          )}
 
-    defp deliver_tool_result(state, command) do
-      case encode_tool_result(command) do
+    defp dispatch_value(
+           %Backplane.AgentRuntime.ToolResultContract.Delivery{} = delivery,
+           context
+         ),
+         do: {:ok, delivery.value, context, delivery.contract}
+
+    defp dispatch_value(value, context), do: {:ok, value, context, nil}
+
+    defp deliver_tool_result(state, command, contract \\ nil) do
+      case encode_tool_result(command, contract) do
         {:ok, record} ->
+          if contract do
+            send_command(state.port, %{
+              type: "tool_result_allowance",
+              id: command.id,
+              bytes: byte_size(record)
+            })
+          end
+
           Port.command(state.port, [record, "\n"])
           complete_tool(state)
 
@@ -1200,10 +1216,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       end
     end
 
-    defp encode_tool_result(command) do
+    defp encode_tool_result(command, contract) do
       record = command |> public_errors() |> JSON.encode!()
 
-      if byte_size(record) <= @max_line,
+      if transport_fits?(record, command, contract),
         do: {:ok, record},
         else:
           {:error,
@@ -1212,6 +1228,15 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       _ -> {:error, Error.new(:malformed_result, "nested tool result is not JSON encodable")}
     catch
       _, _ -> {:error, Error.new(:malformed_result, "nested tool result is not JSON encodable")}
+    end
+
+    defp transport_fits?(record, _command, nil), do: byte_size(record) <= @max_line
+
+    defp transport_fits?(record, %{value: value}, contract) do
+      value_size = value |> public_errors() |> JSON.encode!() |> byte_size()
+
+      Backplane.AgentRuntime.ToolResultContract.validate(contract) == :ok and
+        value_size <= contract.json_limit and byte_size(record) - value_size <= @max_line
     end
 
     defp public_errors(%Error{} = error), do: error |> Error.to_map() |> public_errors()

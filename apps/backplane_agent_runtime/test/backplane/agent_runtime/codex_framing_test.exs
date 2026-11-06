@@ -67,6 +67,41 @@ defmodule Backplane.AgentRuntime.CodexFramingTest do
     end
   end
 
+  test "host allowance carries one exact pending result across fragmented UTF-8 records",
+       context do
+    {output, status} =
+      run_worker(context, """
+      const inputEncoder = new TextEncoder();
+      const result = inputEncoder.encode(JSON.stringify({type:'tool_result',id:'1',ok:true,value:'界'.repeat(400000)}));
+      const chunks = [inputEncoder.encode(
+        JSON.stringify({type:'execute',code:'return (await codex.tool("image", {})).length;'})+'\\n'+
+        JSON.stringify({type:'tool_result_allowance',id:'1',bytes:result.length})+'\\n')];
+      for (let i=0;i<result.length;i+=997) chunks.push(result.slice(i,i+997));
+      chunks.push(inputEncoder.encode('\\n'));
+      """)
+
+    assert status == 0, output
+    assert output =~ ~s("type":"complete","value":400000)
+    refute output =~ ~s("type":"error")
+  end
+
+  test "host allowance rejects absent pending identity and mismatched following result",
+       context do
+    for commands <- [
+          "{type:'tool_result_allowance',id:'missing',bytes:2000000}",
+          "{type:'tool_result_allowance',id:'1',bytes:2000000}, {type:'tool_result',id:'2',ok:true,value:42}"
+        ] do
+      {output, status} =
+        run_worker(context, """
+        const inputRecords = [{type:'execute',code:'return await codex.tool("image", {});'}, #{commands}];
+        const chunks = [new TextEncoder().encode(inputRecords.map(r=>JSON.stringify(r)+'\\n').join(''))];
+        """)
+
+      assert status != 0
+      assert output =~ "malformed_result"
+    end
+  end
+
   test "large permitted execution and nested result use the real CodeMode worker", %{deno: deno} do
     registry = start_supervised!(ResourceRegistry)
 

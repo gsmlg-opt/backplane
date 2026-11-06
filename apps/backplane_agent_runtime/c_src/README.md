@@ -71,3 +71,20 @@ python3 test/native/pty_protocol_test.py
 
 Python is only a test driver, never a production transport dependency. Native
 architecture/official-package/release validation are distinct evidence.
+
+## Pipe input half-close
+
+`LocalCommand.start_link(pipe_stdin: true)` uses this helper for non-PTY commands.
+It requires the separate `--probe-pipe` capability (`BACKPLANE_PIPE 1`); a legacy
+PTY-only helper is rejected before advertising input-close support. This probe
+checks procfs/pidfd support without requiring a controlling terminal. The explicit
+build command remains `mix backplane.pty.build` and generated binaries remain
+excluded from Hex packages.
+
+`--pipe` takes the same arguments as `--run`, but starts the child with ordinary
+stdin/output pipes in its verified session. Packet4 input `E` requests EOF: the
+guardian flushes all previously accepted `I` bytes, closes the child's stdin pipe
+write end, then returns `E` to acknowledge closure. Output and child lifetime are
+independent; final `F` plus successful broker exit still prove resource cleanup.
+The child sees literal input bytes, including Ctrl-D. PTY mode does not support
+half-close. Default raw Erlang Port pipes retain their existing behavior.

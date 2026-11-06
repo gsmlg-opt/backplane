@@ -6,10 +6,10 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
   @frame_max 65_536
 
   def options(opts) do
-    case Keyword.get(opts, :pty, false) do
-      false -> {:ok, nil}
-      true -> enabled_options(opts)
-      _ -> {:error, Error.new(:validation, "pty must be a boolean")}
+    case {Keyword.get(opts, :pty, false), Keyword.get(opts, :pipe_stdin, false)} do
+      {false, false} -> {:ok, nil}
+      {pty, pipe} when is_boolean(pty) and is_boolean(pipe) -> enabled_options(opts)
+      _ -> {:error, Error.new(:validation, "pty and pipe_stdin must be booleans")}
     end
   end
 
@@ -44,7 +44,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
         unavailable("PTY helper is unavailable; run mix backplane.pty.build")
 
       true ->
-        case probe(path) do
+        case probe(path, Keyword.get(opts, :pipe_stdin, false)) do
           :ok -> {:ok, %{path: path, rows: rows, columns: columns}}
           _ -> unavailable("PTY helper capability probe failed")
         end
@@ -53,27 +53,32 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
 
   defp unavailable(message), do: {:error, Error.new(:unsupported_capability, message)}
 
-  defp probe(path) do
+  defp probe(path, pipe?) do
     port =
       Port.open({:spawn_executable, path}, [
         :binary,
         :exit_status,
         :use_stdio,
-        {:args, ["--probe"]}
+        {:args, [if(pipe?, do: "--probe-pipe", else: "--probe")]}
       ])
 
-    probe_result(port, "", System.monotonic_time(:millisecond) + 1000)
+    probe_result(
+      port,
+      "",
+      System.monotonic_time(:millisecond) + 1000,
+      if(pipe?, do: "BACKPLANE_PIPE 1\n", else: "BACKPLANE_PTY 1\n")
+    )
   rescue
     _ -> :error
   end
 
-  defp probe_result(port, bytes, deadline) do
+  defp probe_result(port, bytes, deadline, expected) do
     receive do
       {^port, {:data, data}} when byte_size(bytes) + byte_size(data) <= 64 ->
-        probe_result(port, bytes <> data, deadline)
+        probe_result(port, bytes <> data, deadline, expected)
 
       {^port, {:exit_status, 0}} ->
-        if(bytes == "BACKPLANE_PTY 1\n", do: :ok, else: :error)
+        if(bytes == expected, do: :ok, else: :error)
 
       {^port, {:exit_status, _}} ->
         :error
@@ -90,7 +95,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
 
     args =
       [
-        "--run",
+        if(Map.get(request, :tty, false), do: "--run", else: "--pipe"),
         token,
         owner,
         to_string(Map.get(request, :incarnation, 1)),
@@ -192,6 +197,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand.Pty do
     <<chunk::binary-size(^size), rest::binary>> = bytes
     Port.command(port, <<"I", chunk::binary>>, [:nosuspend]) and write_chunks(port, rest)
   end
+
+  def close_stdin(port), do: Port.command(port, "E", [:nosuspend])
 
   def acknowledge(port, token), do: Port.command(port, "A" <> token, [:nosuspend])
 

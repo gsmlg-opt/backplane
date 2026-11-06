@@ -22,6 +22,9 @@ defmodule Backplane.AgentRuntime.Command do
 
   @optional_callbacks write: 4
 
+  @callback close_stdin(map(), map(), map()) :: :ok | {:error, Error.t()}
+  @optional_callbacks close_stdin: 3
+
   @callback cancel_confirmed(map(), map(), pos_integer()) :: :ok | {:error, Error.t()}
   @optional_callbacks cancel_confirmed: 3
 
@@ -102,6 +105,20 @@ defmodule Backplane.AgentRuntime.Command do
 
   def write(_command, _invocation, _job, _chars),
     do: {:error, Error.new(:validation, "command write arguments are malformed")}
+
+  @doc "Close command input without terminating it; unsupported backends return an explicit error."
+  def close_stdin(command, invocation, job)
+      when is_map(command) and is_map(invocation) and is_map(job) do
+    with {:ok, owner} <- require_binary(invocation, :owner_run_id, "owner run"),
+         {:ok, _} <- validate_job_owner(job, owner) do
+      if function_exported?(command.adapter, :close_stdin, 3),
+        do: command.adapter.close_stdin(command, invocation, job),
+        else: {:error, Error.new(:unsupported_capability, "command backend cannot close stdin")}
+    end
+  end
+
+  def close_stdin(_, _, _),
+    do: {:error, Error.new(:validation, "command input-close arguments are malformed")}
 
   defp reject_shell_string(executable) do
     if String.contains?(executable, " ") do

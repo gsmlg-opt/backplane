@@ -120,6 +120,30 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   def forget_session(pid, session_id, owner, incarnation \\ nil),
     do: GenServer.call(pid, {:forget_session, session_id, owner, incarnation})
 
+  @doc false
+  def command_records(pid, owner, incarnation),
+    do: GenServer.call(pid, {:command_records, owner, incarnation})
+
+  @doc false
+  def command_record(pid, id, owner, incarnation),
+    do: GenServer.call(pid, {:command_record, id, owner, incarnation})
+
+  @doc false
+  def command_output(pid, id, owner, incarnation, snapshot, opts),
+    do: GenServer.call(pid, {:command_output, id, owner, incarnation, snapshot, opts})
+
+  @doc false
+  def archive_command(pid, id, owner, incarnation, snapshot),
+    do: GenServer.call(pid, {:archive_command, id, owner, incarnation, snapshot})
+
+  @doc false
+  def remove_command(pid, id, owner, incarnation),
+    do: GenServer.call(pid, {:remove_command, id, owner, incarnation})
+
+  @doc false
+  def clear_commands(pid, owner, incarnation),
+    do: GenServer.call(pid, {:clear_commands, owner, incarnation})
+
   @doc """
   Withdraw an unused reservation after trusted backend evidence proves non-start.
 
@@ -137,14 +161,23 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
     timeout = Keyword.get(opts, :cleanup_timeout, @default_cleanup_timeout)
     max_continuations = Keyword.get(opts, :max_continuations, 16)
 
+    command_retention = %{
+      count: Keyword.get(opts, :command_history_count, 64),
+      bytes: Keyword.get(opts, :command_history_bytes, 16_777_216),
+      ttl: Keyword.get(opts, :command_history_ttl, 300_000)
+    }
+
     recovery_options = Reconciliation.validate_options(opts)
     owner_incarnation = Keyword.get(opts, :recovery_owner_incarnation, 1)
 
     if recovery_options == :ok and is_integer(timeout) and timeout > 0 and timeout <= 60_000 and
          is_integer(max_continuations) and max_continuations in 1..256 and
-         is_integer(owner_incarnation) and owner_incarnation > 0 do
+         is_integer(owner_incarnation) and owner_incarnation > 0 and
+         Enum.all?(Map.values(command_retention), &(is_integer(&1) and &1 > 0)) and
+         command_retention.ttl <= 4_294_967_295 do
       {:ok, cleanup_supervisor} = Task.Supervisor.start_link()
       {:ok, worker_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+      Process.send_after(self(), :prune_commands, command_retention.ttl)
 
       {:ok,
        %{
@@ -154,6 +187,8 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
          closed_owners: MapSet.new(),
          resources: %{},
          sessions: %{},
+         command_history: %{},
+         command_retention: command_retention,
          settled: %{},
          settled_order: :queue.new(),
          tasks: %{},
@@ -174,7 +209,7 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
          else:
            Error.new(
              :validation,
-             "cleanup_timeout must be 1..60000 ms and max_continuations must be 1..256"
+             "cleanup_timeout/max_continuations or command history limits are outside supported bounds"
            )
        )}
     end
@@ -412,6 +447,8 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
       entry =
         entry(handle, value, normalize_cleanup(cleanup, handle), Keyword.get(opts, :owner_pid))
         |> Map.put(:acknowledge, Keyword.get(opts, :acknowledge))
+        |> Map.put(:command_metadata, Keyword.get(opts, :command_metadata))
+        |> Map.put(:command_poll_cursor, 0)
 
       {:reply, {:ok, id}, put_entry(state, {:session, id}, entry)}
     else
@@ -433,6 +470,143 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   def handle_call({:update_session, id, owner, value, incarnation}, _from, state) do
     with {:ok, entry} <- lookup_session(state, id, owner, incarnation), :ok <- active(entry) do
       {:reply, :ok, put_entry(state, {:session, id}, %{entry | value: value})}
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:command_records, owner, incarnation}, _from, state) do
+    state = prune_commands(state)
+
+    result =
+      with :ok <- command_identity(owner, incarnation) do
+        records =
+          Enum.flat_map(state.sessions, fn {id, entry} ->
+            if entry.owner_id == owner and entry.handle.incarnation == incarnation and
+                 is_map(entry.command_metadata),
+               do: [live_command_record(id, entry)],
+               else: []
+          end) ++
+            Enum.filter(Map.values(state.command_history), fn record ->
+              record.owner_id == owner and record.incarnation == incarnation
+            end)
+
+        {:ok, Enum.sort_by(records, & &1.command_id)}
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:command_record, id, owner, incarnation}, _from, state) do
+    state = prune_commands(state)
+    {:reply, lookup_command(state, id, owner, incarnation), state}
+  end
+
+  def handle_call({:command_output, id, owner, incarnation, snapshot, opts}, _from, state) do
+    state = prune_commands(state)
+
+    with {:ok, record} <- lookup_command(state, id, owner, incarnation) do
+      record =
+        if record.finalized,
+          do: record,
+          else:
+            Map.merge(
+              record,
+              Map.take(snapshot, [
+                :output,
+                :status,
+                :exit_status,
+                :termination_status,
+                :cleanup_status,
+                :output_limit_exceeded?,
+                :finished_at
+              ])
+            )
+
+      output = record.output
+      cursor = if opts[:poll], do: record.poll_cursor, else: opts[:cursor]
+      start = min(cursor, byte_size(output))
+      size = min(opts[:max_bytes], byte_size(output) - start)
+      next_cursor = if opts[:poll], do: max(cursor, start + size), else: start + size
+      chunk = binary_part(output, start, size)
+
+      result =
+        public_command(record)
+        |> Map.merge(%{
+          output: chunk,
+          cursor: next_cursor,
+          total_bytes: byte_size(output),
+          truncated: next_cursor < byte_size(output)
+        })
+
+      state =
+        if opts[:poll] do
+          if record.finalized do
+            put_in(state.command_history[id].poll_cursor, next_cursor)
+          else
+            put_in(state.sessions[id].command_poll_cursor, next_cursor)
+          end
+        else
+          state
+        end
+
+      {:reply, {:ok, result}, state}
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:archive_command, id, owner, incarnation, snapshot}, _from, state) do
+    with {:ok, entry} <- lookup_session(state, id, owner, incarnation),
+         :ok <- active(entry),
+         :ok <- finalized_snapshot(snapshot) do
+      record =
+        live_command_record(id, entry)
+        |> Map.merge(snapshot)
+        |> Map.merge(%{
+          finalized: true,
+          finished_at: Map.get(snapshot, :finished_at),
+          retained_at: System.monotonic_time(:millisecond)
+        })
+
+      state = remove_entry(state, {:session, id}, entry, :confirmed)
+      state = %{state | command_history: Map.put(state.command_history, id, record)}
+      {:reply, :ok, prune_commands(state)}
+    else
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:remove_command, id, owner, incarnation}, _from, state) do
+    state = prune_commands(state)
+
+    with {:ok, %{finalized: true}} <- lookup_command(state, id, owner, incarnation) do
+      {:reply, :ok, %{state | command_history: Map.delete(state.command_history, id)}}
+    else
+      {:ok, _} ->
+        {:reply,
+         {:error,
+          Error.new(
+            :resource_conflict,
+            "only finalized command inspection records can be removed"
+          )}, state}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:clear_commands, owner, incarnation}, _from, state) do
+    state = prune_commands(state)
+
+    with :ok <- command_identity(owner, incarnation) do
+      history =
+        Map.reject(state.command_history, fn {_id, record} ->
+          record.owner_id == owner and record.incarnation == incarnation
+        end)
+
+      {:reply, {:ok, map_size(state.command_history) - map_size(history)},
+       %{state | command_history: history}}
     else
       error -> {:reply, error, state}
     end
@@ -622,6 +796,11 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
       end)
 
     {:noreply, next}
+  end
+
+  def handle_info(:prune_commands, state) do
+    Process.send_after(self(), :prune_commands, state.command_retention.ttl)
+    {:noreply, prune_commands(state)}
   end
 
   def handle_info(_, state), do: {:noreply, state}
@@ -1071,6 +1250,92 @@ defmodule Backplane.AgentRuntime.Codex.ResourceRegistry do
   end
 
   defp lookup_resource(_, _, _), do: {:error, Error.new(:validation, "invalid resource handle")}
+
+  defp finalized_snapshot(%{output: output, status: status} = snapshot) when is_binary(output) do
+    if status != :running and Map.get(snapshot, :cleanup_status) not in [:pending, :uncertain],
+      do: :ok,
+      else: {:error, Error.new(:resource_conflict, "command terminal cleanup is not settled")}
+  end
+
+  defp finalized_snapshot(_),
+    do: {:error, Error.new(:validation, "command terminal snapshot is malformed")}
+
+  defp command_identity(owner, incarnation)
+       when is_binary(owner) and owner != "" and is_integer(incarnation) and incarnation > 0,
+       do: :ok
+
+  defp command_identity(_, _),
+    do: {:error, Error.new(:validation, "command owner and positive incarnation are required")}
+
+  defp live_command_record(id, entry) do
+    Map.merge(entry.command_metadata || %{}, %{
+      command_id: id,
+      owner_id: entry.owner_id,
+      incarnation: entry.handle.incarnation,
+      finalized: false,
+      poll_cursor: entry.command_poll_cursor,
+      output: "",
+      status: if(entry.status == :active, do: :running, else: :cleanup_pending),
+      cleanup_status: entry.status
+    })
+  end
+
+  defp lookup_command(state, id, owner, incarnation) do
+    with :ok <- command_identity(owner, incarnation) do
+      case Map.get(state.sessions, id) do
+        %{owner_id: ^owner, handle: %{incarnation: ^incarnation}, command_metadata: metadata} =
+            entry
+        when is_map(metadata) ->
+          {:ok, live_command_record(id, entry)}
+
+        %{owner_id: ^owner} ->
+          {:error, Error.new(:resource_conflict, "stale command incarnation")}
+
+        %{} ->
+          {:error, Error.new(:forbidden, "command owner does not match")}
+
+        nil ->
+          case Map.get(state.command_history, id) do
+            %{owner_id: ^owner, incarnation: ^incarnation} = record ->
+              {:ok, record}
+
+            %{owner_id: ^owner} ->
+              {:error, Error.new(:resource_conflict, "stale command incarnation")}
+
+            %{} ->
+              {:error, Error.new(:forbidden, "command owner does not match")}
+
+            nil ->
+              {:error, Error.new(:not_found, "command inspection record is unavailable")}
+          end
+      end
+    end
+  end
+
+  defp public_command(record),
+    do: Map.drop(record, [:output, :poll_cursor, :retained_at, :owner_id, :incarnation])
+
+  defp prune_commands(state) do
+    now = System.monotonic_time(:millisecond)
+    retention = state.command_retention
+
+    records =
+      state.command_history
+      |> Map.values()
+      |> Enum.filter(&(now - &1.retained_at < retention.ttl))
+      |> Enum.sort_by(& &1.command_id, :desc)
+
+    {history, _bytes} =
+      Enum.reduce(records, {%{}, 0}, fn record, {kept, bytes} ->
+        size = :erlang.external_size(record)
+
+        if map_size(kept) < retention.count and bytes + size <= retention.bytes,
+          do: {Map.put(kept, record.command_id, record), bytes + size},
+          else: {kept, bytes}
+      end)
+
+    %{state | command_history: history}
+  end
 
   defp lookup_session(state, id, owner, incarnation)
        when is_integer(id) and is_binary(owner) and

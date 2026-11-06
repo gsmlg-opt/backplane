@@ -79,6 +79,11 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   @impl Backplane.AgentRuntime.Command
+  def close_stdin(command, invocation, job) do
+    GenServer.call(server(command), {:close_stdin, invocation, job})
+  end
+
+  @impl Backplane.AgentRuntime.Command
   def cancel(command, invocation) do
     GenServer.call(server(command), {:cancel_owner, invocation.owner_run_id})
   end
@@ -119,6 +124,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       {:ok,
        %{
          pty: config.pty,
+         pipe_stdin: config.pipe_stdin,
+         pty_enabled: config.pty_enabled,
          active: %{},
          completed: %{},
          pending: %{},
@@ -155,7 +162,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   end
 
   @impl GenServer
-  def handle_call(:capabilities, _from, state), do: {:reply, Pty.capabilities(state.pty), state}
+  def handle_call(:capabilities, _from, state) do
+    capabilities = if state.pipe_stdin, do: %{stdin_close: %{pipe: true, pty: false}}, else: %{}
+
+    {:reply,
+     Map.merge(if(state.pty_enabled, do: Pty.capabilities(state.pty), else: %{}), capabilities),
+     state}
+  end
 
   def handle_call({:start, request}, from, state) do
     case admit_session(state, request) do
@@ -222,9 +235,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         {:reply,
          {:ok,
           %{
-            output: if(current.transport == :pty, do: IO.iodata_to_binary(events), else: events),
+            output:
+              if(current.transport in [:pty, :pipe_broker],
+                do: IO.iodata_to_binary(events),
+                else: events
+              ),
             cursor: length(current.output),
             status: current.status,
+            finished_at: Map.get(current, :finished_at),
             exit_status: current.exit_status,
             termination_status: current.termination_status,
             cleanup_status: current.cleanup_status,
@@ -239,10 +257,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       nil ->
         {:reply, {:error, Error.new(:not_found, "job not found")}, state}
 
+      %{stdin_status: status} when status != :open ->
+        {:reply, {:error, Error.new(:validation, "command stdin is closed")}, state}
+
       current ->
         try do
           written =
-            if Map.get(current, :transport, :pipe) == :pty,
+            if Map.get(current, :transport, :pipe) in [:pty, :pipe_broker],
               do: Pty.write(job.port, chars),
               else: Port.command(job.port, chars)
 
@@ -255,6 +276,52 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           ArgumentError ->
             {:reply, {:error, Error.new(:execution_failure, "command stdin write failed")}, state}
         end
+    end
+  end
+
+  def handle_call({:close_stdin, invocation, job}, from, state) do
+    case Map.get(state.active, job.port) do
+      %{owner_run_id: owner, owner_incarnation: incarnation} = current
+      when owner == invocation.owner_run_id and incarnation == job.owner_incarnation ->
+        cond do
+          Map.get(invocation, :incarnation, 1) != incarnation or
+              job.session_id != current.session_id ->
+            {:reply, {:error, Error.new(:forbidden, "command input-close identity is stale")},
+             state}
+
+          current.transport != :pipe_broker ->
+            {:reply,
+             {:error,
+              Error.new(
+                :unsupported_capability,
+                "stdin close requires pipe_stdin helper transport; PTY is unsupported"
+              )}, state}
+
+          current.stdin_status == :closed ->
+            {:reply, :ok, state}
+
+          current.stdin_status == :closing ->
+            {:reply, {:error, Error.new(:resource_conflict, "stdin close is pending")}, state}
+
+          true ->
+            try do
+              if Pty.close_stdin(job.port) do
+                Process.send_after(self(), {:stdin_close_timeout, job.port}, 1000)
+                next = %{current | stdin_status: :closing, stdin_waiter: from}
+                {:noreply, %{state | active: Map.put(state.active, job.port, next)}}
+              else
+                {:reply, {:error, Error.new(:overloaded, "command stdin queue is full")}, state}
+              end
+            rescue
+              ArgumentError ->
+                {:reply, {:error, Error.new(:execution_failure, "command input-close failed")},
+                 state}
+            end
+        end
+
+      _ ->
+        {:reply, {:error, Error.new(:not_found, "command input-close identity is unavailable")},
+         state}
     end
   end
 
@@ -491,7 +558,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   def handle_info({:pty_cleanup_timeout, port, token}, state) do
     case Map.get(state.active, port) do
-      %{transport: :pty, cleanup_token: ^token} = job ->
+      %{transport: transport, cleanup_token: ^token} = job
+      when transport in [:pty, :pipe_broker] ->
         Pty.close(port)
 
         {:noreply,
@@ -504,7 +572,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   def handle_info({:pty_startup_cleanup_timeout, port}, state) do
     case Map.get(state.pending, port) do
-      %{transport: :pty} = pending ->
+      %{transport: transport} = pending when transport in [:pty, :pipe_broker] ->
         Pty.close(port)
 
         error =
@@ -516,7 +584,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         if pending.owner_monitor_ref, do: Process.demonitor(pending.owner_monitor_ref, [:flush])
 
         evidence = %{
-          transport: :pty,
+          transport: pending.transport,
           session_id: pending.session_id,
           owner_run_id: pending.request.owner_run_id,
           owner_incarnation: Map.get(pending.request, :incarnation, 1),
@@ -594,7 +662,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   def handle_info({port, {:exit_status, status}}, state) when is_map_key(state.active, port) do
     job = Map.fetch!(state.active, port)
 
-    if Map.get(job, :transport, :pipes) == :pty do
+    if Map.get(job, :transport, :pipes) in [:pty, :pipe_broker] do
       job = %{job | broker_exit: status, port_closed?: true}
       state = %{state | active: Map.put(state.active, port, job)}
 
@@ -630,6 +698,21 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   def handle_info({:startup_timeout, _port}, state), do: {:noreply, state}
 
+  def handle_info({:stdin_close_timeout, port}, state) do
+    case Map.get(state.active, port) do
+      %{stdin_waiter: waiter} = job when not is_nil(waiter) ->
+        GenServer.reply(
+          waiter,
+          {:error, Error.new(:unknown_outcome, "stdin close acknowledgement unavailable")}
+        )
+
+        {:noreply, %{state | active: Map.put(state.active, port, %{job | stdin_waiter: nil})}}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:timeout, port}, state) when is_map_key(state.active, port) do
     {:noreply, request_cleanup(port, :deadline_exceeded, state)}
   end
@@ -654,7 +737,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   def handle_info({:settle_exit, port}, state) when is_map_key(state.active, port) do
     job = Map.fetch!(state.active, port)
 
-    if job.transport == :pty do
+    if job.transport in [:pty, :pipe_broker] do
       {:noreply,
        settle_job(port, {:error, pty_error(job, "PTY broker exit proof is missing")}, state)}
     else
@@ -835,8 +918,25 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   def handle_info({:cleanup_completed, port, token}, state) do
     completed =
       case Map.get(state.completed, port) do
-        %{completion_token: ^token} -> Map.delete(state.completed, port)
-        _other -> state.completed
+        %{completion_token: ^token, session_id: id, cleanup_status: :confirmed}
+        when is_integer(id) ->
+          if Map.has_key?(state.session_obligations, id) do
+            Process.send_after(
+              self(),
+              {:cleanup_completed, port, token},
+              max(100, state.completion_retention)
+            )
+
+            state.completed
+          else
+            Map.delete(state.completed, port)
+          end
+
+        %{completion_token: ^token} ->
+          Map.delete(state.completed, port)
+
+        _other ->
+          state.completed
       end
 
     {:noreply, %{state | completed: completed}}
@@ -857,7 +957,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     group_ids =
       state.owned_groups
       |> Map.values()
-      |> Enum.reject(&(Map.get(&1, :transport) == :pty))
+      |> Enum.reject(&(Map.get(&1, :transport) in [:pty, :pipe_broker]))
       |> Enum.map(& &1.process_group_id)
       |> Enum.uniq()
 
@@ -865,13 +965,23 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
     pending_pids =
       state.pending
-      |> Enum.reject(fn {_port, pending} -> pending.transport == :pty end)
+      |> Enum.reject(fn {_port, pending} -> pending.transport in [:pty, :pipe_broker] end)
       |> Enum.map(fn {_port, pending} -> pending.launcher_pid end)
 
     reconcile_shutdown(group_ids, pending_pids, state.shutdown_timeout)
     stop_cleanup_supervisor(state.cleanup_supervisor, state.shutdown_timeout)
 
     :ok
+  end
+
+  defp pty_frame(port, "E", state) do
+    job = Map.fetch!(state.active, port)
+    if job.stdin_waiter, do: GenServer.reply(job.stdin_waiter, :ok)
+
+    %{
+      state
+      | active: Map.put(state.active, port, %{job | stdin_status: :closed, stdin_waiter: nil})
+    }
   end
 
   defp pty_frame(port, <<"O", bytes::binary>>, state) do
@@ -974,12 +1084,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp shutdown_ptys(state) do
     Enum.each(state.pending, fn {port, pending} ->
-      if pending.transport == :pty, do: Pty.cancel(port)
+      if pending.transport in [:pty, :pipe_broker], do: Pty.cancel(port)
     end)
 
     state =
       Enum.reduce(state.active, state, fn {port, job}, current ->
-        if job.transport == :pty, do: request_cleanup(port, :cancelled, current), else: current
+        if job.transport in [:pty, :pipe_broker],
+          do: request_cleanup(port, :cancelled, current),
+          else: current
       end)
 
     shutdown_ptys_until(state, System.monotonic_time(:millisecond) + state.shutdown_timeout)
@@ -987,8 +1099,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp shutdown_ptys_until(state, deadline) do
     pending? =
-      Enum.any?(state.active, fn {_, job} -> job.transport == :pty end) or
-        Enum.any?(state.pending, fn {_, job} -> job.transport == :pty end)
+      Enum.any?(state.active, fn {_, job} -> job.transport in [:pty, :pipe_broker] end) or
+        Enum.any?(state.pending, fn {_, job} -> job.transport in [:pty, :pipe_broker] end)
 
     if pending? and System.monotonic_time(:millisecond) < deadline do
       receive do
@@ -1019,6 +1131,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       pty_proof: nil,
       broker_exit: nil,
       utf8_pending: "",
+      stdin_status: :open,
+      stdin_waiter: nil,
       startup_from: if(Map.get(pending, :failure), do: pending.from),
       startup_error: Map.get(pending, :failure),
       startup_request: if(Map.get(pending, :failure), do: pending.request),
@@ -1035,6 +1149,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       output: [],
       bytes: 0,
       status: :running,
+      finished_at: nil,
       exit_status: nil,
       timer: timer,
       settle_timer: nil,
@@ -1062,6 +1177,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
            :pty_proof,
            :broker_exit,
            :utf8_pending,
+           :stdin_waiter,
            :startup_from,
            :startup_error,
            :startup_request,
@@ -1096,7 +1212,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     {:noreply, next}
   end
 
-  defp start_reserved(%{tty: true} = request, _from, %{pty: nil} = state) do
+  defp start_reserved(%{tty: true} = request, _from, %{pty_enabled: false} = state) do
     error =
       refusal_error(
         state,
@@ -1140,12 +1256,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
             )}, session_status(state, request, :never_started)}
         else
           request =
-            if Map.get(request, :tty, false),
+            if Map.get(request, :tty, false) or state.pipe_stdin,
               do:
-                Map.put_new(request, :terminal, %{
-                  rows: state.pty.rows,
-                  columns: state.pty.columns
-                }),
+                Map.update(
+                  request,
+                  :terminal,
+                  %{
+                    rows: state.pty.rows,
+                    columns: state.pty.columns
+                  },
+                  fn terminal ->
+                    terminal || %{rows: state.pty.rows, columns: state.pty.columns}
+                  end
+                ),
               else: request
 
           state = session_status(state, request, :launching)
@@ -1172,10 +1295,15 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
             {:cd, request.workspace}
           ]
 
-          transport = if Map.get(request, :tty, false), do: :pty, else: :pipe
+          transport =
+            cond do
+              Map.get(request, :tty, false) -> :pty
+              state.pipe_stdin -> :pipe_broker
+              true -> :pipe
+            end
 
           opened =
-            if transport == :pty,
+            if transport in [:pty, :pipe_broker],
               do: Pty.open(state.pty, request, nonce, environment, state.cleanup_timeout),
               else:
                 {:ok, Port.open({:spawn_executable, state.bootstrap_paths.setsid}, spawn_opts)}
@@ -1218,7 +1346,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp fail_pending(port, error, state) do
     case Map.get(state.pending, port) do
-      %{transport: :pty} = pending ->
+      %{transport: transport} = pending when transport in [:pty, :pipe_broker] ->
         if Map.has_key?(pending, :failure) do
           state
         else
@@ -1298,7 +1426,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp request_cleanup(port, requested_status, state) do
     case Map.get(state.active, port) do
-      %{transport: :pty} = job ->
+      %{transport: transport} = job when transport in [:pty, :pipe_broker] ->
         terminal = choose_terminal_status(job.terminal_status, requested_status)
 
         if job.cleanup_token do
@@ -1381,7 +1509,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
   defp retry_session_cleanup(session_id, state) do
     case Map.get(state.cleanup_evidence, session_id) do
-      %{transport: :pty} ->
+      %{transport: transport} when transport in [:pty, :pipe_broker] ->
         state
 
       %{cleanup_status: :uncertain, cleanup_task_ref: nil} = evidence ->
@@ -1428,7 +1556,21 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         state
 
       {job, active} ->
-        job = finalize_pty_output(job)
+        if job.stdin_waiter do
+          GenServer.reply(
+            job.stdin_waiter,
+            {:error,
+             Error.new(:unknown_outcome, "command settled before stdin close acknowledgement")}
+          )
+        end
+
+        job =
+          finalize_pty_output(%{
+            job
+            | stdin_waiter: nil,
+              finished_at: System.system_time(:millisecond)
+          })
+
         if job.owner_monitor_ref, do: Process.demonitor(job.owner_monitor_ref, [:flush])
         Process.cancel_timer(job.timer)
         cancel_timer(job.settle_timer)
@@ -1457,7 +1599,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
                }, false}
           end
 
-        if job.transport == :pty and job.startup_from do
+        if job.transport in [:pty, :pipe_broker] and job.startup_from do
           error =
             if (cleanup_result == :ok and job.pty_proof) &&
                  job.pty_proof.dispatch == "never_started",
@@ -1502,7 +1644,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp finalize_pty_output(%{transport: :pty} = job) do
+  defp finalize_pty_output(%{transport: transport} = job)
+       when transport in [:pty, :pipe_broker] do
     {text, ""} = Pty.project(job.utf8_pending, true)
     output = if text == "", do: job.output, else: job.output ++ [text]
     # Replacement bytes were reserved when the incomplete suffix was retained.
@@ -2033,6 +2176,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          completion_retention: completion_retention,
          bootstrap_paths: paths,
          pty: pty,
+         pipe_stdin: Keyword.get(opts, :pipe_stdin, false),
+         pty_enabled: Keyword.get(opts, :pty, false),
          cleanup_reconciler: cleanup_reconciler,
          shutdown_signaler: shutdown_signaler,
          receipt_capacity: receipt_capacity,

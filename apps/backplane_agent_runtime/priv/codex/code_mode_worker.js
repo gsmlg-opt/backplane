@@ -74,6 +74,7 @@ const advance = async value => {
 };
 // Decode bytes incrementally. Count each record before decoding/appending, so a
 // fragmented or whitespace-only record cannot grow the retained buffer unbounded.
+let commandRecordLimit = 1048576, allowedResultId = null;
 async function* records(stream) {
   const decoder = new TextDecoder("utf-8", {fatal:true});
   let partial = "", bytes = 0;
@@ -83,10 +84,11 @@ async function* records(stream) {
       if (i !== chunk.length && chunk[i] !== 10) continue;
       const piece = chunk.subarray(start, i);
       bytes += piece.byteLength;
-      if (bytes > 1048576) throw {protocolClass:"budget_exceeded", message:"command record exceeds byte limit"};
+      if (bytes > commandRecordLimit) throw {protocolClass:"budget_exceeded", message:"command record exceeds byte limit"};
       partial += decoder.decode(piece, {stream:true});
       if (i !== chunk.length) {
         partial += decoder.decode();
+        commandRecordLimit = 1048576;
         if (partial.trim()) yield partial;
         partial = ""; bytes = 0;
       }
@@ -101,6 +103,11 @@ try {
     let command;
     try { command = JSON.parse(line); }
     catch (_) { throw {protocolClass:"malformed_result", message:"invalid command"}; }
+    if (allowedResultId !== null) {
+      if (command.type !== "tool_result" || command.id !== allowedResultId)
+        throw {protocolClass:"malformed_result", message:"result allowance identity mismatch"};
+      allowedResultId = null;
+    }
     if (command.type === "execute") {
       metadata = command.tools || []; stored = command.stored || {}; globalThis.ALL_TOOLS = Object.freeze(metadata);
       try {
@@ -118,7 +125,12 @@ try {
       }
     } else if (command.type === "resume" && iterator) advance(command.value);
     else if (command.type === "configure") { metadata = command.tools; stored = command.stored; globalThis.ALL_TOOLS = Object.freeze(metadata); }
-    else if (command.type === "tool_result") {
+    else if (command.type === "tool_result_allowance") {
+      if (!pending.has(command.id) || !Number.isSafeInteger(command.bytes) || command.bytes < 1 || command.bytes > 2148532223)
+        throw {protocolClass:"malformed_result", message:"invalid result allowance"};
+      commandRecordLimit = command.bytes;
+      allowedResultId = command.id;
+    } else if (command.type === "tool_result") {
       const item = pending.get(command.id); if (!item) continue; pending.delete(command.id);
       command.ok ? item.resolve(command.value) : item.reject(new Error(command.error && command.error.message || "nested tool failed"));
     } else throw {protocolClass:"malformed_result", message:"invalid command type"};

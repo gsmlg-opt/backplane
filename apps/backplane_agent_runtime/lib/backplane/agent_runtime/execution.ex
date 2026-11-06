@@ -9,6 +9,7 @@ defmodule Backplane.AgentRuntime.Execution do
   alias Backplane.AgentRuntime.Store
   alias Backplane.AgentRuntime.ToolEffects
   alias Backplane.AgentRuntime.ToolRegistry
+  alias Backplane.AgentRuntime.ToolResultContract
 
   @moduledoc """
   Store-first runtime execution boundary.
@@ -145,14 +146,22 @@ defmodule Backplane.AgentRuntime.Execution do
     operation = Map.put(operation, :backend_context, host_context)
 
     with :ok <- ProviderOutput.validate_options(opts),
+         {:ok, output_limit} <- tool_output_limit(operation, opts),
          {:ok, result} <- call_adapter(adapter, :execute, operation),
          {:ok, _} <-
            ToolEffects.validate_output(%{payload: result},
-             limit: Keyword.get(opts, :output_limit, @default_output_limit)
+             limit: output_limit
            ) do
       {:ok, [result]}
     end
   end
+
+  defp tool_output_limit(%{result_contract: contract}, _opts) do
+    with :ok <- ToolResultContract.validate(contract), do: {:ok, contract.output_limit}
+  end
+
+  defp tool_output_limit(_operation, opts),
+    do: {:ok, Keyword.get(opts, :output_limit, @default_output_limit)}
 
   defp prepare(command, run, meta, record, opts) do
     case command do
@@ -222,6 +231,7 @@ defmodule Backplane.AgentRuntime.Execution do
          {:ok, authorization} <- Policy.authorize_tool(authority, descriptor, input),
          :ok <- approval(descriptor, input, arguments, opts),
          {:ok, adapter} <- descriptor_backend(descriptor),
+         {:ok, result_contract} <- ToolResultContract.select(descriptor, input, opts),
          {:ok, budget, reservation} <-
            reserve(record, opts, "tool:#{field(input, :invocation_id)}") do
       operation =
@@ -243,6 +253,11 @@ defmodule Backplane.AgentRuntime.Execution do
         |> Map.put(:caller, authorization.caller)
         |> Map.put(:effective_authority, authority_summary(authority, opts))
         |> Map.merge(Map.take(descriptor, [:collaboration_binding]))
+
+      operation =
+        if result_contract,
+          do: Map.put(operation, :result_contract, result_contract),
+          else: operation
 
       intent = %{type: :tool, status: :started, operation: operation, reservation: reservation}
 
@@ -421,6 +436,7 @@ defmodule Backplane.AgentRuntime.Execution do
             :arguments,
             :caller,
             :effective_authority,
+            :result_contract,
             :collaboration_binding
           ])
       end

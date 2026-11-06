@@ -166,3 +166,58 @@ missing/unsupported helpers make that component unavailable before target launch
 A trusted `guardian_path` Session option selects a specific built guardian.
 Verified stdio receipts cover the direct child, guardian and local pipes; hosts
 own descendants or external effects beyond that scope.
+
+### Retained command inspection and stdin EOF
+
+`Backplane.AgentRuntime.Codex.Commands` accepts the same trusted context used by
+`Codex.call/3`. `list/1` and `inspect/2` expose current/recent command metadata;
+`log/3` reads bounded bytes without consuming them, and `poll/3` advances a separate
+inspection byte cursor. Original command results include a stable `command_id`;
+`session_id` retains its existing active-session meaning. A terminal poll settles
+the native session and retains its snapshot. `remove/2` and `clear_finished/1`
+remove only finalized inspection records, preserving resource cleanup receipts.
+
+Registry options `command_history_count`, `command_history_bytes` and
+`command_history_ttl` bound recent records (defaults 64, 16 MiB and 300,000 ms).
+Reads default to 65,536 bytes, capped at 1 MiB; cursors are byte offsets and may
+split UTF-8. Eviction/expiry returns `:not_found`. Issued command output remains
+pinned in the backend until release acknowledgement, under its existing finite
+session capacity; the finalized snapshot then obeys Registry history limits.
+
+For real pipe EOF on Linux, build the packaged helper with
+`mix backplane.pty.build` and start LocalCommand with `pipe_stdin: true`.
+`Command.close_stdin(command, invocation, job)` waits for actual input-close
+acknowledgement while output remains readable. Original `write_stdin` accepts
+`"eof" => true`, writing any `chars` first. Later writes are rejected. This mode
+uses the existing native helper's verified launch and cleanup; it provides no OS
+sandbox. PTYs, default raw pipes and adapters without the optional callback return
+`:unsupported_capability`; a Ctrl-D byte is not pipe EOF.
+
+### Per-tool result allowances
+
+Execution/Conversation accepts the trusted host option:
+
+```elixir
+tool_result_contract: fn descriptor, identity ->
+  if descriptor.backend == MyFilesystem and descriptor.tool_revision == 3 and
+       identity.tool_name == "fs::read" do
+    {:ok, %{output_limit: 8_388_608, json_limit: 8_388_608}}
+  else
+    :default
+  end
+end
+```
+
+Choose bindings using your actual issued descriptor/backend/revision policy; the
+binding example is illustrative. The selector receives the registered descriptor
+and invocation identity without arguments. It runs after admission checks and
+before intent/effect, returning `:default`, the contract above, or `{:error, error}`.
+Both limits must be positive integers at most 2,147,483,647. Selection failures
+refuse execution. The operation persists the selected contract with schema version
+1; later delivery does not reselect it.
+
+`output_limit` bounds the native result's Erlang external size. `json_limit` bounds
+the nested JSON result value independently; Code Mode permits at most its ordinary
+1 MiB of envelope overhead in addition, using a pending-call-bound one-record
+allowance. Exact accepted content/details are preserved. Other tool defaults,
+provider-output limits and Code Mode program/output limits remain unchanged.

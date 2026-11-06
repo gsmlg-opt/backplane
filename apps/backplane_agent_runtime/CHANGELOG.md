@@ -2,6 +2,13 @@
 
 ## 1.10.58
 
+- Add owner/incarnation-scoped bounded command inspection and retained logs with
+  stable command IDs, independent polling and finalized-record removal (#151).
+- Add optional acknowledged stdin half-close through the Linux native pipe helper
+  and `write_stdin` EOF, preserving output and normal native settlement (#152).
+- Add trusted per-tool native/JSON result allowances selected before effects,
+  persisted in receipts and carried through native Code Mode execution (#153).
+
 - Upgrade the production JSON Schema engine to `jsonschex ~> 0.11` and align
   standalone package verification with the supported dependency range.
 

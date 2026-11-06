@@ -33,7 +33,7 @@ struct identity { pid_t pid, parent, group, session; unsigned long long start; c
 struct member { struct identity id; int fd; };
 struct queue { unsigned char data[QUEUE_MAX]; size_t begin, end; };
 struct reader { unsigned char data[FRAME_MAX + 4]; size_t used; };
-struct config { const char *token, *owner, *incarnation, *session; int rows, columns, timeout; size_t output_limit; char **command; };
+struct config { const char *token, *owner, *incarnation, *session; int rows, columns, timeout; bool pipe_mode; size_t output_limit; char **command; };
 
 static int64_t now_ms(void) {
   struct timespec t;
@@ -256,10 +256,14 @@ static int child_terminal(const char *slave, int rows, int columns) {
   if (!isatty(0) || !isatty(1) || !isatty(2) || tcgetsid(0) != getpid()) return -1;
   return 0;
 }
-static void child_run(const struct config *config, const char *slave, int master, int socket_fd, int gate, int ready) {
+static void child_run(const struct config *config, const char *slave, int master, int socket_fd, int gate, int ready, int input_fd, int output_fd) {
   close(master); close(socket_fd);
   pid_t parent = getppid();
-  if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent || child_terminal(slave, config->rows, config->columns)) _exit(125);
+  if (prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent) _exit(125);
+  if (config->pipe_mode) {
+    if (setsid() < 0 || dup2(input_fd, 0) < 0 || dup2(output_fd, 1) < 0 || dup2(output_fd, 2) < 0) _exit(125);
+    close(input_fd); close(output_fd);
+  } else if (child_terminal(slave, config->rows, config->columns)) _exit(125);
   char byte = 'R';
   if (write(ready, &byte, 1) != 1) _exit(125);
   close(ready);
@@ -276,14 +280,22 @@ static void guardian(const struct config *config, int channel, pid_t broker) {
   for (int i = 0; i < 3; i++) if (dup2(null_fd, i) < 0) _exit(111);
   if (null_fd > 2) close(null_fd);
   char slave[PATH_MAX], evidence[2048];
-  int master = terminal_master(slave, sizeof(slave), config->rows, config->columns);
+  int inpipe[2] = {-1, -1}, outpipe[2] = {-1, -1};
+  int master, input_fd;
+  if (config->pipe_mode) {
+    if (pipe2(inpipe, O_CLOEXEC) || pipe2(outpipe, O_CLOEXEC)) _exit(111);
+    master = outpipe[0]; input_fd = inpipe[1];
+    if (nonblock(master) || nonblock(input_fd)) _exit(111);
+  } else { master = terminal_master(slave, sizeof(slave), config->rows, config->columns); input_fd = master; }
   int gate[2], ready[2];
   if (master < 0 || pipe2(gate, O_CLOEXEC) || pipe2(ready, O_CLOEXEC)) _exit(111);
   if (prctl(PR_SET_CHILD_SUBREAPER, 1) < 0) _exit(111);
   pid_t child = fork();
   if (child < 0) _exit(111);
-  if (!child) { close(gate[1]); close(ready[0]); child_run(config, slave, master, channel, gate[0], ready[1]); }
+  if (!child) { close(gate[1]); close(ready[0]); if (config->pipe_mode) close(input_fd);
+    child_run(config, slave, master, channel, gate[0], ready[1], inpipe[0], outpipe[1]); }
   close(gate[0]); close(ready[1]);
+  if (config->pipe_mode) { close(inpipe[0]); close(outpipe[1]); }
   struct pollfd setup = {.fd = ready[0], .events = POLLIN};
   char byte = 0;
   int setup_result = poll(&setup, 1, 1000);
@@ -305,7 +317,7 @@ static void guardian(const struct config *config, int channel, pid_t broker) {
   char message[FRAME_MAX];
   message[0] = 'R'; memcpy(message + 1, evidence, strlen(evidence));
   bounded_message(channel, message, strlen(evidence) + 1, 100);
-  bool dispatched = false, cancel = false, child_seen = false, limited = false;
+  bool dispatched = false, cancel = false, child_seen = false, limited = false, eof_requested = false;
   int child_status = -1;
   size_t output_bytes = 0;
   struct queue input = {0};
@@ -319,8 +331,12 @@ static void guardian(const struct config *config, int channel, pid_t broker) {
       bounded_message(channel, message, (size_t)length, 10);
       break;
     }
-    struct pollfd fds[2] = {{.fd = channel, .events = POLLIN}, {.fd = master, .events = POLLIN | (input.end > input.begin ? POLLOUT : 0)}};
-    int polled = poll(fds, 2, 10);
+    if (eof_requested && input_fd >= 0 && input.end == input.begin) {
+      close(input_fd); input_fd = -1;
+      bounded_message(channel, "E", 1, 100);
+    }
+    struct pollfd fds[3] = {{.fd = channel, .events = POLLIN}, {.fd = master, .events = POLLIN}, {.fd = input_fd, .events = input.end > input.begin ? POLLOUT : 0}};
+    int polled = poll(fds, 3, 10);
     if (polled < 0 && errno != EINTR) { cancel = true; break; }
     if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
       ssize_t n = recv(channel, message, sizeof(message), MSG_DONTWAIT);
@@ -330,11 +346,13 @@ static void guardian(const struct config *config, int channel, pid_t broker) {
         byte = 'A';
         if (write(gate[1], &byte, 1) != 1) { cancel = true; break; }
         close(gate[1]); gate[1] = -1; dispatched = true;
-      } else if (message[0] == 'I' && dispatched) {
+      } else if (message[0] == 'E' && n == 1 && dispatched && config->pipe_mode && !eof_requested) {
+        eof_requested = true;
+      } else if (message[0] == 'I' && dispatched && !eof_requested) {
         if (enqueue(&input, message + 1, (size_t)n - 1, false, false)) { limited = true; cancel = true; break; }
       } else { cancel = true; break; }
     }
-    if ((fds[1].revents & POLLOUT) && flush_queue(master, &input)) { cancel = true; break; }
+    if ((fds[2].revents & POLLOUT) && flush_queue(input_fd, &input)) { cancel = true; break; }
     if (fds[1].revents & POLLIN) {
       ssize_t n = read(master, message + 1, CHUNK);
       if (n > 0) {
@@ -374,6 +392,7 @@ static void guardian(const struct config *config, int channel, pid_t broker) {
     if (waitpid(child, NULL, WNOHANG) != child) { clean = -1; if (!strcmp(error, "none")) error = "leader_reap_unobserved"; }
   } else { clean = -1; if (!strcmp(error, "none")) error = "leader_exit_unobserved"; }
   while (waitpid(-1, NULL, WNOHANG) > 0) {}
+  if (config->pipe_mode && input_fd >= 0) close(input_fd);
   if (close(master) != 0) { clean = -1; if (!strcmp(error, "none")) error = "master_close"; }
   int length = snprintf(message, sizeof(message), "K%s|%d|%s|closed|%s|reaped|%s", evidence, child_status, clean == 0 ? "confirmed" : "uncertain", dispatched ? "dispatched" : "never_started", error);
   bounded_message(channel, message, (size_t)length, 50);
@@ -469,7 +488,7 @@ static int broker(const struct config *config) {
   }
   return 1;
 }
-static int probe(void) {
+static int probe(bool pipe_mode) {
   struct identity self;
   if (identity(getpid(), &self)) return 1;
   struct member *members = calloc(MEMBER_MAX, sizeof(*members));
@@ -481,6 +500,7 @@ static int probe(void) {
   int fd = pidfd_open_(getpid());
   if (fd < 0 || pidfd_signal(fd, 0)) { if (fd >= 0) close(fd); return 1; }
   close(fd);
+  if (pipe_mode) return write(STDOUT_FILENO, "BACKPLANE_PIPE 1\n", 17) == 17 ? 0 : 1;
   char slave[PATH_MAX];
   int master = terminal_master(slave, sizeof(slave), 24, 80);
   if (master < 0) return 1;
@@ -501,10 +521,11 @@ static long number(const char *text, long minimum, long maximum) {
 }
 int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
-  if (argc == 2 && !strcmp(argv[1], "--probe")) return probe();
-  if (argc < 11 || strcmp(argv[1], "--run")) return 64;
+  if (argc == 2 && !strcmp(argv[1], "--probe")) return probe(false);
+  if (argc == 2 && !strcmp(argv[1], "--probe-pipe")) return probe(true);
+  if (argc < 11 || (strcmp(argv[1], "--run") && strcmp(argv[1], "--pipe"))) return 64;
   for (int i = 2; i <= 5; i++) if (!argv[i][0] || strlen(argv[i]) > 256 || strpbrk(argv[i], " |\n\r")) return 64;
-  struct config config = {.token = argv[2], .owner = argv[3], .incarnation = argv[4], .session = argv[5],
+  struct config config = {.pipe_mode = !strcmp(argv[1], "--pipe"), .token = argv[2], .owner = argv[3], .incarnation = argv[4], .session = argv[5],
     .rows = (int)number(argv[6], 1, 1000), .columns = (int)number(argv[7], 1, 1000),
     .timeout = (int)number(argv[8], 1, 4000), .output_limit = (size_t)number(argv[9], 1, LONG_MAX), .command = &argv[10]};
   if (config.rows < 0 || config.columns < 0 || config.timeout < 0 || config.output_limit == (size_t)-1 || argv[10][0] != '/') return 64;

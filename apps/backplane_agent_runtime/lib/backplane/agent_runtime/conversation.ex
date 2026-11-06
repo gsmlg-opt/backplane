@@ -710,6 +710,7 @@ defmodule Backplane.AgentRuntime.Conversation do
             from: from,
             token: nested_token,
             selected_timeout_ms: selected_timeout,
+            result_contract: prepared.operation[:result_contract],
             invocation: invocation,
             catalog: catalog,
             startup_context: %{}
@@ -4045,7 +4046,14 @@ defmodule Backplane.AgentRuntime.Conversation do
       })
 
       deliver_goal(next_state, fn acknowledged ->
-        GenServer.reply(nested.from, consumer_result(normalized, presentation))
+        GenServer.reply(
+          nested.from,
+          Backplane.AgentRuntime.ToolResultContract.deliver(
+            consumer_result(normalized, presentation),
+            nested.result_contract
+          )
+        )
+
         %{acknowledged | nested: nil}
       end)
     end

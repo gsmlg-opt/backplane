@@ -48,8 +48,8 @@ class Protocol(unittest.TestCase):
     def setUp(self):
         self.assertTrue(os.path.isfile(HELPER), "first-party native helper has not been built")
 
-    def launch(self, cmd, rows=24, cols=80, ack=True, output_limit=1048576):
-        proc = subprocess.Popen([HELPER, '--run', 'test-launch', 'test-owner', '4', '11', str(rows), str(cols), '650', str(output_limit), '/bin/sh', '-c', cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    def launch(self, cmd, rows=24, cols=80, ack=True, output_limit=1048576, pipe=False):
+        proc = subprocess.Popen([HELPER, '--pipe' if pipe else '--run', 'test-launch', 'test-owner', '4', '11', str(rows), str(cols), '650', str(output_limit), '/bin/sh', '-c', cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.addCleanup(self.finish, proc)
         ready = frame(proc)
         self.assertTrue(ready.startswith(b'R1 test-launch '), ready)
@@ -235,6 +235,24 @@ class Protocol(unittest.TestCase):
         output, events = self.collect(proc)
         self.assertLessEqual(len(output), 128)
         self.assertTrue(any(event == b'L' for event in events))
+        self.assertIn(b'|confirmed|closed|', events[-1])
+
+    def test_pipe_eof_flushes_bytes_and_preserves_final_output(self):
+        proc = self.launch('cat; printf EOF; sleep 0.1; printf FINAL', pipe=True)
+        send(proc, b'Ihello\x04world')
+        send(proc, b'E')
+        output, events = self.collect(proc)
+        self.assertEqual(output, b'hello\x04worldEOFFINAL')
+        self.assertIn(b'E', events)
+        self.assertLess(events.index(b'E'), len(events) - 1)
+        self.assertIn(b'|0|confirmed|closed|dispatched|reaped|none', events[-1])
+
+    def test_pipe_empty_eof_is_distinct_from_control_d(self):
+        proc = self.launch('cat; printf DONE', pipe=True)
+        send(proc, b'E')
+        output, events = self.collect(proc)
+        self.assertEqual(output, b'DONE')
+        self.assertIn(b'E', events)
         self.assertIn(b'|confirmed|closed|', events[-1])
 
 

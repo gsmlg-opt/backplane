@@ -142,9 +142,11 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     incarnation = resource_incarnation(context)
     invocation = %{owner_run_id: caller_run_id, incarnation: incarnation}
 
-    with {:ok, session} <-
+    with :ok <- validate_eof(args),
+         {:ok, session} <-
            fetch_command_session(context, registry, session_id, caller_run_id, incarnation),
          :ok <- write_chars(command, invocation, session.job, Map.get(args, "chars", "")),
+         :ok <- close_input(command, invocation, session.job, Map.get(args, "eof", false)),
          {:ok, result} <-
            poll(
              command,
@@ -153,7 +155,16 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
              session.cursor,
              yield_time(args, Map.get(args, "chars", "") != "")
            ),
-         :ok <- settle_session(registry, session_id, caller_run_id, incarnation, session, result) do
+         :ok <-
+           settle_session(
+             command,
+             registry,
+             session_id,
+             caller_run_id,
+             incarnation,
+             session,
+             result
+           ) do
       {:ok, budget_response(format_command_result(result, session_id), args)}
     end
   end
@@ -163,7 +174,9 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     job = Map.get(args, "job") || Map.get(args, :job)
     invocation = %{owner_run_id: resource_owner_id(context, caller)}
 
-    with true <- is_map(job) or {:error, Error.new(:validation, "session_id is required")},
+    with :ok <- validate_eof(args),
+         true <- is_map(job) or {:error, Error.new(:validation, "session_id is required")},
+         :ok <- close_input(command, invocation, job, Map.get(args, "eof", false)),
          {:ok, result} <- Command.read(command, invocation, job, cursor: 0) do
       {:ok, budget_response(format_command_result(result, nil), args)}
     end
@@ -278,6 +291,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
          {:ok, workspace} <- authorize_workspace(context, workspace) do
       {:ok,
        %{
+         command_text: cmd,
          executable: shell,
          arguments: [shell_flag, cmd],
          workspace: workspace,
@@ -354,6 +368,11 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     resource_opts =
       [
         cleanup: cleanup,
+        command_metadata: %{
+          command: invocation.command_text,
+          workspace: invocation.workspace,
+          started_at: System.system_time(:millisecond)
+        },
         incarnation: invocation.incarnation,
         acknowledge: fn handle -> Command.acknowledge_release(command, identity.(handle)) end
       ]
@@ -377,10 +396,25 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
 
   defp bind_command_session(_context, _id, _invocation, _job), do: :ok
 
-  defp settle_command_session(%{session_registry: registry}, id, invocation, job, result)
+  defp settle_command_session(
+         %{session_registry: registry, command: command},
+         id,
+         invocation,
+         job,
+         result
+       )
        when is_pid(registry) and is_integer(id) do
     session = %{job: job, cursor: result.cursor}
-    settle_session(registry, id, invocation.owner_run_id, invocation.incarnation, session, result)
+
+    settle_session(
+      command,
+      registry,
+      id,
+      invocation.owner_run_id,
+      invocation.incarnation,
+      session,
+      result
+    )
   end
 
   defp settle_command_session(_context, _id, _invocation, _job, _result), do: :ok
@@ -433,12 +467,24 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     end
   end
 
+  defp validate_eof(args) do
+    if is_boolean(Map.get(args, "eof", false)),
+      do: :ok,
+      else: {:error, Error.new(:validation, "eof must be a boolean")}
+  end
+
+  defp close_input(_command, _invocation, _job, false), do: :ok
+
+  defp close_input(command, invocation, job, true),
+    do: Command.close_stdin(command, invocation, job)
+
   defp write_chars(_command, _invocation, _job, ""), do: :ok
 
   defp write_chars(command, invocation, job, chars),
     do: Command.write(command, invocation, job, chars)
 
   defp settle_session(
+         _command,
          registry,
          session_id,
          owner,
@@ -456,6 +502,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
   end
 
   defp settle_session(
+         _command,
          registry,
          session_id,
          owner,
@@ -478,12 +525,24 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
     end
   end
 
-  defp settle_session(registry, session_id, owner, incarnation, _session, _result),
-    do: ResourceRegistry.forget_session(registry, session_id, owner, incarnation)
+  defp settle_session(command, registry, session_id, owner, incarnation, session, _result) do
+    invocation = %{owner_run_id: owner, incarnation: incarnation, session_id: session_id}
+
+    with {:ok, full} <- Command.read(command, invocation, session.job, cursor: 0) do
+      ResourceRegistry.archive_command(
+        registry,
+        session_id,
+        owner,
+        incarnation,
+        Backplane.AgentRuntime.Codex.Commands.snapshot(full)
+      )
+    end
+  end
 
   defp format_command_result(result, session_id) do
     %{
       output: output_text(result.output),
+      command_id: session_id,
       status: result.status,
       termination_status: Map.get(result, :termination_status),
       cleanup_status: Map.get(result, :cleanup_status),
@@ -652,6 +711,7 @@ defmodule Backplane.AgentRuntime.Codex.Tools do
       %{
         "session_id" => %{"type" => "number"},
         "chars" => %{"type" => "string"},
+        "eof" => %{"type" => "boolean"},
         "yield_time_ms" => %{"type" => "number"},
         "max_output_tokens" => %{"type" => "number"}
       },
