@@ -1,0 +1,154 @@
+defmodule Backplane.JsonSchema.Formats do
+  @moduledoc """
+  Implements validation logic for the 'format' keyword.
+
+  ## Supported Formats
+
+  The following format values are supported when `format_assertion: true` is enabled:
+
+  - Date/Time: `date-time`, `date`, `time`, `duration`
+  - Email: `email`, `idn-email`
+  - Hostnames: `hostname`, `idn-hostname`
+  - IP Addresses: `ipv4`, `ipv6`
+  - URIs: `uri`, `uri-reference`, `iri`, `iri-reference`, `uri-template`
+  - Identifiers: `uuid`
+  - JSON Pointers: `json-pointer`, `relative-json-pointer`
+  - Patterns: `regex`
+
+  ## Behavior
+
+  - Non-string data always passes format validation.
+  - Unknown format values pass validation by default (per the JSON Schema specification).
+  """
+
+  alias Backplane.JsonSchema.Types.ErrorContext
+
+  @doc """
+  Validates data against the specified format.
+
+  Non-string data always passes. Unknown format values pass by default.
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.Formats.validate("email", "user@example.com")
+      :ok
+
+      iex> Backplane.JsonSchema.Formats.validate("email", "not-an-email")
+      {:error, %Backplane.JsonSchema.Types.ErrorContext{contrast: "email", input: "not-an-email"}}
+
+      iex> Backplane.JsonSchema.Formats.validate("email", 123)
+      :ok
+
+  """
+
+  def validate(format, data) when is_binary(data) do
+    if valid?(format, data), do: :ok, else: {:error, %ErrorContext{contrast: format, input: data}}
+  end
+  def validate(_, _), do: :ok
+
+  defp valid?("date-time", data) do
+    Backplane.JsonSchema.Formats.DateTime.valid?(data)
+  end
+
+  # RFC 3339 `full-date` requires exactly four unsigned year digits. Elixir's
+  # `Date.from_iso8601/1` also accepts signed years, so validate the lexical form
+  # before delegating calendar and leap-year checks to `Date`.
+  defp valid?("date", <<y1, y2, y3, y4, ?-, m1, m2, ?-, d1, d2>> = data)
+       when y1 in ?0..?9 and y2 in ?0..?9 and y3 in ?0..?9 and y4 in ?0..?9 and
+              m1 in ?0..?9 and m2 in ?0..?9 and d1 in ?0..?9 and d2 in ?0..?9 do
+    match?({:ok, _}, Date.from_iso8601(data))
+  end
+
+  defp valid?("date", _data), do: false
+
+  defp valid?("time", data) do
+    Backplane.JsonSchema.Formats.DateTime.valid_time?(data)
+  end
+
+  defp valid?("duration", data) do
+    # RFC 3339 Appendix A duration grammar.
+    # Weeks cannot be combined with other units.
+    # Date ordering is constrained to Y -> M -> D, but D cannot appear unless M is present
+    # when Y is also present. Time ordering is constrained to H -> M -> S, but S cannot
+    # appear unless M is present when H is also present.
+    Regex.match?(~r/\AP[0-9]+W\z/, data) or
+      Regex.match?(~r/\AP(?:(?:[0-9]+Y(?:[0-9]+M(?:[0-9]+D)?)?|[0-9]+M(?:[0-9]+D)?|[0-9]+D)(?:T(?:[0-9]+H(?:[0-9]+M(?:[0-9]+S)?)?|[0-9]+M(?:[0-9]+S)?|[0-9]+S))?|T(?:[0-9]+H(?:[0-9]+M(?:[0-9]+S)?)?|[0-9]+M(?:[0-9]+S)?|[0-9]+S))\z/, data)
+  end
+
+  defp valid?("email", data) do
+    Backplane.JsonSchema.Formats.Email.valid?(data)
+  end
+
+  defp valid?("idn-email", data) do
+    Backplane.JsonSchema.Formats.Email.valid_idn?(data)
+  end
+
+  defp valid?("hostname", data) do
+    Backplane.JsonSchema.Formats.Hostname.valid?(data)
+  end
+
+  defp valid?("idn-hostname", data) do
+    Backplane.JsonSchema.Formats.Hostname.valid_idn?(data)
+  end
+
+  defp valid?("ipv4", data) do
+    Backplane.JsonSchema.Formats.IP.valid_ipv4?(data)
+  end
+
+  defp valid?("ipv6", data) do
+    Backplane.JsonSchema.Formats.IP.valid_ipv6?(data)
+  end
+
+  defp valid?("uri", data) do
+    valid_percent_encoding?(data) and
+      match?({:ok, %URI{scheme: s}} when s != nil and s != "", URI.new(data))
+  end
+
+  defp valid?("uri-reference", data) do
+    valid_percent_encoding?(data) and
+      match?({:ok, _}, URI.new(data))
+  end
+
+  defp valid?("iri", data) do
+    uri_string = replace_non_ascii_chars_by_uri_encode(data)
+    valid?("uri", uri_string)
+  end
+
+  defp valid?("iri-reference", data) do
+    uri_string = replace_non_ascii_chars_by_uri_encode(data)
+    valid?("uri-reference", uri_string)
+  end
+
+  defp valid?("uri-template", data) do
+    Backplane.JsonSchema.Formats.URITemplate.valid?(data)
+  end
+
+  defp valid?("uuid", data) do
+    Regex.match?(~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i, data)
+  end
+
+  defp valid?("json-pointer", data) do
+    ExJSONPointer.valid_json_pointer?(data)
+  end
+
+  defp valid?("relative-json-pointer", data) do
+    Regex.match?(~r/\A(?:0|[1-9][0-9]*)(?:[+-](?:0|[1-9][0-9]*))?(?:\/(?:[^#].*)?|#)?\z/s, data) and
+      ExJSONPointer.valid_relative_json_pointer?(data)
+  end
+
+  defp valid?("regex", data) do
+    Backplane.JsonSchema.Formats.Regex.valid?(data)
+  end
+
+  defp valid?(_, _), do: true # Unknown formats pass by default
+
+  defp replace_non_ascii_chars_by_uri_encode(data) do
+    Regex.replace(~r/[^\x00-\x7F]/u, data, fn c ->
+      URI.encode(c)
+    end)
+  end
+
+  defp valid_percent_encoding?(data) do
+    not Regex.match?(~r/%(?![0-9A-Fa-f]{2})/u, data)
+  end
+end

@@ -1,0 +1,99 @@
+defmodule Backplane.JsonSchema.ScopeScanner do
+  @moduledoc """
+  Scans raw schemas and containing documents to discover resource identifiers,
+  anchors, and local fragment references for the selected draft.
+
+  The resulting registry is used by `Backplane.JsonSchema.Compiler` to populate the `defs`
+  field in the compiled `Schema`, enabling reference resolution during validation.
+  Traversal is delegated to draft-specific scanners; Draft 2020-12 is the default.
+
+  ## Examples
+
+      iex> schema = %{
+      ...>   "$id" => "https://example.com/schema",
+      ...>   "$defs" => %{
+      ...>     "user" => %{"$id" => "user", "type" => "object"}
+      ...>   }
+      ...> }
+      iex> {registry, _refs} = Backplane.JsonSchema.ScopeScanner.scan_schema(schema)
+      iex> Map.has_key?(registry, "https://example.com/schema")
+      true
+      iex> Map.has_key?(registry, "https://example.com/user")
+      true
+
+  """
+
+  @typedoc "Raw schema resources indexed by resolved URI."
+  @type registry :: %{optional(String.t()) => map()}
+
+  @typedoc "The resource registry and local fragment references from the initial traversal."
+  @type scan_result :: {registry(), MapSet.t(String.t())}
+  @type resource_contexts :: %{optional(String.t()) => %{raw: term(), source_id: String.t() | nil}}
+  @type contextual_scan_result :: {registry(), MapSet.t(String.t()), resource_contexts()}
+
+  @doc """
+  Scans a known JSON Schema through draft-recognized subschema locations.
+
+  Returns a tuple `{registry, refs}` where:
+  - `registry` is a map of `{absolute_uri => raw_schema}`.
+  - `refs` is a MapSet of local fragment references found during the initial traversal.
+
+  The `:draft` option defaults to `"draft2020_12"`. Use `"draft7"` to ignore
+  `$ref` siblings and newer-draft annotations and scan tuple `additionalItems`.
+  Both drafts honor `:base_uri` as the initial URI for resolving resource IDs;
+  omitting it retains the default `nil` base. Draft 7 also expands the registry
+  through explicitly referenced pointer targets, including targets in other
+  registered resources. Ancestor `$id` resources crossed by those pointers are
+  registered as fallback identities without traversing their unrelated siblings or
+  annotations. Ordinary discovery retains precedence, and no external schemas are
+  loaded. Pointers awaiting a newly discovered resource are retried only
+  when the registry grows. Additional discovery does not add root-document aliases
+  to `refs`.
+
+  The compiler's `:with_resource_contexts` option adds a third tuple element
+  mapping each registered target to its lexical resource root and source ID.
+  This provenance is retained during discovery rather than inferred from a
+  potentially overwritten canonical URI later.
+  """
+  @spec scan_schema(map() | boolean(), keyword()) :: scan_result() | contextual_scan_result()
+  def scan_schema(schema, opts \\ []) do
+    scanner = scanner(opts)
+    scanner.scan_schema(schema, opts)
+  end
+
+  @doc """
+  Scans maps and lists in a containing document for JSON Schema resource
+  identifiers and references.
+
+  This is intentionally broader than `scan_schema/1`: fragment compilation may receive
+  an OpenAPI document whose schema objects live under arbitrary paths such as
+  `components.schemas` or `paths.*.requestBody.content.*.schema`.
+  The `:draft` option controls Draft 7 `$ref` sibling and newer-keyword handling.
+  Draft 7 filtering applies in schema context, not to arbitrary document names.
+  Schema context is inferred from keyword value shapes or inherited from schema
+  slots. The compiler also passes the selected entry's decoded `:schema_path`
+  so annotation-only entry schemas do not depend on inference. Draft 7 registers
+  `$id` resources and collects `$ref` fragments only; `$anchor`, `$dynamicAnchor`,
+  and `$dynamicRef` never contribute metadata, even in unclassified document maps.
+  Draft 7 also discovers resources inside explicitly referenced pointer targets,
+  retaining the containing document or embedded resource as the pointer root.
+  Ancestor resource identities on explicit pointer or selected-entry routes remain
+  addressable without traversing unrelated ignored siblings.
+  Draft 2020-12 scans every map/list node without requiring roles or a selected
+  schema path. The compiler's `:with_resource_contexts` option has the same
+  three-element result as `scan_schema/2`.
+  """
+  @spec scan_document(term(), String.t() | nil, keyword()) :: scan_result() | contextual_scan_result()
+  def scan_document(document, base_uri \\ nil, opts \\ []) do
+    scanner = scanner(opts)
+    scanner.scan_document(document, base_uri, opts)
+  end
+
+  @spec scanner(keyword()) :: module()
+  defp scanner(opts) do
+    case Keyword.get(opts, :draft, "draft2020_12") do
+      "draft7" -> Backplane.JsonSchema.Draft7.ScopeScanner
+      _ -> Backplane.JsonSchema.Draft202012.ScopeScanner
+    end
+  end
+end

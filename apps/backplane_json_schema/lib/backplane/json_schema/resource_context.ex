@@ -24,7 +24,6 @@ defmodule Backplane.JsonSchema.ResourceContext do
   end
 
   defp decode_tokens(nil), do: {:ok, []}
-
   defp decode_tokens(fragment) when is_binary(fragment) do
     ExJSONPointer.decode_path("#" <> fragment)
   end
@@ -87,6 +86,8 @@ defmodule Backplane.JsonSchema.ResourceContext do
 
   defp walk(_value, _tokens, _current_base, _resource, _resource_base, _resources, _draft), do: :error
 
+  # Fragment-only IDs still affect URI inheritance, but only a changed resource
+  # URI establishes a new raw root for JSON Pointer lookup.
   defp enter_resource(value, id, base, resource, resource_base) do
     new_base = URIUtil.resolve(base, id)
     id_base = URIUtil.base(id)

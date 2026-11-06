@@ -1,0 +1,251 @@
+defmodule Backplane.JsonSchema.Compiler.Predicates do
+  @moduledoc """
+  Pure predicates for JSON Schema validation constraints.
+
+  Functions return `:ok` or `{:error, context}`. Non-applicable data types
+  pass validation (e.g., pattern checking on non-strings). Regex engine errors
+  abort validation rather than returning an invertible schema mismatch.
+  """
+
+  alias Backplane.JsonSchema.Types.ErrorContext
+  alias Backplane.JsonSchema.Validator.Pattern
+
+  # A fixed compromise: it avoids the short non-ASCII regression from the
+  # unrolled counter while keeping charlist allocation bounded.
+  @charlist_byte_cutoff 256
+
+  @doc """
+  Checks if data matches the specified JSON Schema type(s).
+  """
+  @spec check_type(term(), String.t() | [String.t()]) :: :ok | {:error, ErrorContext.t()}
+  # Keep literal heads: lower-allocation guards were not consistently faster.
+  def check_type(data, "string") when is_binary(data), do: :ok
+  def check_type(data, "integer") when is_integer(data), do: :ok
+  def check_type(data, "integer") when is_float(data) do
+    if data == trunc(data), do: :ok, else: {:error, %ErrorContext{contrast: "integer", input: "float"}}
+  end
+  def check_type(data, "boolean") when is_boolean(data), do: :ok
+  def check_type(data, "object") when is_map(data), do: :ok
+  def check_type(data, "array") when is_list(data), do: :ok
+  def check_type(data, "null") when is_nil(data), do: :ok
+  def check_type(data, "number") when is_number(data), do: :ok
+  def check_type(data, types) when is_list(types) do
+    if Enum.any?(types, fn type -> check_type(data, type) == :ok end) do
+      :ok
+    else
+      {:error, %ErrorContext{contrast: types, input: infer_type(data)}}
+    end
+  end
+  def check_type(data, expected) do
+    actual = infer_type(data)
+    {:error, %ErrorContext{contrast: expected, input: actual}}
+  end
+
+  @doc "Checks `maximum`."
+  def check_maximum(data, max) when is_number(data) and data <= max, do: :ok
+  def check_maximum(data, max) when is_number(data), do: {:error, %ErrorContext{contrast: max, input: data}}
+  def check_maximum(_, _), do: :ok
+
+  @doc "Checks `minimum`."
+  @spec check_minimum(number(), number()) :: :ok | {:error, map()}
+  def check_minimum(data, min) when is_number(data) and data < min do
+    {:error, %ErrorContext{contrast: min, input: data}}
+  end
+  def check_minimum(_, _), do: :ok
+
+  @doc "Checks `exclusiveMaximum`."
+  def check_exclusive_maximum(data, limit) when is_number(data) and data < limit, do: :ok
+  def check_exclusive_maximum(data, limit) when is_number(data), do: {:error, %ErrorContext{contrast: limit, input: data}}
+  def check_exclusive_maximum(_, _), do: :ok
+
+  @doc "Checks `exclusiveMinimum`."
+  def check_exclusive_minimum(data, limit) when is_number(data) and data > limit, do: :ok
+  def check_exclusive_minimum(data, limit) when is_number(data), do: {:error, %ErrorContext{contrast: limit, input: data}}
+  def check_exclusive_minimum(_, _), do: :ok
+
+  @doc "Checks `multipleOf`."
+  def check_multiple_of(data, 0), do: {:error, %ErrorContext{contrast: "invalid_factor", input: data}}
+  def check_multiple_of(data, +0.0), do: {:error, %ErrorContext{contrast: "invalid_factor", input: data}}
+  def check_multiple_of(data, factor) when is_number(data) do
+    if Backplane.JsonSchema.Compiler.Predicates.MultipleOf.valid?(data, factor) do
+      :ok
+    else
+      {:error, %ErrorContext{contrast: factor, input: data}}
+    end
+  end
+  def check_multiple_of(_, _), do: :ok
+
+  @doc "Checks `const`."
+  @spec check_const(term(), term()) :: :ok | {:error, map()}
+  def check_const(data, const) do
+    if data == const, do: :ok, else: {:error, %ErrorContext{contrast: const, input: data}}
+  end
+
+  @doc "Checks `minLength`, returning an error for malformed UTF-8."
+  def check_min_length(data, min) when is_binary(data) do
+    case codepoint_length(data) do
+      :error -> {:error, %ErrorContext{contrast: min, input: data, error_detail: "invalid_utf8"}}
+      len -> if len >= min, do: :ok, else: {:error, %ErrorContext{contrast: min, input: len}}
+    end
+  end
+  def check_min_length(_, _), do: :ok
+
+  @doc "Checks `maxLength`, returning an error for malformed UTF-8."
+  def check_max_length(data, max) when is_binary(data) do
+    case codepoint_length(data) do
+      :error -> {:error, %ErrorContext{contrast: max, input: data, error_detail: "invalid_utf8"}}
+      len -> if len <= max, do: :ok, else: {:error, %ErrorContext{contrast: max, input: len}}
+    end
+  end
+  def check_max_length(_, _), do: :ok
+
+  @doc "Checks `minProperties`."
+  def check_min_properties(data, min) when is_map(data) do
+    size = map_size(data)
+    if size >= min, do: :ok, else: {:error, %ErrorContext{contrast: min, input: size}}
+  end
+  def check_min_properties(_, _), do: :ok
+
+  @doc "Checks `maxProperties`."
+  def check_max_properties(data, max) when is_map(data) do
+    size = map_size(data)
+    if size <= max, do: :ok, else: {:error, %ErrorContext{contrast: max, input: size}}
+  end
+  def check_max_properties(_, _), do: :ok
+
+  @doc "Checks `minItems`."
+  def check_min_items(data, min) when is_list(data) do
+    len = length(data)
+    if len >= min, do: :ok, else: {:error, %ErrorContext{contrast: min, input: len}}
+  end
+  def check_min_items(_, _), do: :ok
+
+  @doc "Checks `maxItems`."
+  def check_max_items(data, max) when is_list(data) do
+    len = length(data)
+    if len <= max, do: :ok, else: {:error, %ErrorContext{contrast: max, input: len}}
+  end
+  def check_max_items(_, _), do: :ok
+
+  @doc """
+  Checks `uniqueItems`. Uses `==` semantics (`1` equals `1.0`).
+  """
+  def check_unique_items([], true), do: :ok
+  def check_unique_items([_], true), do: :ok
+  def check_unique_items(data, true) when is_list(data) do
+    if unique_items?(data, %{}) do
+      :ok
+    else
+      {:error, %ErrorContext{contrast: true, input: data}}
+    end
+  end
+  # If uniqueItems is false (or data not list), validation passes
+  def check_unique_items(_, _), do: :ok
+
+  defp unique_items?([], _buckets), do: true
+  defp unique_items?([item | rest], buckets) do
+    key = unique_item_hash(item)
+
+    case buckets do
+      %{^key => bucket} ->
+        if Enum.any?(bucket, &(&1 == item)) do
+          false
+        else
+          unique_items?(rest, Map.put(buckets, key, [item | bucket]))
+        end
+      _ ->
+        unique_items?(rest, Map.put(buckets, key, [item]))
+    end
+  end
+
+  defp unique_item_hash(item) when is_integer(item), do: :erlang.phash2(item)
+  defp unique_item_hash(item) when is_float(item) do
+    integer = trunc(item)
+    if item == integer, do: :erlang.phash2(integer), else: :erlang.phash2(item)
+  end
+  defp unique_item_hash(item) when is_binary(item), do: :erlang.phash2(item)
+  # Equal composites must reach the same bucket; map keys retain exact-key semantics.
+  defp unique_item_hash(item) when is_list(item) or is_map(item) or is_tuple(item),
+    do: :erlang.phash2(normalize_unique_item(item))
+  defp unique_item_hash(item), do: :erlang.phash2(item)
+
+  defp normalize_unique_item(item) when is_integer(item) or is_binary(item) or is_atom(item),
+    do: item
+  defp normalize_unique_item(item) when is_float(item) do
+    integer = trunc(item)
+    if item == integer, do: integer, else: item
+  end
+  defp normalize_unique_item([]), do: []
+  defp normalize_unique_item([item | rest] = list) do
+    normalized_item = normalize_unique_item(item)
+    normalized_rest = normalize_unique_item(rest)
+
+    # Strict comparison must notice integral-float rewrites despite numeric equality.
+    if normalized_item === item and normalized_rest === rest,
+      do: list, else: [normalized_item | normalized_rest]
+  end
+  defp normalize_unique_item(item) when is_map(item) do
+    :maps.fold(fn key, value, acc ->
+      normalized = normalize_unique_item(value)
+      if normalized === value, do: acc, else: Map.put(acc, key, normalized)
+    end, item, item)
+  end
+  defp normalize_unique_item(item) when is_tuple(item),
+    do: item |> Tuple.to_list() |> Enum.map(&normalize_unique_item/1) |> List.to_tuple()
+  defp normalize_unique_item(item), do: item
+
+  # Keep the standard conversion for small and medium strings. The cutoff is
+  # measured across UTF-8 widths; ASCII alone would favor the unrolled path sooner.
+  defp codepoint_length(binary) when byte_size(binary) <= @charlist_byte_cutoff do
+    binary |> String.to_charlist() |> length()
+  rescue
+    UnicodeConversionError -> :error
+  end
+  defp codepoint_length(binary), do: count_codepoints(binary, 0)
+
+  # Count Unicode code points, not graphemes, without allocating a charlist.
+  # Scan to the end or an encoding error: diagnostics need the exact length of
+  # valid input, and permissive bounds must not silently accept malformed UTF-8.
+  # A small unroll reduces loop overhead for mixed-width UTF-8; the next clause
+  # handles the remaining one to three code points without padding or slicing.
+  defp count_codepoints(<<_::utf8, _::utf8, _::utf8, _::utf8, rest::binary>>, count),
+    do: count_codepoints(rest, count + 4)
+  defp count_codepoints(<<_codepoint::utf8, rest::binary>>, count),
+    do: count_codepoints(rest, count + 1)
+  defp count_codepoints(<<>>, count), do: count
+  defp count_codepoints(_invalid, _count), do: :error
+
+  defp infer_type(v) when is_binary(v), do: "string"
+  defp infer_type(v) when is_integer(v), do: "integer"
+  defp infer_type(v) when is_boolean(v), do: "boolean"
+  defp infer_type(v) when is_map(v), do: "object"
+  defp infer_type(v) when is_list(v), do: "array"
+  defp infer_type(v) when is_nil(v), do: "null"
+  defp infer_type(v) when is_float(v) do
+    if v == trunc(v), do: "integer", else: "number"
+  end
+  defp infer_type(_), do: "unknown"
+
+  @doc "Checks `enum`."
+  @spec check_enum(term(), list()) :: :ok | {:error, map()}
+  def check_enum(data, values) do
+    if Enum.any?(values, fn v -> v == data end) do
+      :ok
+    else
+      {:error, %ErrorContext{contrast: values, input: data}}
+    end
+  end
+
+  @doc "Checks `pattern`."
+  @spec check_pattern(term(), Regex.t(), list()) :: :ok | {:error, map()}
+  def check_pattern(data, regex, path \\ [])
+
+  def check_pattern(data, regex, path) when is_binary(data) do
+    if Pattern.match?(regex, data, path) do
+      :ok
+    else
+      {:error, %ErrorContext{contrast: regex, input: data}}
+    end
+  end
+  def check_pattern(_, _, _), do: :ok
+end

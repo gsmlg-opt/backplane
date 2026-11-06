@@ -1,15 +1,30 @@
 defmodule Backplane.JsonSchema.URIUtil do
   @moduledoc """
-  Utilities for URI resolution and manipulation without implicit network access.
+  Utilities for URI resolution and manipulation.
   """
 
   @doc """
   Resolves a relative URI against a base URI.
+  Safely handles cases where URIs are invalid or nil.
+
+  If merging fails (e.g. invalid URI format), it falls back to returning the child URI
+  (or the base if child is nil).
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.URIUtil.resolve("https://example.com/schema.json", "user.json")
+      "https://example.com/user.json"
+
+      iex> Backplane.JsonSchema.URIUtil.resolve("https://example.com/schemas/", "#/definitions/user")
+      "https://example.com/schemas/#/definitions/user"
+
+      iex> Backplane.JsonSchema.URIUtil.resolve(nil, "https://example.com/schema.json")
+      "https://example.com/schema.json"
+
   """
   @spec resolve(String.t() | nil, String.t() | nil) :: String.t() | nil
   def resolve(nil, uri), do: uri
   def resolve(base, nil), do: base
-
   def resolve(base, uri) when is_binary(base) and is_binary(uri) do
     cond do
       filesystem_path_uri?(base) ->
@@ -26,11 +41,28 @@ defmodule Backplane.JsonSchema.URIUtil do
 
   @doc """
   Splits a URI or reference into `{base, fragment}`.
+
+  Only the first literal `#` separates the base from the fragment. The fragment
+  is returned without that leading `#`. If no fragment is present, the second
+  element is `nil`. An empty fragment (`"#"`) is also normalized to `nil`.
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.URIUtil.split_fragment("https://example.com/schema")
+      {"https://example.com/schema", nil}
+
+      iex> Backplane.JsonSchema.URIUtil.split_fragment("https://example.com/schema#meta")
+      {"https://example.com/schema", "meta"}
+
+      iex> Backplane.JsonSchema.URIUtil.split_fragment("#/$defs/foo")
+      {"", "/$defs/foo"}
+
+      iex> Backplane.JsonSchema.URIUtil.split_fragment("https://example.com/schema#")
+      {"https://example.com/schema", nil}
   """
   @spec split_fragment(String.t()) :: {String.t(), String.t() | nil}
   def split_fragment(""), do: {"", nil}
   def split_fragment("#"), do: {"", nil}
-
   def split_fragment(uri) when is_binary(uri) do
     case :binary.split(uri, "#", []) do
       [base, ""] -> {base, nil}
@@ -41,10 +73,34 @@ defmodule Backplane.JsonSchema.URIUtil do
 
   @doc """
   Returns the URI or reference without its fragment.
+
+  Removes the first literal `#` and everything after it, without decoding or
+  normalizing the URI. Fragment-only references return `""`; a missing URI
+  remains `nil`, so absence is not confused with an explicitly empty reference.
+  Callers that require an empty resource key can normalize with `base(uri) || ""`.
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.URIUtil.base("https://example.com/schema#meta")
+      "https://example.com/schema"
+
+      iex> Backplane.JsonSchema.URIUtil.base("schema.json?version=1#/definitions/value")
+      "schema.json?version=1"
+
+      iex> Backplane.JsonSchema.URIUtil.base("urn:example:schema")
+      "urn:example:schema"
+
+      iex> Backplane.JsonSchema.URIUtil.base("#/definitions/value")
+      ""
+
+      iex> Backplane.JsonSchema.URIUtil.base("")
+      ""
+
+      iex> Backplane.JsonSchema.URIUtil.base(nil)
+      nil
   """
   @spec base(String.t() | nil) :: String.t() | nil
   def base(nil), do: nil
-
   def base(uri) when is_binary(uri) do
     case :binary.match(uri, "#") do
       {offset, 1} -> binary_part(uri, 0, offset)
@@ -54,6 +110,17 @@ defmodule Backplane.JsonSchema.URIUtil do
 
   @doc """
   Returns only the fragment portion of a URI or reference, without the leading `#`.
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.URIUtil.fragment("https://example.com/schema#meta")
+      "meta"
+
+      iex> Backplane.JsonSchema.URIUtil.fragment("#/$defs/foo")
+      "/$defs/foo"
+
+      iex> Backplane.JsonSchema.URIUtil.fragment("https://example.com/schema")
+      nil
   """
   @spec fragment(String.t()) :: String.t() | nil
   def fragment(uri) when is_binary(uri) do
@@ -63,16 +130,52 @@ defmodule Backplane.JsonSchema.URIUtil do
 
   @doc """
   Joins a fragment-free base URI and a fragment into a URI reference.
+
+  The fragment should be provided without the leading `#`. Passing `nil` returns
+  the base unchanged; an empty fragment appends `#`. No URI parsing, encoding,
+  normalization, or replacement of an existing fragment is performed.
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.URIUtil.join_fragment("https://example.com/schema", "meta")
+      "https://example.com/schema#meta"
+
+      iex> Backplane.JsonSchema.URIUtil.join_fragment("https://example.com/schema", "/$defs/foo")
+      "https://example.com/schema#/$defs/foo"
+
+      iex> Backplane.JsonSchema.URIUtil.join_fragment("https://example.com/schema", nil)
+      "https://example.com/schema"
+
+      iex> Backplane.JsonSchema.URIUtil.join_fragment("https://example.com/schema", "")
+      "https://example.com/schema#"
+
+      iex> Backplane.JsonSchema.URIUtil.join_fragment("", "/$defs/foo")
+      "#/$defs/foo"
   """
   @spec join_fragment(String.t(), String.t() | nil) :: String.t()
   def join_fragment(base, nil) when is_binary(base), do: base
+  def join_fragment(base, fragment) when is_binary(base) and is_binary(fragment), do: base <> "#" <> fragment
 
-  def join_fragment(base, fragment) when is_binary(base) and is_binary(fragment) do
-    base <> "#" <> fragment
-  end
+  @doc "Deprecated alias for `join_fragment/2`."
+  @deprecated "Use join_fragment/2 instead"
+  @spec with_fragment(String.t(), String.t() | nil) :: String.t()
+  defdelegate with_fragment(base, fragment), to: __MODULE__, as: :join_fragment
 
   @doc """
   Converts a fragment into a local reference string.
+
+  The fragment should be provided without the leading `#`. Passing `nil` returns `"#"`.
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.URIUtil.local_ref("meta")
+      "#meta"
+
+      iex> Backplane.JsonSchema.URIUtil.local_ref("/$defs/foo")
+      "#/$defs/foo"
+
+      iex> Backplane.JsonSchema.URIUtil.local_ref(nil)
+      "#"
   """
   @spec local_ref(String.t() | nil) :: String.t()
   def local_ref(nil), do: "#"
@@ -80,21 +183,36 @@ defmodule Backplane.JsonSchema.URIUtil do
 
   @doc """
   Checks if a reference string represents a remote URI (http or https).
+
+  ## Examples
+
+      iex> Backplane.JsonSchema.URIUtil.remote_ref?("https://example.com/schema.json")
+      true
+
+      iex> Backplane.JsonSchema.URIUtil.remote_ref?("http://example.com/schema.json")
+      true
+
+      iex> Backplane.JsonSchema.URIUtil.remote_ref?("#/definitions/user")
+      false
+
+      iex> Backplane.JsonSchema.URIUtil.remote_ref?("urn:uuid:12345")
+      false
+
   """
   @spec remote_ref?(String.t()) :: boolean()
+  # Optimization: Use binary pattern matching with case-insensitive check
   def remote_ref?(<<h, t, t2, p, ?:, ?/, ?/, _rest::binary>>)
       when (h == ?h or h == ?H) and (t == ?t or t == ?T) and (t2 == ?t or t2 == ?T) and (p == ?p or p == ?P),
       do: true
-
   def remote_ref?(<<h, t, t2, p, s, ?:, ?/, ?/, _rest::binary>>)
       when (h == ?h or h == ?H) and (t == ?t or t == ?T) and (t2 == ?t or t2 == ?T) and
-             (p == ?p or p == ?P) and (s == ?s or s == ?S),
+           (p == ?p or p == ?P) and (s == ?s or s == ?S),
       do: true
-
   def remote_ref?(_), do: false
 
   @doc false
   def external_ref?(ref) when is_binary(ref), do: base(ref) != ""
+
   def external_ref?(_), do: false
 
   defp filesystem_path_uri?(uri) when is_binary(uri) do
