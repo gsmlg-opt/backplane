@@ -10,10 +10,11 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
 
     test "converts basic number type" do
       assert {:ok, {:either, {:integer, :float}}} = JSONSchemaConverter.to_peri(%{"type" => "number"})
+      assert_conversion(%{"type" => "number"}, [-1, 2.5, 7.0], ["2", true])
     end
 
     test "converts basic integer type" do
-      assert {:ok, {:either, {:integer, :float}}} = JSONSchemaConverter.to_peri(%{"type" => "integer"})
+      assert_conversion(%{"type" => "integer"}, [-7, 0, 7, 7.0], [7.5, "7", true])
     end
 
     test "converts basic boolean type" do
@@ -64,22 +65,22 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
 
     test "converts integer with minimum" do
       schema = %{"type" => "integer", "minimum" => 0}
-      assert {:ok, {:either, {{:integer, {:gte, 0}}, {:float, {:gte, 0}}}}} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(schema, [0, 0.0, 1, 1.0], [-1, -1.0, 0.5])
     end
 
     test "converts integer with maximum" do
       schema = %{"type" => "integer", "maximum" => 100}
-      assert {:ok, {:either, {{:integer, {:lte, 100}}, {:float, {:lte, 100}}}}} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(schema, [99, 99.0, 100, 100.0], [101, 101.0, 99.5])
     end
 
     test "converts integer with exclusiveMinimum" do
       schema = %{"type" => "integer", "exclusiveMinimum" => 0}
-      assert {:ok, {:either, {{:integer, {:gt, 0}}, {:float, {:gt, 0}}}}} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(schema, [1, 1.0], [0, 0.0, -1, 0.5])
     end
 
     test "converts integer with exclusiveMaximum" do
       schema = %{"type" => "integer", "exclusiveMaximum" => 100}
-      assert {:ok, {:either, {{:integer, {:lt, 100}}, {:float, {:lt, 100}}}}} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(schema, [99, 99.0], [100, 100.0, 101, 99.5])
     end
 
     test "converts number with minimum" do
@@ -112,12 +113,11 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
         }
       }
 
-      expected = %{
-        "name" => :string,
-        "age" => {:either, {:integer, :float}}
-      }
-
-      assert {:ok, ^expected} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(
+        schema,
+        [%{"name" => "John", "age" => 30}, %{"name" => "Jane", "age" => 30.0}],
+        [%{"name" => "John", "age" => 30.5}, %{"name" => 42, "age" => 30}]
+      )
     end
 
     test "converts object with required fields" do
@@ -130,12 +130,11 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
         "required" => ["name"]
       }
 
-      expected = %{
-        "name" => {:required, :string},
-        "age" => {:either, {:integer, :float}}
-      }
-
-      assert {:ok, ^expected} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(
+        schema,
+        [%{"name" => "John", "age" => 30}, %{"name" => "Jane", "age" => 30.0}],
+        [%{"age" => 30}, %{"name" => "John", "age" => 30.5}]
+      )
     end
 
     test "converts nested object" do
@@ -180,8 +179,11 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
         }
       }
 
-      expected = {:list, %{"id" => {:either, {:integer, :float}}, "name" => :string}}
-      assert {:ok, ^expected} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(
+        schema,
+        [[%{"id" => 1, "name" => "one"}, %{"id" => 2.0, "name" => "two"}]],
+        [[%{"id" => 1.5, "name" => "fractional"}], [%{"id" => 1, "name" => 42}]]
+      )
     end
 
     test "converts object with additionalProperties" do
@@ -201,7 +203,7 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
         ]
       }
 
-      assert {:ok, {:either, {:string, {:either, {:integer, :float}}}}} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(schema, ["text", 7, 7.0], [7.5, true, %{}])
     end
 
     test "converts oneOf with multiple schemas" do
@@ -213,7 +215,7 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
         ]
       }
 
-      assert {:ok, {:oneof, [:string, {:either, {:integer, :float}}, :boolean]}} = JSONSchemaConverter.to_peri(schema)
+      assert_conversion(schema, ["text", 7, 7.0, true, false], [7.5, [], %{}])
     end
 
     test "converts multiple types" do
@@ -378,6 +380,18 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
       }
 
       assert {:error, _} = validator.(invalid_output)
+    end
+  end
+
+  defp assert_conversion(json_schema, valid_values, invalid_values) do
+    assert {:ok, schema} = JSONSchemaConverter.to_peri(json_schema)
+
+    for value <- valid_values do
+      assert {:ok, ^value} = Peri.validate(schema, value)
+    end
+
+    for value <- invalid_values do
+      assert {:error, _errors} = Peri.validate(schema, value)
     end
   end
 end
