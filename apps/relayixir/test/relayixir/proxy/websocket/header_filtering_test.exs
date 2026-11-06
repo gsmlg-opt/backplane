@@ -58,80 +58,40 @@ defmodule Relayixir.Proxy.WebSocket.HeaderFilteringTest do
     test "subprotocol header is forwarded through the proxy to upstream", %{
       proxy_port: proxy_port
     } do
-      {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", proxy_port)
-
-      {:ok, conn, ref} =
-        Mint.WebSocket.upgrade(:ws, conn, "/ws", [
-          {"host", "127.0.0.1:#{proxy_port}"},
-          {"sec-websocket-protocol", "graphql-ws"}
-        ])
-
-      # Complete the WebSocket handshake
-      {:ok, conn, websocket} = await_ws_upgrade(conn, ref)
-
-      # Small delay to ensure bridge is fully open before sending frames
-      Process.sleep(50)
+      socket = HTTP.WebSocket.new("http://127.0.0.1:#{proxy_port}/ws", ["graphql-ws"])
+      assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Open{}}, 5_000
 
       # Send a text message -- the upstream echoes back the negotiated protocol
       # as a prefix to prove it received the subprotocol header
-      {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:text, "check-protocol"})
-      {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
+      :ok = HTTP.WebSocket.send(socket, "check-protocol")
+      assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Message{data: "protocol:graphql-ws"}}, 5_000
 
-      {:ok, _conn, _websocket, frames} = await_ws_frames(conn, websocket)
-
-      # The subprotocol-aware upstream echoes "protocol:<negotiated>" for "check-protocol" message
-      assert [{:text, response}] = frames
-      assert response == "protocol:graphql-ws"
-
-      Mint.HTTP.close(conn)
+      HTTP.WebSocket.close(socket)
     end
 
     test "multiple subprotocol values are forwarded", %{proxy_port: proxy_port} do
-      {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", proxy_port)
-
-      {:ok, conn, ref} =
-        Mint.WebSocket.upgrade(:ws, conn, "/ws", [
-          {"host", "127.0.0.1:#{proxy_port}"},
-          {"sec-websocket-protocol", "graphql-ws, graphql-transport-ws"}
+      socket =
+        HTTP.WebSocket.new("http://127.0.0.1:#{proxy_port}/ws", [
+          "graphql-ws",
+          "graphql-transport-ws"
         ])
 
-      {:ok, conn, websocket} = await_ws_upgrade(conn, ref)
+      assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Open{}}, 5_000
 
-      # Small delay to ensure bridge is fully open before sending frames
-      Process.sleep(50)
+      :ok = HTTP.WebSocket.send(socket, "check-protocol")
+      assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Message{data: "protocol:graphql-ws"}}, 5_000
 
-      {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:text, "check-protocol"})
-      {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
-
-      {:ok, _conn, _websocket, frames} = await_ws_frames(conn, websocket)
-      assert [{:text, response}] = frames
-      # Upstream picks the first protocol from the comma-separated list
-      assert response == "protocol:graphql-ws"
-
-      Mint.HTTP.close(conn)
+      HTTP.WebSocket.close(socket)
     end
 
     test "connection without subprotocol header works normally", %{proxy_port: proxy_port} do
-      {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", proxy_port)
+      socket = HTTP.WebSocket.new("http://127.0.0.1:#{proxy_port}/ws")
+      assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Open{}}, 5_000
 
-      {:ok, conn, ref} =
-        Mint.WebSocket.upgrade(:ws, conn, "/ws", [
-          {"host", "127.0.0.1:#{proxy_port}"}
-        ])
+      :ok = HTTP.WebSocket.send(socket, "check-protocol")
+      assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Message{data: "protocol:none"}}, 5_000
 
-      {:ok, conn, websocket} = await_ws_upgrade(conn, ref)
-
-      # Small delay to ensure bridge is fully open before sending frames
-      Process.sleep(50)
-
-      {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:text, "check-protocol"})
-      {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
-
-      {:ok, _conn, _websocket, frames} = await_ws_frames(conn, websocket)
-      assert [{:text, response}] = frames
-      assert response == "protocol:none"
-
-      Mint.HTTP.close(conn)
+      HTTP.WebSocket.close(socket)
     end
   end
 
@@ -259,57 +219,4 @@ defmodule Relayixir.Proxy.WebSocket.HeaderFilteringTest do
     end
   end
 
-  ## Helpers (same pattern as integration_test.exs)
-
-  defp await_ws_upgrade(conn, ref) do
-    receive do
-      message ->
-        case Mint.WebSocket.stream(conn, message) do
-          {:ok, conn, responses} ->
-            {status, headers} = extract_status_headers(responses)
-
-            case Mint.WebSocket.new(conn, ref, status, headers) do
-              {:ok, conn, websocket} -> {:ok, conn, websocket}
-              {:error, conn, reason} -> {:error, conn, reason}
-            end
-
-          {:error, conn, reason, _} ->
-            {:error, conn, reason}
-        end
-    after
-      5_000 -> {:error, conn, :timeout}
-    end
-  end
-
-  defp await_ws_frames(conn, websocket) do
-    receive do
-      message ->
-        case Mint.WebSocket.stream(conn, message) do
-          {:ok, conn, [{:data, _ref, data}]} ->
-            case Mint.WebSocket.decode(websocket, data) do
-              {:ok, websocket, frames} -> {:ok, conn, websocket, frames}
-              {:error, websocket, reason} -> {:error, conn, websocket, reason}
-            end
-
-          {:ok, conn, _other} ->
-            await_ws_frames(conn, websocket)
-
-          {:error, conn, reason, _} ->
-            {:error, conn, websocket, reason}
-
-          :unknown ->
-            await_ws_frames(conn, websocket)
-        end
-    after
-      5_000 -> {:error, conn, websocket, :timeout}
-    end
-  end
-
-  defp extract_status_headers(responses) do
-    Enum.reduce(responses, {nil, []}, fn
-      {:status, _ref, status}, {_s, h} -> {status, h}
-      {:headers, _ref, headers}, {s, _h} -> {s, headers}
-      _, acc -> acc
-    end)
-  end
 end

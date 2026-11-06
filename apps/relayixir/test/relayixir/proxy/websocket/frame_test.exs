@@ -57,60 +57,6 @@ defmodule Relayixir.Proxy.WebSocket.FrameTest do
     end
   end
 
-  describe "from_mint/1" do
-    test "converts text tuple" do
-      frame = Frame.from_mint({:text, "hello"})
-      assert frame == Frame.text("hello")
-    end
-
-    test "converts binary tuple" do
-      frame = Frame.from_mint({:binary, <<1, 2>>})
-      assert frame == Frame.binary(<<1, 2>>)
-    end
-
-    test "converts ping tuple" do
-      frame = Frame.from_mint({:ping, "data"})
-      assert frame == Frame.ping("data")
-    end
-
-    test "converts pong tuple" do
-      frame = Frame.from_mint({:pong, "data"})
-      assert frame == Frame.pong("data")
-    end
-
-    test "converts close tuple with code and reason" do
-      frame = Frame.from_mint({:close, 1000, "normal"})
-      assert frame == Frame.close(1000, "normal")
-    end
-
-    test "converts bare :close atom" do
-      frame = Frame.from_mint(:close)
-      assert frame == Frame.close(1000, "")
-    end
-  end
-
-  describe "to_mint/1" do
-    test "converts text frame" do
-      assert Frame.to_mint(Frame.text("hello")) == {:text, "hello"}
-    end
-
-    test "converts binary frame" do
-      assert Frame.to_mint(Frame.binary(<<1, 2>>)) == {:binary, <<1, 2>>}
-    end
-
-    test "converts ping frame" do
-      assert Frame.to_mint(Frame.ping("data")) == {:ping, "data"}
-    end
-
-    test "converts pong frame" do
-      assert Frame.to_mint(Frame.pong("data")) == {:pong, "data"}
-    end
-
-    test "converts close frame" do
-      assert Frame.to_mint(Frame.close(1001, "Going Away")) == {:close, 1001, "Going Away"}
-    end
-  end
-
   describe "to_websock/1" do
     test "converts text frame" do
       assert Frame.to_websock(Frame.text("hello")) == {:text, "hello"}
@@ -152,21 +98,6 @@ defmodule Relayixir.Proxy.WebSocket.FrameTest do
   end
 
   describe "roundtrip conversions" do
-    test "mint roundtrip for text" do
-      original = Frame.text("test")
-      assert original == Frame.from_mint(Frame.to_mint(original))
-    end
-
-    test "mint roundtrip for binary" do
-      original = Frame.binary(<<1, 2, 3>>)
-      assert original == Frame.from_mint(Frame.to_mint(original))
-    end
-
-    test "mint roundtrip for close" do
-      original = Frame.close(1001, "Going Away")
-      assert original == Frame.from_mint(Frame.to_mint(original))
-    end
-
     test "websock roundtrip for text" do
       original = Frame.text("test")
       assert original == Frame.from_websock(Frame.to_websock(original))

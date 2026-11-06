@@ -32,29 +32,6 @@ defmodule Relayixir.Proxy.WebSocket.Frame do
   end
 
   @doc """
-  Converts a Mint.WebSocket frame tuple to a Frame struct.
-  """
-  @spec from_mint(tuple()) :: t()
-  def from_mint({:text, payload}), do: text(payload)
-  def from_mint({:binary, payload}), do: binary(payload)
-  def from_mint({:ping, payload}), do: ping(payload)
-  def from_mint({:pong, payload}), do: pong(payload)
-  def from_mint({:close, code, reason}), do: close(code, reason)
-  def from_mint(:close), do: close(1000, "")
-
-  @doc """
-  Converts a Frame struct to a Mint.WebSocket frame tuple.
-  """
-  @spec to_mint(t()) :: tuple()
-  def to_mint(%__MODULE__{type: :text, payload: payload}), do: {:text, payload}
-  def to_mint(%__MODULE__{type: :binary, payload: payload}), do: {:binary, payload}
-  def to_mint(%__MODULE__{type: :ping, payload: payload}), do: {:ping, payload}
-  def to_mint(%__MODULE__{type: :pong, payload: payload}), do: {:pong, payload}
-
-  def to_mint(%__MODULE__{type: :close, close_code: code, close_reason: reason}),
-    do: {:close, code, reason}
-
-  @doc """
   Converts a Frame struct to a Gaoxy/WebSock frame tuple.
   """
   @spec to_websock(t()) :: tuple()

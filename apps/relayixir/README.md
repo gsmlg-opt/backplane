@@ -77,7 +77,7 @@ Environment-selected HTTP proxies are supported, including CONNECT for HTTPS ori
 
 Fetch owns terminal upload cleanup, including preconnect failures and early responses. RequestGuard retains only caller-lifetime cancellation and caller-owned upload tracking; the Promise-monitor workaround for #70 has been removed.
 
-WebSocket uses the public proxy frame API with automatic Pong disabled, acknowledged incoming frames, and local write completion before Close. Mint and Mint.WebSocket remain test-only clients.
+WebSocket uses the public proxy frame API with automatic Pong disabled, acknowledged incoming frames, and local write completion before Close. Tests use HTTP.WebSocket and HTTP.Fetch.
 
 See [`docs/design.md`](docs/design.md) for the historical architecture draft.
 

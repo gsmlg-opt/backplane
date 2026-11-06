@@ -50,8 +50,6 @@ defmodule Relayixir.MixProject do
       {:plug, "~> 1.15"},
       {:http_fetch, "~> 0.21.19"},
       {:http_web_socket, "~> 0.21.19"},
-      {:mint, "~> 1.6", only: :test},
-      {:mint_web_socket, "~> 1.0", only: :test},
       {:telemetry, "~> 1.2"}
     ]
   end

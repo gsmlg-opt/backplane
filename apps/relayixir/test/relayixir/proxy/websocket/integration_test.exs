@@ -52,177 +52,41 @@ defmodule Relayixir.Proxy.WebSocket.IntegrationTest do
   end
 
   test "full end-to-end WebSocket proxy: upgrade, relay text, close", %{proxy_port: proxy_port} do
-    # Connect to the proxy's WebSocket endpoint
-    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", proxy_port)
+    socket = HTTP.WebSocket.new("http://127.0.0.1:#{proxy_port}/ws")
+    assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Open{}}, 5_000
 
-    {:ok, conn, ref} =
-      Mint.WebSocket.upgrade(:ws, conn, "/ws", [
-        {"host", "127.0.0.1:#{proxy_port}"}
-      ])
+    :ok = HTTP.WebSocket.send(socket, "hello via proxy")
+    assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Message{data: "hello via proxy"}}, 5_000
 
-    # Receive upgrade response
-    {:ok, conn, websocket} = await_ws_upgrade(conn, ref)
-
-    # Send a text frame through the proxy
-    {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:text, "hello via proxy"})
-    {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
-
-    # Should receive the echo back through the proxy
-    {:ok, _conn, websocket, frames} = await_ws_frames(conn, websocket)
-    assert [{:text, "hello via proxy"}] = frames
-
-    # Send close
-    {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:close, 1000, "done"})
-    {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
-
-    # Await close ack
-    await_ws_close(conn, websocket)
+    :ok = HTTP.WebSocket.close(socket, 1000, "done")
+    assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Close{code: 1000}}, 5_000
   end
 
   test "full end-to-end WebSocket proxy: relay binary frame", %{proxy_port: proxy_port} do
-    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", proxy_port)
+    socket = HTTP.WebSocket.new("http://127.0.0.1:#{proxy_port}/ws")
+    assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Open{}}, 5_000
 
-    {:ok, conn, ref} =
-      Mint.WebSocket.upgrade(:ws, conn, "/ws", [
-        {"host", "127.0.0.1:#{proxy_port}"}
-      ])
-
-    {:ok, conn, websocket} = await_ws_upgrade(conn, ref)
-
-    # Send binary frame
     binary_data = <<0xFF, 0xFE, 0xFD, 0xFC>>
-    {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:binary, binary_data})
-    {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
+    :ok = HTTP.WebSocket.send(socket, HTTP.WebSocket.array_buffer(binary_data))
+    assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Message{data: %HTTP.Blob{data: ^binary_data}}}, 5_000
 
-    # Should receive binary echo
-    {:ok, _conn, _websocket, frames} = await_ws_frames(conn, websocket)
-    assert [{:binary, ^binary_data}] = frames
-
-    Mint.HTTP.close(conn)
+    HTTP.WebSocket.close(socket)
   end
 
   test "upstream-initiated close reaches the downstream with its reason", %{proxy_port: port} do
-    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", port)
-    {:ok, conn, ref} = Mint.WebSocket.upgrade(:ws, conn, "/ws", [])
-    {:ok, conn, websocket} = await_ws_upgrade(conn, ref)
-    {:ok, websocket, data} = Mint.WebSocket.encode(websocket, {:text, "close"})
-    {:ok, conn} = Mint.WebSocket.stream_request_body(conn, ref, data)
+    socket = HTTP.WebSocket.new("http://127.0.0.1:#{port}/ws")
+    assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Open{}}, 5_000
 
-    assert {:ok, _conn, _websocket, [{:close, 1000, "requested close"}]} =
-             await_ws_frames(conn, websocket)
+    :ok = HTTP.WebSocket.send(socket, "close")
+    assert_receive {HTTP.WebSocket, ^socket, %HTTP.WebSocket.Event.Close{code: 1000, reason: "requested close"}}, 5_000
   end
 
   test "non-WebSocket request to WS route returns normal HTTP response", %{
     proxy_port: proxy_port
   } do
-    # A normal HTTP GET to the WS-eligible route should fall through to HTTP proxy
-    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", proxy_port)
-    {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/ws", [{"host", "localhost"}], nil)
-
-    {:ok, _conn, responses} = recv_all(conn, ref)
-
-    # The upstream WS handler responds with upgrade, but without WS headers
-    # the proxy should handle it as HTTP (404 from test router for non-WS upgrade)
-    statuses = for {:status, ^ref, status} <- responses, do: status
-    assert length(statuses) > 0
-  end
-
-  ## Helpers
-
-  defp await_ws_upgrade(conn, ref) do
-    receive do
-      message ->
-        case Mint.WebSocket.stream(conn, message) do
-          {:ok, conn, responses} ->
-            {status, headers} = extract_status_headers(responses)
-
-            case Mint.WebSocket.new(conn, ref, status, headers) do
-              {:ok, conn, websocket} -> {:ok, conn, websocket}
-              {:error, conn, reason} -> {:error, conn, reason}
-            end
-
-          {:error, conn, reason, _} ->
-            {:error, conn, reason}
-        end
-    after
-      5_000 -> {:error, conn, :timeout}
-    end
-  end
-
-  defp await_ws_frames(conn, websocket) do
-    receive do
-      message ->
-        case Mint.WebSocket.stream(conn, message) do
-          {:ok, conn, [{:data, _ref, data}]} ->
-            case Mint.WebSocket.decode(websocket, data) do
-              {:ok, websocket, frames} -> {:ok, conn, websocket, frames}
-              {:error, websocket, reason} -> {:error, conn, websocket, reason}
-            end
-
-          {:ok, conn, _other} ->
-            await_ws_frames(conn, websocket)
-
-          {:error, conn, reason, _} ->
-            {:error, conn, websocket, reason}
-
-          :unknown ->
-            await_ws_frames(conn, websocket)
-        end
-    after
-      5_000 -> {:error, conn, websocket, :timeout}
-    end
-  end
-
-  defp await_ws_close(conn, websocket) do
-    receive do
-      message ->
-        case Mint.WebSocket.stream(conn, message) do
-          {:ok, conn, [{:data, _ref, data}]} ->
-            case Mint.WebSocket.decode(websocket, data) do
-              {:ok, _websocket, frames} ->
-                has_close = Enum.any?(frames, fn f -> match?({:close, _, _}, f) end)
-                if has_close, do: :ok, else: await_ws_close(conn, websocket)
-
-              {:error, _websocket, _reason} ->
-                :ok
-            end
-
-          {:ok, _conn, _} ->
-            :ok
-
-          _ ->
-            :ok
-        end
-    after
-      5_000 -> :timeout
-    end
-  end
-
-  defp extract_status_headers(responses) do
-    Enum.reduce(responses, {nil, []}, fn
-      {:status, _ref, status}, {_s, h} -> {status, h}
-      {:headers, _ref, headers}, {s, _h} -> {s, headers}
-      _, acc -> acc
-    end)
-  end
-
-  defp recv_all(conn, ref, acc \\ []) do
-    receive do
-      message ->
-        case Mint.HTTP.stream(conn, message) do
-          {:ok, conn, responses} ->
-            new_acc = acc ++ responses
-            done? = Enum.any?(responses, &match?({:done, ^ref}, &1))
-            if done?, do: {:ok, conn, new_acc}, else: recv_all(conn, ref, new_acc)
-
-          {:error, conn, reason, _} ->
-            {:error, conn, reason}
-
-          :unknown ->
-            recv_all(conn, ref, acc)
-        end
-    after
-      5_000 -> {:ok, conn, acc}
-    end
+    promise = HTTP.fetch("http://127.0.0.1:#{proxy_port}/ws", method: "GET")
+    response = HTTP.Promise.await(promise)
+    assert %HTTP.Response{} = response
+    assert response.status != nil
   end
 end
