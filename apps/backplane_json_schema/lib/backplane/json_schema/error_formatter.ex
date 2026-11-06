@@ -1,0 +1,278 @@
+defmodule Backplane.JsonSchema.ErrorFormatter do
+  @moduledoc """
+  Formats `Backplane.JsonSchema.Types.Error` structs into human-readable strings.
+  """
+  alias Backplane.JsonSchema.Types
+  alias Backplane.JsonSchema.Types.Error
+
+  import Types, only: [is_non_neg_int_keywords?: 1, is_numeric_keywords?: 1]
+
+  @doc """
+  Returns a human-readable message for the given `Error`.
+  """
+  def format(%Error{rule: :invalid_keyword_value, path: path, value: value, context: context}) do
+    keyword = List.last(path)
+    format_invalid_keyword(keyword, value, context)
+  end
+
+  def format(%Error{rule: :unsupported_vocabulary, path: path}) do
+    msg = "Unsupported required vocabulary: #{List.last(path)}"
+    formatted_path = format_path(path)
+    if formatted_path == "/", do: msg, else: "At #{formatted_path}: #{msg}"
+  end
+
+  def format(%Error{rule: :invalid_regex, path: path, context: %{error_detail: error}}) do
+    msg = "Invalid regex at schema #{format_path(path)}: #{error}"
+    formatted_path = format_path(path)
+    if formatted_path == "/", do: msg, else: "At #{formatted_path}: #{msg}"
+  end
+
+  def format(%Error{} = error) do
+    path = format_path(error.path)
+    msg = format_message(error)
+    if path == "/", do: msg, else: "At #{path}: #{msg}"
+  end
+
+  defp format_message(%Error{rule: :draft_conflict, value: uri, context: %{contrast: declared, input: requested}}) do
+    "$schema #{inspect(uri)} selects #{inspect(declared)}, but :draft is #{inspect(requested)}"
+  end
+
+  defp format_message(%Error{rule: :invalid_draft, value: draft}) do
+    "Invalid :draft #{inspect(draft)}; expected \"draft7\" or \"draft2020_12\""
+  end
+
+  defp format_message(%Error{rule: :type, context: %{contrast: expected, input: input}})
+       when is_list(expected) do
+    "Expected one of types [#{Enum.join(expected, ", ")}], got #{input}"
+  end
+
+  defp format_message(%Error{rule: :type, context: %{contrast: expected, input: input}}) do
+    "Expected type #{expected}, got #{input}"
+  end
+
+  defp format_message(%Error{rule: :minimum, context: %{contrast: min, input: input}}) do
+    "Value #{input} is less than minimum #{min}"
+  end
+
+  defp format_message(%Error{rule: :maximum, context: %{contrast: max, input: input}}) do
+    "Value #{input} is greater than maximum #{max}"
+  end
+
+  defp format_message(%Error{rule: :exclusiveMinimum, context: %{contrast: min, input: input}}) do
+    "Value #{input} is less than or equal to exclusive minimum #{min}"
+  end
+
+  defp format_message(%Error{rule: :exclusiveMaximum, context: %{contrast: max, input: input}}) do
+    "Value #{input} is greater than or equal to exclusive maximum #{max}"
+  end
+
+  defp format_message(%Error{rule: rule, context: %{error_detail: "invalid_utf8"}})
+       when rule in [:minLength, :maxLength] do
+    "Cannot check #{rule}: string is not valid UTF-8"
+  end
+
+  defp format_message(%Error{rule: :minLength, context: %{contrast: min, input: len}}) do
+    "String length #{len} is less than minimum #{min}"
+  end
+
+  defp format_message(%Error{rule: :maxLength, context: %{contrast: max, input: len}}) do
+    "String length #{len} is greater than maximum #{max}"
+  end
+
+  defp format_message(%Error{rule: :minItems, context: %{contrast: min, input: len}}) do
+    "Array has #{len} items, minimum is #{min}"
+  end
+
+  defp format_message(%Error{rule: :maxItems, context: %{contrast: max, input: len}}) do
+    "Array has #{len} items, maximum is #{max}"
+  end
+
+  defp format_message(%Error{rule: :required, context: %{contrast: missing}}) do
+    "Missing required properties: #{Enum.join(missing, ", ")}"
+  end
+
+  defp format_message(%Error{rule: :dependentRequired, context: %{input: prop, contrast: missing}}) do
+    "Dependency failure: '#{prop}' requires #{inspect(missing)}"
+  end
+
+  defp format_message(%Error{rule: :contains, context: %{contrast: 1, error_detail: "min", input: 0}}) do
+    "Array must contain at least one matching item, but none matched"
+  end
+
+  defp format_message(%Error{rule: :contains, context: %{contrast: 1, error_detail: "min"}}) do
+    "Array must contain at least one matching item"
+  end
+
+  defp format_message(%Error{rule: :contains, context: %{contrast: min, error_detail: "min", input: count}}) do
+    "Array must contain at least #{min} matching items, found #{count}"
+  end
+
+  defp format_message(%Error{rule: :contains, context: %{contrast: max, error_detail: "max", input: count}}) do
+    "Array must contain at most #{max} matching items, found #{count}"
+  end
+
+  defp format_message(%Error{rule: :oneOf, context: %{contrast: 1, input: input}}) do
+    "Failed 'oneOf' constraint: Value #{inspect(input)} is ambiguous because it matched multiple subschemas"
+  end
+
+  defp format_message(%Error{rule: :not, context: %{input: input}}) do
+    "Failed 'not' constraint: Value #{inspect(input)} is explicitly forbidden"
+  end
+
+  defp format_message(%Error{rule: :contentEncoding, context: %{contrast: "unsupported", input: encoding}}) do
+    "Unsupported content encoding: #{encoding}"
+  end
+
+  defp format_message(%Error{rule: :contentEncoding, context: %{contrast: encoding, input: input}}) do
+    "Failed to decode string as '#{encoding}': #{inspect(input)}"
+  end
+
+  defp format_message(%Error{
+         rule: :contentMediaType,
+         value: value,
+         context: %{contrast: "invalid", input: media_type, error_detail: error}
+       }) do
+    "Failed to decode as '#{media_type}': #{inspect(error)}, input: #{inspect(value)}"
+  end
+
+  defp format_message(%Error{rule: :contentMediaType, context: %{contrast: "unsupported", input: media_type}}) do
+    "Unsupported contentMediaType: #{media_type}"
+  end
+
+  defp format_message(%Error{context: %{contrast: "compile_remote", input: uri, error_detail: error}}) do
+    "Failed to compile remote schema '#{uri}': #{inspect(error)}"
+  end
+
+  defp format_message(%Error{context: %{contrast: "load_remote", input: uri, error_detail: reason}}) do
+    "Failed to load remote schema '#{uri}': #{inspect(reason)}"
+  end
+
+  defp format_message(%Error{context: %{contrast: "invalid_loader_response", input: uri}}) do
+    "Invalid loader response for '#{uri}'"
+  end
+
+  defp format_message(%Error{context: %{contrast: "invalid_schema", input: pointer, error_detail: error}}) do
+    "Invalid schema at '#{pointer}': #{inspect(error)}"
+  end
+
+  defp format_message(%Error{context: %{contrast: "ref_not_found", input: pointer}}) do
+    "Reference not found: #{pointer}"
+  end
+
+  defp format_message(%Error{
+         rule: :compile_fragment,
+         context: %{contrast: contrast, input: input, error_detail: detail}
+       }) do
+    base = "Failed to compile schema fragment (#{contrast})"
+
+    details =
+      [
+        if(input, do: "input: #{inspect(input)}", else: nil),
+        if(detail, do: "detail: #{inspect(detail)}", else: nil)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if details == [], do: base, else: base <> ": " <> Enum.join(details, ", ")
+  end
+
+  defp format_message(%Error{rule: :multipleOf, context: %{contrast: factor, input: data}}) do
+    "Value #{data} is not a multiple of #{factor}"
+  end
+
+  defp format_message(%Error{rule: :uniqueItems}) do
+    "Array items must be unique"
+  end
+
+  defp format_message(%Error{rule: :minProperties, context: %{contrast: min, input: size}}) do
+    "Object has #{size} properties, minimum is #{min}"
+  end
+
+  defp format_message(%Error{rule: :maxProperties, context: %{contrast: max, input: size}}) do
+    "Object has #{size} properties, maximum is #{max}"
+  end
+
+  defp format_message(%Error{rule: :unevaluatedProperties, context: %{contrast: "not_allowed"}}) do
+    "Property is not allowed"
+  end
+
+  defp format_message(%Error{rule: :unevaluatedItems, context: %{contrast: "not_allowed"}}) do
+    "Item is not allowed"
+  end
+
+  defp format_message(%Error{rule: :enum, context: %{input: input, contrast: allowed}}) do
+    "Value #{inspect(input)} is not in the allowed list: #{inspect(allowed)}"
+  end
+
+  defp format_message(%Error{rule: :const, context: %{input: input, contrast: expected}}) do
+    "Value #{inspect(input)} does not match const: #{inspect(expected)}"
+  end
+
+  defp format_message(%Error{
+         rule: :indeterminate_pattern,
+         context: %{contrast: pattern, error_detail: reason}
+       }) do
+    "Cannot determine whether input matches pattern #{inspect(pattern)}: regex engine error #{inspect(reason)}"
+  end
+
+  defp format_message(%Error{rule: :pattern, context: %{contrast: pattern, input: input}}) do
+    "String #{inspect(input)} does not match pattern: #{inspect(pattern)}"
+  end
+
+  defp format_message(%Error{rule: :format, context: %{contrast: format, input: input}}) do
+    "Invalid #{format} format: #{inspect(input)}"
+  end
+
+  defp format_message(%Error{rule: rule}), do: "Validation failed for rule: #{inspect(rule)}"
+
+  defp format_path(path) when is_binary(path), do: path
+  defp format_path([]), do: "/"
+  defp format_path([single]) when is_binary(single) or is_integer(single), do: "/" <> to_string(single)
+
+  defp format_path(path) when is_list(path) do
+    iodata = [?/ | Enum.intersperse(Enum.reverse(path), ?/)]
+    IO.iodata_to_binary(iodata)
+  end
+
+  defp format_path(_), do: "/"
+
+  defp format_invalid_keyword("$ref", value, %{contrast: "string"}) do
+    "Keyword '$ref' must be a string, got: #{inspect(value)}"
+  end
+
+  defp format_invalid_keyword("type", value, %{contrast: valid_types})
+       when is_binary(value) and is_list(valid_types) do
+    valid = Enum.join(valid_types, ", ")
+    "Keyword 'type' must be one of [#{valid}], got: #{inspect(value)}"
+  end
+
+  defp format_invalid_keyword("type", value, %{contrast: valid_types})
+       when is_list(value) and is_list(valid_types) do
+    invalid = Enum.reject(value, &(is_binary(&1) and &1 in valid_types))
+    "Keyword 'type' contains unknown type(s): #{Enum.join(invalid, ", ")}"
+  end
+
+  defp format_invalid_keyword("type", value, _context) do
+    "Keyword 'type' must be a type string or an array of type strings, got: #{inspect(value)}"
+  end
+
+  defp format_invalid_keyword("multipleOf", value, %{contrast: "strictly_positive_number"}) do
+    "Keyword 'multipleOf' must be a strictly positive number, got: #{inspect(value)}"
+  end
+
+  defp format_invalid_keyword("uniqueItems", value, %{contrast: "boolean"}) do
+    "Keyword 'uniqueItems' must be a boolean, got: #{inspect(value)}"
+  end
+
+  defp format_invalid_keyword(kw, value, %{contrast: "number"}) when is_numeric_keywords?(kw) do
+    "Keyword '#{kw}' must be a number, got: #{inspect(value)}"
+  end
+
+  defp format_invalid_keyword(kw, value, %{contrast: "non_negative_integer"})
+       when is_non_neg_int_keywords?(kw) do
+    "Keyword '#{kw}' must be a non-negative integer, got: #{inspect(value)}"
+  end
+
+  defp format_invalid_keyword(kw, value, _context) do
+    "Keyword '#{kw}' has an invalid value: #{inspect(value)}"
+  end
+end
