@@ -47,7 +47,7 @@ defmodule BackplaneLlama.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:mox, "~> 1.1", only: :test},
-      {:gaoxy_http, "~> 0.14.0"}
+      {:gaoxy_http, "~> 0.15.0"}
     ]
   end
 end
