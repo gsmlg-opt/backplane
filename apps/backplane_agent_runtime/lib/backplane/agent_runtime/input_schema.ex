@@ -1,11 +1,11 @@
 defmodule Backplane.AgentRuntime.InputSchema do
   alias Backplane.AgentRuntime.Error
-  alias JSONSchex.Types.Schema
+  alias Backplane.JsonSchema.Types.Schema
 
   @moduledoc """
   JSON Schema Draft 2020-12 boundary for MCP tool arguments.
 
-  `JSONSchex` owns schema semantics. This module keeps the runtime contract
+  `Backplane.JsonSchema` owns schema semantics. This module keeps the runtime contract
   deliberately small: MCP tool roots are objects, host-authored atom keys are
   normalized without creating atoms, and external references are loaded only
   through an explicitly supplied registry or loader.
@@ -126,7 +126,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
       try do
-        case JSONSchex.compile(schema, compile_opts) do
+        case Backplane.JsonSchema.compile(schema, compile_opts) do
           {:ok, %Schema{} = compiled} -> {:ok, compiled}
           {:error, error} -> {:error, compile_error(error)}
         end
@@ -150,8 +150,8 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp validate_meta_schema(schema) do
     with {:ok, meta_schema} <-
-           JSONSchex.Draft202012.Schemas.fetch(@draft2020_12),
-         {:ok, compiled} <- JSONSchex.compile(meta_schema),
+           Backplane.JsonSchema.Draft202012.Schemas.fetch(@draft2020_12),
+         {:ok, compiled} <- Backplane.JsonSchema.compile(meta_schema),
          :ok <- validate_meta_value(compiled, schema) do
       :ok
     else
@@ -161,7 +161,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
   end
 
   defp validate_meta_value(compiled, schema) do
-    case JSONSchex.validate(compiled, schema) do
+    case Backplane.JsonSchema.validate(compiled, schema) do
       :ok -> :ok
       {:error, errors} -> {:error, validation_errors(errors)}
     end
@@ -169,7 +169,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
   defp validate_compiled(compiled, input) do
     try do
-      case JSONSchex.validate(compiled, input) do
+      case Backplane.JsonSchema.validate(compiled, input) do
         :ok ->
           {:ok, input}
 
@@ -537,7 +537,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
 
     details = add_constraint_details(base_details, errors)
 
-    Error.new(class, JSONSchex.format_error(error), details: details)
+    Error.new(class, Backplane.JsonSchema.format_error(error), details: details)
   end
 
   defp error_path([]), do: "$arguments"
@@ -573,7 +573,7 @@ defmodule Backplane.AgentRuntime.InputSchema do
     %{
       path: Map.get(error, :path, []),
       rule: Map.get(error, :rule),
-      message: JSONSchex.format_error(error)
+      message: Backplane.JsonSchema.format_error(error)
     }
   end
 
