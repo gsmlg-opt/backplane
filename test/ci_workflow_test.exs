@@ -57,6 +57,14 @@ defmodule Backplane.CIWorkflowTest do
 
   @native_build_run "sudo apt-get update\nsudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev\n"
 
+  @test_native_build_run ~S"""
+  if [ -f /etc/apt/apt-mirrors.txt ]; then
+    printf 'https://archive.ubuntu.com/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
+  fi
+  sudo apt-get update
+  sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+  """
+
   @audio_tools_run "sudo apt-get install -y --no-install-recommends ffmpeg\n"
   @audio_sdk_run ~S"""
   sudo apt-get install -y --no-install-recommends python3-venv
@@ -125,9 +133,6 @@ defmodule Backplane.CIWorkflowTest do
   . /etc/os-release
   echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
     | sudo tee /etc/apt/sources.list.d/pgdg.list
-  if [ -f /etc/apt/apt-mirrors.txt ]; then
-    printf 'https://archive.ubuntu.com/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
-  fi
   sudo apt-get update
   sudo apt-get install -y postgresql-17 postgresql-server-dev-17 build-essential
   git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
@@ -240,7 +245,7 @@ defmodule Backplane.CIWorkflowTest do
       "Run tests"
     ])
 
-    assert_common_steps(job, true, @test_cache_key, @test_cache_prefix)
+    assert_common_steps(job, true, @test_cache_key, @test_cache_prefix, @test_native_build_run)
 
     assert_step(job, %{
       "name" => "Set up qualified OpenClaw Node runtime",
@@ -665,7 +670,7 @@ defmodule Backplane.CIWorkflowTest do
     })
   end
 
-  defp assert_common_steps(job, native?, cache_key, cache_prefix) do
+  defp assert_common_steps(job, native?, cache_key, cache_prefix, native_run \\ @native_build_run) do
     assert_step(job, %{"name" => "Checkout code", "uses" => "actions/checkout@v7"})
     assert_setup_beam_step(job)
 
@@ -674,7 +679,7 @@ defmodule Backplane.CIWorkflowTest do
 
       assert_step(job, %{
         "name" => "Install native build dependencies",
-        "run" => @native_build_run
+        "run" => native_run
       })
     end
 
