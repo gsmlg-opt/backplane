@@ -150,17 +150,17 @@ defmodule Backplane.Audio.HTTP do
       monitor = Process.monitor(stream)
       send(stream, {:read_chunk, self(), :ack})
 
-      consume_stream(
-        stream,
-        monitor,
-        response.status,
-        headers_list,
-        max_bytes,
-        receiver,
-        initial,
-        0,
-        deadline
-      )
+      stream_ctx = %{
+        stream: stream,
+        monitor: monitor,
+        status: response.status,
+        headers: headers_list,
+        max: max_bytes,
+        receiver: receiver,
+        deadline: deadline
+      }
+
+      consume_stream(stream_ctx, initial, 0)
     else
       body_bytes = response.body || ""
 
@@ -184,115 +184,73 @@ defmodule Backplane.Audio.HTTP do
     end
   end
 
-  defp consume_stream(stream, monitor, status, headers, max, receiver, acc, bytes, deadline) do
-    timeout = remaining(deadline)
+  defp consume_stream(ctx, acc, bytes) do
+    timeout = remaining(ctx.deadline)
 
     if timeout <= 0 do
-      Process.demonitor(monitor, [:flush])
-      HTTP.Stream.stop(stream, :timeout)
+      Process.demonitor(ctx.monitor, [:flush])
+      HTTP.Stream.stop(ctx.stream, :timeout)
       {:error, timeout_error(), acc}
     else
+      stream = ctx.stream
+
       receive do
         {:stream_chunk, ^stream, chunk, ack_ref} ->
           send(stream, {:stream_chunk_ack, ack_ref})
-
-          handle_stream_chunk(
-            stream,
-            monitor,
-            status,
-            headers,
-            max,
-            receiver,
-            acc,
-            bytes,
-            deadline,
-            chunk
-          )
+          handle_stream_chunk(ctx, acc, bytes, chunk)
 
         {:stream_chunk, ^stream, chunk} ->
-          handle_stream_chunk(
-            stream,
-            monitor,
-            status,
-            headers,
-            max,
-            receiver,
-            acc,
-            bytes,
-            deadline,
-            chunk
-          )
+          handle_stream_chunk(ctx, acc, bytes, chunk)
 
         {:stream_end, ^stream} ->
-          Process.demonitor(monitor, [:flush])
+          Process.demonitor(ctx.monitor, [:flush])
 
-          if status in 200..299 do
-            {:ok, status, headers, acc}
+          if ctx.status in 200..299 do
+            {:ok, ctx.status, ctx.headers, acc}
           else
-            err_status = if status == 429, do: 429, else: 502
+            err_status = if ctx.status == 429, do: 429, else: 502
 
             {:error,
              error(err_status, "Provider rejected audio request", "audio_provider_error"), acc}
           end
 
         {:stream_error, ^stream, _reason} ->
-          Process.demonitor(monitor, [:flush])
+          Process.demonitor(ctx.monitor, [:flush])
           {:error, error(502, "Provider stream ended early", "audio_provider_incomplete"), acc}
 
-        {:DOWN, ^monitor, :process, ^stream, _reason} ->
+        {:DOWN, monitor, :process, ^stream, _reason} when monitor == ctx.monitor ->
           {:error, error(502, "Provider stream ended early", "audio_provider_incomplete"), acc}
       after
         timeout ->
-          Process.demonitor(monitor, [:flush])
-          HTTP.Stream.stop(stream, :timeout)
+          Process.demonitor(ctx.monitor, [:flush])
+          HTTP.Stream.stop(ctx.stream, :timeout)
           {:error, timeout_error(), acc}
       end
     end
   end
 
-  defp handle_stream_chunk(
-         stream,
-         monitor,
-         status,
-         headers,
-         max,
-         receiver,
-         acc,
-         bytes,
-         deadline,
-         chunk
-       ) do
+  defp handle_stream_chunk(ctx, acc, bytes, chunk) do
     new_bytes = bytes + byte_size(chunk)
 
     cond do
-      new_bytes > max ->
-        Process.demonitor(monitor, [:flush])
-        HTTP.Stream.stop(stream, :too_large)
+      new_bytes > ctx.max ->
+        Process.demonitor(ctx.monitor, [:flush])
+        HTTP.Stream.stop(ctx.stream, :too_large)
         {:error, error(502, "Provider response too large", "audio_provider_too_large"), acc}
 
-      status not in 200..299 ->
-        consume_stream(stream, monitor, status, headers, max, receiver, acc, new_bytes, deadline)
+      ctx.status not in 200..299 ->
+        consume_stream(ctx, acc, new_bytes)
 
       true ->
-        response = %{status: status, headers: headers}
+        response = %{status: ctx.status, headers: ctx.headers}
 
-        case deliver_data(chunk, receiver, response, acc) do
+        case deliver_data(chunk, ctx.receiver, response, acc) do
           {:ok, next_acc} ->
-            consume_stream(
-              stream,
-              monitor,
-              status,
-              headers,
-              max,
-              receiver,
-              next_acc,
-              new_bytes,
-              deadline
-            )
+            consume_stream(ctx, next_acc, new_bytes)
 
           {:error, %Error{} = reason, next_acc} ->
-            Process.demonitor(monitor, [:flush])
-            HTTP.Stream.stop(stream, :cancelled)
+            Process.demonitor(ctx.monitor, [:flush])
+            HTTP.Stream.stop(ctx.stream, :cancelled)
             {:error, reason, next_acc}
         end
     end
