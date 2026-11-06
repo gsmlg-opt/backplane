@@ -36,8 +36,6 @@ defmodule Backplane.Transport.SSEHttpTest do
     @protocol protocol
 
     test "#{protocol} delivers a tool result over SSE", %{port: port} do
-      {:ok, conn} = connect(@protocol, port)
-
       body =
         Jason.encode!(%{
           "jsonrpc" => "2.0",
@@ -46,26 +44,23 @@ defmodule Backplane.Transport.SSEHttpTest do
           "params" => %{"name" => "day::now", "arguments" => %{}}
         })
 
-      {:ok, conn, ref} =
-        Mint.HTTP.request(
-          conn,
-          "POST",
-          "/",
-          [
+      promise =
+        HTTP.fetch("http://127.0.0.1:#{port}/",
+          method: "POST",
+          headers: [
             {"content-type", "application/json"},
             {"accept", "application/json, text/event-stream"}
           ],
-          body
+          body: body,
+          http_version: if(@protocol == :http2, do: :h2c, else: :http1),
+          stream_response: true
         )
 
-      {conn, events} = receive_until(conn, &match?({:done, ^ref}, &1))
-      Mint.HTTP.close(conn)
+      response = HTTP.Promise.await(promise)
+      assert response.status == 200
+      assert HTTP.Headers.get(response.headers, "content-type") =~ "text/event-stream"
 
-      assert {:status, ref, 200} in events
-      headers = for {:headers, ^ref, headers} <- events, header <- headers, do: header
-      assert {"content-type", "text/event-stream; charset=utf-8"} in headers
-
-      data = for {:data, ^ref, data} <- events, into: "", do: data
+      data = read_all_chunks(response.body)
       assert data =~ "event: message\n"
       [_, json] = String.split(data, "data: ", parts: 2)
       assert %{"id" => 1, "result" => %{"content" => [%{"text" => text}]}} = Jason.decode!(json)
@@ -74,39 +69,47 @@ defmodule Backplane.Transport.SSEHttpTest do
     end
 
     test "#{protocol} opens the SSE notification stream", %{port: port} do
-      {:ok, conn} = connect(@protocol, port)
+      promise =
+        HTTP.fetch("http://127.0.0.1:#{port}/",
+          method: "GET",
+          headers: [{"accept", "text/event-stream"}],
+          http_version: if(@protocol == :http2, do: :h2c, else: :http1),
+          stream_response: true
+        )
 
-      {:ok, conn, ref} =
-        Mint.HTTP.request(conn, "GET", "/", [{"accept", "text/event-stream"}], nil)
+      response = HTTP.Promise.await(promise)
+      assert response.status == 200
 
-      {conn, events} = receive_until(conn, &match?({:data, ^ref, _}, &1))
-      Mint.HTTP.close(conn)
-
-      assert {:status, ref, 200} in events
-      data = for {:data, ^ref, data} <- events, into: "", do: data
+      data = read_first_chunk(response.body)
       assert data =~ ": connected\n\n"
     end
   end
 
-  defp connect(:http1, port),
-    do: Mint.HTTP1.connect(:http, "127.0.0.1", port, mode: :passive)
+  defp read_first_chunk(stream_pid) do
+    send(stream_pid, {:read_chunk, self()})
 
-  defp connect(:http2, port),
-    do: Mint.HTTP2.connect(:http, "127.0.0.1", port, mode: :passive)
+    receive do
+      {:stream_chunk, ^stream_pid, chunk} -> chunk
+    after
+      5_000 -> ""
+    end
+  end
 
-  defp receive_until(conn, complete?, events \\ []) do
-    {:ok, conn, received} = Mint.HTTP.recv(conn, 0, 5_000)
-    events = events ++ received
+  defp read_all_chunks(stream_pid, acc \\ "") do
+    send(stream_pid, {:read_chunk, self()})
 
-    cond do
-      Enum.any?(events, complete?) ->
-        {conn, events}
+    receive do
+      {:stream_chunk, ^stream_pid, chunk} ->
+        read_all_chunks(stream_pid, acc <> chunk)
 
-      Enum.any?(received, &match?({:done, _}, &1)) ->
-        flunk("SSE stream ended early: #{inspect(events)}")
+      {:stream_end, ^stream_pid} ->
+        acc
 
-      true ->
-        receive_until(conn, complete?, events)
+      {:stream_error, ^stream_pid, reason} ->
+        {:error, reason}
+    after
+      5_000 ->
+        acc
     end
   end
 end
