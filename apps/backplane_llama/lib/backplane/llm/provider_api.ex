@@ -40,6 +40,7 @@ defmodule Backplane.LLM.ProviderApi do
     field(:model_discovery_enabled, :boolean, default: true)
     field(:model_discovery_path, :string)
     field(:last_discovered_at, :utc_datetime_usec)
+    field(:responses_websocket, :boolean, default: false)
     field(:responses_lifecycle, :boolean, default: false)
     field(:responses_route_ttl_seconds, :integer, default: 86_400)
 
@@ -50,7 +51,7 @@ defmodule Backplane.LLM.ProviderApi do
   end
 
   @required_fields ~w(provider_id api_surface base_url)a
-  @optional_fields ~w(native_protocols enabled default_headers backend_config model_discovery_enabled model_discovery_path last_discovered_at responses_lifecycle responses_route_ttl_seconds)a
+  @optional_fields ~w(native_protocols enabled default_headers backend_config model_discovery_enabled model_discovery_path last_discovered_at responses_websocket responses_lifecycle responses_route_ttl_seconds)a
 
   @doc "Changeset for creating or updating a provider API surface."
   def changeset(api, attrs) do
@@ -65,12 +66,17 @@ defmodule Backplane.LLM.ProviderApi do
     |> Provider.validate_api_url(:base_url)
     |> validate_default_headers()
     |> validate_backend_config()
+    |> validate_responses_websocket()
     |> validate_responses_lifecycle()
     |> validate_number(:responses_route_ttl_seconds,
       greater_than_or_equal_to: 60,
       less_than_or_equal_to: 2_592_000
     )
-    |> validate_required([:responses_route_ttl_seconds, :responses_lifecycle])
+    |> validate_required([
+      :responses_route_ttl_seconds,
+      :responses_lifecycle,
+      :responses_websocket
+    ])
     |> foreign_key_constraint(:provider_id)
     |> unique_constraint([:provider_id, :api_surface])
   end
@@ -125,6 +131,16 @@ defmodule Backplane.LLM.ProviderApi do
 
   defp trim_trailing_slash(url) when is_binary(url), do: String.trim_trailing(url, "/")
   defp trim_trailing_slash(url), do: url
+
+  defp validate_responses_websocket(changeset) do
+    if get_field(changeset, :responses_websocket) == true and
+         (get_field(changeset, :api_surface) != :openai or
+            :openai_responses not in (get_field(changeset, :native_protocols) || [])) do
+      add_error(changeset, :responses_websocket, "requires native OpenAI Responses")
+    else
+      changeset
+    end
+  end
 
   defp validate_responses_lifecycle(changeset) do
     if get_field(changeset, :responses_lifecycle) == true and

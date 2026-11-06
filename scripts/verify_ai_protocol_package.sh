@@ -6,6 +6,7 @@ package_root="$repo_root/apps/backplane_ai_protocol"
 consumer_fixtures=(
   "$repo_root/test/ai_protocol_packages/google_codec_consumer"
   "$repo_root/test/ai_protocol_packages/antigravity_native_consumer"
+  "$repo_root/test/ai_protocol_packages/responses_websocket_consumer"
 )
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/backplane-ai-protocol.XXXXXX")"
 trap 'rm -rf "$work_root"' EXIT

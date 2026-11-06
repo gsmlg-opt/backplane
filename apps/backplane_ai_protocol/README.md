@@ -468,3 +468,53 @@ fingerprint, prompt modifications, model-name inference, or a signature cache.
 
 See [`SOURCE_NOTES.md`](SOURCE_NOTES.md) for the pinned extraction candidates
 and current non-extraction boundary.
+
+## Native Responses WebSocket messages
+
+`Backplane.AiProtocol.OpenAIResponsesWebSocket` is a reusable, transport-neutral
+message codec. It is separate from the Backplane-specific `Wire` protocol:
+
+```elixir
+alias Backplane.AiProtocol.OpenAIResponsesWebSocket, as: ResponsesWS
+
+{:ok, text} = ResponsesWS.encode_create(%{
+  "model" => "provider-model",
+  "input" => "Hello",
+  "stream_id" => "main"
+})
+# Host sends `text` as ONE WebSocket text message on its authenticated connection.
+
+{:ok, event} = ResponsesWS.decode_event(received_complete_text_message)
+# Host dispatches by event["stream_id"] / response identity as appropriate.
+```
+
+`encode_request/2` accepts a canonical `Request` through the existing Responses
+codec and omits its HTTP `stream` field. `encode_create/2` accepts native,
+string-keyed parameters, requires a model, adds `type: response.create`, and
+preserves fields such as `previous_response_id`, `generate`, tools and provider
+extensions. It rejects explicit HTTP `stream`/`background` fields instead of
+silently changing their meaning. Native event decoding retains unknown types
+and fields, so one terminal event does not prevent reading later/interleaved
+responses on the same socket. The module does not correlate or schedule them.
+
+Both directions return `{:ok, value}` or `{:error, %Error{}}`. Options include
+`max_encoded_bytes` (default 2 MiB) and the existing `limits` profile. Decoding
+requires a complete reassembled JSON text message, never an SSE record or a
+fragment. These bounds are not transport frame/read/queue limits. Provider
+error events are returned as native data, not thrown or deemed retryable.
+
+This package still starts no connection or processes and takes no credentials.
+The caller owns endpoint choice, authentication, verified handshake metadata,
+frame reassembly, per-message controls, backpressure, timeout and disconnect
+cleanup. It must not automatically replay after uncertain submission. There is
+no implied interrupt, steering or REST cancellation support. A transport adapter
+using Backplane's umbrella dependency graph still needs a compatible release set
+tracked in [http_fetch#155](https://github.com/gsmlg-dev/http_fetch/issues/155); this pure
+codec does not resolve the gateway dependency conflict. The Backplane gateway
+itself currently returns 501 on `GET /v1/responses`.
+
+A separate caller-owned reference transport is available in
+`examples/responses_websocket_client`. It uses published HTTP rc.3 in a standalone
+client project; it cannot currently be added to the gateway's 0.21.x graph without
+unsupported dependency overrides. See its README for API, loopback evidence and
+limits. This does not change the pure protocol package's dependencies.

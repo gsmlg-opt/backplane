@@ -125,6 +125,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         enabled: truthy?(params["#{prefix}_enabled"]),
         default_headers: decode_json_map(params["#{prefix}_default_headers"]),
         model_discovery_enabled: truthy?(params["#{prefix}_model_discovery_enabled"]),
+        responses_websocket: truthy?(params["#{prefix}_responses_websocket"]),
         model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"]),
         backend_config: backend_config_from_params(surface, params)
       }
@@ -294,6 +295,7 @@ defmodule Backplane.Admin.ProviderNewLive do
     )
     |> Map.put_new("#{prefix}_model_discovery_path", defaults.discovery_path || "")
     |> Map.put_new("#{prefix}_default_headers", "{}")
+    |> Map.put_new("#{prefix}_responses_websocket", "false")
     |> put_backend_config_defaults(surface)
     |> put_protocol_defaults(Map.get(defaults, :native_protocols, []))
   end
@@ -581,6 +583,22 @@ defmodule Backplane.Admin.ProviderNewLive do
             />
           </div>
           <.error errors={@errors} field={"#{@key}_native_protocols"} />
+        </div>
+
+        <div :if={@key == "openai"} class="space-y-2">
+          <input type="hidden" name="provider[openai_responses_websocket]" value="false" />
+          <.dm_checkbox
+            id="provider-openai-responses-websocket"
+            name="provider[openai_responses_websocket]"
+            label="Upstream supports Responses WebSocket"
+            value="true"
+            checked={field_value(@form, @key, "responses_websocket") in [true, "true", "on"]}
+          />
+          <p class="text-sm text-base-content/60">
+            Requires native Responses. Records upstream capability only; WebSocket forwarding
+            is currently unavailable. Does not enable background cancellation or steering.
+          </p>
+          <.error errors={@errors} field="openai_responses_websocket" />
         </div>
 
         <input type="hidden" name={"provider[#{@key}_model_discovery_enabled]"} value="false" />

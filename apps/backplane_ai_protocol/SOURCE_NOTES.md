@@ -121,3 +121,32 @@ requests. They do not claim every model accepts PDFs or that provider body, page
 context, document-quality or password constraints have been met. Canonical `uri`
 is deliberately omitted only for this new inline mapping; the host still owns
 acquisition, model selection, HTTP/authentication and provider failure handling.
+
+## Native Responses WebSocket messages (2026-11-05)
+
+The [official WebSocket guide](https://developers.openai.com/api/docs/guides/websocket-mode)
+was checked for native `response.create` messages, omission of HTTP-only
+stream/background controls, continuation IDs and lane correlation. The new
+OpenAIResponsesWebSocket module handles bounded complete JSON messages only;
+it deliberately preserves unknown events and does not reuse SSE framing or
+Backplane's custom Wire handshake. Tests use independently written native maps
+and literal JSON, including interleaved lanes and unknown provider extensions.
+These are local protocol tests, not a live-provider or socket-transport claim.
+
+The existing dependency blocker
+[http_fetch#152](https://github.com/gsmlg-dev/http_fetch/issues/152) was re-read:
+it remains open and requests public bounded handshake metadata, dial controls
+and separate frame/read bounds. No adapter or replacement HTTP client was added.
+
+Follow-up at 2026-11-06 03:23 UTC: #152 is now closed with source fix
+`27e5fe617d31b0eaa8dd4e36487c89e1b0258ab2`, but Hex still lists rc.2 and the rc.3
+release and tarball URLs both return 404. The source's public handshake metadata
+retains only Retry-After and the Codex message-size limit, so broader gateway
+header coverage still needs verification. No transport integration or dependency
+change was made solely on the basis of issue closure.
+
+Later on 2026-11-06 the rc.3 tarball was confirmed published and its bounded
+metadata behavior verified over real TCP loopbacks in the standalone reference
+client. The gateway now waits on compatible published Gaoxy/DuskMoon/Phoenix
+Socket Client constraints, not #152 source publication. The protocol package
+remains network-independent; see docs/responses-websocket.md for current evidence.

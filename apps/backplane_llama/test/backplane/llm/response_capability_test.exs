@@ -16,6 +16,7 @@ defmodule Backplane.LLM.ResponseCapabilityTest do
 
   test "native protocol alone is not lifecycle support", %{provider: provider} do
     {:ok, api} = create_api(provider, %{})
+    refute api.responses_websocket
     refute api.responses_lifecycle
     refute ResponseCapability.enabled?(provider, api)
     assert {:error, :responses_lifecycle_unsupported} = ResponseCapability.validate(provider, api)
@@ -51,6 +52,18 @@ defmodule Backplane.LLM.ResponseCapabilityTest do
       })
 
     assert {:error, :responses_lifecycle_unsupported} = ResponseCapability.validate(provider, api)
+  end
+
+  test "WebSocket declaration persists independently of lifecycle", %{provider: provider} do
+    {:ok, api} = create_api(provider, %{responses_websocket: true})
+    assert ProviderApi.get(api.id).responses_websocket
+    refute api.responses_lifecycle
+    refute ResponseCapability.enabled?(provider, api)
+
+    {:ok, api} = ProviderApi.update(api, %{responses_lifecycle: true})
+    {:ok, api} = ProviderApi.update(api, %{responses_websocket: false})
+    refute ProviderApi.get(api.id).responses_websocket
+    assert api.responses_lifecycle
   end
 
   defp create_api(provider, attrs) do

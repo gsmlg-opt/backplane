@@ -260,6 +260,42 @@ defmodule Backplane.Admin.ProvidersLiveTest do
              ] = apis
     end
 
+    test "Responses WebSocket declaration can be created, reopened and disabled", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/llama/providers/new")
+      assert html =~ "WebSocket forwarding"
+      refute has_element?(view, "#provider-openai-responses-websocket[checked]")
+
+      view
+      |> form("form[phx-submit=save]", %{
+        "provider" => %{
+          "name" => "websocket-config",
+          "credential" => "test-cred",
+          "openai_enabled" => "true",
+          "openai_base_url" => "https://api.example.com/v1",
+          "openai_responses_enabled" => "true",
+          "openai_responses_websocket" => "true"
+        }
+      })
+      |> render_submit()
+
+      assert_redirect(view, "/llama/providers")
+      provider = Repo.get_by!(Provider, name: "websocket-config")
+      api = Enum.find(ProviderApi.list_for_provider(provider.id), &(&1.api_surface == :openai))
+      assert api.responses_websocket
+      refute api.responses_lifecycle
+
+      {:ok, view, _html} = live(conn, "/llama/providers/#{provider.id}")
+      assert has_element?(view, "#provider-openai-responses-websocket[checked]")
+
+      view
+      |> form("form[phx-submit=save_provider]", %{
+        "provider" => %{"openai_responses_websocket" => "false"}
+      })
+      |> render_submit()
+
+      refute ProviderApi.get(api.id).responses_websocket
+    end
+
     test "deepseek creation preserves manually disabled openai responses", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/llama/providers/new")
 

@@ -146,6 +146,7 @@ defmodule Backplane.LLM.ApiRouter do
         api_surface: to_string(api.api_surface),
         base_url: api.base_url,
         enabled: api.enabled,
+        responses_websocket: api.responses_websocket,
         model_discovery_enabled: api.model_discovery_enabled,
         model_discovery_path: api.model_discovery_path,
         last_discovered_at: api.last_discovered_at

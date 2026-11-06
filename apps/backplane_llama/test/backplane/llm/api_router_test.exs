@@ -4,7 +4,7 @@ defmodule Backplane.LLM.ApiRouterTest do
   import Plug.Conn
   import Plug.Test
 
-  alias Backplane.LLM.{ApiRouter, ModelAlias, Provider}
+  alias Backplane.LLM.{ApiRouter, ModelAlias, Provider, ProviderApi}
   alias Backplane.Settings.Credentials
 
   setup do
@@ -72,6 +72,26 @@ defmodule Backplane.LLM.ApiRouterTest do
       assert provider["name"] == "anthropic-prod"
       assert provider["credential_hint"] =~ ~r/^\.\.\./
       refute Map.has_key?(provider, "aliases")
+    end
+  end
+
+  test "provider management exposes the stored WebSocket declaration" do
+    {:ok, provider} = Provider.create(@provider_attrs)
+
+    {:ok, api} =
+      ProviderApi.create(%{
+        provider_id: provider.id,
+        api_surface: :openai,
+        base_url: "https://api.example.com/v1",
+        native_protocols: [:openai_responses]
+      })
+
+    for enabled <- [true, false] do
+      {:ok, _api} = ProviderApi.update(ProviderApi.get(api.id), %{responses_websocket: enabled})
+      conn = api_request(:get, "/providers")
+      assert conn.status == 200
+      [provider] = json_body(conn)
+      assert [%{"responses_websocket" => ^enabled}] = provider["apis"]
     end
   end
 

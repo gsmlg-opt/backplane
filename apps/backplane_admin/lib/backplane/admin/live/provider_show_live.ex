@@ -463,6 +463,7 @@ defmodule Backplane.Admin.ProviderShowLive do
       enabled: truthy?(params["#{prefix}_enabled"]),
       default_headers: decode_json_map(params["#{prefix}_default_headers"]),
       model_discovery_enabled: truthy?(params["#{prefix}_model_discovery_enabled"]),
+      responses_websocket: truthy?(params["#{prefix}_responses_websocket"]),
       model_discovery_path: blank_to_nil(params["#{prefix}_model_discovery_path"]),
       backend_config: backend_config_from_params(surface, params)
     }
@@ -663,6 +664,7 @@ defmodule Backplane.Admin.ProviderShowLive do
       |> Map.put("#{prefix}_enabled", api_enabled(api))
       |> Map.put("#{prefix}_base_url", api_value(api, :base_url))
       |> Map.put("#{prefix}_model_discovery_enabled", api_enabled(api, :model_discovery_enabled))
+      |> Map.put("#{prefix}_responses_websocket", api_enabled(api, :responses_websocket))
       |> Map.put("#{prefix}_model_discovery_path", api_value(api, :model_discovery_path))
       |> Map.put("#{prefix}_default_headers", encode_json_map(api_headers(api)))
       |> put_backend_config_params(api)
@@ -1401,6 +1403,22 @@ defmodule Backplane.Admin.ProviderShowLive do
             />
           </div>
           <.error errors={@errors} field={"#{@key}_native_protocols"} />
+        </div>
+
+        <div :if={@key == "openai"} class="space-y-2">
+          <input type="hidden" name="provider[openai_responses_websocket]" value="false" />
+          <.dm_checkbox
+            id="provider-openai-responses-websocket"
+            name="provider[openai_responses_websocket]"
+            label="Upstream supports Responses WebSocket"
+            value="true"
+            checked={field_value(@form, @key, "responses_websocket") in [true, "true", "on"]}
+          />
+          <p class="text-sm text-base-content/60">
+            Requires native Responses. Records upstream capability only; WebSocket forwarding
+            is currently unavailable. Does not enable background cancellation or steering.
+          </p>
+          <.error errors={@errors} field="openai_responses_websocket" />
         </div>
 
         <input type="hidden" name={"provider[#{@key}_model_discovery_enabled]"} value="false" />
