@@ -199,37 +199,115 @@ defmodule Backplane.Audio.DownstreamTest do
   end
 
   test "HTTP/2 peer reset releases only its request owner", %{port: port} do
-    {:ok, conn} = Mint.HTTP2.connect(:http, "127.0.0.1", port, mode: :passive)
-    {:ok, conn, request_ref} = Mint.HTTP.request(conn, "POST", "/wait", [], "")
+    {:ok, socket} = h2_connect(port)
+    h2_request(socket, 1, "POST", "/wait")
     assert_receive {:started, owner, ""}, 2_000
     monitor = Process.monitor(owner)
-    {:ok, conn} = Mint.HTTP2.cancel_request(conn, request_ref)
+    h2_cancel(socket, 1)
     assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 2_000
-    assert_health(conn)
+    assert_health_h2(socket, 3)
   end
 
   test "HTTP/2 explicit abort preserves a sibling request", %{port: port} do
-    {:ok, conn} = Mint.HTTP2.connect(:http, "127.0.0.1", port, mode: :passive)
-    {:ok, conn, _request_ref} = Mint.HTTP.request(conn, "POST", "/wait", [], "")
+    {:ok, socket} = h2_connect(port)
+    h2_request(socket, 1, "POST", "/wait")
     assert_receive {:started, owner, ""}, 2_000
     monitor = Process.monitor(owner)
     send(owner, :abort)
     assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 2_000
-    assert_health(conn)
+    assert_health_h2(socket, 3)
   end
 
   test "HTTP/2 flow-control blocked delivery expires without closing its connection", %{
     port: port
   } do
-    {:ok, conn} = Mint.HTTP2.connect(:http, "127.0.0.1", port, mode: :passive)
-    {:ok, conn} = Mint.HTTP2.put_settings(conn, initial_window_size: 1)
-    {:ok, conn, _request_ref} = Mint.HTTP.request(conn, "POST", "/blocked", [], "")
+    {:ok, socket} = h2_connect(port)
+    h2_put_settings(socket, initial_window_size: 1)
+    h2_request(socket, 1, "POST", "/blocked")
     assert_receive {:started, owner, ""}, 2_000
     monitor = Process.monitor(owner)
     assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}, 2_000
-    {:ok, conn} = Mint.HTTP2.put_settings(conn, initial_window_size: 65_535)
-    assert_health(conn)
+    h2_put_settings(socket, initial_window_size: 65_535)
+    assert_health_h2(socket, 3)
   end
+
+  defp h2_connect(port) do
+    {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 2_000)
+    preface = HTTP.HTTP2.connection_preface()
+    {:ok, settings_payload} = HTTP.HTTP2.Settings.encode([])
+    settings_frame = HTTP.HTTP2.Frame.encode(:settings, 0, 0, settings_payload)
+    :ok = :gen_tcp.send(socket, [preface, settings_frame])
+    {:ok, socket}
+  end
+
+  defp h2_request(socket, stream_id, method, path, body \\ "") do
+    headers = [
+      {":method", method},
+      {":path", path},
+      {":scheme", "http"},
+      {":authority", "localhost"}
+    ]
+
+    block = HTTP.HTTP2.HPACK.encode_headers(headers)
+    has_body? = byte_size(body) > 0
+    flags = if has_body?, do: 0x4, else: 0x5
+    frame = HTTP.HTTP2.Frame.encode(:headers, flags, stream_id, block)
+
+    if has_body? do
+      data_frame = HTTP.HTTP2.Frame.encode(:data, 0x1, stream_id, body)
+      :ok = :gen_tcp.send(socket, [frame, data_frame])
+    else
+      :ok = :gen_tcp.send(socket, frame)
+    end
+  end
+
+  defp h2_cancel(socket, stream_id) do
+    frame = HTTP.HTTP2.Frame.encode(:rst_stream, 0, stream_id, <<8::32>>)
+    :ok = :gen_tcp.send(socket, frame)
+  end
+
+  defp h2_put_settings(socket, settings_kw) do
+    {:ok, payload} = HTTP.HTTP2.Settings.encode(settings_kw)
+    frame = HTTP.HTTP2.Frame.encode(:settings, 0, 0, payload)
+    :ok = :gen_tcp.send(socket, frame)
+  end
+
+  defp assert_health_h2(socket, stream_id) do
+    h2_request(socket, stream_id, "GET", "/health")
+    assert_data_received(socket, stream_id, "healthy")
+    :gen_tcp.close(socket)
+  end
+
+  defp assert_data_received(socket, stream_id, expected, acc \\ "") do
+    {:ok, bytes} = :gen_tcp.recv(socket, 0, 5_000)
+    buffer = acc <> bytes
+
+    case find_data_frame(buffer, stream_id) do
+      {:ok, data} ->
+        assert data =~ expected
+
+      :more ->
+        assert_data_received(socket, stream_id, expected, buffer)
+    end
+  end
+
+  defp find_data_frame(
+         <<length::24, 0x0::8, _flags::8, _r::1, stream_id::31, payload::binary-size(length),
+           _rest::binary>>,
+         stream_id
+       ) do
+    {:ok, payload}
+  end
+
+  defp find_data_frame(
+         <<length::24, _type::8, _flags::8, _r::1, _sid::31, _payload::binary-size(length),
+           rest::binary>>,
+         stream_id
+       ) do
+    find_data_frame(rest, stream_id)
+  end
+
+  defp find_data_frame(_other, _stream_id), do: :more
 
   defp tcp(port) do
     {:ok, socket} =
@@ -252,20 +330,4 @@ defmodule Backplane.Audio.DownstreamTest do
     end
   end
 
-  defp assert_health(conn) do
-    {:ok, conn, request_ref} = Mint.HTTP.request(conn, "GET", "/health", [], nil)
-    {conn, events} = until_done(conn, request_ref, [])
-    assert {:status, request_ref, 200} in events
-    assert {:data, request_ref, "healthy"} in events
-    Mint.HTTP.close(conn)
-  end
-
-  defp until_done(conn, request_ref, acc) do
-    {:ok, conn, events} = Mint.HTTP.recv(conn, 0, 2_000)
-    acc = acc ++ events
-
-    if {:done, request_ref} in acc,
-      do: {conn, acc},
-      else: until_done(conn, request_ref, acc)
-  end
 end

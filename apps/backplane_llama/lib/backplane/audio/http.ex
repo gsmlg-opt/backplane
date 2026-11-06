@@ -11,17 +11,58 @@ defmodule Backplane.Audio.HTTP do
              (is_function(receiver, 2) or is_function(receiver, 3)) do
     uri = URI.parse(origin)
 
-    with :ok <- valid_origin(uri),
-         {:ok, conn} <- connect(uri, deadline) do
-      try do
-        request(conn, uri, path, headers, body, %{
-          deadline: deadline,
-          max_bytes: max_bytes,
-          receiver: receiver,
-          initial: initial
-        })
-      after
-        Mint.HTTP.close(conn)
+    with :ok <- valid_origin(uri) do
+      timeout = remaining(deadline)
+
+      if timeout > 0 do
+        target = URI.merge(uri, path)
+        target_url = URI.to_string(target)
+
+        case prepare_request(headers, body) do
+          {:ok, fetch_headers, fetch_body, duplex} ->
+            fetch_opts =
+              [
+                method: "POST",
+                headers: fetch_headers,
+                body: fetch_body,
+                timeout: timeout,
+                connect_timeout: min(timeout, 10_000),
+                http_version: :http1,
+                stream_response: true
+              ]
+              |> maybe_put_duplex(duplex)
+
+            promise = HTTP.fetch(target_url, fetch_opts)
+
+            case HTTP.Promise.await(promise, timeout) do
+              %HTTP.Response{} = response ->
+                process_response(response, max_bytes, receiver, initial, deadline)
+
+              {:error, :timeout} ->
+                {:error, timeout_error(), initial}
+
+              {:error, {:timeout, _}} ->
+                {:error, timeout_error(), initial}
+
+              {:error, %HTTP.RequestError{reason: reason}}
+              when reason in [:timeout, :idle_timeout, :read_idle_timeout] ->
+                {:error, timeout_error(), initial}
+
+              {:error, %HTTP.RequestError{reason: reason}}
+              when reason in [:connect_failed, :closed, :econnrefused] ->
+                {:error, error(502, "Provider connection failed", "audio_provider_unavailable"),
+                 initial}
+
+              {:error, _reason} ->
+                {:error, error(502, "Provider connection failed", "audio_provider_unavailable"),
+                 initial}
+            end
+
+          {:error, %Error{} = err} ->
+            {:error, err, initial}
+        end
+      else
+        {:error, timeout_error(), initial}
       end
     else
       {:error, error} -> {:error, error, initial}
@@ -35,246 +76,227 @@ defmodule Backplane.Audio.HTTP do
   defp valid_origin(_),
     do: {:error, error(502, "Invalid provider origin", "audio_provider_config")}
 
-  defp connect(uri, deadline) do
-    timeout = remaining(deadline)
-
-    if timeout > 0 do
-      case Mint.HTTP.connect(
-             String.to_existing_atom(uri.scheme),
-             uri.host,
-             uri.port || default_port(uri),
-             protocols: [:http1],
-             mode: :passive,
-             transport_opts: [
-               timeout: min(timeout, 10_000),
-               send_timeout: min(timeout, 10_000),
-               recbuf: @read_bytes
-             ]
-           ) do
-        {:ok, conn} ->
-          {:ok, conn}
-
-        {:error, _} ->
-          {:error, error(502, "Provider connection failed", "audio_provider_unavailable")}
-      end
-    else
-      {:error, timeout_error()}
-    end
-  end
-
-  defp request(conn, uri, path, headers, body, %{
-         deadline: deadline,
-         max_bytes: max_bytes,
-         receiver: receiver,
-         initial: initial
-       }) do
-    target = URI.merge(uri, path)
-    target_path = (target.path || "/") <> if(target.query, do: "?" <> target.query, else: "")
-    length = body_length(body)
-
-    headers = [
-      {"content-length", Integer.to_string(length)},
+  defp prepare_request(headers, body) when is_binary(body) do
+    fetch_headers = [
+      {"content-length", Integer.to_string(byte_size(body))},
       {"accept-encoding", "identity"} | headers
     ]
 
-    case Mint.HTTP.request(conn, "POST", target_path, headers, :stream) do
-      {:ok, conn, ref} ->
-        case send_body(conn, ref, body, deadline) do
-          {:ok, conn} ->
-            receive_response(conn, ref, deadline, max_bytes, receiver, %{
-              status: nil,
-              headers: [],
-              bytes: 0,
-              acc: initial
-            })
-
-          {:error, error} ->
-            {:error, error, initial}
-        end
-
-      {:error, _, _} ->
-        {:error, error(502, "Provider request failed", "audio_provider_unavailable"), initial}
-    end
+    {:ok, fetch_headers, body, nil}
   end
 
-  defp body_length(body) when is_binary(body), do: byte_size(body)
+  defp prepare_request(headers, {:enumerable, size, body}) do
+    fetch_headers = [
+      {"content-length", Integer.to_string(size)},
+      {"accept-encoding", "identity"} | headers
+    ]
 
-  defp body_length({:enumerable, size, _body}), do: size
-
-  defp body_length({:file, prefix, path, suffix}) do
-    {:ok, %{size: size}} = File.stat(path)
-    IO.iodata_length(prefix) + size + IO.iodata_length(suffix)
-  end
-
-  defp send_body(conn, ref, body, deadline) when is_binary(body) do
-    with {:ok, conn} <- send_bytes(conn, ref, body, deadline),
-         {:ok, conn} <- Mint.HTTP.stream_request_body(conn, ref, :eof) do
-      {:ok, conn}
-    else
-      _ -> {:error, error(502, "Provider upload failed", "audio_provider_unavailable")}
-    end
-  end
-
-  defp send_body(conn, ref, {:enumerable, size, body}, deadline) do
-    result =
-      Enum.reduce_while(body, {:ok, conn, 0}, fn part, {:ok, conn, sent} ->
-        bytes = IO.iodata_to_binary(part)
-        next = sent + byte_size(bytes)
-
-        if next > size do
-          {:halt, {:error, error(502, "Multipart length mismatch", "audio_upload_invalid")}}
-        else
-          case send_bytes(conn, ref, bytes, deadline) do
-            {:ok, conn} -> {:cont, {:ok, conn, next}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end
-      end)
-
-    case result do
-      {:ok, conn, ^size} ->
-        case Mint.HTTP.stream_request_body(conn, ref, :eof) do
-          {:ok, conn} -> {:ok, conn}
-          _ -> {:error, error(502, "Provider upload failed", "audio_provider_unavailable")}
-        end
-
-      {:ok, _conn, _} ->
-        {:error, error(502, "Multipart length mismatch", "audio_upload_invalid")}
-
-      error ->
-        error
+    case HTTP.Stream.from_enumerable(body) do
+      {:ok, stream} -> {:ok, fetch_headers, stream, "half"}
+      {:error, _} -> {:error, error(503, "Audio input unavailable", "audio_input_unavailable")}
     end
   rescue
     _ -> {:error, error(503, "Audio input unavailable", "audio_input_unavailable")}
   end
 
-  defp send_body(conn, ref, {:file, prefix, path, suffix}, deadline) do
-    with {:ok, conn} <- send_bytes(conn, ref, IO.iodata_to_binary(prefix), deadline),
-         {:ok, io} <- File.open(path, [:read, :binary, :raw]) do
-      result =
-        try do
-          send_file(conn, ref, io, deadline)
-        after
-          File.close(io)
-        end
+  defp prepare_request(headers, {:file, prefix, path, suffix}) do
+    with {:ok, %{size: size}} <- File.stat(path) do
+      total_size = IO.iodata_length(prefix) + size + IO.iodata_length(suffix)
 
-      with {:ok, conn} <- result,
-           {:ok, conn} <- send_bytes(conn, ref, IO.iodata_to_binary(suffix), deadline),
-           {:ok, conn} <- Mint.HTTP.stream_request_body(conn, ref, :eof) do
-        {:ok, conn}
-      else
-        _ -> {:error, error(502, "Provider upload failed", "audio_provider_unavailable")}
+      fetch_headers = [
+        {"content-length", Integer.to_string(total_size)},
+        {"accept-encoding", "identity"} | headers
+      ]
+
+      enumerable =
+        Stream.concat([
+          [IO.iodata_to_binary(prefix)],
+          File.stream!(path, [], @write_bytes),
+          [IO.iodata_to_binary(suffix)]
+        ])
+
+      case HTTP.Stream.from_enumerable(enumerable) do
+        {:ok, stream} -> {:ok, fetch_headers, stream, "half"}
+        {:error, _} -> {:error, error(503, "Audio input unavailable", "audio_input_unavailable")}
       end
     else
       _ -> {:error, error(503, "Audio input unavailable", "audio_input_unavailable")}
     end
+  rescue
+    _ -> {:error, error(503, "Audio input unavailable", "audio_input_unavailable")}
   end
 
-  defp send_file(conn, ref, io, deadline) do
-    case IO.binread(io, @write_bytes) do
-      :eof ->
-        {:ok, conn}
+  defp process_response(response, max_bytes, receiver, initial, deadline) do
+    headers_list =
+      case response.headers do
+        %HTTP.Headers{headers: h} ->
+          Enum.map(h, fn {k, v} -> {String.downcase(to_string(k)), to_string(v)} end)
 
-      data when is_binary(data) ->
-        with {:ok, conn} <- send_bytes(conn, ref, data, deadline),
-             do: send_file(conn, ref, io, deadline)
+        headers when is_list(headers) ->
+          Enum.map(headers, fn {k, v} -> {String.downcase(to_string(k)), to_string(v)} end)
 
-      _ ->
-        {:error, error(503, "Audio input unavailable", "audio_input_unavailable")}
-    end
-  end
-
-  defp send_bytes(conn, _ref, <<>>, _deadline), do: {:ok, conn}
-
-  defp send_bytes(conn, ref, bytes, deadline) when byte_size(bytes) <= @write_bytes do
-    if remaining(deadline) > 0 do
-      case Mint.HTTP.stream_request_body(conn, ref, bytes) do
-        {:ok, conn} -> {:ok, conn}
-        _ -> {:error, error(502, "Provider upload failed", "audio_provider_unavailable")}
+        _ ->
+          []
       end
+
+    stream =
+      cond do
+        is_pid(response.body) -> response.body
+        is_pid(response.stream) -> response.stream
+        true -> nil
+      end
+
+    if stream do
+      monitor = Process.monitor(stream)
+      send(stream, {:read_chunk, self(), :ack})
+
+      consume_stream(
+        stream,
+        monitor,
+        response.status,
+        headers_list,
+        max_bytes,
+        receiver,
+        initial,
+        0,
+        deadline
+      )
     else
-      {:error, timeout_error()}
+      body_bytes = response.body || ""
+
+      if byte_size(body_bytes) > max_bytes do
+        {:error, error(502, "Provider response too large", "audio_provider_too_large"), initial}
+      else
+        if response.status in 200..299 do
+          resp_meta = %{status: response.status, headers: headers_list}
+
+          case deliver_data(body_bytes, receiver, resp_meta, initial) do
+            {:ok, acc} -> {:ok, response.status, headers_list, acc}
+            {:error, %Error{} = reason, acc} -> {:error, reason, acc}
+          end
+        else
+          status = if response.status == 429, do: 429, else: 502
+
+          {:error, error(status, "Provider rejected audio request", "audio_provider_error"),
+           initial}
+        end
+      end
     end
   end
 
-  defp send_bytes(conn, ref, bytes, deadline) do
-    <<part::binary-size(@write_bytes), rest::binary>> = bytes
-
-    with {:ok, conn} <- send_bytes(conn, ref, part, deadline),
-         do: send_bytes(conn, ref, rest, deadline)
-  end
-
-  defp receive_response(conn, ref, deadline, max_bytes, receiver, state) do
+  defp consume_stream(stream, monitor, status, headers, max, receiver, acc, bytes, deadline) do
     timeout = remaining(deadline)
 
     if timeout <= 0 do
-      {:error, timeout_error(), state.acc}
+      Process.demonitor(monitor, [:flush])
+      HTTP.Stream.stop(stream, :timeout)
+      {:error, timeout_error(), acc}
     else
-      case Mint.HTTP.recv(conn, 0, timeout) do
-        {:ok, conn, events} ->
-          case handle_events(events, ref, max_bytes, receiver, state) do
-            {:continue, next} -> receive_response(conn, ref, deadline, max_bytes, receiver, next)
-            result -> result
+      receive do
+        {:stream_chunk, ^stream, chunk, ack_ref} ->
+          send(stream, {:stream_chunk_ack, ack_ref})
+
+          handle_stream_chunk(
+            stream,
+            monitor,
+            status,
+            headers,
+            max,
+            receiver,
+            acc,
+            bytes,
+            deadline,
+            chunk
+          )
+
+        {:stream_chunk, ^stream, chunk} ->
+          handle_stream_chunk(
+            stream,
+            monitor,
+            status,
+            headers,
+            max,
+            receiver,
+            acc,
+            bytes,
+            deadline,
+            chunk
+          )
+
+        {:stream_end, ^stream} ->
+          Process.demonitor(monitor, [:flush])
+
+          if status in 200..299 do
+            {:ok, status, headers, acc}
+          else
+            err_status = if status == 429, do: 429, else: 502
+
+            {:error,
+             error(err_status, "Provider rejected audio request", "audio_provider_error"), acc}
           end
 
-        {:error, _conn, reason, events} ->
-          case handle_events(events, ref, max_bytes, receiver, state) do
-            {:continue, next} ->
-              failure =
-                if match?(%Mint.TransportError{reason: :timeout}, reason),
-                  do: timeout_error(),
-                  else: error(502, "Provider stream ended early", "audio_provider_incomplete")
+        {:stream_error, ^stream, _reason} ->
+          Process.demonitor(monitor, [:flush])
+          {:error, error(502, "Provider stream ended early", "audio_provider_incomplete"), acc}
 
-              {:error, failure, next.acc}
-
-            result ->
-              result
-          end
+        {:DOWN, ^monitor, :process, ^stream, _reason} ->
+          {:error, error(502, "Provider stream ended early", "audio_provider_incomplete"), acc}
+      after
+        timeout ->
+          Process.demonitor(monitor, [:flush])
+          HTTP.Stream.stop(stream, :timeout)
+          {:error, timeout_error(), acc}
       end
     end
   end
 
-  defp handle_events([], _ref, _max, _receiver, state), do: {:continue, state}
-
-  defp handle_events([{:status, ref, code} | rest], ref, max, receiver, state),
-    do: handle_events(rest, ref, max, receiver, %{state | status: code})
-
-  defp handle_events([{:headers, ref, headers} | rest], ref, max, receiver, state),
-    do: handle_events(rest, ref, max, receiver, %{state | headers: headers})
-
-  defp handle_events([{:data, ref, data} | rest], ref, max, receiver, state) do
-    bytes = state.bytes + byte_size(data)
+  defp handle_stream_chunk(
+         stream,
+         monitor,
+         status,
+         headers,
+         max,
+         receiver,
+         acc,
+         bytes,
+         deadline,
+         chunk
+       ) do
+    new_bytes = bytes + byte_size(chunk)
 
     cond do
-      bytes > max ->
-        {:error, error(502, "Provider response too large", "audio_provider_too_large"), state.acc}
+      new_bytes > max ->
+        Process.demonitor(monitor, [:flush])
+        HTTP.Stream.stop(stream, :too_large)
+        {:error, error(502, "Provider response too large", "audio_provider_too_large"), acc}
 
-      state.status not in 200..299 ->
-        handle_events(rest, ref, max, receiver, %{state | bytes: bytes})
+      status not in 200..299 ->
+        consume_stream(stream, monitor, status, headers, max, receiver, acc, new_bytes, deadline)
 
       true ->
-        response = %{status: state.status, headers: state.headers}
+        response = %{status: status, headers: headers}
 
-        case deliver_data(data, receiver, response, state.acc) do
-          {:ok, acc} -> handle_events(rest, ref, max, receiver, %{state | bytes: bytes, acc: acc})
-          {:error, %Error{} = reason, acc} -> {:error, reason, acc}
+        case deliver_data(chunk, receiver, response, acc) do
+          {:ok, next_acc} ->
+            consume_stream(
+              stream,
+              monitor,
+              status,
+              headers,
+              max,
+              receiver,
+              next_acc,
+              new_bytes,
+              deadline
+            )
+
+          {:error, %Error{} = reason, next_acc} ->
+            Process.demonitor(monitor, [:flush])
+            HTTP.Stream.stop(stream, :cancelled)
+            {:error, reason, next_acc}
         end
     end
   end
-
-  defp handle_events([{:done, ref} | _], ref, _max, _receiver, state) do
-    if state.status in 200..299 do
-      {:ok, state.status, state.headers, state.acc}
-    else
-      status = if state.status == 429, do: 429, else: 502
-
-      {:error, error(status, "Provider rejected audio request", "audio_provider_error"),
-       state.acc}
-    end
-  end
-
-  defp handle_events([_ | rest], ref, max, receiver, state),
-    do: handle_events(rest, ref, max, receiver, state)
 
   defp deliver_data(<<>>, _receiver, _response, acc), do: {:ok, acc}
 
@@ -292,9 +314,9 @@ defmodule Backplane.Audio.HTTP do
          do: deliver_data(rest, receiver, response, acc)
   end
 
+  defp maybe_put_duplex(opts, nil), do: opts
+  defp maybe_put_duplex(opts, duplex), do: Keyword.put(opts, :duplex, duplex)
   defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
-  defp default_port(%URI{scheme: "https"}), do: 443
-  defp default_port(_), do: 80
   defp timeout_error, do: error(504, "Audio provider timed out", "audio_timeout")
   defp error(status, message, code), do: Error.new(status, message, nil, code, "api_error")
 end
