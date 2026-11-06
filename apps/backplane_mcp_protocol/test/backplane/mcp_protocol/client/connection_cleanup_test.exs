@@ -165,9 +165,13 @@ defmodule Backplane.McpProtocol.Client.ConnectionCleanupTest do
       }
     ]
 
-    {:ok, sup} = Supervisor.start_link(children, strategy: :one_for_all)
-    Process.unlink(sup)
-    on_exit(fn -> if Process.alive?(sup), do: Supervisor.stop(sup) end)
+    sup =
+      start_supervised!(%{
+        id: make_ref(),
+        start: {Supervisor, :start_link, [children, [strategy: :one_for_all]]},
+        restart: :temporary
+      })
+
     client = Process.whereis(name)
 
     :sys.replace_state(

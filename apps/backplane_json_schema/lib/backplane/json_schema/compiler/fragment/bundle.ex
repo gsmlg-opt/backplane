@@ -468,9 +468,7 @@ defmodule Backplane.JsonSchema.Compiler.Fragment.Bundle do
   end
 
   defp load_external_resource(base, state) do
-    if not is_function(state.loader, 1) do
-      {:error, %Error{context: %ErrorContext{contrast: "load_remote", input: base, error_detail: :no_loader}}}
-    else
+    if is_function(state.loader, 1) do
       with {:ok, document, loaded_base} <- load_resource(state.loader, base) do
         document = put_effective_base_uri(document, loaded_base)
         canonical_base = document_resource_base(document, loaded_base)
@@ -494,6 +492,8 @@ defmodule Backplane.JsonSchema.Compiler.Fragment.Bundle do
 
         {:ok, state}
       end
+    else
+      {:error, %Error{context: %ErrorContext{contrast: "load_remote", input: base, error_detail: :no_loader}}}
     end
   end
 

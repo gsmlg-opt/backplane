@@ -273,59 +273,59 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
   @doc """
   Validates data against all schemas in an `allOf` array.
   """
-  def validate_allOf(data, schemas, path, root, _evaluated) do
-    reduce_allOf(schemas, data, path, root, [], [])
+  def validate_all_of(data, schemas, path, root, _evaluated) do
+    reduce_all_of(schemas, data, path, root, [], [])
   end
 
-  defp reduce_allOf([], _data, _path, _root, acc_keys, []) do
+  defp reduce_all_of([], _data, _path, _root, acc_keys, []) do
     {:ok, MapSet.new(List.flatten(acc_keys))}
   end
 
-  defp reduce_allOf([], _data, _path, _root, _acc_keys, error_lists) do
+  defp reduce_all_of([], _data, _path, _root, _acc_keys, error_lists) do
     {:error, List.flatten(Enum.reverse(error_lists))}
   end
 
-  defp reduce_allOf([schema | rest], data, path, root, acc_keys, error_lists) do
+  defp reduce_all_of([schema | rest], data, path, root, acc_keys, error_lists) do
     case Validator.validate_entry(schema, data, path, root, @empty_mapset) do
       {:ok, new_keys} ->
         if MapSet.size(new_keys) == 0 do
-          reduce_allOf(rest, data, path, root, acc_keys, error_lists)
+          reduce_all_of(rest, data, path, root, acc_keys, error_lists)
         else
-          reduce_allOf(rest, data, path, root, [MapSet.to_list(new_keys) | acc_keys], error_lists)
+          reduce_all_of(rest, data, path, root, [MapSet.to_list(new_keys) | acc_keys], error_lists)
         end
 
       {:error, errs} ->
-        reduce_allOf(rest, data, path, root, acc_keys, [errs | error_lists])
+        reduce_all_of(rest, data, path, root, acc_keys, [errs | error_lists])
     end
   end
 
   @doc """
   Validates data against schemas in an `anyOf` array.
   """
-  def validate_anyOf(data, schemas, path, root, evaluated) do
+  def validate_any_of(data, schemas, path, root, evaluated) do
     if any_of_direct_merge_candidate?(schemas, evaluated) do
-      reduce_anyOf_with_shared_evaluated_keys(schemas, data, path, root, evaluated, 0, 0, [], [])
+      reduce_any_of_with_shared_evaluated_keys(schemas, data, path, root, evaluated, {0, 0}, [], [])
     else
-      reduce_anyOf(schemas, data, path, root, evaluated, 0, [], [])
+      reduce_any_of(schemas, data, path, root, evaluated, 0, [], [])
     end
   end
 
-  defp reduce_anyOf([], _data, _path, _root, _evaluated, count, merged_keys, _error_lists)
+  defp reduce_any_of([], _data, _path, _root, _evaluated, count, merged_keys, _error_lists)
        when count > 0 do
     {:ok, MapSet.new(List.flatten(merged_keys))}
   end
 
-  defp reduce_anyOf([], _data, _path, _root, _evaluated, 0, _merged_keys, error_lists) do
+  defp reduce_any_of([], _data, _path, _root, _evaluated, 0, _merged_keys, error_lists) do
     {:error, List.flatten(Enum.reverse(error_lists))}
   end
 
-  defp reduce_anyOf([schema | rest], data, path, root, evaluated, count, acc_keys, acc_errs) do
+  defp reduce_any_of([schema | rest], data, path, root, evaluated, count, acc_keys, acc_errs) do
     case Validator.validate_entry(schema, data, path, root, evaluated) do
       {:ok, keys} ->
         if MapSet.size(keys) == 0 do
-          reduce_anyOf(rest, data, path, root, evaluated, count + 1, acc_keys, acc_errs)
+          reduce_any_of(rest, data, path, root, evaluated, count + 1, acc_keys, acc_errs)
         else
-          reduce_anyOf(
+          reduce_any_of(
             rest,
             data,
             path,
@@ -339,7 +339,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
 
       {:error, errs} ->
         new_errs = if count == 0, do: [errs | acc_errs], else: acc_errs
-        reduce_anyOf(rest, data, path, root, evaluated, count, acc_keys, new_errs)
+        reduce_any_of(rest, data, path, root, evaluated, count, acc_keys, new_errs)
     end
   end
 
@@ -351,14 +351,13 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
 
   defp any_of_direct_merge_candidate?(_schemas, _evaluated), do: false
 
-  defp reduce_anyOf_with_shared_evaluated_keys(
+  defp reduce_any_of_with_shared_evaluated_keys(
          [],
          _data,
          _path,
          _root,
          evaluated,
-         count,
-         total_evaluated_key_count,
+         {count, total_evaluated_key_count},
          evaluated_key_sets,
          _error_lists
        )
@@ -372,28 +371,26 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
      )}
   end
 
-  defp reduce_anyOf_with_shared_evaluated_keys(
+  defp reduce_any_of_with_shared_evaluated_keys(
          [],
          _data,
          _path,
          _root,
          _evaluated,
-         0,
-         _total_evaluated_key_count,
+         {0, _total_evaluated_key_count},
          _evaluated_key_sets,
          error_lists
        ) do
     {:error, List.flatten(Enum.reverse(error_lists))}
   end
 
-  defp reduce_anyOf_with_shared_evaluated_keys(
+  defp reduce_any_of_with_shared_evaluated_keys(
          [schema | rest],
          data,
          path,
          root,
          evaluated,
-         count,
-         total_evaluated_key_count,
+         {count, total_evaluated_key_count},
          evaluated_key_sets,
          acc_errs
        ) do
@@ -402,14 +399,13 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
         key_count = MapSet.size(keys)
 
         if key_count == 0 do
-          reduce_anyOf_with_shared_evaluated_keys(
+          reduce_any_of_with_shared_evaluated_keys(
             rest,
             data,
             path,
             root,
             evaluated,
-            count + 1,
-            total_evaluated_key_count,
+            {count + 1, total_evaluated_key_count},
             evaluated_key_sets,
             acc_errs
           )
@@ -423,19 +419,18 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
                new_count,
                new_total_evaluated_key_count
              ) do
-            reduce_anyOf_with_shared_evaluated_keys(
+            reduce_any_of_with_shared_evaluated_keys(
               rest,
               data,
               path,
               root,
               evaluated,
-              new_count,
-              new_total_evaluated_key_count,
+              {new_count, new_total_evaluated_key_count},
               new_evaluated_key_sets,
               acc_errs
             )
           else
-            reduce_anyOf(
+            reduce_any_of(
               rest,
               data,
               path,
@@ -451,14 +446,13 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
       {:error, errs} ->
         new_errs = if count == 0, do: [errs | acc_errs], else: acc_errs
 
-        reduce_anyOf_with_shared_evaluated_keys(
+        reduce_any_of_with_shared_evaluated_keys(
           rest,
           data,
           path,
           root,
           evaluated,
-          count,
-          total_evaluated_key_count,
+          {count, total_evaluated_key_count},
           evaluated_key_sets,
           new_errs
         )
@@ -469,23 +463,23 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
   Validates data against schemas in a `oneOf` array.
   Exactly one schema must pass.
   """
-  def validate_oneOf(data, schemas, path, root, evaluated) do
-    reduce_oneOf(schemas, data, path, root, evaluated, 0, nil, [])
+  def validate_one_of(data, schemas, path, root, evaluated) do
+    reduce_one_of(schemas, data, path, root, evaluated, 0, nil, [])
   end
 
-  defp reduce_oneOf([], _data, _path, _root, _evaluated, 1, first_keys, _acc_errs) do
+  defp reduce_one_of([], _data, _path, _root, _evaluated, 1, first_keys, _acc_errs) do
     {:ok, first_keys}
   end
 
-  defp reduce_oneOf([], _data, _path, _root, _evaluated, 0, _first_keys, acc_errs) do
+  defp reduce_one_of([], _data, _path, _root, _evaluated, 0, _first_keys, acc_errs) do
     {:error, List.flatten(Enum.reverse(acc_errs))}
   end
 
-  defp reduce_oneOf([schema | rest], data, path, root, evaluated, count, first_keys, acc_errs) do
+  defp reduce_one_of([schema | rest], data, path, root, evaluated, count, first_keys, acc_errs) do
     case Validator.validate_entry(schema, data, path, root, evaluated) do
       {:ok, keys} ->
         if count == 0 do
-          reduce_oneOf(rest, data, path, root, evaluated, 1, keys, acc_errs)
+          reduce_one_of(rest, data, path, root, evaluated, 1, keys, acc_errs)
         else
           error = %Error{
             path: path,
@@ -501,7 +495,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
 
       {:error, errs} ->
         new_errs = if count == 0, do: [errs | acc_errs], else: acc_errs
-        reduce_oneOf(rest, data, path, root, evaluated, count, first_keys, new_errs)
+        reduce_one_of(rest, data, path, root, evaluated, count, first_keys, new_errs)
     end
   end
 
@@ -529,7 +523,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
   """
   def validate_contains(data, schema, min, max, path, root) when is_list(data) do
     {match_count, matching_indices} =
-      reduce_contains(data, schema, min, max, path, root, 0, 0, [])
+      reduce_contains(data, schema, max, path, root, 0, 0, [])
 
     cond do
       match_count < min ->
@@ -545,22 +539,22 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
 
   def validate_contains(_, _, _, _, _, _), do: :ok
 
-  defp reduce_contains(_data, _schema, _min, max, _path, _root, _index, count, indices)
+  defp reduce_contains(_data, _schema, max, _path, _root, _index, count, indices)
        when is_integer(max) and count > max do
     {count, indices}
   end
 
-  defp reduce_contains([], _schema, _min, _max, _path, _root, _index, count, indices) do
+  defp reduce_contains([], _schema, _max, _path, _root, _index, count, indices) do
     {count, indices}
   end
 
-  defp reduce_contains([item | rest], schema, min, max, path, root, index, count, indices) do
+  defp reduce_contains([item | rest], schema, max, path, root, index, count, indices) do
     case Validator.validate_entry(schema, item, [index | path], root) do
       {:error, _} ->
-        reduce_contains(rest, schema, min, max, path, root, index + 1, count, indices)
+        reduce_contains(rest, schema, max, path, root, index + 1, count, indices)
 
       {:ok, _} ->
-        reduce_contains(rest, schema, min, max, path, root, index + 1, count + 1, [
+        reduce_contains(rest, schema, max, path, root, index + 1, count + 1, [
           index | indices
         ])
     end
@@ -731,8 +725,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
         path,
         root,
         index,
-        errs,
-        eval_keys,
+        {errs, eval_keys},
         cache
       )
 
@@ -755,8 +748,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
          _path,
          _root,
          _index,
-         errs,
-         eval_keys,
+         {errs, eval_keys},
          _cache
        ),
        do: {errs, eval_keys}
@@ -768,8 +760,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
          path,
          root,
          index,
-         errs,
-         eval_keys,
+         {errs, eval_keys},
          cache
        ) do
     if pattern_matches_after_additional?(cache, key, index, regex, path) do
@@ -782,8 +773,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
             path,
             root,
             index,
-            [new_errs | errs],
-            eval_keys,
+            {[new_errs | errs], eval_keys},
             cache
           )
 
@@ -795,8 +785,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
             path,
             root,
             index,
-            errs,
-            [key | eval_keys],
+            {errs, [key | eval_keys]},
             cache
           )
       end
@@ -808,8 +797,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
         path,
         root,
         index,
-        errs,
-        eval_keys,
+        {errs, eval_keys},
         cache
       )
     end
@@ -900,8 +888,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
       patterns,
       path,
       root,
-      [],
-      [],
+      {[], []},
       cache
     )
   end
@@ -947,8 +934,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
          _patterns,
          _path,
          _root,
-         [],
-         [],
+         {[], []},
          cache
        ),
        do: {:ok, cache}
@@ -960,8 +946,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
          _patterns,
          _path,
          _root,
-         [],
-         eval_keys,
+         {[], eval_keys},
          cache
        ),
        do: {{:ok, MapSet.new(eval_keys)}, cache}
@@ -973,8 +958,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
          _patterns,
          _path,
          _root,
-         errs,
-         _eval_keys,
+         {errs, _eval_keys},
          cache
        ),
        do: {{:error, List.flatten(errs)}, cache}
@@ -986,8 +970,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
          patterns,
          path,
          root,
-         errs,
-         eval_keys,
+         {errs, eval_keys},
          cache
        ) do
     if MapSet.member?(known, key) do
@@ -998,8 +981,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
         patterns,
         path,
         root,
-        errs,
-        eval_keys,
+        {errs, eval_keys},
         cache
       )
     else
@@ -1016,8 +998,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
                 patterns,
                 path,
                 root,
-                [new_errs | errs],
-                eval_keys,
+                {[new_errs | errs], eval_keys},
                 cache
               )
 
@@ -1029,8 +1010,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
                 patterns,
                 path,
                 root,
-                errs,
-                [key | eval_keys],
+                {errs, [key | eval_keys]},
                 cache
               )
           end
@@ -1043,8 +1023,7 @@ defmodule Backplane.JsonSchema.Validator.Keywords do
             patterns,
             path,
             root,
-            errs,
-            eval_keys,
+            {errs, eval_keys},
             cache
           )
       end

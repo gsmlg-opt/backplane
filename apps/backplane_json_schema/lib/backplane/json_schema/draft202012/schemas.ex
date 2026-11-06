@@ -384,7 +384,7 @@ defmodule Backplane.JsonSchema.Draft202012.Schemas do
   defp family_uris_for(uri) when uri in @draft2020_12_family_uris, do: @draft2020_12_family_uris
   defp family_uris_for(_), do: []
 
-  defp cached_compiled_defs() do
+  defp cached_compiled_defs do
     case :persistent_term.get(@compiled_defs_cache_key, :undefined) do
       :undefined ->
         compiled_defs = build_compiled_defs()
@@ -396,7 +396,7 @@ defmodule Backplane.JsonSchema.Draft202012.Schemas do
     end
   end
 
-  defp build_compiled_defs() do
+  defp build_compiled_defs do
     Enum.reduce(@draft2020_12_family_uris, %{}, fn family_uri, acc ->
       {:ok, raw_schema} = fetch(family_uri)
 

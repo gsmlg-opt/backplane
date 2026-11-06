@@ -248,15 +248,15 @@ defmodule Backplane.JsonSchema.Validator.Rules do
   end
 
   def apply(%Rule{name: :allOf, params: compiled_schemas}, data, {path, evaluated, root}) do
-    Keywords.validate_allOf(data, compiled_schemas, path, root, evaluated)
+    Keywords.validate_all_of(data, compiled_schemas, path, root, evaluated)
   end
 
   def apply(%Rule{name: :anyOf, params: compiled_schemas}, data, {path, evaluated, root}) do
-    Keywords.validate_anyOf(data, compiled_schemas, path, root, evaluated)
+    Keywords.validate_any_of(data, compiled_schemas, path, root, evaluated)
   end
 
   def apply(%Rule{name: :oneOf, params: compiled_schemas}, data, {path, evaluated, root}) do
-    Keywords.validate_oneOf(data, compiled_schemas, path, root, evaluated)
+    Keywords.validate_one_of(data, compiled_schemas, path, root, evaluated)
   end
 
   def apply(%Rule{name: :not, params: compiled_sub}, data, {path, evaluated, root}) do

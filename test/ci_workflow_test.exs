@@ -118,6 +118,8 @@ defmodule Backplane.CIWorkflowTest do
   @postgres_run ~S"""
   sudo install -d /usr/share/postgresql-common/pgdg
   sudo curl --fail --silent --show-error \
+    --retry 4 --retry-all-errors --retry-max-time 240 \
+    --connect-timeout 15 --max-time 60 \
     --output /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
     https://www.postgresql.org/media/keys/ACCC4CF8.asc
   . /etc/os-release

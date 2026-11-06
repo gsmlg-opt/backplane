@@ -281,8 +281,7 @@ defmodule Backplane.JsonSchema.Validator do
           complete?,
           rest,
           data,
-          path,
-          context,
+          {path, context},
           evaluated,
           ctx,
           errors,
@@ -296,8 +295,7 @@ defmodule Backplane.JsonSchema.Validator do
               complete?,
               rest,
               data,
-              path,
-              context,
+              {path, context},
               evaluated,
               ctx,
               errors,
@@ -311,8 +309,7 @@ defmodule Backplane.JsonSchema.Validator do
               complete?,
               rest,
               data,
-              path,
-              context,
+              {path, context},
               new_eval_keys,
               new_ctx,
               errors,
@@ -327,8 +324,7 @@ defmodule Backplane.JsonSchema.Validator do
               complete?,
               rest,
               data,
-              path,
-              context,
+              {path, context},
               new_evaluated,
               new_ctx,
               errors,
@@ -341,8 +337,7 @@ defmodule Backplane.JsonSchema.Validator do
           complete?,
           rest,
           data,
-          path,
-          context,
+          {path, context},
           evaluated,
           ctx,
           [new_errs | errors],
@@ -356,8 +351,7 @@ defmodule Backplane.JsonSchema.Validator do
           complete?,
           rest,
           data,
-          path,
-          context,
+          {path, context},
           evaluated,
           ctx,
           [error | errors],
@@ -366,11 +360,11 @@ defmodule Backplane.JsonSchema.Validator do
     end
   end
 
-  defp continue_cached_rules(true, rest, data, path, context, evaluated, ctx, errors, _cache) do
+  defp continue_cached_rules(true, rest, data, {path, context}, evaluated, ctx, errors, _cache) do
     run_rules(rest, data, path, context, evaluated, ctx, errors)
   end
 
-  defp continue_cached_rules(false, rest, data, path, context, evaluated, ctx, errors, cache) do
+  defp continue_cached_rules(false, rest, data, {path, context}, evaluated, ctx, errors, cache) do
     run_rules_with_pattern_cache(rest, data, path, context, evaluated, ctx, errors, cache)
   end
 

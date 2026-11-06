@@ -49,7 +49,7 @@ defmodule Backplane.JsonSchema.Draft202012.Vocabulary do
   `$vocabulary` declarations.
   """
   @spec defaults() :: list()
-  def defaults(), do: @known_vocabularies
+  def defaults, do: @known_vocabularies
 
   @doc """
   Returns the built-in default active vocabularies for the standard Draft 2020-12
@@ -59,13 +59,13 @@ defmodule Backplane.JsonSchema.Draft202012.Vocabulary do
   standard Draft 2020-12 dialect.
   """
   @spec draft2020_12_defaults() :: list()
-  def draft2020_12_defaults(), do: @draft2020_12_defaults
+  def draft2020_12_defaults, do: @draft2020_12_defaults
 
   @doc "Returns the format-annotation vocabulary URI."
-  def format_annotation(), do: @vocab_format_annotation
+  def format_annotation, do: @vocab_format_annotation
 
   @doc "Returns the format-assertion vocabulary URI."
-  def format_assertion(), do: @vocab_format_assertion
+  def format_assertion, do: @vocab_format_assertion
 
   @doc """
   Returns the vocabulary URI for a given JSON Schema keyword, or `nil` if unknown.

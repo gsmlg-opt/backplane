@@ -4,10 +4,10 @@ defmodule Backplane.JsonSchema.Formats.Hostname do
   """
 
   def valid?(data) when is_binary(data) do
-    if not is_ascii?(data) do
-      false
-    else
+    if ascii?(data) do
       validate_ascii_hostname(data)
+    else
+      false
     end
   end
 
@@ -25,22 +25,22 @@ defmodule Backplane.JsonSchema.Formats.Hostname do
       end
     end
   else
-    defp is_ascii_and_size_le_253?(<<>>), do: true
-    defp is_ascii_and_size_le_253?(data) do
-      is_ascii_and_size_le_253?(data, 0)
+    defp ascii_and_size_le_253?(<<>>), do: true
+    defp ascii_and_size_le_253?(data) do
+      ascii_and_size_le_253?(data, 0)
     end
 
-    defp is_ascii_and_size_le_253?(_data, count) when count > 253, do: false
-    defp is_ascii_and_size_le_253?(<<c, rest::binary>>, count) when c <= 127, do: is_ascii_and_size_le_253?(rest, count + 1)
-    defp is_ascii_and_size_le_253?(<<c, _rest::binary>>, _count) when c > 127, do: false
-    defp is_ascii_and_size_le_253?(<<>>, count) when count >= 0 and count <= 253, do: true
-    defp is_ascii_and_size_le_253?(_, _), do: false
+    defp ascii_and_size_le_253?(_data, count) when count > 253, do: false
+    defp ascii_and_size_le_253?(<<c, rest::binary>>, count) when c <= 127, do: ascii_and_size_le_253?(rest, count + 1)
+    defp ascii_and_size_le_253?(<<c, _rest::binary>>, _count) when c > 127, do: false
+    defp ascii_and_size_le_253?(<<>>, count) when count >= 0 and count <= 253, do: true
+    defp ascii_and_size_le_253?(_, _), do: false
 
     def valid_idn?(data) when is_binary(data) do
       # Normalize IDNA separators to dots
       normalized = String.replace(data, ["\u3002", "\uFF0E", "\uFF61"], ".")
 
-      if is_ascii_and_size_le_253?(normalized) do
+      if ascii_and_size_le_253?(normalized) do
         validate_ascii_hostname(normalized)
       else
         raise "The optional dependency :idna is required to validate idn-hostname with non-ASCII characters. Please add it to your mix.exs deps."
@@ -50,9 +50,9 @@ defmodule Backplane.JsonSchema.Formats.Hostname do
 
   def valid_idn?(_), do: true
 
-  defp is_ascii?(<<>>), do: true
-  defp is_ascii?(<<c, rest::binary>>) when c <= 127, do: is_ascii?(rest)
-  defp is_ascii?(_), do: false
+  defp ascii?(<<>>), do: true
+  defp ascii?(<<c, rest::binary>>) when c <= 127, do: ascii?(rest)
+  defp ascii?(_), do: false
 
   defp validate_ascii_hostname(data) when byte_size(data) > 255, do: false
 
@@ -130,7 +130,7 @@ defmodule Backplane.JsonSchema.Formats.Hostname do
       if String.starts_with?(String.downcase(label), "xn--") do
         validate_idn_label(label)
       else
-        is_ascii?(label) == false or validate_std_label(label)
+        ascii?(label) == false or validate_std_label(label)
       end
     end
 
