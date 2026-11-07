@@ -1,0 +1,164 @@
+name: Host Agent Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published main release version, without leading v
+        type: string
+        required: true
+      revision:
+        description: Full immutable source SHA of the published release
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: host-agent-${{ inputs.version }}
+  cancel-in-progress: false
+env:
+  ELIXIR_VERSION: "1.18"
+  OTP_VERSION: "28"
+  MIX_ENV: prod
+  RELEASE_VERSION: ${{ inputs.version }}
+  GATED_SHA: ${{ inputs.revision }}
+  RELEASE_REVISION: ${{ inputs.revision }}
+jobs:
+  build:
+    name: Host Agent (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - {name: linux-x64, runner: ubuntu-22.04}
+          - {name: linux-arm64, runner: ubuntu-22.04-arm}
+          - {name: macos-x64, runner: macos-15-intel}
+          - {name: macos-arm64, runner: macos-latest}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
+      - name: Check published release identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST_TARGET: ${{ matrix.target.name }}
+        run: python3 scripts/manage_release_assets.py check-host
+      - name: Set up BEAM
+        if: steps.identity.outputs.needed == 'true'
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        if: steps.identity.outputs.needed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        if: steps.identity.outputs.needed == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+
+      - name: Configure OpenSSL for macOS
+        if: steps.identity.outputs.needed == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install pkg-config openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Restore Mix cache
+        if: steps.identity.outputs.needed == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/prod
+          key: release-${{ matrix.target.runner }}-${{ matrix.target.name }}-host_agent-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
+          restore-keys: |
+            release-${{ matrix.target.runner }}-${{ matrix.target.name }}-host_agent-
+            release-${{ matrix.target.runner }}-${{ matrix.target.name }}-
+
+      - name: Install dependencies
+        if: steps.identity.outputs.needed == 'true'
+        run: mix deps.get --only prod --check-locked
+
+      - name: Build OTP release
+        if: steps.identity.outputs.needed == 'true'
+        env:
+          RELEASE_NAME: host_agent
+        run: |
+          rm -rf -- "_build/prod/rel/$RELEASE_NAME"
+          mix release "$RELEASE_NAME" --overwrite --version "$RELEASE_VERSION"
+
+      - name: Archive OTP release
+        if: steps.identity.outputs.needed == 'true'
+        shell: bash
+        env:
+          RELEASE_NAME: host_agent
+          TARGET_NAME: ${{ matrix.target.name }}
+        run: |
+          mkdir -p dist
+          artifact="$RELEASE_NAME-$RELEASE_VERSION-$TARGET_NAME.tar.gz"
+          tar -czf "dist/$artifact" -C "_build/prod/rel" "$RELEASE_NAME"
+          shasum -a 256 "dist/$artifact" > "dist/$artifact.sha256"
+
+      - name: Upload release artifact
+        if: steps.identity.outputs.needed == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: host_agent-${{ matrix.target.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Attach available Host Agent packages
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout asset publisher
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
+      - name: List successful platform artifacts
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > platform-artifacts.json
+          python3 - <<'PY'
+          import json, os
+          with open('platform-artifacts.json') as source:
+              listing = json.load(source)
+          if listing['total_count'] != len(listing['artifacts']):
+              raise ValueError('Incomplete Host Agent artifact listing')
+          artifacts = [artifact for artifact in listing['artifacts']
+                       if artifact['name'].startswith('host_agent-')]
+          if any(artifact['expired'] for artifact in artifacts):
+              raise ValueError('Host Agent build artifact expired')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'available={str(bool(artifacts)).lower()}\n')
+          PY
+      - name: Download successful platform builds
+        id: download
+        if: steps.artifacts.outputs.available == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: host_agent-*
+          merge-multiple: true
+          path: dist
+      - name: Attach packages and update Host Agent status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          python3 scripts/manage_release_assets.py host --directory dist

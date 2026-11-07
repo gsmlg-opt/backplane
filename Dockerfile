@@ -31,6 +31,7 @@ COPY apps/backplane_ai_protocol/mix.exs ./apps/backplane_ai_protocol/mix.exs
 COPY apps/backplane_ai_protocol_testkit/mix.exs ./apps/backplane_ai_protocol_testkit/mix.exs
 COPY apps/backplane_auth/mix.exs ./apps/backplane_auth/mix.exs
 COPY apps/backplane_data_case/mix.exs ./apps/backplane_data_case/mix.exs
+COPY apps/backplane_json_schema/mix.exs ./apps/backplane_json_schema/mix.exs
 COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
 COPY apps/backplane_llama/c_src ./apps/backplane_llama/c_src
 COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
@@ -40,6 +41,7 @@ COPY apps/backplane_memory_contract/mix.exs ./apps/backplane_memory_contract/mix
 COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
 COPY apps/backplane_plugin_protocol/mix.exs ./apps/backplane_plugin_protocol/mix.exs
 COPY apps/backplane_plugins/mix.exs ./apps/backplane_plugins/mix.exs
+COPY apps/backplane_schema/mix.exs ./apps/backplane_schema/mix.exs
 COPY apps/backplane_skill_protocol/mix.exs ./apps/backplane_skill_protocol/mix.exs
 COPY apps/backplane_skills/mix.exs ./apps/backplane_skills/mix.exs
 COPY apps/backplane_system/mix.exs ./apps/backplane_system/mix.exs
@@ -89,6 +91,7 @@ COPY apps/backplane_ai_protocol/mix.exs ./apps/backplane_ai_protocol/mix.exs
 COPY apps/backplane_ai_protocol_testkit/mix.exs ./apps/backplane_ai_protocol_testkit/mix.exs
 COPY apps/backplane_auth/mix.exs ./apps/backplane_auth/mix.exs
 COPY apps/backplane_data_case/mix.exs ./apps/backplane_data_case/mix.exs
+COPY apps/backplane_json_schema/mix.exs ./apps/backplane_json_schema/mix.exs
 COPY apps/backplane_llama/mix.exs ./apps/backplane_llama/mix.exs
 COPY apps/backplane_llama/c_src ./apps/backplane_llama/c_src
 COPY apps/backplane_mcp/mix.exs ./apps/backplane_mcp/mix.exs
@@ -98,6 +101,7 @@ COPY apps/backplane_memory_contract/mix.exs ./apps/backplane_memory_contract/mix
 COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
 COPY apps/backplane_plugin_protocol/mix.exs ./apps/backplane_plugin_protocol/mix.exs
 COPY apps/backplane_plugins/mix.exs ./apps/backplane_plugins/mix.exs
+COPY apps/backplane_schema/mix.exs ./apps/backplane_schema/mix.exs
 COPY apps/backplane_skill_protocol/mix.exs ./apps/backplane_skill_protocol/mix.exs
 COPY apps/backplane_skills/mix.exs ./apps/backplane_skills/mix.exs
 COPY apps/backplane_system/mix.exs ./apps/backplane_system/mix.exs

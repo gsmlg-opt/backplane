@@ -17,8 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-main-${{ inputs.version }}
-  cancel-in-progress: true
+  group: release-main
+  cancel-in-progress: false
 
 env:
   ELIXIR_VERSION: "1.18"
@@ -27,24 +27,22 @@ env:
   SECRET_KEY_BASE: release_build_secret_key_base_for_ci_only_1234567890_release_build_secret
 
 jobs:
-  qualify-memory:
-    name: Qualify Memory
-    runs-on: ubuntu-26.04
-
+  prepare:
+    name: Check release integrity
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
     outputs:
-      gated_sha: ${{ steps.gate.outputs.sha }}
+      gated_sha: ${{ steps.version.outputs.sha }}
       version: ${{ steps.gate.outputs.version }}
       release_apps: ${{ steps.gate.outputs.release_apps }}
-
-    env:
-      MIX_ENV: test
-      PGHOST: /var/run/postgresql
-
     steps:
-      - name: Checkout
+      - name: Checkout release source
         uses: actions/checkout@v7
         with:
-          ref: refs/heads/main
+          ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Resolve immutable release inputs
         id: gate
@@ -107,6 +105,41 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "release_apps=$release_apps" >> "$GITHUB_OUTPUT"
 
+      - name: Check completed source CI and release conflicts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.gate.outputs.version }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: python3 scripts/check_release_source.py
+
+      - name: Prepare the immutable release version commit
+        id: version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.gate.outputs.version }}
+          RELEASE_APPS: ${{ steps.gate.outputs.release_apps }}
+        run: |
+          IFS=',' read -r -a release_apps <<< "$RELEASE_APPS"
+          bash scripts/set-version.sh "$RELEASE_VERSION" "${release_apps[@]}"
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -- mix.exs apps/*/mix.exs integrations/memory \
+              apps/backplane_mcp_protocol/README.md apps/backplane_mcp_protocol/pages
+            git commit -m "chore(release): prepare v${RELEASE_VERSION}"
+            git push origin HEAD:refs/heads/main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  web-assets:
+    name: Build shared static assets
+    needs: prepare
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.gated_sha }}
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
         with:
@@ -117,137 +150,19 @@ jobs:
         uses: actions/cache@v6
         with:
           path: deps
-          key: release-memory-qualification-ubuntu26-v3-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
+          key: release-web-assets-ubuntu26-v1-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs', 'package.json', 'package-lock.json') }}
           restore-keys: |
-            release-memory-qualification-ubuntu26-v3-
+            release-web-assets-ubuntu26-v1-
 
       - name: Install dependencies
         run: mix deps.get
-
-      - name: Start PostgreSQL 17 with pgvector
-        run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl --fail --silent --show-error \
-            --retry 4 --retry-all-errors --retry-max-time 240 \
-            --connect-timeout 15 --max-time 60 \
-            --output /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
-            https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          . /etc/os-release
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
-            | sudo tee /etc/apt/sources.list.d/pgdg.list
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            printf 'https://archive.ubuntu.com/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
-          fi
-          sudo apt-get update
-          sudo apt-get install -y postgresql-17 postgresql-server-dev-17 build-essential
-          git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
-          make -C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no
-          sudo make -C /tmp/pgvector PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config with_llvm=no install
-          sudo pg_ctlcluster 16 main stop || true
-          sudo pg_dropcluster --stop 17 main || true
-          sudo pg_createcluster 17 main --start --port 5432
-          sudo -u postgres createuser --superuser "$USER" || true
-          pg_isready -h "$PGHOST"
-
-      - name: Verify root release configuration
-        run: mix run --no-start test/release_config_test.exs
-
-      - name: Verify Hex publication dependencies
-        run: mix run --no-start test/hex_release_dependencies_test.exs
-
-      - name: Verify web asset build orchestration
-        run: |
-          elixir test/build_web_assets_script_test.exs
-          mix run --no-start test/web_assets_test.exs
-
-      - name: Verify Hermes provider contract
-        run: >-
-          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover
-          -s integrations/memory/tests -p 'test_hermes*.py' -v
-
-      - name: Set up qualified OpenClaw Node runtime
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24.22.1"
-
-      - name: Verify OpenClaw provider contract
-        run: node --test integrations/memory/tests/test_openclaw*.mjs
-
-      - name: Verify Hermes live semantic oracle
-        run: MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs
-
-      - name: Prepare qualification database
-        run: |
-          mix ecto.create
-          psql --dbname backplane_test --command "CREATE EXTENSION IF NOT EXISTS vector"
-          mix ecto.migrate
-
-      # Migration 20260525000050 creates eight empty legacy slots without a
-      # host. Resolve only those exact fresh-install fixtures in this CI database;
-      # real installations must investigate their own backfill issues.
-      - name: Resolve migration-seeded empty memory slots in the qualification database
-        run: |
-          psql -X -v ON_ERROR_STOP=1 --dbname backplane_test <<'SQL'
-          DO $qualification$
-          DECLARE
-            names text[];
-            issues integer;
-            removed integer;
-            settled integer;
-          BEGIN
-            SELECT array_agg(name ORDER BY name) INTO names FROM memory_slots;
-            IF names IS DISTINCT FROM ARRAY[
-              'guidance', 'pending_items', 'persona', 'project_context',
-              'self_notes', 'session_patterns', 'tool_guidelines', 'user_preferences'
-            ]::text[] OR EXISTS (
-              SELECT 1 FROM memory_slots
-              WHERE content <> '' OR updated_by IS NOT NULL OR size_limit_chars <> 2000
-                 OR host_id IS NOT NULL OR client_id IS NOT NULL
-                 OR source_client_id IS NOT NULL OR memory_space_id IS NOT NULL
-                 OR scope IS NOT NULL OR namespace IS NOT NULL
-            ) THEN
-              RAISE EXCEPTION 'unexpected legacy slot data in fresh qualification database';
-            END IF;
-
-            SELECT count(*) INTO issues
-            FROM bpm_memory_space_backfill_issues issue
-            JOIN memory_slots slot
-              ON issue.source_id = bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))
-            WHERE issue.source_table = 'memory_slots' AND issue.reason = 'missing_mapping'
-              AND issue.disposition = 'pending';
-            IF issues <> 8 OR (SELECT count(*) FROM bpm_memory_space_backfill_issues) <> 8 THEN
-              RAISE EXCEPTION 'unexpected backfill issues in fresh qualification database';
-            END IF;
-
-            WITH deleted AS (
-              DELETE FROM memory_slots AS slot
-              RETURNING bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot)) AS source_id
-            ), resolved AS (
-              UPDATE bpm_memory_space_backfill_issues AS issue
-              SET disposition = 'resolved', resolved_at = now(), updated_at = now()
-              FROM deleted
-              WHERE issue.source_table = 'memory_slots' AND issue.source_id = deleted.source_id
-                AND issue.disposition = 'pending'
-              RETURNING issue.source_id
-            )
-            SELECT (SELECT count(*) FROM deleted), (SELECT count(*) FROM resolved)
-            INTO removed, settled;
-            IF removed <> 8 OR settled <> 8 THEN
-              RAISE EXCEPTION 'fresh qualification slot resolution was incomplete';
-            END IF;
-          END
-          $qualification$;
-          SQL
-
-      - name: Verify revisioned edge cutover readiness
-        run: mix backplane.memory.edge_cutover_check
 
       - name: Build web assets on the supported native build platform
         env:
           MIX_ENV: prod
           DUSKMOON_NATIVE_MODE: precompiled
-          GATED_SHA: ${{ steps.gate.outputs.sha }}
-          RELEASE_VERSION: ${{ steps.gate.outputs.version }}
+          GATED_SHA: ${{ needs.prepare.outputs.gated_sha }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           mix deps.compile
           mix npm.install --frozen
@@ -263,126 +178,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-      - name: Verify Memory migration, upgrade, and projection repair contracts
-        run: |
-          mix test \
-            apps/backplane_memory/test/backplane/memory/m18_migration_chain_test.exs \
-            apps/backplane_memory/test/backplane/memory/m18_migration_matrix_test.exs \
-            apps/backplane_memory/test/backplane/memory/qualification_test.exs \
-            apps/backplane_memory/test/backplane/memory/readiness_test.exs \
-            apps/backplane_memory/test/backplane/memory/memory_v2_upgrade_test.exs \
-            apps/backplane_memory/test/backplane/memory/projections/coalesce_projection_repairs_migration_test.exs \
-            apps/backplane_memory/test/backplane/memory/projections/projection_repair_worker_test.exs \
-            --exclude memory_qualification_runtime
-
-      - name: Verify outage, privacy, performance, and integration adapters
-        run: |
-          mix test \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/capture_outage_contract_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/event_envelope_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/claude_code_hook_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/codex_hook_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs \
-            apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs \
-            apps/backplane_api/test/backplane/api/memory_v2_edge_qualification_test.exs
-
-      - name: Verify Hermes source lifecycle
-        run: |
-          mix test \
-            apps/backplane_memory_contract/test/backplane/memory_source_contract_test.exs \
-            apps/backplane_memory_contract/test/backplane/openclaw_capture_contract_test.exs \
-            apps/backplane_memory/test/backplane/memory/sources_test.exs \
-            apps/backplane_memory/test/backplane/memory/source_commands_test.exs \
-            apps/backplane_memory/test/backplane/memory/fact_extraction_test.exs \
-            apps/backplane_memory/test/backplane/memory/llm_test.exs \
-            apps/backplane_memory/test/backplane/memory/workers/hermes_pipeline_test.exs \
-            apps/backplane_memory/test/backplane/memory/workers/episodic_worker_test.exs \
-            apps/backplane_memory/test/backplane/memory/memories/evidence_test.exs \
-            apps/backplane_memory/test/backplane/memory/memories/evidence_concurrency_test.exs \
-            apps/backplane_memory/test/backplane/memory/recall/relevance_test.exs \
-            apps/backplane_memory/test/backplane/memory/recall/fusion_test.exs \
-            apps/backplane_memory/test/backplane/memory/recall/retriever_test.exs \
-            apps/backplane_memory/test/backplane/memory/recall/pipeline_test.exs \
-            apps/backplane_memory/test/backplane/memory/recall/selection_test.exs \
-            apps/backplane_memory/test/backplane/memory/recall/channels_test.exs \
-            apps/backplane_memory/test/backplane/memory/recall/query_plan_test.exs \
-            apps/backplane_memory/test/backplane/memory/exact_read_test.exs \
-            apps/backplane_memory/test/backplane/memory/config_test.exs \
-            apps/backplane_memory/test/backplane/memory/service_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/access_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/hermes_hook_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/openclaw_hook_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/spool_turso_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/context_packer_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory_facade_test.exs \
-            apps/backplane_api/test/backplane/api/host_agent_memory_sync_test.exs
-
-      - name: Install pinned OpenClaw qualification runtime
-        run: npm install --prefix "$RUNNER_TEMP/backplane-openclaw-runtime" --no-audit --no-fund openclaw@2026.10.10
-
-      - name: Verify real OpenClaw canonical path
-        env:
-          BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL: "1"
-          OPENCLAW_LIVE_MODE: deterministic
-          OPENROUTER_API_KEY: ""
-        run: |
-          mkdir -p artifacts/openclaw
-          OPENCLAW_NODE="$(command -v node)" \
-          OPENCLAW_RUNTIME="$RUNNER_TEMP/backplane-openclaw-runtime/node_modules/openclaw" \
-          MIX_TEST_PARTITION="_openclawlive_$(openssl rand -hex 8)" \
-            mix run --no-start test/openclaw_memory_live_acceptance.exs \
-            > artifacts/openclaw/openclaw-live.log
-
-      - name: Run guarded Memory qualification and Recall evaluation
-        run: |
-          mkdir -p artifacts/memory
-          mix memory.replay.browser_qualify \
-            --report artifacts/memory/memory-replay-browser.json
-          mix memory.seed_bench
-          mix memory.eval \
-            --profile ci \
-            --report artifacts/memory/memory-eval-ci-smoke.json \
-            --longmemeval artifacts/memory/memory-longmemeval.jsonl \
-            --sidecar artifacts/memory/memory-longmemeval-sidecar.json
-          BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify \
-            --profile ci \
-            --report artifacts/memory/memory-m18-ci-smoke.json
-          {
-            echo "revision=$(git rev-parse HEAD)"
-            echo "qualification_tests=apps/backplane_memory/test/backplane/memory/qualification_test.exs"
-            echo "outage_test=apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs"
-            sha256sum artifacts/memory/memory-*.json \
-              artifacts/memory/memory-*.jsonl
-          } > artifacts/memory/qualification-manifest.txt
-
-      - name: Upload Memory qualification artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: memory-qualification
-          path: artifacts/memory/
-          if-no-files-found: warn
-          retention-days: 90
-
-      - name: Upload OpenClaw memory qualification artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: openclaw-memory-qualification
-          path: artifacts/openclaw/
-          if-no-files-found: warn
-          retention-days: 90
-
   build:
     name: ${{ matrix.release }} (${{ matrix.target.name }})
-    needs: qualify-memory
+    needs: [prepare, web-assets]
     runs-on: ${{ matrix.target.runner }}
 
     env:
-      GATED_SHA: ${{ needs.qualify-memory.outputs.gated_sha }}
-      RELEASE_VERSION: ${{ needs.qualify-memory.outputs.version }}
-      RELEASE_APPS: ${{ needs.qualify-memory.outputs.release_apps }}
+      GATED_SHA: ${{ needs.prepare.outputs.gated_sha }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_APPS: ${{ needs.prepare.outputs.release_apps }}
 
     strategy:
       fail-fast: false
@@ -396,28 +200,12 @@ jobs:
             target:
               name: linux-arm64
               runner: ubuntu-24.04-arm
-          - release: host_agent
-            target:
-              name: linux-x64
-              runner: ubuntu-22.04
-          - release: host_agent
-            target:
-              name: linux-arm64
-              runner: ubuntu-22.04-arm
-          - release: host_agent
-            target:
-              name: macos-x64
-              runner: macos-15-intel
-          - release: host_agent
-            target:
-              name: macos-arm64
-              runner: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.qualify-memory.outputs.gated_sha }}
+          ref: ${{ needs.prepare.outputs.gated_sha }}
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -434,14 +222,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
 
-      - name: Configure OpenSSL for macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          brew install pkg-config openssl@3
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-
       - name: Restore Mix cache
         uses: actions/cache@v6
         with:
@@ -453,19 +233,8 @@ jobs:
             release-${{ matrix.target.runner }}-${{ matrix.target.name }}-${{ matrix.release }}-
             release-${{ matrix.target.runner }}-${{ matrix.target.name }}-
 
-      - name: Set selected app versions
-        shell: bash
-        run: |
-          IFS=',' read -r -a release_apps <<< "$RELEASE_APPS"
-          bash scripts/set-version.sh "$RELEASE_VERSION" "${release_apps[@]}"
-
       - name: Install dependencies
-        run: |
-          if [[ "${{ matrix.release }}" == "backplane" ]]; then
-            mix deps.get
-          else
-            mix deps.get --only prod
-          fi
+        run: mix deps.get --check-locked
 
       - name: Compile gateway dependencies
         if: matrix.release == 'backplane'
@@ -503,103 +272,30 @@ jobs:
           rm -rf -- "_build/prod/rel/$RELEASE_NAME"
           mix release "$RELEASE_NAME" --overwrite --version "$RELEASE_VERSION"
 
-      - name: Verify packaged Linux PTY helper
-        if: runner.os == 'Linux' && matrix.release == 'backplane'
-        env:
-          RELEASE_NAME: ${{ matrix.release }}
+      - name: Check packaged release inventory
         run: |
-          helpers=("_build/prod/rel/$RELEASE_NAME"/lib/backplane_agent_runtime-*/priv/bin/backplane-local-command-pty)
-          test "${#helpers[@]}" -eq 1
-          test -x "${helpers[0]}"
-          "${helpers[0]}" --probe
-
-      - name: Verify packaged MCP stdio guardian
-        if: matrix.release == 'backplane'
-        env:
-          RELEASE_NAME: ${{ matrix.release }}
-        run: |
-          helpers=("_build/prod/rel/$RELEASE_NAME"/lib/backplane_mcp_protocol-*/priv/bin/backplane-mcp-stdio-guardian)
-          test "${#helpers[@]}" -eq 1
-          test -x "${helpers[0]}"
-          test "$("${helpers[0]}" --probe)" = "backplane-mcp-stdio-guardian 1"
-
-      - name: Verify compiled release metadata
-        if: matrix.release == 'backplane'
-        env:
-          RELEASE_DISTRIBUTION: none
-        run: |
-          _build/prod/rel/backplane/bin/backplane eval '
-            Enum.each(
-              ~w(BACKPLANE_GIT_REF BACKPLANE_GIT_SHA VCS_REF BACKPLANE_BUILD_DATE BACKPLANE_RELEASE_DATE),
-              &System.delete_env/1
-            )
-            info = Backplane.Admin.BuildInfo.current()
-            expected = %{
-              version: System.fetch_env!("RELEASE_VERSION"),
-              git_sha: System.fetch_env!("GATED_SHA"),
-              environment: "prod"
-            }
-            unless Map.take(info, Map.keys(expected)) == expected do
-              raise "Release build metadata mismatch: #{inspect(info)}; expected #{inspect(expected)}"
+          test -x _build/prod/rel/backplane/bin/backplane
+          test -d _build/prod/rel/backplane/releases/"$RELEASE_VERSION"
+          helpers=(_build/prod/rel/backplane/lib/backplane_agent_runtime-*/priv/bin/backplane-local-command-pty)
+          test "${#helpers[@]}" -eq 1 && test -x "${helpers[0]}"
+          guardians=(_build/prod/rel/backplane/lib/backplane_mcp_protocol-*/priv/bin/backplane-mcp-stdio-guardian)
+          test "${#guardians[@]}" -eq 1 && test -x "${guardians[0]}"
+          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane
+          elixir -e '
+            paths = Path.wildcard("_build/prod/rel/backplane/lib/backplane*-*/ebin/*.app")
+            for required <- ["backplane.app", "backplane_admin.app"] do
+              unless Enum.any?(paths, &(Path.basename(&1) == required)), do: raise("Missing #{required}")
+            end
+            for path <- paths do
+              {:ok, [{:application, app, metadata}]} = :file.consult(String.to_charlist(path))
+              selected = System.fetch_env!("RELEASE_APPS")
+              if selected == "all" or Atom.to_string(app) in String.split(selected, ",") do
+                unless to_string(Keyword.fetch!(metadata, :vsn)) == System.fetch_env!("RELEASE_VERSION") do
+                  raise "Packaged application version mismatch: #{app}"
+                end
+              end
             end
           '
-
-      - name: Verify packaged web assets
-        if: matrix.release == 'backplane'
-        run: elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane
-
-      - name: Verify packaged web assets
-        if: matrix.release == 'backplane'
-        run: mix run --no-start scripts/verify_web_assets.exs --release _build/prod/rel/backplane
-
-      - name: Smoke test host-agent native database
-        if: matrix.release == 'host_agent'
-        run: |
-          _build/prod/rel/host_agent/bin/host_agent eval '
-            {:ok, _} = Application.ensure_all_started(:ex_turso)
-            {:ok, pid} = Turso.start_link(database: ":memory:")
-            {:ok, %Turso.Result{rows: [%{"value" => 1}]}} =
-              Turso.query(pid, "SELECT 1 AS value")
-            GenServer.stop(pid)
-          '
-
-      # The pinned Hermes source requires Python >=3.11; Ubuntu 22.04 ships 3.10.
-      - name: Set up Python for Hermes contract tests
-        if: matrix.release == 'host_agent'
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Verify packaged Hermes provider
-        if: matrix.release == 'host_agent'
-        run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-          from pathlib import Path
-          import subprocess
-          import sys
-
-          roots = list(Path('_build/prod/rel/host_agent/lib').glob(
-              'backplane_host_agent-*/priv/integrations/memory'))
-          if len(roots) != 1:
-              raise SystemExit('expected one packaged memory integration directory')
-          subprocess.run([
-              sys.executable, '-B', '-m', 'unittest', 'discover',
-              '-s', str(roots[0] / 'tests'), '-p', 'test_hermes*.py', '-v',
-          ], check=True)
-          PY
-
-      - name: Set up qualified OpenClaw Node runtime
-        if: matrix.release == 'host_agent'
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24.22.1"
-
-      - name: Verify packaged OpenClaw provider
-        if: matrix.release == 'host_agent'
-        run: |
-          roots=(_build/prod/rel/host_agent/lib/backplane_host_agent-*/priv/integrations/memory)
-          test "${#roots[@]}" -eq 1
-          node --test "${roots[0]}"/tests/test_openclaw*.mjs
 
       - name: Archive OTP release
         shell: bash
@@ -620,207 +316,106 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  installed-release-migration-smoke:
-    name: Installed release database migration smoke
-    needs:
-      - qualify-memory
-      - build
-    runs-on: ubuntu-24.04
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: backplane_release_smoke
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d backplane_release_smoke"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
+  hex-preflight:
+    name: Prepare Hex packages
+    needs: prepare
+    if: needs.prepare.outputs.release_apps == 'all'
+    runs-on: ubuntu-26.04
+    env:
+      MIX_ENV: dev
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - name: Checkout authoritative migration inventory
+      - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.qualify-memory.outputs.gated_sha }}
-
-      - name: Download Linux x64 Backplane release
-        uses: actions/download-artifact@v8
+          ref: ${{ needs.prepare.outputs.gated_sha }}
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
         with:
-          name: backplane-linux-x64
-          path: dist
-
-      - name: Extract installed release
-        shell: bash
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - name: Restore package build dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/dev
+          key: release-hex-preflight-${{ hashFiles('mix.lock', 'apps/*/mix.exs') }}
+      - name: Install dependencies
+        run: mix deps.get --check-locked
+      - name: Build packages and documentation before any publication
         run: |
-          mkdir -p installed
-          archive="$(find dist -maxdepth 1 -name 'backplane-*-linux-x64.tar.gz' -print -quit)"
-          test -n "$archive"
-          tar -xzf "$archive" -C installed
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/hex"
+          for package in backplane_plugin_protocol backplane_json_schema backplane_schema backplane_mcp_protocol backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol; do
+            (
+              cd "apps/$package"
+              mix docs
+              if [[ "$package" == backplane_agent_runtime || "$package" == backplane_mcp_protocol ]]; then
+                standalone_root="$(mktemp -d "$RUNNER_TEMP/backplane-preflight.XXXXXX")"
+                package_directory="$standalone_root/standalone/$package"
+                mkdir -p "$package_directory"
+                git archive "HEAD:apps/$package" | tar -x -C "$package_directory"
+                cd "$package_directory"
+              fi
+              mix hex.build --output "$GITHUB_WORKSPACE/artifacts/hex/$package-$RELEASE_VERSION.tar"
+            )
+          done
+      - name: Upload prepared Hex packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: qualified-hex-packages
+          path: artifacts/hex/*.tar
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Configure smoke database
-        shell: bash
-        run: |
-          cat > release-smoke.toml <<'EOF'
-          [database]
-          url = "postgres://postgres:postgres@127.0.0.1:5432/backplane_release_smoke"
-          EOF
-
-      - name: Apply packaged migrations and prove idempotency
-        env:
-          BACKPLANE_CONFIG: ${{ github.workspace }}/release-smoke.toml
-          SECRET_KEY_BASE: release_smoke_secret_key_base_for_ci_only_1234567890_release_smoke
-        shell: bash
-        run: |
-          latest_migration="$(
-            find apps/backplane_system/priv/repo/migrations \
-              -maxdepth 1 -type f -name '[0-9]*_*.exs' -print \
-              | sort \
-              | tail -n 1
-          )"
-          latest_migration="${latest_migration##*/}"
-          expected_latest_migration="${latest_migration%%_*}"
-
-          if [[ ! "$expected_latest_migration" =~ ^[0-9]{14}$ ]]; then
-            echo "Could not derive authoritative latest migration version" >&2
-            exit 1
-          fi
-
-          packaged_latest_migration="$(
-            find installed/backplane/lib \
-              -path '*/backplane_system-*/priv/repo/migrations/*' \
-              -name "$latest_migration" -print -quit
-          )"
-
-          if [[ -z "$packaged_latest_migration" ]]; then
-            echo "Installed release is missing authoritative migration $latest_migration" >&2
-            exit 1
-          fi
-
-          export EXPECTED_LATEST_MIGRATION="$expected_latest_migration"
-
-          installed/backplane/bin/backplane eval '
-          path = Application.app_dir(:backplane_system, "priv/repo/migrations")
-          {:ok, versions, _apps} =
-            Ecto.Migrator.with_repo(Backplane.Repo, fn repo ->
-              Ecto.Migrator.run(repo, path, :up, all: true)
-            end)
-          if versions == [], do: raise("fresh installed release applied no migrations")
-          '
-
-          installed/backplane/bin/backplane eval '
-          path = Application.app_dir(:backplane_system, "priv/repo/migrations")
-          {:ok, versions, _apps} =
-            Ecto.Migrator.with_repo(Backplane.Repo, fn repo ->
-              Ecto.Migrator.run(repo, path, :up, all: true)
-            end)
-          if versions != [], do: raise("second installed migration pass was not a no-op")
-          {:ok, :verified, _apps} =
-            Ecto.Migrator.with_repo(Backplane.Repo, fn repo ->
-              expected_latest_migration =
-                System.fetch_env!("EXPECTED_LATEST_MIGRATION") |> String.to_integer()
-
-              %Postgrex.Result{rows: [[last_version]]} =
-                Ecto.Adapters.SQL.query!(repo, "SELECT max(version) FROM schema_migrations", [])
-              required_tables = [
-                "public.bpm_events",
-                "public.memory_import_batches",
-                "public.bpm_memory_spaces",
-                "public.bpm_memory_changes"
-              ]
-
-              missing_tables =
-                Enum.reject(required_tables, fn table ->
-                  %Postgrex.Result{rows: [[exists?]]} =
-                    Ecto.Adapters.SQL.query!(repo, "SELECT to_regclass($1) IS NOT NULL", [table])
-
-                  exists?
-                end)
-
-              unless last_version == expected_latest_migration and missing_tables == [] do
-                raise(
-                  "installed migration inventory is incomplete: " <>
-                    "expected latest #{expected_latest_migration}, got #{inspect(last_version)}, " <>
-                    "missing tables #{inspect(missing_tables)}"
-                )
-              end
-
-              :verified
-            end)
-          '
-
-      - name: Verify installed web assets over HTTP
-        env:
-          BACKPLANE_CONFIG: ${{ github.workspace }}/release-smoke.toml
-          SECRET_KEY_BASE: release_smoke_secret_key_base_for_ci_only_1234567890_release_smoke
-          PHX_SERVER: "true"
-          BACKPLANE_API_PORT: "14100"
-          BACKPLANE_ADMIN_PORT: "14101"
-        shell: bash
-        run: |
-          installed/backplane/bin/backplane daemon
-          trap 'installed/backplane/bin/backplane stop || true' EXIT
-          if ! python3 scripts/verify_web_assets_http.py \
-              http://127.0.0.1:14100/docs \
-              http://127.0.0.1:14101/dashboard/overview; then
-            find installed/backplane/log -maxdepth 1 -type f -print \
-              -exec tail -n 100 {} \; || true
-            exit 1
-          fi
+  docker-build:
+    name: Prepare Docker image
+    needs: prepare
+    uses: ./.github/workflows/docker-image.yml
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    with:
+      git_ref: ${{ needs.prepare.outputs.gated_sha }}
+      image_tag: ghcr.io/gsmlg-dev/backplane:latest
+      version: ${{ needs.prepare.outputs.version }}
+      publish: false
+      artifact_name: release-docker-image
 
   publish:
-    name: Publish GitHub Release
+    name: Stage draft GitHub Release
     needs:
-      - qualify-memory
+      - prepare
       - build
-      - installed-release-migration-smoke
+      - docker-build
+      - hex-preflight
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' &&
+          needs.build.result == 'success' && needs.docker-build.result == 'success' &&
+          (needs.hex-preflight.result == 'success' ||
+           (needs.prepare.outputs.release_apps != 'all' && needs.hex-preflight.result == 'skipped')) }}
     runs-on: ubuntu-24.04
 
     permissions:
       contents: write
 
     outputs:
-      version: ${{ needs.qualify-memory.outputs.version }}
-      gated_sha: ${{ needs.qualify-memory.outputs.gated_sha }}
-      release_apps: ${{ needs.qualify-memory.outputs.release_apps }}
+      version: ${{ needs.prepare.outputs.version }}
+      gated_sha: ${{ needs.prepare.outputs.gated_sha }}
+      release_apps: ${{ needs.prepare.outputs.release_apps }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.qualify-memory.outputs.gated_sha }}
+          ref: ${{ needs.prepare.outputs.gated_sha }}
           fetch-depth: 0
-
-      - name: Set selected app versions
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.qualify-memory.outputs.version }}
-          RELEASE_APPS: ${{ needs.qualify-memory.outputs.release_apps }}
-        run: |
-          IFS=',' read -r -a release_apps <<< "$RELEASE_APPS"
-          bash scripts/set-version.sh "$RELEASE_VERSION" "${release_apps[@]}"
-
-      - name: Commit and push release version to repository
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.qualify-memory.outputs.version }}
-        run: |
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -A
-            git commit -m "chore(release): prepare v${RELEASE_VERSION}"
-            git push origin HEAD:refs/heads/main
-          fi
 
       - name: Prepare deploy docs and release notes
         shell: bash
         env:
-          RELEASE_VERSION: ${{ needs.qualify-memory.outputs.version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           version="$RELEASE_VERSION"
           mkdir -p dist
@@ -840,27 +435,56 @@ jobs:
           - **Host agent** — see the attached \`host_agent-$version-deploy.md\` (per-platform tarballs and YAML config).
           - **Memory** — see the attached operations, release/rollback, and qualification runbooks.
 
-          Docker image details are appended to these notes after the image is published.
+          Docker image details are appended after publication.
+
+          ## Host Agent
+
+          <!-- host-agent-status:start -->
+          Host Agent packages are built asynchronously after the main release. Status: pending.
+          <!-- host-agent-status:end -->
           EOF
 
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: '{backplane-*,host_agent-*,memory-qualification}'
+          pattern: 'backplane-*'
           path: dist
           merge-multiple: true
 
-      - name: Publish release
-        uses: softprops/action-gh-release@v3
+      - name: Record core release manifest
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_REVISION: ${{ needs.prepare.outputs.gated_sha }}
+          RELEASE_APPS: ${{ needs.prepare.outputs.release_apps }}
+        run: |
+          python3 - <<'MANIFEST'
+          import json, os
+          from pathlib import Path
+          manifest = {
+              "schema_version": 1,
+              "revision": os.environ["RELEASE_REVISION"],
+              "workflow_revision": os.environ["GITHUB_SHA"],
+              "version": os.environ["RELEASE_VERSION"],
+              "source_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "release_apps": os.environ["RELEASE_APPS"],
+              "host_agent": "async",
+          }
+          Path("dist/release-manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n")
+          MANIFEST
+      - name: Upload core release manifest
+        uses: actions/upload-artifact@v7
         with:
-          tag_name: v${{ needs.qualify-memory.outputs.version }}
-          target_commitish: ${{ needs.qualify-memory.outputs.gated_sha }}
-          name: Backplane v${{ needs.qualify-memory.outputs.version }}
-          body_path: release-notes-header.md
-          files: dist/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          overwrite_files: true
+          name: core-release-manifest
+          overwrite: true
+          path: dist/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Stage immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_REVISION: ${{ needs.prepare.outputs.gated_sha }}
+        run: python3 scripts/manage_release_assets.py stage --directory dist
 
   hex-plugin-protocol:
     name: Publish backplane_plugin_protocol to Hex
@@ -880,11 +504,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish.outputs.gated_sha }}
-
-      - name: Unify app versions
-        env:
-          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
-        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -926,9 +545,17 @@ jobs:
         working-directory: apps/backplane_plugin_protocol
         run: mix docs
 
+      - name: Download prepared Hex packages
+        uses: actions/download-artifact@v8
+        with:
+          name: qualified-hex-packages
+          path: artifacts/hex
+
       - name: Publish package
         working-directory: apps/backplane_plugin_protocol
-        run: mix hex.publish --yes
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/publish_hex_package.py" "$GITHUB_WORKSPACE/artifacts/hex" "$RELEASE_VERSION"
 
   hex-mcp-protocol:
     name: Publish backplane_mcp_protocol to Hex
@@ -952,19 +579,24 @@ jobs:
         with:
           ref: ${{ needs.publish.outputs.gated_sha }}
 
-      - name: Unify app versions
-        env:
-          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
-        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
-
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
+      - name: Select standalone MCP package directory
+        env:
+          GATED_SHA: ${{ needs.publish.outputs.gated_sha }}
+        run: |
+          standalone_root="$(mktemp -d "$RUNNER_TEMP/backplane-mcp-hex.XXXXXX")"
+          package_directory="$standalone_root/standalone/backplane_mcp_protocol"
+          mkdir -p "$package_directory"
+          git archive "$GATED_SHA:apps/backplane_mcp_protocol" | tar -x -C "$package_directory"
+          echo "PACKAGE_DIRECTORY=$package_directory" >> "$GITHUB_ENV"
+
       - name: Validate package version
-        working-directory: apps/backplane_mcp_protocol
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
@@ -990,16 +622,24 @@ jobs:
           fi
 
       - name: Install package publishing dependencies
-        working-directory: apps/backplane_mcp_protocol
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: mix deps.get
 
       - name: Verify package documentation
-        working-directory: apps/backplane_mcp_protocol
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: mix docs
 
+      - name: Download prepared Hex packages
+        uses: actions/download-artifact@v8
+        with:
+          name: qualified-hex-packages
+          path: artifacts/hex
+
       - name: Publish package
-        working-directory: apps/backplane_mcp_protocol
-        run: mix hex.publish --yes
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/publish_hex_package.py" "$GITHUB_WORKSPACE/artifacts/hex" "$RELEASE_VERSION"
 
   hex-json-schema:
     name: Publish backplane_json_schema to Hex
@@ -1019,11 +659,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish.outputs.gated_sha }}
-
-      - name: Unify app versions
-        env:
-          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
-        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -1065,9 +700,17 @@ jobs:
         working-directory: apps/backplane_json_schema
         run: mix docs
 
+      - name: Download prepared Hex packages
+        uses: actions/download-artifact@v8
+        with:
+          name: qualified-hex-packages
+          path: artifacts/hex
+
       - name: Publish package
         working-directory: apps/backplane_json_schema
-        run: mix hex.publish --yes
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/publish_hex_package.py" "$GITHUB_WORKSPACE/artifacts/hex" "$RELEASE_VERSION"
 
   hex-schema:
     name: Publish backplane_schema to Hex
@@ -1087,11 +730,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish.outputs.gated_sha }}
-
-      - name: Unify app versions
-        env:
-          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
-        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
 
       - name: Set up BEAM
         uses: erlef/setup-beam@v1
@@ -1133,9 +771,17 @@ jobs:
         working-directory: apps/backplane_schema
         run: mix docs
 
+      - name: Download prepared Hex packages
+        uses: actions/download-artifact@v8
+        with:
+          name: qualified-hex-packages
+          path: artifacts/hex
+
       - name: Publish package
         working-directory: apps/backplane_schema
-        run: mix hex.publish --yes
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/publish_hex_package.py" "$GITHUB_WORKSPACE/artifacts/hex" "$RELEASE_VERSION"
 
   hex-packages:
     name: Publish ${{ matrix.package.name }} to Hex
@@ -1149,7 +795,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         package:
           - name: backplane_agent_runtime
@@ -1171,11 +817,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.publish.outputs.gated_sha }}
-
-      - name: Unify app versions
-        env:
-          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
-        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
 
       - name: Select package working directory
         shell: bash
@@ -1256,9 +897,17 @@ jobs:
         working-directory: ${{ env.PACKAGE_DIRECTORY }}
         run: mix docs
 
+      - name: Download prepared Hex packages
+        uses: actions/download-artifact@v8
+        with:
+          name: qualified-hex-packages
+          path: artifacts/hex
+
       - name: Publish package
         working-directory: ${{ env.PACKAGE_DIRECTORY }}
-        run: mix hex.publish --yes
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/publish_hex_package.py" "$GITHUB_WORKSPACE/artifacts/hex" "$RELEASE_VERSION"
 
   docker-image:
     name: Publish Docker Image
@@ -1274,57 +923,55 @@ jobs:
     uses: ./.github/workflows/docker-image.yml
     permissions:
       contents: read
+      actions: read
       packages: write
     with:
       git_ref: ${{ needs.publish.outputs.gated_sha }}
       image_tag: ghcr.io/gsmlg-dev/backplane:latest
       version: ${{ needs.publish.outputs.version }}
+      publish: true
+      artifact_name: release-docker-image
+      source_run_id: ${{ github.run_id }}
     secrets:
       GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
 
-  release-docker-info:
-    name: Update release page with Docker info
-    needs:
-      - publish
-      - docker-image
+  finalize:
+    name: Publish complete main release
+    needs: [publish, hex-packages, docker-image]
+    if: >-
+      ${{ !cancelled() && needs.publish.result == 'success' &&
+          needs.docker-image.result == 'success' &&
+          (needs.hex-packages.result == 'success' ||
+           (needs.publish.outputs.release_apps != 'all' && needs.hex-packages.result == 'skipped')) }}
     runs-on: ubuntu-24.04
-
     permissions:
       contents: write
-
-    env:
-      GH_TOKEN: ${{ github.token }}
-
+    outputs:
+      version: ${{ needs.publish.outputs.version }}
+      gated_sha: ${{ needs.publish.outputs.gated_sha }}
     steps:
-      - name: Append Docker image info to release notes
-        shell: bash
+      - name: Checkout release publisher
+        uses: actions/checkout@v7
+      - name: Verify core assets and publish the draft
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_REVISION: ${{ needs.publish.outputs.gated_sha }}
           IMAGE_DIGEST: ${{ needs.docker-image.outputs.digest }}
-          IMAGE_TAGS: ${{ needs.docker-image.outputs.tags }}
-          REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/manage_release_assets.py finalize
+
+  dispatch-host-agent:
+    name: Schedule asynchronous Host Agent builds
+    needs: finalize
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch Host Agent publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.finalize.outputs.version }}
+          RELEASE_REVISION: ${{ needs.finalize.outputs.gated_sha }}
         run: |
-          version="$RELEASE_VERSION"
-          release_tag="v$version"
-          digest="$IMAGE_DIGEST"
-          tags="$IMAGE_TAGS"
-
-          gh release view "$release_tag" -R "$REPOSITORY" --json body -q .body > body.md
-
-          {
-            echo ""
-            echo "## Docker image"
-            echo ""
-            echo '```sh'
-            echo "docker pull ghcr.io/gsmlg-dev/backplane:$version"
-            echo '```'
-            echo ""
-            echo "- Tags:"
-            IFS=',' read -ra tag_list <<< "$tags"
-            for image_tag in "${tag_list[@]}"; do
-              echo "  - \`$image_tag\`"
-            done
-            echo "- Digest: \`$digest\`"
-          } >> body.md
-
-          gh release edit "$release_tag" -R "$REPOSITORY" --notes-file body.md
+          gh workflow run host-agent-release.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f version="$RELEASE_VERSION" -f revision="$RELEASE_REVISION"

@@ -40,7 +40,10 @@ defmodule Backplane.HexReleaseDependenciesTest do
           ] do
         step = Enum.find(plugin["steps"], &(&1["name"] == name))
         assert step["working-directory"] == "apps/backplane_plugin_protocol"
-        assert step["run"] == command
+
+        if command == "mix hex.publish --yes" and gate == "publish",
+          do: assert(step["run"] =~ "publish_hex_package.py"),
+          else: assert(step["run"] == command)
       end
 
       validation = Enum.find(plugin["steps"], &(&1["name"] == "Validate package version"))
@@ -65,8 +68,11 @@ defmodule Backplane.HexReleaseDependenciesTest do
           {"Publish package", "mix hex.publish --yes"}
         ] do
       step = Enum.find(mcp["steps"], &(&1["name"] == name))
-      assert step["working-directory"] == "apps/backplane_mcp_protocol"
-      assert step["run"] == command
+      assert step["working-directory"] == "${{ env.PACKAGE_DIRECTORY }}"
+
+      if command == "mix hex.publish --yes",
+        do: assert(step["run"] =~ "publish_hex_package.py"),
+        else: assert(step["run"] == command)
     end
   end
 
@@ -87,7 +93,10 @@ defmodule Backplane.HexReleaseDependenciesTest do
         ] do
       step = Enum.find(schema["steps"], &(&1["name"] == name))
       assert step["working-directory"] == "apps/backplane_json_schema"
-      assert step["run"] == command
+
+      if command == "mix hex.publish --yes",
+        do: assert(step["run"] =~ "publish_hex_package.py"),
+        else: assert(step["run"] == command)
     end
   end
 
@@ -109,7 +118,10 @@ defmodule Backplane.HexReleaseDependenciesTest do
         ] do
       step = Enum.find(schema["steps"], &(&1["name"] == name))
       assert step["working-directory"] == "apps/backplane_schema"
-      assert step["run"] == command
+
+      if command == "mix hex.publish --yes",
+        do: assert(step["run"] =~ "publish_hex_package.py"),
+        else: assert(step["run"] == command)
     end
   end
 
@@ -118,12 +130,25 @@ defmodule Backplane.HexReleaseDependenciesTest do
     assert jobs["hex-plugin-protocol"]["if"] == "needs.publish.outputs.release_apps == 'all'"
     assert "hex-packages" in jobs["docker-image"]["needs"]
 
-    gate = Enum.find(jobs["qualify-memory"]["steps"], &(&1["id"] == "gate"))
+    gate = Enum.find(jobs["prepare"]["steps"], &(&1["id"] == "gate"))
     assert gate["run"] =~ "backplane_plugin_protocol|"
 
-    assert Enum.any?(jobs["qualify-memory"]["steps"], fn step ->
-             step["run"] == "mix run --no-start test/hex_release_dependencies_test.exs"
+    refute Enum.any?(jobs["prepare"]["steps"], fn step ->
+             String.contains?(step["run"] || "", "test/hex_release_dependencies_test.exs")
            end)
+
+    assert "hex-packages" in jobs["finalize"]["needs"]
+  end
+
+  test "retry-safe publication delegates package and documentation uploads to Hex" do
+    script = File.read!("scripts/publish_hex_package.py")
+    assert script =~ ~r/subprocess\.run\(\[['"]mix['"],\s*['"]hex\.publish['"],\s*['"]--yes['"]\]/
+
+    assert script =~
+             ~r/subprocess\.run\(\[['"]mix['"],\s*['"]hex\.publish['"],\s*['"]docs['"],\s*['"]--yes['"]\]/
+
+    assert script =~ "compare_release(release, expected, package, version)"
+    assert script =~ "await_registry(package, version, expected)"
   end
 
   test "qualified recovery handles releases predating the plugin package without substituting sources" do

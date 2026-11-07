@@ -117,7 +117,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert workflow =~ ~r/release_apps:.*?type: string.*?default: all/s
     assert workflow =~ "RELEASE_APPS_INPUT: ${{ inputs.release_apps }}"
     assert workflow =~ "release_apps: ${{ steps.gate.outputs.release_apps }}"
-    assert workflow =~ "release_apps: ${{ needs.qualify-memory.outputs.release_apps }}"
+    assert workflow =~ "release_apps: ${{ needs.prepare.outputs.release_apps }}"
     assert workflow =~ "Selective runtime releases must include backplane_host_agent"
     assert workflow =~ "Selective runtime releases cannot publish Hex packages"
     assert workflow =~ ~s(IFS=',' read -r -a release_apps <<< "$RELEASE_APPS")
@@ -132,7 +132,7 @@ defmodule Backplane.ReleaseConfigTest do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
 
     gate =
-      workflow["jobs"]["qualify-memory"]["steps"]
+      workflow["jobs"]["prepare"]["steps"]
       |> Enum.find(&(&1["id"] == "gate"))
 
     directory = version_fixture()
@@ -247,67 +247,30 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
-  test "Linux releases build and probe the packaged optional PTY helper" do
+  test "Linux releases build the optional PTY helper before assembling the package" do
     steps = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]["build"]["steps"]
     build = Enum.find(steps, &(&1["name"] == "Build optional Linux PTY helper"))
-    verify = Enum.find(steps, &(&1["name"] == "Verify packaged Linux PTY helper"))
     assert build["if"] == "runner.os == 'Linux' && matrix.release == 'backplane'"
     assert build["run"] == "mix backplane.pty.build"
-    assert verify["if"] == "runner.os == 'Linux' && matrix.release == 'backplane'"
-
     refute File.read!("apps/backplane_host_agent/mix.exs") =~ "{:backplane_agent_runtime,"
 
-    assert verify["run"] =~
-             "backplane_agent_runtime-*/priv/bin/backplane-local-command-pty"
-
-    assert verify["run"] =~ ~s("${helpers[0]}" --probe)
-
-    positions =
-      Enum.map(
-        [
-          "Build optional Linux PTY helper",
-          "Build OTP release",
-          "Verify packaged Linux PTY helper",
-          "Archive OTP release"
-        ],
-        fn name -> Enum.find_index(steps, &(&1["name"] == name)) end
-      )
-
-    refute nil in positions
-    assert positions == Enum.sort(positions)
+    assert Enum.find_index(steps, &(&1 == build)) <
+             Enum.find_index(steps, &(&1["name"] == "Build OTP release"))
   end
 
-  test "gateway native releases and Docker explicitly build and probe the MCP guardian" do
+  test "gateway native releases and Docker build the MCP guardian before assembly" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
     steps = workflow["jobs"]["build"]["steps"]
     build = Enum.find(steps, &(&1["name"] == "Build verified MCP stdio guardian"))
-    verify = Enum.find(steps, &(&1["name"] == "Verify packaged MCP stdio guardian"))
     assert build["if"] == "matrix.release == 'backplane'"
     assert build["run"] == "mix backplane.mcp.stdio.build"
-    assert verify["if"] == "matrix.release == 'backplane'"
-    assert verify["run"] =~ "backplane_mcp_protocol-*/priv/bin/backplane-mcp-stdio-guardian"
-    assert verify["run"] =~ "backplane-mcp-stdio-guardian 1"
 
-    positions =
-      Enum.map(
-        [
-          "Build verified MCP stdio guardian",
-          "Build OTP release",
-          "Verify packaged MCP stdio guardian",
-          "Archive OTP release"
-        ],
-        fn name ->
-          Enum.find_index(steps, &(&1["name"] == name))
-        end
-      )
-
-    refute nil in positions
-    assert positions == Enum.sort(positions)
+    assert Enum.find_index(steps, &(&1 == build)) <
+             Enum.find_index(steps, &(&1["name"] == "Build OTP release"))
 
     docker = File.read!("Dockerfile")
     assert docker =~ "RUN mix backplane.mcp.stdio.build"
     assert docker =~ "backplane_mcp_protocol-${VERSION}/priv/bin/backplane-mcp-stdio-guardian"
-    assert docker =~ "backplane-mcp-stdio-guardian 1"
 
     packages = workflow["jobs"]["hex-packages"]
     assert "hex-mcp-protocol" in packages["needs"]
@@ -319,34 +282,38 @@ defmodule Backplane.ReleaseConfigTest do
     assert mcp["needs"] == ["publish", "hex-plugin-protocol", "hex-schema"]
     assert mcp["if"] == "needs.publish.outputs.release_apps == 'all'"
     publish_mcp = Enum.find(mcp["steps"], &(&1["name"] == "Publish package"))
-    assert publish_mcp["working-directory"] == "apps/backplane_mcp_protocol"
-    assert publish_mcp["run"] == "mix hex.publish --yes"
+    assert publish_mcp["working-directory"] == "${{ env.PACKAGE_DIRECTORY }}"
+    assert publish_mcp["run"] =~ "publish_hex_package.py"
   end
 
-  test "release refreshes compiled admin metadata and verifies it before archiving" do
+  test "release refreshes compiled admin metadata and checks inventory before archiving" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
-    steps = workflow["jobs"]["build"]["steps"]
+    build = workflow["jobs"]["build"]
+    steps = build["steps"]
     refresh = Enum.find(steps, &(&1["name"] == "Refresh compiled admin build metadata"))
-    verify = Enum.find(steps, &(&1["name"] == "Verify compiled release metadata"))
+    inventory = Enum.find(steps, &(&1["name"] == "Check packaged release inventory"))
 
     assert refresh["if"] == "matrix.release == 'backplane'"
 
     assert refresh["run"] ==
              ~s(mix "do" --app backplane_admin loadpaths + compile.all --force --warnings-as-errors)
 
-    assert verify["if"] == "matrix.release == 'backplane'"
-    assert verify["run"] =~ "_build/prod/rel/backplane/bin/backplane eval"
-
-    ordered_steps = [
-      "Import qualified web assets",
-      "Refresh compiled admin build metadata",
-      "Build OTP release",
-      "Verify compiled release metadata",
-      "Archive OTP release"
-    ]
+    assert build["env"]["GATED_SHA"] == "${{ needs.prepare.outputs.gated_sha }}"
+    assert build["env"]["RELEASE_VERSION"] == "${{ needs.prepare.outputs.version }}"
+    assert inventory["run"] =~ "_build/prod/rel/backplane/bin/backplane"
+    assert inventory["run"] =~ "scripts/verify_web_assets.exs --release"
 
     positions =
-      Enum.map(ordered_steps, fn name -> Enum.find_index(steps, &(&1["name"] == name)) end)
+      Enum.map(
+        [
+          "Import qualified web assets",
+          "Refresh compiled admin build metadata",
+          "Build OTP release",
+          "Check packaged release inventory",
+          "Archive OTP release"
+        ],
+        fn name -> Enum.find_index(steps, &(&1["name"] == name)) end
+      )
 
     refute nil in positions
     assert positions == Enum.sort(positions)
@@ -719,76 +686,68 @@ defmodule Backplane.ReleaseConfigTest do
     refute File.exists?(Path.join(directory, "_build/test/lib/removed_transport"))
   end
 
-  test "compiled release metadata verification rejects stale builds despite runtime overrides" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+  @tag :tmp_dir
+  test "static package inventory rejects stale versions and missing required files", %{
+    tmp_dir: directory
+  } do
+    steps = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]["build"]["steps"]
+    inventory = Enum.find(steps, &(&1["name"] == "Check packaged release inventory"))
+    release = Path.join(directory, "_build/prod/rel/backplane")
+    File.mkdir_p!(Path.join(release, "releases/9.8.7"))
+    File.mkdir_p!(Path.join(directory, "scripts"))
+    File.write!(Path.join(directory, "scripts/verify_web_assets.exs"), ":ok\n")
 
-    verify =
-      workflow["jobs"]["build"]["steps"]
-      |> Enum.find(&(&1["name"] == "Verify compiled release metadata"))
+    files = [
+      "bin/backplane",
+      "lib/backplane_agent_runtime-9.8.7/priv/bin/backplane-local-command-pty",
+      "lib/backplane_mcp_protocol-9.8.7/priv/bin/backplane-mcp-stdio-guardian"
+    ]
 
-    directory = version_fixture()
-    release_cli = Path.join(directory, "_build/prod/rel/backplane/bin/backplane")
-    File.mkdir_p!(Path.dirname(release_cli))
-
-    File.write!(release_cli, """
-    #!/usr/bin/env bash
-    set -euo pipefail
-    [[ "$1" == eval ]]
-    exec "$FIXTURE_ELIXIR" -r "$FIXTURE_BUILD_INFO" -e "$2"
-    """)
-
-    File.chmod!(release_cli, 0o755)
-    build_info = Path.join(directory, "build_info.exs")
-
-    metadata_env =
-      ~w(BACKPLANE_GIT_REF BACKPLANE_GIT_SHA VCS_REF BACKPLANE_BUILD_DATE BACKPLANE_RELEASE_DATE)
-
-    File.write!(build_info, """
-    defmodule Backplane.Admin.BuildInfo do
-      def current do
-        for key <- #{inspect(metadata_env)} do
-          if System.get_env(key), do: raise("runtime metadata override survived: " <> key)
-        end
-
-        %{
-          git_sha: System.fetch_env!("FIXTURE_COMPILED_SHA"),
-          version: System.fetch_env!("FIXTURE_COMPILED_VERSION"),
-          environment: System.fetch_env!("FIXTURE_COMPILED_ENV")
-        }
-      end
+    for path <- files do
+      path = Path.join(release, path)
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "#!/bin/sh\nexit 0\n")
+      File.chmod!(path, 0o755)
     end
-    """)
 
-    for {sha, version, environment, valid?} <- [
-          {"current-sha", "9.8.7", "prod", true},
-          {"previous-release-sha", "9.8.7", "prod", false},
-          {"current-sha", "9.8.6", "prod", false},
-          {"current-sha", "9.8.7", "dev", false}
-        ] do
-      {output, status} =
-        System.cmd("bash", ["-c", verify["run"]],
-          cd: directory,
-          stderr_to_stdout: true,
-          env:
-            [
-              {"ERL_FLAGS", "+S 2:2"},
-              {"FIXTURE_ELIXIR", System.find_executable("elixir")},
-              {"FIXTURE_BUILD_INFO", build_info},
-              {"FIXTURE_COMPILED_SHA", sha},
-              {"FIXTURE_COMPILED_VERSION", version},
-              {"FIXTURE_COMPILED_ENV", environment},
-              {"GATED_SHA", "current-sha"},
-              {"RELEASE_VERSION", "9.8.7"}
-            ] ++ Enum.map(metadata_env, &{&1, "runtime-override"})
-        )
-
-      if valid? do
-        assert status == 0, output
-      else
-        assert status != 0, "accepted stale metadata: #{inspect({sha, version, environment})}"
-        assert output =~ "Release build metadata mismatch"
+    manifests =
+      for app <- ~w(backplane backplane_admin) do
+        path = Path.join(release, "lib/#{app}-9.8.7/ebin/#{app}.app")
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, "{application,#{app},[{vsn,\"9.8.7\"}]}.\n")
+        path
       end
+
+    run = fn ->
+      System.cmd("bash", ["-e", "-o", "pipefail", "-c", inventory["run"]],
+        cd: directory,
+        stderr_to_stdout: true,
+        env: [{"RELEASE_VERSION", "9.8.7"}, {"RELEASE_APPS", "all"}, {"ERL_FLAGS", "+S 2:2"}]
+      )
     end
+
+    {output, status} = run.()
+    assert status == 0, output
+
+    for path <- files do
+      path = Path.join(release, path)
+      File.chmod!(path, 0o644)
+      {_output, status} = run.()
+      assert status != 0, "accepted non-executable required file #{path}"
+      File.chmod!(path, 0o755)
+    end
+
+    [manifest | _] = manifests
+    valid = File.read!(manifest)
+    File.write!(manifest, String.replace(valid, "9.8.7", "9.8.6"))
+    {output, status} = run.()
+    assert status != 0
+    assert output =~ "Packaged application version mismatch"
+    File.write!(manifest, valid)
+
+    for manifest <- manifests, do: File.rm!(manifest)
+    {_output, status} = run.()
+    assert status != 0, "accepted a release missing required application manifests"
   end
 
   test "Docker allows deliberately skipped Hex only for selective successful releases" do
@@ -893,79 +852,74 @@ defmodule Backplane.ReleaseConfigTest do
     assert is_function(aliases[:"assets.deploy"], 1)
   end
 
-  test "build and release workflows verify assets inside packaged releases" do
+  test "build and release workflows verify packaged assets without executing release test code" do
     for path <- [".github/workflows/build.yml", ".github/workflows/release.yml"] do
       workflow = File.read!(path)
 
       assert workflow =~
                "elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane"
 
-      assert workflow =~ "elixir test/build_web_assets_script_test.exs"
-
       refute workflow =~ ~s(mix "do" --app backplane_api assets.deploy)
       refute workflow =~ ~s(mix "do" --app backplane_admin assets.deploy)
     end
 
-    release_workflow = File.read!(".github/workflows/release.yml")
-    assert release_workflow =~ "python3 scripts/verify_web_assets_http.py"
-    assert release_workflow =~ "installed/backplane/bin/backplane daemon"
-    assert release_workflow =~ "http://127.0.0.1:14100/docs"
-    assert release_workflow =~ "http://127.0.0.1:14101/dashboard/overview"
+    release = File.read!(".github/workflows/release.yml")
+    refute release =~ "elixir test/build_web_assets_script_test.exs"
+    refute release =~ "scripts/verify_web_assets_http.py"
+    refute release =~ "installed/backplane/bin/backplane daemon"
+    refute release =~ "installed-release-migration-smoke:"
   end
 
-  test "qualified assets are built on Ubuntu 26 and imported by the original release targets" do
+  test "gateway releases build shared static assets once on the supported platform" do
     workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
-    qualification = workflow["jobs"]["qualify-memory"]
+    producer = workflow["jobs"]["web-assets"]
     build = workflow["jobs"]["build"]
 
-    producer =
+    export =
       Enum.find(
-        qualification["steps"],
-        &(&1["name"] == "Build web assets on the supported native build platform")
+        producer["steps"],
+        &String.contains?(&1["run"] || "", "--export . artifacts/web-assets")
       )
 
-    upload =
-      Enum.find(qualification["steps"], &(&1["name"] == "Upload qualified static web assets"))
+    upload = Enum.find(producer["steps"], &(&1["with"]["name"] == "qualified-web-assets"))
+    download = Enum.find(build["steps"], &(&1["with"]["name"] == "qualified-web-assets"))
 
-    download = Enum.find(build["steps"], &(&1["name"] == "Download qualified static web assets"))
-    consume = Enum.find(build["steps"], &(&1["name"] == "Import qualified web assets"))
+    import =
+      Enum.find(
+        build["steps"],
+        &String.contains?(&1["run"] || "", "--import artifacts/web-assets")
+      )
 
-    assert qualification["runs-on"] == "ubuntu-26.04"
-    assert producer["env"]["MIX_ENV"] == "prod"
-    assert producer["env"]["DUSKMOON_NATIVE_MODE"] == "precompiled"
-    assert producer["run"] =~ "mix assets.deploy"
-    assert producer["run"] =~ ~s(--export . artifacts/web-assets "$GATED_SHA" "$RELEASE_VERSION")
+    assert producer["runs-on"] == "ubuntu-26.04"
+    assert producer["needs"] == "prepare"
+    assert export["env"]["GATED_SHA"] == "${{ needs.prepare.outputs.gated_sha }}"
+    assert export["env"]["RELEASE_VERSION"] == "${{ needs.prepare.outputs.version }}"
+    assert export["env"]["DUSKMOON_NATIVE_MODE"] == "precompiled"
+    assert export["run"] =~ "mix assets.deploy"
+    assert export["run"] =~ ~s(--export . artifacts/web-assets "$GATED_SHA" "$RELEASE_VERSION")
     assert upload["with"]["path"] == "artifacts/web-assets/"
     assert upload["with"]["if-no-files-found"] == "error"
-    assert download["with"]["name"] == upload["with"]["name"]
-    assert download["if"] == "matrix.release == 'backplane'"
+    assert upload["with"]["name"] == download["with"]["name"]
+    assert import["run"] =~ ~s(--import artifacts/web-assets . "$GATED_SHA" "$RELEASE_VERSION")
+    assert Enum.sort(List.wrap(build["needs"])) == ["prepare", "web-assets"]
+    refute Enum.any?(build["steps"], &String.contains?(&1["run"] || "", "mix assets.deploy"))
 
-    publish_download =
+    assert Enum.map(build["strategy"]["matrix"]["include"], & &1["target"]["runner"]) ==
+             ["ubuntu-24.04", "ubuntu-24.04-arm"]
+
+    assert Enum.all?(build["strategy"]["matrix"]["include"], &(&1["release"] == "backplane"))
+
+    download =
       Enum.find(
         workflow["jobs"]["publish"]["steps"],
         &(&1["name"] == "Download release artifacts")
       )
 
-    assert publish_download["with"] == %{
-             "pattern" => "{backplane-*,host_agent-*,memory-qualification}",
+    assert download["with"] == %{
+             "pattern" => "backplane-*",
              "path" => "dist",
              "merge-multiple" => true
            }
-
-    refute publish_download["with"]["pattern"] =~ upload["with"]["name"]
-    assert consume["run"] =~ ~s(--import artifacts/web-assets . "$GATED_SHA" "$RELEASE_VERSION")
-    assert build["needs"] == "qualify-memory"
-    refute Enum.any?(build["steps"], &String.contains?(&1["run"] || "", "mix assets.deploy"))
-
-    assert Enum.map(build["strategy"]["matrix"]["include"], & &1["target"]["runner"]) ==
-             [
-               "ubuntu-24.04",
-               "ubuntu-24.04-arm",
-               "ubuntu-22.04",
-               "ubuntu-22.04-arm",
-               "macos-15-intel",
-               "macos-latest"
-             ]
 
     build_workflow = YamlElixir.read_from_file!(".github/workflows/build.yml")
     steps = build_workflow["jobs"]["otp-release"]["steps"]
@@ -1073,7 +1027,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert release_workflow =~ "Install package publishing dependencies"
     assert release_workflow =~ "Verify package documentation"
     assert release_workflow =~ "mix docs"
-    assert release_workflow =~ "mix hex.publish --yes"
+    assert release_workflow =~ "publish_hex_package.py"
     assert release_workflow =~ ~r/docker-image:.*needs:.*hex-packages/s
   end
 
@@ -1104,75 +1058,62 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
-  test "release qualification gates the Hermes semantic oracle before database setup" do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
-    steps = workflow["jobs"]["qualify-memory"]["steps"]
+  test "independent plugin qualification retains the Hermes semantic oracle" do
+    steps = workflow_steps(".github/workflows/memory-plugins.yml")
     name = "Verify Hermes live semantic oracle"
 
     assert [step] = Enum.filter(steps, &(&1["name"] == name))
 
-    assert step == %{
-             "name" => name,
-             "run" => "MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs"
-           }
+    assert step["run"] ==
+             "MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs"
 
-    assert Enum.find_index(steps, &(&1["name"] == "Install dependencies")) <
-             Enum.find_index(steps, &(&1["name"] == name))
-
-    assert Enum.find_index(steps, &(&1["name"] == name)) <
-             Enum.find_index(steps, &(&1["name"] == "Prepare qualification database"))
+    refute File.read!(".github/workflows/release.yml") =~ "hermes_memory_live_oracle_test.exs"
   end
 
-  test "OpenClaw contracts and installed helpers use the qualified Node runtime before archiving" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
-    qualification = jobs["qualify-memory"]["steps"]
-    build = jobs["build"]["steps"]
+  test "independent plugin qualification retains pinned OpenClaw contracts and canonical path" do
+    steps = workflow_steps(".github/workflows/memory-plugins.yml")
+    setup = Enum.find(steps, &(&1["name"] == "Set up qualified OpenClaw Node runtime"))
+    assert setup["uses"] == "actions/setup-node@v6"
+    assert setup["with"] == %{"node-version" => "24.22.1"}
 
-    for {steps, condition} <- [
-          {qualification, nil},
-          {build, "matrix.release == 'host_agent'"}
-        ] do
-      assert [setup] =
-               Enum.filter(steps, &(&1["name"] == "Set up qualified OpenClaw Node runtime"))
-
-      assert setup["uses"] == "actions/setup-node@v6"
-      assert setup["with"] == %{"node-version" => "24.22.1"}
-      assert setup["if"] == condition
-    end
-
-    contract = Enum.find(qualification, &(&1["name"] == "Verify OpenClaw provider contract"))
+    contract = Enum.find(steps, &(&1["name"] == "Verify OpenClaw provider contract"))
     assert contract["run"] == "node --test integrations/memory/tests/test_openclaw*.mjs"
 
-    lifecycle = Enum.find(qualification, &(&1["name"] == "Verify Hermes source lifecycle"))
+    lifecycle = Enum.find(steps, &(&1["name"] == "Verify memory plugin source lifecycle"))
     assert lifecycle["run"] =~ "openclaw_capture_contract_test.exs"
     assert lifecycle["run"] =~ "openclaw_hook_test.exs"
-
-    packaged = Enum.find(build, &(&1["name"] == "Verify packaged OpenClaw provider"))
-    assert packaged["if"] == "matrix.release == 'host_agent'"
+    assert File.read!(".github/workflows/memory-plugins.yml") =~ "v1_to_v2_upgrade_test.exs"
+    packaged = Enum.find(steps, &(&1["name"] == "Verify packaged OpenClaw provider"))
     assert packaged["run"] =~ "backplane_host_agent-*/priv/integrations/memory"
     assert packaged["run"] =~ ~s(node --test "${roots[0]}"/tests/test_openclaw*.mjs)
 
-    assert Enum.find_index(build, &(&1["name"] == "Verify packaged OpenClaw provider")) <
-             Enum.find_index(build, &(&1["name"] == "Archive OTP release"))
-
-    runtime =
-      Enum.find(qualification, &(&1["name"] == "Install pinned OpenClaw qualification runtime"))
-
+    runtime = Enum.find(steps, &(&1["name"] == "Install pinned OpenClaw qualification runtime"))
     assert runtime["run"] =~ "openclaw@2026.10.10"
-    live = Enum.find(qualification, &(&1["name"] == "Verify real OpenClaw canonical path"))
+    live = Enum.find(steps, &(&1["name"] == "Verify real OpenClaw canonical path"))
     assert live["env"]["OPENCLAW_LIVE_MODE"] == "deterministic"
     assert live["env"]["OPENROUTER_API_KEY"] == ""
     assert live["env"]["BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL"] == "1"
     assert live["run"] =~ "test/openclaw_memory_live_acceptance.exs"
     assert live["run"] =~ "_openclawlive_$(openssl rand -hex 8)"
     assert live["run"] =~ "artifacts/openclaw/openclaw-live.log"
+
+    for path <- [".github/workflows/release.yml", ".github/workflows/host-agent-release.yml"] do
+      commands = workflow_steps(path) |> Enum.map_join("\n", &(&1["run"] || ""))
+      refute commands =~ "node --test"
+      refute commands =~ "test_hermes"
+      refute commands =~ "openclaw_memory_live_acceptance"
+    end
   end
 
   test "OpenClaw logs preserve the qualified Hex archive and release asset inventory" do
     jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
-    steps = jobs["qualify-memory"]["steps"]
+    steps = workflow_steps(".github/workflows/memory-plugins.yml")
     live = Enum.find(steps, &(&1["name"] == "Verify real OpenClaw canonical path"))
-    memory = Enum.find(steps, &(&1["with"]["name"] == "memory-qualification"))
+
+    memory =
+      workflow_steps(".github/workflows/memory-test.yml")
+      |> Enum.find(&(&1["with"]["name"] == "memory-qualification"))
+
     [_, log_path] = Regex.run(~r/>\s+(\S+openclaw-live\.log)/, live["run"])
 
     verification = ~S"""
@@ -1233,15 +1174,18 @@ defmodule Backplane.ReleaseConfigTest do
     download =
       Enum.find(jobs["publish"]["steps"], &(&1["name"] == "Download release artifacts"))
 
-    assert download["with"]["pattern"] == "{backplane-*,host_agent-*,memory-qualification}"
+    assert download["with"]["pattern"] == "backplane-*"
+
+    refute Enum.any?(workflow_steps(".github/workflows/release.yml"), fn step ->
+             step["with"]["name"] in ["memory-qualification", "openclaw-memory-qualification"]
+           end)
   end
 
   @tag :tmp_dir
   test "qualification compiles and installs pgvector with the PostgreSQL 17 toolchain", %{
     tmp_dir: directory
   } do
-    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
-    steps = workflow["jobs"]["qualify-memory"]["steps"]
+    steps = workflow_steps(".github/workflows/memory-test.yml")
     setup = Enum.find(steps, &(&1["name"] == "Start PostgreSQL 17 with pgvector"))
 
     commands =
@@ -1287,27 +1231,28 @@ defmodule Backplane.ReleaseConfigTest do
            ]
   end
 
-  test "release gates publication on Memory V2 qualification and installed migration smoke" do
-    workflow = File.read!(".github/workflows/release.yml")
+  test "server memory CI retains migration and readiness qualification outside release" do
+    workflow = File.read!(".github/workflows/memory-test.yml")
 
-    assert workflow =~ "mix run --no-start test/release_config_test.exs"
-    assert workflow =~ "qualify-memory:"
-    assert workflow =~ "m18_migration_chain_test.exs"
-    assert workflow =~ "memory_v2_upgrade_test.exs"
-    assert workflow =~ "v1_to_v2_upgrade_test.exs"
-    assert workflow =~ "coalesce_projection_repairs_migration_test.exs"
-    assert workflow =~ "projection_repair_worker_test.exs"
-    assert workflow =~ "--exclude memory_qualification_runtime"
-    assert workflow =~ "memory_m18_outage_qualification_test.exs"
-    assert workflow =~ "memory_v2_edge_qualification_test.exs"
-    assert workflow =~ "apps/backplane_memory/test/backplane/memory/fact_extraction_test.exs"
-    assert workflow =~ "apps/backplane_memory/test/backplane/memory/llm_test.exs"
-    assert workflow =~ "mix backplane.memory.edge_cutover_check"
-    assert workflow =~ "Resolve migration-seeded empty memory slots in the qualification database"
-    assert workflow =~ "bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))"
-    assert workflow =~ "size_limit_chars <> 2000"
-    assert workflow =~ "host_id IS NOT NULL OR client_id IS NOT NULL"
-    assert workflow =~ "source_client_id IS NOT NULL OR memory_space_id IS NOT NULL"
+    for contract <- [
+          "m18_migration_chain_test.exs",
+          "memory_v2_upgrade_test.exs",
+          "coalesce_projection_repairs_migration_test.exs",
+          "projection_repair_worker_test.exs",
+          "--exclude memory_qualification_runtime",
+          "memory_m18_outage_qualification_test.exs",
+          "memory_v2_edge_qualification_test.exs",
+          "mix backplane.memory.edge_cutover_check",
+          "bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))",
+          "size_limit_chars <> 2000",
+          "host_id IS NOT NULL OR client_id IS NOT NULL",
+          "source_client_id IS NOT NULL OR memory_space_id IS NOT NULL",
+          "mix memory.replay.browser_qualify",
+          "mix memory.eval",
+          "memory-m18-ci-smoke.json"
+        ] do
+      assert workflow =~ contract
+    end
 
     {migration_offset, _} = :binary.match(workflow, "mix ecto.migrate")
 
@@ -1321,45 +1266,22 @@ defmodule Backplane.ReleaseConfigTest do
     refute workflow =~ "capture_performance_test.exs"
     assert workflow =~ "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify"
     assert workflow =~ ~r/mix memory\.qualify \\\s+--profile ci/
-    assert workflow =~ "memory-m18-ci-smoke.json"
-    assert workflow =~ "mix memory.replay.browser_qualify"
-    assert workflow =~ "memory-replay-browser.json"
-    assert workflow =~ "mix memory.eval"
     assert workflow =~ ~r/mix memory\.eval \\\s+--profile ci/
-    assert workflow =~ "memory-eval-ci-smoke.json"
-
     {seed_offset, _} = :binary.match(workflow, "mix memory.seed_bench")
 
-    {real_pool_offset, _} =
+    {qualification_offset, _} =
       :binary.match(workflow, "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify")
 
-    assert seed_offset < real_pool_offset
-
-    [qualification_job, _rest] = String.split(workflow, "  build:", parts: 2)
-    refute qualification_job =~ "_build/test"
-    assert qualification_job =~ "release-memory-qualification-ubuntu26-v3-"
-    refute qualification_job =~ "release-memory-qualification-v2-"
-    refute qualification_job =~ "release-memory-v2-qualification-"
-
+    assert seed_offset < qualification_offset
     assert Backplane.Repo.config()[:pool_size] >= 10
-
     assert workflow =~ "postgresql-17"
     assert workflow =~ "CREATE EXTENSION IF NOT EXISTS vector"
-    assert workflow =~ "installed-release-migration-smoke:"
-    assert workflow =~ "installed/backplane/bin/backplane eval"
-    assert workflow =~ "second installed migration pass was not a no-op"
-    assert workflow =~ "Checkout authoritative migration inventory"
-    assert workflow =~ "EXPECTED_LATEST_MIGRATION"
-    assert workflow =~ "Installed release is missing authoritative migration"
-    assert workflow =~ "last_version == expected_latest_migration"
-    refute workflow =~ ~r/last_version == \d{14}/
 
-    for table <- ~w(bpm_events memory_import_batches bpm_memory_spaces bpm_memory_changes) do
-      assert workflow =~ table
-    end
-
-    assert workflow =~
-             ~r/publish:.*needs:\s+- qualify-memory\s+- build\s+- installed-release-migration-smoke/s
+    release = File.read!(".github/workflows/release.yml")
+    refute release =~ "qualify-memory:"
+    refute release =~ "mix memory.qualify"
+    refute release =~ "mix ecto.migrate"
+    refute release =~ "installed-release-migration-smoke:"
 
     for path <- [
           "docs/operations/memory.md",
@@ -1369,7 +1291,7 @@ defmodule Backplane.ReleaseConfigTest do
           "docs/operations/host-memory-edge-runbook.md"
         ] do
       assert File.regular?(path), "missing release runbook #{path}"
-      assert workflow =~ path
+      assert release =~ path
     end
   end
 
@@ -1380,27 +1302,38 @@ defmodule Backplane.ReleaseConfigTest do
              ~s(mix "do" --app backplane_memory test --exclude memory_qualification_runtime)
   end
 
-  test "release qualification pins one main-branch SHA and validates semver before builds" do
-    workflow = File.read!(".github/workflows/release.yml")
+  test "release integrity prepares one main-branch version SHA before builds" do
+    workflow = YamlElixir.read_from_file!(".github/workflows/release.yml")
+    prepare = workflow["jobs"]["prepare"]
+    gate = Enum.find(prepare["steps"], &(&1["id"] == "gate"))
+    version = Enum.find(prepare["steps"], &(&1["id"] == "version"))
 
-    refute workflow =~ "inputs.git_ref"
-    refute workflow =~ ~r/workflow_dispatch:\s+inputs:\s+git_ref:/
-    refute workflow =~ ~s(version="${{ inputs.version }}")
-    refute workflow =~ "steps.bump.outputs.commitish"
-    refute workflow =~ "Commit version bump"
+    assert prepare["name"] == "Check release integrity"
+    assert prepare["outputs"]["gated_sha"] == "${{ steps.version.outputs.sha }}"
+    assert prepare["outputs"]["version"] == "${{ steps.gate.outputs.version }}"
+    assert gate["env"]["WORKFLOW_REF"] == "${{ github.ref }}"
+    assert gate["env"]["RELEASE_VERSION_INPUT"] == "${{ inputs.version }}"
+    assert gate["run"] =~ ~s([[ "$WORKFLOW_REF" != "refs/heads/main" ]])
+    assert gate["run"] =~ "^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"
+    assert version["run"] =~ "git push origin HEAD:refs/heads/main"
 
-    assert workflow =~ "ref: refs/heads/main"
-    assert workflow =~ "gated_sha: ${{ steps.gate.outputs.sha }}"
-    assert workflow =~ "version: ${{ steps.gate.outputs.version }}"
-    assert workflow =~ "RELEASE_VERSION_INPUT: ${{ inputs.version }}"
-    assert workflow =~ "WORKFLOW_REF: ${{ github.ref }}"
-    assert workflow =~ ~s([[ "$WORKFLOW_REF" != "refs/heads/main" ]])
-    assert workflow =~ "GATED_SHA: ${{ needs.qualify-memory.outputs.gated_sha }}"
-    assert workflow =~ "ref: ${{ needs.qualify-memory.outputs.gated_sha }}"
-    assert workflow =~ "target_commitish: ${{ needs.qualify-memory.outputs.gated_sha }}"
-    assert workflow =~ "git push origin HEAD:refs/heads/main"
-    assert workflow =~ ~s([[ "$sha" != "$main_sha" ]])
-    assert workflow =~ "^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"
+    release = File.read!(".github/workflows/release.yml")
+    assert release =~ "ref: ${{ needs.prepare.outputs.gated_sha }}"
+
+    stage =
+      Enum.find(
+        workflow["jobs"]["publish"]["steps"],
+        &(&1["name"] == "Stage immutable release assets")
+      )
+
+    assert stage["env"]["RELEASE_REVISION"] == "${{ needs.prepare.outputs.gated_sha }}"
+    assert stage["run"] =~ "manage_release_assets.py stage"
+    refute release =~ "inputs.git_ref"
+    refute release =~ "needs.qualify-memory"
+
+    refute Enum.any?(workflow["jobs"]["publish"]["steps"], fn step ->
+             String.contains?(step["run"] || "", "git push")
+           end)
   end
 
   test "deploy documentation preserves the separate trusted admin boundary" do
@@ -1414,6 +1347,12 @@ defmodule Backplane.ReleaseConfigTest do
 
     assert proxy =~ "127.0.0.1:4101"
     assert proxy =~ "must resolve only on a trusted network"
+  end
+
+  defp workflow_steps(path) do
+    YamlElixir.read_from_file!(path)["jobs"]
+    |> Map.values()
+    |> Enum.flat_map(&(&1["steps"] || []))
   end
 
   defp version_fixture do

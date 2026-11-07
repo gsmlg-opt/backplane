@@ -1,6 +1,4 @@
 ExUnit.start()
-Code.require_file("openclaw_capture_barrier_test.exs", __DIR__)
-Code.require_file("openclaw_owned_process_test.exs", __DIR__)
 
 defmodule Backplane.CIWorkflowTest do
   use ExUnit.Case, async: true
@@ -654,7 +652,8 @@ defmodule Backplane.CIWorkflowTest do
       "Restore dependencies cache",
       "Install dependencies",
       "Verify CI workflow contract",
-      "Verify Hermes live semantic oracle"
+      "Verify release workflow contract",
+      "Verify publication helpers"
     ])
 
     assert_common_steps(job, true, @ci_cache_key, @ci_cache_prefix)
@@ -664,10 +663,16 @@ defmodule Backplane.CIWorkflowTest do
       "run" => "mix run --no-start test/ci_workflow_test.exs"
     })
 
-    assert_step(job, %{
-      "name" => "Verify Hermes live semantic oracle",
-      "run" => "MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs"
-    })
+    release_contract =
+      Enum.find(job["steps"], &(&1["name"] == "Verify release workflow contract"))
+
+    assert release_contract["run"] =~ "test/release_config_test.exs"
+    assert release_contract["run"] =~ "test/hex_release_dependencies_test.exs"
+    assert release_contract["run"] =~ "test/release_workflow_split_test.exs"
+    helpers = Enum.find(job["steps"], &(&1["name"] == "Verify publication helpers"))
+    assert helpers["run"] =~ "test_*publication*.py"
+    assert helpers["run"] =~ "test_stage_docker_image.py"
+    refute Enum.any?(job["steps"], &((&1["run"] || "") =~ "hermes_memory_live_oracle"))
   end
 
   defp assert_common_steps(job, native?, cache_key, cache_prefix, native_run \\ @native_build_run) do

@@ -125,8 +125,15 @@ jobs:
       - name: Verify CI workflow contract
         run: mix run --no-start test/ci_workflow_test.exs
 
-      - name: Verify Hermes live semantic oracle
-        run: MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs
+      - name: Verify release workflow contract
+        run: >-
+          mix run --no-start -e
+          'Enum.each(~w(test/release_config_test.exs test/hex_release_dependencies_test.exs test/release_workflow_split_test.exs), &Code.require_file/1)'
+
+      - name: Verify publication helpers
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s scripts/tests -p 'test_*publication*.py'
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s scripts/tests -p 'test_stage_docker_image.py'
 
   credo:
     name: Credo

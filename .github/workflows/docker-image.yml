@@ -18,6 +18,21 @@ on:
         required: false
         default: ""
         type: string
+      publish:
+        description: "Publish the verified image; false stages it without registry writes"
+        required: false
+        default: true
+        type: boolean
+      artifact_name:
+        description: "Artifact name for staging or restoring the verified Docker image"
+        required: false
+        default: ""
+        type: string
+      source_run_id:
+        description: "Restore the staged image from this workflow run instead of rebuilding"
+        required: false
+        default: ""
+        type: string
   workflow_call:
     inputs:
       git_ref:
@@ -33,6 +48,21 @@ on:
         required: false
         default: ""
         type: string
+      publish:
+        description: "Publish the verified image; false stages it without registry writes"
+        required: false
+        default: true
+        type: boolean
+      artifact_name:
+        description: "Artifact name for staging or restoring the verified Docker image"
+        required: false
+        default: ""
+        type: string
+      source_run_id:
+        description: "Restore the staged image from this workflow run instead of rebuilding"
+        required: false
+        default: ""
+        type: string
     outputs:
       digest:
         description: "Digest of the published image"
@@ -45,19 +75,20 @@ on:
         value: ${{ jobs.docker-image.outputs.version }}
     secrets:
       GHCR_TOKEN:
-        required: true
+        required: false
 
 permissions:
   contents: read
+  actions: read
   packages: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.git_ref }}-${{ inputs.image_tag }}
-  cancel-in-progress: true
+  group: docker-image-${{ github.run_id }}-${{ inputs.git_ref }}-${{ inputs.publish }}-${{ inputs.source_run_id }}
+  cancel-in-progress: false
 
 jobs:
   docker-image:
-    name: Build and publish image
+    name: Build or publish verified image
     runs-on: ubuntu-24.04
 
     outputs:
@@ -65,66 +96,142 @@ jobs:
       tags: ${{ steps.metadata.outputs.tags }}
       version: ${{ steps.metadata.outputs.version }}
 
+    env:
+      DOCKER_HELPER: ${{ github.workspace }}/workflow-tools/scripts/stage_docker_image.py
+      IMAGE_DIRECTORY: ${{ github.workspace }}/.docker-image
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_ref }}
+          path: source
+
+      # Tooling follows the workflow revision, even when rebuilding an older tag.
+      - name: Checkout image publication helper
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow-tools
+          sparse-checkout: scripts/stage_docker_image.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - name: Resolve image metadata
         id: metadata
         shell: bash
+        env:
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          PUBLISH_IMAGE: ${{ inputs.publish }}
         run: |
-          version="${{ inputs.version }}"
-          version="${version#v}"
-
+          version="${RELEASE_VERSION_INPUT#v}"
           if [[ -z "$version" ]]; then
-            version="$(awk -F '"' '/^[[:space:]]*version:/ { print $2; exit }' mix.exs)"
+            version="$(awk -F '"' '/^[[:space:]]*(@version[[:space:]]+|version:[[:space:]]*)"/ { print $2; exit }' source/mix.exs)"
           fi
-
-          if [[ -z "$version" ]]; then
-            echo "Could not resolve an image version" >&2
+          if [[ "$PUBLISH_IMAGE" != true || -n "$SOURCE_RUN_ID" ]]; then
+            test -n "$ARTIFACT_NAME" || { echo 'Staging or restoring requires artifact_name' >&2; exit 1; }
+          fi
+          if [[ -n "$SOURCE_RUN_ID" && "$PUBLISH_IMAGE" != true ]]; then
+            echo 'Restoring an image is only supported for publication' >&2
             exit 1
           fi
-
-          image_tag="${{ inputs.image_tag }}"
-          image_repo="${image_tag%:*}"
-          tags="$image_tag,$image_repo:$version"
-
-          build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          revision="$(git rev-parse HEAD)"
-
-          echo "build_date=$build_date" >> "$GITHUB_OUTPUT"
-          echo "git_ref=${{ inputs.git_ref }}" >> "$GITHUB_OUTPUT"
-          echo "revision=$revision" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          revision="$(git -C source rev-parse HEAD)"
+          source_run_id="${SOURCE_RUN_ID:-$GITHUB_RUN_ID}"
+          python3 - "$DOCKER_HELPER" "$revision" "$version" "$source_run_id" "$IMAGE_TAG" <<'PY'
+          import runpy, sys
+          helper = runpy.run_path(sys.argv[1])
+          helper['validate_inputs'](*sys.argv[2:])
+          PY
+          image_repo="${IMAGE_TAG%:*}"
+          tags="$IMAGE_TAG,$image_repo:$version"
+          {
+            echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "revision=$revision"
+            echo "version=$version"
+            echo "source_run_id=$source_run_id"
+            echo "tags=$tags"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Build verified image without publishing
+        if: inputs.source_run_id == ''
+        uses: docker/build-push-action@v7
+        with:
+          context: ./source
+          file: ./source/Dockerfile
+          push: false
+          load: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          build-args: |
+            BUILD_DATE=${{ steps.metadata.outputs.build_date }}
+            GIT_REF=${{ steps.metadata.outputs.revision }}
+            VCS_REF=${{ steps.metadata.outputs.revision }}
+            VERSION=${{ steps.metadata.outputs.version }}
+          labels: |
+            org.opencontainers.image.created=${{ steps.metadata.outputs.build_date }}
+            org.opencontainers.image.ref.name=${{ steps.metadata.outputs.revision }}
+            org.opencontainers.image.revision=${{ steps.metadata.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
+
+      - name: Verify identity and archive the exact image
+        if: inputs.source_run_id == ''
+        env:
+          REVISION: ${{ steps.metadata.outputs.revision }}
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          SOURCE_RUN_ID: ${{ steps.metadata.outputs.source_run_id }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: >-
+          python3 "$DOCKER_HELPER" stage --directory "$IMAGE_DIRECTORY"
+          --revision "$REVISION" --version "$RELEASE_VERSION"
+          --source-run-id "$SOURCE_RUN_ID" --image "$IMAGE_TAG"
+
+      - name: Upload verified Docker image
+        if: inputs.source_run_id == '' && inputs.artifact_name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ github.workspace }}/.docker-image/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Download verified Docker image
+        if: inputs.source_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ github.workspace }}/.docker-image/
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Require registry publication credential
+        if: inputs.publish
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: test -n "$GHCR_TOKEN"
+
       - name: Log in to GHCR
+        if: inputs.publish
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Build and publish image
+      - name: Publish the staged image without rebuilding
+        if: inputs.publish
         id: image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          build-args: |
-            BUILD_DATE=${{ steps.metadata.outputs.build_date }}
-            GIT_REF=${{ steps.metadata.outputs.git_ref }}
-            VCS_REF=${{ steps.metadata.outputs.revision }}
-            VERSION=${{ steps.metadata.outputs.version }}
-          labels: |
-            org.opencontainers.image.created=${{ steps.metadata.outputs.build_date }}
-            org.opencontainers.image.ref.name=${{ steps.metadata.outputs.git_ref }}
-            org.opencontainers.image.revision=${{ steps.metadata.outputs.revision }}
-            org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
+        env:
+          REVISION: ${{ steps.metadata.outputs.revision }}
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          SOURCE_RUN_ID: ${{ steps.metadata.outputs.source_run_id }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: >-
+          python3 "$DOCKER_HELPER" publish --directory "$IMAGE_DIRECTORY"
+          --revision "$REVISION" --version "$RELEASE_VERSION"
+          --source-run-id "$SOURCE_RUN_ID" --image "$IMAGE_TAG"
