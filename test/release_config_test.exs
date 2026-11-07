@@ -157,7 +157,7 @@ defmodule Backplane.ReleaseConfigTest do
 
     hex_selections =
       Enum.map(
-        ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol),
+        ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol backplane_schema),
         &"backplane_host_agent,#{&1}"
       )
 
@@ -229,6 +229,7 @@ defmodule Backplane.ReleaseConfigTest do
     for {dependency, rejected} <- [
           {"backplane_mcp_protocol ~> 1.10.32 (Hex package)", false},
           {"backplane_plugin_protocol ~> 1.10.32 (Hex package)", false},
+          {"backplane_schema ~> 1.10.58 (Hex package)", false},
           {"backplane_mcp ~> 1.10.32", true},
           {"backplane_system ~> 1.10.32", true},
           {"phoenix_live_view ~> 1.0", true},
@@ -315,7 +316,7 @@ defmodule Backplane.ReleaseConfigTest do
     refute "backplane_mcp_protocol" in names
 
     mcp = workflow["jobs"]["hex-mcp-protocol"]
-    assert mcp["needs"] == ["publish", "hex-plugin-protocol"]
+    assert mcp["needs"] == ["publish", "hex-plugin-protocol", "hex-schema"]
     assert mcp["if"] == "needs.publish.outputs.release_apps == 'all'"
     publish_mcp = Enum.find(mcp["steps"], &(&1["name"] == "Publish package"))
     assert publish_mcp["working-directory"] == "apps/backplane_mcp_protocol"

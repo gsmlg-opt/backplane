@@ -89,7 +89,7 @@ jobs:
               fi
 
               case "$app" in
-                backplane_plugin_protocol|backplane_agent_runtime|backplane_ai_protocol|backplane_skill_protocol|backplane_mcp_protocol|backplane_json_schema)
+                backplane_plugin_protocol|backplane_agent_runtime|backplane_ai_protocol|backplane_skill_protocol|backplane_mcp_protocol|backplane_json_schema|backplane_schema)
                   echo "Selective runtime releases cannot publish Hex packages; use all" >&2
                   exit 1
                   ;;
@@ -935,6 +935,7 @@ jobs:
     needs:
       - publish
       - hex-plugin-protocol
+      - hex-schema
     if: needs.publish.outputs.release_apps == 'all'
     runs-on: ubuntu-24.04
 
@@ -1068,6 +1069,74 @@ jobs:
         working-directory: apps/backplane_json_schema
         run: mix hex.publish --yes
 
+  hex-schema:
+    name: Publish backplane_schema to Hex
+    needs: publish
+    if: needs.publish.outputs.release_apps == 'all'
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: read
+
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      MIX_ENV: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.publish.outputs.gated_sha }}
+
+      - name: Unify app versions
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: bash scripts/set-version.sh "$RELEASE_VERSION" all
+
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Validate package version
+        working-directory: apps/backplane_schema
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          package_version="$(awk -F '"' '/^[[:space:]]*@version/ { print $2; exit }' mix.exs)"
+
+          if [[ -z "$package_version" ]]; then
+            echo "Could not read backplane_schema version from mix.exs" >&2
+            exit 1
+          fi
+
+          if [[ "$package_version" != "$RELEASE_VERSION" ]]; then
+            echo "Release version $RELEASE_VERSION does not match backplane_schema version $package_version" >&2
+            exit 1
+          fi
+
+      - name: Require Hex API key
+        shell: bash
+        run: |
+          if [[ -z "${HEX_API_KEY:-}" ]]; then
+            echo "HEX_API_KEY secret is required to publish backplane_schema to Hex" >&2
+            exit 1
+          fi
+
+      - name: Install package publishing dependencies
+        working-directory: apps/backplane_schema
+        run: mix deps.get
+
+      - name: Verify package documentation
+        working-directory: apps/backplane_schema
+        run: mix docs
+
+      - name: Publish package
+        working-directory: apps/backplane_schema
+        run: mix hex.publish --yes
+
   hex-packages:
     name: Publish ${{ matrix.package.name }} to Hex
     needs:
@@ -1075,6 +1144,7 @@ jobs:
       - hex-plugin-protocol
       - hex-mcp-protocol
       - hex-json-schema
+      - hex-schema
     if: needs.publish.outputs.release_apps == 'all'
     runs-on: ubuntu-24.04
 

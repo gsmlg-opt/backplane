@@ -17,7 +17,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
 
       expected_dependencies =
         if gate == "publish",
-          do: [gate, "hex-plugin-protocol", "hex-mcp-protocol", "hex-json-schema"],
+          do: [gate, "hex-plugin-protocol", "hex-mcp-protocol", "hex-json-schema", "hex-schema"],
           else: [gate, "hex-plugin-protocol"]
 
       assert Enum.sort(jobs["hex-packages"]["needs"]) == Enum.sort(expected_dependencies)
@@ -52,7 +52,7 @@ defmodule Backplane.HexReleaseDependenciesTest do
   test "release publishes the required MCP package before the standalone runtime consumer" do
     jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
     mcp = jobs["hex-mcp-protocol"]
-    assert mcp["needs"] == ["publish", "hex-plugin-protocol"]
+    assert mcp["needs"] == ["publish", "hex-plugin-protocol", "hex-schema"]
     assert mcp["if"] == "needs.publish.outputs.release_apps == 'all'"
     assert "hex-mcp-protocol" in jobs["hex-packages"]["needs"]
 
@@ -87,6 +87,28 @@ defmodule Backplane.HexReleaseDependenciesTest do
         ] do
       step = Enum.find(schema["steps"], &(&1["name"] == name))
       assert step["working-directory"] == "apps/backplane_json_schema"
+      assert step["run"] == command
+    end
+  end
+
+  test "release publishes Schema before its MCP and standalone runtime consumers" do
+    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+    schema = jobs["hex-schema"]
+    assert schema["needs"] == "publish"
+    assert schema["if"] == "needs.publish.outputs.release_apps == 'all'"
+    assert "hex-schema" in jobs["hex-mcp-protocol"]["needs"]
+    assert "hex-schema" in jobs["hex-packages"]["needs"]
+
+    checkout = Enum.find(schema["steps"], &(&1["uses"] == "actions/checkout@v7"))
+    assert checkout["with"]["ref"] == "${{ needs.publish.outputs.gated_sha }}"
+
+    for {name, command} <- [
+          {"Install package publishing dependencies", "mix deps.get"},
+          {"Verify package documentation", "mix docs"},
+          {"Publish package", "mix hex.publish --yes"}
+        ] do
+      step = Enum.find(schema["steps"], &(&1["name"] == name))
+      assert step["working-directory"] == "apps/backplane_schema"
       assert step["run"] == command
     end
   end
@@ -153,12 +175,18 @@ defmodule Backplane.HexReleaseDependenciesTest do
     refute Enum.any?(steps, &(&1["run"] && &1["run"] =~ "set-version.sh"))
   end
 
-  test "qualified recovery restricts publication to all packages, runtime, or JSON Schema" do
+  test "qualified recovery restricts publication to all packages, runtime, JSON Schema, or Schema" do
     workflow = YamlElixir.read_from_file!(".github/workflows/publish-hex.yml")
     selection = workflow["on"]["workflow_dispatch"]["inputs"]["packages"]
     assert selection["type"] == "choice"
     assert selection["default"] == "all"
-    assert selection["options"] == ["all", "backplane_agent_runtime", "backplane_json_schema"]
+
+    assert selection["options"] == [
+             "all",
+             "backplane_agent_runtime",
+             "backplane_json_schema",
+             "backplane_schema"
+           ]
 
     qualify = workflow["jobs"]["qualify"]
     assert qualify["outputs"]["package_matrix"] == "${{ steps.packages.outputs.matrix }}"
@@ -167,9 +195,10 @@ defmodule Backplane.HexReleaseDependenciesTest do
     output = Path.join(directory, "output")
 
     for {selection, expected} <- [
-          {"all", ["backplane_json_schema" | @packages]},
+          {"all", ["backplane_json_schema", "backplane_schema" | @packages]},
           {"backplane_agent_runtime", ["backplane_agent_runtime"]},
-          {"backplane_json_schema", ["backplane_json_schema"]}
+          {"backplane_json_schema", ["backplane_json_schema"]},
+          {"backplane_schema", ["backplane_schema"]}
         ] do
       File.write!(output, "")
 
