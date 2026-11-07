@@ -1,0 +1,2901 @@
+defmodule Backplane.Schema do
+  import Backplane.Schema.Error, only: [summarize: 1]
+
+  @moduledoc """
+  Composable Elixir schema validation, transformation, and JSON Schema conversion.
+  """
+
+  @type validation :: (term -> validation_result)
+  @type validation_result :: :ok | {:error, template :: String.t(), context :: map | keyword}
+  @type custom_validation ::
+          (value :: term -> validation_result)
+          | (value :: term, root :: term -> validation_result)
+  @type validation_opt :: {:mode, :strict | :permissive} | {:spellcheck, boolean}
+  @type validation_opts :: [validation_opt]
+  @type string_option ::
+          {:regex, Regex.t()} | {:eq, String.t()} | {:min, integer} | {:max, integer}
+  @type numeric_option(type) ::
+          {:eq, type}
+          | {:neq, type}
+          | {:lt, type}
+          | {:lte, type}
+          | {:gt, type}
+          | {:gte, type}
+          | {:range, {min :: type, max :: type}}
+  @type time_def :: :time | :date | :datetime | :naive_datetime | :duration
+  @type string_def :: :string | {:string, string_option | list(string_option)}
+  @type int_def :: :integer | {:integer, numeric_option(integer) | list(numeric_option(integer))}
+  @type float_def :: :float | {:float, numeric_option(float) | list(numeric_option(float))}
+  @type default_def ::
+          {schema_def, {:default, term}}
+          | {schema_def, {:default, (-> term)}}
+          | {schema_def, {:default, {module, atom}}}
+  @type transform_def ::
+          {schema_def, {:transform, (term -> term) | (term, term -> term)}}
+          | {schema_def, {:transform, {module, atom}}}
+          | {schema_def, {:transform, {module, atom, list(term)}}}
+  @type custom_def ::
+          {:custom, custom_validation}
+          | {:custom, {module, atom}}
+          | {:custom, {module, atom, list(term)}}
+  @type coerce_source ::
+          :string
+          | (term -> {:ok, term} | :error)
+          | {module, atom}
+          | {module, atom, list(term)}
+  @type coerce_def ::
+          {:coerce, schema_def}
+          | {:coerce, schema_def, keyword}
+          | {:coerce, coerce_source, schema_def}
+          | {:coerce, coerce_source, schema_def, keyword}
+  @type encode_def ::
+          {schema_def, {:encode, (term -> term)}}
+          | {schema_def, {:encode, {module, atom}}}
+          | {schema_def, {:encode, {module, atom, list(term)}}}
+  @type cond_def ::
+          {:cond, condition :: (term -> boolean), true_branch :: schema_def,
+           else_branch :: schema_def}
+          | {:cond, condition :: (current :: term, root :: term -> boolean),
+             true_branch :: schema_def, else_branch :: schema_def}
+  @type dependent_def ::
+          {:dependent, field :: atom, validation, type :: schema_def}
+          | {:dependent,
+             (term ->
+                {:ok, schema_def | nil}
+                | {:error, template :: String.t(), context :: map | keyword})}
+          | {:dependent,
+             (current :: term, root :: term ->
+                {:ok, schema_def | nil}
+                | {:error, template :: String.t(), context :: map | keyword})}
+          | {:dependent, {module, fun :: atom}}
+          | {:dependent, {module, fun :: atom, args :: list}}
+  @type explicit_schema_def ::
+          {:schema, schema}
+          | {:schema, map_schema, {:additional_keys, schema_def}}
+  @type literal :: integer | float | atom | String.t() | boolean
+  @type schema_def ::
+          :any
+          | :atom
+          | :atom!
+          | :boolean
+          | :list
+          | :map
+          | :pid
+          | {:either, {schema_def, schema_def}}
+          | {:oneof, list(schema_def)}
+          | {:required, schema_def}
+          | {:meta, schema_def, keyword}
+          | {:ref, atom}
+          | {:ref, {module, atom}}
+          | {:multi, atom, %{optional(term) => schema_def}}
+          | {:enum, list(term)}
+          | {:enum, list(term), keyword}
+          | {:list, schema_def}
+          | {:map, schema_def}
+          | {:map, key_type :: schema_def, value_type :: schema_def}
+          | {:tuple, list(schema_def)}
+          | {:literal, literal}
+          | time_def
+          | string_def
+          | int_def
+          | float_def
+          | default_def
+          | transform_def
+          | custom_def
+          | coerce_def
+          | encode_def
+  @type map_schema :: %{(String.t() | atom) => schema_def}
+  @type schema ::
+          schema_def
+          | map_schema
+          | [{atom, schema_def}]
+
+  @doc """
+  Defines a schema with a given name and schema definition.
+
+  ## Examples
+
+      defmodule MySchemas do
+        import Backplane.Schema
+
+        defschema :user, %{
+          name: :string,
+          age: :integer,
+          email: {:required, :string}
+        }
+
+        # With permissive mode
+        defschema :flexible_user, %{
+          name: :string,
+          email: {:required, :string}
+        }, mode: :permissive
+
+        # With metadata (field-level and schema-level)
+        defschema :documented_user, %{
+          email: {:meta, {:required, :string}, doc: "Login email", example: "a@b.io"}
+        }, title: "User", description: "Account holder"
+      end
+
+      # Schema-level metadata is accessible via __schema_meta__/1:
+      MySchemas.__schema_meta__(:documented_user)
+      # => [title: "User", description: "Account holder"]
+
+      user_data = %{name: "John", age: 30, email: "john@example.com"}
+      MySchemas.user(user_data)
+      # => {:ok, %{name: "John", age: 30, email: "john@example.com"}}
+
+      invalid_data = %{name: "John", age: 30}
+      MySchemas.user(invalid_data)
+      # => {:error, [email: "is required"]}
+
+      # Permissive mode preserves extra fields
+      flexible_data = %{name: "John", email: "john@example.com", role: "admin"}
+      MySchemas.flexible_user(flexible_data)
+      # => {:ok, %{name: "John", email: "john@example.com", role: "admin"}}
+  """
+  @validation_opts [:mode, :spellcheck]
+
+  defmacro defschema(name, schema, opts \\ []) do
+    bang = :"#{name}!"
+    {validation_opts, meta_opts} = Keyword.split(opts, @validation_opts)
+    schema = rewrite_local_refs(schema)
+
+    {schema, prevalidated?} = prepare_schema(name, schema, __CALLER__)
+    {validation_body, bang_body} = schema_function_bodies(schema, prevalidated?, validation_opts)
+
+    quote do
+      def get_schema(unquote(name)) do
+        unquote(schema)
+      end
+
+      def __schema_meta__(unquote(name)) do
+        unquote(meta_opts)
+      end
+
+      def unquote(name)(data), do: unquote(validation_body)
+
+      def unquote(bang)(data), do: unquote(bang_body)
+    end
+  end
+
+  defp prepare_schema(name, schema, caller) do
+    case literal_schema(schema, caller) do
+      {:ok, schema_value} ->
+        case validate_schema(schema_value) do
+          {:ok, validated_schema} ->
+            {Macro.escape(validated_schema), true}
+
+          {:error, errors} ->
+            raise ArgumentError,
+                  "invalid literal schema for #{inspect(name)}: #{inspect(errors)}"
+        end
+
+      :error ->
+        {schema, false}
+    end
+  end
+
+  defp schema_function_bodies(schema, true, opts) do
+    validation = quote do: Backplane.Schema.validate(unquote(schema), data, unquote(opts))
+
+    bang =
+      quote do
+        case Backplane.Schema.validate(unquote(schema), data, unquote(opts)) do
+          {:ok, valid_data} -> valid_data
+          {:error, errors} -> raise Backplane.Schema.InvalidSchema, errors
+        end
+      end
+
+    {validation, bang}
+  end
+
+  defp schema_function_bodies(schema, false, opts) do
+    validation =
+      quote do
+        with {:ok, schema} <- Backplane.Schema.validate_schema(unquote(schema)) do
+          Backplane.Schema.validate(schema, data, unquote(opts))
+        end
+      end
+
+    bang =
+      quote do
+        with {:ok, valid_schema} <- Backplane.Schema.validate_schema(unquote(schema)),
+             {:ok, valid_data} <- Backplane.Schema.validate(valid_schema, data, unquote(opts)) do
+          valid_data
+        else
+          {:error, errors} -> raise Backplane.Schema.InvalidSchema, errors
+        end
+      end
+
+    {validation, bang}
+  end
+
+  # Rewrites `{:ref, atom}` to `{:ref, {__MODULE__, atom}}` at macro expansion
+  # so local refs resolve against the calling module without forcing users to
+  # spell out the module name. Cross-module refs `{:ref, {Mod, name}}` pass
+  # through unchanged.
+  defp rewrite_local_refs(ast) do
+    Macro.prewalk(ast, fn
+      {:ref, name} when is_atom(name) and name not in [:ref] ->
+        quote do: {:ref, {__MODULE__, unquote(name)}}
+
+      other ->
+        other
+    end)
+  end
+
+  defp literal_schema(ast, caller) do
+    ast =
+      Macro.prewalk(ast, fn
+        {:__MODULE__, _, _} -> caller.module
+        {:__aliases__, _, _} = alias_ast -> Macro.expand(alias_ast, caller)
+        other -> other
+      end)
+
+    if Macro.quoted_literal?(ast) do
+      {value, _binding} = Code.eval_quoted(ast)
+      {:ok, value}
+    else
+      :error
+    end
+  end
+
+  @doc """
+  Checks if the given data is an enumerable, specifically a map or a list.
+
+  ## Parameters
+
+    - `data`: The data to check.
+
+  ## Examples
+
+      iex> is_enumerable(%{})
+      true
+
+      iex> is_enumerable([])
+      true
+
+      iex> is_enumerable(123)
+      false
+
+      iex> is_enumerable("string")
+      false
+  """
+  defguard is_enumerable(data) when is_map(data) or is_list(data)
+
+  @doc """
+  Checks if the given data conforms to the specified schema.
+
+  ## Parameters
+
+    - `schema`: The schema definition to validate against.
+    - `data`: The data to be validated.
+
+  ## Options
+
+    - `:mode` - Validation mode. Can be `:strict` (default) or `:permissive`.
+      - `:strict` - Only fields defined in the schema are returned.
+      - `:permissive` - All fields from the input data are preserved.
+    - `:spellcheck` - Set to `false` to skip missing-required-field typo
+      suggestions. Defaults to `true`.
+
+  ## Returns
+
+    - `true` if the data conforms to the schema.
+    - `false` if the data does not conform to the schema.
+
+  ## Examples
+
+      iex> schema = %{name: :string, age: :integer}
+      iex> data = %{name: "Alice", age: 30}
+      iex> Backplane.Schema.conforms?(schema, data)
+      true
+
+      iex> invalid_data = %{name: "Alice", age: "thirty"}
+      iex> Backplane.Schema.conforms?(schema, invalid_data)
+      false
+  """
+  @spec conforms?(schema, term, validation_opts) :: boolean
+  def conforms?(schema, data, opts \\ []) do
+    mode = Keyword.get(opts, :mode, :strict)
+
+    validate_opts = Keyword.take(opts, [:spellcheck]) ++ [mode: mode]
+
+    case validate(schema, data, validate_opts) do
+      {:ok, _} -> true
+      {:error, _errors} -> false
+    end
+  end
+
+  @doc """
+  Converts a Backplane.Schema schema into a JSON Schema (Draft 7) map.
+
+  Reads `{:meta, type, opts}` annotations and emits `title`, `description`,
+  `examples`, `deprecated`. Dynamic types degrade per `:on_unsupported`
+  (`:omit | :true_schema | :raise`, default `:omit`).
+
+  Pass `:exclude_meta_keys` to drop annotation keywords from the output —
+  commonly `[:default]` when the consumer-facing schema should not surface
+  validation defaults.
+
+  ## Examples
+
+      iex> Backplane.Schema.to_json_schema(%{name: {:required, :string}})
+      %{"type" => "object", "properties" => %{"name" => %{"type" => "string"}}, "required" => ["name"]}
+
+      iex> Backplane.Schema.to_json_schema({:integer, {:default, 0}}, exclude_meta_keys: [:default])
+      %{"type" => "integer"}
+  """
+  @spec to_json_schema(schema, Backplane.Schema.JSONSchema.Encoder.opts()) :: map
+  defdelegate to_json_schema(schema, opts \\ []),
+    to: Backplane.Schema.JSONSchema.Encoder,
+    as: :encode
+
+  @doc """
+  Decodes a JSON Schema (Draft 7) map into a Backplane.Schema schema.
+
+  Returns `{:ok, schema}` if the resulting Backplane.Schema schema is valid, otherwise
+  `{:error, errors}`.
+  """
+  @spec from_json_schema(map, list(opt)) :: {:ok, schema} | {:error, term}
+        when opt: {:keys, :strings | :atoms | :atoms!}
+  defdelegate from_json_schema(json_schema, opts \\ []),
+    to: Backplane.Schema.JSONSchema.Decoder,
+    as: :decode
+
+  @doc """
+  Depth-first rewrite of a schema tree.
+
+  The callback is invoked on every subtree (pre-order). It must return either
+  `{:cont, new_node}` to replace the node and continue, or `:drop` to remove it
+  (only valid for values inside a map or keyword schema).
+
+  Building block for transforms like "make every field optional" or "strip
+  internal-only fields from a public DTO". See `Backplane.Schema.Walker` for details.
+
+  ## Examples
+
+      iex> schema = %{name: {:required, :string}, age: {:required, :integer}}
+      iex> Backplane.Schema.walk(schema, fn
+      ...>   {:required, t} -> {:cont, t}
+      ...>   other -> {:cont, other}
+      ...> end)
+      %{name: :string, age: :integer}
+  """
+  @spec walk(schema, Backplane.Schema.Walker.walker_fun()) :: schema
+  defdelegate walk(schema, fun), to: Backplane.Schema.Walker
+
+  @doc """
+  Validates a given data map against a schema with options.
+
+  Returns `{:ok, data}` if the data is valid according to the schema, or `{:error, errors}` if there are validation errors.
+
+  ## Parameters
+
+    - schema: The schema definition map.
+    - data: The data map to be validated.
+    - opts: Options for validation.
+
+  ## Options
+
+    - `:mode` - Validation mode. Can be `:strict` (default) or `:permissive`.
+      - `:strict` - Only fields defined in the schema are returned.
+      - `:permissive` - All fields from the input data are preserved.
+    - `:spellcheck` - Set to `false` to skip missing-required-field typo
+      suggestions. Defaults to `true`.
+
+  A schema returned by `validate_schema/1` can be reused directly with
+  `validate/3` and the integrations that accept schemas. This avoids
+  `defschema`'s runtime schema validation for each call.
+
+  ## Examples
+
+      schema = %{name: :string, age: :integer}
+      data = %{name: "John", age: 30, extra: "field"}
+
+      # Strict mode (default)
+      Backplane.Schema.validate(schema, data)
+      # => {:ok, %{name: "John", age: 30}}
+
+      # Permissive mode
+      Backplane.Schema.validate(schema, data, mode: :permissive)
+      # => {:ok, %{name: "John", age: 30, extra: "field"}}
+  """
+  @spec validate(schema, term, validation_opts) :: {:ok, term} | {:error, term}
+  def validate(schema, data, opts \\ [])
+
+  def validate(schema, data, opts) when is_enumerable(schema) and is_enumerable(data) do
+    mode = Keyword.get(opts, :mode, :strict)
+
+    if mode not in [:strict, :permissive] do
+      raise ArgumentError, "Invalid mode: #{inspect(mode)}. Must be :strict or :permissive"
+    end
+
+    spellcheck = Keyword.get(opts, :spellcheck, true)
+
+    unless is_boolean(spellcheck) do
+      raise ArgumentError,
+            "Invalid spellcheck option: #{inspect(spellcheck)}. Must be a boolean"
+    end
+
+    field_opts =
+      [
+        mode: mode,
+        spellcheck: spellcheck,
+        spellcheck_data: data,
+        spellcheck_schema: schema
+      ] ++ Keyword.take(opts, [:direction])
+
+    state = Backplane.Schema.Parser.new(data, root_data: data)
+
+    state =
+      if strict_traversal?(schema, data, field_opts) do
+        traverse_schema_strict(schema, state, field_opts)
+      else
+        data = filter_data(schema, data, field_opts)
+        traverse_schema(schema, %{state | data: data}, field_opts)
+      end
+
+    case state do
+      %Backplane.Schema.Parser{errors: [], data: result} -> {:ok, result}
+      %Backplane.Schema.Parser{errors: errors} -> {:error, errors}
+    end
+  end
+
+  def validate(schema, data, opts) do
+    spellcheck = Keyword.get(opts, :spellcheck, true)
+
+    unless is_boolean(spellcheck) do
+      raise ArgumentError,
+            "Invalid spellcheck option: #{inspect(spellcheck)}. Must be a boolean"
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:spellcheck, spellcheck)
+      |> Keyword.put(:spellcheck_data, data)
+
+    case validate_field(data, schema, data, opts) do
+      :ok ->
+        {:ok, data}
+
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, errors} ->
+        {:error, errors}
+
+      {:error, reason, info} ->
+        {:error, Backplane.Schema.Error.new_single(reason, info)}
+    end
+  end
+
+  @doc """
+  Decodes wire data against a schema.
+
+  Coercion is a schema directive, so decoding is exactly `validate/3`:
+  `{:coerce, source, target}` fields convert their `source` representation
+  into the `target` type, and values already matching the target pass through
+  unchanged.
+
+  Accepts the same options as `validate/3` and returns the same shape.
+
+  ## Examples
+
+      iex> schema = %{page: {:coerce, :string, :integer}}
+      iex> Backplane.Schema.decode(schema, %{"page" => "2"})
+      {:ok, %{page: 2}}
+
+      iex> schema = %{page: {:coerce, :string, :integer}}
+      iex> Backplane.Schema.decode(schema, %{page: 2})
+      {:ok, %{page: 2}}
+  """
+  @spec decode(schema, term, validation_opts) :: {:ok, term} | {:error, term}
+  def decode(schema, data, opts \\ []), do: validate(schema, data, opts)
+
+  @doc """
+  Encodes data against a schema, producing its wire representation.
+
+  Validates `data` against the schema (target types), then applies the
+  reverse of each codec directive:
+
+    * `{:coerce, source, target}` - built-in `:string` sources render with
+      `to_string/1` (`to_iso8601/1` for date/time structs); when the
+      `encode:` opt is given, that function/MFA is applied instead. Custom
+      function/MFA sources without an `encode:` opt pass the validated value
+      through unchanged.
+    * `{type, {:encode, fun}}` - applies `fun` (or MFA) to the validated
+      value. This directive is inert under `validate/3` and `decode/3`.
+    * `{:transform, fun}` - skipped; transforms are decode-only.
+
+  Accepts the same options as `validate/3` and returns the same shape.
+
+  ## Examples
+
+      iex> schema = %{page: {:coerce, :string, :integer}}
+      iex> Backplane.Schema.encode(schema, %{page: 2})
+      {:ok, %{page: "2"}}
+
+      iex> schema = %{upcased: {:string, {:encode, &String.downcase/1}}}
+      iex> Backplane.Schema.encode(schema, %{upcased: "HELLO"})
+      {:ok, %{upcased: "hello"}}
+  """
+  @spec encode(schema, term, validation_opts) :: {:ok, term} | {:error, term}
+  def encode(schema, data, opts \\ []) do
+    validate(schema, data, Keyword.put(opts, :direction, :encode))
+  end
+
+  @doc """
+  Helper function to put a value into an enum, handling
+  not only maps and keyword lists but also structs.
+
+  ## Examples
+
+      iex> Backplane.Schema.put_in_enum(%{}, :hello, "world")
+      iex> Backplane.Schema.put_in_enum(%{}, "hello", "world")
+      iex> Backplane.Schema.put_in_enum(%User{}, :hello, "world")
+      iex> Backplane.Schema.put_in_enum([], :hello, "world")
+  """
+  def put_in_enum(enum, key, val) when is_struct(enum) do
+    struct(enum, %{key => val})
+  end
+
+  def put_in_enum(enum, key, val) when is_map(enum) do
+    put_in(enum, [Access.key(key)], val)
+  end
+
+  def put_in_enum(enum, key, val) when is_list(enum) do
+    put_in(enum[key], val)
+  end
+
+  # if data is struct, well, we do not need to filter it
+  defp filter_data(_schema, data, _opts) when is_struct(data), do: data
+
+  defp filter_data(schema, data, opts) do
+    mode = Keyword.get(opts, :mode, :strict)
+
+    if mode == :permissive do
+      data
+    else
+      acc = make_filter_data_accumulator(schema, data)
+      result = Enum.reduce(schema, acc, &do_filter_data(data, &1, &2, opts))
+      if is_list(result), do: Enum.reverse(result), else: result
+    end
+  end
+
+  defp do_filter_data(data, {key, {:meta, type, _meta_opts}}, acc, opts) do
+    do_filter_data(data, {key, type}, acc, opts)
+  end
+
+  defp do_filter_data(data, {key, type}, acc, opts) do
+    string_key = to_string(key)
+    value = get_enumerable_value(data, key)
+    original_key = if enumerable_has_key?(data, key), do: key, else: string_key
+
+    cond do
+      is_enumerable(data) and not enumerable_has_key?(data, key) ->
+        acc
+
+      is_enumerable(value) and is_enumerable(type) ->
+        nested_filtered_value = filter_data(type, value, opts)
+        put_in_enum(acc, original_key, nested_filtered_value)
+
+      true ->
+        put_in_enum(acc, original_key, value)
+    end
+  end
+
+  defp make_filter_data_accumulator(schema, _data) when is_map(schema), do: %{}
+  defp make_filter_data_accumulator(schema, _data) when is_list(schema), do: []
+
+  defp enumerable_has_key?(data, key) when is_struct(data) do
+    Map.has_key?(data, key)
+  end
+
+  defp enumerable_has_key?(data, key) when is_map(data) and is_binary(key) do
+    Map.has_key?(data, key)
+  end
+
+  defp enumerable_has_key?(data, key) when is_map(data) and is_atom(key) do
+    Map.has_key?(data, key) or enumerable_has_key?(data, Atom.to_string(key))
+  end
+
+  defp enumerable_has_key?(data, key) when is_list(data) do
+    Keyword.has_key?(data, key)
+  end
+
+  @doc false
+  defp traverse_schema(schema, %Backplane.Schema.Parser{} = state, opts, path \\ []) do
+    opts = Keyword.put(opts, :spellcheck_schema, schema)
+    parent_path_rev = Backplane.Schema.Parser.path_rev(state)
+
+    Enum.reduce(schema, state, fn {key, type}, parser ->
+      exists? = enumerable_has_key?(parser.data, key)
+      value = if exists?, do: get_enumerable_value(parser.data, key)
+      parser = Backplane.Schema.Parser.push_field(parser, key, exists?, parent_path_rev)
+
+      case validate_field(value, type, parser, opts) do
+        :ok ->
+          parser
+
+        {:ok, value} ->
+          Backplane.Schema.Parser.update_data(parser, key, value)
+
+        {:error, [_ | _] = nested_errs} ->
+          reduce_errors(path, key, nested_errs, parser)
+
+        {:error, reason, info} ->
+          {reason, info} = maybe_suggest_key(reason, info, key, type, exists?, parser, opts)
+          err = Backplane.Schema.Error.new_child(path, key, reason, info)
+          Backplane.Schema.Parser.add_error(parser, err)
+      end
+    end)
+  end
+
+  defp traverse_schema_strict(
+         schema,
+         %Backplane.Schema.Parser{data: source_data} = state,
+         opts,
+         path \\ []
+       ) do
+    opts = Keyword.put(opts, :spellcheck_schema, schema)
+    parent_path_rev = Backplane.Schema.Parser.path_rev(state)
+    result = %{}
+
+    {state, result} =
+      Enum.reduce(schema, {state, result}, fn {key, type}, {parser, result} ->
+        {exists?, value} = fetch_enumerable_value(source_data, key)
+        field_parser = Backplane.Schema.Parser.push_field(parser, key, exists?, parent_path_rev)
+
+        case validate_field(value, type, field_parser, opts) do
+          :ok ->
+            {parser, put_strict_value(result, key, value, exists?)}
+
+          {:ok, value} ->
+            {parser, Map.put(result, key, value)}
+
+          {:error, [_ | _] = nested_errs} ->
+            {reduce_errors(path, key, nested_errs, parser), result}
+
+          {:error, reason, info} ->
+            {reason, info} =
+              maybe_suggest_key(reason, info, key, type, exists?, field_parser, opts)
+
+            err = Backplane.Schema.Error.new_child(path, key, reason, info)
+            {Backplane.Schema.Parser.add_error(parser, err), result}
+        end
+      end)
+
+    %{state | data: result}
+  end
+
+  defp put_strict_value(result, key, value, true), do: Map.put(result, key, value)
+  defp put_strict_value(result, _key, _value, false), do: result
+
+  defp fetch_enumerable_value(data, key) when is_struct(data) do
+    case Map.fetch(data, key) do
+      {:ok, value} -> {true, value}
+      :error -> {false, nil}
+    end
+  end
+
+  defp fetch_enumerable_value(data, key) when is_map(data) and is_binary(key) do
+    case Map.fetch(data, key) do
+      {:ok, value} -> {true, value}
+      :error -> {false, nil}
+    end
+  end
+
+  defp fetch_enumerable_value(data, key) when is_map(data) and is_atom(key) do
+    case Map.fetch(data, key) do
+      {:ok, value} ->
+        {true, value}
+
+      :error ->
+        case Map.fetch(data, Atom.to_string(key)) do
+          {:ok, value} -> {true, value}
+          :error -> {false, nil}
+        end
+    end
+  end
+
+  defp fetch_enumerable_value(data, key) when is_list(data) do
+    case Keyword.fetch(data, key) do
+      {:ok, value} -> {true, value}
+      :error -> {false, nil}
+    end
+  end
+
+  defp strict_traversal?(schema, data, opts) do
+    # Keyword schemas can repeat keys, and the existing traversal applies earlier
+    # updates before later duplicate definitions.
+    Keyword.get(opts, :mode, :strict) == :strict and not is_struct(data) and
+      not is_list(schema)
+  end
+
+  # When a required field is missing, suggest a typo'd sibling key present in
+  # the data but absent from the schema (e.g. `:emial` for `:email`). Candidates
+  # are computed from the unfiltered data only at this point, in either mode.
+  defp maybe_suggest_key(reason, info, key, {:required, _}, false, parser, opts),
+    do: suggest_key(reason, info, key, parser, opts)
+
+  defp maybe_suggest_key(reason, info, key, {:required, _, _}, false, parser, opts),
+    do: suggest_key(reason, info, key, parser, opts)
+
+  defp maybe_suggest_key(reason, info, _key, _type, _exists?, _parser, _opts),
+    do: {reason, info}
+
+  defp suggest_key(reason, info, key, parser, opts) do
+    candidates =
+      if Keyword.get(opts, :spellcheck, true) do
+        path = Backplane.Schema.Parser.path(parser) |> Enum.drop(-1)
+        schema = Keyword.get(opts, :spellcheck_schema)
+        data = data_at_path(Keyword.get(opts, :spellcheck_data), path)
+        spellcheck_candidates(schema, data)
+      else
+        []
+      end
+
+    key_string = to_string(key)
+    distance = &String.jaro_distance(to_string(&1), key_string)
+
+    candidate =
+      candidates
+      |> Enum.filter(&(distance.(&1) > 0.8))
+      |> Enum.max_by(distance, fn -> nil end)
+
+    if candidate do
+      {reason <> " did you mean %{did_you_mean}?", info ++ [did_you_mean: candidate]}
+    else
+      {reason, info}
+    end
+  end
+
+  # Keys present in the data but absent from the schema, in their original
+  # (atom or string) form. Compared as strings so string-keyed data matches
+  # against atom-keyed schemas. Keys that are neither atoms nor strings
+  # (PIDs, tuples, ...) can't be typo suggestions, so they're skipped.
+  defp spellcheck_candidates(_schema, data) when is_struct(data), do: []
+
+  defp spellcheck_candidates(schema, data) when is_map(schema) or is_list(schema) do
+    schema_keys = MapSet.new(enum_keys(schema))
+
+    data
+    |> enum_keys()
+    |> Enum.reject(fn key ->
+      key == :__struct__ or not spellcheckable_key?(key) or
+        MapSet.member?(schema_keys, to_string(key))
+    end)
+  end
+
+  defp spellcheck_candidates(_schema, _data), do: []
+
+  defp spellcheckable_key?(key), do: is_atom(key) or is_binary(key)
+
+  defp enum_keys(enum) do
+    Enum.flat_map(enum, fn
+      {key, _} -> [key]
+      _other -> []
+    end)
+  end
+
+  defp data_at_path(data, []), do: data
+
+  defp data_at_path(data, [segment | rest]) when is_list(data) do
+    value =
+      if is_integer(segment) and not Keyword.keyword?(data),
+        do: Enum.at(data, segment),
+        else: get_enumerable_value(data, segment)
+
+    data_at_path(value, rest)
+  end
+
+  defp data_at_path(data, [segment | rest]) when is_map(data) do
+    data_at_path(get_enumerable_value(data, segment), rest)
+  end
+
+  defp data_at_path(_data, _path), do: nil
+
+  # Access.key/1 only support maps and structs
+  def get_enumerable_value(enum, key) when is_struct(enum) do
+    get_in(enum, [Access.key(key)])
+  end
+
+  def get_enumerable_value(enum, key) when is_map(enum) and is_binary(key) do
+    Map.get(enum, key)
+  end
+
+  def get_enumerable_value(enum, key) when is_map(enum) and is_atom(key) do
+    if Map.has_key?(enum, key) do
+      Map.get(enum, key)
+    else
+      get_enumerable_value(enum, Atom.to_string(key))
+    end
+  end
+
+  def get_enumerable_value(enum, key) when is_list(enum) do
+    Keyword.get(enum, key)
+  end
+
+  @doc """
+  Checks if the given data is a numeric value, specifically a integer or a float.
+
+  ## Parameters
+
+    - `data`: The data to check.
+
+  ## Examples
+
+      iex> is_numeric(123)
+      true
+
+      iex> is_numeric(0xFF)
+      true
+
+      iex> is_numeric(12.12)
+      true
+
+      iex> is_numeric("string")
+      false
+
+      iex> is_numeric(%{})
+      false
+  """
+  defguard is_numeric(n) when is_integer(n) or is_float(n)
+
+  @doc """
+  Checks if the given type as an atom is a numeric (integer or float).
+
+  ## Parameters
+
+    - `data`: The data to check.
+
+  ## Examples
+
+      iex> is_numeric(:integer)
+      true
+
+      iex> is_numeric(:float)
+      true
+
+      iex> is_numeric(:list)
+      false
+
+      iex> is_numeric({:enum, _})
+      false
+  """
+  defguard is_numeric_type(t) when t in [:integer, :float]
+
+  defguard is_of_numeric_type(val, t)
+           when (t == :integer and is_integer(val)) or (t == :float and is_float(val))
+
+  defguard is_type_with_multiple_options(t) when is_numeric_type(t) or t === :string
+
+  @doc false
+  defp validate_field(nil, nil, _data, _opts), do: :ok
+  defp validate_field(_, :any, _data, _opts), do: :ok
+  defp validate_field(pid, :pid, _data, _opts) when is_pid(pid), do: :ok
+  defp validate_field(%Date{}, :date, _data, _opts), do: :ok
+  defp validate_field(%Time{}, :time, _data, _opts), do: :ok
+  defp validate_field(%Duration{}, :duration, _data, _opts), do: :ok
+  defp validate_field(%DateTime{}, :datetime, _data, _opts), do: :ok
+  defp validate_field(%NaiveDateTime{}, :naive_datetime, _data, _opts), do: :ok
+  defp validate_field(val, :atom, _data, _opts) when is_atom(val), do: :ok
+  defp validate_field(val, :atom!, _data, _opts) when is_atom(val), do: :ok
+  defp validate_field(val, :map, _data, _opts) when is_map(val), do: :ok
+  defp validate_field(val, :string, _data, _opts) when is_binary(val), do: :ok
+  defp validate_field(val, :integer, _data, _opts) when is_integer(val), do: :ok
+  defp validate_field(val, :float, _data, _opts) when is_float(val), do: :ok
+  defp validate_field(val, :boolean, _data, _opts) when is_boolean(val), do: :ok
+  defp validate_field(val, :list, _data, _opts) when is_list(val), do: :ok
+
+  defp validate_field(val, {:literal, literal}, _data, _opts) when val === literal, do: :ok
+
+  defp validate_field(val, {:literal, literal}, _data, _opts) do
+    error_with_code(:literal, "expected literal value %{expected} but got %{actual}",
+      expected: inspect(literal),
+      actual: inspect(val)
+    )
+  end
+
+  defp validate_field(val, {:meta, type, _meta_opts}, data, opts),
+    do: validate_field(val, type, data, opts)
+
+  defp validate_field(val, {:ref, {mod, name}}, parser, opts)
+       when is_atom(mod) and is_atom(name) do
+    resolve_ref({mod, name}, val, parser, opts)
+  end
+
+  defp validate_field(val, {:ref, name}, parser, opts) when is_atom(name) do
+    resolve_ref({nil, name}, val, parser, opts)
+  end
+
+  defp validate_field(val, {:multi, field, branches}, parser, opts)
+       when is_atom(field) and is_map(branches) do
+    dispatch_multi(val, field, branches, parser, opts)
+  end
+
+  defp validate_field(nil, {:required, type}, _data, _opts) do
+    error_with_code(:required, "is required, expected type of %{expected}",
+      expected: summarize(type)
+    )
+  end
+
+  defp validate_field(_val, {:required, {type, {:default, default}}}, _data, _opts) do
+    template =
+      "cannot set default value of #{inspect(default)} for required field of type %{type}"
+
+    {:ok, template, [type: summarize(type)]}
+  end
+
+  # Empty maps and lists are valid for required fields - only nil is invalid
+  defp validate_field(val, {:required, type}, data, opts),
+    do: validate_field(val, type, data, opts)
+
+  defp validate_field(val, {:required, type, error_opts}, data, opts) when is_list(error_opts) do
+    {override, _rest} = Keyword.pop(error_opts, :error)
+
+    val
+    |> validate_field({:required, type}, data, opts)
+    |> tag_error_override(override)
+  end
+
+  defp validate_field(val, {type, options}, data, opts)
+       when is_type_with_multiple_options(type) and is_list(options) do
+    {override, options} = Keyword.pop(options, :error)
+    options = Keyword.delete(options, :gen)
+
+    options
+    |> Enum.map(fn option -> validate_field(val, {type, option}, data, opts) end)
+    |> Enum.filter(fn x -> x != :ok end)
+    |> case do
+      [] -> :ok
+      errs -> {:error, errs}
+    end
+    |> tag_error_override(override)
+  end
+
+  defp validate_field(val, {:string, {:regex, regex}}, _data, _opts) when is_binary(val) do
+    if Regex.match?(regex, val) do
+      :ok
+    else
+      error_with_code(:regex, "should match the %{regex} pattern", regex: regex)
+    end
+  end
+
+  defp validate_field(val, {:string, {:eq, eq}}, _data, _opts) when is_binary(val) do
+    if val === eq do
+      :ok
+    else
+      error_with_code(:eq, "should be equal to literal %{literal}", literal: eq)
+    end
+  end
+
+  defp validate_field(val, {:string, {:min, min}}, _data, _opts) when is_binary(val) do
+    if String.length(val) >= min do
+      :ok
+    else
+      error_with_code(:min, "should have the minimum length of %{length}", length: min)
+    end
+  end
+
+  defp validate_field(val, {:string, {:max, max}}, _data, _opts) when is_binary(val) do
+    if String.length(val) <= max do
+      :ok
+    else
+      error_with_code(:max, "should have the maximum length of %{length}", length: max)
+    end
+  end
+
+  defp validate_field(val, {type, {:eq, value}}, _data, _opts)
+       when is_of_numeric_type(val, type) do
+    if val == value do
+      :ok
+    else
+      error_with_code(:eq, "should be equal to %{value}", value: value)
+    end
+  end
+
+  defp validate_field(val, {type, {:neq, value}}, _data, _opts)
+       when is_of_numeric_type(val, type) do
+    if val != value do
+      :ok
+    else
+      error_with_code(:neq, "should be not equal to %{value}", value: value)
+    end
+  end
+
+  defp validate_field(val, {type, {:gt, value}}, _data, _opts)
+       when is_of_numeric_type(val, type) do
+    if val > value do
+      :ok
+    else
+      error_with_code(:gt, "should be greater then %{value}", value: value)
+    end
+  end
+
+  defp validate_field(val, {type, {:gte, value}}, _data, _opts)
+       when is_of_numeric_type(val, type) do
+    if val >= value do
+      :ok
+    else
+      error_with_code(:gte, "should be greater then or equal to %{value}", value: value)
+    end
+  end
+
+  defp validate_field(val, {type, {:lte, value}}, _data, _opts)
+       when is_of_numeric_type(val, type) do
+    if val <= value do
+      :ok
+    else
+      error_with_code(:lte, "should be less then or equal to %{value}", value: value)
+    end
+  end
+
+  defp validate_field(val, {type, {:lt, value}}, _data, _opts)
+       when is_of_numeric_type(val, type) do
+    if val < value do
+      :ok
+    else
+      error_with_code(:lt, "should be less then %{value}", value: value)
+    end
+  end
+
+  defp validate_field(val, {type, {:range, {min, max}}}, _data, _opts)
+       when is_of_numeric_type(val, type) do
+    info = [min: min, max: max]
+    template = "should be in the range of %{min}..%{max} (inclusive)"
+
+    cond do
+      val < min -> error_with_code(:range, template, info)
+      val > max -> error_with_code(:range, template, info)
+      true -> :ok
+    end
+  end
+
+  defp validate_field(val, {type, {:multiple_of, n}}, _data, _opts)
+       when is_of_numeric_type(val, type) and is_numeric(n) do
+    if multiple_of?(val, n) do
+      :ok
+    else
+      error_with_code(:multiple_of, "should be a multiple of %{value}", value: n)
+    end
+  end
+
+  defp validate_field(val, {type, {:default, {mod, fun}}}, data, opts)
+       when is_atom(mod) and is_atom(fun) do
+    validate_field(val, {type, {:default, apply(mod, fun, [])}}, data, opts)
+  end
+
+  defp validate_field(val, {type, {:default, {mod, fun, args}}}, data, opts)
+       when is_atom(mod) and is_atom(fun) and is_list(args) do
+    validate_field(val, {type, {:default, apply(mod, fun, args)}}, data, opts)
+  end
+
+  defp validate_field(val, {type, {:default, default}}, data, opts)
+       when is_function(default, 0) do
+    validate_field(val, {type, {:default, default.()}}, data, opts)
+  end
+
+  defp validate_field(val, {type, {:default, default}}, data, opts) do
+    val = if is_nil(val), do: default, else: val
+
+    with :ok <- validate_field(val, type, data, opts) do
+      {:ok, val}
+    end
+  end
+
+  defp validate_field(val, {:cond, condition, true_type, else_type}, parser, opts) do
+    if call_callback(condition, parser) do
+      validate_field(val, true_type, %{parser | field_presence?: true}, opts)
+    else
+      validate_field(val, else_type, parser, opts)
+    end
+  end
+
+  defp validate_field(val, {:dependent, callback}, parser, opts)
+       when is_function(callback) do
+    callback
+    |> call_callback(parser)
+    |> validate_dependent(val, parser, opts)
+  end
+
+  defp validate_field(val, {:dependent, {mod, fun}}, parser, opts)
+       when is_atom(mod) and is_atom(fun) do
+    result =
+      cond do
+        function_exported?(mod, fun, 2) ->
+          current = maybe_get_current_data(parser)
+          root = maybe_get_root_data(parser)
+          apply(mod, fun, [current, root])
+
+        function_exported?(mod, fun, 1) ->
+          root = maybe_get_root_data(parser)
+          apply(mod, fun, [root])
+
+        true ->
+          nil
+      end
+
+    validate_dependent(result, val, parser, opts)
+  end
+
+  defp validate_field(val, {:dependent, {mod, fun, args}}, parser, opts)
+       when is_atom(mod) and is_atom(fun) and is_list(args) do
+    root = maybe_get_root_data(parser)
+
+    mod
+    |> apply(fun, [root | args])
+    |> validate_dependent(val, parser, opts)
+  end
+
+  defp validate_field(val, {:dependent, field, condition, type}, parser, opts) do
+    root = maybe_get_root_data(parser)
+    dependent_val = get_enumerable_value(root, field)
+
+    case condition.(val, dependent_val) do
+      :ok ->
+        validate_field(val, type, root, opts)
+
+      {:error, [_ | _]} = error ->
+        tag_error_code(:dependent, error)
+
+      {:error, _reason, _info} = error ->
+        tag_error_code(:dependent, error)
+
+      other ->
+        info = [actual: inspect(other)]
+
+        error_with_code(
+          :dependent,
+          "expected dependent condition to return :ok or {:error, reason}, got %{actual}",
+          info
+        )
+    end
+  end
+
+  defp validate_field(nil, s, parser, opts) when is_enumerable(s) do
+    if schema_has_defaults?(s) and parser.field_presence? do
+      validate_field(%{}, s, parser, opts)
+    else
+      :ok
+    end
+  end
+
+  defp validate_field(nil, _schema, _data, _opts), do: :ok
+
+  defp validate_field(val, {type, {:transform, mapper}}, data, opts)
+       when is_function(mapper, 1) do
+    if encoding?(opts) do
+      validate_field(val, type, data, opts)
+    else
+      case validate_field(val, type, data, opts) do
+        :ok -> {:ok, mapper.(val)}
+        {:ok, val} -> {:ok, mapper.(val)}
+        err -> err
+      end
+    end
+  end
+
+  defp validate_field(val, {type, {:transform, mapper}}, data, opts)
+       when is_function(mapper, 2) do
+    if encoding?(opts) do
+      validate_field(val, type, data, opts)
+    else
+      case validate_field(val, type, data, opts) do
+        :ok -> {:ok, mapper.(val, maybe_get_root_data(data))}
+        {:ok, val} -> {:ok, mapper.(val, maybe_get_root_data(data))}
+        err -> err
+      end
+    end
+  end
+
+  defp validate_field(val, {type, {:transform, {mod, fun}}}, data, opts)
+       when is_atom(mod) and is_atom(fun) do
+    if encoding?(opts) do
+      validate_field(val, type, data, opts)
+    else
+      apply_mod_transform(val, type, mod, fun, data, opts)
+    end
+  end
+
+  defp validate_field(val, {type, {:transform, {mod, fun, args}}}, data, opts)
+       when is_atom(mod) and is_atom(fun) and is_list(args) do
+    if encoding?(opts) do
+      validate_field(val, type, data, opts)
+    else
+      apply_mod_transform(val, type, mod, fun, args, data, opts)
+    end
+  end
+
+  defp validate_field(val, {type, {:encode, encoder}}, data, opts)
+       when is_function(encoder, 1),
+       do: validate_with_encode(val, type, encoder, data, opts)
+
+  defp validate_field(val, {type, {:encode, {mod, fun}}}, data, opts)
+       when is_atom(mod) and is_atom(fun),
+       do: validate_with_encode(val, type, {mod, fun}, data, opts)
+
+  defp validate_field(val, {type, {:encode, {mod, fun, args}}}, data, opts)
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: validate_with_encode(val, type, {mod, fun, args}, data, opts)
+
+  defp validate_field(val, {:coerce, target}, data, opts),
+    do: validate_field(val, {:coerce, :string, target, []}, data, opts)
+
+  defp validate_field(val, {:coerce, target, coerce_opts}, data, opts)
+       when is_list(coerce_opts),
+       do: validate_field(val, {:coerce, :string, target, coerce_opts}, data, opts)
+
+  defp validate_field(val, {:coerce, source, target}, data, opts),
+    do: validate_field(val, {:coerce, source, target, []}, data, opts)
+
+  defp validate_field(val, {:coerce, source, target, coerce_opts}, data, opts)
+       when is_list(coerce_opts) do
+    if encoding?(opts) do
+      encode_coercion(val, source, target, coerce_opts, data, opts)
+    else
+      decode_coercion(val, source, target, coerce_opts, data, opts)
+    end
+  end
+
+  defp validate_field(val, {:custom, callback}, _data, _opts) when is_function(callback, 1) do
+    tag_error_code(:custom, callback.(val))
+  end
+
+  defp validate_field(val, {:custom, callback}, data, _opts) when is_function(callback, 2) do
+    tag_error_code(:custom, callback.(val, maybe_get_root_data(data)))
+  end
+
+  defp validate_field(val, {:custom, {mod, fun}}, data, _opts)
+       when is_atom(mod) and is_atom(fun) do
+    root = maybe_get_root_data(data)
+
+    result =
+      cond do
+        function_exported?(mod, fun, 1) ->
+          apply(mod, fun, [val])
+
+        function_exported?(mod, fun, 2) ->
+          apply(mod, fun, [val, root])
+
+        true ->
+          {:error, "expected %{mod} to export %{fun}/1 or %{fun}/2", mod: mod, fun: fun}
+      end
+
+    tag_error_code(:custom, result)
+  end
+
+  defp validate_field(val, {:custom, {mod, fun, args}}, data, _opts)
+       when is_atom(mod) and is_atom(fun) and is_list(args) do
+    root = maybe_get_root_data(data)
+
+    result =
+      cond do
+        function_exported?(mod, fun, length(args) + 1) ->
+          apply(mod, fun, [val | args])
+
+        function_exported?(mod, fun, length(args) + 2) ->
+          apply(mod, fun, [val, root | args])
+
+        true ->
+          template = "expected %{mod} to export %{fun} with arity from %{base} to %{arity}"
+          {:error, template, mod: mod, fun: fun, base: length(args) + 1, arity: length(args) + 2}
+      end
+
+    tag_error_code(:custom, result)
+  end
+
+  defp validate_field(val, {:either, {type_1, type_2}}, data, opts) do
+    with {:error, _} <- normalize_validation_result(validate_field(val, type_1, data, opts)),
+         {:error, _} <- normalize_validation_result(validate_field(val, type_2, data, opts)) do
+      info = [
+        first_type: summarize(type_1),
+        second_type: summarize(type_2),
+        actual: inspect(val)
+      ]
+
+      template = "expected either %{first_type} or %{second_type}, got: %{actual}"
+      error_with_code(:either, template, info)
+    end
+  end
+
+  defp validate_field(val, {:oneof, types}, data, opts) do
+    types
+    |> Enum.reduce_while(:error, fn type, :error ->
+      case validate_field(val, type, data, opts) do
+        :ok -> {:halt, :ok}
+        {:ok, val} -> {:halt, {:ok, val}}
+        {:error, _reason, _info} -> {:cont, :error}
+        {:error, _errors} -> {:cont, :error}
+      end
+    end)
+    |> then(fn
+      :ok ->
+        :ok
+
+      {:ok, val} ->
+        {:ok, val}
+
+      :error ->
+        expected = Enum.map_join(types, " or ", &summarize/1)
+        info = [oneof: expected, actual: inspect(val)]
+        template = "expected one of %{oneof}, got: %{actual}"
+
+        error_with_code(:oneof, template, info)
+    end)
+  end
+
+  defp validate_field(source, {:tuple, types}, data, opts) when is_tuple(source) do
+    if tuple_size(source) == length(types) do
+      validate_tuple_elements(source, types, data, opts)
+    else
+      info = [length: length(types), actual: length(Tuple.to_list(source))]
+      template = "expected tuple of size %{length} received tuple with %{actual} length"
+      error_with_code(:tuple_size, template, info)
+    end
+  end
+
+  defp validate_field(val, {:enum, choices}, _data, _opts) do
+    if val in choices do
+      :ok
+    else
+      info = [choices: inspect(choices, pretty: true), actual: inspect(val)]
+      template = "expected one of %{choices} received %{actual}"
+      error_with_code(:enum, template, info)
+    end
+  end
+
+  defp validate_field(val, {:enum, choices, enum_opts}, data, opts)
+       when is_list(choices) and is_list(enum_opts) do
+    {override, rest} = Keyword.pop(enum_opts, :error)
+    rest = Keyword.delete(rest, :gen)
+
+    val
+    |> run_enum_with_opts(choices, rest, data, opts)
+    |> tag_error_override(override)
+  end
+
+  defp validate_field(data, {:list, type}, source, opts) when is_list(data) do
+    data
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, [], false}, fn {el, index}, {:ok, vals, changed?} ->
+      element_source =
+        case source do
+          %Backplane.Schema.Parser{} = parser ->
+            Backplane.Schema.Parser.push_list_element(el, parser, index)
+
+          _ ->
+            source
+        end
+
+      case validate_field(el, type, element_source, opts) do
+        :ok ->
+          {:cont, {:ok, [el | vals], changed?}}
+
+        {:ok, val} ->
+          {:cont, {:ok, [val | vals], true}}
+
+        {:error, errors} ->
+          {:halt, tag_list_error({:error, errors}, index)}
+
+        {:error, reason, info} ->
+          {:halt, tag_list_error({:error, reason, info}, index)}
+      end
+    end)
+    |> then(fn
+      {:ok, _vals, false} -> :ok
+      {:ok, vals, true} -> {:ok, Enum.reverse(vals)}
+      err -> err
+    end)
+  end
+
+  defp validate_field(data, {:list, type, list_opts}, source, opts)
+       when is_list(data) and is_list(list_opts) do
+    constraint_opts = Keyword.drop(list_opts, [:error, :gen])
+
+    with :ok <- check_list_constraints(data, constraint_opts),
+         do: validate_field(data, {:list, type}, source, opts)
+  end
+
+  defp validate_field(data, {:map, type}, source, opts) when is_map(data) do
+    Enum.reduce_while(data, {:ok, %{}}, fn {key, val}, {:ok, map_acc} ->
+      case validate_field(val, type, source, opts) do
+        :ok -> {:cont, {:ok, Map.put(map_acc, key, val)}}
+        {:ok, validated_val} -> {:cont, {:ok, Map.put(map_acc, key, validated_val)}}
+        {:error, errors} -> {:halt, {:error, errors}}
+        {:error, reason, info} -> {:halt, {:error, reason, info}}
+      end
+    end)
+    |> then(fn
+      {:ok, map} when map == %{} -> :ok
+      {:ok, map} -> {:ok, map}
+      err -> err
+    end)
+  end
+
+  defp validate_field(data, {:map, key_type, value_type}, source, opts) when is_map(data) do
+    Enum.reduce_while(data, {:ok, %{}}, fn {key, val}, {:ok, map_acc} ->
+      with {:ok, validated_key} <- validate_and_extract(key, key_type, source, opts),
+           {:ok, validated_val} <- validate_and_extract(val, value_type, source, opts) do
+        {:cont, {:ok, Map.put(map_acc, validated_key, validated_val)}}
+      else
+        error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, map} when map == %{} -> :ok
+      {:ok, map} -> {:ok, map}
+      err -> err
+    end)
+  end
+
+  defp validate_field(data, {:schema, schema}, source, opts) do
+    validate_field(data, schema, source, opts)
+  end
+
+  defp validate_field(data, {:schema, schema, schema_opts}, source, opts)
+       when is_list(schema_opts) do
+    validate_field(data, schema, source, opts)
+  end
+
+  defp validate_field(
+         data,
+         {:schema, schema, {:additional_keys, value_schema}},
+         source,
+         opts
+       )
+       when is_map(data) and is_map(schema) do
+    # Split data not in the schema so that the additional validator doesn't try
+    # to validate over the defined keys.
+    additional_keys =
+      Enum.reduce(Map.keys(schema), MapSet.new(Map.keys(data)), fn key, acc ->
+        acc |> MapSet.delete(key) |> MapSet.delete(to_string(key))
+      end)
+
+    additional_data =
+      data
+      |> Enum.filter(fn {key, _} -> MapSet.member?(additional_keys, key) end)
+      |> Map.new()
+
+    with {:ok, schema_data} <- validate_and_extract(data, schema, source, opts),
+         {:ok, additional_data} <-
+           validate_and_extract(additional_data, {:map, value_schema}, source, opts) do
+      {:ok, Map.merge(schema_data, additional_data)}
+    end
+  end
+
+  defp validate_field(data, schema, _data, _opts)
+       when is_enumerable(data) and not is_enumerable(schema) do
+    error_with_code(
+      :type,
+      "expected a nested schema but received schema: %{type}",
+      type: summarize(schema)
+    )
+  end
+
+  defp validate_field(data, schema, p, opts) when is_enumerable(data) do
+    root = maybe_get_root_data(p)
+    current = maybe_get_current_data(p)
+    opts = Keyword.put(opts, :spellcheck_schema, schema)
+
+    new_parser = %Backplane.Schema.Parser{
+      data: data,
+      root_data: root,
+      current_data: current,
+      path: Backplane.Schema.Parser.internal_path(parser_path_rev(p)),
+      ref_depth: parser_ref_depth(p)
+    }
+
+    parser =
+      if strict_traversal?(schema, data, opts) do
+        traverse_schema_strict(schema, new_parser, opts)
+      else
+        filtered_data = filter_data(schema, data, opts)
+        traverse_schema(schema, %{new_parser | data: filtered_data}, opts)
+      end
+
+    case parser do
+      %Backplane.Schema.Parser{errors: []} = parser -> {:ok, parser.data}
+      %Backplane.Schema.Parser{errors: errors} -> {:error, errors}
+    end
+  end
+
+  defp validate_field(val, type, _data, _opts) do
+    info = [expected: summarize(type), actual: inspect(val, pretty: true)]
+    error_with_code(:type, "expected type of %{expected} received %{actual} value", info)
+  end
+
+  # Dependent callbacks must return {:ok, type} or {:error, reason, info}.
+  # A bare return or a type that fails schema validation is a contract breach;
+  # report it as a validation error instead of leaking the raw value into
+  # traverse_schema.
+  defp validate_dependent({:ok, type}, val, parser, opts) do
+    case validate_schema(type) do
+      {:ok, schema} ->
+        validate_field(val, schema, parser, opts)
+
+      {:error, error} ->
+        info = [schema: inspect(type), reason: inspect(error)]
+
+        error_with_code(
+          :dependent,
+          "dependent callback returned invalid schema %{schema}: %{reason}",
+          info
+        )
+    end
+  end
+
+  defp validate_dependent({:error, reason, info}, _val, _parser, _opts)
+       when is_binary(reason) and is_map(info),
+       do: error_with_code(:dependent, reason, Map.to_list(info))
+
+  defp validate_dependent({:error, reason, info}, _val, _parser, _opts)
+       when is_binary(reason) and is_list(info),
+       do: tag_error_code(:dependent, {:error, reason, info})
+
+  defp validate_dependent(other, _val, _parser, _opts) do
+    info = [actual: inspect(other)]
+
+    error_with_code(
+      :dependent,
+      "expected dependent callback to return {:ok, type}, got %{actual}",
+      info
+    )
+  end
+
+  defp validate_tuple_elements(source, types, data, opts) do
+    Enum.with_index(types)
+    |> Enum.reduce_while({:ok, [], false}, fn {type, index}, {:ok, vals, changed?} ->
+      case validate_field(elem(source, index), type, data, opts) do
+        :ok ->
+          {:cont, {:ok, [elem(source, index) | vals], changed?}}
+
+        {:ok, val} ->
+          {:cont, {:ok, [val | vals], true}}
+
+        {:error, errors} when is_list(errors) ->
+          info = [index: index]
+          {:halt, error_with_code(:tuple_element, "tuple element %{index}: invalid", info)}
+
+        {:error, reason, nested_info} ->
+          info = [index: index] ++ nested_info
+          {:halt, error_with_code(:tuple_element, "tuple element %{index}: #{reason}", info)}
+      end
+    end)
+    |> then(fn
+      {:ok, _vals, false} -> :ok
+      {:ok, vals, true} -> {:ok, List.to_tuple(Enum.reverse(vals))}
+      {:error, reason, info} -> {:error, reason, info}
+    end)
+  end
+
+  defp validate_and_extract(val, type, data, opts) do
+    case validate_field(val, type, data, opts) do
+      :ok -> {:ok, val}
+      {:ok, val} -> {:ok, val}
+      err -> err
+    end
+  end
+
+  defp apply_mod_transform(val, type, mod, fun, data, opts) do
+    with {:ok, val} <- validate_and_extract(val, type, data, opts) do
+      cond do
+        function_exported?(mod, fun, 1) ->
+          {:ok, apply(mod, fun, [val])}
+
+        function_exported?(mod, fun, 2) ->
+          {:ok, apply(mod, fun, [val, maybe_get_root_data(data)])}
+
+        true ->
+          template = "expected %{mod} to export %{fun}/1 or %{fun}/2"
+          {:error, template, mod: mod, fun: fun}
+      end
+    end
+  end
+
+  defp apply_mod_transform(val, type, mod, fun, args, data, opts) do
+    with {:ok, val} <- validate_and_extract(val, type, data, opts) do
+      cond do
+        function_exported?(mod, fun, length(args) + 2) ->
+          {:ok, apply(mod, fun, [val, maybe_get_root_data(data) | args])}
+
+        function_exported?(mod, fun, length(args) + 1) ->
+          {:ok, apply(mod, fun, [val | args])}
+
+        true ->
+          template = "expected %{mod} to export %{fun} with arity from %{base} to %{arity}"
+          {:error, template, mod: mod, fun: fun, arity: length(args), base: length(args) + 1}
+      end
+    end
+  end
+
+  defp encoding?(opts), do: Keyword.get(opts, :direction) == :encode
+
+  defp validate_with_encode(val, type, encoder, data, opts) do
+    if encoding?(opts) do
+      case validate_field(val, type, data, opts) do
+        :ok -> {:ok, apply_encoder(encoder, val)}
+        {:ok, val} -> {:ok, apply_encoder(encoder, val)}
+        err -> err
+      end
+    else
+      validate_field(val, type, data, opts)
+    end
+  end
+
+  defp apply_encoder(encoder, val) when is_function(encoder, 1), do: encoder.(val)
+
+  defp apply_encoder({mod, fun}, val) when is_atom(mod) and is_atom(fun),
+    do: apply(mod, fun, [val])
+
+  defp apply_encoder({mod, fun, args}, val) when is_atom(mod) and is_atom(fun) and is_list(args),
+    do: apply(mod, fun, [val | args])
+
+  defp decode_coercion(val, :string, {:list, inner}, coerce_opts, data, opts)
+       when is_binary(val) do
+    case Keyword.fetch(coerce_opts, :split) do
+      {:ok, separators} ->
+        val
+        |> split_wire_list(separators)
+        |> validate_wire_list({:list, {:coerce, :string, inner}}, data, opts)
+
+      :error ->
+        validate_field(val, {:list, inner}, data, opts)
+    end
+  end
+
+  defp decode_coercion(val, :string, {:list, inner, list_opts}, coerce_opts, data, opts)
+       when is_binary(val) and is_list(list_opts) do
+    case Keyword.fetch(coerce_opts, :split) do
+      {:ok, separators} ->
+        val
+        |> split_wire_list(separators)
+        |> validate_wire_list({:list, {:coerce, :string, inner}, list_opts}, data, opts)
+
+      :error ->
+        validate_field(val, {:list, inner, list_opts}, data, opts)
+    end
+  end
+
+  defp decode_coercion(val, source, target, coerce_opts, data, opts) do
+    if matches_type?(val, target) do
+      validate_field(val, target, data, opts)
+    else
+      val
+      |> validate_field(target, data, opts)
+      |> handle_coercion_fallback(val, source, target, coerce_opts, data, opts)
+    end
+  end
+
+  defp split_wire_list(val, separators) do
+    val
+    |> String.split(List.wrap(separators), trim: true)
+    |> Enum.map(&String.trim/1)
+  end
+
+  # a split always replaces the wire value with a list, even when the
+  # elements validate unchanged (:ok from list validation keeps the original)
+  defp validate_wire_list(parts, list_type, data, opts) do
+    case validate_field(parts, list_type, data, opts) do
+      :ok -> {:ok, parts}
+      other -> other
+    end
+  end
+
+  defp handle_coercion_fallback(:ok, _val, _source, _target, _coerce_opts, _data, _opts), do: :ok
+
+  defp handle_coercion_fallback(
+         {:ok, _} = ok,
+         _val,
+         _source,
+         _target,
+         _coerce_opts,
+         _data,
+         _opts
+       ),
+       do: ok
+
+  defp handle_coercion_fallback(target_error, val, source, target, coerce_opts, data, opts) do
+    if matches_source?(val, source) do
+      val
+      |> do_coerce(source, target, coerce_opts)
+      |> finish_coercion(val, source, target, data, opts)
+    else
+      target_error
+    end
+  end
+
+  defp finish_coercion({:ok, coerced}, _val, _source, target, data, opts) do
+    case validate_field(coerced, target, data, opts) do
+      :ok -> {:ok, coerced}
+      {:ok, val} -> {:ok, val}
+      err -> err
+    end
+  end
+
+  defp finish_coercion(:error, val, source, target, _data, _opts) do
+    info = [value: inspect(val), source: inspect(source), target: summarize(target)]
+    error_with_code(:coercion, "cannot coerce %{value} from %{source} to %{target}", info)
+  end
+
+  defp encode_coercion(val, source, target, coerce_opts, data, opts) do
+    case validate_field(val, target, data, opts) do
+      :ok -> {:ok, encode_coerced_value(val, source, target, coerce_opts)}
+      {:ok, val} -> {:ok, encode_coerced_value(val, source, target, coerce_opts)}
+      err -> err
+    end
+  end
+
+  defp encode_coerced_value(val, source, target, coerce_opts) do
+    case Keyword.fetch(coerce_opts, :encode) do
+      {:ok, encoder} -> apply_encoder(encoder, val)
+      :error -> default_wire_encode(val, source, target, coerce_opts)
+    end
+  end
+
+  defp default_wire_encode(val, source, target, coerce_opts) do
+    case {source, target} do
+      {:string, {:list, inner}} when is_list(val) ->
+        encode_wire_list(val, inner, coerce_opts)
+
+      {:string, {:list, inner, list_opts}} when is_list(val) and is_list(list_opts) ->
+        encode_wire_list(val, inner, coerce_opts)
+
+      _other ->
+        default_wire_encode(val, source, target)
+    end
+  end
+
+  defp default_wire_encode(val, :string, target) do
+    case coerce_target_atom(target) do
+      :date -> Date.to_iso8601(val)
+      :time -> Time.to_iso8601(val)
+      :naive_datetime -> NaiveDateTime.to_iso8601(val)
+      :datetime -> DateTime.to_iso8601(val)
+      _other -> to_string(val)
+    end
+  end
+
+  defp default_wire_encode(val, _source, _target), do: val
+
+  defp encode_wire_list(val, inner, coerce_opts) do
+    separator = coerce_opts |> Keyword.get(:split, ",") |> List.wrap() |> List.first()
+    Enum.map_join(val, separator, &default_wire_encode(&1, :string, inner))
+  end
+
+  defp matches_type?(val, :string), do: is_binary(val)
+  defp matches_type?(val, :integer), do: is_integer(val)
+  defp matches_type?(val, :float), do: is_float(val)
+  defp matches_type?(val, :boolean), do: is_boolean(val)
+  defp matches_type?(val, :atom), do: is_atom(val)
+  defp matches_type?(val, :atom!), do: is_atom(val)
+  defp matches_type?(%Date{}, :date), do: true
+  defp matches_type?(%Time{}, :time), do: true
+  defp matches_type?(%DateTime{}, :datetime), do: true
+  defp matches_type?(%NaiveDateTime{}, :naive_datetime), do: true
+  defp matches_type?(_val, _target), do: false
+
+  defp matches_source?(val, :string), do: is_binary(val)
+  defp matches_source?(_val, source) when is_function(source, 1), do: true
+  defp matches_source?(_val, {mod, fun}) when is_atom(mod) and is_atom(fun), do: true
+
+  defp matches_source?(_val, {mod, fun, args})
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: true
+
+  defp matches_source?(_val, _source), do: false
+
+  defp do_coerce(val, source, _target, _coerce_opts) when is_function(source, 1),
+    do: normalize_coercion_result(source.(val))
+
+  defp do_coerce(val, {mod, fun}, _target, _coerce_opts) when is_atom(mod) and is_atom(fun),
+    do: normalize_coercion_result(apply(mod, fun, [val]))
+
+  defp do_coerce(val, {mod, fun, args}, _target, _coerce_opts)
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: normalize_coercion_result(apply(mod, fun, [val | args]))
+
+  defp do_coerce(val, :string, {:enum, choices}, _coerce_opts) when is_binary(val),
+    do: coerce_wire_choice(val, choices)
+
+  defp do_coerce(val, :string, {:enum, choices, enum_opts}, _coerce_opts)
+       when is_binary(val) and is_list(enum_opts),
+       do: coerce_wire_choice(val, choices)
+
+  defp do_coerce(val, :string, {:literal, literal}, _coerce_opts) when is_binary(val),
+    do: coerce_wire_choice(val, [literal])
+
+  defp do_coerce(val, :string, target, _coerce_opts) when is_binary(val),
+    do: coerce_from_string(val, coerce_target_atom(target))
+
+  defp do_coerce(_val, _source, _target, _coerce_opts), do: :error
+
+  # on a choice miss the raw value goes through so the enum/literal
+  # validation produces its own error (including any error: override)
+  defp coerce_wire_choice(val, choices) do
+    Enum.find_value(choices, {:ok, val}, fn
+      choice when is_atom(choice) or is_binary(choice) or is_number(choice) ->
+        if to_string(choice) == val, do: {:ok, choice}
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp normalize_coercion_result({:ok, val}), do: {:ok, val}
+  defp normalize_coercion_result(_other), do: :error
+
+  defp coerce_target_atom(target) when is_atom(target), do: target
+  defp coerce_target_atom({target, _opts}) when is_atom(target), do: target
+  defp coerce_target_atom(_target), do: nil
+
+  defp coerce_from_string(val, :integer) do
+    case Integer.parse(val) do
+      {int, ""} -> {:ok, int}
+      _other -> :error
+    end
+  end
+
+  defp coerce_from_string(val, :float) do
+    case Float.parse(val) do
+      {float, ""} -> {:ok, float}
+      _other -> :error
+    end
+  end
+
+  defp coerce_from_string("true", :boolean), do: {:ok, true}
+  defp coerce_from_string("false", :boolean), do: {:ok, false}
+  defp coerce_from_string(_val, :boolean), do: :error
+
+  defp coerce_from_string(val, :atom) do
+    {:ok, String.to_existing_atom(val)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp coerce_from_string(val, :atom!), do: {:ok, String.to_atom(val)}
+
+  defp coerce_from_string(val, :date), do: wrap_iso8601(Date.from_iso8601(val))
+  defp coerce_from_string(val, :time), do: wrap_iso8601(Time.from_iso8601(val))
+
+  defp coerce_from_string(val, :naive_datetime),
+    do: wrap_iso8601(NaiveDateTime.from_iso8601(val))
+
+  defp coerce_from_string(val, :datetime) do
+    case DateTime.from_iso8601(val) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      {:error, _reason} -> :error
+    end
+  end
+
+  defp coerce_from_string(_val, _target), do: :error
+
+  defp wrap_iso8601({:ok, value}), do: {:ok, value}
+  defp wrap_iso8601({:error, _reason}), do: :error
+
+  # if schema is matches a raw data structure, it will not use the Backplane.Schema.Parser
+  defp maybe_get_root_data(%Backplane.Schema.Parser{} = p), do: p.root_data
+  defp maybe_get_root_data(data), do: data
+
+  defp parser_ref_depth(%Backplane.Schema.Parser{ref_depth: depth}), do: depth
+  defp parser_ref_depth(_data), do: 0
+
+  defp parser_path_rev(%Backplane.Schema.Parser{} = parser),
+    do: Backplane.Schema.Parser.path_rev(parser)
+
+  defp parser_path_rev(_data), do: []
+
+  defp maybe_get_current_data(%Backplane.Schema.Parser{} = p), do: p.current_data || p.data
+  defp maybe_get_current_data(data), do: data
+
+  defp valid_error_opt?(opts) do
+    case Keyword.fetch(opts, :error) do
+      :error -> true
+      {:ok, msg} when is_binary(msg) -> true
+      {:ok, {mod, fun, args}} when is_atom(mod) and is_atom(fun) and is_list(args) -> true
+      {:ok, _} -> false
+    end
+  end
+
+  defp valid_gen_opt?(opts) do
+    case Keyword.fetch(opts, :gen) do
+      :error -> true
+      {:ok, {mod, fun, args}} when is_atom(mod) and is_atom(fun) and is_list(args) -> true
+      {:ok, {mod, fun}} when is_atom(mod) and is_atom(fun) -> true
+      {:ok, fun} when is_function(fun, 0) -> true
+      {:ok, _} -> false
+    end
+  end
+
+  defp valid_list_opts?(opts) do
+    Enum.all?(opts, fn
+      {:min, n} when is_integer(n) and n >= 0 -> true
+      {:max, n} when is_integer(n) and n >= 0 -> true
+      {:unique, b} when is_boolean(b) -> true
+      {:error, _} -> true
+      {:gen, _} -> true
+      _ -> false
+    end)
+  end
+
+  defp check_list_constraints(data, list_opts) do
+    Enum.reduce_while(list_opts, :ok, fn opt, :ok ->
+      case check_list_constraint(data, opt) do
+        :ok -> {:cont, :ok}
+        err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp check_list_constraint(data, {:min, min}) when is_integer(min) do
+    if length(data) >= min do
+      :ok
+    else
+      error_with_code(:min, "should have at least %{min} items", min: min)
+    end
+  end
+
+  defp check_list_constraint(data, {:max, max}) when is_integer(max) do
+    if length(data) <= max do
+      :ok
+    else
+      error_with_code(:max, "should have at most %{max} items", max: max)
+    end
+  end
+
+  defp check_list_constraint(data, {:unique, true}) do
+    if length(Enum.uniq(data)) == length(data) do
+      :ok
+    else
+      error_with_code(:unique, "should have unique items", [])
+    end
+  end
+
+  defp check_list_constraint(_data, {:unique, false}), do: :ok
+  defp check_list_constraint(_data, _opt), do: :ok
+
+  defp multiple_of?(_val, 0), do: false
+  defp multiple_of?(val, n) when is_integer(val) and is_integer(n), do: rem(val, n) == 0
+
+  defp multiple_of?(val, n) when is_number(val) and is_number(n) do
+    quotient = val / n
+    abs(quotient - Float.round(quotient)) < 1.0e-9
+  end
+
+  defp validate_enum_type_opt(enum_opts, p) do
+    case Keyword.fetch(enum_opts, :type) do
+      :error -> :ok
+      {:ok, type} -> validate_type(type, p)
+    end
+  end
+
+  defp run_enum_with_opts(val, choices, enum_opts, data, opts) do
+    case Keyword.fetch(enum_opts, :type) do
+      :error ->
+        validate_field(val, {:enum, choices}, data, opts)
+
+      {:ok, type} ->
+        case validate_field(val, type, data, opts) do
+          :ok ->
+            validate_field(val, {:enum, choices}, data, opts)
+
+          {:ok, validated_val} ->
+            validate_enum_membership(validated_val, choices, data, opts)
+
+          error ->
+            error
+        end
+    end
+  end
+
+  defp validate_enum_membership(val, choices, data, opts) do
+    case validate_field(val, {:enum, choices}, data, opts) do
+      :ok -> {:ok, val}
+      error -> error
+    end
+  end
+
+  defp tag_error_override(:ok, _), do: :ok
+  defp tag_error_override({:ok, _} = result, _), do: result
+  defp tag_error_override(result, nil), do: result
+
+  defp tag_error_override({:error, template, info}, override) when is_list(info) do
+    {:error, template, Keyword.put(info, :__error_override__, override)}
+  end
+
+  defp tag_error_override({:error, errors}, override) when is_list(errors) do
+    tagged =
+      Enum.map(errors, fn
+        {:error, template, info} when is_list(info) ->
+          {:error, template, Keyword.put(info, :__error_override__, override)}
+
+        other ->
+          other
+      end)
+
+    {:error, tagged}
+  end
+
+  defp tag_error_override(other, _), do: other
+
+  defp error_with_code(code, reason, info) when is_map(info) do
+    error_with_code(code, reason, Map.to_list(info))
+  end
+
+  defp error_with_code(code, reason, info) when is_list(info) do
+    {:error, reason, Keyword.put(info, :__error_code__, code)}
+  end
+
+  defp tag_error_code(code, {:error, reason, info}) when is_map(info),
+    do: error_with_code(code, reason, info)
+
+  defp tag_error_code(code, {:error, reason, info}) when is_list(info),
+    do: error_with_code(code, reason, info)
+
+  defp tag_error_code(code, {:error, errors}) when is_list(errors) do
+    {:error, Enum.map(errors, &tag_error_code(code, &1))}
+  end
+
+  defp tag_error_code(code, %Backplane.Schema.Error{errors: nested} = error)
+       when is_list(nested) do
+    %{error | errors: Enum.map(nested, &tag_error_code(code, &1))}
+  end
+
+  defp tag_error_code(code, %Backplane.Schema.Error{code: nil} = error), do: %{error | code: code}
+  defp tag_error_code(_code, %Backplane.Schema.Error{} = error), do: error
+  defp tag_error_code(_code, other), do: other
+
+  defp tag_list_error({:error, reason, info}, index) when is_map(info),
+    do: tag_list_error({:error, reason, Map.to_list(info)}, index)
+
+  defp tag_list_error({:error, reason, info}, index) when is_list(info) do
+    path_prefix = Keyword.get(info, :__error_path_prefix__, [])
+
+    info =
+      info
+      |> Keyword.put_new(:index, index)
+      |> Keyword.put(:__error_path_prefix__, [index | path_prefix])
+
+    {:error, reason, info}
+  end
+
+  defp tag_list_error({:error, errors}, index) when is_list(errors) do
+    {:error, Enum.map(errors, &tag_list_error(&1, index))}
+  end
+
+  defp tag_list_error(%Backplane.Schema.Error{} = error, index) do
+    error = Backplane.Schema.Error.update_error_paths(error, [index])
+    add_list_index_content(error, index)
+  end
+
+  defp tag_list_error(other, _index), do: other
+
+  defp add_list_index_content(%Backplane.Schema.Error{errors: nested} = error, index)
+       when is_list(nested) do
+    %{error | errors: Enum.map(nested, &add_list_index_content(&1, index))}
+  end
+
+  defp add_list_index_content(%Backplane.Schema.Error{} = error, index) do
+    content = if is_map(error.content), do: error.content, else: %{}
+    %{error | content: Map.put_new(content, :index, index)}
+  end
+
+  @ref_depth_limit 64
+
+  defp resolve_ref({_mod, _name} = ref, _val, %Backplane.Schema.Parser{ref_depth: d}, _opts)
+       when d >= @ref_depth_limit do
+    error_with_code(:ref, "ref resolution exceeded depth limit of %{limit} at %{ref}",
+      limit: @ref_depth_limit,
+      ref: inspect(ref)
+    )
+  end
+
+  defp resolve_ref({mod, name}, val, parser, opts) when is_atom(mod) and is_atom(name) do
+    case fetch_ref_schema(mod, name) do
+      {:ok, schema} ->
+        parser =
+          case parser do
+            %Backplane.Schema.Parser{} = parser -> parser
+            data -> Backplane.Schema.Parser.new(data, root_data: data)
+          end
+
+        validate_field(val, schema, Backplane.Schema.Parser.bump_ref_depth(parser), opts)
+
+      {:error, reason} ->
+        error_with_code(:ref, reason, ref: inspect({mod, name}))
+    end
+  end
+
+  defp fetch_ref_schema(nil, name) do
+    {:error, "ref #{inspect(name)} has no module to resolve against; use {:ref, {Mod, name}}"}
+  end
+
+  defp fetch_ref_schema(mod, name) do
+    cond do
+      not Code.ensure_loaded?(mod) ->
+        {:error, "module #{inspect(mod)} not loaded for ref #{inspect(name)}"}
+
+      not function_exported?(mod, :get_schema, 1) ->
+        {:error, "#{inspect(mod)} does not export get_schema/1 for ref #{inspect(name)}"}
+
+      true ->
+        try do
+          {:ok, mod.get_schema(name)}
+        rescue
+          FunctionClauseError ->
+            {:error, "ref #{inspect(name)} not defined in #{inspect(mod)}"}
+        end
+    end
+  end
+
+  defp dispatch_multi(val, field, branches, parser, opts) when is_map(val) or is_list(val) do
+    with {:ok, tag} <- fetch_dispatch_value(val, field),
+         {:ok, branch} <- fetch_branch(branches, tag, field) do
+      validate_field(val, branch, parser, opts)
+    else
+      {:error, reason, info} -> tag_error_code(:multi_dispatch, {:error, reason, info})
+    end
+  end
+
+  defp dispatch_multi(val, _field, _branches, _parser, _opts) do
+    error_with_code(
+      :multi_dispatch,
+      "expected a map or keyword list for :multi dispatch, got %{actual}",
+      actual: inspect(val)
+    )
+  end
+
+  defp fetch_dispatch_value(val, field) when is_map(val) do
+    cond do
+      Map.has_key?(val, field) -> {:ok, Map.get(val, field)}
+      Map.has_key?(val, Atom.to_string(field)) -> {:ok, Map.get(val, Atom.to_string(field))}
+      true -> {:error, "missing :multi dispatch field %{field}", [field: field]}
+    end
+  end
+
+  defp fetch_dispatch_value(val, field) when is_list(val) do
+    if Keyword.has_key?(val, field),
+      do: {:ok, Keyword.get(val, field)},
+      else: {:error, "missing :multi dispatch field %{field}", [field: field]}
+  end
+
+  defp fetch_branch(branches, tag, field) do
+    case Map.fetch(branches, tag) do
+      {:ok, branch} ->
+        {:ok, branch}
+
+      :error ->
+        {:error, "no :multi branch matches dispatch %{field}=%{tag}; expected one of %{tags}",
+         field: field, tag: inspect(tag), tags: inspect(Map.keys(branches))}
+    end
+  end
+
+  defp schema_has_defaults?(schema) when is_enumerable(schema) do
+    Enum.any?(schema, fn {_key, type} -> type_has_default?(type) end)
+  end
+
+  defp type_has_default?({_type, {:default, _default}}), do: true
+  defp type_has_default?({:required, type}), do: type_has_default?(type)
+
+  defp type_has_default?(nested) when is_enumerable(nested) do
+    schema_has_defaults?(nested)
+  end
+
+  defp type_has_default?(_), do: false
+
+  defp call_callback(callback, parser) when is_function(callback, 1) do
+    root = maybe_get_root_data(parser)
+    callback.(root)
+  end
+
+  defp call_callback(callback, parser) when is_function(callback, 2) do
+    current = maybe_get_current_data(parser)
+    root = maybe_get_root_data(parser)
+    callback.(current, root)
+  end
+
+  @doc """
+  Deep merges two map schemas into a new one.
+
+  When both schemas define the same key as a plain map (a nested schema), the
+  nested schemas are merged recursively. Otherwise the value from the right
+  side wins: type tuples and directives are never merged structurally.
+
+  The resulting schema is checked with `validate_schema/1`, returning its
+  error tuple when the composed schema is invalid.
+
+  ## Examples
+
+      iex> Backplane.Schema.merge(%{name: :string}, %{age: :integer})
+      {:ok, %{name: :string, age: :integer}}
+
+      iex> Backplane.Schema.merge(%{name: :string}, %{name: :atom})
+      {:ok, %{name: :atom}}
+
+      iex> Backplane.Schema.merge(%{user: %{name: :string}}, %{user: %{age: :integer}})
+      {:ok, %{user: %{name: :string, age: :integer}}}
+  """
+  @spec merge(map_schema, map_schema) ::
+          {:ok, map_schema} | {:error, [Backplane.Schema.Error.t()]}
+  def merge(schema1, schema2) when is_map(schema1) and is_map(schema2) do
+    schema1 |> deep_merge(schema2) |> validate_schema()
+  end
+
+  def merge(schema1, schema2) do
+    raise ArgumentError,
+          "Backplane.Schema.merge/2 expects two map schemas, got: " <>
+            inspect(schema1) <> " and " <> inspect(schema2)
+  end
+
+  defp deep_merge(schema1, schema2) do
+    Map.merge(schema1, schema2, fn _key, value1, value2 ->
+      if plain_map?(value1) and plain_map?(value2),
+        do: deep_merge(value1, value2),
+        else: value2
+    end)
+  end
+
+  defp plain_map?(value), do: is_map(value) and not is_struct(value)
+
+  @doc """
+  Keeps only the given top-level keys of a map schema.
+
+  Keys not present in the schema are ignored. The resulting schema is checked
+  with `validate_schema/1`, returning its error tuple when invalid.
+
+  ## Examples
+
+      iex> Backplane.Schema.select(%{name: :string, age: :integer}, [:name])
+      {:ok, %{name: :string}}
+
+      iex> Backplane.Schema.select(%{name: :string}, [:name, :missing])
+      {:ok, %{name: :string}}
+  """
+  @spec select(map_schema, [atom | String.t()]) ::
+          {:ok, map_schema} | {:error, [Backplane.Schema.Error.t()]}
+  def select(schema, keys) when is_map(schema) and is_list(keys) do
+    schema |> Map.take(keys) |> validate_schema()
+  end
+
+  def select(schema, keys) do
+    raise ArgumentError,
+          "Backplane.Schema.select/2 expects a map schema and a list of keys, got: " <>
+            inspect(schema) <> " and " <> inspect(keys)
+  end
+
+  @doc """
+  Drops the given top-level keys from a map schema.
+
+  Keys not present in the schema are ignored. The resulting schema is checked
+  with `validate_schema/1`, returning its error tuple when invalid.
+
+  ## Examples
+
+      iex> Backplane.Schema.except(%{name: :string, age: :integer}, [:age])
+      {:ok, %{name: :string}}
+
+      iex> Backplane.Schema.except(%{name: :string}, [:missing])
+      {:ok, %{name: :string}}
+  """
+  @spec except(map_schema, [atom | String.t()]) ::
+          {:ok, map_schema} | {:error, [Backplane.Schema.Error.t()]}
+  def except(schema, keys) when is_map(schema) and is_list(keys) do
+    schema |> Map.drop(keys) |> validate_schema()
+  end
+
+  def except(schema, keys) do
+    raise ArgumentError,
+          "Backplane.Schema.except/2 expects a map schema and a list of keys, got: " <>
+            inspect(schema) <> " and " <> inspect(keys)
+  end
+
+  @doc """
+  Validates a schema definition to ensure it adheres to the expected structure and types.
+
+  This function can handle both simple and complex schema definitions, including nested schemas, custom validation functions, and various type constraints.
+
+  ## Parameters
+
+    - `schema` - The schema definition to be validated. It can be a map or a keyword list representing the schema.
+
+  ## Returns
+
+    - `{:ok, schema}` - If the schema is valid, returns the original schema.
+    - `{:error, errors}` - If the schema is invalid, returns an error tuple with detailed error information.
+
+  ## Examples
+
+    Validating a simple schema:
+
+    ```elixir
+    schema = %{
+      name: :string,
+      age: :integer,
+      email: {:required, :string}
+    }
+    assert {:ok, ^schema} = validate_schema(schema)
+    ```
+
+    Validating a nested schema:
+
+    ```elixir
+    schema = %{
+      user: %{
+        name: :string,
+        profile: %{
+          age: {:required, :integer},
+          email: {:required, :string}
+        }
+      }
+    }
+    assert {:ok, ^schema} = validate_schema(schema)
+    ```
+
+    Handling invalid schema definition:
+
+    ```elixir
+    schema = %{
+      name: :str,
+      age: :integer,
+      email: {:required, :string}
+    }
+    assert {:error, _errors} = validate_schema(schema)
+    ```
+  """
+  def validate_schema(schema) when is_enumerable(schema) do
+    case traverse_definition(schema, Backplane.Schema.Parser.new(schema, root_data: schema)) do
+      %Backplane.Schema.Parser{errors: [], data: data} -> {:ok, data}
+      %Backplane.Schema.Parser{errors: errors} -> {:error, errors}
+    end
+  end
+
+  def validate_schema(schema) do
+    case validate_type(schema, Backplane.Schema.Parser.new(schema, root_data: schema)) do
+      :ok ->
+        {:ok, schema}
+
+      {:error, reason, info} ->
+        {:error,
+         Backplane.Schema.Error.new_single(reason, Keyword.put(info, :__error_code__, :type))}
+    end
+  end
+
+  defp traverse_definition(schema, state) when is_enumerable(schema) do
+    Enum.reduce(schema, state, fn {key, type}, %{path: path} = parser ->
+      case validate_type(type, parser) do
+        :ok ->
+          parser
+
+        {:error, [_ | _] = nested_errs} ->
+          reduce_errors(path, key, nested_errs, parser)
+
+        {:error, reason, info} ->
+          err =
+            Backplane.Schema.Error.new_child(
+              path,
+              key,
+              reason,
+              [{:schema, schema}, {:__error_code__, :type} | info]
+            )
+
+          Backplane.Schema.Parser.add_error(parser, err)
+      end
+    end)
+  end
+
+  defp validate_type(nil, _parser), do: :ok
+  defp validate_type(:any, _parser), do: :ok
+  defp validate_type(:atom, _parser), do: :ok
+  defp validate_type(:atom!, _parser), do: :ok
+  defp validate_type(:integer, _parser), do: :ok
+  defp validate_type(:list, _parser), do: :ok
+  defp validate_type(:map, _parser), do: :ok
+  defp validate_type(:float, _parser), do: :ok
+  defp validate_type(:boolean, _parser), do: :ok
+  defp validate_type(:string, _parser), do: :ok
+  defp validate_type({:literal, _literal}, _parser), do: :ok
+  defp validate_type(:date, _parser), do: :ok
+  defp validate_type(:time, _parser), do: :ok
+  defp validate_type(:duration, _parser), do: :ok
+  defp validate_type(:datetime, _parser), do: :ok
+  defp validate_type(:naive_datetime, _parser), do: :ok
+  defp validate_type(:pid, _parser), do: :ok
+  defp validate_type({type, {:default, _val}}, p), do: validate_type(type, p)
+  defp validate_type({:enum, choices}, _) when is_list(choices), do: :ok
+
+  defp validate_type({:enum, choices, enum_opts}, p)
+       when is_list(choices) and is_list(enum_opts) do
+    cond do
+      not Keyword.keyword?(enum_opts) ->
+        {:error, "expected enum opts to be a keyword list, got %{actual}",
+         actual: inspect(enum_opts)}
+
+      not valid_error_opt?(enum_opts) ->
+        {:error, "expected error: opt to be a string or MFA tuple, got %{actual}",
+         actual: inspect(Keyword.get(enum_opts, :error))}
+
+      not valid_gen_opt?(enum_opts) ->
+        {:error,
+         "expected gen: opt to be an MFA tuple, {mod, fun}, or 0-arity function, got %{actual}",
+         actual: inspect(Keyword.get(enum_opts, :gen))}
+
+      true ->
+        validate_enum_type_opt(enum_opts, p)
+    end
+  end
+
+  defp validate_type({type, options}, p)
+       when is_type_with_multiple_options(type) and is_list(options) do
+    cond do
+      not valid_error_opt?(options) ->
+        {:error, "expected error: opt to be a string or MFA tuple, got %{actual}",
+         actual: inspect(Keyword.get(options, :error))}
+
+      not valid_gen_opt?(options) ->
+        {:error,
+         "expected gen: opt to be an MFA tuple, {mod, fun}, or 0-arity function, got %{actual}",
+         actual: inspect(Keyword.get(options, :gen))}
+
+      true ->
+        options
+        |> Keyword.drop([:error, :gen])
+        |> reduce_type_options(type, p)
+    end
+  end
+
+  defp validate_type({:string, {:regex, %Regex{}}}, _p), do: :ok
+  defp validate_type({:string, {:eq, eq}}, _p) when is_binary(eq), do: :ok
+  defp validate_type({:string, {:min, min}}, _p) when is_integer(min), do: :ok
+  defp validate_type({:string, {:max, max}}, _p) when is_integer(max), do: :ok
+
+  defp validate_type({type, {:eq, val}}, _parer)
+       when is_numeric_type(type) and is_numeric(val),
+       do: :ok
+
+  defp validate_type({type, {:neq, val}}, _parer)
+       when is_numeric_type(type) and is_numeric(val),
+       do: :ok
+
+  defp validate_type({type, {:lt, val}}, _parer)
+       when is_numeric_type(type) and is_numeric(val),
+       do: :ok
+
+  defp validate_type({type, {:lte, val}}, _parer)
+       when is_numeric_type(type) and is_numeric(val),
+       do: :ok
+
+  defp validate_type({type, {:gt, val}}, _parer)
+       when is_numeric_type(type) and is_numeric(val),
+       do: :ok
+
+  defp validate_type({type, {:gte, val}}, _parer)
+       when is_numeric_type(type) and is_numeric(val),
+       do: :ok
+
+  defp validate_type({type, {:range, {min, max}}}, _parer)
+       when is_numeric_type(type) and is_numeric(min) and is_numeric(max),
+       do: :ok
+
+  defp validate_type({type, {:multiple_of, n}}, _parer)
+       when is_numeric_type(type) and is_numeric(n) and n != 0,
+       do: :ok
+
+  defp validate_type({type, {:multiple_of, n}}, _parer) when is_numeric_type(type) do
+    {:error, "expected :multiple_of value to be a non-zero number, got %{actual}",
+     actual: inspect(n)}
+  end
+
+  defp validate_type({type, {:transform, mapper}}, p) when is_function(mapper, 1),
+    do: validate_type(type, p)
+
+  defp validate_type({type, {:transform, mapper}}, p) when is_function(mapper, 2),
+    do: validate_type(type, p)
+
+  defp validate_type({type, {:transform, {_mod, _fun}}}, p),
+    do: validate_type(type, p)
+
+  defp validate_type({type, {:transform, {_mod, _fun, args}}}, p) when is_list(args),
+    do: validate_type(type, p)
+
+  defp validate_type({type, {:encode, encoder}}, p) when is_function(encoder, 1),
+    do: validate_type(type, p)
+
+  defp validate_type({type, {:encode, {mod, fun}}}, p) when is_atom(mod) and is_atom(fun),
+    do: validate_type(type, p)
+
+  defp validate_type({type, {:encode, {mod, fun, args}}}, p)
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: validate_type(type, p)
+
+  defp validate_type({:coerce, target}, p),
+    do: validate_coerce_type(:string, target, [], p)
+
+  defp validate_type({:coerce, target, coerce_opts}, p) when is_list(coerce_opts),
+    do: validate_coerce_type(:string, target, coerce_opts, p)
+
+  defp validate_type({:coerce, source, target}, p),
+    do: validate_coerce_type(source, target, [], p)
+
+  defp validate_type({:coerce, source, target, coerce_opts}, p) when is_list(coerce_opts),
+    do: validate_coerce_type(source, target, coerce_opts, p)
+
+  defp validate_type({:coerce, _source, _target, coerce_opts}, _p) do
+    {:error, "expected coerce opts to be a keyword list, got %{actual}",
+     actual: inspect(coerce_opts)}
+  end
+
+  defp validate_type({:required, {type, {:default, val}}}, _) do
+    template = "cannot set default value of %{value} for required field of type %{type}"
+    {:error, template, [value: val, type: summarize(type)]}
+  end
+
+  defp validate_type({:meta, type, meta_opts}, p) when is_list(meta_opts) do
+    cond do
+      not Keyword.keyword?(meta_opts) ->
+        {:error, "expected meta opts to be a keyword list, got %{actual}",
+         actual: inspect(meta_opts)}
+
+      not valid_gen_opt?(meta_opts) ->
+        {:error,
+         "expected gen: opt to be an MFA tuple, {mod, fun}, or 0-arity function, got %{actual}",
+         actual: inspect(Keyword.get(meta_opts, :gen))}
+
+      true ->
+        validate_type(type, p)
+    end
+  end
+
+  defp validate_type({:meta, _type, meta_opts}, _p) do
+    {:error, "expected meta opts to be a keyword list, got %{actual}", actual: inspect(meta_opts)}
+  end
+
+  defp validate_type({:ref, name}, _p) when is_atom(name), do: :ok
+
+  defp validate_type({:ref, {mod, name}}, _p) when is_atom(mod) and is_atom(name), do: :ok
+
+  defp validate_type({:multi, field, branches}, p)
+       when is_atom(field) and is_map(branches) do
+    Enum.reduce_while(branches, :ok, fn {_tag, branch}, :ok ->
+      case validate_type(branch, p) do
+        :ok -> {:cont, :ok}
+        err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp validate_type({:multi, field, _branches}, _p) when not is_atom(field) do
+    {:error, "expected :multi dispatch field to be an atom, got %{actual}",
+     actual: inspect(field)}
+  end
+
+  defp validate_type({:multi, _field, branches}, _p) when not is_map(branches) do
+    {:error, "expected :multi branches to be a map, got %{actual}", actual: inspect(branches)}
+  end
+
+  defp validate_type({:required, type}, p), do: validate_type(type, p)
+
+  defp validate_type({:required, type, opts}, p) when is_list(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, "expected required opts to be a keyword list, got %{actual}",
+         actual: inspect(opts)}
+
+      not valid_error_opt?(opts) ->
+        {:error, "expected error: opt to be a string or MFA tuple, got %{actual}",
+         actual: inspect(Keyword.get(opts, :error))}
+
+      not valid_gen_opt?(opts) ->
+        {:error,
+         "expected gen: opt to be an MFA tuple, {mod, fun}, or 0-arity function, got %{actual}",
+         actual: inspect(Keyword.get(opts, :gen))}
+
+      true ->
+        validate_type(type, p)
+    end
+  end
+
+  defp validate_type({:list, type}, p), do: validate_type(type, p)
+
+  defp validate_type({:list, type, list_opts}, p) when is_list(list_opts) do
+    cond do
+      not Keyword.keyword?(list_opts) ->
+        {:error, "expected list opts to be a keyword list, got %{actual}",
+         actual: inspect(list_opts)}
+
+      not valid_list_opts?(list_opts) ->
+        {:error, "invalid list constraint, allowed: :min, :max, :unique; got %{actual}",
+         actual: inspect(list_opts)}
+
+      true ->
+        validate_type(type, p)
+    end
+  end
+
+  defp validate_type({:map, type}, p), do: validate_type(type, p)
+
+  defp validate_type({:map, key_type, value_type}, p) do
+    with :ok <- validate_type(key_type, p) do
+      validate_type(value_type, p)
+    end
+  end
+
+  defp validate_type({:schema, type}, p), do: validate_type(type, p)
+
+  defp validate_type({:schema, type, {:additional_keys, value_type}}, p) when is_map(type) do
+    with :ok <- validate_type(type, p) do
+      validate_type(value_type, p)
+    end
+  end
+
+  defp validate_type({:schema, type, schema_opts}, p) when is_list(schema_opts) do
+    cond do
+      not Keyword.keyword?(schema_opts) ->
+        {:error, "expected :schema opts to be a keyword list, got %{actual}",
+         actual: inspect(schema_opts)}
+
+      not is_binary(Keyword.get(schema_opts, :name, "")) and
+          not is_atom(Keyword.get(schema_opts, :name)) ->
+        {:error, "expected :schema name to be a binary or atom, got %{actual}",
+         actual: inspect(Keyword.get(schema_opts, :name))}
+
+      true ->
+        validate_type(type, p)
+    end
+  end
+
+  defp validate_type({:custom, cb}, _)
+       when is_function(cb, 1) or is_function(cb, 2),
+       do: :ok
+
+  defp validate_type({:custom, {mod, fun}}, _) when is_atom(mod) and is_atom(fun), do: :ok
+
+  defp validate_type({:custom, {mod, fun, args}}, _)
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: :ok
+
+  defp validate_type({:cond, cb, type, else_type}, p)
+       when is_function(cb, 1) or is_function(cb, 2) do
+    with :ok <- validate_type(type, p) do
+      validate_type(else_type, p)
+    end
+  end
+
+  defp validate_type({:dependent, cb}, _) when is_function(cb, 1) or is_function(cb, 2), do: :ok
+
+  defp validate_type({:dependent, {mod, fun}}, _) when is_atom(mod) and is_atom(fun), do: :ok
+
+  defp validate_type({:dependent, {mod, fun, args}}, _)
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: :ok
+
+  defp validate_type({:dependent, _, cb, type}, p) when is_function(cb, 2) do
+    validate_type(type, p)
+  end
+
+  defp validate_type({:tuple, types}, p) do
+    Enum.reduce_while(types, :ok, fn type, :ok ->
+      case validate_type(type, p) do
+        :ok -> {:cont, :ok}
+        {:error, errors} -> {:halt, {:error, errors}}
+        {:error, template, info} -> {:halt, {:error, template, info}}
+      end
+    end)
+  end
+
+  defp validate_type({:either, {type_1, type_2}}, p) do
+    with :ok <- validate_type(type_1, p) do
+      validate_type(type_2, p)
+    end
+  end
+
+  defp validate_type({:oneof, types}, p) do
+    Enum.reduce_while(types, :ok, fn type, :ok ->
+      case validate_type(type, p) do
+        :ok -> {:cont, :ok}
+        {:error, errors} -> {:halt, {:error, errors}}
+        {:error, template, info} -> {:halt, {:error, template, info}}
+      end
+    end)
+  end
+
+  defp validate_type(schema, p) when is_enumerable(schema) do
+    case traverse_definition(schema, p) do
+      %Backplane.Schema.Parser{errors: []} -> :ok
+      %Backplane.Schema.Parser{errors: errors} -> {:error, errors}
+    end
+  end
+
+  defp validate_type(invalid, _p) do
+    invalid = inspect(invalid, pretty: true)
+    {:error, "invalid schema definition: %{invalid}", invalid: invalid}
+  end
+
+  defp reduce_type_options(options, type, p) do
+    Enum.reduce_while(options, :ok, fn option, :ok ->
+      case validate_type({type, option}, p) do
+        :ok -> {:cont, :ok}
+        {:error, errors} -> {:halt, {:error, errors}}
+        {:error, template, info} -> {:halt, {:error, template, info}}
+      end
+    end)
+  end
+
+  @coerce_string_targets [
+    :integer,
+    :float,
+    :boolean,
+    :atom,
+    :atom!,
+    :date,
+    :time,
+    :naive_datetime,
+    :datetime
+  ]
+
+  defp validate_coerce_type(source, target, coerce_opts, p) do
+    with :ok <- validate_coerce_source(source),
+         :ok <- validate_coerce_target(source, target),
+         :ok <- validate_coerce_opts(coerce_opts),
+         :ok <- validate_coerce_list_split(source, target, coerce_opts),
+         do: validate_type(target, p)
+  end
+
+  defp validate_coerce_list_split(:string, {:list, _inner}, coerce_opts),
+    do: require_split_opt(coerce_opts)
+
+  defp validate_coerce_list_split(:string, {:list, _inner, list_opts}, coerce_opts)
+       when is_list(list_opts),
+       do: require_split_opt(coerce_opts)
+
+  defp validate_coerce_list_split(_source, _target, _coerce_opts), do: :ok
+
+  defp require_split_opt(coerce_opts) do
+    if Keyword.has_key?(coerce_opts, :split) do
+      :ok
+    else
+      {:error,
+       "expected split: opt when coercing from :string to a list target, e.g. {:coerce, {:list, :integer}, split: \",\"}",
+       []}
+    end
+  end
+
+  defp validate_coerce_source(:string), do: :ok
+  defp validate_coerce_source(fun) when is_function(fun, 1), do: :ok
+
+  defp validate_coerce_source({mod, fun}) when is_atom(mod) and is_atom(fun), do: :ok
+
+  defp validate_coerce_source({mod, fun, args})
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: :ok
+
+  defp validate_coerce_source(other) do
+    {:error,
+     "expected coerce source to be :string, a 1-arity function, or an MFA tuple, got %{actual}",
+     actual: inspect(other)}
+  end
+
+  defp validate_coerce_target(:string, target) do
+    if coerce_string_target?(target) do
+      :ok
+    else
+      {:error,
+       "expected coerce target for :string source to be one of %{targets}, an {:enum, ...}, a {:literal, ...}, or a {:list, ...} of those, got %{actual}",
+       targets: inspect(@coerce_string_targets), actual: summarize(target)}
+    end
+  end
+
+  defp validate_coerce_target(_source, _target), do: :ok
+
+  defp coerce_string_target?(target) when target in @coerce_string_targets, do: true
+
+  defp coerce_string_target?({target, _opts}) when target in @coerce_string_targets, do: true
+
+  defp coerce_string_target?({:enum, choices}) when is_list(choices), do: true
+
+  defp coerce_string_target?({:enum, choices, enum_opts})
+       when is_list(choices) and is_list(enum_opts),
+       do: true
+
+  defp coerce_string_target?({:literal, literal})
+       when is_atom(literal) or is_binary(literal) or is_number(literal),
+       do: true
+
+  defp coerce_string_target?({:list, inner}), do: coerce_string_target?(inner)
+
+  defp coerce_string_target?({:list, inner, list_opts}) when is_list(list_opts),
+    do: coerce_string_target?(inner)
+
+  defp coerce_string_target?(_target), do: false
+
+  defp validate_coerce_opts(opts) do
+    cond do
+      not Keyword.keyword?(opts) ->
+        {:error, "expected coerce opts to be a keyword list, got %{actual}",
+         actual: inspect(opts)}
+
+      not valid_coerce_encode_opt?(opts) ->
+        {:error, "expected encode: opt to be a 1-arity function or an MFA tuple, got %{actual}",
+         actual: inspect(Keyword.get(opts, :encode))}
+
+      not valid_coerce_split_opt?(opts) ->
+        {:error, "expected split: opt to be a string or a list of strings, got %{actual}",
+         actual: inspect(Keyword.get(opts, :split))}
+
+      Keyword.keys(opts) -- [:encode, :split] != [] ->
+        {:error, "unknown coerce opts %{actual}, only :encode and :split are allowed",
+         actual: inspect(Keyword.keys(opts) -- [:encode, :split])}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp valid_coerce_split_opt?(opts) do
+    case Keyword.fetch(opts, :split) do
+      :error -> true
+      {:ok, separator} when is_binary(separator) -> true
+      {:ok, [_ | _] = separators} -> Enum.all?(separators, &is_binary/1)
+      {:ok, _} -> false
+    end
+  end
+
+  defp valid_coerce_encode_opt?(opts) do
+    case Keyword.fetch(opts, :encode) do
+      :error -> true
+      {:ok, fun} when is_function(fun, 1) -> true
+      {:ok, {mod, fun}} when is_atom(mod) and is_atom(fun) -> true
+      {:ok, {mod, fun, args}} when is_atom(mod) and is_atom(fun) and is_list(args) -> true
+      {:ok, _} -> false
+    end
+  end
+
+  # Helper functions
+
+  # Normalize validation results to handle different error formats
+  defp normalize_validation_result(:ok), do: :ok
+  defp normalize_validation_result({:ok, val}), do: {:ok, val}
+  defp normalize_validation_result({:error, reason, info}), do: {:error, [reason, info]}
+  defp normalize_validation_result({:error, errors}), do: {:error, errors}
+
+  defp reduce_errors(path, key, [_ | _] = errors, parser) do
+    Enum.reduce(errors, parser, fn
+      %Backplane.Schema.Error{} = err, parser ->
+        err
+        |> Backplane.Schema.Error.update_error_paths(path ++ [key])
+        |> then(&Backplane.Schema.Error.new_parent(path, key, [&1]))
+        |> then(&Backplane.Schema.Parser.add_error(parser, &1))
+
+      {:error, reason, info}, parser ->
+        err =
+          Backplane.Schema.Error.new_child(
+            path,
+            key,
+            reason,
+            Keyword.put_new(info, :__error_code__, :type)
+          )
+
+        Backplane.Schema.Parser.add_error(parser, err)
+    end)
+  end
+end

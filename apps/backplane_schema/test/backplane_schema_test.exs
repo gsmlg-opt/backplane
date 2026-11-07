@@ -1,0 +1,3188 @@
+defmodule PeriTest do
+  use ExUnit.Case, async: true
+
+  import Backplane.Schema
+
+  defschema(:simple, %{
+    name: :string,
+    age: :integer,
+    email: {:required, :string}
+  })
+
+  defschema(:simple_mixed_keys, %{
+    "email" => {:required, :string},
+    name: :string,
+    age: :integer
+  })
+
+  defschema(:nested, %{
+    user: %{
+      name: :string,
+      profile: %{
+        age: {:required, :integer},
+        email: {:required, :string}
+      }
+    }
+  })
+
+  defschema(:optional_fields, %{
+    name: :string,
+    age: {:required, :integer},
+    email: {:required, :string},
+    phone: :string
+  })
+
+  defschema(:invalid_nested_type, %{
+    user: %{
+      name: :string,
+      profile: %{
+        age: {:required, :integer},
+        email: :string,
+        address: %{
+          street: :string,
+          number: :integer
+        }
+      }
+    }
+  })
+
+  describe "simple schema validation" do
+    test "validates simple schema with valid data" do
+      data = %{name: "John", age: 30, email: "john@example.com"}
+      assert {:ok, ^data} = simple(data)
+    end
+
+    test "validates simple schema with missing required field" do
+      data = %{name: "John", age: 30}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:email],
+                  message: "is required, expected type of :string"
+                }
+              ]} =
+               simple(data)
+    end
+
+    test "validates simple schema with invalid field type" do
+      data = %{name: "John", age: "thirty", email: "john@example.com"}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:age],
+                   key: :age,
+                   content: %{actual: "\"thirty\"", expected: ":integer"},
+                   message: "expected type of :integer received \"thirty\" value",
+                   errors: nil
+                 }
+               ]
+             } =
+               simple(data)
+    end
+
+    test "does not raise on simple schema with string keys" do
+      data = %{name: "John", age: 30}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: ["email"],
+                  message: "is required, expected type of :string"
+                }
+              ]} =
+               simple_mixed_keys(data)
+    end
+  end
+
+  defschema(:nested_explicit, %{
+    user:
+      {:schema,
+       %{
+         name: :string,
+         profile:
+           {:schema,
+            %{
+              age: {:required, :integer},
+              email: {:required, :string}
+            }}
+       }}
+  })
+
+  defschema(:nested_additional_keys, %{
+    definitions:
+      {:schema, %{main: {:required, %{id: :string, foobar: :integer}}},
+       {:additional_keys, {:oneof, [:string, :integer, :boolean]}}}
+  })
+
+  describe "nested schema validation" do
+    test "validates nested schema with valid data" do
+      data = %{user: %{name: "Jane", profile: %{age: 25, email: "jane@example.com"}}}
+      assert {:ok, ^data} = nested(data)
+    end
+
+    test "validates nested schema with invalid data" do
+      data = %{user: %{name: "Jane", profile: %{age: "twenty-five", email: "jane@example.com"}}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:user],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:user, :profile],
+                       key: :profile,
+                       content: nil,
+                       message: nil,
+                       errors: [
+                         %Backplane.Schema.Error{
+                           path: [:user, :profile, :age],
+                           key: :age,
+                           content: %{expected: ":integer", actual: "\"twenty-five\""},
+                           message: "expected type of :integer received \"twenty-five\" value",
+                           errors: nil
+                         }
+                       ]
+                     }
+                   ],
+                   key: :user
+                 }
+               ]
+             } = nested(data)
+    end
+
+    test "validates nested schema with missing required field" do
+      data = %{user: %{name: "Jane", profile: %{age: 25}}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:user],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:user, :profile],
+                       key: :profile,
+                       content: nil,
+                       message: nil,
+                       errors: [
+                         %Backplane.Schema.Error{
+                           path: [:user, :profile, :email],
+                           key: :email,
+                           content: %{expected: ":string"},
+                           message: "is required, expected type of :string",
+                           errors: nil
+                         }
+                       ]
+                     }
+                   ],
+                   key: :user
+                 }
+               ]
+             } =
+               nested(data)
+    end
+
+    test "validates nested schema with an explicit type" do
+      data = %{user: %{name: "Jane", profile: %{age: 25, email: "jane@example.com"}}}
+      assert {:ok, ^data} = nested_explicit(data)
+    end
+
+    test "preserves defaults and transforms when additional keys are absent" do
+      schema =
+        {:schema,
+         %{
+           a: {:integer, {:default, 1}},
+           b: {:integer, {:transform, fn value -> value * 2 end}}
+         }, {:additional_keys, :string}}
+
+      for mode <- [:strict, :permissive] do
+        assert {:ok, %{a: 1, b: 4}} = Backplane.Schema.validate(schema, %{b: 2}, mode: mode)
+      end
+    end
+
+    test "preserves defaults and transforms in nested additional-key schemas" do
+      schema = %{
+        settings:
+          {:schema,
+           %{
+             a: {:integer, {:default, 1}},
+             b: {:integer, {:transform, fn value -> value * 2 end}}
+           }, {:additional_keys, :string}}
+      }
+
+      assert {:ok, %{settings: %{a: 1, b: 4}}} =
+               Backplane.Schema.validate(schema, %{settings: %{b: 2}})
+    end
+
+    test "validates additional keys in a nested schema" do
+      data = %{
+        definitions: %{
+          :main => %{id: "1234", foobar: 55},
+          :foo => 412,
+          "bar" => "lorem ipsum",
+          "foobar" => true
+        }
+      }
+
+      assert {:ok, ^data} = nested_additional_keys(data)
+    end
+
+    test "validates invalid additional keys in a nested schema" do
+      data = %{
+        definitions: %{
+          :main => %{id: "1234", foobar: 55},
+          :foo => [412],
+          "bar" => %{},
+          "foobar" => true
+        }
+      }
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:definitions],
+                  key: :definitions,
+                  content: %{actual: "[412]", oneof: ":string or :integer or :boolean"},
+                  message: "expected one of :string or :integer or :boolean, got: [412]",
+                  errors: nil
+                }
+              ]} = nested_additional_keys(data)
+    end
+
+    test "validates additional keys in a nested schema when the data's key is a string" do
+      data = %{
+        "definitions" => %{
+          "main" => %{id: "1234", foobar: 55},
+          :foo => 412,
+          "bar" => "lorem ipsum",
+          "foobar" => true
+        }
+      }
+
+      expected = %{
+        definitions: %{
+          :main => %{id: "1234", foobar: 55},
+          :foo => 412,
+          "bar" => "lorem ipsum",
+          "foobar" => true
+        }
+      }
+
+      assert {:ok, ^expected} = nested_additional_keys(data)
+    end
+
+    test "validates nested schema of an invalid type with additional keys" do
+      data = %{
+        definitions: %{
+          :main => %{id: "1234", foobar: "fifty-five"},
+          :foo => 412,
+          "bar" => %{},
+          "foobar" => true
+        }
+      }
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:definitions],
+                  key: :definitions,
+                  content: nil,
+                  message: nil,
+                  errors: [
+                    %Backplane.Schema.Error{
+                      path: [:definitions, :main],
+                      key: :main,
+                      content: nil,
+                      message: nil,
+                      errors: [
+                        %Backplane.Schema.Error{
+                          path: [:definitions, :main, :foobar],
+                          key: :foobar,
+                          content: %{actual: "\"fifty-five\"", expected: ":integer"},
+                          message: "expected type of :integer received \"fifty-five\" value",
+                          errors: nil
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]} = nested_additional_keys(data)
+    end
+  end
+
+  describe "optional fields validation" do
+    test "validates schema with optional fields" do
+      data = %{name: "John", age: 30, email: "john@example.com"}
+      assert {:ok, ^data} = optional_fields(data)
+
+      data_with_optional = %{name: "John", age: 30, email: "john@example.com", phone: "123-456"}
+      assert {:ok, ^data_with_optional} = optional_fields(data_with_optional)
+    end
+
+    test "validates schema with optional fields and invalid optional field type" do
+      data = %{name: "John", age: 30, email: "john@example.com", phone: 123_456}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:phone],
+                   key: :phone,
+                   content: %{actual: "123456", expected: ":string"},
+                   message: "expected type of :string received 123456 value",
+                   errors: nil
+                 }
+               ]
+             } =
+               optional_fields(data)
+    end
+  end
+
+  defschema(:list_example, %{
+    tags: {:list, :string},
+    scores: {:list, :integer}
+  })
+
+  defschema(:enum_example, %{
+    role: {:enum, [:admin, :user, :guest]},
+    status: {:enum, [:active, :inactive]}
+  })
+
+  describe "list validation" do
+    test "validates list of strings with correct data" do
+      data = %{tags: ["elixir", "programming"], scores: [1, 2, 3]}
+      assert list_example(data) == {:ok, data}
+    end
+
+    test "validates list of strings with incorrect data type in list" do
+      data = %{tags: ["elixir", 42], scores: [1, 2, 3]}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:tags, 1],
+                   key: :tags,
+                   code: :type,
+                   content: %{index: 1, actual: "42", expected: ":string"},
+                   message: "expected type of :string received 42 value",
+                   errors: nil
+                 }
+               ]
+             } =
+               list_example(data)
+    end
+
+    test "validates list of integers with correct data" do
+      data = %{tags: ["tag1", "tag2"], scores: [10, 20, 30]}
+      assert list_example(data) == {:ok, data}
+    end
+
+    test "validates list of integers with incorrect data type in list" do
+      data = %{tags: ["tag1", "tag2"], scores: [10, "twenty", 30]}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:scores, 1],
+                   key: :scores,
+                   code: :type,
+                   content: %{index: 1, actual: "\"twenty\"", expected: ":integer"},
+                   message: "expected type of :integer received \"twenty\" value",
+                   errors: nil
+                 }
+               ]
+             } =
+               list_example(data)
+    end
+
+    test "handles empty lists correctly" do
+      data = %{tags: [], scores: []}
+      assert list_example(data) == {:ok, data}
+    end
+
+    test "preserves unchanged elements when another element is coerced" do
+      schema = %{xs: {:list, {:coerce, :string, :integer}}}
+
+      assert {:ok, %{xs: [1, 2, 3]}} = Backplane.Schema.validate(schema, %{xs: [1, "2", 3]})
+    end
+
+    test "handles missing lists correctly" do
+      data = %{}
+      assert list_example(data) == {:ok, data}
+    end
+  end
+
+  describe "enum validation" do
+    test "validates enum with correct data" do
+      data = %{role: :admin, status: :active}
+      assert enum_example(data) == {:ok, data}
+    end
+
+    test "validates enum with incorrect data" do
+      data = %{role: :superuser, status: :active}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:role],
+                  message: "expected one of [:admin, :user, :guest] received :superuser"
+                }
+              ]} = enum_example(data)
+    end
+
+    test "validates enum with another incorrect data" do
+      data = %{role: :admin, status: :pending}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:status],
+                  message: "expected one of [:active, :inactive] received :pending"
+                }
+              ]} = enum_example(data)
+    end
+
+    test "handles missing enum fields correctly" do
+      data = %{}
+      assert enum_example(data) == {:ok, data}
+    end
+
+    test "handles nil enum fields correctly" do
+      data = %{role: nil, status: nil}
+      assert enum_example(data) == {:ok, data}
+    end
+  end
+
+  describe "enum validation with opts (3-arity)" do
+    test "validates value membership when no opts" do
+      assert Backplane.Schema.validate({:enum, [1, 2, 3], []}, 2) == {:ok, 2}
+
+      assert {:error, %Backplane.Schema.Error{message: "expected one of [1, 2, 3] received 4"}} =
+               Backplane.Schema.validate({:enum, [1, 2, 3], []}, 4)
+    end
+
+    test "checks base type with :type opt" do
+      schema = {:enum, [1, 2, 3], type: :integer}
+      assert Backplane.Schema.validate(schema, 2) == {:ok, 2}
+
+      assert {:error,
+              %Backplane.Schema.Error{message: "expected type of :integer received \"2\" value"}} =
+               Backplane.Schema.validate(schema, "2")
+    end
+
+    test "checks membership after a type transforms the value" do
+      schema = {:enum, [2], type: {:coerce, :string, :integer}}
+
+      assert {:ok, 2} = Backplane.Schema.validate(schema, "2")
+
+      assert {:error, %Backplane.Schema.Error{message: "expected one of [2] received 1"}} =
+               Backplane.Schema.validate(schema, "1")
+    end
+
+    test "checks membership after a type returns without transforming" do
+      schema = {:enum, [1], type: :integer}
+
+      assert {:ok, 1} = Backplane.Schema.validate(schema, 1)
+
+      assert {:error, %Backplane.Schema.Error{message: "expected one of [1] received 2"}} =
+               Backplane.Schema.validate(schema, 2)
+    end
+
+    test ":type passes but value not in choices fails on enum" do
+      schema = {:enum, [1, 2, 3], type: :integer}
+
+      assert {:error, %Backplane.Schema.Error{message: "expected one of [1, 2, 3] received 99"}} =
+               Backplane.Schema.validate(schema, 99)
+    end
+
+    test ":error opt overrides message" do
+      schema = {:enum, [1, 2], type: :integer, error: "must be 1 or 2"}
+
+      assert {:error, %Backplane.Schema.Error{message: "must be 1 or 2"}} =
+               Backplane.Schema.validate(schema, 3)
+    end
+
+    test "validates inside a map schema" do
+      schema = %{role: {:enum, [:admin, :user], type: :atom}}
+      assert Backplane.Schema.validate(schema, %{role: :admin}) == {:ok, %{role: :admin}}
+
+      assert {:error, [%Backplane.Schema.Error{path: [:role]}]} =
+               Backplane.Schema.validate(schema, %{role: :superuser})
+    end
+
+    test "rejects non-keyword opts at validate_schema/1" do
+      assert {:error, _} = Backplane.Schema.validate_schema({:enum, [1, 2], [1, 2]})
+    end
+
+    test "rejects invalid :gen opt at validate_schema/1" do
+      assert {:error, _} = Backplane.Schema.validate_schema({:enum, [1, 2], gen: :not_a_callable})
+    end
+  end
+
+  defschema(:list_of_maps_example, %{
+    users: {:list, %{name: {:required, :string}, age: {:required, :integer}}}
+  })
+
+  defschema(:map_of_integers, %{
+    scores: {:map, :integer}
+  })
+
+  defschema(:map_of_lists, %{
+    user_lists: {:map, {:list, :string}}
+  })
+
+  defschema(:map_of_maps, %{
+    user_data: {:map, %{name: :string, age: :integer}}
+  })
+
+  defschema(:string_to_integer_map, %{
+    scores: {:map, :string, :integer}
+  })
+
+  defschema(:atom_to_map_map, %{
+    users: {:map, :atom, %{name: :string, active: :boolean}}
+  })
+
+  describe "map type validation" do
+    test "validates map of integers with correct data" do
+      data = %{scores: %{"Alice" => 95, "Bob" => 87, "Charlie" => 92}}
+      assert map_of_integers(data) == {:ok, data}
+    end
+
+    test "validates map of integers with incorrect value type" do
+      data = %{scores: %{"Alice" => "excellent", "Bob" => 87}}
+
+      assert {:error, errors} = map_of_integers(data)
+      assert [%Backplane.Schema.Error{path: [:scores]}] = errors
+    end
+
+    test "validates map of lists with correct data" do
+      data = %{
+        user_lists: %{
+          "team_a" => ["Alice", "Bob", "Charlie"],
+          "team_b" => ["Dave", "Eve"]
+        }
+      }
+
+      assert map_of_lists(data) == {:ok, data}
+    end
+
+    test "validates map of lists with incorrect inner type" do
+      data = %{
+        user_lists: %{
+          "team_a" => ["Alice", "Bob", 123],
+          "team_b" => ["Dave", "Eve"]
+        }
+      }
+
+      assert {:error, errors} = map_of_lists(data)
+
+      assert [%Backplane.Schema.Error{path: [:user_lists, 2], code: :type, content: %{index: 2}}] =
+               errors
+    end
+
+    test "validates map of maps with correct data" do
+      data = %{
+        user_data: %{
+          "user1" => %{name: "Alice", age: 30},
+          "user2" => %{name: "Bob", age: 25}
+        }
+      }
+
+      assert map_of_maps(data) == {:ok, data}
+    end
+
+    test "validates map of maps with incorrect inner field" do
+      data = %{
+        user_data: %{
+          "user1" => %{name: "Alice", age: "thirty"},
+          "user2" => %{name: "Bob", age: 25}
+        }
+      }
+
+      assert {:error, errors} = map_of_maps(data)
+      assert [%Backplane.Schema.Error{path: [:user_data]}] = errors
+    end
+
+    test "handles empty map correctly" do
+      data = %{scores: %{}}
+      assert map_of_integers(data) == {:ok, data}
+    end
+
+    test "handles missing map correctly" do
+      data = %{}
+      assert map_of_integers(data) == {:ok, data}
+    end
+
+    test "validates empty map with :map type" do
+      schema = %{data: :map}
+      data = %{data: %{}}
+      assert Backplane.Schema.validate(schema, data) == {:ok, data}
+    end
+
+    test "validates empty map with {:required, :map} type" do
+      schema = %{data: {:required, :map}}
+      data = %{data: %{}}
+      assert Backplane.Schema.validate(schema, data) == {:ok, data}
+    end
+
+    test "validates nil with {:required, :map} type" do
+      schema = %{data: {:required, :map}}
+      data = %{data: nil}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:data],
+                  message: "is required, expected type of :map"
+                }
+              ]} =
+               Backplane.Schema.validate(schema, data)
+    end
+
+    test "validates empty map returns consistent result" do
+      # Test that empty maps return consistent results
+      schema1 = %{data: {:map, :string}}
+      data = %{data: %{}}
+      result1 = Backplane.Schema.validate(schema1, data)
+      assert result1 == {:ok, data}
+
+      # Direct field validation should also be consistent
+      assert Backplane.Schema.validate({:map, :string}, %{}) == {:ok, %{}}
+    end
+  end
+
+  defschema(:literal_values, %{
+    string_val: {:literal, "hello"},
+    integer_val: {:literal, 42},
+    float_val: {:literal, 3.14},
+    atom_val: {:literal, :success},
+    boolean_val: {:literal, true}
+  })
+
+  describe "literal type validation" do
+    test "validates literal values with correct data" do
+      data = %{
+        string_val: "hello",
+        integer_val: 42,
+        float_val: 3.14,
+        atom_val: :success,
+        boolean_val: true
+      }
+
+      assert literal_values(data) == {:ok, data}
+    end
+
+    test "validates literal values with incorrect string value" do
+      data = %{
+        string_val: "world",
+        integer_val: 42,
+        float_val: 3.14,
+        atom_val: :success,
+        boolean_val: true
+      }
+
+      assert {:error, errors} = literal_values(data)
+      assert [%Backplane.Schema.Error{path: [:string_val]}] = errors
+    end
+
+    test "validates literal values with incorrect integer value" do
+      data = %{
+        string_val: "hello",
+        integer_val: 24,
+        float_val: 3.14,
+        atom_val: :success,
+        boolean_val: true
+      }
+
+      assert {:error, errors} = literal_values(data)
+      assert [%Backplane.Schema.Error{path: [:integer_val]}] = errors
+    end
+
+    test "validates literal values with incorrect float value" do
+      data = %{
+        string_val: "hello",
+        integer_val: 42,
+        float_val: 2.71,
+        atom_val: :success,
+        boolean_val: true
+      }
+
+      assert {:error, errors} = literal_values(data)
+      assert [%Backplane.Schema.Error{path: [:float_val]}] = errors
+    end
+
+    test "validates literal values with incorrect atom value" do
+      data = %{
+        string_val: "hello",
+        integer_val: 42,
+        float_val: 3.14,
+        atom_val: :failure,
+        boolean_val: true
+      }
+
+      assert {:error, errors} = literal_values(data)
+      assert [%Backplane.Schema.Error{path: [:atom_val]}] = errors
+    end
+
+    test "validates literal values with incorrect boolean value" do
+      data = %{
+        string_val: "hello",
+        integer_val: 42,
+        float_val: 3.14,
+        atom_val: :success,
+        boolean_val: false
+      }
+
+      assert {:error, errors} = literal_values(data)
+      assert [%Backplane.Schema.Error{path: [:boolean_val]}] = errors
+    end
+  end
+
+  describe "map key-value type validation" do
+    test "validates string to integer map with correct data" do
+      data = %{scores: %{"Alice" => 95, "Bob" => 87, "Charlie" => 92}}
+      assert string_to_integer_map(data) == {:ok, data}
+    end
+
+    test "validates string to integer map with incorrect key type" do
+      data = %{scores: %{123 => 95, "Bob" => 87}}
+
+      assert {:error, errors} = string_to_integer_map(data)
+      assert [%Backplane.Schema.Error{path: [:scores]}] = errors
+    end
+
+    test "validates string to integer map with incorrect value type" do
+      data = %{scores: %{"Alice" => "excellent", "Bob" => 87}}
+
+      assert {:error, errors} = string_to_integer_map(data)
+      assert [%Backplane.Schema.Error{path: [:scores]}] = errors
+    end
+
+    test "validates atom to map map with correct data" do
+      data = %{
+        users: %{
+          admin: %{name: "Alice", active: true},
+          user: %{name: "Bob", active: false}
+        }
+      }
+
+      assert atom_to_map_map(data) == {:ok, data}
+    end
+
+    test "validates atom to map map with incorrect key type" do
+      data = %{
+        users: %{
+          "admin" => %{name: "Alice", active: true},
+          user: %{name: "Bob", active: false}
+        }
+      }
+
+      assert {:error, errors} = atom_to_map_map(data)
+      assert [%Backplane.Schema.Error{path: [:users]}] = errors
+    end
+
+    test "validates atom to map map with incorrect value type" do
+      data = %{
+        users: %{
+          admin: %{name: "Alice", active: "yes"},
+          user: %{name: "Bob", active: false}
+        }
+      }
+
+      assert {:error, errors} = atom_to_map_map(data)
+      assert [%Backplane.Schema.Error{path: [:users]}] = errors
+    end
+
+    test "handles empty map correctly" do
+      data = %{scores: %{}}
+      assert string_to_integer_map(data) == {:ok, data}
+    end
+
+    test "validates and transforms typed map keys and values independently" do
+      key_schema = {:map, {:coerce, :string, :integer}, :string}
+      value_schema = {:map, :string, {:coerce, :string, :integer}}
+      both_schema = {:map, {:coerce, :string, :integer}, {:coerce, :string, :integer}}
+
+      assert {:ok, %{1 => "one"}} = Backplane.Schema.validate(key_schema, %{"1" => "one"})
+
+      assert {:ok, %{"one" => 1, "two" => 2}} =
+               Backplane.Schema.validate(value_schema, %{"one" => "1", "two" => 2})
+
+      assert {:ok, %{1 => 2}} = Backplane.Schema.validate(both_schema, %{"1" => "2"})
+
+      assert {:error, _} = Backplane.Schema.validate(key_schema, %{"bad" => "one"})
+      assert {:error, _} = Backplane.Schema.validate(value_schema, %{"one" => "bad"})
+    end
+
+    test "handles missing map correctly" do
+      data = %{}
+      assert string_to_integer_map(data) == {:ok, data}
+    end
+  end
+
+  describe "list of maps validation" do
+    test "validates list of maps with correct data" do
+      data = %{users: [%{name: "Alice", age: 30}, %{name: "Bob", age: 25}]}
+      assert list_of_maps_example(data) == {:ok, data}
+    end
+
+    test "validates list of maps with missing required fields" do
+      data = %{users: [%{name: "Alice", age: 30}, %{age: 25}]}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:users],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:users, 1, :name],
+                       key: :name,
+                       code: :required,
+                       content: %{index: 1, expected: ":string"},
+                       message: "is required, expected type of :string",
+                       errors: nil
+                     }
+                   ],
+                   key: :users
+                 }
+               ]
+             } =
+               list_of_maps_example(data)
+    end
+
+    test "validates list of maps with incorrect field types" do
+      data = %{users: [%{name: "Alice", age: "thirty"}, %{name: "Bob", age: 25}]}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:users],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:users, 0, :age],
+                       key: :age,
+                       code: :type,
+                       content: %{index: 0, expected: ":integer", actual: "\"thirty\""},
+                       message: "expected type of :integer received \"thirty\" value",
+                       errors: nil
+                     }
+                   ],
+                   key: :users
+                 }
+               ]
+             } =
+               list_of_maps_example(data)
+    end
+
+    test "validates list of maps with extra fields" do
+      data = %{users: [%{name: "Alice", age: 30, extra: "field"}, %{name: "Bob", age: 25}]}
+      expected = %{users: [%{name: "Alice", age: 30}, %{name: "Bob", age: 25}]}
+      assert list_of_maps_example(data) == {:ok, expected}
+    end
+
+    test "handles empty list of maps" do
+      data = %{users: []}
+      assert list_of_maps_example(data) == {:ok, data}
+    end
+
+    test "handles missing list of maps" do
+      data = %{}
+      assert list_of_maps_example(data) == {:ok, data}
+    end
+  end
+
+  defmodule CustomValidations do
+    def positive?(val) when is_integer(val) and val > 0, do: :ok
+    def positive?(_val), do: {:error, "must be positive", []}
+
+    def starts_with_a?(<<"a", _::binary>>), do: :ok
+    def starts_with_a?(_val), do: {:error, "must start with %{prefix}", [prefix: "'a'"]}
+  end
+
+  defschema(:custom_example, %{
+    positive_number: {:custom, &CustomValidations.positive?/1},
+    name: {:custom, {CustomValidations, :starts_with_a?}}
+  })
+
+  defschema(:tuple_example, %{
+    coordinates: {:tuple, [:float, :float]}
+  })
+
+  describe "custom validation" do
+    test "validates custom validation functions with correct data" do
+      data = %{positive_number: 5, name: "alice"}
+      assert custom_example(data) == {:ok, data}
+    end
+
+    test "validates custom validation functions with incorrect data" do
+      data = %{positive_number: -5, name: "bob"}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: "must be positive",
+                   path: [:positive_number],
+                   content: %{},
+                   errors: nil,
+                   key: :positive_number
+                 },
+                 %Backplane.Schema.Error{
+                   message: "must start with 'a'",
+                   path: [:name],
+                   content: %{prefix: "'a'"},
+                   errors: nil,
+                   key: :name
+                 }
+               ]
+             } = custom_example(data)
+    end
+
+    test "handles missing custom validation fields correctly" do
+      data = %{}
+      assert custom_example(data) == {:ok, data}
+    end
+  end
+
+  describe "tuple validation" do
+    test "validates tuple with correct data" do
+      data = %{coordinates: {10.5, 20.5}}
+      assert tuple_example(data) == {:ok, data}
+    end
+
+    test "preserves unchanged elements when another element is coerced" do
+      schema = {:tuple, [{:coerce, :string, :integer}, {:coerce, :string, :integer}, :integer]}
+
+      assert {:ok, {1, 2, 3}} = Backplane.Schema.validate(schema, {1, "2", 3})
+    end
+
+    test "validates tuple with incorrect data type" do
+      data = %{coordinates: {10.5, "20.5"}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: "tuple element 1: expected type of :float received \"20.5\" value",
+                   path: [:coordinates],
+                   content: %{index: 1, expected: ":float", actual: "\"20.5\""},
+                   errors: nil,
+                   key: :coordinates
+                 }
+               ]
+             } = tuple_example(data)
+    end
+
+    test "validates tuple with incorrect size" do
+      data = %{coordinates: {10.5}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:coordinates],
+                   key: :coordinates,
+                   content: %{length: 2, actual: 1},
+                   message: "expected tuple of size 2 received tuple with 1 length",
+                   errors: nil
+                 }
+               ]
+             } = tuple_example(data)
+    end
+
+    test "validates tuple with extra elements" do
+      data = %{coordinates: {10.5, 20.5, 30.5}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:coordinates],
+                   key: :coordinates,
+                   content: %{length: 2, actual: 3},
+                   message: "expected tuple of size 2 received tuple with 3 length",
+                   errors: nil
+                 }
+               ]
+             } = tuple_example(data)
+    end
+
+    test "handles missing tuple correctly" do
+      data = %{}
+      assert tuple_example(data) == {:ok, data}
+    end
+  end
+
+  defschema(:string_list, {:list, :string})
+  defschema(:string_scores, %{name: :string, score: :float})
+  defschema(:string_score_map, %{id: {:required, :integer}, scores: {:custom, &string_scores/1}})
+
+  defschema(:recursive_schema, %{
+    id: :integer,
+    children: {:list, {:custom, &recursive_schema/1}}
+  })
+
+  describe "composable schema validation" do
+    test "validates custom schema for list of strings" do
+      data = ["hello", "world"]
+      assert string_list(data) == {:ok, data}
+    end
+
+    test "validates custom schema for list of strings with invalid data" do
+      data = ["hello", 123]
+
+      assert {
+               :error,
+               %Backplane.Schema.Error{
+                 path: [1],
+                 key: nil,
+                 code: :type,
+                 content: %{index: 1, expected: ":string", actual: "123"},
+                 message: "expected type of :string received 123 value",
+                 errors: nil
+               }
+             } =
+               string_list(data)
+    end
+
+    test "validates custom schema for map with nested schema" do
+      data = %{id: 1, scores: %{name: "test", score: 95.5}}
+      assert string_score_map(data) == {:ok, data}
+    end
+
+    test "validates custom schema for map with nested schema with invalid data" do
+      data = %{id: 1, scores: %{name: "test", score: "high"}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:scores],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:scores, :score],
+                       key: :score,
+                       code: :type,
+                       content: %{expected: ":float", actual: "\"high\""},
+                       message: "expected type of :float received \"high\" value",
+                       errors: nil
+                     }
+                   ],
+                   key: :scores
+                 }
+               ]
+             } =
+               string_score_map(data)
+    end
+
+    test "validates recursive schema with correct data" do
+      data = %{
+        id: 1,
+        children: [%{id: 2, children: []}, %{id: 3, children: [%{id: 4, children: []}]}]
+      }
+
+      assert recursive_schema(data) == {:ok, data}
+    end
+
+    test "validates recursive schema with incorrect data" do
+      data = %{id: 1, children: [%{id: 2, children: [%{id: "invalid", children: []}]}]}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:children],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:children, 0, :children],
+                       key: :children,
+                       content: nil,
+                       message: nil,
+                       errors: [
+                         %Backplane.Schema.Error{
+                           path: [:children, 0, :children, 0, :id],
+                           key: :id,
+                           code: :type,
+                           content: %{index: 0, expected: ":integer", actual: "\"invalid\""},
+                           message: "expected type of :integer received \"invalid\" value",
+                           errors: nil
+                         }
+                       ]
+                     }
+                   ],
+                   key: :children
+                 }
+               ]
+             } = recursive_schema(data)
+    end
+
+    test "validates schema with missing required fields" do
+      data = %{scores: %{name: "test", score: 95.5}}
+
+      assert string_score_map(data) ==
+               {
+                 :error,
+                 [
+                   %Backplane.Schema.Error{
+                     code: :required,
+                     content: %{expected: ":integer"},
+                     errors: nil,
+                     key: :id,
+                     message: "is required, expected type of :integer",
+                     path: [:id]
+                   }
+                 ]
+               }
+    end
+
+    test "validates schema with extra fields" do
+      data = %{id: 1, scores: %{name: "test", score: 95.5, extra: "field"}}
+      expected = %{id: 1, scores: %{name: "test", score: 95.5}}
+
+      assert {:ok, ^expected} = string_score_map(data)
+    end
+  end
+
+  defschema(:user, %{
+    name: :string,
+    age: :integer,
+    email: {:required, :string}
+  })
+
+  defschema(:profile, %{
+    user: {:custom, &user/1},
+    bio: :string
+  })
+
+  describe "unknown keys" do
+    test "drops unknown keys and validates correct data" do
+      data = %{name: "John", age: 30, email: "john@example.com", extra_key: "value"}
+      expected_data = %{name: "John", age: 30, email: "john@example.com"}
+      assert user(data) == {:ok, expected_data}
+    end
+
+    test "drops unknown keys and handles missing required field" do
+      data = %{name: "John", age: 30, extra_key: "value"}
+
+      assert user(data) == {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   code: :required,
+                   content: %{expected: ":string"},
+                   errors: nil,
+                   key: :email,
+                   message: "is required, expected type of :string",
+                   path: [:email]
+                 }
+               ]
+             }
+    end
+
+    test "drops multiple unknown keys and validates correct data" do
+      data = %{
+        name: "Jane",
+        age: 25,
+        email: "jane@example.com",
+        extra_key1: "value1",
+        extra_key2: "value2"
+      }
+
+      expected_data = %{name: "Jane", age: 25, email: "jane@example.com"}
+      assert {:ok, ^expected_data} = user(data)
+    end
+
+    # test "drops nested unknown keys and validates correct data" do
+    #   data = %{
+    #     user: %{name: "John", age: 30, email: "john@example.com", extra_key: "value"},
+    #     bio: "Developer",
+    #     extra_key2: "value2"
+    #   }
+
+    #   expected_data = %{
+    #     user: %{name: "John", age: 30, email: "john@example.com"},
+    #     bio: "Developer"
+    #   }
+
+    #   assert {:ok, ^expected_data} = profile(data)
+    # end
+
+    test "drops nested unknown keys and handles missing required field" do
+      data = %{
+        user: %{name: "John", age: 30, extra_key: "value"},
+        bio: "Developer",
+        extra_key2: "value2"
+      }
+
+      assert profile(data) ==
+               {:error,
+                [
+                  %Backplane.Schema.Error{
+                    content: nil,
+                    errors: [
+                      %Backplane.Schema.Error{
+                        path: [:user, :email],
+                        key: :email,
+                        code: :required,
+                        content: %{expected: ":string"},
+                        message: "is required, expected type of :string",
+                        errors: nil
+                      }
+                    ],
+                    key: :user,
+                    message: nil,
+                    path: [:user]
+                  }
+                ]}
+    end
+  end
+
+  defschema(:simple_keyword, [
+    {:name, :string},
+    {:age, :integer},
+    {:email, {:required, :string}}
+  ])
+
+  defschema(:nested_keyword, [
+    {:user,
+     [
+       {:name, :string},
+       {:profile,
+        [
+          {:age, {:required, :integer}},
+          {:email, {:required, :string}}
+        ]}
+     ]}
+  ])
+
+  defschema(:optional_fields_keyword, [
+    {:name, :string},
+    {:age, {:required, :integer}},
+    {:email, {:required, :string}},
+    {:phone, :string}
+  ])
+
+  describe "simple keyword list schema validation" do
+    test "validates simple keyword list schema with valid data" do
+      data = [name: "John", age: 30, email: "john@example.com"]
+      assert {:ok, ^data} = simple_keyword(data)
+    end
+
+    test "validates simple keyword list schema with missing required field" do
+      data = [name: "John", age: 30]
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:email],
+                  message: "is required, expected type of :string"
+                }
+              ]} =
+               simple_keyword(data)
+    end
+
+    test "validates simple keyword list schema with invalid field type" do
+      data = [name: "John", age: "thirty", email: "john@example.com"]
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:age],
+                   key: :age,
+                   content: %{actual: "\"thirty\"", expected: ":integer"},
+                   message: "expected type of :integer received \"thirty\" value",
+                   errors: nil
+                 }
+               ]
+             } =
+               simple_keyword(data)
+    end
+  end
+
+  describe "nested keyword list schema validation" do
+    test "validates nested keyword list schema with valid data" do
+      data = [user: [name: "Jane", profile: [age: 25, email: "jane@example.com"]]]
+      assert {:ok, ^data} = nested_keyword(data)
+    end
+
+    test "validates nested keyword list schema with invalid data" do
+      data = [user: [name: "Jane", profile: [age: "twenty-five", email: "jane@example.com"]]]
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:user],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:user, :profile],
+                       key: :profile,
+                       content: nil,
+                       message: nil,
+                       errors: [
+                         %Backplane.Schema.Error{
+                           path: [:user, :profile, :age],
+                           key: :age,
+                           content: %{expected: ":integer", actual: "\"twenty-five\""},
+                           message: "expected type of :integer received \"twenty-five\" value",
+                           errors: nil
+                         }
+                       ]
+                     }
+                   ],
+                   key: :user
+                 }
+               ]
+             } = nested_keyword(data)
+    end
+
+    test "validates nested keyword list schema with missing required field" do
+      data = [user: [name: "Jane", profile: [age: 25]]]
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:user],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:user, :profile],
+                       key: :profile,
+                       content: nil,
+                       message: nil,
+                       errors: [
+                         %Backplane.Schema.Error{
+                           path: [:user, :profile, :email],
+                           key: :email,
+                           content: %{expected: ":string"},
+                           message: "is required, expected type of :string",
+                           errors: nil
+                         }
+                       ]
+                     }
+                   ],
+                   key: :user
+                 }
+               ]
+             } =
+               nested_keyword(data)
+    end
+  end
+
+  describe "optional fields keyword list validation" do
+    test "validates keyword list schema with optional fields" do
+      data = [name: "John", age: 30, email: "john@example.com"]
+      assert {:ok, ^data} = optional_fields_keyword(data)
+
+      data_with_optional = [name: "John", age: 30, email: "john@example.com", phone: "123-456"]
+      assert {:ok, ^data_with_optional} = optional_fields_keyword(data_with_optional)
+    end
+
+    test "validates keyword list schema with optional fields and invalid optional field type" do
+      data = [name: "John", age: 30, email: "john@example.com", phone: 123_456]
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:phone],
+                   key: :phone,
+                   content: %{actual: "123456", expected: ":string"},
+                   message: "expected type of :string received 123456 value",
+                   errors: nil
+                 }
+               ]
+             } =
+               optional_fields_keyword(data)
+    end
+  end
+
+  defschema(:mixed_schema, %{
+    user_info: [
+      avatar: %{
+        url: :string
+      },
+      username: {:required, :string},
+      role: {:required, {:enum, [:admin, :user]}}
+    ]
+  })
+
+  describe "mixed schema validation" do
+    test "validates mixed schema with valid data" do
+      data = %{
+        user_info: [
+          avatar: %{url: "http://example.com/avatar.jpg"},
+          username: "john_doe",
+          role: :admin
+        ]
+      }
+
+      assert {:ok, ^data} = mixed_schema(data)
+    end
+
+    test "validates mixed schema with missing required field" do
+      data = %{user_info: %{avatar: %{url: "http://example.com/avatar.jpg"}, role: :admin}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:user_info],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:user_info, :username],
+                       key: :username,
+                       content: %{expected: ":string"},
+                       message: "is required, expected type of :string",
+                       errors: nil
+                     }
+                   ],
+                   key: :user_info
+                 }
+               ]
+             } =
+               mixed_schema(data)
+    end
+
+    test "validates mixed schema with invalid enum value" do
+      data = %{
+        user_info: %{
+          avatar: %{url: "http://example.com/avatar.jpg"},
+          username: "john_doe",
+          role: :superuser
+        }
+      }
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:user_info],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:user_info, :role],
+                       key: :role,
+                       content: %{choices: "[:admin, :user]", actual: ":superuser"},
+                       message: "expected one of [:admin, :user] received :superuser",
+                       errors: nil
+                     }
+                   ],
+                   key: :user_info
+                 }
+               ]
+             } = mixed_schema(data)
+    end
+
+    test "validates mixed schema with invalid field type" do
+      data = %{user_info: %{avatar: %{url: 12_345}, username: "john_doe", role: :admin}}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   message: nil,
+                   path: [:user_info],
+                   content: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:user_info, :avatar],
+                       key: :avatar,
+                       content: nil,
+                       message: nil,
+                       errors: [
+                         %Backplane.Schema.Error{
+                           path: [:user_info, :avatar, :url],
+                           key: :url,
+                           content: %{expected: ":string", actual: "12345"},
+                           message: "expected type of :string received 12345 value",
+                           errors: nil
+                         }
+                       ]
+                     }
+                   ],
+                   key: :user_info
+                 }
+               ]
+             } = mixed_schema(data)
+    end
+
+    test "validates mixed schema with extra fields" do
+      data = %{
+        user_info: %{
+          avatar: %{url: "http://example.com/avatar.jpg", size: "large"},
+          username: "john_doe",
+          role: :admin,
+          extra_field: "extra"
+        }
+      }
+
+      expected_data = %{
+        user_info: [
+          avatar: %{url: "http://example.com/avatar.jpg"},
+          username: "john_doe",
+          role: :admin
+        ]
+      }
+
+      assert {:ok, ^expected_data} = mixed_schema(data)
+    end
+  end
+
+  describe "validate_schema/1" do
+    test "validates a correct schema" do
+      schema = %{
+        name: :string,
+        age: :integer,
+        email: {:required, :string},
+        address: %{
+          street: :string,
+          city: :string
+        },
+        tags: {:list, :string},
+        role: {:enum, [:admin, :user, :guest]},
+        geolocation: {:tuple, [:float, :float]}
+      }
+
+      assert {:ok, ^schema} = Backplane.Schema.validate_schema(schema)
+    end
+
+    test "detects an incorrect schema with invalid key" do
+      schema = %{
+        name: :str,
+        age: :integer,
+        email: {:required, :string}
+      }
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:name],
+                   key: :name,
+                   content: %{
+                     schema: %{name: :str, age: :integer, email: {:required, :string}},
+                     invalid: ":str"
+                   },
+                   message: "invalid schema definition: :str",
+                   errors: nil
+                 }
+               ]
+             } =
+               Backplane.Schema.validate_schema(schema)
+    end
+
+    test "detects an incorrect schema with invalid nested key" do
+      schema = %{
+        address: %{
+          street: :str,
+          city: :string
+        }
+      }
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:address],
+                   key: :address,
+                   content: nil,
+                   message: nil,
+                   errors: [
+                     %Backplane.Schema.Error{
+                       path: [:address, :street],
+                       key: :street,
+                       content: %{schema: %{street: :str, city: :string}, invalid: ":str"},
+                       message: "invalid schema definition: :str",
+                       errors: nil
+                     }
+                   ]
+                 }
+               ]
+             } =
+               Backplane.Schema.validate_schema(schema)
+    end
+
+    test "detects an incorrect schema with invalid custom validation" do
+      schema = %{
+        custom_field: {:custom, "not_a_function"}
+      }
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:custom_field],
+                  message: "invalid schema definition: {:custom, \"not_a_function\"}"
+                }
+              ]} =
+               Backplane.Schema.validate_schema(schema)
+    end
+
+    test "detects an incorrect schema with invalid either types" do
+      schema = %{
+        field: {:either, {:string, 123}}
+      }
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:field],
+                   key: :field,
+                   content: %{schema: %{field: {:either, {:string, 123}}}, invalid: "123"},
+                   message: "invalid schema definition: 123",
+                   errors: nil
+                 }
+               ]
+             } =
+               Backplane.Schema.validate_schema(schema)
+    end
+
+    test "detects an incorrect schema with invalid oneof types" do
+      schema = %{
+        field: {:oneof, [:string, 123]}
+      }
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:field],
+                   key: :field,
+                   content: %{invalid: "123"},
+                   message: "invalid schema definition: 123",
+                   errors: nil
+                 }
+               ]
+             } =
+               Backplane.Schema.validate_schema(schema)
+    end
+
+    test "detects an incorrect schema with invalid tuple types" do
+      schema = %{
+        geolocation: {:tuple, [:float, "string"]}
+      }
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:geolocation],
+                   key: :geolocation,
+                   content: %{
+                     schema: %{geolocation: {:tuple, [:float, "string"]}},
+                     invalid: "\"string\""
+                   },
+                   message: "invalid schema definition: \"string\"",
+                   errors: nil
+                 }
+               ]
+             } =
+               Backplane.Schema.validate_schema(schema)
+    end
+
+    test "handles valid conditional types" do
+      schema = %{
+        conditional_field: {:cond, fn x -> x > 0 end, :integer, :string}
+      }
+
+      assert {:ok, ^schema} = Backplane.Schema.validate_schema(schema)
+    end
+
+    test "handles valid dependent types" do
+      schema = %{
+        dependent_field: {:dependent, :string, fn _, _ -> true end, :integer}
+      }
+
+      assert {:ok, ^schema} = Backplane.Schema.validate_schema(schema)
+    end
+
+    test "handles an empty schema" do
+      schema = %{}
+
+      assert {:ok, ^schema} = Backplane.Schema.validate_schema(schema)
+    end
+  end
+
+  defschema(:default_values, %{
+    name: {:string, {:default, "Anonymous"}},
+    age: {:integer, {:default, 0}},
+    email: {:required, :string}
+  })
+
+  defschema(:nested_default_values, %{
+    user: %{
+      name: {:string, {:default, "John Doe"}},
+      profile:
+        {:required,
+         %{
+           email: {:string, {:default, "default@example.com"}},
+           address:
+             {:required,
+              %{
+                street: {:string, {:default, "123 Main St"}},
+                number: {:integer, {:default, 1}}
+              }}
+         }}
+    }
+  })
+
+  describe "default values schema validation" do
+    test "applies default values when fields are missing" do
+      data = %{email: "user@example.com"}
+      expected_data = %{name: "Anonymous", age: 0, email: "user@example.com"}
+      assert {:ok, ^expected_data} = default_values(data)
+    end
+
+    test "does not override provided values with defaults" do
+      data = %{name: "Alice", age: 25, email: "alice@example.com"}
+      assert {:ok, ^data} = default_values(data)
+    end
+
+    test "handles missing required fields" do
+      data = %{name: "Alice", age: 25}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:email],
+                  message: "is required, expected type of :string"
+                }
+              ]} =
+               default_values(data)
+    end
+  end
+
+  describe "nested default values schema validation" do
+    test "applies default values in nested schema" do
+      data = %{user: %{profile: %{email: nil, address: %{number: nil, street: nil}}}}
+
+      expected_data = %{
+        user: %{
+          name: "John Doe",
+          profile: %{
+            email: "default@example.com",
+            address: %{street: "123 Main St", number: 1}
+          }
+        }
+      }
+
+      assert {:ok, ^expected_data} = nested_default_values(data)
+    end
+
+    test "does not override provided values in nested schema" do
+      data = %{
+        user: %{
+          name: "Jane Doe",
+          profile: %{
+            email: "jane@example.com",
+            address: %{street: "456 Elm St", number: 99}
+          }
+        }
+      }
+
+      assert {:ok, ^data} = nested_default_values(data)
+    end
+
+    test "rejects invalid literal schemas when defschema is defined" do
+      assert_raise ArgumentError, ~r/invalid literal schema for :invalid/, fn ->
+        Code.compile_string("""
+        defmodule Backplane.Schema.InvalidLiteralSchema do
+          import Backplane.Schema
+
+          defschema :invalid, %{field: {:required, {:string, {:default, \"value\"}}}}
+        end
+        """)
+      end
+    end
+  end
+
+  defschema(:simple_list, [
+    {:name, {:string, {:default, "Default Name"}}},
+    {:age, {:integer, {:default, 18}}},
+    {:email, {:required, :string}}
+  ])
+
+  defschema(
+    :simple_tuple,
+    {:tuple,
+     [
+       {:integer, {:default, 0}},
+       {:string, {:default, "Unknown"}}
+     ]}
+  )
+
+  describe "simple list schema validation" do
+    test "applies default values for missing fields in keyword list schema" do
+      data = [email: "user@example.com"]
+      expected_data = [age: 18, name: "Default Name", email: "user@example.com"]
+      assert {:ok, ^expected_data} = simple_list(data)
+    end
+
+    test "does not override provided values in keyword list schema" do
+      data = [name: "Alice", age: 25, email: "alice@example.com"]
+      assert {:ok, ^data} = simple_list(data)
+    end
+  end
+
+  describe "simple tuple schema validation" do
+    test "applies default values for missing elements in tuple schema" do
+      data = {nil, nil}
+      expected_data = {0, "Unknown"}
+      assert {:ok, ^expected_data} = simple_tuple(data)
+    end
+
+    test "does not override provided values in tuple schema" do
+      data = {42, "Provided"}
+      assert {:ok, ^data} = simple_tuple(data)
+    end
+  end
+
+  defp double(x), do: x * 2
+  defp upcase(str), do: String.upcase(str)
+
+  defschema(:basic_transform, %{
+    number: {:integer, {:transform, &double/1}},
+    name: {:string, {:transform, &upcase/1}}
+  })
+
+  defschema(:nested_transform, %{
+    user: %{
+      age: {:integer, {:transform, &double/1}},
+      profile: %{
+        nickname: {:string, {:transform, &upcase/1}}
+      }
+    }
+  })
+
+  defschema(:list_transform, %{
+    scores: {:list, {:integer, {:transform, &double/1}}}
+  })
+
+  defschema(:dependent_transform, %{
+    id: {:required, :string},
+    name:
+      {:string,
+       {:transform,
+        fn
+          name, data -> (data[:id] && name <> "-#{data[:id]}") || name
+        end}}
+  })
+
+  defschema(:nested_dependent_transform, %{
+    user: %{
+      birth_year: {:required, :integer},
+      age: {:integer, {:transform, fn _, %{user: %{birth_year: y}} -> 2024 - y end}},
+      profile: %{
+        nickname:
+          {:string,
+           {:transform,
+            fn nick, data ->
+              year = get_in(data, [:user, :birth_year])
+              if year > 2006, do: nick, else: "doomed"
+            end}}
+      }
+    }
+  })
+
+  describe "basic transform schema" do
+    test "applies transform function correctly" do
+      data = %{number: 5, name: "john"}
+      expected = %{number: 10, name: "JOHN"}
+      assert {:ok, ^expected} = basic_transform(data)
+    end
+  end
+
+  describe "nested transform schema" do
+    test "applies transform function correctly in nested schema" do
+      data = %{user: %{age: 5, profile: %{nickname: "john"}}}
+      expected = %{user: %{age: 10, profile: %{nickname: "JOHN"}}}
+      assert {:ok, ^expected} = nested_transform(data)
+    end
+  end
+
+  describe "list transform schema" do
+    test "applies transform function correctly in list schema" do
+      data = %{scores: [1, 2, 3]}
+      expected = %{scores: [2, 4, 6]}
+      assert {:ok, ^expected} = list_transform(data)
+    end
+  end
+
+  describe "dependent fields transform" do
+    test "applies transform function correctly with dependent fields" do
+      data = %{id: "123", name: "john"}
+      expected = %{id: "123", name: "john-123"}
+      assert {:ok, ^expected} = dependent_transform(data)
+
+      # how about keyword lists?
+      data = [id: "123", name: "maria"]
+      s = Map.to_list(get_schema(:dependent_transform))
+      assert {:ok, valid} = Backplane.Schema.validate(s, data)
+      assert valid[:id] == "123"
+      assert valid[:name] == "maria-123"
+
+      # order shouldn't matter too
+      data = [name: "maria", id: "123"]
+      s = Map.to_list(get_schema(:dependent_transform))
+      assert {:ok, valid} = Backplane.Schema.validate(s, data)
+      assert valid[:id] == "123"
+      assert valid[:name] == "maria-123"
+    end
+
+    test "it should return an error if the dependent field is invalid" do
+      data = %{id: 123, name: "john"}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:id],
+                   key: :id,
+                   content: %{actual: "123", expected: ":string"},
+                   message: "expected type of :string received 123 value",
+                   errors: nil
+                 }
+               ]
+             } = dependent_transform(data)
+
+      # map order shouldn't matter
+      data = %{name: "john", id: 123}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:id],
+                  key: :id,
+                  content: %{actual: "123", expected: ":string"},
+                  message: "expected type of :string received 123 value",
+                  errors: nil
+                }
+              ]} = dependent_transform(data)
+    end
+
+    test "it should support nested dependent transformations too" do
+      data = %{user: %{birth_year: 2007, age: 5, profile: %{nickname: "john"}}}
+      expected = %{user: %{birth_year: 2007, age: 17, profile: %{nickname: "john"}}}
+      assert {:ok, ^expected} = nested_dependent_transform(data)
+    end
+  end
+
+  describe "transform with MFA" do
+    test "it should apply the mapper function without additional argument" do
+      s = {:string, {:transform, {String, :to_integer}}}
+      assert {:ok, 10} = Backplane.Schema.validate(s, "10")
+    end
+
+    test "it should apply the mapper function without additional argument but with dependent field" do
+      s = %{id: {:string, {:transform, {__MODULE__, :integer_by_name}}}, name: :string}
+      data = %{id: "10", name: "john"}
+      assert {:ok, %{id: 20, name: "john"}} = Backplane.Schema.validate(s, data)
+
+      data = %{id: "10", name: "maria"}
+      assert {:ok, %{id: 10, name: "maria"}} = Backplane.Schema.validate(s, data)
+    end
+
+    test "it should apply mapper function with additional arguments" do
+      s = {:string, {:transform, {String, :split, [~r/\D/, [trim: true]]}}}
+      assert {:ok, ["10"]} = Backplane.Schema.validate(s, "omw 10")
+    end
+
+    test "it should apply mapper function with additional arguments with dependent field" do
+      s = %{
+        id: {:string, {:transform, {__MODULE__, :integer_by_name, [[make_sense?: false]]}}},
+        name: :string
+      }
+
+      data = %{id: "10", name: "john"}
+      assert {:ok, %{id: 10, name: "john"}} = Backplane.Schema.validate(s, data)
+    end
+  end
+
+  def integer_by_name(id, %{name: name}) do
+    if name != "john" do
+      String.to_integer(id)
+    else
+      String.to_integer(id) + 10
+    end
+  end
+
+  def integer_by_name(id, %{name: name}, make_sense?: sense) do
+    cond do
+      sense && name != "john" -> String.to_integer(id) - 10
+      not sense && name == "john" -> String.to_integer(id)
+      true -> 42
+    end
+  end
+
+  describe "transform directive on nested schema type" do
+    test "it should apply the trasnformation on a nested schema type" do
+      nested = %{foo: :string}
+      parent = %{bar: {nested, {:transform, fn v -> v end}}}
+      data = %{bar: %{foo: "hello"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # generic map type should pass too
+      parent = %{bar: {:map, {:transform, fn v -> v end}}}
+      data = %{bar: %{foo: "hello"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # function are indeed being applied?
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {nested, {:transform, fn _ -> raise("boom") end}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {:map, {:transform, fn _ -> raise("boom") end}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+    end
+
+    test "it should apply the mapper on nested schemas too by MFA" do
+      nested = %{foo: :string}
+      parent = %{bar: {nested, {:transform, {__MODULE__, :id}}}}
+      data = %{bar: %{foo: "10"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # generic map type should pass too
+      parent = %{bar: {:map, {:transform, {__MODULE__, :id}}}}
+      data = %{bar: %{foo: "hello"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # function are indeed being applied?
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {nested, {:transform, {__MODULE__, :boom}}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {:map, {:transform, {__MODULE__, :boom}}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+    end
+
+    test "it should apply the mapper on nested schemas too by MFA with additional args" do
+      nested = %{foo: :string}
+      parent = %{bar: {nested, {:transform, {__MODULE__, :id, []}}}}
+      data = %{bar: %{foo: "10"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # generic map type should pass too
+      parent = %{bar: {:map, {:transform, {__MODULE__, :id, []}}}}
+      data = %{bar: %{foo: "hello"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # function are indeed being applied?
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {nested, {:transform, {__MODULE__, :boom, []}}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {:map, {:transform, {__MODULE__, :boom, []}}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+    end
+
+    test "it should apply the trasnformation on a nested schema type with dependent fields" do
+      nested = %{foo: :string}
+      parent = %{bar: {nested, {:transform, fn v, _ -> v end}}}
+      data = %{bar: %{foo: "hello"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # generic map type should pass too
+      parent = %{bar: {:map, {:transform, fn v, _ -> v end}}}
+      data = %{bar: %{foo: "hello"}}
+      assert {:ok, ^data} = Backplane.Schema.validate(parent, data)
+
+      # function are indeed being applied?
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {nested, {:transform, fn _, _ -> raise("boom") end}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+
+      assert_raise RuntimeError, fn ->
+        parent = %{bar: {:map, {:transform, fn _, _ -> raise("boom") end}}}
+        data = %{bar: %{foo: "hello"}}
+        refute {:ok, ^data} = Backplane.Schema.validate(parent, data)
+      end
+    end
+  end
+
+  def id(v), do: v
+  def boom(_), do: raise("boom")
+
+  defschema(:either_transform, %{
+    value: {:either, {{:integer, {:transform, &double/1}}, {:string, {:transform, &upcase/1}}}}
+  })
+
+  defschema(:either_transform_mixed, %{
+    value: {:either, {{:integer, {:transform, &double/1}}, :string}}
+  })
+
+  defschema(:oneof_transform, %{
+    value: {:oneof, [{:integer, {:transform, &double/1}}, {:string, {:transform, &upcase/1}}]}
+  })
+
+  describe "either transform schema" do
+    test "applies transform function correctly for integer type" do
+      data = %{value: 5}
+      expected = %{value: 10}
+      assert {:ok, ^expected} = either_transform(data)
+    end
+
+    test "applies transform function correctly for string type" do
+      data = %{value: "john"}
+      expected = %{value: "JOHN"}
+      assert {:ok, ^expected} = either_transform(data)
+    end
+  end
+
+  describe "either transform mixed schema" do
+    test "applies transform function correctly for integer type" do
+      data = %{value: 5}
+      expected = %{value: 10}
+      assert {:ok, ^expected} = either_transform_mixed(data)
+    end
+
+    test "applies transform function correctly for string type" do
+      data = %{value: "john"}
+      assert {:ok, ^data} = either_transform_mixed(data)
+    end
+  end
+
+  describe "oneof transform schema" do
+    test "applies transform function correctly for integer type" do
+      data = %{value: 5}
+      expected = %{value: 10}
+      assert {:ok, ^expected} = oneof_transform(data)
+    end
+
+    test "applies transform function correctly for string type" do
+      data = %{value: "john"}
+      expected = %{value: "JOHN"}
+      assert {:ok, ^expected} = oneof_transform(data)
+    end
+  end
+
+  defschema(:mixed, %{
+    id: {:integer, {:transform, &(&1 * 2)}},
+    name:
+      {:either,
+       {{:string, {:transform, &String.upcase/1}}, {:atom, {:transform, &Atom.to_string/1}}}},
+    tags: {:list, :string},
+    info:
+      {:oneof,
+       [
+         {:string, {:transform, &String.upcase/1}},
+         %{
+           age: {:integer, {:transform, &(&1 + 1)}},
+           address: %{
+             street: :string,
+             number: :integer
+           }
+         }
+       ]}
+  })
+
+  describe "massive mixed schema validation" do
+    test "validates and transforms mixed schema with integer id and string info" do
+      data = %{id: 5, name: :john, tags: ["elixir", "programming"], info: "some info"}
+
+      expected = %{
+        id: 10,
+        name: "john",
+        tags: ["elixir", "programming"],
+        info: "SOME INFO"
+      }
+
+      assert {:ok, ^expected} = mixed(data)
+    end
+
+    test "validates and transforms mixed schema with integer id and map info" do
+      data = %{
+        id: 7,
+        name: "jane",
+        tags: ["elixir", "programming"],
+        info: %{age: 25, address: %{street: "Main St", number: 123}}
+      }
+
+      expected = %{
+        id: 14,
+        name: "JANE",
+        tags: ["elixir", "programming"],
+        info: %{age: 26, address: %{street: "Main St", number: 123}}
+      }
+
+      assert {:ok, ^expected} = mixed(data)
+    end
+
+    test "validates and transforms mixed schema with atom name" do
+      data = %{id: 8, name: :doe, tags: ["elixir"], info: "details"}
+
+      expected = %{
+        id: 16,
+        name: "doe",
+        tags: ["elixir"],
+        info: "DETAILS"
+      }
+
+      assert {:ok, ^expected} = mixed(data)
+    end
+
+    test "returns error for invalid info type in mixed schema" do
+      data = %{id: 8, name: "doe", tags: ["elixir"], info: 123}
+      assert {:error, errors} = mixed(data)
+      assert [%Backplane.Schema.Error{path: [:info], message: _}] = errors
+    end
+  end
+
+  defschema(:regex_validation, %{
+    username: {:string, {:regex, ~r/^[a-zA-Z0-9_]+$/}}
+  })
+
+  defschema(:string_eq_validation, %{
+    exact_name: {:string, {:eq, "Elixir"}}
+  })
+
+  defschema(:string_min_validation, %{
+    short_text: {:string, {:min, 5}}
+  })
+
+  defschema(:string_max_validation, %{
+    long_text: {:string, {:max, 20}}
+  })
+
+  defschema(:numeric_eq_validation, %{
+    exact_number: {:integer, {:eq, 42}}
+  })
+
+  defschema(:numeric_neq_validation, %{
+    not_this_number: {:integer, {:neq, 42}}
+  })
+
+  defschema(:numeric_gt_validation, %{
+    greater_than: {:integer, {:gt, 10}}
+  })
+
+  defschema(:numeric_gte_validation, %{
+    greater_than_or_equal: {:integer, {:gte, 10}}
+  })
+
+  defschema(:numeric_lt_validation, %{
+    less_than: {:integer, {:lt, 10}}
+  })
+
+  defschema(:numeric_lte_validation, %{
+    less_than_or_equal: {:integer, {:lte, 10}}
+  })
+
+  defschema(:numeric_range_validation, %{
+    in_range: {:integer, {:range, {5, 15}}}
+  })
+
+  describe "regex validation" do
+    test "validates a string against a regex pattern" do
+      assert {:ok, %{username: "valid_user"}} = regex_validation(%{username: "valid_user"})
+
+      assert {:error,
+              [%Backplane.Schema.Error{message: "should match the ~r/^[a-zA-Z0-9_]+$/ pattern"}]} =
+               regex_validation(%{username: "invalid user"})
+    end
+  end
+
+  describe "string equal validation" do
+    test "validates a string to be exactly equal to a value" do
+      assert {:ok, %{exact_name: "Elixir"}} = string_eq_validation(%{exact_name: "Elixir"})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should be equal to literal Elixir"}]} =
+               string_eq_validation(%{exact_name: "Phoenix"})
+    end
+  end
+
+  describe "string minimum length validation" do
+    test "validates a string to have a minimum length" do
+      assert {:ok, %{short_text: "Hello"}} = string_min_validation(%{short_text: "Hello"})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should have the minimum length of 5"}]} =
+               string_min_validation(%{short_text: "Hi"})
+    end
+  end
+
+  describe "string maximum length validation" do
+    test "validates a string to have a maximum length" do
+      assert {:ok, %{long_text: "This is a test"}} =
+               string_max_validation(%{long_text: "This is a test"})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should have the maximum length of 20"}]} =
+               string_max_validation(%{long_text: "This text is too long for validation"})
+    end
+  end
+
+  describe "numeric equal validation" do
+    test "validates a number to be exactly equal to a value" do
+      assert {:ok, %{exact_number: 42}} = numeric_eq_validation(%{exact_number: 42})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should be equal to 42"}]} =
+               numeric_eq_validation(%{exact_number: 43})
+    end
+  end
+
+  describe "numeric not equal validation" do
+    test "validates a number to not be equal to a value" do
+      assert {:ok, %{not_this_number: 43}} = numeric_neq_validation(%{not_this_number: 43})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should be not equal to 42"}]} =
+               numeric_neq_validation(%{not_this_number: 42})
+    end
+  end
+
+  describe "numeric greater than validation" do
+    test "validates a number to be greater than a value" do
+      assert {:ok, %{greater_than: 11}} = numeric_gt_validation(%{greater_than: 11})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should be greater then 10"}]} =
+               numeric_gt_validation(%{greater_than: 10})
+    end
+  end
+
+  describe "numeric greater than or equal validation" do
+    test "validates a number to be greater than or equal to a value" do
+      assert {:ok, %{greater_than_or_equal: 10}} =
+               numeric_gte_validation(%{greater_than_or_equal: 10})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should be greater then or equal to 10"}]} =
+               numeric_gte_validation(%{greater_than_or_equal: 9})
+    end
+  end
+
+  describe "numeric less than validation" do
+    test "validates a number to be less than a value" do
+      assert {:ok, %{less_than: 9}} = numeric_lt_validation(%{less_than: 9})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should be less then 10"}]} =
+               numeric_lt_validation(%{less_than: 10})
+    end
+  end
+
+  describe "numeric less than or equal validation" do
+    test "validates a number to be less than or equal to a value" do
+      assert {:ok, %{less_than_or_equal: 10}} = numeric_lte_validation(%{less_than_or_equal: 10})
+
+      assert {:error, [%Backplane.Schema.Error{message: "should be less then or equal to 10"}]} =
+               numeric_lte_validation(%{less_than_or_equal: 11})
+    end
+  end
+
+  describe "numeric range validation" do
+    test "validates a number to be within a range" do
+      assert {:ok, %{in_range: 10}} = numeric_range_validation(%{in_range: 10})
+
+      assert {:error,
+              [%Backplane.Schema.Error{message: "should be in the range of 5..15 (inclusive)"}]} =
+               numeric_range_validation(%{in_range: 4})
+
+      assert {:error,
+              [%Backplane.Schema.Error{message: "should be in the range of 5..15 (inclusive)"}]} =
+               numeric_range_validation(%{in_range: 16})
+    end
+  end
+
+  describe "numeric constraints type strictness" do
+    test "integer constraint rejects floats" do
+      assert {:ok, 5} = Backplane.Schema.validate({:integer, {:gt, 4}}, 5)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:gt, 4}}, 5.1)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:gte, 4}}, 5.1)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:lt, 10}}, 5.1)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:lte, 10}}, 5.1)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:eq, 5}}, 5.0)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:neq, 4}}, 5.1)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:range, {1, 10}}}, 5.1)
+      assert {:error, _} = Backplane.Schema.validate({:integer, {:multiple_of, 1}}, 5.1)
+    end
+
+    test "float constraint rejects integers" do
+      assert {:ok, 5.1} = Backplane.Schema.validate({:float, {:gt, 4}}, 5.1)
+      assert {:error, _} = Backplane.Schema.validate({:float, {:gt, 4}}, 5)
+    end
+
+    test "integer constraint in a map schema rejects floats" do
+      assert {:error, [%Backplane.Schema.Error{}]} = numeric_gt_validation(%{greater_than: 10.5})
+    end
+
+    test "keyword options form rejects floats for integer type" do
+      assert {:ok, 5} = Backplane.Schema.validate({:integer, [gt: 4]}, 5)
+      assert {:error, _} = Backplane.Schema.validate({:integer, [gt: 4]}, 5.1)
+    end
+  end
+
+  defmodule TypeDependentSchema do
+    import Backplane.Schema
+
+    defschema(:email_details, %{email: {:required, :string}})
+    defschema(:country_details, %{country: {:required, :string}})
+    defschema(:details, Map.merge(get_schema(:email_details), get_schema(:country_details)))
+
+    defschema(:info, %{
+      name: {:required, :string},
+      provide_email: {:required, :boolean},
+      provide_country: {:required, :boolean},
+      details: {:dependent, &verify_details/1}
+    })
+
+    defp verify_details(data) do
+      %{provide_email: pe, provide_country: pc} = data
+
+      provide = {pe, pc}
+
+      case provide do
+        {true, true} -> {:ok, {:required, get_schema(:details)}}
+        {true, false} -> {:ok, {:required, get_schema(:email_details)}}
+        {false, true} -> {:ok, {:required, get_schema(:country_details)}}
+        {false, false} -> {:ok, nil}
+      end
+    end
+
+    defschema(:user_registration, %{
+      username: {:required, :string},
+      password: {:required, :string},
+      password_confirmation: {:dependent, :password, &validate_confirmation/2, :string}
+    })
+
+    defp validate_confirmation(password, password), do: :ok
+
+    defp validate_confirmation(_confirmation, _password) do
+      {:error, "confirmation should be equal to password", []}
+    end
+  end
+
+  describe "TypeDependentSchema.info/1" do
+    test "validates correctly when both email and country are provided" do
+      data = %{
+        name: "John Doe",
+        provide_email: true,
+        provide_country: true,
+        details: %{
+          email: "john@example.com",
+          country: "USA"
+        }
+      }
+
+      assert {:ok, valid_data} = TypeDependentSchema.info(data)
+      assert valid_data == data
+    end
+
+    test "validates correctly when only email is provided" do
+      data = %{
+        name: "Jane Doe",
+        provide_email: true,
+        provide_country: false,
+        details: %{
+          email: "jane@example.com"
+        }
+      }
+
+      assert {:ok, valid_data} = TypeDependentSchema.info(data)
+      assert valid_data == data
+    end
+
+    test "validates correctly when only country is provided" do
+      data = %{
+        name: "Jake Doe",
+        provide_email: false,
+        provide_country: true,
+        details: %{country: "Canada"}
+      }
+
+      assert {:ok, valid_data} = TypeDependentSchema.info(data)
+      assert valid_data == data
+    end
+
+    test "validates correctly when neither email nor country is provided" do
+      data = %{name: "Jenny Doe", provide_email: false, provide_country: false}
+
+      assert {:ok, valid_data} = TypeDependentSchema.info(data)
+      assert valid_data == data
+    end
+
+    test "returns an error when email is required but not provided" do
+      data = %{name: "John Doe", provide_email: true, provide_country: false}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:details],
+                   key: :details,
+                   content: %{expected: "%{keys: [:email]}"},
+                   message: "is required, expected type of %{keys: [:email]}",
+                   errors: nil
+                 }
+               ]
+             } =
+               TypeDependentSchema.info(data)
+    end
+
+    test "returns an error when country is required but not provided" do
+      data = %{name: "John Doe", provide_email: false, provide_country: true}
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   path: [:details],
+                   key: :details,
+                   content: %{expected: "%{keys: [:country]}"},
+                   message: "is required, expected type of %{keys: [:country]}",
+                   errors: nil
+                 }
+               ]
+             } =
+               TypeDependentSchema.info(data)
+    end
+  end
+
+  describe "TypeDependentSchema.user_registration/1" do
+    test "validates when password and confirmation match" do
+      data = %{
+        username: "alice",
+        password: "secure123",
+        password_confirmation: "secure123"
+      }
+
+      assert {:ok, valid_data} = TypeDependentSchema.user_registration(data)
+      assert valid_data == data
+    end
+
+    test "fails when confirmation does not match password" do
+      data = %{
+        username: "bob",
+        password: "secure123",
+        password_confirmation: "wrongpass"
+      }
+
+      assert {
+               :error,
+               [
+                 %Backplane.Schema.Error{
+                   key: :password_confirmation,
+                   path: [:password_confirmation],
+                   message: "confirmation should be equal to password",
+                   errors: nil,
+                   content: %{}
+                 }
+               ]
+             } = TypeDependentSchema.user_registration(data)
+    end
+  end
+
+  defmodule CondSchema do
+    import Backplane.Schema
+
+    defschema(:details, %{
+      email: {:required, :string},
+      country: {:required, :string}
+    })
+
+    defschema(:info, %{
+      name: {:required, :string},
+      provide_details: {:required, :boolean},
+      details: {:cond, & &1.provide_details, {:required, get_schema(:details)}, nil}
+    })
+  end
+
+  describe "CondSchema.info/1" do
+    test "validates correctly when provide_details is true" do
+      data = %{
+        name: "John Doe",
+        provide_details: true,
+        details: %{email: "john@example.com", country: "USA"}
+      }
+
+      assert {:ok, valid_data} = CondSchema.info(data)
+
+      assert valid_data == data
+    end
+
+    test "validates correctly when provide_details is false" do
+      data = %{name: "Jane Doe", provide_details: false}
+
+      assert {:ok, valid_data} = CondSchema.info(data)
+      assert valid_data == data
+    end
+
+    test "returns error when provide_details is true but details are missing" do
+      data = %{name: "John Doe", provide_details: true}
+
+      assert {:error, errors} = CondSchema.info(data)
+      assert length(errors) == 1
+
+      assert [
+               %Backplane.Schema.Error{
+                 path: [:details],
+                 key: :details,
+                 content: %{expected: "%{keys: [:country, :email]}"},
+                 message: "is required, expected type of %{keys: [:country, :email]}",
+                 errors: nil
+               }
+             ] = errors
+    end
+
+    test "returns error when provide_details is true but only partial details are provided" do
+      data = %{
+        name: "John Doe",
+        provide_details: true,
+        details: %{email: "john@example.com"}
+      }
+
+      assert {:error, errors} = CondSchema.info(data)
+
+      assert [
+               %Backplane.Schema.Error{
+                 path: [:details],
+                 key: :details,
+                 content: nil,
+                 message: nil,
+                 errors: [
+                   %Backplane.Schema.Error{
+                     path: [:details, :country],
+                     key: :country,
+                     content: %{expected: ":string"},
+                     message: "is required, expected type of :string",
+                     errors: nil
+                   }
+                 ]
+               }
+             ] = errors
+    end
+  end
+
+  defmodule User do
+    defstruct [:name, :age, :email]
+  end
+
+  defmodule Flag do
+    defstruct [:enabled, :optional]
+  end
+
+  defmodule StructWithNestedDefaults do
+    defstruct [:settings]
+  end
+
+  defschema(:flag_struct_schema, %{enabled: {:required, :boolean}, optional: :boolean})
+  defschema(:struct_nested_defaults, %{settings: %{count: {:integer, {:default, 1}}}})
+
+  defschema(:user_map_schema, %{
+    name: {:required, :string},
+    age: :integer,
+    email: {:required, :string}
+  })
+
+  describe "basic struct input validation" do
+    test "validates struct input with valid data" do
+      data = %User{name: "John", age: 30, email: "john@example.com"}
+      assert {:ok, ^data} = user_map_schema(data)
+    end
+
+    test "validates struct input with missing required field" do
+      data = %User{name: "John", age: 30}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:email],
+                  message: "is required, expected type of :string"
+                }
+              ]} =
+               user_map_schema(data)
+    end
+
+    test "validates struct input with invalid field type" do
+      data = %User{name: "John", age: "thirty", email: "john@example.com"}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:age],
+                  message: "expected type of :integer received \"thirty\" value"
+                }
+              ]} = user_map_schema(data)
+    end
+
+    test "treats false as a present required struct field and preserves nil optional fields" do
+      data = %Flag{enabled: false, optional: nil}
+      assert {:ok, ^data} = flag_struct_schema(data)
+    end
+
+    test "rejects nil for a required struct field" do
+      data = %Flag{enabled: nil}
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:enabled],
+                  message: "is required, expected type of :boolean"
+                }
+              ]} =
+               flag_struct_schema(data)
+    end
+
+    test "applies nested defaults when a struct field is present with nil" do
+      data = %StructWithNestedDefaults{settings: nil}
+
+      assert {:ok, %StructWithNestedDefaults{settings: %{count: 1}}} =
+               struct_nested_defaults(data)
+    end
+  end
+
+  defschema(:cond_with_nest_default, %{
+    name: {:required, :string},
+    provide_details: {:required, :boolean},
+    details: {:cond, & &1.provide_details, get_schema(:details), nil}
+  })
+
+  defschema(:details, %{
+    email: {:string, {:default, "foo@example.com"}},
+    country: {:string, {:default, "USA"}}
+  })
+
+  describe "default values with conditional schema" do
+    test "validates correctly when provide_details is true" do
+      data = %{
+        name: "John Doe",
+        provide_details: true
+      }
+
+      assert {:ok, valid_data} = cond_with_nest_default(data)
+
+      assert valid_data == %{
+               name: "John Doe",
+               provide_details: true,
+               details: %{email: "foo@example.com", country: "USA"}
+             }
+    end
+
+    test "validates correctly when provide_details is false" do
+      data = %{
+        name: "Jane Doe",
+        provide_details: false
+      }
+
+      assert {:ok, valid_data} = cond_with_nest_default(data)
+
+      assert valid_data == %{
+               name: "Jane Doe",
+               provide_details: false
+             }
+    end
+
+    test "validates correctly when provide_details is true and details are provided" do
+      data = %{
+        name: "John Doe",
+        provide_details: true,
+        details: %{email: "zoey@example.com", country: "Canada"}
+      }
+
+      assert {:ok, valid_data} = cond_with_nest_default(data)
+
+      assert valid_data == %{
+               name: "John Doe",
+               provide_details: true,
+               details: %{email: "zoey@example.com", country: "Canada"}
+             }
+    end
+  end
+
+  defschema(:schema_x, %{
+    type: {:enum, [:x]},
+    name: :string,
+    value: :integer
+  })
+
+  defschema(:schema_y, %{
+    type: {:enum, [:y]},
+    name: :string,
+    metadata: %{
+      description: :string
+    }
+  })
+
+  defschema(:schema_either, {:either, {get_schema(:schema_x), get_schema(:schema_y)}})
+  defschema(:schema_oneof, {:oneof, [get_schema(:schema_x), get_schema(:schema_y)]})
+
+  describe "either and oneof validation with nested schemas" do
+    test "validates :either type with nested schema x" do
+      data_x = %{
+        type: :x,
+        name: "test",
+        value: 42
+      }
+
+      assert {:ok, ^data_x} = schema_either(data_x)
+    end
+
+    test "validates :either type with nested schema y" do
+      data_y = %{
+        type: :y,
+        name: "test",
+        metadata: %{
+          description: "test description"
+        }
+      }
+
+      # This should now work after fixing the either implementation
+      assert {:ok, ^data_y} = schema_either(data_y)
+    end
+
+    test "validates :oneof type with nested schema x" do
+      data_x = %{
+        type: :x,
+        name: "test",
+        value: 42
+      }
+
+      assert {:ok, ^data_x} = schema_oneof(data_x)
+    end
+
+    test "validates :oneof type with nested schema y" do
+      data_y = %{
+        type: :y,
+        name: "test",
+        metadata: %{
+          description: "test description"
+        }
+      }
+
+      # This works for :oneof but fails for :either - showing the inconsistency
+      assert {:ok, ^data_y} = schema_oneof(data_y)
+    end
+
+    test "oneof with inlined map schemas renders a legible key summary" do
+      schema = %{
+        body:
+          {:oneof,
+           [
+             %{collection: {:required, :string}, rkey: :string},
+             %{endpoint: {:required, :string}}
+           ]}
+      }
+
+      assert {:error, [%Backplane.Schema.Error{message: msg} = err]} =
+               Backplane.Schema.validate(schema, %{body: 1})
+
+      assert msg ==
+               "expected one of %{keys: [:collection, :rkey]} or %{keys: [:endpoint]}, got: 1"
+
+      assert err.content[:oneof] == "%{keys: [:collection, :rkey]} or %{keys: [:endpoint]}"
+    end
+
+    test "oneof map summary truncates past 6 keys" do
+      big = %{a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8}
+      schema = %{body: {:oneof, [:string, big]}}
+
+      assert {:error, [%Backplane.Schema.Error{message: msg}]} =
+               Backplane.Schema.validate(schema, %{body: 1})
+
+      assert msg == "expected one of :string or %{keys: [:a, :b, :c, :d, :e, :f, ...]}, got: 1"
+    end
+
+    test "either with inlined map schema renders a legible key summary" do
+      schema = %{body: {:either, {%{collection: {:required, :string}}, :string}}}
+
+      assert {:error, [%Backplane.Schema.Error{message: msg}]} =
+               Backplane.Schema.validate(schema, %{body: 1})
+
+      assert msg == "expected either %{keys: [:collection]} or :string, got: 1"
+    end
+  end
+
+  defschema(:schema_multiopts, %{
+    x: {:string, min: 3, max: 10, regex: ~r/^[a-z0-9-]+$/},
+    y: {:integer, gt: 6, lte: 14}
+  })
+
+  test "validates :string and :integer with multiple options" do
+    data = %{x: "foobar", y: 12}
+
+    assert {:ok, ^data} = schema_multiopts(data)
+  end
+
+  test "returns all errors when bad data is passed to a validator with multiple options" do
+    data = %{x: "a!", y: 16}
+
+    assert {:error, errors} = schema_multiopts(data)
+    assert length(errors) == 3
+
+    # Check for regex error
+    assert Enum.any?(errors, fn
+             %Backplane.Schema.Error{path: [:x], content: %{regex: regex}} ->
+               Regex.source(regex) == "^[a-z0-9-]+$"
+
+             _ ->
+               false
+           end)
+
+    # Check for minimum length error
+    assert Enum.any?(errors, fn
+             %Backplane.Schema.Error{path: [:x], content: %{length: 3}} -> true
+             _ -> false
+           end)
+
+    # Check for lte error
+    assert Enum.any?(errors, fn
+             %Backplane.Schema.Error{path: [:y], content: %{value: 14}} -> true
+             _ -> false
+           end)
+  end
+
+  describe "regression tests for github issue #40" do
+    # https://github.com/zoedsoupe/peri/issues/40
+
+    test "schemas with nested required fields should be partially required" do
+      required = %{
+        id: {:required, :string},
+        profile:
+          {:required,
+           %{
+             name: {:required, :string},
+             email: :string
+           }}
+      }
+
+      assert {:ok, _} =
+               Backplane.Schema.validate(required, %{id: "123", profile: %{name: "john"}})
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:profile],
+                  key: :profile,
+                  content: %{expected: "%{keys: [:email, :name]}"},
+                  message: "is required, expected type of %{keys: [:email, :name]}",
+                  errors: nil
+                }
+              ]} = Backplane.Schema.validate(required, %{id: "123"})
+
+      optional = %{
+        id: {:required, :string},
+        profile: %{
+          name: {:required, :string},
+          email: :string
+        }
+      }
+
+      assert {:ok, _} =
+               Backplane.Schema.validate(optional, %{id: "123", profile: %{name: "john"}})
+
+      assert {:ok, _} = Backplane.Schema.validate(optional, %{id: "123"})
+
+      assert {:error,
+              [
+                %Backplane.Schema.Error{
+                  path: [:profile],
+                  key: :profile,
+                  content: nil,
+                  message: nil,
+                  errors: [
+                    %Backplane.Schema.Error{
+                      path: [:profile, :name],
+                      key: :name,
+                      content: %{expected: ":string"},
+                      message: "is required, expected type of :string",
+                      errors: nil
+                    }
+                  ]
+                }
+              ]} = Backplane.Schema.validate(optional, %{id: "123", profile: %{}})
+    end
+
+    test "schemas with nested required fields and default values should be also partially requried" do
+      data = %{description: "lorem ipsum admun", type: "procedure"}
+
+      without_default = %{
+        type: {:required, {:literal, "procedure"}},
+        description: :string,
+        parameters: %{
+          type: {:required, {:literal, "params"}},
+          description: :string,
+          required: {:list, :string}
+        }
+      }
+
+      assert {:ok, _} = Backplane.Schema.validate(without_default, data)
+
+      with_default = %{
+        type: {:required, {:literal, "procedure"}},
+        description: :string,
+        parameters: %{
+          type: {:required, {:literal, "params"}},
+          description: :string,
+          required: {{:list, :string}, {:default, []}}
+        }
+      }
+
+      assert {:ok, _} = Backplane.Schema.validate(with_default, data)
+    end
+  end
+
+  describe "regression test for schema field filtering with mixed key types" do
+    # Regression test for bug introduced in v0.6.1 where validation would incorrectly
+    # return {:ok, ...} for data with string keys that should fail enum validation
+
+    test "validation should fail when string-keyed data has invalid enum values" do
+      schema = %{
+        jsonrpc: :string,
+        id: :integer,
+        method: {:enum, [:valid_method, :another_method]}
+      }
+
+      # This should fail because "unknown" is not in the enum
+      invalid_data_with_string_keys = %{
+        "jsonrpc" => "2.0",
+        "id" => 1,
+        "method" => "unknown"
+      }
+
+      assert {:error, errors} = Backplane.Schema.validate(schema, invalid_data_with_string_keys)
+      assert length(errors) == 1
+      assert %Backplane.Schema.Error{path: [:method], key: :method} = hd(errors)
+      assert String.contains?(hd(errors).message, "expected one of")
+    end
+
+    test "validation should work correctly with atom-keyed data" do
+      schema = %{
+        jsonrpc: :string,
+        id: :integer,
+        method: {:enum, [:valid_method, :another_method]}
+      }
+
+      # This should also fail
+      invalid_data_with_atom_keys = %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: :unknown
+      }
+
+      assert {:error, errors} = Backplane.Schema.validate(schema, invalid_data_with_atom_keys)
+      assert length(errors) == 1
+      assert %Backplane.Schema.Error{path: [:method], key: :method} = hd(errors)
+
+      # This should succeed
+      valid_data = %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: :valid_method
+      }
+
+      assert {:ok, _result} = Backplane.Schema.validate(schema, valid_data)
+    end
+  end
+
+  describe "dependent callback contract" do
+    test "returns a clear error when the callback returns a bare type" do
+      schema = %{x: {:dependent, fn _ -> {:required, {:coerce, {:integer, gte: 0}}} end}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{x: "18"})
+
+      assert %Backplane.Schema.Error{path: [:x], key: :x} = error
+      assert error.message =~ "expected dependent callback to return {:ok, type}"
+    end
+
+    test "returns a clear error when the callback returns nil" do
+      schema = %{x: {:dependent, fn _ -> nil end}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{x: "18"})
+
+      assert error.message =~ "expected dependent callback to return {:ok, type}"
+    end
+
+    test "returns a clear error when the callback returns an invalid schema" do
+      schema = %{x: {:dependent, fn _ -> {:ok, :nope} end}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{x: "18"})
+
+      assert error.message =~ "dependent callback returned invalid schema"
+    end
+
+    test "returns a clear error when the MFA callback is not exported" do
+      schema = %{x: {:dependent, {String, :no_such_fun}}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{x: "18"})
+
+      assert error.message =~ "expected dependent callback to return {:ok, type}"
+    end
+
+    test "MFA callback returning a bare type also gets a clear error" do
+      defmodule BareMFA do
+        def type_for(_root), do: {:required, :string}
+      end
+
+      schema = %{x: {:dependent, {BareMFA, :type_for}}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{x: "18"})
+
+      assert error.message =~ "expected dependent callback to return {:ok, type}"
+    end
+
+    test "callback may fail validation directly with {:error, reason, info}" do
+      schema = %{x: {:dependent, fn _ -> {:error, "not allowed here", []} end}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{x: "18"})
+
+      assert %Backplane.Schema.Error{path: [:x], message: "not allowed here"} = error
+    end
+
+    test "callback error accepts a map context" do
+      schema = %{x: {:dependent, fn _ -> {:error, "got %{got}", %{got: 1}} end}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{x: "18"})
+
+      assert error.message == "got 1"
+    end
+
+    test "field condition must return :ok or an error tuple" do
+      schema = %{y: :string, x: {:dependent, :y, fn _, _ -> true end, :integer}}
+
+      assert {:error, [error]} = Backplane.Schema.validate(schema, %{y: "a", x: 1})
+
+      assert error.message =~ "expected dependent condition to return :ok or {:error, reason}"
+    end
+  end
+end
