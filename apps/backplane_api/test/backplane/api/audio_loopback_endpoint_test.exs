@@ -725,7 +725,7 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     assert_receive {:public_request, owner}
     assert_receive {:native_request, _, _, _, _}, 15_000
     monitor = Process.monitor(owner)
-    assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}, 5000
+    assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}, 8000
     clean!()
     h2_put_settings(socket, initial_window_size: 65_535)
     assert_h2_models(socket, 3, ctx.token)

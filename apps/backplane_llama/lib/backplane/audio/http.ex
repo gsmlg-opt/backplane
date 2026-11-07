@@ -111,7 +111,7 @@ defmodule Backplane.Audio.HTTP do
       enumerable =
         Stream.concat([
           [IO.iodata_to_binary(prefix)],
-          File.stream!(path, [], @write_bytes),
+          File.stream!(path, @write_bytes, []),
           [IO.iodata_to_binary(suffix)]
         ])
 
@@ -128,16 +128,9 @@ defmodule Backplane.Audio.HTTP do
 
   defp process_response(response, max_bytes, receiver, initial, deadline) do
     headers_list =
-      case response.headers do
-        %HTTP.Headers{headers: h} ->
-          Enum.map(h, fn {k, v} -> {String.downcase(to_string(k)), to_string(v)} end)
-
-        headers when is_list(headers) ->
-          Enum.map(headers, fn {k, v} -> {String.downcase(to_string(k)), to_string(v)} end)
-
-        _ ->
-          []
-      end
+      Enum.map(response.headers.headers, fn {k, v} ->
+        {String.downcase(to_string(k)), to_string(v)}
+      end)
 
     stream =
       cond do
@@ -210,8 +203,8 @@ defmodule Backplane.Audio.HTTP do
           else
             err_status = if ctx.status == 429, do: 429, else: 502
 
-            {:error,
-             error(err_status, "Provider rejected audio request", "audio_provider_error"), acc}
+            {:error, error(err_status, "Provider rejected audio request", "audio_provider_error"),
+             acc}
           end
 
         {:stream_error, ^stream, _reason} ->
