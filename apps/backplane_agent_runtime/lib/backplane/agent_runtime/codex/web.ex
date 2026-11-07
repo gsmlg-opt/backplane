@@ -32,6 +32,16 @@ defmodule Backplane.AgentRuntime.Codex.Web do
 
   def fetch(_, _), do: {:error, validation("web URL and options are required")}
 
+  @doc """
+  Calls a host search adapter and preserves its bounded success map unchanged.
+
+  Besides results lists and answer envelopes, adapters may return a raw envelope
+  with `kind: :raw` (or `"raw"`), a nonempty UTF-8 provider, and a plain `data`
+  map containing JSON values and UTF-8 string keys. Envelope fields accept atom
+  or string keys without duplicate aliases. Raw payload URLs and nested cache
+  metadata are opaque; no outer query, timing, or cache fields are required.
+  `result_limit` bounds the complete result using `:erlang.external_size/1`.
+  """
   @spec search(module(), String.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def search(adapter, query, opts \\ [])
 
@@ -42,6 +52,7 @@ defmodule Backplane.AgentRuntime.Codex.Web do
 
   def search(_, _, _), do: {:error, validation("search adapter, query, and options are required")}
 
+  @doc "Uses the same bounded result contract as `search/3` for a social search adapter."
   @spec x_search(module(), String.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def x_search(adapter, query, opts \\ [])
 
@@ -166,9 +177,12 @@ defmodule Backplane.AgentRuntime.Codex.Web do
     limit = Keyword.get(opts, :result_limit, @default_result_limit)
 
     cond do
-      not is_list(results) and not valid_answer?(result) ->
+      not is_list(results) and not valid_answer?(result) and not valid_raw?(result) ->
         {:error,
-         Error.new(:malformed_result, "search result must contain results or a valid answer")}
+         Error.new(
+           :malformed_result,
+           "search result must contain results, a valid answer or raw envelope"
+         )}
 
       not is_integer(limit) or limit <= 0 ->
         {:error, validation("result_limit must be positive")}
@@ -180,6 +194,27 @@ defmodule Backplane.AgentRuntime.Codex.Web do
         {:ok, result}
     end
   end
+
+  defp valid_raw?(result) do
+    unambiguous?(result, [:kind, :provider, :data]) and
+      field(result, :kind) in [:raw, "raw"] and
+      nonempty_text?(field(result, :provider)) and
+      is_map(field(result, :data)) and portable_json?(field(result, :data))
+  end
+
+  defp portable_json?(value) when is_binary(value), do: String.valid?(value)
+  defp portable_json?(value) when is_number(value) or is_boolean(value) or is_nil(value), do: true
+
+  defp portable_json?(value) when is_map(value) and not is_struct(value) do
+    Enum.all?(value, fn {key, child} -> text?(key) and portable_json?(child) end)
+  end
+
+  defp portable_json?(value) when is_list(value), do: portable_list?(value)
+  defp portable_json?(_value), do: false
+
+  defp portable_list?([]), do: true
+  defp portable_list?([head | tail]), do: portable_json?(head) and portable_list?(tail)
+  defp portable_list?(_value), do: false
 
   defp valid_answer?(result) do
     unambiguous?(result, [:kind, :content, :provider, :query, :citations]) and

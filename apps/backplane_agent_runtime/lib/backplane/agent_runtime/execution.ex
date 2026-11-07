@@ -6,6 +6,7 @@ defmodule Backplane.AgentRuntime.Execution do
   alias Backplane.AgentRuntime.Kernel
   alias Backplane.AgentRuntime.Policy
   alias Backplane.AgentRuntime.ProviderOutput
+  alias Backplane.AgentRuntime.ProviderSelection
   alias Backplane.AgentRuntime.Store
   alias Backplane.AgentRuntime.ToolEffects
   alias Backplane.AgentRuntime.ToolRegistry
@@ -186,16 +187,11 @@ defmodule Backplane.AgentRuntime.Execution do
     end
   end
 
-  defp prepare_provider(input, _run, meta, record, opts) do
+  defp prepare_provider(input, run, meta, record, opts) do
     with {:ok, adapter} <- required_module(opts, :adapter, "provider adapter"),
          {:ok, budget, reservation} <-
-           reserve(record, opts, "provider:#{field(input, :attempt_id)}") do
-      trusted = Map.get(meta, :operation, %{})
-
-      operation =
-        trusted
-        |> Map.merge(Map.take(input, [:run_id, :incarnation, :step_id, :attempt_id]))
-
+           reserve(record, opts, "provider:#{field(input, :attempt_id)}"),
+         {:ok, operation} <- provider_operation(input, run, meta) do
       intent = %{
         type: :provider,
         status: :started,
@@ -216,6 +212,35 @@ defmodule Backplane.AgentRuntime.Execution do
            run: nil
          }}
       end
+    end
+  end
+
+  defp provider_operation(input, run, meta) do
+    operation =
+      Map.get(meta, :operation, %{})
+      |> Map.drop([:provider_selection, "provider_selection"])
+      |> Map.merge(
+        Map.take(input, [
+          :run_id,
+          :incarnation,
+          :step_id,
+          :attempt_id,
+          :turn_id,
+          :provider_adoption,
+          :provider_view
+        ])
+      )
+
+    binding = ProviderSelection.state(run).binding
+    operation = if binding, do: Map.put(operation, :provider_selection, binding), else: operation
+
+    if ProviderSelection.enabled?(run) do
+      canonical = get_in(run, [:context, :conversation, :messages]) || []
+
+      with {:ok, messages} <- ProviderSelection.messages(run, canonical),
+           do: {:ok, Map.put(operation, :messages, messages)}
+    else
+      {:ok, operation}
     end
   end
 
@@ -418,7 +443,15 @@ defmodule Backplane.AgentRuntime.Execution do
     canonical_input =
       case kind do
         :provider_started ->
-          Map.take(prepared.operation, [:run_id, :incarnation, :step_id, :attempt_id])
+          Map.take(prepared.operation, [
+            :run_id,
+            :incarnation,
+            :step_id,
+            :attempt_id,
+            :turn_id,
+            :provider_adoption,
+            :provider_view
+          ])
 
         :tool_invoked ->
           Map.take(prepared.operation, [

@@ -47,6 +47,21 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   provider requests, history, events or public JSON. The field grants no
   publication or dispatch callbacks to these adapters.
 
+  Optional `prepare_provider_selection/2` opts into native-owned current-turn
+  recovery adoption. The trusted host stages exact run/incarnation/turn requests
+  through Conversation.stage_provider_selection/2; ordinary continuations retain
+  the active selection. Only an explicit terminal response_failed event with
+  recovery: :retry or :compaction can request a native eligibility check. Any
+  published text, thinking, tool-call or hosted effect blocks replay. After the
+  failed worker retires, the bounded hook resolves the observed pending request
+  and returns provider/model IDs, optional ephemeral provider_context, and
+  messages: :unchanged or a compacted provider-message list. Canonical history
+  stays intact. The hook receives a pinned snapshot and context without runtime
+  dispatch/interaction/publication callbacks. Store acknowledgement binds the
+  selection to the actual new attempt before stream dispatch; later staged
+  requests cannot change that binding. EMBEDDING.md documents this contract and
+  its bounds; restoration still dispatches nothing.
+
   Optional hooks run in bounded workers: prompt/2 before appending each user
   message, stop/2 after a response with no tools and no consumed steering.
   Stop may add a user message to continue (the host owns stop-hook recursion
@@ -109,6 +124,15 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
   are rejected before admission. Root interaction/resolve semantics retain the
   original atom-shaped request and answer for existing adapters.
   """
+  @callback prepare_provider_selection(map(), map()) ::
+              {:ok,
+               %{
+                 required(:provider) => binary(),
+                 required(:model) => binary(),
+                 optional(:messages) => :unchanged | [map()],
+                 optional(:provider_context) => map()
+               }}
+              | {:error, Backplane.AgentRuntime.Error.t()}
   @callback stream(map(), map()) :: Enumerable.t()
   @callback prompt(map(), map()) :: {:ok, map()} | {:error, term()}
   @callback stop([map()], map()) :: :stop | {:continue, map()} | {:error, term()}
@@ -119,5 +143,9 @@ defmodule Backplane.AgentRuntime.ConversationAdapter do
               | {:error, Backplane.AgentRuntime.Error.t()}
   @callback tool_effect_timeout(map(), map()) ::
               :default | {:ok, pos_integer()} | {:error, Backplane.AgentRuntime.Error.t()}
-  @optional_callbacks prompt: 2, stop: 2, prepare_tool: 2, tool_effect_timeout: 2
+  @optional_callbacks prompt: 2,
+                      stop: 2,
+                      prepare_tool: 2,
+                      tool_effect_timeout: 2,
+                      prepare_provider_selection: 2
 end

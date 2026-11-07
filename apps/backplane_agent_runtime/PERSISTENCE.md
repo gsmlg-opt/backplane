@@ -542,3 +542,29 @@ Cold reconciliation requires the byte-equal authoritative source Store record;
 a resealed substitute is insufficient. Code Mode references require matching
 nested and enclosing retirement evidence. These records neither replay an Events
 page nor create subscriptions, remote cleanup guarantees or host scheduling.
+
+### Provider-selection recovery records
+
+Opt-in Conversation runs carry `provider_selection_state` on the native run:
+request generations and bounded idempotency receipts, current binding, pending
+request, an open native recovery boundary, and a separate compacted provider view.
+`provider_attempts` retains each attempt's binding and replay-blocking publication
+marker. Kernel owns the `provider_selection_staged`, `provider_replay_blocked`
+and `provider_recovery_opened` commands. A first replay-blocking provider event is
+committed before it can be emitted, including runs without Goal accounting.
+
+The recovery boundary identifies the exact failed attempt, turn, observed
+request/generation, and canonical-prefix count/digest. Only a matching
+`provider_started` consumes it. Execution preserves the adoption metadata in the
+canonical command and committed intent. That same atomic transition binds the
+new native attempt, records the provider view and clears the pending slot only
+if its generation is still the observed generation. Store acknowledgement gates
+both adoption observation and provider dispatch. Failed acknowledgements never
+produce an executable adoption receipt.
+
+Provider context and credentials from host preparation remain process-local;
+they never enter the journal. The canonical messages, settled tools, usage,
+work reservations and root deadline remain authoritative. Restoring a
+nonterminal record exposes these fields for inspection but starts no worker,
+preparation or provider automatically; the live adoption contract does not change
+the existing restoration fence or promise crash-replay eligibility.

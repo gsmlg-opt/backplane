@@ -12,6 +12,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     InputSchema,
     Policy,
     ProviderOutput,
+    ProviderSelection,
     ToolCatalog,
     ToolEffects,
     ToolRegistry
@@ -45,6 +46,7 @@ defmodule Backplane.AgentRuntime.Conversation do
     with {:ok, feedback} <- HostFeedback.history(opts),
          opts = Keyword.put(opts, :host_feedback, feedback),
          :ok <- ProviderOutput.validate_options(opts),
+         :ok <- ProviderSelection.validate_initial(Keyword.get(opts, :provider_selection)),
          :ok <- validate_session_options(opts),
          :ok <- validate_host_context(opts),
          :ok <- validate_presentation_history(Keyword.get(opts, :run)),
@@ -192,6 +194,10 @@ defmodule Backplane.AgentRuntime.Conversation do
   def stage_catalog(pid, update),
     do: GenServer.call(pid, {:stage_catalog, nil, update}, :infinity)
 
+  @doc "Stages a correlated host selection; acknowledgement is not adoption."
+  def stage_provider_selection(pid, request),
+    do: GenServer.call(pid, {:stage_provider_selection, request}, :infinity)
+
   def cancel(pid), do: GenServer.call(pid, :cancel)
 
   @doc false
@@ -238,7 +244,12 @@ defmodule Backplane.AgentRuntime.Conversation do
           },
           children: [],
           deadline: initial_deadline(opts, limits.run),
-          execution_budget: budget
+          execution_budget: budget,
+          provider_selection_state:
+            ProviderSelection.initial(
+              Keyword.get(opts, :provider_selection),
+              selection_enabled?(opts)
+            )
         }
       end)
 
@@ -290,6 +301,7 @@ defmodule Backplane.AgentRuntime.Conversation do
       admission: nil,
       last_error: nil,
       provider_output: ProviderOutput.new(),
+      selection_context: %{},
       catalog: catalog,
       pending_catalog: nil,
       accepting_turn: nil,
@@ -392,8 +404,14 @@ defmodule Backplane.AgentRuntime.Conversation do
          pending_catalog_publication:
            catalog_publication(s.pending_catalog && s.pending_catalog.catalog, :staged),
          retirement_evidence: s.retirement_evidence,
-         resource_cleanup: s.resource_cleanup
+         resource_cleanup: s.resource_cleanup,
+         provider_selection: ProviderSelection.state(s.run)
        }, s}
+
+  def handle_call({:stage_provider_selection, request}, from, s) do
+    {:noreply,
+     enqueue(%{s | callers: [from | s.callers]}, {:stage_provider_selection, request, from})}
+  end
 
   def handle_call({:stage_catalog, token, update}, _from, s) do
     case stage_catalog(s, token, update) do
@@ -534,7 +552,7 @@ defmodule Backplane.AgentRuntime.Conversation do
         case ProviderOutput.check(output, ProviderOutput.limit(s.opts)) do
           {:ok, output} ->
             s = refresh_provider_idle(%{s | provider_output: output})
-            checkpoint_provider_progress(s, event, from)
+            checkpoint_replay_progress(s, event, from)
 
           {:error, error} ->
             {:reply, {:error, error}, s}
@@ -1011,13 +1029,29 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   def handle_info({ref, result}, %{effect: %{task: %{ref: ref}} = entry} = s) do
     clear_task(entry)
-    s = %{s | effect: nil}
 
-    if s.preparation && s.preparation.outer_token == entry.token do
-      # An escaped nested caller cannot outlive the enclosing invocation.
-      {:noreply, stop(s, :uncertain)}
-    else
-      {:noreply, enqueue(s, {:effect_result, entry.role, result})}
+    retired =
+      not match?({:provider_failure, _, _, _}, result) or
+        await_provider_retirement(entry.task.pid) == :ok
+
+    cond do
+      not retired ->
+        {:noreply,
+         stop(
+           %{
+             s
+             | last_error:
+                 Error.new(:unknown_outcome, "provider worker retirement was not confirmed")
+           },
+           :uncertain
+         )}
+
+      s.preparation && s.preparation.outer_token == entry.token ->
+        # An escaped nested caller cannot outlive the enclosing invocation.
+        {:noreply, stop(%{s | effect: nil}, :uncertain)}
+
+      true ->
+        {:noreply, enqueue(%{s | effect: nil}, {:effect_result, entry.role, result})}
     end
   end
 
@@ -1156,6 +1190,31 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp process(%{phase: phase} = s, {:input, _, _, from})
        when phase in [:terminal, :storage_failed, :recovery_required, :cancelling] do
     reply(s, from, {:error, Error.new(:resource_conflict, "run is not accepting input")})
+  end
+
+  defp process(s, {:stage_provider_selection, request, from}) do
+    input = Map.merge(identity(s), %{request: request})
+
+    with true <-
+           s.phase in [:running, :waiting_interaction] and s.stopping == nil and
+             not is_nil(s.accepting_turn),
+         {:ok, _} <- ProviderSelection.stage(s.run, input) do
+      commit(s, {:provider_selection_staged, now(), input}, %{}, [], fn next, _ ->
+        receipt = ProviderSelection.receipt(next.run, request.request_id)
+        store = Keyword.fetch!(next.opts, :store)
+        reply(next, from, {:ok, Map.put(receipt, :store_mode, store.mode())})
+      end)
+    else
+      {:error, error} ->
+        reply(s, from, {:error, error})
+
+      _ ->
+        reply(
+          s,
+          from,
+          {:error, Error.new(:resource_conflict, "selection requires a live accepting turn")}
+        )
+    end
   end
 
   defp process(s, {:active_notification, message, expected, turn, from}) do
@@ -1515,23 +1574,11 @@ defmodule Backplane.AgentRuntime.Conversation do
             storage_failed(s, error)
         end
 
+      {:provider_failure, error, recovery, usage} ->
+        failed_provider(s, identity, error, recovery, usage)
+
       {:error, error} ->
-        conversation =
-          GoalBridge.queue(s, s.conversation, [
-            {:turn_error, %{class: goal_error_class(error), retryable: false}}
-          ])
-
-        input =
-          Map.merge(identity, %{
-            final?: false,
-            result: %{error: error},
-            context: Map.put(s.run.context, :conversation, conversation)
-          })
-
-        commit(s, {:provider_completed, now(), input}, %{}, [], fn s, _ ->
-          emit(s, %{type: :response_failed, error: error})
-          deliver_goal(s, &finish_turn(%{&1 | last_error: error}, :failed))
-        end)
+        failed_provider(s, identity, error, nil, [])
     end
   end
 
@@ -1683,7 +1730,128 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp process(s, {:effect_result, {:goal_delivery, _}, {:error, error}}),
     do: storage_failed(s, error)
 
+  defp process(s, {:effect_result, {:provider_selection, boundary}, result}) do
+    with true <- s.phase == :running and s.stopping == nil,
+         true <- ProviderSelection.state(s.run).boundary == boundary,
+         {:ok, adoption, view, context} <-
+           ProviderSelection.prepare_result(result, boundary, s.conversation.messages) do
+      do_start_provider(%{s | selection_context: context}, %{adoption: adoption, view: view})
+    else
+      {:error, error} ->
+        finish_turn(%{s | last_error: error}, :failed)
+
+      _ ->
+        finish_turn(
+          %{s | last_error: Error.new(:resource_conflict, "stale provider preparation")},
+          :failed
+        )
+    end
+  end
+
   defp process(s, {:effect_result, _, _}), do: fail(s, "invalid adapter result")
+
+  defp failed_provider(s, provider_identity, error, recovery, usage) do
+    conversation = %{s.conversation | usage: s.conversation.usage ++ usage}
+
+    case goal_provider_usage(s, conversation, usage, provider_identity) do
+      {:ok, conversation} ->
+        result = %{error: error, recovery: recovery}
+
+        input =
+          Map.merge(provider_identity, %{
+            final?: false,
+            result: result,
+            context: Map.put(s.run.context, :conversation, conversation)
+          })
+
+        commit(s, {:provider_completed, now(), input}, %{}, [], fn next, _ ->
+          if eligible_selection_recovery?(next, provider_identity, recovery) do
+            open_selection_recovery(next, provider_identity)
+          else
+            finish_failed_provider(next, error)
+          end
+        end)
+
+      {:error, failure} ->
+        storage_failed(s, failure)
+    end
+  end
+
+  defp finish_failed_provider(s, error) do
+    conversation =
+      GoalBridge.queue(s, s.conversation, [
+        {:turn_error, %{class: goal_error_class(error), retryable: false}}
+      ])
+
+    checkpoint(s, conversation, fn next ->
+      emit(next, %{type: :response_failed, error: error})
+      deliver_goal(next, &finish_turn(%{&1 | last_error: error}, :failed))
+    end)
+  end
+
+  defp eligible_selection_recovery?(s, provider_identity, recovery) do
+    selection = ProviderSelection.state(s.run)
+
+    selection.enabled and is_map(selection.pending) and
+      selection.pending.request.turn_id == s.conversation.turn_id and
+      recovery in [:retry, :compaction] and
+      not ProviderSelection.blocked?(s.run, provider_identity.attempt_id) and
+      s.phase == :running and s.stopping == nil and s.effect == nil and s.nested == nil and
+      s.preparation == nil and s.interaction == nil and s.nested_admission == nil
+  end
+
+  defp open_selection_recovery(s, provider_identity) do
+    input =
+      Map.merge(identity(s), %{
+        boundary_id: id("selection_boundary"),
+        failed_attempt: provider_identity,
+        turn_id: s.conversation.turn_id
+      })
+
+    commit(s, {:provider_recovery_opened, now(), input}, %{}, [], fn next, _ ->
+      boundary = ProviderSelection.state(next.run).boundary
+
+      snapshot = %{
+        boundary: boundary,
+        pending: boundary.selection,
+        messages: next.conversation.messages,
+        revision: next.run.expected_revision,
+        current_selection: ProviderSelection.state(next.run).binding,
+        catalog_revision: next.catalog.revision
+      }
+
+      context =
+        Keyword.get(next.opts, :provider_context, %{})
+        |> Map.drop([
+          :interact,
+          :emit,
+          :provider_emit,
+          :request_new_context,
+          :append_feedback,
+          :stage_catalog
+        ])
+        |> Map.merge(identity(next))
+        |> Map.put(:turn_id, next.conversation.turn_id)
+        |> Map.put(:catalog_snapshot, next.catalog)
+
+      start_effect(next, {:provider_selection, boundary}, fn _ ->
+        hook(
+          next,
+          :prepare_provider_selection,
+          [snapshot, context],
+          {:error,
+           Error.new(:unsupported_capability, "provider selection preparation is unavailable")}
+        )
+      end)
+    end)
+  end
+
+  defp selection_enabled?(opts) do
+    hooks = Keyword.get(opts, :hooks)
+
+    is_atom(hooks) and not is_nil(hooks) and Code.ensure_loaded?(hooks) and
+      function_exported?(hooks, :prepare_provider_selection, 2)
+  end
 
   defp begin_prompt(s, message, mode) do
     s = if mode == :new, do: %{s | last_error: nil}, else: s
@@ -1721,21 +1889,61 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
-  defp do_start_provider(s) do
+  defp do_start_provider(s, prepared \\ nil) do
+    case provider_request_messages(s, prepared) do
+      {:ok, messages} -> dispatch_provider(s, prepared, messages)
+      {:error, error} -> finish_turn(%{s | last_error: error}, :failed)
+    end
+  end
+
+  defp provider_request_messages(s, nil),
+    do: ProviderSelection.messages(s.run, s.conversation.messages)
+
+  defp provider_request_messages(s, %{view: nil}), do: {:ok, s.conversation.messages}
+
+  defp provider_request_messages(s, %{view: view}) do
+    {:ok, view.messages ++ Enum.drop(s.conversation.messages, view.prefix_count)}
+  end
+
+  defp dispatch_provider(s, prepared, messages) do
     catalog = s.catalog
     identity = Map.merge(identity(s), %{step_id: id("step"), attempt_id: id("attempt")})
 
     request =
       Map.merge(identity, %{
-        messages: s.conversation.messages,
+        messages: messages,
         turn_id: s.conversation.turn_id,
         catalog_revision: catalog.revision,
         tools: catalog.tools ++ Keyword.get(s.opts, :hosted_tools, [])
       })
 
+    selection =
+      if prepared,
+        do: Map.take(prepared.adoption, [:provider, :model, :request_id, :generation, :turn_id]),
+        else: ProviderSelection.state(s.run).binding
+
+    request = if selection, do: Map.put(request, :provider_selection, selection), else: request
+    input = Map.put(identity, :turn_id, s.conversation.turn_id)
+
+    input =
+      if prepared,
+        do:
+          Map.merge(input, %{provider_adoption: prepared.adoption, provider_view: prepared.view}),
+        else: input
+
     opts = [adapter: Keyword.fetch!(s.opts, :provider)]
 
-    commit(s, {:provider_started, now(), identity}, %{operation: request}, opts, fn s, _ ->
+    commit(s, {:provider_started, now(), input}, %{operation: request}, opts, fn s, _ ->
+      if prepared do
+        emit(
+          s,
+          Map.merge(
+            Map.take(request, [:run_id, :incarnation, :turn_id, :step_id, :attempt_id]),
+            %{type: :provider_selection_adopted, provider_selection: selection}
+          )
+        )
+      end
+
       start_effect(
         %{s | provider_output: ProviderOutput.new()},
         {:provider, identity, catalog},
@@ -1766,7 +1974,14 @@ defmodule Backplane.AgentRuntime.Conversation do
             end
 
           %{type: :response_failed} ->
-            {:halt, {:error, Map.get(event, :error, "provider failed")}}
+            error = Map.get(event, :error, "provider failed")
+
+            result =
+              if ProviderSelection.enabled?(s.run),
+                do: {:provider_failure, error, event[:recovery], acc.usage},
+                else: {:error, error}
+
+            {:halt, result}
 
           %{type: type}
           when type in [
@@ -2444,6 +2659,32 @@ defmodule Backplane.AgentRuntime.Conversation do
     end
   end
 
+  defp checkpoint_replay_progress(s, event, from) do
+    {:provider, provider_identity, _} = s.effect.role
+
+    if ProviderSelection.enabled?(s.run) and ProviderSelection.blocking_event?(event) and
+         not ProviderSelection.blocked?(s.run, provider_identity.attempt_id) do
+      s = suspend_provider_idle(%{s | callers: [from | s.callers], provider_progress_from: from})
+
+      {:noreply,
+       commit(s, {:provider_replay_blocked, now(), provider_identity}, %{}, [], fn next, _ ->
+         next =
+           refresh_provider_idle(%{
+             next
+             | provider_progress_from: nil,
+               callers: List.delete(next.callers, from)
+           })
+
+         case checkpoint_provider_progress(next, event, from) do
+           {:reply, result, next} -> reply(next, from, result)
+           {:noreply, next} -> next
+         end
+       end)}
+    else
+      checkpoint_provider_progress(s, event, from)
+    end
+  end
+
   defp checkpoint_provider_progress(%{goal_binding: nil} = s, event, _from) do
     if event.type != :response_completed, do: emit(s, event)
     {:reply, :ok, s}
@@ -2836,8 +3077,14 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     context =
       case role do
-        {:provider, _identity, catalog} ->
-          Map.put(context, :catalog_snapshot, catalog)
+        {:provider, provider_identity, catalog} ->
+          context
+          |> Map.merge(Map.drop(s.selection_context, [:interact, :emit, :provider_emit,
+            :request_new_context, :append_feedback, :stage_catalog]))
+          |> Map.merge(provider_identity)
+          |> Map.put(:turn_id, s.conversation.turn_id)
+          |> Map.put(:provider_selection, ProviderSelection.state(s.run).binding)
+          |> Map.put(:catalog_snapshot, catalog)
 
         {:tool, invocation, _, _} ->
           Map.merge(
@@ -4744,6 +4991,27 @@ defmodule Backplane.AgentRuntime.Conversation do
   defp catalog_publication(nil, _status), do: nil
   defp catalog_publication(%{publication_id: nil}, _status), do: nil
   defp catalog_publication(catalog, status), do: ToolCatalog.receipt(catalog, status)
+
+  defp await_provider_retirement(pid) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> :ok
+    after
+      100 ->
+        # No user code runs after Task sends its return value. Fence the short
+        # Task shutdown tail before admitting a replacement provider.
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          100 ->
+            Process.demonitor(ref, [:flush])
+            :unconfirmed
+        end
+    end
+  end
 
   defp clear_task(entry) do
     Process.demonitor(entry.task.ref, [:flush])

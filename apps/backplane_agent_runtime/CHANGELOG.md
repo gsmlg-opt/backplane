@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Stage correlated provider/model intent and adopt it only at a native-owned,
+  replay-safe classified failure boundary within the existing turn. Preserve
+  canonical history, bounded host compaction views, superseding requests, usage,
+  and Store-first attempt binding (#154).
+- Preserve portable raw search envelopes, including protocol-relative URLs and
+  nested cache metadata, through direct native and Code Mode search (#155).
+
 ## 1.10.58
 
 - Add owner/incarnation-scoped bounded command inspection and retained logs with

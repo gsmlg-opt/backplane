@@ -1,5 +1,5 @@
 defmodule Backplane.AgentRuntime.Kernel do
-  alias Backplane.AgentRuntime.Error
+  alias Backplane.AgentRuntime.{Error, ProviderSelection}
 
   @moduledoc """
   Deterministic execution kernel for Backplane agent runtime runs.
@@ -18,6 +18,9 @@ defmodule Backplane.AgentRuntime.Kernel do
 
   @two_arg_commands [
     :host_step_started,
+    :provider_selection_staged,
+    :provider_replay_blocked,
+    :provider_recovery_opened,
     :provider_started,
     :provider_completed,
     :tool_invoked,
@@ -92,6 +95,7 @@ defmodule Backplane.AgentRuntime.Kernel do
          :ok <- validate_run_identity(run, input),
          {:ok, conversation} <- required_map(input, :conversation, "conversation") do
       run
+      |> ProviderSelection.clear_view_on_context_reset(conversation)
       |> Map.put(:context, Map.put(Map.get(run, :context, %{}), :conversation, conversation))
       |> maybe_update_execution_deadline(input)
       |> commit(:running, :conversation_updated, at, input)
@@ -154,17 +158,45 @@ defmodule Backplane.AgentRuntime.Kernel do
     end
   end
 
+  defp transition(run, :provider_selection_staged, at, input) do
+    with :ok <- require_state(run, :running, :provider_selection_staged),
+         :ok <- validate_run_identity(run, input),
+         {:ok, next} <- ProviderSelection.stage(run, input) do
+      commit(next, :running, :provider_selection_staged, at, input)
+    end
+  end
+
+  defp transition(run, :provider_replay_blocked, at, input) do
+    with :ok <- require_state(run, :running, :provider_replay_blocked),
+         :ok <- validate_run_identity(run, input),
+         {:ok, next} <- ProviderSelection.block(run, input) do
+      commit(next, :running, :provider_replay_blocked, at, input)
+    end
+  end
+
+  defp transition(run, :provider_recovery_opened, at, input) do
+    with :ok <- require_state(run, :running, :provider_recovery_opened),
+         :ok <- validate_run_identity(run, input),
+         :ok <- ensure_no_unsettled_work(run),
+         {:ok, next} <- ProviderSelection.open(run, input) do
+      commit(next, :running, :provider_recovery_opened, at, input)
+    end
+  end
+
   defp transition(run, :provider_started, at, input) do
     with true <- get_in(run, [:context, :execution_mode]) != :headless,
          :ok <- require_state(run, :running, :provider_started),
          :ok <- validate_run_identity(run, input),
          :ok <- ensure_provider_start_allowed(run),
          {:ok, identity} <- identity(input, @provider_identity, "provider"),
-         :ok <- ensure_new_provider_attempt(run, identity) do
+         :ok <- ensure_new_provider_attempt(run, identity),
+         {:ok, run} <- ProviderSelection.provider_start(run, input) do
+      attempt = ProviderSelection.attempt_record(run, input, identity)
+
       run
       |> Map.put(:active_provider, identity)
       |> Map.put(:current_step, Map.take(identity, [:step_id, :attempt_id]))
-      |> record_provider_attempt(identity)
+      |> record_provider_attempt(attempt)
       |> record_execution_intent(input)
       |> commit(:running, :provider_started, at, input)
     else
@@ -494,7 +526,8 @@ defmodule Backplane.AgentRuntime.Kernel do
 
   defp ensure_provider_start_allowed(run) do
     if map_size(Map.get(run, :active_tools, %{})) == 0 and
-         is_nil(Map.get(run, :active_wait)) do
+         is_nil(Map.get(run, :active_wait)) and
+         (not ProviderSelection.enabled?(run) or is_nil(Map.get(run, :active_provider))) do
       :ok
     else
       conflict("provider cannot start while tool or continuation work is active")
@@ -659,6 +692,15 @@ defmodule Backplane.AgentRuntime.Kernel do
     with {:ok, _} <- identity(input, @provider_identity, "host step"),
          {:ok, _} <- required(input, :catalog, "headless catalog"),
          do: {:ok, input}
+  end
+
+  defp validate_command_input(kind, input)
+       when kind in [
+              :provider_selection_staged,
+              :provider_replay_blocked,
+              :provider_recovery_opened
+            ] do
+    with {:ok, _} <- identity(input, [:run_id, :incarnation], "selection run"), do: {:ok, input}
   end
 
   defp validate_command_input(:provider_started, input) do

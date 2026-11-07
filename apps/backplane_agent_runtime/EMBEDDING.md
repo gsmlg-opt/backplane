@@ -1225,3 +1225,85 @@ Use the one-argument starter's reserved tracking options unchanged. Full tracked
 request retirement is required on normal and cancelled paths; current-wire
 cancellation alone is insufficient. Shared MCP clients remain host-owned.
 See `CODEX.md` for registration, deadline and acknowledgement requirements.
+
+## Pending provider selection within a turn
+
+Fixed-provider consumers need no changes. Hosts that need current-turn adoption
+can implement the optional hooks callback `prepare_provider_selection/2` and
+pass an initial `provider_selection: %{provider: "provider-id", model: "model-id"}`.
+The existing provider facade remains the only transport adapter; provider/model
+IDs describe the pinned selection rather than dynamically selecting an Elixir
+module. Returned-model provenance is separate.
+
+While a turn is active, call `Conversation.stage_provider_selection/2` with:
+
+```elixir
+%{
+  run_id: run_id,
+  incarnation: incarnation,
+  turn_id: turn_id,
+  request_id: "host-selection-B",
+  mode: :select, # or :reset
+  intent: %{provider: "requested-provider", model: "requested-model"}
+}
+```
+
+This trusted-host API requires the exact native destination identity. A reset
+uses `intent: %{}`. Requests have exactly those six keys and a 16 KiB total
+external-size bound; intent is portable data with nesting at most 32. Each run
+retains at most 64 request receipts. An exact request retry returns its original
+receipt; identity reuse with changed content fails. The receipt identifies the
+request, native generation, accepted revision and Store mode. It acknowledges
+staging, not adoption. Hosts own their durable pending intent; an observation for
+B must never clear a newer host request C.
+
+Ordinary tool continuations remain on the active selection. Adoption is possible
+only when the provider emits a terminal `response_failed` event with explicit
+`recovery: :retry | :compaction`, and the native owner verifies that the failed
+attempt published no text, thinking, tool-call or hosted-effect output. Response
+start and usage reports do not alone prevent eligibility. Crashes, deadlines,
+malformed streams, cancellation and restored runs do not open this boundary.
+Earlier settled messages/tools stay canonical and are never re-executed.
+
+After the failed worker settles, the runtime commits a correlated boundary and
+runs `prepare_provider_selection(snapshot, context)` under its existing finite
+effect/root limits. The snapshot contains `pending`, `boundary`, canonical
+`messages`, native `revision`, `current_selection`, and `catalog_revision`.
+`pending` is the exact request receipt observed at boundary creation. The
+context supplies native run/turn identity and the pinned `catalog_snapshot`, with
+no runtime interaction, dispatch, feedback or publication callbacks.
+
+The host resolves the observed intent (or its current default for `:reset`) and
+returns:
+
+```elixir
+{:ok, %{
+  provider: "resolved-provider",
+  model: "resolved-model",
+  provider_context: %{credential: ephemeral_credential},
+  messages: :unchanged
+}}
+```
+
+The context map is ephemeral and never persisted. The existing stream adapter
+receives that context plus runtime-owned native identity, catalog snapshot, and
+`provider_selection`. It must use the pinned selection rather than re-resolve a
+newer pending intent. Returning `{:error, %Backplane.AgentRuntime.Error{}}` ends
+the turn without consuming the request or emitting adoption.
+
+For host-owned compaction, `messages` may instead be a portable normalized message
+list (1 MiB external-size bound). It is a separate provider view; an empty list is
+allowed. `:unchanged` uses canonical history. Canonical history, tool results and
+usage are retained. Future provider requests append the canonical suffix after
+the compacted prefix. A native context-window reset invalidates this view; a
+prefix mismatch fails closed.
+
+Adoption, view, observed request/generation, resolved provider/model and the new
+step/attempt identity commit atomically in `provider_started` before stream
+execution. `provider_selection_adopted` observations and actual requests expose
+the matching native identities. Status retains the pending slot and each
+attempt's pinned binding. If C arrives while B prepares or commits, B dispatches
+with B's binding and only B's generation is consumed; C remains pending. Another
+recovery requires a distinct request and reserves ordinary provider work again.
+The root deadline, settled tools, failed-attempt usage and Goal accounting are
+not reset.
