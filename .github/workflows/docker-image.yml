@@ -196,6 +196,7 @@ jobs:
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ github.workspace }}/.docker-image/
+          include-hidden-files: true
           compression-level: 0
           if-no-files-found: error
           retention-days: 14

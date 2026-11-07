@@ -62,6 +62,13 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
     refute workflow =~ "workflow_run"
   end
 
+  test "Docker image staging includes its dedicated hidden artifact directory" do
+    job = YamlElixir.read_from_file!(".github/workflows/docker-image.yml")["jobs"]["docker-image"]
+    upload = Enum.find(job["steps"], &(&1["uses"] == "actions/upload-artifact@v7"))
+    assert upload["with"]["path"] == "${{ github.workspace }}/.docker-image/"
+    assert upload["with"]["include-hidden-files"] == true
+  end
+
   test "the version commit is prepared before qualification and all builds use that revision" do
     jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
     assert jobs["build"]["needs"] == ["prepare", "web-assets"]
