@@ -80,7 +80,8 @@ defmodule Backplane.McpProtocol.MixProject do
 
   defp schema_dependency do
     if File.dir?(Path.expand("../../apps", __DIR__)) do
-      {:backplane_schema, in_umbrella: true}
+      # Keep local resolution while exposing the published dependency to Hex.
+      {:backplane_schema, "~> 1.10.58", in_umbrella: true, hex: :backplane_schema}
     else
       {:backplane_schema, "~> 1.10.58"}
     end
