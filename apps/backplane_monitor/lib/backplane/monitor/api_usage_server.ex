@@ -4,7 +4,7 @@ defmodule Backplane.Monitor.ApiUsageServer do
   use GenServer
 
   alias Backplane.Monitor.{ApiAccounts, ApiUsageFetcher}
-  alias Backplane.Monitor.Providers.{DeepSeek, Exa, Firecrawl, OpenRouter, Tavily}
+  alias Backplane.Monitor.Providers.{DeepSeek, Exa, Firecrawl, OpenAI, OpenRouter, Tavily}
 
   @refresh_interval :timer.minutes(5)
   @request_timeout :timer.seconds(45)
@@ -300,8 +300,8 @@ defmodule Backplane.Monitor.ApiUsageServer do
   end
 
   defp same_credentials?(previous, current) do
-    {previous.provider, previous.credential_name, previous.management_credential_name} ==
-      {current.provider, current.credential_name, current.management_credential_name}
+    fields = [:provider, :credential_name, :management_credential_name, :organization_id]
+    Map.take(previous, fields) == Map.take(current, fields)
   end
 
   defp refresh_snapshots(state) do
@@ -446,6 +446,7 @@ defmodule Backplane.Monitor.ApiUsageServer do
           "exa" -> Exa
           "tavily" -> Tavily
           "firecrawl" -> Firecrawl
+          "openai" -> OpenAI
         end
 
       Req.Test.allow(stub, owner, self())

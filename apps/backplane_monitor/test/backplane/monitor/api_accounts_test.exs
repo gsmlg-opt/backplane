@@ -48,6 +48,16 @@ defmodule Backplane.Monitor.ApiAccountsTest do
     refute Enum.any?(ApiAccounts.credential_options(), &(&1.name == credential))
   end
 
+  test "persists and updates OpenAI organization definitions", %{credential: credential} do
+    attributes = Map.merge(attrs(credential), %{provider: "openai", organization_id: "org-first"})
+    assert {:ok, account} = ApiAccounts.create_account(attributes)
+    assert ApiAccounts.get_account(account.id).organization_id == "org-first"
+    assert {:ok, changed} = ApiAccounts.update_account(account, %{organization_id: "org-second"})
+    assert ApiAccounts.get_account(changed.id).organization_id == "org-second"
+    assert {:ok, other} = ApiAccounts.update_account(changed, %{provider: "deepseek"})
+    assert other.organization_id == nil
+  end
+
   test "rejects credential kinds outside account monitoring", %{credential: credential} do
     Vault.put(%{Vault.get(credential) | kind: "admin"})
     assert {:error, changeset} = ApiAccounts.create_account(attrs(credential))

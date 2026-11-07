@@ -2,7 +2,7 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
   @moduledoc "Resolves vaulted API keys and returns secret-free provider usage snapshots."
 
   alias Backplane.Monitor.{ApiAccount, ApiAccounts}
-  alias Backplane.Monitor.Providers.{DeepSeek, OpenRouter}
+  alias Backplane.Monitor.Providers.{DeepSeek, OpenAI, OpenRouter}
   alias Backplane.Monitor.Providers.{Exa, Firecrawl, Tavily}
   alias Backplane.Settings.Encryption
   alias Backplane.Settings.Credentials.Vault
@@ -16,6 +16,7 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
           | :decryption_failed
           | :invalid_response
           | :request_failed
+          | :invalid_organization
           | {:http_error, integer()}
   @type balance :: %{
           currency: String.t(),
@@ -30,8 +31,14 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
           currency: String.t(),
           reset: String.t() | nil
         }
-  @type warning :: {:account_credits, reason()} | {:usage_unavailable, atom()}
+  @type warning ::
+          {:account_credits, reason()}
+          | {:usage_unavailable, atom()}
+          | {:account_balance, :not_supported}
+          | {:organization_costs | :organization_usage, reason()}
+  @type metric :: %{label: String.t(), amount: String.t(), unit: String.t()}
   @type data :: %{
+          optional(:metrics) => [metric()],
           balances: [balance()],
           usage: [usage()],
           limit: limit() | nil,
@@ -55,6 +62,12 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
   def fetch_usage(%ApiAccount{provider: "deepseek"} = account) do
     with {:ok, key} <- resolve_credential(account.credential_name) do
       DeepSeek.fetch(key)
+    end
+  end
+
+  def fetch_usage(%ApiAccount{provider: "openai"} = account) do
+    with {:ok, key} <- resolve_credential(account.credential_name) do
+      OpenAI.fetch(key, account.organization_id)
     end
   end
 
@@ -98,15 +111,18 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
   defp resolve_credential(_name), do: {:error, :credential_not_found}
 
   @doc false
-  @spec request(atom(), String.t(), String.t()) :: {:ok, map()} | {:error, reason()}
-  def request(option, url, key, auth_header \\ "authorization") do
+  @spec request(atom(), String.t(), String.t(), String.t(), [{String.t(), String.t()}]) ::
+          {:ok, map()} | {:error, reason()}
+  def request(option, url, key, auth_header \\ "authorization", extra_headers \\ []) do
     options =
       :backplane_monitor
       |> Application.get_env(option, [])
       |> Keyword.take([:plug, :adapter])
       |> Keyword.merge(
         url: url,
-        headers: [{auth_header, if(auth_header == "x-api-key", do: key, else: "Bearer #{key}")}],
+        headers:
+          [{auth_header, if(auth_header == "x-api-key", do: key, else: "Bearer #{key}")}] ++
+            extra_headers,
         redirect: false,
         retry: false,
         redirect_log_level: false,

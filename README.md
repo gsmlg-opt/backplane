@@ -274,8 +274,8 @@ The admin UI, including Memory and Auth management, is intentionally a trusted-o
 ### API Usage Monitoring
 
 **System → Monitor → API Usage** (`/system/monitor/api-usage`) lists and configures
-API accounts independently of subscription Plan Usage. Add a named OpenRouter
-or DeepSeek account using an existing LLM/service API-key credential from the
+API accounts independently of subscription Plan Usage. Add a named API-provider
+account using an existing LLM/service API-key credential from the
 vault. Account definitions store credential names, not keys. This configuration
 page does not display usage figures or request usage snapshots.
 
@@ -287,6 +287,17 @@ limits, availability, last-success timestamps and errors, with manual refresh.
   successful key usage.
 - **DeepSeek:** available, granted, and topped-up balances with their currencies.
   Usage totals are explicitly unavailable rather than reported as zero.
+- **OpenAI Platform:** configure an Organization ID and its organization Admin
+  API-key credential with Usage read permission (a regular project key or Codex
+  OAuth credential is insufficient). The dashboard can select among configured
+  organizations and displays organization-wide spending plus Completions input,
+  output, cached input tokens and model request counts for today and month to
+  date, using UTC boundaries. Costs and usage are paginated independently; if one
+  fails, successful fields remain visible with a warning. OpenAI reporting may be
+  delayed. Balances are currently unavailable, with a placeholder and a link to
+  Platform billing. **TODO:** integrate balances when a supported public OpenAI
+  Platform balance API becomes available and its response is verified. Changing the
+  organization clears the account's previous snapshot.
 
 **System → Config** (`/system/config`) provides the global API information
 fetching switch (`monitor.api_usage.enabled`, default enabled). Disabling it
@@ -300,7 +311,9 @@ Active accounts refresh every five minutes when fetching is enabled. Paused
 accounts do not poll. After a refresh fails, the last successful values remain
 visible with the error and success timestamp. Snapshots are held in memory, not
 stored as billing history. Run `mix ecto.migrate` before starting an upgraded
-deployment to create `monitor_api_accounts`.
+deployment to create or upgrade `monitor_api_accounts`, including its OpenAI
+organization column and provider constraint. The OpenAI migration is required
+before running the updated application.
 
 Restart the running application after upgrading, including in development.
 Phoenix code reloading recompiles modules but does not update existing GenServer

@@ -15,6 +15,9 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
      assign(socket,
        current_path: "/dashboard/usage/api",
        states: [],
+       visible_states: [],
+       organizations: [],
+       selected_organization: "",
        fetching_enabled: ApiAccounts.fetching_enabled?(),
        reload_timer: nil
      )}
@@ -49,9 +52,28 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
     {:noreply, load_states(socket)}
   end
 
+  def handle_event("select_organization", %{"organization_id" => id}, socket) do
+    {:noreply, select_organization(socket, id)}
+  end
+
   defp load_states(socket) do
     states = ApiAccounts.list_states()
-    socket = assign(socket, states: states, fetching_enabled: ApiAccounts.fetching_enabled?())
+
+    organizations =
+      states
+      |> Enum.filter(&(&1.account.provider == "openai"))
+      |> Enum.map(& &1.account.organization_id)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    socket =
+      socket
+      |> assign(
+        states: states,
+        organizations: organizations,
+        fetching_enabled: ApiAccounts.fetching_enabled?()
+      )
+      |> select_organization(socket.assigns.selected_organization)
 
     if connected?(socket) do
       if socket.assigns.reload_timer, do: Process.cancel_timer(socket.assigns.reload_timer)
@@ -63,6 +85,18 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
     else
       socket
     end
+  end
+
+  defp select_organization(socket, id) do
+    selected = if id in socket.assigns.organizations, do: id, else: ""
+
+    visible =
+      Enum.filter(socket.assigns.states, fn state ->
+        state.account.provider != "openai" or selected == "" or
+          state.account.organization_id == selected
+      end)
+
+    assign(socket, selected_organization: selected, visible_states: visible)
   end
 
   @impl true
@@ -98,8 +132,14 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
       <p :if={@states == []} class="text-on-surface-variant">
         No API accounts configured. Manage API Accounts to add an API-key credential from the vault.
       </p>
+      <.form :if={@organizations != []} for={%{}} id="api-organization-filter" phx-change="select_organization">
+        <.dm_select id="api-usage-organization" name="organization_id" label="OpenAI Organization"
+          value={@selected_organization} options={Enum.map(@organizations, &{&1, &1})}
+          prompt="All OpenAI organizations"
+          helper="Filter configured OpenAI organizations. Other providers remain visible." />
+      </.form>
       <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <.account_card :for={state <- @states} state={state} fetching_enabled={@fetching_enabled} />
+        <.account_card :for={state <- @visible_states} state={state} fetching_enabled={@fetching_enabled} />
       </div>
     </div>
     """
@@ -117,6 +157,14 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
         </div>
       </:title>
       <div class="space-y-4">
+        <div :if={@state.account.provider == "openai"} class="text-sm space-y-2">
+          <p>Organization: <code class="font-mono">{@state.account.organization_id}</code></p>
+          <p class="text-on-surface-variant">
+            Spending covers the whole organization. Completions usage shows tokens and requests;
+            daily and month-to-date periods use UTC. OpenAI may report usage with a delay.
+          </p>
+          <.openai_balance_placeholder />
+        </div>
         <p :if={@state.usage != nil && (!@fetching_enabled || !@state.account.active)} role="status" class="text-sm text-on-surface-variant">
           Cached data from the last successful refresh; fetching is {if @fetching_enabled, do: "paused for this account", else: "disabled globally"}.
         </p>
@@ -125,7 +173,7 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
           <p>Last attempt: <.timestamp id={"api-account-#{@state.account.id}-attempt"} datetime={@state.fetched_at} /></p>
         </div>
         <div :if={@state.error != nil} role="alert" class="text-sm text-error">
-          Refresh failed. {error_message(@state.error)}
+          Refresh failed. {error_message(@state.error, @state.account.provider)}
           <p :if={@state.usage != nil}>Retained data from last successful refresh; values may be stale.</p>
         </div>
         <p :if={@state.usage == nil} class="text-sm text-on-surface-variant">
@@ -144,10 +192,22 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
     """
   end
 
+  # Public balance integration is deferred; see API Usage Monitoring in README.
+  defp openai_balance_placeholder(assigns) do
+    ~H"""
+    <section>
+      <h3 class="font-semibold">Account balances</h3>
+      <p class="text-sm text-on-surface-variant">Unavailable — public API balance support pending.</p>
+      <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank"
+        rel="noopener noreferrer" class="text-primary underline text-sm">Open OpenAI Platform billing</a>
+    </section>
+    """
+  end
+
   defp usage_details(assigns) do
     ~H"""
     <div class="space-y-4">
-      <section>
+      <section :if={@account.provider != "openai"}>
         <h3 class="font-semibold">Account balances</h3>
         <p :if={@data.balances == []} class="text-sm text-on-surface-variant">Unavailable</p>
         <dl :for={balance <- @data.balances} class="text-sm space-y-1 mt-2">
@@ -159,6 +219,15 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
           Management credential required for OpenRouter account credits. These balances are account-wide,
           not this API key's remaining limit. Credit failures do not hide key spending.
         </p>
+      </section>
+      <section :if={@account.provider == "openai"}>
+        <h3 class="font-semibold">Completions usage</h3>
+        <p :if={Map.get(@data, :metrics, []) == []} class="text-sm text-on-surface-variant">Unavailable</p>
+        <dl class="text-sm space-y-1 mt-2">
+          <div :for={metric <- Map.get(@data, :metrics, [])} class="flex justify-between gap-3">
+            <dt>{metric.label}</dt><dd>{metric.amount} {metric.unit}</dd>
+          </div>
+        </dl>
       </section>
       <section>
         <h3 class="font-semibold">{if @account.provider == "openrouter", do: "API key spending / account spending", else: "Spending"}</h3>
@@ -187,7 +256,7 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
       <p :if={@data.is_available != nil} class="text-sm">
         {if @data.is_available, do: "Available for API requests", else: "Unavailable for API requests"}
       </p>
-      <p :for={warning <- @data.warnings} role="status" class="text-sm text-warning">
+      <p :for={warning <- visible_warnings(@data.warnings)} role="status" class="text-sm text-warning">
         {warning_message(warning)}
       </p>
     </div>
@@ -208,6 +277,21 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
   defp provider_label("exa"), do: "Exa"
   defp provider_label("tavily"), do: "Tavily"
   defp provider_label("firecrawl"), do: "Firecrawl"
+  defp provider_label("openai"), do: "OpenAI Platform"
+
+  defp visible_warnings(warnings),
+    do: Enum.reject(warnings, &(&1 == {:account_balance, :not_supported}))
+
+  defp warning_message({field, {:http_error, status}})
+       when field in [:organization_costs, :organization_usage] and status in [401, 403],
+       do:
+         "OpenAI rejected access to some organization data. Check the organization's Admin API key and Usage read permission. Successfully fetched fields are still shown."
+
+  defp warning_message({:organization_costs, _reason}),
+    do: "OpenAI organization spending unavailable. Successfully fetched usage is still shown."
+
+  defp warning_message({:organization_usage, _reason}),
+    do: "OpenAI Completions usage unavailable. Successfully fetched spending is still shown."
 
   defp warning_message({:account_credits, _reason}),
     do:
@@ -221,11 +305,17 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
     do:
       "Some provider data is unavailable. Displayed values represent only successfully fetched fields."
 
-  defp error_message(:credential_not_found), do: "Check the referenced vault credential."
-  defp error_message(:timeout), do: "The provider timed out."
+  defp error_message({:http_error, status}, "openai") when status in [401, 403],
+    do: "Check the organization's Admin API key and Usage read permission."
 
-  defp error_message({:http_error, status}) when status in [401, 403],
+  defp error_message(:credential_not_found, _provider),
+    do: "Check the referenced vault credential."
+
+  defp error_message(:timeout, _provider), do: "The provider timed out."
+
+  defp error_message({:http_error, status}, _provider) when status in [401, 403],
     do: "The provider rejected authorization."
 
-  defp error_message(_reason), do: "Check provider availability and API-key credentials."
+  defp error_message(_reason, _provider),
+    do: "Check provider availability and API-key credentials."
 end

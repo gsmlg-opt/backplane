@@ -171,6 +171,80 @@ defmodule Backplane.Admin.ApiUsageLiveTest do
     assert html =~ "Contact Exa support"
   end
 
+  test "OpenAI configuration requires an organization and saves its Admin key reference",
+       %{conn: conn, credential: credential} do
+    name = unique("openai")
+    {:ok, view, _html} = live(conn, @path <> "/new")
+
+    html =
+      view
+      |> form("#api-account-form", account: %{provider: "openai"})
+      |> render_change()
+
+    assert html =~ "OpenAI Platform"
+    assert html =~ "Admin API-key credential"
+    assert html =~ "regular project API key cannot read organization usage"
+    assert has_element?(view, "#api-account-organization")
+    refute has_element?(view, "#api-account-management-credential")
+
+    view
+    |> form("#api-account-form",
+      account: %{name: name, credential_name: credential, active: false}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#api-account-form")
+    refute Enum.any?(ApiAccounts.list_accounts(), &(&1.name == name))
+
+    view
+    |> form("#api-account-form", account: %{organization_id: "org-primary"})
+    |> render_submit()
+
+    assert_patch(view, @path)
+    account = Enum.find(ApiAccounts.list_accounts(), &(&1.name == name))
+    assert account.provider == "openai"
+    assert account.organization_id == "org-primary"
+    assert account.credential_name == credential
+    assert account.management_credential_name == nil
+    assert render(view) =~ "org-primary"
+    refute render(view) =~ @secret
+
+    view |> element("#edit-api-account-#{account.id}") |> render_click()
+    assert has_element?(view, "#api-account-organization[value='org-primary']")
+
+    view
+    |> form("#api-account-form", account: %{organization_id: "org-secondary"})
+    |> render_submit()
+
+    assert_patch(view, @path)
+    assert ApiAccounts.get_account(account.id).organization_id == "org-secondary"
+    events = Audit.list(%{target_type: "monitor_api_account", target_id: account.id})
+    refute inspect(events) =~ "org-primary"
+    refute inspect(events) =~ "org-secondary"
+    refute inspect(events) =~ @secret
+  end
+
+  test "switching away from OpenAI clears the organization configuration",
+       %{conn: conn, credential: credential} do
+    {:ok, account} =
+      ApiAccounts.create_account(%{
+        name: unique("openai"),
+        provider: "openai",
+        credential_name: credential,
+        organization_id: "org-primary",
+        active: false
+      })
+
+    {:ok, view, _html} = live(conn, @path <> "/#{account.id}/edit")
+    view |> form("#api-account-form", account: %{provider: "deepseek"}) |> render_change()
+    refute has_element?(view, "#api-account-organization")
+    view |> form("#api-account-form") |> render_submit()
+    assert_patch(view, @path)
+    updated = ApiAccounts.get_account(account.id)
+    assert updated.provider == "deepseek"
+    assert updated.organization_id == nil
+  end
+
   test "creates, edits, pauses and deletes with ID-only audit events",
        %{conn: conn, credential: credential} do
     name = unique("account")

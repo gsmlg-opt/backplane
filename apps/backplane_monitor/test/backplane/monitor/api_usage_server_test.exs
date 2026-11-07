@@ -109,6 +109,41 @@ defmodule Backplane.Monitor.ApiUsageServerTest do
     refute_receive {:fetch_started, _}, 30
   end
 
+  test "changing OpenAI organization discards previous values and cancels old requests",
+       context do
+    owner = self()
+
+    server =
+      server(context, fn account ->
+        send(owner, {:fetch_started, self(), account.organization_id})
+
+        receive do
+          {:result, result} -> result
+        end
+      end)
+
+    account = struct!(account(), provider: "openai", organization_id: "org-old")
+    ApiUsageServer.sync(server, [account])
+    assert_receive {:fetch_started, first, "org-old"}
+    send(first, {:result, {:ok, data()}})
+    assert %{last_success_at: timestamp} = await_state(server, account.id, &(!&1.refreshing))
+    assert timestamp
+    ApiUsageServer.refresh(server, account.id)
+    assert_receive {:fetch_started, old, "org-old"}
+
+    updated = %{account | organization_id: "org-new"}
+
+    assert [%{usage: nil, last_success_at: nil, refreshing: true}] =
+             ApiUsageServer.sync(server, [updated])
+
+    refute Process.alive?(old)
+    assert_receive {:fetch_started, current, "org-new"}
+    send(current, {:result, {:error, {:http_error, 403}}})
+
+    assert %{usage: nil, last_success_at: nil, error: {:http_error, 403}} =
+             await_state(server, account.id, &(!&1.refreshing))
+  end
+
   test "task crashes become a safe error without exposing their reason", context do
     fetcher = fn _ -> exit({:remote_error, "super-secret-api-key"}) end
     server = server(context, fetcher)

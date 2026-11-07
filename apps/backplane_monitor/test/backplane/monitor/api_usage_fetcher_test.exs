@@ -2,7 +2,7 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Monitor.{ApiAccount, ApiUsageFetcher}
-  alias Backplane.Monitor.Providers.{DeepSeek, OpenRouter}
+  alias Backplane.Monitor.Providers.{DeepSeek, OpenAI, OpenRouter}
   alias Backplane.Settings.{Credential, Encryption}
   alias Backplane.Settings.Credentials.Vault
 
@@ -17,7 +17,11 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
   end
 
   setup do
-    for {option, provider} <- [openrouter_req_options: OpenRouter, deepseek_req_options: DeepSeek] do
+    for {option, provider} <- [
+          openrouter_req_options: OpenRouter,
+          deepseek_req_options: DeepSeek,
+          openai_req_options: OpenAI
+        ] do
       previous = Application.get_env(:backplane_monitor, option)
       Application.put_env(:backplane_monitor, option, plug: {Req.Test, provider})
 
@@ -132,6 +136,30 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
   test "unsupported providers fail without resolving credentials" do
     assert {:error, :provider_not_supported} =
              ApiUsageFetcher.fetch_usage(account("unknown", "missing"))
+  end
+
+  test "dispatches OpenAI Admin keys with an explicit organization and rejects OAuth" do
+    name = credential("service", "api_key", "private-admin-key")
+
+    Req.Test.stub(OpenAI, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer private-admin-key"]
+      assert Plug.Conn.get_req_header(conn, "openai-organization") == ["org-selected"]
+      assert conn.request_path in ["/v1/organization/costs", "/v1/organization/usage/completions"]
+      Req.Test.json(conn, %{data: [], has_more: false, next_page: nil})
+    end)
+
+    definition = struct!(account("openai", name), organization_id: "org-selected")
+
+    assert {:ok, %{metrics: metrics, balances: []} = result} =
+             ApiUsageFetcher.fetch_usage(definition)
+
+    assert length(metrics) == 8
+    refute inspect(result) =~ "private-admin-key"
+
+    oauth = credential("llm", "openai_oauth", "private-oauth-token")
+
+    assert {:error, :invalid_credential_auth_type} =
+             ApiUsageFetcher.fetch_usage(%{definition | credential_name: oauth})
   end
 
   test "provider mock ownership can be explicitly allowed to a polling task" do

@@ -4,7 +4,7 @@ defmodule Backplane.Admin.ApiUsageLive do
   alias Backplane.Admin.Audit
   alias Backplane.Monitor.{ApiAccount, ApiAccounts}
 
-  @fields ~w(name provider credential_name management_credential_name active)
+  @fields ~w(name provider credential_name management_credential_name organization_id active)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -121,9 +121,14 @@ defmodule Backplane.Admin.ApiUsageLive do
   defp account_params(params) do
     params = Map.take(params, @fields)
 
-    if params["provider"] in ["openrouter", "exa"],
+    params =
+      if params["provider"] in ["openrouter", "exa"],
+        do: params,
+        else: Map.put(params, "management_credential_name", nil)
+
+    if params["provider"] == "openai",
       do: params,
-      else: Map.put(params, "management_credential_name", nil)
+      else: Map.put(params, "organization_id", nil)
   end
 
   defp account_form(changeset) do
@@ -167,10 +172,24 @@ defmodule Backplane.Admin.ApiUsageLive do
             value={@form[:provider].value} prompt="Select a provider..."
             options={Enum.map(ApiAccount.providers(), &{&1, provider_label(&1)})} />
           <.form_error field={@form[:provider]} />
-          <.dm_select id="api-account-credential" name="account[credential_name]" label="API-key credential"
+          <.dm_select id="api-account-credential" name="account[credential_name]"
+            label={if @form[:provider].value == "openai", do: "Admin API-key credential", else: "API-key credential"}
             value={@form[:credential_name].value} prompt="Select a credential..." options={@credentials}
             helper="Only LLM/service API-key vault entries are eligible. Secret values are never displayed." />
           <.form_error field={@form[:credential_name]} />
+          <div :if={@form[:provider].value == "openai"} class="space-y-2">
+            <.dm_input id="api-account-organization" name="account[organization_id]"
+              label="Organization ID" value={@form[:organization_id].value}
+              helper="Use the Organization ID associated with this Admin API key." />
+            <.form_error field={@form[:organization_id]} />
+            <p class="text-sm text-on-surface-variant">
+              OpenAI usage monitoring requires an organization Admin API key with Usage read permission.
+              A regular project API key cannot read organization usage.
+              Store the Admin API key in an LLM/service API-key vault entry, then select it above.
+              <a href="https://platform.openai.com/settings/organization/admin-keys" target="_blank"
+                rel="noopener noreferrer" class="text-primary underline">Manage OpenAI Admin API keys</a>.
+            </p>
+          </div>
           <div :if={@form[:provider].value == "openrouter"}>
             <.dm_select id="api-account-management-credential" name="account[management_credential_name]"
               label="Management credential (optional)" value={@form[:management_credential_name].value}
@@ -207,6 +226,10 @@ defmodule Backplane.Admin.ApiUsageLive do
         </:col>
         <:col :let={account} label="API-key credential">
           <code class="text-xs font-mono">{account.credential_name}</code>
+        </:col>
+        <:col :let={account} label="Organization">
+          <code :if={account.provider == "openai"} class="text-xs font-mono">{account.organization_id}</code>
+          <span :if={account.provider != "openai"} class="text-on-surface-variant">Not applicable</span>
         </:col>
         <:col :let={account} label="Management credential">
           <code class="text-xs font-mono">{account.management_credential_name || "Not configured"}</code>
@@ -256,6 +279,7 @@ defmodule Backplane.Admin.ApiUsageLive do
   defp provider_label("exa"), do: "Exa"
   defp provider_label("tavily"), do: "Tavily"
   defp provider_label("firecrawl"), do: "Firecrawl"
+  defp provider_label("openai"), do: "OpenAI Platform"
 
   defp form_error(assigns) do
     ~H"""

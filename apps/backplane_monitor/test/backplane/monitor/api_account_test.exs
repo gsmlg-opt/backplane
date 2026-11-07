@@ -4,12 +4,34 @@ defmodule Backplane.Monitor.ApiAccountTest do
   alias Backplane.Monitor.ApiAccount
 
   test "API providers are independent of subscription providers" do
-    assert ApiAccount.providers() == ~w(openrouter deepseek exa tavily firecrawl)
+    assert ApiAccount.providers() == ~w(openrouter deepseek exa tavily firecrawl openai)
     assert ApiAccount.provider_label("openrouter") == "OpenRouter"
     assert ApiAccount.provider_label("deepseek") == "DeepSeek"
     assert ApiAccount.provider_label("exa") == "Exa"
     assert ApiAccount.provider_label("tavily") == "Tavily"
     assert ApiAccount.provider_label("firecrawl") == "Firecrawl"
+    assert ApiAccount.provider_label("openai") == "OpenAI Platform"
+  end
+
+  test "OpenAI requires a safe explicit organization and clears it for other providers" do
+    refute ApiAccount.changeset(%ApiAccount{}, attrs(%{provider: "openai"})).valid?
+
+    for organization <- ["org-example", "org_example"] do
+      assert ApiAccount.changeset(
+               %ApiAccount{},
+               attrs(%{provider: "openai", organization_id: organization})
+             ).valid?
+    end
+
+    for organization <- ["org-test\r\nInjected: value", "org test", String.duplicate("a", 256)] do
+      refute ApiAccount.changeset(
+               %ApiAccount{},
+               attrs(%{provider: "openai", organization_id: organization})
+             ).valid?
+    end
+
+    changeset = ApiAccount.changeset(%ApiAccount{organization_id: "org-old"}, attrs())
+    assert Ecto.Changeset.get_field(changeset, :organization_id) == nil
   end
 
   test "requires a name, supported provider, and credential reference" do

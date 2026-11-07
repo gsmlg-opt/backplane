@@ -2,7 +2,7 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
   alias Backplane.Monitor.{ApiAccounts, ApiUsageServer}
-  alias Backplane.Monitor.Providers.{DeepSeek, OpenRouter}
+  alias Backplane.Monitor.Providers.{DeepSeek, OpenAI, OpenRouter}
   alias Backplane.Settings.{Credential, Encryption}
   alias Backplane.Settings.Credentials.Vault
 
@@ -21,6 +21,7 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     options = [
       openrouter_req_options: [plug: {Req.Test, OpenRouter}],
       deepseek_req_options: [plug: {Req.Test, DeepSeek}],
+      openai_req_options: [plug: {Req.Test, OpenAI}],
       req_test_owner: self()
     ]
 
@@ -72,6 +73,124 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     assert html =~ "No API accounts configured"
     assert has_element?(view, "a[href='/system/monitor/api-usage']", "Manage API Accounts")
     refute has_element?(view, "#api-account-form")
+    refute html =~ @secret
+  end
+
+  test "OpenAI displays organization spending, token units, and pending balance support",
+       %{conn: conn, credential: credential} do
+    Req.Test.stub(OpenAI, fn conn ->
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer #{@secret}"]
+      assert Plug.Conn.get_req_header(conn, "openai-organization") == ["org-primary"]
+      openai_response(conn)
+    end)
+
+    account = create_openai_account(credential, "org-primary")
+    :ok = ApiAccounts.refresh_account(account.id)
+    await_state(account.id, &(&1.last_success_at != nil and not &1.refreshing))
+    {:ok, view, html} = live(conn, @path)
+    assert has_element?(view, "#api-account-#{account.id}", "OpenAI Platform")
+    assert html =~ "org-primary"
+    assert html =~ "Organization spending (today, UTC)"
+    assert html =~ "Organization spending (month to date, UTC)"
+    assert html =~ "1.25 USD"
+    assert html =~ "Input tokens (today, UTC)"
+    assert html =~ "100 tokens"
+    assert html =~ "20 tokens"
+    assert html =~ "10 tokens"
+    assert html =~ "3 requests"
+    assert html =~ "Completions usage"
+    assert html =~ "Spending covers the whole organization"
+    assert html =~ "Unavailable — public API balance support pending."
+
+    assert has_element?(
+             view,
+             "a[href='https://platform.openai.com/settings/organization/billing/overview']"
+           )
+
+    refute html =~ "100 USD"
+    refute html =~ "Purchased credits"
+    refute html =~ @secret
+  end
+
+  test "OpenAI organization selection deduplicates IDs and keeps other providers visible",
+       %{conn: conn, credential: credential} do
+    :ok = ApiAccounts.set_fetching_enabled(false)
+    first = create_openai_account(credential, "org-first", false)
+    second = create_openai_account(credential, "org-second", false)
+    duplicate = create_openai_account(credential, "org-first", false)
+    other = create_account(credential, "deepseek")
+
+    {:ok, view, html} = live(conn, @path)
+    assert html =~ "Unavailable — public API balance support pending."
+    refute html =~ "0 USD"
+
+    assert html
+           |> Floki.parse_fragment!()
+           |> Floki.find("#api-usage-organization option[value='org-first']")
+           |> length() == 1
+
+    view
+    |> form("#api-organization-filter", organization_id: "org-first")
+    |> render_change()
+
+    assert has_element?(view, "#api-account-#{first.id}")
+    assert has_element?(view, "#api-account-#{duplicate.id}")
+    assert has_element?(view, "#api-account-#{other.id}")
+    refute has_element?(view, "#api-account-#{second.id}")
+
+    view
+    |> form("#api-organization-filter", organization_id: "org-second")
+    |> render_change()
+
+    assert has_element?(view, "#api-account-#{second.id}")
+    refute has_element?(view, "#api-account-#{first.id}")
+    {:ok, _deleted} = ApiAccounts.delete_account(second)
+    send(view.pid, :reload_states)
+    render(view)
+    assert has_element?(view, "#api-account-#{first.id}")
+    assert has_element?(view, "#api-account-#{duplicate.id}")
+    assert has_element?(view, "#api-account-#{other.id}")
+    refute has_element?(view, "#api-usage-organization option[value='org-second']")
+
+    render_change(view, "select_organization", %{"organization_id" => "org-unconfigured"})
+    assert has_element?(view, "#api-account-#{first.id}")
+    refute render(view) =~ @secret
+  end
+
+  test "OpenAI partial access failure preserves spending with a safe Admin key message",
+       %{conn: conn, credential: credential} do
+    Req.Test.stub(OpenAI, fn conn ->
+      if conn.request_path == "/v1/organization/costs" do
+        openai_response(conn)
+      else
+        Plug.Conn.send_resp(conn, 403, @secret)
+      end
+    end)
+
+    account = create_openai_account(credential, "org-primary")
+    :ok = ApiAccounts.refresh_account(account.id)
+    await_state(account.id, &(&1.last_success_at != nil and not &1.refreshing))
+    {:ok, _view, html} = live(conn, @path)
+    assert html =~ "1.25 USD"
+    assert html =~ "Admin API key and Usage read permission"
+    assert html =~ "Successfully fetched fields are still shown"
+    assert html =~ "Unavailable — public API balance support pending."
+    refute html =~ "Refresh failed"
+    refute html =~ @secret
+  end
+
+  test "OpenAI rejected authorization leaves balance pending and explains Admin key requirements",
+       %{conn: conn, credential: credential} do
+    Req.Test.stub(OpenAI, &Plug.Conn.send_resp(&1, 401, @secret))
+    account = create_openai_account(credential, "org-primary")
+    :ok = ApiAccounts.refresh_account(account.id)
+    await_state(account.id, &(&1.error != nil and not &1.refreshing))
+    {:ok, _view, html} = live(conn, @path)
+    assert html =~ "Refresh failed"
+    assert html =~ "Admin API key and Usage read permission"
+    assert html =~ "Unavailable — public API balance support pending."
+    assert html =~ "No successful snapshot yet"
+    refute html =~ "0 USD"
     refute html =~ @secret
   end
 
@@ -362,6 +481,53 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
       })
 
     account
+  end
+
+  defp create_openai_account(credential, organization, active \\ true) do
+    {:ok, account} =
+      ApiAccounts.create_account(%{
+        name: unique("openai"),
+        provider: "openai",
+        credential_name: credential,
+        organization_id: organization,
+        active: active
+      })
+
+    account
+  end
+
+  defp openai_response(conn) do
+    now = DateTime.utc_now()
+
+    start_time =
+      now |> DateTime.to_date() |> DateTime.new!(~T[00:00:00], "Etc/UTC") |> DateTime.to_unix()
+
+    result =
+      case conn.request_path do
+        "/v1/organization/costs" ->
+          %{"amount" => %{"value" => 1.25, "currency" => "usd"}}
+
+        "/v1/organization/usage/completions" ->
+          %{
+            "input_tokens" => 100,
+            "output_tokens" => 20,
+            "input_cached_tokens" => 10,
+            "num_model_requests" => 3
+          }
+      end
+
+    Req.Test.json(conn, %{
+      "data" => [
+        %{
+          "object" => "bucket",
+          "start_time" => start_time,
+          "end_time" => DateTime.to_unix(now),
+          "results" => [result]
+        }
+      ],
+      "has_more" => false,
+      "next_page" => nil
+    })
   end
 
   defp put_credential(name, kind, metadata \\ %{}, secret \\ @secret) do
