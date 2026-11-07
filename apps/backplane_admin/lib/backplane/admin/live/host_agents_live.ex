@@ -263,6 +263,10 @@ defmodule Backplane.Admin.HostAgentsLive do
         </div>
       </div>
 
+      <.link id="host-api-services-link" navigate={~p"/system/host-agents/#{@entry.host.id}/services"} class="mb-4 inline-block text-sm text-primary">
+        Configure API Services
+      </.link>
+
       <div class="mb-6 flex flex-wrap gap-2 border-b border-outline-variant pb-2">
         <.link
           :for={{tab, label} <- @tabs}

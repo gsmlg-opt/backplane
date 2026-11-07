@@ -1,7 +1,7 @@
 defmodule Backplane.Admin.ProviderNewLive do
   use Backplane.Admin, :live_view
 
-  alias Backplane.LLM.{Provider, ProviderApi, ProviderPreset}
+  alias Backplane.LLM.{HostServices, Provider, ProviderApi, ProviderPreset}
   alias Backplane.Repo
   alias Backplane.Settings.Credentials
 
@@ -16,6 +16,7 @@ defmodule Backplane.Admin.ProviderNewLive do
        selected_preset: ProviderPreset.fetch!(@default_preset),
        form: form_for_preset(ProviderPreset.fetch!(@default_preset), %{}),
        credential_options: [],
+       host_service_options: [],
        errors: %{}
      )}
   end
@@ -79,6 +80,7 @@ defmodule Backplane.Admin.ProviderNewLive do
                name: params["name"],
                preset_key: preset.key,
                credential: params["credential"],
+               host_service_id: blank_to_nil(params["host_service_id"]),
                rpm_limit: parse_optional_integer(params["rpm_limit"]),
                default_headers: decode_json_map(params["default_headers"])
              }),
@@ -149,6 +151,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         %{
           "name" => preset.default_name,
           "credential" => "",
+          "host_service_id" => "",
           "base_url" => root,
           "rpm_limit" => "",
           "default_headers" => "{}"
@@ -163,7 +166,7 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp validate_params(preset, params) do
     %{}
     |> require_field(params, "name", "Name is required")
-    |> require_field(params, "credential", "Credential is required")
+    |> require_credential(params)
     |> require_allowed_credential(preset, params)
     |> require_surfaces(params, preset)
   end
@@ -182,6 +185,7 @@ defmodule Backplane.Admin.ProviderNewLive do
       selected_preset: preset,
       form: form_for_preset(preset, params),
       credential_options: credential_options,
+      host_service_options: [{"", "Direct HTTP"} | HostServices.options()],
       errors: %{}
     )
   end
@@ -232,6 +236,12 @@ defmodule Backplane.Admin.ProviderNewLive do
 
   defp default_credential(_preset, _options), do: ""
 
+  defp require_credential(errors, params) do
+    if blank?(params["host_service_id"]),
+      do: require_field(errors, params, "credential", "Credential is required"),
+      else: errors
+  end
+
   defp require_allowed_credential(errors, preset, params) do
     credential = params["credential"]
 
@@ -262,7 +272,7 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp credential_error(preset), do: "Credential must be a #{preset.credential_kind} credential"
 
   defp require_surface(errors, params, surface) do
-    if truthy?(params["#{surface}_enabled"]) do
+    if truthy?(params["#{surface}_enabled"]) and blank?(params["host_service_id"]) do
       require_field(
         errors,
         params,
@@ -456,6 +466,13 @@ defmodule Backplane.Admin.ProviderNewLive do
                 >credential store</.link>.
               </p>
               <.error errors={@errors} field="credential" />
+            </div>
+
+            <div>
+              <.dm_select id="provider-host-service" name="provider[host_service_id]" label="Host API Service"
+                options={@host_service_options} value={@form[:host_service_id].value || ""} />
+              <p class="mt-1 text-xs text-on-surface-variant">Select Custom for host APIs. Endpoint URLs come from the service; credentials are optional for unauthenticated local services.</p>
+              <.error errors={@errors} field="host_service_id" />
             </div>
 
             <div>

@@ -59,6 +59,7 @@ defmodule Backplane.LLM.ProviderApi do
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> update_change(:base_url, &trim_trailing_slash/1)
     |> put_default_native_protocols()
+    |> configure_host_service()
     |> validate_required(@required_fields)
     |> validate_length(:native_protocols, min: 1)
     |> validate_native_protocols()
@@ -131,6 +132,54 @@ defmodule Backplane.LLM.ProviderApi do
 
   defp trim_trailing_slash(url) when is_binary(url), do: String.trim_trailing(url, "/")
   defp trim_trailing_slash(url), do: url
+
+  defp provider_for(changeset) do
+    case get_field(changeset, :provider_id) do
+      id when is_binary(id) -> Repo.get(Provider, id)
+      _ -> nil
+    end
+  end
+
+  defp configure_host_service(changeset) do
+    case provider_for(changeset) do
+      %Provider{host_service_id: id} when is_binary(id) ->
+        case Backplane.LLM.HostServices.get(id) do
+          nil ->
+            add_error(changeset, :provider_id, "host service not found")
+
+          service ->
+            protocols = get_field(changeset, :native_protocols) || []
+            enabled = get_field(changeset, :enabled)
+
+            changeset =
+              if enabled and
+                   not Enum.all?(protocols, &Map.has_key?(service.endpoints, to_string(&1))),
+                 do:
+                   add_error(changeset, :native_protocols, "must be declared by the host service"),
+                 else: changeset
+
+            changeset =
+              Enum.reduce([:responses_websocket, :responses_lifecycle], changeset, fn field,
+                                                                                      acc ->
+                if get_field(acc, field),
+                  do: add_error(acc, field, "is unavailable for host services"),
+                  else: acc
+              end)
+
+            changeset
+            |> put_change(
+              :base_url,
+              Enum.find_value(protocols, &service.endpoints[to_string(&1)]) ||
+                List.first(Map.values(service.endpoints))
+            )
+            |> put_change(:model_discovery_enabled, false)
+            |> put_change(:model_discovery_path, nil)
+        end
+
+      _ ->
+        changeset
+    end
+  end
 
   defp validate_responses_websocket(changeset) do
     if get_field(changeset, :responses_websocket) == true and

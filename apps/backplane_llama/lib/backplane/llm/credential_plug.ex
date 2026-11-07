@@ -62,6 +62,15 @@ defmodule Backplane.LLM.CredentialPlug do
   """
   @spec build_auth_headers(Provider.t(), atom()) ::
           {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  def build_auth_headers(
+        %Provider{host_service_id: id, credential: credential} = provider,
+        api_type
+      )
+      when is_binary(id) and credential in [nil, ""] and api_type in [:anthropic, :openai] do
+    {:ok,
+     anthropic_version_pair(api_type) ++ safe_default_headers(provider.default_headers, api_type)}
+  end
+
   def build_auth_headers(%Provider{} = provider, api_type)
       when api_type in [:anthropic, :antigravity, :google, :openai] do
     case resolve_surface_credential(provider, api_type) do

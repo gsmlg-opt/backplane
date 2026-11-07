@@ -75,6 +75,10 @@ defmodule Backplane.LLM.ModelDiscovery do
     end
   end
 
+  defp reload_api_with_details(%Provider{host_service_id: id}, _api) when is_binary(id) do
+    {:error, add_error(empty_result(), "host services use explicitly configured models")}
+  end
+
   defp reload_api_with_details(provider, api) do
     # Resolving OAuth headers can refresh and persist the credential. Complete that
     # before capturing the generation that guards the upstream request and writes.
@@ -985,7 +989,8 @@ defmodule Backplane.LLM.ModelDiscovery do
       is_nil(provider) or is_nil(api) or api.provider_id != provider_id ->
         {:error, :discovery_configuration_changed}
 
-      not provider.enabled or not is_nil(provider.deleted_at) or not api.enabled or
+      not is_nil(provider.host_service_id) or not provider.enabled or
+        not is_nil(provider.deleted_at) or not api.enabled or
           not api.model_discovery_enabled ->
         {:error, :discovery_disabled}
 

@@ -195,6 +195,7 @@ defmodule Backplane.HostAgent.ChannelTest do
     Application.put_env(:backplane_host_agent, :memory_host_sync, %{enabled: false})
     assert {:ok, %{}, _channel} = Channel.join(self(), "host-1")
     assert_receive {:join, _, "host_agent:host-1", payload}
+    assert payload["host_api"] == %{"protocol" => "host_api.v1"}
     refute Map.has_key?(payload, "memory")
     assert payload["memory_v2"]["offers"] == ["host_memory.v2"]
     assert payload["memory_v2"]["partitions"] == []

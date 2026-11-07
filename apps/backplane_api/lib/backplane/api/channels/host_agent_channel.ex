@@ -66,6 +66,7 @@ defmodule Backplane.Api.HostAgentChannel do
             }),
           else: json_shape(negotiation)
 
+      socket = Backplane.Api.HostApiChannel.join(socket, payload)
       {:ok, reply, socket}
     else
       false -> {:error, %{reason: "unauthorized"}}
@@ -165,6 +166,14 @@ defmodule Backplane.Api.HostAgentChannel do
 
   def handle_in("config_report", _payload, socket) do
     invalid_payload(socket)
+  end
+
+  def handle_in("api_services_registered", payload, socket) do
+    Backplane.Api.HostApiChannel.registered(socket, payload, active_token?(socket))
+  end
+
+  def handle_in("api_response", payload, socket) do
+    Backplane.Api.HostApiChannel.response(socket, payload, active_token?(socket))
   end
 
   def handle_in("get_desired", _payload, socket) do
@@ -472,6 +481,22 @@ defmodule Backplane.Api.HostAgentChannel do
   defp selected_sources_extension(_, _), do: {:error, :invalid_request}
 
   @impl true
+  def handle_info(event, socket) when event in [:host_api_services, :host_api_services_changed] do
+    Backplane.Api.HostApiChannel.inventory(socket, active_token?(socket))
+  end
+
+  def handle_info({:host_api_request, id, payload}, socket) do
+    Backplane.Api.HostApiChannel.request(socket, id, payload, active_token?(socket))
+  end
+
+  def handle_info({:host_api_ack, reference, result}, socket) do
+    Backplane.Api.HostApiChannel.ack(socket, reference, result, active_token?(socket))
+  end
+
+  def handle_info({:host_api_cancel, id}, socket) do
+    Backplane.Api.HostApiChannel.cancel(socket, id)
+  end
+
   def handle_info({:memory_access_changed, hint}, socket) do
     if active_token?(socket) and selected_extension(socket, "memory_access.v1") == :ok,
       do: push(socket, "memory_access_changed", hint)

@@ -88,6 +88,13 @@ defmodule Backplane.LLM.ModelResponseTest do
     assert mapped =~ ~S("response":{"model":"smart"})
   end
 
+  test "flushes unfinished provider bytes without inventing a terminal event" do
+    mapper = ModelResponse.responses_stream_mapper("smart", "local")
+    assert mapper.("data: {\"partial\":") == []
+    assert mapper.(:eof) == ["data: {\"partial\":"]
+    assert mapper.(:eof) == []
+  end
+
   test "does not replace nested or unrelated model fields" do
     response =
       ~S({"model":"another-model","response":{"model":"gpt-5.6-terra"}})

@@ -68,7 +68,8 @@ defmodule Backplane.HostAgent.Channel do
         Phoenix.SocketClient.Channel
       )
 
-    channel_join_module.join(socket, "host_agent:#{host_id}", join_payload())
+    payload = Map.put(join_payload(), "host_api", %{"protocol" => "host_api.v1"})
+    channel_join_module.join(socket, "host_agent:#{host_id}", payload)
   end
 
   defp join_payload do

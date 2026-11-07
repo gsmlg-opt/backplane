@@ -19,6 +19,7 @@ defmodule Backplane.Embedding.Provider do
   schema "embedding_providers" do
     field(:name, :string)
     field(:credential, :string)
+    field(:host_service_id, :binary_id)
     field(:base_url, :string)
     field(:default_headers, :map, default: %{})
     field(:enabled, :boolean, default: true)
@@ -29,13 +30,14 @@ defmodule Backplane.Embedding.Provider do
     timestamps()
   end
 
-  @required_fields ~w(name credential base_url)a
-  @optional_fields ~w(default_headers enabled deleted_at)a
+  @required_fields ~w(name base_url)a
+  @optional_fields ~w(credential host_service_id default_headers enabled deleted_at)a
 
   @doc "Changeset for creating or updating an embedding provider."
   def changeset(provider, attrs) do
     provider
     |> cast(attrs, @required_fields ++ @optional_fields)
+    |> derive_host_base_url()
     |> update_change(:base_url, &trim_trailing_slash/1)
     |> validate_required(@required_fields)
     |> validate_format(:name, @name_pattern,
@@ -44,8 +46,36 @@ defmodule Backplane.Embedding.Provider do
     )
     |> validate_base_url()
     |> validate_default_headers()
+    |> validate_host_service()
     |> validate_credential_exists()
+    |> foreign_key_constraint(:host_service_id)
     |> unique_constraint(:name, name: :embedding_providers_name_index)
+  end
+
+  defp derive_host_base_url(changeset) do
+    case get_field(changeset, :host_service_id) do
+      nil ->
+        changeset
+
+      id ->
+        case Backplane.LLM.HostServices.get(id) do
+          %{endpoints: %{"openai_embeddings" => url}} -> put_change(changeset, :base_url, url)
+          _ -> changeset
+        end
+    end
+  end
+
+  defp validate_host_service(changeset) do
+    case get_field(changeset, :host_service_id) do
+      nil ->
+        validate_required(changeset, [:credential])
+
+      id ->
+        case Backplane.LLM.HostServices.get(id) do
+          %{endpoints: %{"openai_embeddings" => _}} -> changeset
+          _ -> add_error(changeset, :host_service_id, "must provide OpenAI Embeddings")
+        end
+    end
   end
 
   defp trim_trailing_slash(url) when is_binary(url), do: String.trim_trailing(url, "/")

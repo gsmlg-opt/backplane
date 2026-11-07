@@ -112,6 +112,11 @@ defmodule Backplane.Embedding do
 
   @doc "Build OpenAI-compatible embedding auth headers for a provider."
   @spec build_auth_headers(Provider.t()) :: {:ok, [{String.t(), String.t()}]} | {:error, atom()}
+  def build_auth_headers(%Provider{host_service_id: id, credential: credential} = provider)
+      when is_binary(id) and credential in [nil, ""] do
+    {:ok, default_header_pairs(provider.default_headers)}
+  end
+
   def build_auth_headers(%Provider{} = provider) do
     case Credentials.fetch_with_meta(provider.credential) do
       {:ok, token, meta} ->
@@ -153,6 +158,7 @@ defmodule Backplane.Embedding do
     %{
       name: attrs["name"],
       credential: attrs["credential"],
+      host_service_id: blank_to_nil(attrs["host_service_id"]),
       base_url: attrs["base_url"],
       enabled: truthy?(attrs["enabled"]),
       default_headers: decode_json_map(attrs["default_headers"])

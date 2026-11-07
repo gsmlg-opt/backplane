@@ -2,6 +2,7 @@ defmodule Backplane.Admin.ProviderShowLive do
   use Backplane.Admin, :live_view
 
   alias Backplane.LLM.{
+    HostServices,
     ModelDiscovery,
     Provider,
     ProviderApi,
@@ -20,6 +21,7 @@ defmodule Backplane.Admin.ProviderShowLive do
        current_path: "/llama/providers",
        provider: nil,
        credential_options: [],
+       host_service_options: [],
        provider_form: to_form(%{}, as: :provider),
        provider_errors: %{},
        model_form: to_form(model_defaults(), as: :model),
@@ -384,7 +386,10 @@ defmodule Backplane.Admin.ProviderShowLive do
         options
       end
 
-    assign(socket, credential_options: options)
+    assign(socket,
+      host_service_options: [{"", "Direct HTTP"} | HostServices.options()],
+      credential_options: options
+    )
   end
 
   defp provider_preset(%Provider{preset_key: preset_key}) when is_binary(preset_key) do
@@ -424,6 +429,7 @@ defmodule Backplane.Admin.ProviderShowLive do
              Provider.update(provider, %{
                name: params["name"],
                credential: params["credential"],
+               host_service_id: blank_to_nil(params["host_service_id"]),
                rpm_limit: parse_optional_integer(params["rpm_limit"]),
                enabled: truthy?(params["enabled"]),
                default_headers: decode_json_map(params["default_headers"])
@@ -571,9 +577,15 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp validate_provider_params(provider, params) do
     %{}
     |> require_field(params, "name", "Name is required")
-    |> require_field(params, "credential", "Credential is required")
+    |> require_credential(params)
     |> require_allowed_credential(provider_preset(provider), params)
     |> require_api_surfaces(params, provider)
+  end
+
+  defp require_credential(errors, params) do
+    if blank?(params["host_service_id"]),
+      do: require_field(errors, params, "credential", "Credential is required"),
+      else: errors
   end
 
   defp require_allowed_credential(errors, nil, _params), do: errors
@@ -608,7 +620,7 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp credential_error(preset), do: "Credential must be a #{preset.credential_kind} credential"
 
   defp require_api_surface(errors, params, surface) do
-    if truthy?(params["#{surface}_enabled"]) do
+    if truthy?(params["#{surface}_enabled"]) and blank?(params["host_service_id"]) do
       require_field(
         errors,
         params,
@@ -648,6 +660,7 @@ defmodule Backplane.Admin.ProviderShowLive do
     params = %{
       "name" => provider.name,
       "credential" => provider.credential || "",
+      "host_service_id" => provider.host_service_id || "",
       "enabled" => checkbox_value(provider.enabled),
       "rpm_limit" => provider.rpm_limit && Integer.to_string(provider.rpm_limit),
       "default_headers" => encode_json_map(provider.default_headers)
@@ -930,6 +943,13 @@ defmodule Backplane.Admin.ProviderShowLive do
                 value={@provider_form[:credential].value || ""}
               />
               <.error errors={@provider_errors} field="credential" />
+            </div>
+
+            <div>
+              <.dm_select id="provider-host-service" name="provider[host_service_id]" label="Host API Service"
+                options={@host_service_options} value={@provider_form[:host_service_id].value || ""} />
+              <.error errors={@provider_errors} field="host_service_id" />
+              <p class="mt-1 text-xs text-on-surface-variant">Hosted APIs use the service endpoints. Credential is optional for unauthenticated local services.</p>
             </div>
 
             <div>

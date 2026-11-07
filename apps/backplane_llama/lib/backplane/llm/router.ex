@@ -546,19 +546,32 @@ defmodule Backplane.LLM.Router do
                ModelExtractor.replace_model(raw_body, model_string, raw_model),
              {:ok, auth_headers} <-
                proxy_auth_headers(provider, provider_api, client_protocol, api_type) do
-          conn = upstream_request_conn(conn, api_type, provider_api)
-          upstream = build_upstream(provider_api, auth_headers)
+          if provider.host_service_id do
+            do_host_proxy(
+              conn,
+              provider,
+              provider_api,
+              client_protocol,
+              {model_string, raw_model},
+              rewritten_body,
+              auth_headers,
+              access
+            )
+          else
+            conn = upstream_request_conn(conn, api_type, provider_api)
+            upstream = build_upstream(provider_api, auth_headers)
 
-          do_proxy(
-            conn,
-            upstream,
-            provider,
-            {model_string, raw_model},
-            rewritten_body,
-            client_protocol,
-            access,
-            provider_api
-          )
+            do_proxy(
+              conn,
+              upstream,
+              provider,
+              {model_string, raw_model},
+              rewritten_body,
+              client_protocol,
+              access,
+              provider_api
+            )
+          end
         else
           {:error, :no_provider} ->
             conn = send_not_found(conn, api_type, model_string)
@@ -674,13 +687,33 @@ defmodule Backplane.LLM.Router do
           access =
             AccessEvent.put_resolution(access, provider, raw_model, nil)
 
-          conn =
-            if base_url_has_path?(provider.base_url),
-              do: strip_repeated_request_prefix(conn, "v1"),
-              else: conn
+          if provider.host_service_id do
+            access = AccessEvent.mark_upstream_start(access)
 
-          upstream = build_embedding_upstream(provider, auth_headers)
-          do_embedding_proxy(conn, upstream, rewritten_body, access)
+            result_conn =
+              Backplane.LLM.HostProxy.call(
+                strip_client_authentication(conn),
+                provider.host_service_id,
+                :openai_embeddings,
+                auth_headers,
+                body: rewritten_body
+              )
+
+            finalize_access(access, result_conn, outcome_for_conn(result_conn),
+              api_surface: :openai,
+              status: result_conn.status
+            )
+
+            result_conn
+          else
+            conn =
+              if base_url_has_path?(provider.base_url),
+                do: strip_repeated_request_prefix(conn, "v1"),
+                else: conn
+
+            upstream = build_embedding_upstream(provider, auth_headers)
+            do_embedding_proxy(conn, upstream, rewritten_body, access)
+          end
         else
           {:error, :no_provider} ->
             conn = send_not_found(conn, :openai, model_string)
@@ -864,6 +897,66 @@ defmodule Backplane.LLM.Router do
     result_conn
   end
 
+  defp do_host_proxy(
+         conn,
+         provider,
+         provider_api,
+         protocol,
+         {requested_model, raw_model},
+         body,
+         headers,
+         access
+       ) do
+    stream? = is_stream_request?(body)
+
+    access =
+      access
+      |> AccessEvent.put_resolution(provider, raw_model, provider_api)
+      |> then(fn acc -> if stream?, do: AccessEvent.mark_stream(acc), else: acc end)
+      |> AccessEvent.prepare_response_observation()
+      |> AccessEvent.mark_upstream_start()
+
+    opts =
+      [body: body]
+      |> then(fn opts ->
+        if AccessEvent.response_observation?(access) do
+          callback = fn bytes -> AccessEvent.scan_stream_chunk(access, bytes) end
+          Keyword.merge(opts, on_response_chunk: callback, on_response_body: callback)
+        else
+          opts
+        end
+      end)
+      |> response_model_mapping(protocol, requested_model, raw_model, stream?)
+      |> then(fn opts ->
+        if stream? and requested_model != raw_model do
+          mapper = Backplane.LLM.ModelResponse.responses_stream_mapper(requested_model, raw_model)
+
+          Keyword.merge(opts,
+            map_response_chunk: mapper,
+            flush_response_chunks: fn -> mapper.(:eof) end
+          )
+        else
+          opts
+        end
+      end)
+
+    result_conn =
+      Backplane.LLM.HostProxy.call(
+        strip_client_authentication(conn),
+        provider.host_service_id,
+        protocol,
+        headers,
+        opts
+      )
+
+    finalize_access(access, result_conn, outcome_for_conn(result_conn),
+      api_surface: api_type(protocol),
+      status: result_conn.status
+    )
+
+    result_conn
+  end
+
   defp response_model_mapping(opts, _client_protocol, model, model, _stream?), do: opts
 
   defp response_model_mapping(opts, :openai_responses, requested_model, raw_model, true) do
@@ -947,6 +1040,8 @@ defmodule Backplane.LLM.Router do
 
   defp outcome_for_conn(%Plug.Conn{private: %{relayixir_downstream_disconnected: true}}),
     do: :cancelled
+
+  defp outcome_for_conn(%Plug.Conn{private: %{relayixir_proxy_error: _reason}}), do: :error
 
   defp outcome_for_conn(%Plug.Conn{status: status}), do: outcome_for_status(status)
 

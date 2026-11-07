@@ -76,32 +76,41 @@ defmodule Backplane.LLM.ModelResponse do
     end)
   end
 
-  @doc "Builds a per-request mapper that handles SSE lines split across transport chunks."
-  @spec responses_stream_mapper(binary(), binary()) :: (binary() -> [binary()])
+  @doc "Builds a per-request mapper for split SSE lines; `:eof` flushes any unfinished bytes."
+  @spec responses_stream_mapper(binary(), binary()) :: (binary() | :eof -> [binary()])
   def responses_stream_mapper(model, model) when is_binary(model) do
-    fn chunk -> [chunk] end
+    fn
+      :eof -> []
+      chunk -> [chunk]
+    end
   end
 
   def responses_stream_mapper(requested_model, resolved_model)
       when is_binary(requested_model) and is_binary(resolved_model) do
     state_key = {__MODULE__, :responses_stream, make_ref()}
 
-    fn chunk ->
-      {mapped, state} =
-        map_stream_chunk(
-          Process.get(state_key, {"", false}),
-          chunk,
-          requested_model,
-          resolved_model
-        )
-
-      if state == {"", false} do
+    fn
+      :eof ->
+        {buffer, _} = Process.get(state_key, {"", false})
         Process.delete(state_key)
-      else
-        Process.put(state_key, state)
-      end
+        if buffer == "", do: [], else: [buffer]
 
-      mapped
+      chunk ->
+        {mapped, state} =
+          map_stream_chunk(
+            Process.get(state_key, {"", false}),
+            chunk,
+            requested_model,
+            resolved_model
+          )
+
+        if state == {"", false} do
+          Process.delete(state_key)
+        else
+          Process.put(state_key, state)
+        end
+
+        mapped
     end
   end
 

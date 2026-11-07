@@ -1,6 +1,7 @@
 defmodule Backplane.Admin.EmbeddingLive do
   use Backplane.Admin, :live_view
 
+  alias Backplane.LLM.HostServices
   alias Backplane.Embedding
   alias Backplane.Settings.Credentials
 
@@ -15,6 +16,7 @@ defmodule Backplane.Admin.EmbeddingLive do
        provider_form: to_form(provider_defaults(), as: :provider),
        provider_errors: %{},
        credential_options: [],
+       host_service_options: [],
        embedding_models: []
      )}
   end
@@ -165,6 +167,7 @@ defmodule Backplane.Admin.EmbeddingLive do
 
     assign(socket,
       credential_options: credential_options(),
+      host_service_options: [{"", "Direct HTTP"} | HostServices.options(:openai_embeddings)],
       embedding_models: embedding_models
     )
   end
@@ -190,6 +193,7 @@ defmodule Backplane.Admin.EmbeddingLive do
     %{
       "name" => "",
       "credential" => "",
+      "host_service_id" => "",
       "base_url" => "",
       "enabled" => "true",
       "default_headers" => "{}",
@@ -204,6 +208,7 @@ defmodule Backplane.Admin.EmbeddingLive do
     %{
       "name" => provider.name,
       "credential" => provider.credential,
+      "host_service_id" => provider.host_service_id || "",
       "base_url" => provider.base_url,
       "enabled" => to_string(provider.enabled),
       "default_headers" => encode_json_map(provider.default_headers),
@@ -336,6 +341,7 @@ defmodule Backplane.Admin.EmbeddingLive do
         provider_form={@provider_form}
         provider_errors={@provider_errors}
         credential_options={@credential_options}
+        host_service_options={@host_service_options}
       />
     </div>
     """
@@ -411,6 +417,13 @@ defmodule Backplane.Admin.EmbeddingLive do
                 checked={@provider_form[:enabled].value in [true, "true", "on"]}
               />
             </div>
+          </div>
+
+          <div>
+            <.dm_select id="embedding-provider-host-service" name="provider[host_service_id]" label="Host API Service"
+              options={@host_service_options} value={@provider_form[:host_service_id].value || ""} />
+            <p class="mt-1 text-xs text-on-surface-variant">Hosted services use their configured endpoint. Credential is optional for unauthenticated host services.</p>
+            <.error errors={@provider_errors} field="host_service_id" />
           </div>
 
           <div>

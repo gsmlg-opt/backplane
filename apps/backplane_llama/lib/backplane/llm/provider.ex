@@ -28,6 +28,7 @@ defmodule Backplane.LLM.Provider do
     field(:preset_key, :string)
     field(:name, :string)
     field(:credential, :string)
+    field(:host_service_id, :binary_id)
     field(:default_headers, :map, default: %{})
     field(:rpm_limit, :integer)
     field(:enabled, :boolean, default: true)
@@ -44,8 +45,8 @@ defmodule Backplane.LLM.Provider do
     timestamps()
   end
 
-  @required_fields ~w(name credential)a
-  @optional_fields ~w(preset_key default_headers rpm_limit enabled api_type)a
+  @required_fields ~w(name)a
+  @optional_fields ~w(credential host_service_id preset_key default_headers rpm_limit enabled api_type)a
 
   # ── Changesets ───────────────────────────────────────────────────────────────
 
@@ -60,8 +61,11 @@ defmodule Backplane.LLM.Provider do
     )
     |> validate_number(:rpm_limit, greater_than: 0)
     |> validate_default_headers()
+    |> validate_host_service()
+    |> validate_credential_requirement()
     |> validate_credential_exists()
     |> validate_preset_credential_auth_type()
+    |> foreign_key_constraint(:host_service_id)
     |> unique_constraint(:name, name: :llm_providers_name_index)
   end
 
@@ -75,9 +79,60 @@ defmodule Backplane.LLM.Provider do
     )
     |> validate_number(:rpm_limit, greater_than: 0)
     |> validate_default_headers()
+    |> validate_host_service()
+    |> validate_credential_requirement()
     |> validate_credential_exists()
     |> validate_preset_credential_auth_type()
+    |> foreign_key_constraint(:host_service_id)
     |> unique_constraint(:name, name: :llm_providers_name_index)
+  end
+
+  defp validate_credential_requirement(changeset) do
+    if get_field(changeset, :host_service_id),
+      do: changeset,
+      else: validate_required(changeset, [:credential])
+  end
+
+  defp validate_host_service(changeset) do
+    case get_field(changeset, :host_service_id) do
+      nil ->
+        changeset
+
+      id ->
+        case Backplane.LLM.HostServices.get(id) do
+          nil ->
+            add_error(changeset, :host_service_id, "host service not found")
+
+          service ->
+            apis =
+              case changeset.data do
+                %{id: provider_id} when is_binary(provider_id) ->
+                  ProviderApi.list_for_provider(provider_id)
+                  |> Enum.filter(& &1.enabled)
+
+                _ ->
+                  []
+              end
+
+            cond do
+              Enum.any?(apis, &(&1.responses_websocket or &1.responses_lifecycle)) ->
+                add_error(
+                  changeset,
+                  :host_service_id,
+                  "requires disabling Responses WebSocket and lifecycle APIs first"
+                )
+
+              Enum.all?(
+                Enum.flat_map(apis, & &1.native_protocols),
+                &Map.has_key?(service.endpoints, to_string(&1))
+              ) ->
+                changeset
+
+              true ->
+                add_error(changeset, :host_service_id, "does not provide every configured API")
+            end
+        end
+    end
   end
 
   defp validate_default_headers(changeset) do

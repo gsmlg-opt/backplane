@@ -2,7 +2,8 @@
 
 The host agent runs on any machine that should sync skills from a Backplane
 hub, expose local `day::`/`math::`/`memory::` tools, and proxy every other
-tool call back to the hub over an authenticated channel.
+tool call back to the hub over an authenticated channel. It can also export
+host-local inference and embedding APIs to the hub through that connection.
 
 ## 1. Download
 
@@ -91,6 +92,60 @@ automatic EPMD startup. Manage its lifecycle with your process manager (for
 example, launchd or systemd); `rpc`, `remote`, and the RPC-based `stop` command
 are unavailable with the default distribution mode. Existing runtime VM options
 are preserved, and the gateway release keeps its existing distribution defaults.
+
+### Configure host-local API services
+
+Apply the gateway database migrations when installing this version, and run an
+agent version offering `host_api.v1`. An older agent can keep its existing
+functions, but cannot forward these API requests.
+
+In Backplane Admin, open **System → Host Agents → your host → API Services**
+(`/system/host-agents/:id/services`). Add a service and fill in the complete
+endpoint URL for each API it supports. Leave unsupported APIs empty. For example:
+
+| API | Example endpoint URL |
+| --- | --- |
+| OpenAI Embeddings | `http://127.0.0.1:8001/v1/embeddings` |
+| OpenAI Chat Completions | `http://127.0.0.1:8000/v1/chat/completions` |
+| OpenAI Responses | `http://127.0.0.1:8000/v1/responses` |
+| Anthropic Messages | `http://127.0.0.1:8000/v1/messages` |
+
+URLs are interpreted on the host and used exactly as configured, including the
+path and query. Configure the APIs actually implemented by the service; the
+underlying server can be Ollama, SGLang, vLLM, or any compatible implementation.
+The host's local IP/port need not be reachable from the gateway. Endpoint changes
+are delivered over the existing authenticated WebSocket connection; they need no
+agent YAML changes or restart. Inventory replacement retires in-flight calls on
+that host, and the agent acknowledges the new configuration before further calls.
+
+To use inference, create a **Llama → Providers → Custom** provider, choose the
+**Host API Service**, and enable its declared API protocols. Add models manually
+in the provider detail page, including the API surfaces on which each is usable.
+Automatic model discovery is disabled for host services. To use embeddings,
+choose the service in **Llama → Embedding** and configure its model. Requests keep
+the normal `provider/model` routing; Memory can select the embedding model in its
+existing embedding configuration.
+
+A vault credential is optional for an unauthenticated host-local service. For a
+service requiring authentication, select the provider's vault credential and
+configure its normal default headers. Credentials are resolved only for the
+request and excluded from the service inventory. Client authentication headers
+and cookies are stripped before the selected provider headers are injected.
+
+Calls support ordinary JSON and SSE streaming. Upstream HTTP error statuses and
+bodies are preserved. Disconnects, cancellation and configuration replacement
+stop remote forwarding; ambiguous inference requests are not automatically
+replayed. The initial transport supports POST calls for the four declared APIs.
+Responses lifecycle operations and Responses WebSocket transport are unavailable
+for host-linked providers; disable those options before moving an existing
+provider to a host service.
+
+Limits: 64 configured services per host, 2,048 bytes per endpoint URL, eight
+concurrent calls per connection, 384 KiB request bodies, 50,000,000-byte responses,
+and acknowledged response chunks of at most 48 KiB. Calls use a 120-second request
+deadline/idle limit; each channel frame acknowledgment has a 30-second timeout.
+An unavailable or unregistered host returns an API error without direct HTTP
+fallback. Request bodies over the transport limit return HTTP 413.
 
 ## 5. Install memory plugins
 

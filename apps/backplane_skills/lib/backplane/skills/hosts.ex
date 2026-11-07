@@ -291,7 +291,19 @@ defmodule Backplane.Skills.Hosts do
             |> Repo.delete_all()
           end
 
-          case Repo.delete(locked_host) do
+          deletion =
+            locked_host
+            |> Ecto.Changeset.change()
+            |> Ecto.Changeset.foreign_key_constraint(:id,
+              name: :llm_providers_host_service_id_fkey,
+              message: "has API services used by LLM providers; detach the providers first"
+            )
+            |> Ecto.Changeset.foreign_key_constraint(:id,
+              name: :embedding_providers_host_service_id_fkey,
+              message: "has API services used by embedding providers; detach the providers first"
+            )
+
+          case Repo.delete(deletion) do
             {:ok, deleted} -> deleted
             {:error, changeset} -> Repo.rollback(changeset)
           end

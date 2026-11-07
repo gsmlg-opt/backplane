@@ -21,6 +21,7 @@ defmodule BackplaneSystem.Application do
         Backplane.Registry.ToolRegistry,
         Backplane.Registry.PromptCatalog,
         Backplane.Registry.PromptRegistry,
+        Backplane.HostApi.Transport,
         Backplane.Metrics
       ]
       |> maybe_audit_writer()

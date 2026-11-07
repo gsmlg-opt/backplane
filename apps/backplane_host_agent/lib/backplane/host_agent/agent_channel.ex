@@ -5,7 +5,7 @@ defmodule Backplane.HostAgent.AgentChannel do
 
   use Phoenix.SocketClient.Channel
 
-  alias Backplane.HostAgent.Services
+  alias Backplane.HostAgent.{ApiForwarder, Services}
   alias Backplane.HostAgent.Memory.Edge.Syncer
   alias Phoenix.SocketClient.Channel.Helpers
 
@@ -24,6 +24,54 @@ defmodule Backplane.HostAgent.AgentChannel do
       {"plugin_call_result", plugin_call_result(payload, %{channel: self()})},
       state
     )
+  end
+
+  def handle_message("api_services", payload, state) when is_map(payload) do
+    with {:ok, forwarder, state} <- api_forwarder(state),
+         :ok <- ApiForwarder.configure(forwarder, payload) do
+      registrations =
+        payload["services"]
+        |> Enum.reject(&(&1["enabled"] == false))
+        |> Enum.map(&Map.take(&1, ["id", "revision"]))
+
+      Helpers.handle_push_cast(
+        {"api_services_registered", %{"protocol" => "host_api.v1", "services" => registrations}},
+        state
+      )
+    else
+      {:error, _reason} -> {:noreply, state}
+    end
+  end
+
+  def handle_message("api_request", payload, state) when is_map(payload) do
+    result =
+      with {:ok, forwarder} <- current_api_forwarder(state) do
+        ApiForwarder.request(forwarder, payload)
+      end
+
+    case result do
+      :ok ->
+        {:noreply, state}
+
+      {:error, reason} ->
+        Helpers.handle_push_cast(
+          {"api_response",
+           %{
+             "request_id" => payload["request_id"],
+             "type" => "error",
+             "code" => Atom.to_string(reason)
+           }},
+          state
+        )
+    end
+  end
+
+  def handle_message("api_cancel", %{"request_id" => id}, state) do
+    with {:ok, forwarder} <- current_api_forwarder(state) do
+      ApiForwarder.cancel(forwarder, id)
+    end
+
+    {:noreply, state}
   end
 
   def handle_message("memory_access_changed", hint, state) when is_map(hint) do
@@ -60,6 +108,28 @@ defmodule Backplane.HostAgent.AgentChannel do
 
   defp plugin_call_error(call_id, reason) do
     %{"call_id" => call_id, "ok" => false, "error" => format_error(reason)}
+  end
+
+  defp current_api_forwarder(state) do
+    case get_in(state.hooks, [:host_api_forwarder]) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid), do: {:ok, pid}, else: {:error, :service_unavailable}
+
+      nil ->
+        {:error, :service_unavailable}
+    end
+  end
+
+  defp api_forwarder(state) do
+    case current_api_forwarder(state) do
+      {:ok, pid} ->
+        {:ok, pid, state}
+
+      {:error, :service_unavailable} ->
+        with {:ok, pid} <- ApiForwarder.start(self()) do
+          {:ok, pid, put_in(state.hooks[:host_api_forwarder], pid)}
+        end
+    end
   end
 
   defp syncer_module,
