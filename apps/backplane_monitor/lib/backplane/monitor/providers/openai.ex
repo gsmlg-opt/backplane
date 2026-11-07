@@ -40,7 +40,7 @@ defmodule Backplane.Monitor.Providers.OpenAI do
   end
 
   defp fetch_data(path, key, organization, params, today, parser) do
-    with {:ok, buckets} <- pages(path, key, organization, params, MapSet.new(), []) do
+    with {:ok, buckets} <- pages(path, key, organization, params, %{}, []) do
       parser.(buckets, today)
     end
   rescue
@@ -70,14 +70,14 @@ defmodule Backplane.Monitor.Providers.OpenAI do
   end
 
   defp next_page(path, key, organization, params, cursor, seen, buckets) do
-    if is_binary(cursor) and cursor != "" and not MapSet.member?(seen, cursor) and
-         MapSet.size(seen) < @max_pages - 1 do
+    if is_binary(cursor) and cursor != "" and not is_map_key(seen, cursor) and
+         map_size(seen) < @max_pages - 1 do
       pages(
         path,
         key,
         organization,
         Keyword.put(params, :page, cursor),
-        MapSet.put(seen, cursor),
+        Map.put(seen, cursor, true),
         buckets
       )
     else
