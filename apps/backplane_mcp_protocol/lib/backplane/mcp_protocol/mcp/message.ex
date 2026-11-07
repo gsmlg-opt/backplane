@@ -5,7 +5,7 @@ defmodule Backplane.McpProtocol.MCP.Message do
   This module provides functions to parse and validate MCP messages based on the Model Context Protocol schema
   """
 
-  import Peri
+  import Backplane.Schema
 
   # MCP message schemas
 
@@ -575,7 +575,7 @@ defmodule Backplane.McpProtocol.MCP.Message do
   def encode_progress_notification(params, params_schema \\ @progress_notif_params_schema)
       when is_map(params) do
     # Validate params against the provided schema
-    case Peri.validate(params_schema, params) do
+    case Backplane.Schema.validate(params_schema, params) do
       {:ok, validated_params} ->
         encode_notification(%{
           "method" => "notifications/progress",
@@ -669,7 +669,7 @@ defmodule Backplane.McpProtocol.MCP.Message do
 
   defp encode_message(data, schema) do
     encoder = {schema, {:transform, fn data -> JSON.encode!(data) <> "\n" end}}
-    Peri.validate(encoder, data)
+    Backplane.Schema.validate(encoder, data)
   end
 
   @doc """

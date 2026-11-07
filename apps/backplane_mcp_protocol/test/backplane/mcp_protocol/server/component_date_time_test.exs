@@ -182,7 +182,7 @@ defmodule Backplane.McpProtocol.Server.ComponentDateTimeTest do
                  important_dates: ["2024-01-01", "not-a-date", "2024-12-25"]
                })
 
-      assert %Peri.Error{path: [:important_dates, 1], content: %{index: 1}} = error
+      assert %Backplane.Schema.Error{path: [:important_dates, 1], content: %{index: 1}} = error
       assert error.message =~ "invalid ISO 8601 date format"
     end
   end

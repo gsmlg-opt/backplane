@@ -37,7 +37,7 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
     end
 
     test "fails with invalid options" do
-      assert_raise Peri.InvalidSchema, fn ->
+      assert_raise Backplane.Schema.InvalidSchema, fn ->
         WebSocket.start_link(server: [base_path: "/mcp", ws_path: "/ws"])
       end
     end

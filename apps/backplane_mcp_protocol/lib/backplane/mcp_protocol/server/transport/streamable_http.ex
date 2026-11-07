@@ -34,7 +34,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Peri
+  import Backplane.Schema
 
   alias Backplane.McpProtocol.Telemetry
   alias Backplane.McpProtocol.Transport.Behaviour, as: Transport

@@ -13,7 +13,7 @@ defmodule Backplane.McpProtocol.Server.Session do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Peri
+  import Backplane.Schema
 
   alias Backplane.McpProtocol.MCP.ElicitationSchema
   alias Backplane.McpProtocol.MCP.Error

@@ -1,7 +1,7 @@
 defmodule Backplane.McpProtocol do
   @moduledoc false
 
-  import Peri
+  import Backplane.Schema
 
   alias Backplane.McpProtocol.Server.Transport.SSE, as: ServerSSE
   alias Backplane.McpProtocol.Server.Transport.STDIO, as: ServerSTDIO

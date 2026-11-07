@@ -360,14 +360,14 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
   describe "format_errors/1" do
     test "formats a single root custom validation error" do
       schema = {:custom, fn _value -> {:error, "invalid note input", []} end}
-      assert {:error, %Peri.Error{} = error} = Peri.validate(schema, %{})
+      assert {:error, %Backplane.Schema.Error{} = error} = Backplane.Schema.validate(schema, %{})
 
       assert Schema.format_errors(error) == "invalid note input"
     end
 
     test "formats nested error leaves with their complete field paths" do
       assert {:error, errors} =
-               Peri.validate(%{attachment: %{meta: %{name: :string}}}, %{
+               Backplane.Schema.validate(%{attachment: %{meta: %{name: :string}}}, %{
                  "attachment" => %{"meta" => %{"name" => 1}}
                })
 
@@ -411,7 +411,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
     test "normalizes root custom errors into lists with an empty path" do
       validator = Schema.validator({:custom, fn _ -> {:error, "invalid note input", []} end})
 
-      assert {:error, [%Peri.Error{path: [], message: "invalid note input"}]} = validator.(%{})
+      assert {:error, [%Backplane.Schema.Error{path: [], message: "invalid note input"}]} = validator.(%{})
     end
 
     test "composes root custom validation under a declared attachment field" do
@@ -433,7 +433,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
     end
 
     test "composes an error collection whose parent and leaves have root paths" do
-      error = Peri.Error.exception([Peri.Error.new_single("invalid attachment", [])])
+      error = Backplane.Schema.Error.exception([Backplane.Schema.Error.new_single("invalid attachment", [])])
       inner = Schema.validator({:custom, fn _ -> {:error, error} end})
       validator = Schema.validator(%{attachment: {:required, {:custom, inner}}})
 
@@ -445,7 +445,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       schema = {:schema, %{}, {:additional_keys, {:custom, fn _ -> {:error, "invalid extra field", []} end}}}
       validator = Schema.validator(schema)
 
-      assert {:error, [%Peri.Error{path: ["extra"], message: "invalid extra field"}]} =
+      assert {:error, [%Backplane.Schema.Error{path: ["extra"], message: "invalid extra field"}]} =
                validator.(%{"extra" => 1})
     end
 
@@ -454,7 +454,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
             {:custom, fn _ -> {:error, "invalid attachment", []} end},
             %{name: {:required, :string}}
           ] do
-        callback = fn value -> Peri.validate(schema, value) end
+        callback = fn value -> Backplane.Schema.validate(schema, value) end
         validator = Schema.validator(%{attachment: {:custom, callback}})
 
         assert {:error, errors} = validator.(%{"attachment" => %{"name" => 1}})
@@ -492,7 +492,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
     end
 
     test "normalizes callbacks under transform and constrained-list modifiers" do
-      callback = fn value -> Peri.validate({:custom, fn _ -> {:error, "invalid attachment", []} end}, value) end
+      callback = fn value -> Backplane.Schema.validate({:custom, fn _ -> {:error, "invalid attachment", []} end}, value) end
 
       schemas = [
         %{attachments: {{:list, {:custom, callback}}, {:transform, &Function.identity/1}}},
@@ -536,7 +536,7 @@ defmodule Backplane.McpProtocol.Server.Component.SchemaTest do
       input = %{prefix: "a-", attachment: %{name: "b", extra: "ok"}}
       expected = {:ok, %{prefix: "a-", attachment: %{name: "a-b", extra: "ok"}}}
 
-      assert Peri.validate(schema, input) == expected
+      assert Backplane.Schema.validate(schema, input) == expected
       assert Schema.validator(schema).(input) == expected
     end
 

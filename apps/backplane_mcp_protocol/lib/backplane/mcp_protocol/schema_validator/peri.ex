@@ -10,7 +10,7 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
 
   @behaviour Backplane.McpProtocol.SchemaValidator
 
-  alias Elixir.Peri, as: PeriLibrary
+  alias Backplane.Schema, as: PeriLibrary
 
   @default_max_depth 64
   @default_max_nodes 1_000
@@ -401,6 +401,6 @@ defmodule Backplane.McpProtocol.SchemaValidator.Peri do
   defp validation_error(path, message, content) do
     path = Enum.reverse(path)
 
-    {:error, [%Peri.Error{path: path, key: List.last(path), content: content, message: message}]}
+    {:error, [%Backplane.Schema.Error{path: path, key: List.last(path), content: content, message: message}]}
   end
 end

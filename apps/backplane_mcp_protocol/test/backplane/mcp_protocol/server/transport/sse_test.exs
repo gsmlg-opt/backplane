@@ -34,13 +34,13 @@ defmodule Backplane.McpProtocol.Server.Transport.SSETest do
     end
 
     test "requires server option" do
-      assert_raise Peri.InvalidSchema, fn ->
+      assert_raise Backplane.Schema.InvalidSchema, fn ->
         SSE.start_link(name: :test)
       end
     end
 
     test "requires name option" do
-      assert_raise Peri.InvalidSchema, fn ->
+      assert_raise Backplane.Schema.InvalidSchema, fn ->
         SSE.start_link(server: StubServer)
       end
     end

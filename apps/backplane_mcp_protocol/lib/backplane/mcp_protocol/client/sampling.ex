@@ -257,7 +257,7 @@ defmodule Backplane.McpProtocol.Client.Sampling do
       {:ok, validated} ->
         send_sampling_response(id, validated, state)
 
-      {:error, [%Peri.Error{} | _] = errors} ->
+      {:error, [%Backplane.Schema.Error{} | _] = errors} ->
         error_message = "Invalid sampling response"
 
         send_sampling_error(

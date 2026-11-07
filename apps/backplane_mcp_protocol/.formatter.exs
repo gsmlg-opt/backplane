@@ -17,7 +17,7 @@ test = [
 
 [
   plugins: [Styler],
-  import_deps: [:peri],
+  import_deps: [:backplane_schema],
   inputs: [
     "{mix,.formatter}.exs",
     "{config,lib,test}/**/*.{ex,exs}",

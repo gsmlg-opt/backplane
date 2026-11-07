@@ -32,7 +32,7 @@ defmodule Mix.Tasks.Backplane.McpProtocol.StreamableHttp.Interactive do
 
   def run(args) do
     # Start required applications without requiring a project
-    Application.ensure_all_started([:backplane_mcp_protocol, :peri])
+    Application.ensure_all_started([:backplane_mcp_protocol, :backplane_schema])
 
     {parsed, _} =
       OptionParser.parse!(args,

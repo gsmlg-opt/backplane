@@ -175,7 +175,7 @@ defmodule Backplane.McpProtocol.Server.Component do
       end
 
     quote generated: true do
-      import Peri
+      import Backplane.Schema
 
       alias Backplane.McpProtocol.Server.Component
 
@@ -209,7 +209,7 @@ defmodule Backplane.McpProtocol.Server.Component do
       end
 
     quote generated: true do
-      import Peri
+      import Backplane.Schema
 
       alias Backplane.McpProtocol.Server.Component
 
@@ -605,7 +605,7 @@ defmodule Backplane.McpProtocol.Server.Component do
   def __make_optional_nullable__(schema) do
     schema
     |> __expand_user_input__()
-    |> Peri.walk(fn
+    |> Backplane.Schema.walk(fn
       {:field, k, {:required, _} = v} ->
         {:cont, {:field, k, v}}
 

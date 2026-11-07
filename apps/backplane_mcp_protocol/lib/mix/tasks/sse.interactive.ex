@@ -43,7 +43,7 @@ defmodule Mix.Tasks.Backplane.McpProtocol.Sse.Interactive do
 
   def run(args) do
     # Start required applications without requiring a project
-    Application.ensure_all_started([:backplane_mcp_protocol, :peri])
+    Application.ensure_all_started([:backplane_mcp_protocol, :backplane_schema])
 
     # Parse arguments and set log level
     {parsed, _} =

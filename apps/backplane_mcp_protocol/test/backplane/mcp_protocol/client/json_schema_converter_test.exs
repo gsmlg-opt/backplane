@@ -387,11 +387,11 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverterTest do
     assert {:ok, schema} = JSONSchemaConverter.to_peri(json_schema)
 
     for value <- valid_values do
-      assert {:ok, ^value} = Peri.validate(schema, value)
+      assert {:ok, ^value} = Backplane.Schema.validate(schema, value)
     end
 
     for value <- invalid_values do
-      assert {:error, _errors} = Peri.validate(schema, value)
+      assert {:error, _errors} = Backplane.Schema.validate(schema, value)
     end
   end
 end

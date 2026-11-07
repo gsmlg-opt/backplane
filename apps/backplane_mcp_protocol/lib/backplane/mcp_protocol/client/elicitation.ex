@@ -172,7 +172,7 @@ defmodule Backplane.McpProtocol.Client.Elicitation do
           %{id: id, method: "elicitation/create"}
         )
 
-      {:error, [%Peri.Error{} | _] = errors} ->
+      {:error, [%Backplane.Schema.Error{} | _] = errors} ->
         send_elicitation_error(
           id,
           "Invalid elicitation response",

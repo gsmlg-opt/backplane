@@ -27,7 +27,7 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
 
     def run(args) do
       # Start required applications without requiring a project
-      Application.ensure_all_started([:backplane_mcp_protocol, :peri, :http_web_socket])
+      Application.ensure_all_started([:backplane_mcp_protocol, :backplane_schema, :http_web_socket])
 
       # Parse arguments and set log level
       {parsed, _} =

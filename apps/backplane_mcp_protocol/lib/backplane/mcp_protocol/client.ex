@@ -83,7 +83,7 @@ defmodule Backplane.McpProtocol.Client do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Peri
+  import Backplane.Schema
 
   alias Backplane.McpProtocol.Client.Cache
   alias Backplane.McpProtocol.Client.Catalog
@@ -2391,7 +2391,7 @@ defmodule Backplane.McpProtocol.Client do
   end
 
   defp error_response_meta(errors) when is_list(errors) do
-    %{errors: Enum.map(errors, &Peri.Error.error_to_map/1)}
+    %{errors: Enum.map(errors, &Backplane.Schema.Error.error_to_map/1)}
   rescue
     _error -> %{malformed_error: true}
   end

@@ -713,7 +713,7 @@ defmodule Backplane.McpProtocol.Server.Response do
   defp maybe_add_annotations(map, nil), do: map
 
   defp maybe_add_annotations(map, annotations) do
-    {:ok, annotations} = Peri.validate(@annotations_schema, annotations)
+    {:ok, annotations} = Backplane.Schema.validate(@annotations_schema, annotations)
 
     annotations
     |> then(&if(l = &1[:last_modified], do: Map.put(&1, :lastModified, l), else: &1))

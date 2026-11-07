@@ -421,7 +421,7 @@ defmodule Backplane.McpProtocol.Server do
         fn params ->
           mod.__mcp_output_schema__()
           |> Component.__clean_schema_for_peri__()
-          |> Peri.validate(params)
+          |> Backplane.Schema.validate(params)
         end
       end
 
@@ -429,7 +429,7 @@ defmodule Backplane.McpProtocol.Server do
       validate_input = fn params ->
         mod.__mcp_raw_schema__()
         |> Component.__clean_schema_for_peri__()
-        |> Peri.validate(params)
+        |> Backplane.Schema.validate(params)
       end
 
       [
@@ -462,7 +462,7 @@ defmodule Backplane.McpProtocol.Server do
       validate_input = fn params ->
         mod.__mcp_raw_schema__()
         |> Component.__clean_schema_for_peri__()
-        |> Peri.validate(params)
+        |> Backplane.Schema.validate(params)
       end
 
       [

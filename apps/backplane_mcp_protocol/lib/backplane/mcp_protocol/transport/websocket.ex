@@ -15,7 +15,7 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
     use GenServer
     use Backplane.McpProtocol.Logging
 
-    import Peri
+    import Backplane.Schema
 
     alias Backplane.McpProtocol.Telemetry
     alias Backplane.McpProtocol.Transport.Behaviour, as: Transport

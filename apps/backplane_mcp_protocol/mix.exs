@@ -61,7 +61,7 @@ defmodule Backplane.McpProtocol.MixProject do
   defp deps do
     [
       {:http_fetch, "~> 1.0.0-rc.5"},
-      {:peri, "~> 0.12"},
+      schema_dependency(),
       {:telemetry, "~> 1.2"},
       {:redix, "~> 1.5", optional: true},
       {:http_web_socket, "~> 1.0.0-rc.5", optional: true},
@@ -76,6 +76,14 @@ defmodule Backplane.McpProtocol.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.3", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  defp schema_dependency do
+    if File.dir?(Path.expand("../../apps", __DIR__)) do
+      {:backplane_schema, in_umbrella: true}
+    else
+      {:backplane_schema, "~> 1.10.58"}
+    end
   end
 
   # Define releases for standalone binaries

@@ -213,7 +213,7 @@ defmodule Backplane.McpProtocol.Server.Frame do
   def register_prompt(%__MODULE__{} = frame, name, opts) when is_binary(name) do
     arguments = opts[:arguments] || %{}
     raw_schema = Component.__clean_schema_for_peri__(arguments)
-    validate_input = fn params -> Peri.validate(raw_schema, params) end
+    validate_input = fn params -> Backplane.Schema.validate(raw_schema, params) end
     title = opts[:title] || name
     scopes = validate_scopes_opt!(Keyword.get(opts, :scopes, []))
 

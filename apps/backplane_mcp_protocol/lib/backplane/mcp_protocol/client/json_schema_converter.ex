@@ -4,15 +4,15 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverter do
   alias Backplane.McpProtocol.SchemaValidator.Peri, as: PeriValidator
 
   @type json_schema :: map()
-  @type peri_schema :: Peri.schema_def()
+  @type peri_schema :: Backplane.Schema.schema_def()
   @type validator :: (term() -> {:ok, term()} | {:error, term()})
-  @type legacy_validator :: (term() -> {:ok, term()} | {:error, list(Peri.Error.t())})
+  @type legacy_validator :: (term() -> {:ok, term()} | {:error, list(Backplane.Schema.Error.t())})
 
   @doc """
   Converts a JSON Schema (Draft 7) into a Peri schema.
   """
-  @spec to_peri(json_schema()) :: {:ok, peri_schema()} | {:error, list(Peri.Error.t())}
-  defdelegate to_peri(json_schema), to: Peri, as: :from_json_schema
+  @spec to_peri(json_schema()) :: {:ok, peri_schema()} | {:error, list(Backplane.Schema.Error.t())}
+  defdelegate to_peri(json_schema), to: Backplane.Schema, as: :from_json_schema
 
   @doc """
   Creates a validator function from a JSON Schema.
@@ -20,10 +20,10 @@ defmodule Backplane.McpProtocol.Client.JSONSchemaConverter do
   Returns a function that takes a value and returns either
   `{:ok, value}` or `{:error, errors}`.
   """
-  @spec validator(json_schema()) :: {:ok, legacy_validator()} | {:error, list(Peri.Error.t())}
+  @spec validator(json_schema()) :: {:ok, legacy_validator()} | {:error, list(Backplane.Schema.Error.t())}
   def validator(json_schema) do
     with {:ok, peri_schema} <- to_peri(json_schema) do
-      {:ok, fn value -> Peri.validate(peri_schema, value) end}
+      {:ok, fn value -> Backplane.Schema.validate(peri_schema, value) end}
     end
   end
 

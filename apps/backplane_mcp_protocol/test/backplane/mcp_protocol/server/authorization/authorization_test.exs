@@ -45,8 +45,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       assert config.scopes_supported == ["tools:read", "tools:write"]
     end
 
-    test "raises Peri.InvalidSchema when authorization_servers is missing" do
-      assert_raise Peri.InvalidSchema, ~r/authorization_servers/, fn ->
+    test "raises Backplane.Schema.InvalidSchema when authorization_servers is missing" do
+      assert_raise Backplane.Schema.InvalidSchema, ~r/authorization_servers/, fn ->
         Authorization.parse_config!(
           resource: "https://api.example.com",
           validator: {MockTokenValidator, []}
@@ -54,8 +54,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       end
     end
 
-    test "raises Peri.InvalidSchema when resource is missing" do
-      assert_raise Peri.InvalidSchema, ~r/resource/, fn ->
+    test "raises Backplane.Schema.InvalidSchema when resource is missing" do
+      assert_raise Backplane.Schema.InvalidSchema, ~r/resource/, fn ->
         Authorization.parse_config!(
           authorization_servers: ["https://auth.example.com"],
           validator: {MockTokenValidator, []}
@@ -63,8 +63,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       end
     end
 
-    test "raises Peri.InvalidSchema when validator is missing" do
-      assert_raise Peri.InvalidSchema, ~r/validator/, fn ->
+    test "raises Backplane.Schema.InvalidSchema when validator is missing" do
+      assert_raise Backplane.Schema.InvalidSchema, ~r/validator/, fn ->
         Authorization.parse_config!(
           authorization_servers: ["https://auth.example.com"],
           resource: "https://api.example.com"
@@ -72,8 +72,8 @@ defmodule Backplane.McpProtocol.Server.AuthorizationTest do
       end
     end
 
-    test "raises Peri.InvalidSchema when validator has wrong shape" do
-      assert_raise Peri.InvalidSchema, fn ->
+    test "raises Backplane.Schema.InvalidSchema when validator has wrong shape" do
+      assert_raise Backplane.Schema.InvalidSchema, fn ->
         Authorization.parse_config!(
           authorization_servers: ["https://auth.example.com"],
           resource: "https://api.example.com",

@@ -12,7 +12,7 @@ defmodule Backplane.McpProtocol.Server.Transport.STDIO do
   use GenServer
   use Backplane.McpProtocol.Logging
 
-  import Peri
+  import Backplane.Schema
 
   alias Backplane.McpProtocol.MCP.Error
   alias Backplane.McpProtocol.MCP.Message

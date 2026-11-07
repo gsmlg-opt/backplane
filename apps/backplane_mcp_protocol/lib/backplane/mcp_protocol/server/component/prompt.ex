@@ -96,7 +96,7 @@ defmodule Backplane.McpProtocol.Server.Component.Prompt do
           description: String.t() | nil,
           arguments: map | nil,
           handler: module | nil,
-          validate_input: (map -> {:ok, map} | {:error, [Peri.Error.t()]}) | nil,
+          validate_input: (map -> {:ok, map} | {:error, [Backplane.Schema.Error.t()]}) | nil,
           scopes: [String.t()]
         }
 

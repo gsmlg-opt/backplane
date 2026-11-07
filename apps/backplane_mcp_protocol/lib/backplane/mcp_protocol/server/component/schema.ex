@@ -38,7 +38,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
     # defaults — prompt docs and validation still use them.
     schema
     |> Component.__expand_user_input__()
-    |> Peri.to_json_schema(exclude_meta_keys: [:default])
+    |> Backplane.Schema.to_json_schema(exclude_meta_keys: [:default])
   end
 
   @spec to_prompt_arguments(schema() | nil) :: [prompt_argument()]
@@ -67,7 +67,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
   def format_errors(error), do: format_errors([error])
 
-  defp format_error(%Peri.Error{errors: [_ | _] = errors}), do: format_errors(errors)
+  defp format_error(%Backplane.Schema.Error{errors: [_ | _] = errors}), do: format_errors(errors)
 
   defp format_error(%{path: path, message: message}) do
     path_str = Enum.join(path || [], ".")
@@ -121,7 +121,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   Use `{:custom, validator(inner_schema)}` to delegate to another Peri schema.
   Error lists have valid root paths so Peri can prefix enclosing field names.
   """
-  @spec validator(schema() | Peri.schema()) :: validator()
+  @spec validator(schema() | Backplane.Schema.schema()) :: validator()
   def validator({:json_schema, _schema} = schema) do
     case compile_validator(schema) do
       {:ok, validator} -> validator
@@ -139,12 +139,12 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
     fn params ->
       prepared = peri_schema |> expand_additional_keys(params) |> prepare_composition()
-      normalize_peri_result(Peri.validate(prepared, params))
+      normalize_peri_result(Backplane.Schema.validate(prepared, params))
     end
   end
 
   defp prepare_composition(schema) do
-    Peri.walk(schema, fn
+    Backplane.Schema.walk(schema, fn
       {:custom, callback} ->
         {:cont, {:custom, fn value -> normalize_peri_result(call_validator(callback, value)) end}}
 
@@ -209,13 +209,13 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
 
     fn value ->
       with_result =
-        with {:ok, values} <- Peri.validate({:list, :any, opts}, value) do
+        with {:ok, values} <- Backplane.Schema.validate({:list, :any, opts}, value) do
           values
           |> Enum.with_index()
           |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, acc} ->
             case item_validator.(item) do
               {:ok, validated} -> {:cont, {:ok, [validated | acc]}}
-              {:error, errors} -> {:halt, {:error, Enum.map(errors, &Peri.Error.update_error_paths(&1, [index]))}}
+              {:error, errors} -> {:halt, {:error, Enum.map(errors, &Backplane.Schema.Error.update_error_paths(&1, [index]))}}
             end
           end)
           |> then(fn
@@ -231,7 +231,7 @@ defmodule Backplane.McpProtocol.Server.Component.Schema do
   defp normalize_peri_result({:error, errors}), do: {:error, Enum.map(List.wrap(errors), &normalize_peri_error/1)}
   defp normalize_peri_result(result), do: result
 
-  defp normalize_peri_error(%Peri.Error{} = error) do
+  defp normalize_peri_error(%Backplane.Schema.Error{} = error) do
     nested =
       if is_list(error.errors),
         do: Enum.map(error.errors, &normalize_peri_error/1),

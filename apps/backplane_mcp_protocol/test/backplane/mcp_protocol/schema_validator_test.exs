@@ -45,7 +45,7 @@ defmodule Backplane.McpProtocol.SchemaValidatorTest do
     }
 
     assert {:ok, compiled} = PeriValidator.compile(schema, [])
-    assert {:error, [%Peri.Error{}]} = PeriValidator.validate(compiled, %{"score" => -1}, [])
+    assert {:error, [%Backplane.Schema.Error{}]} = PeriValidator.validate(compiled, %{"score" => -1}, [])
     assert {:error, [:invalid_compiled_schema]} = PeriValidator.validate(:invalid, %{}, [])
   end
 

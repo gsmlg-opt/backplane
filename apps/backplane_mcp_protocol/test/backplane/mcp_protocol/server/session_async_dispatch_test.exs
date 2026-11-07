@@ -94,7 +94,7 @@ defmodule Backplane.McpProtocol.Server.SessionAsyncDispatchTest do
     test "rejects non-positive concurrency limits" do
       session_id = "invalid-limit-#{System.unique_integer([:positive])}"
 
-      assert_raise Peri.InvalidSchema, fn ->
+      assert_raise Backplane.Schema.InvalidSchema, fn ->
         Session.start_link(
           session_id: session_id,
           server_module: AsyncDispatchTestServer,

@@ -41,7 +41,7 @@ defmodule Backplane.McpProtocol.Server.Authorization do
       }
   """
 
-  import Peri
+  import Backplane.Schema
 
   @type config :: %{
           authorization_servers: [String.t()],

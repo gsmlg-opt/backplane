@@ -72,16 +72,16 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTP.CustomSchemaVali
       |> register_validator(
         "direct-peri-single",
         Schema.validator(%{
-          attachments: {:list, {:custom, fn value -> Peri.validate(root_schema, value) end}}
+          attachments: {:list, {:custom, fn value -> Backplane.Schema.validate(root_schema, value) end}}
         })
       )
       |> register_validator(
         "direct-peri-list",
         Schema.validator(%{
-          attachments: {:list, {:custom, fn value -> Peri.validate(%{name: :string}, value) end}}
+          attachments: {:list, {:custom, fn value -> Backplane.Schema.validate(%{name: :string}, value) end}}
         })
       )
-      |> register_validator("root", fn params -> Peri.validate(root_schema, params) end)
+      |> register_validator("root", fn params -> Backplane.Schema.validate(root_schema, params) end)
       |> register_validator(
         "nested-root",
         Schema.validator(%{attachment: {:required, {:custom, Schema.validator(root_schema)}}})

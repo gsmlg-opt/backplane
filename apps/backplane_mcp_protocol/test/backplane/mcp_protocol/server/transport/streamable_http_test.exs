@@ -22,7 +22,7 @@ defmodule Backplane.McpProtocol.Server.Transport.StreamableHTTPTest do
     end
 
     test "requires server option" do
-      assert_raise Peri.InvalidSchema, fn ->
+      assert_raise Backplane.Schema.InvalidSchema, fn ->
         StreamableHTTP.start_link(name: :test)
       end
     end
