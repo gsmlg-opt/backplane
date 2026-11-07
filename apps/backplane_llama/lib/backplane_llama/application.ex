@@ -15,6 +15,10 @@ defmodule BackplaneLlama.Application do
         route_loader_child(),
         Backplane.LLM.RateLimiter,
         {DynamicSupervisor,
+         strategy: :one_for_one,
+         max_children: 128,
+         name: Backplane.LLM.ResponsesWebSocket.Supervisor},
+        {DynamicSupervisor,
          strategy: :one_for_one, name: Backplane.Audio.AccessLifecycle.Supervisor},
         Backplane.Audio.Media.Supervisor
       ]

@@ -1,7 +1,7 @@
 # Standalone Responses WebSocket client
 
 This reference client is intentionally a separate Mix project, outside the
-Backplane umbrella. It uses published `http_web_socket == 1.0.0-rc.3` and the
+Backplane umbrella. It uses published `http_web_socket == 1.0.0-rc.5` and the
 extracted `backplane_ai_protocol` package containing the new message codec.
 It can be consumed as a path dependency by another application with a compatible
 HTTP dependency graph. It is not wired into the Backplane gateway.
@@ -14,9 +14,8 @@ mix test
 ```
 
 The only transport dependency is the released HTTP family; there is no alternative
-HTTP client, private-state access, Git pin or vendored runtime. Backplane itself
-still uses 0.21.x because its published Gaoxy/DuskMoon dependencies exclude rc.3.
-Do not force this example into that graph with version overrides.
+HTTP client, private-state access, Git pin or vendored runtime. Backplane uses the compatible RC5/Gaoxy/DuskMoon release set. The reference
+client remains an independent project for other applications.
 
 ```elixir
 alias Backplane.ResponsesWebSocket.Client
@@ -61,6 +60,11 @@ reconnect/replay. TLS 1.3 loopback tests additionally verify a caller-selected C
 native messages, and rejection of a wrong hostname before HTTP credentials.
 The committed certificate/key are public test fixtures only, valid until November
 2036. OTP SSL is a test-only peer dependency; the client still uses ex_ssl.
-A TLS-1.2-only exploratory peer failed its handshake; TLS 1.2 remains unverified.
-No real provider has been tested. Gateway dependency compatibility is tracked in
-[http_fetch #155](https://github.com/gsmlg-dev/http_fetch/issues/155).
+The earlier OTP 28 TLS-1.2-only peer failure is explained: its ServerHello omits
+Extended Master Secret (extension 23), and ex_ssl deliberately rejects that peer
+with `:extended_master_secret_required`. The published ex_ssl README documents
+this boundary. An independent verified-CA TLS 1.2 handshake and HTTP exchange with
+OpenSSL 3.5.7 succeeded using ECDHE-RSA/AES-128-GCM. This qualifies that transport
+subset, not native WebSocket messages over TLS 1.2 or arbitrary TLS 1.2 peers.
+No real provider has been tested. See `docs/responses-websocket.md` for the gateway
+contract, including its required handshake-time `model` query.

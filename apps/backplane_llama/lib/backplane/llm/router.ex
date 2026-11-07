@@ -11,7 +11,7 @@ defmodule Backplane.LLM.Router do
   - POST /v1/embeddings                — OpenAI-compatible Embeddings API
   - POST /v1/chat/completions          — OpenAI Chat Completions API
   - POST /v1/responses                 — OpenAI Responses API
-  - GET /v1/responses                  — reserved WebSocket entry (currently unavailable)
+  - GET /v1/responses                  — native WebSocket entry (explicit model query)
   - GET /v1/responses/:id              — opt-in owned retrieval / stream resume
   - POST /v1/responses/:id/cancel      — opt-in owned background cancellation
   - DELETE /v1/responses/:id           — opt-in owned deletion
@@ -123,17 +123,7 @@ defmodule Backplane.LLM.Router do
   end
 
   get "/v1/responses" do
-    # The upstream capability declaration is not a runtime availability promise.
-    # credo:disable-for-next-line Credo.Check.Design.TagTODO
-    # TODO(upstream): gsmlg-dev/http_fetch#155 — adopt with a compatible published dependency graph.
-    # See docs/responses-websocket.md for the transport acceptance gates.
-    send_json(conn, 501, %{
-      "error" => %{
-        "type" => "unsupported_transport_error",
-        "code" => "responses_websocket_unavailable",
-        "message" => "Responses WebSocket forwarding is not available on this gateway"
-      }
-    })
+    Backplane.LLM.ResponsesWebSocket.call(conn)
   end
 
   get "/v1/responses/:response_id" do

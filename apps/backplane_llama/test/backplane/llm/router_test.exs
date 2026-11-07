@@ -186,34 +186,13 @@ defmodule Backplane.LLM.RouterTest do
   defp restore_env(key, nil), do: Application.delete_env(:backplane, key)
   defp restore_env(key, value), do: Application.put_env(:backplane, key, value)
 
-  describe "Responses WebSocket unavailable transport" do
-    test "rejects before upgrading regardless of the upstream declaration" do
-      {:ok, provider} = Provider.create(%{name: "ws-upstream", credential: "router-openai-cred"})
-
-      {:ok, api} =
-        ProviderApi.create(%{
-          provider_id: provider.id,
-          api_surface: :openai,
-          base_url: "https://unused.example/v1",
-          native_protocols: [:openai_responses]
-        })
-
-      for enabled <- [true, false] do
-        {:ok, _api} = ProviderApi.update(ProviderApi.get(api.id), %{responses_websocket: enabled})
-
-        conn =
-          conn(:get, "/v1/responses?model=ws-upstream/model")
-          |> put_req_header("connection", "Upgrade")
-          |> put_req_header("upgrade", "websocket")
-          |> put_req_header("sec-websocket-version", "13")
-          |> put_req_header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
-          |> Backplane.LLM.ProxyPlug.call([])
-
-        assert conn.status == 501
-        assert conn.state == :sent
-        assert get_resp_header(conn, "upgrade") == []
-        assert Jason.decode!(conn.resp_body)["error"]["code"] == "responses_websocket_unavailable"
-      end
+  describe "Responses WebSocket admission" do
+    test "requires an explicit handshake-time model before upgrading" do
+      conn = conn(:get, "/v1/responses") |> Backplane.LLM.ProxyPlug.call([])
+      assert conn.status == 400
+      assert conn.state == :sent
+      assert get_resp_header(conn, "upgrade") == []
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_model"
     end
 
     test "authenticates and requires invoke scope before reporting transport availability" do
@@ -223,7 +202,7 @@ defmodule Backplane.LLM.RouterTest do
       assert public_llm_request(:get, "/v1/responses").status == 401
       assert public_authenticated_llm_request(:get, "/v1/responses", "invalid").status == 401
       assert public_authenticated_llm_request(:get, "/v1/responses", models.value).status == 403
-      assert public_authenticated_llm_request(:get, "/v1/responses", invoke.value).status == 501
+      assert public_authenticated_llm_request(:get, "/v1/responses", invoke.value).status == 400
     end
   end
 

@@ -507,14 +507,12 @@ This package still starts no connection or processes and takes no credentials.
 The caller owns endpoint choice, authentication, verified handshake metadata,
 frame reassembly, per-message controls, backpressure, timeout and disconnect
 cleanup. It must not automatically replay after uncertain submission. There is
-no implied interrupt, steering or REST cancellation support. A transport adapter
-using Backplane's umbrella dependency graph still needs a compatible release set
-tracked in [http_fetch#155](https://github.com/gsmlg-dev/http_fetch/issues/155); this pure
-codec does not resolve the gateway dependency conflict. The Backplane gateway
-itself currently returns 501 on `GET /v1/responses`.
+no implied interrupt, steering or REST cancellation support. Backplane's gateway requires an explicit `model` query at WebSocket upgrade
+and per-provider opt-in. See `docs/responses-websocket.md` for supported routing,
+handshake-header boundaries and verification; codec support alone does not imply
+any provider supports a particular control event.
 
 A separate caller-owned reference transport is available in
-`examples/responses_websocket_client`. It uses published HTTP rc.3 in a standalone
-client project; it cannot currently be added to the gateway's 0.21.x graph without
-unsupported dependency overrides. See its README for API, loopback evidence and
+`examples/responses_websocket_client`. It uses published HTTP rc.5 in a standalone
+client project. The gateway uses the compatible published RC5 ecosystem. See its README for API, loopback evidence and
 limits. This does not change the pure protocol package's dependencies.

@@ -60,11 +60,11 @@ defmodule Backplane.McpProtocol.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:http_fetch, "~> 1.0.0-rc.4"},
+      {:http_fetch, "~> 1.0.0-rc.5"},
       {:peri, "~> 0.12"},
       {:telemetry, "~> 1.2"},
       {:redix, "~> 1.5", optional: true},
-      {:http_web_socket, "~> 1.0.0-rc.4", optional: true},
+      {:http_web_socket, "~> 1.0.0-rc.5", optional: true},
       {:burrito, "~> 1.0", optional: true},
       {:plug, "~> 1.18", optional: true},
       {:jose, "~> 1.11", optional: true},

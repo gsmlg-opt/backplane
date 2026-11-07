@@ -31,7 +31,7 @@ defmodule Backplane.HostAgent.MixProject do
   defp deps do
     [
       {:backplane_plugin_protocol, in_umbrella: true},
-      {:phoenix_socket_client, "~> 0.8"},
+      {:phoenix_socket_client, "~> 0.9.0"},
       {:req, "~> 0.5", override: true},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},

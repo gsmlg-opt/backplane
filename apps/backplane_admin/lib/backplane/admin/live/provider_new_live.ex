@@ -595,8 +595,9 @@ defmodule Backplane.Admin.ProviderNewLive do
             checked={field_value(@form, @key, "responses_websocket") in [true, "true", "on"]}
           />
           <p class="text-sm text-base-content/60">
-            Requires native Responses. Records upstream capability only; WebSocket forwarding
-            is currently unavailable. Does not enable background cancellation or steering.
+            Requires native Responses. Enables WebSocket forwarding with an explicit model query.
+            Does not enable background cancellation or steering. WebSocket token usage is not yet
+            included in gateway usage totals.
           </p>
           <.error errors={@errors} field="openai_responses_websocket" />
         </div>

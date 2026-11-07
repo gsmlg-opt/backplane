@@ -150,3 +150,9 @@ metadata behavior verified over real TCP loopbacks in the standalone reference
 client. The gateway now waits on compatible published Gaoxy/DuskMoon/Phoenix
 Socket Client constraints, not #152 source publication. The protocol package
 remains network-independent; see docs/responses-websocket.md for current evidence.
+
+On 2026-11-07, compatible HTTP rc.5/DuskMoon10.1.2/Gaoxy0.15/Phoenix Socket
+Client0.9 releases resolved the dependency graph. The gateway now composes the
+pure codec with its own supervised session and per-message policy; see
+`docs/responses-websocket.md` for the tested explicit-model contract and remaining
+header/accounting/provider-qualification boundaries. The pure codec is unchanged.

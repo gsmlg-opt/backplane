@@ -48,8 +48,8 @@ defmodule Relayixir.MixProject do
     [
       {:gaoxy_http, "~> 0.15.0"},
       {:plug, "~> 1.15"},
-      {:http_fetch, "~> 1.0.0-rc.4"},
-      {:http_web_socket, "~> 1.0.0-rc.4"},
+      {:http_fetch, "~> 1.0.0-rc.5"},
+      {:http_web_socket, "~> 1.0.0-rc.5"},
       {:telemetry, "~> 1.2"}
     ]
   end
