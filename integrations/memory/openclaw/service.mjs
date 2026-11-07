@@ -233,7 +233,15 @@ export class MemoryService {
         text(content);
         return [{ role, content, message_index: fence.history_count + index + 1, ...(row.toolCallId ? { tool_call_id: row.toolCallId } : {}) }];
       });
-      const peer = await this.peer(invocation, { admitOffline: true, capture: true, requireWrite: true });
+      // The host starts agent_end hooks without awaiting them, then releases the
+      // audience. Admit the suffix synchronously under that live authority using
+      // the binding verified at prompt admission; delivery renegotiates it.
+      const peer = journal.get(`binding:${invocation.accessId}`);
+      if (!peer) throw new MemoryRequestError("binding_unverified");
+      if (peer.protocol !== SOURCE_PROTOCOL || peer.supported !== true || !peer.contracts?.includes("openclaw_source.v1") || !peer.negotiated?.includes("openclaw_source.v1")) throw new MemoryRequestError("unsupported_capability");
+      if (peer.binding?.access_id !== invocation.accessId || digest(peer.binding) !== peer.binding_fingerprint) throw new MemoryRequestError("invalid_binding");
+      if (peer.ready !== true) throw new MemoryRequestError("source_unavailable");
+      if (!peer.contracts.includes(CAPTURE_PROTOCOL) || !peer.negotiated.includes(CAPTURE_PROTOCOL) || peer.capture_ready !== true || peer.capture_binding_fingerprint !== peer.binding_fingerprint) throw new MemoryRequestError("capture_binding_mismatch");
       invocation.guard();
       journal.transaction(() => {
         invocation.guard();

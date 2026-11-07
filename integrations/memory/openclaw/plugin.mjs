@@ -1,4 +1,4 @@
-/** OpenClaw v2026.10.7 public SDK adapter. Canonical memory remains in Backplane. */
+/** OpenClaw v2026.10.10 public SDK adapter. Canonical memory remains in Backplane. */
 import { TOOL_NAMES } from "./contract.mjs";
 import { configSchema, createMemoryService } from "./service.mjs";
 export { createPlaintextWarner } from "./client.mjs";

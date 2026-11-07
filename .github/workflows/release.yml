@@ -319,7 +319,7 @@ jobs:
             apps/backplane_api/test/backplane/api/host_agent_memory_sync_test.exs
 
       - name: Install pinned OpenClaw qualification runtime
-        run: npm install --prefix "$RUNNER_TEMP/backplane-openclaw-runtime" --no-audit --no-fund openclaw@2026.10.7
+        run: npm install --prefix "$RUNNER_TEMP/backplane-openclaw-runtime" --no-audit --no-fund openclaw@2026.10.10
 
       - name: Verify real OpenClaw canonical path
         env:

@@ -52,7 +52,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
       gate("T01_real_loader_registry", fn ->
         assert!(
-          boot["version"] == "2026.10.7" and get_in(boot, ["loader", "actualPackage"]) == true,
+          boot["version"] == "2026.10.10" and get_in(boot, ["loader", "actualPackage"]) == true,
           "OpenClaw_boot_result_missing"
         )
 
@@ -216,7 +216,12 @@ defmodule Backplane.OpenClawLiveAcceptance do
               payloads =
                 if mutation?,
                   do: [
-                    %{path: conn.request_path, payload: conn.body_params, status: response.status}
+                    %{
+                      path: conn.request_path,
+                      payload: conn.body_params,
+                      status: response.status,
+                      mode: state.mode
+                    }
                     | value.payloads
                   ],
                   else: value.payloads
@@ -1828,6 +1833,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
             })
           end)
 
+        wait_for_capture_admission!([pending])
         before = recovery_step!("t06_snapshot_before_crash", fn -> node!("snapshot") end)
         recovery_step!("t06_abrupt_restart", fn -> node!("restart", %{abrupt: true}) end)
         proxy_mode(:normal)
@@ -1847,6 +1853,21 @@ defmodule Backplane.OpenClawLiveAcceptance do
               responseText: "Acknowledged."
             })
           end)
+
+        wait_for_capture_admission!([lost])
+
+        wait!(
+          fn ->
+            Agent.get(resource(:proxy_state), fn state ->
+              Enum.any?(state.payloads, fn row ->
+                row.mode == :lost_ack and row.status in [200, 202] and
+                  row.path == "/capture/v1/hooks/openclaw/message" and
+                  row.payload["run_id"] == lost["runId"] and row.payload["role"] == "assistant"
+              end)
+            end)
+          end,
+          "lost_ack_fault_not_observed"
+        )
 
         proxy_mode(:normal)
         previous = live_connection(nil)
@@ -1887,14 +1908,21 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
         wait!(
           fn ->
-            Repo.aggregate(
-              from(e in Event,
-                where:
-                  e.host_id == ^fixture.host.id and
-                    fragment("?->'source'->>'run_id'", e.payload) == ^lost_run
-              ),
-              :count
-            ) == 2
+            events =
+              Repo.all(
+                from(e in Event,
+                  where:
+                    e.host_id == ^fixture.host.id and
+                      fragment("?->'source'->>'run_id'", e.payload) == ^lost_run,
+                  select: %{id: e.id, event_type: e.event_type, role: e.role}
+                )
+              )
+
+            if length(events) == 2,
+              do: true,
+              else:
+                {:retry,
+                 %{events: events, turns: capture_turn_diagnostics([lost], node!("snapshot"))}}
           end,
           "lost_ack_effect_count_wrong"
         )
@@ -1922,6 +1950,19 @@ defmodule Backplane.OpenClawLiveAcceptance do
         proxy_mode(:normal)
       end
     end)
+  end
+
+  defp wait_for_capture_admission!(turns) do
+    wait!(
+      fn ->
+        snapshot = node!("snapshot")
+
+        if Backplane.OpenClawCaptureBarrier.admitted?(snapshot, turns),
+          do: true,
+          else: {:retry, %{turns: capture_turn_diagnostics(turns, snapshot)}}
+      end,
+      "recovery_capture_not_durably_admitted"
+    )
   end
 
   defp recovery_step!(scenario, fun) do

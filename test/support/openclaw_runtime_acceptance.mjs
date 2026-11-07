@@ -161,7 +161,7 @@ const root = resolve(fixture.root);
 const runtime = resolve(process.env.OPENCLAW_RUNTIME);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const version = JSON.parse(await readFile(join(runtime, 'package.json'), 'utf8')).version;
-if (version !== '2026.10.7') throw new Error('unsupported_openclaw_version');
+if (version !== '2026.10.10') throw new Error('unsupported_openclaw_version');
 const { GatewayClient } = await import(pathToFileURL(join(runtime, 'dist/plugin-sdk/gateway-runtime.js')));
 const token = 'isolated-fixture-token-not-a-user-credential';
 const requests = [], events = [];

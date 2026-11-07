@@ -1158,7 +1158,7 @@ defmodule Backplane.ReleaseConfigTest do
     runtime =
       Enum.find(qualification, &(&1["name"] == "Install pinned OpenClaw qualification runtime"))
 
-    assert runtime["run"] =~ "openclaw@2026.10.7"
+    assert runtime["run"] =~ "openclaw@2026.10.10"
     live = Enum.find(qualification, &(&1["name"] == "Verify real OpenClaw canonical path"))
     assert live["env"]["OPENCLAW_LIVE_MODE"] == "deterministic"
     assert live["env"]["OPENROUTER_API_KEY"] == ""

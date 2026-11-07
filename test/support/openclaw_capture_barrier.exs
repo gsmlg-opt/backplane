@@ -3,7 +3,10 @@ defmodule Backplane.OpenClawCaptureBarrier do
 
   # A public chat terminal is separate from plugin agent_end and canonical capture ACKs.
   # These are observations of the real journal; none of them performs delivery work.
-  def settled?(snapshot, turns) do
+  def admitted?(snapshot, turns), do: ready?(snapshot, turns, false)
+  def settled?(snapshot, turns), do: ready?(snapshot, turns, true)
+
+  defp ready?(snapshot, turns, require_commit?) do
     expected = MapSet.new(turns, &identity/1)
     journal = snapshot["journal"] || %{}
 
@@ -28,7 +31,8 @@ defmodule Backplane.OpenClawCaptureBarrier do
       |> MapSet.new(&payload_identity(&1["payload"]))
 
     MapSet.size(expected) == length(turns) and length(turns) > 0 and
-      completed == expected and admitted == expected and Enum.all?(captures, &committed?/1)
+      completed == expected and admitted == expected and
+      (not require_commit? or Enum.all?(captures, &committed?/1))
   end
 
   defp identity(turn), do: [turn["agentId"], turn["sessionId"], turn["runId"]]

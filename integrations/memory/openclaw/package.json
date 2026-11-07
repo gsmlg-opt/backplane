@@ -7,7 +7,7 @@
       "./plugin.mjs"
     ],
     "install": {
-      "minHostVersion": ">=2026.10.7"
+      "minHostVersion": ">=2026.10.10"
     }
   },
   "engines": {

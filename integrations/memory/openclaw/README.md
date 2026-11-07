@@ -1,6 +1,6 @@
 # Backplane Memory for OpenClaw
 
-This package uses OpenClaw **2026.10.7** public plugin APIs and Node
+This package uses OpenClaw **2026.10.10** public plugin APIs and Node
 **24.22.1** (`>=24.22.1 <25 || >=26.12.1`). It integrates a local Backplane
 host agent with canonical Backplane Memory. Source changes, conversation evidence
 and provider facts retain separate ownership and delivery states.

@@ -1,9 +1,10 @@
 # OpenClaw memory integration
 
 This review covers the packaged OpenClaw provider, the local host agent and
-canonical Backplane Memory. The qualified upstream contract is OpenClaw
-`v2026.10.7`, commit `157d8c2bc3ea2fa183afdc11088e69690bf8e64e`, with Node
-`24.22.1`. Other OpenClaw releases have not been qualified by this review.
+canonical Backplane Memory. Current release qualification targets OpenClaw
+`2026.10.10` with Node `24.22.1`. Historical qualification and publication evidence
+below covers `v2026.10.7`, commit `157d8c2bc3ea2fa183afdc11088e69690bf8e64e`;
+it does not establish compatibility with the updated runtime.
 
 Implementation started on `main@77721c0e674996c81b7f0a0b824a748a641420a6`
 (`v1.10.39`). The plan's older `9424dfd5` baseline predates the shared Hermes
@@ -87,6 +88,13 @@ atomically with input capture. `agent_end` admits only the verified new
 assistant/tool suffix. Model-only recalled context is not recaptured as original
 user evidence, and empty/tool-only output cannot borrow a prior answer.
 Input provenance is retained independently from the user role.
+
+The host starts `agent_end` hooks without awaiting their promises and can release
+the SDK audience before an HTTP request finishes. Terminal admission therefore
+uses the previously verified capture binding synchronously, while the live hook
+authority still holds. An absent, mismatched or non-writable binding is refused.
+Delivery separately renegotiates the current capabilities and binding before any
+content leaves the journal; synchronous admission cannot bypass remote revocation.
 
 Canonical ingestion preserves that raw role while classifying the actor from
 typed input provenance. Explicit `internal_system`, `inter_session` and
@@ -396,7 +404,7 @@ have not been performed.
 ### Reproduce the isolated live checks
 
 Use the supported development shell, available PostgreSQL/pgvector, Node
-24.22.1 and an installed `openclaw@2026.10.7` package. Set `OPENCLAW_NODE` to that
+24.22.1 and an installed `openclaw@2026.10.10` package. Set `OPENCLAW_NODE` to that
 Node executable and `OPENCLAW_RUNTIME` to the package directory. The harness
 refuses existing fixture directories/databases, reserves ephemeral ports and
 cleans only its owned resources. It does not use operator services on
@@ -411,6 +419,11 @@ with identical frozen arguments/key and bounded retries, retaining rejection
 counts and canonical one-effect checks. The host does not mark that error
 `retryable`; this is explicit acceptance-driver handling, not a production
 plugin change or a generic retry of failed mutations.
+
+Recovery checks observe completed durable turn admission before terminating the
+plugin, while the fault proxy still withholds requests or acknowledgements. This
+separates a crash before hook admission from recovery of admitted work. They retain
+the immutable-envelope and exact canonical effect-count assertions after restart.
 
 ```bash
 MIX_ENV=test BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=1 \

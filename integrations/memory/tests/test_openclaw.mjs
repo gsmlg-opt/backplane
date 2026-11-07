@@ -175,6 +175,57 @@ test("capture keeps original input and current suffix separate, including empty 
   assert.equal(last.args.content, "next question"); assert.equal(last.args.session_id, ctx.sessionId); assert.equal(last.args.run_id, "run-two"); assert.notEqual(first[0].args.occurrence_id, last.args.occurrence_id);
 });
 
+test("agent_end admits its suffix before the host releases the hook audience", async (t) => {
+  const { service, ctx, active } = setup(t);
+  await service.beforePrompt({ prompt: "Current question.", messages: [] }, ctx);
+  const completion = service.agentEnd({ messages: [
+    { role: "user", content: "Current question." },
+    { role: "assistant", content: "Current answer." },
+  ] }, ctx);
+  active.value = false;
+  await completion;
+  const turn = service.journal.db.prepare("SELECT completed FROM turns").get();
+  assert.equal(turn.completed, 1);
+  const rows = service.journal.db.prepare("SELECT payload FROM delivery WHERE path LIKE '%/message'").all().map((row) => JSON.parse(row.payload));
+  assert.deepEqual(rows.map((row) => [row.role, row.content]), [["user", "Current question."], ["assistant", "Current answer."]]);
+});
+
+test("agent_end refuses an already released audience before durable admission", async (t) => {
+  const { service, ctx, active } = setup(t);
+  await service.beforePrompt({ prompt: "Current question.", messages: [] }, ctx);
+  active.value = false;
+  await service.agentEnd({ messages: [{ role: "user", content: "Current question." }, { role: "assistant", content: "Late answer." }] }, ctx);
+  assert.equal(service.journal.db.prepare("SELECT completed FROM turns").get().completed, 0);
+  assert.equal(service.journal.db.prepare("SELECT count(*) AS n FROM delivery WHERE path LIKE '%/message'").get().n, 1);
+});
+
+test("agent_end requires a verified writable capture binding for local admission", async (t) => {
+  const { service, ctx } = setup(t);
+  await service.beforePrompt({ prompt: "Current question.", messages: [] }, ctx);
+  for (const cached of [null, { ...peer, supported: false }, { ...peer, ready: false },
+    { ...peer, binding: { ...binding, access_id: uuid() } },
+    { ...peer, binding_fingerprint: "changed" },
+    { ...peer, contracts: ["openclaw_source.v1"] },
+    { ...peer, negotiated: ["openclaw_source.v1"] },
+    { ...peer, capture_ready: false }, { ...peer, capture_binding_fingerprint: "changed" }]) {
+    service.journal.set(`binding:${accessId}`, cached);
+    await service.agentEnd({ messages: [{ role: "user", content: "Current question." }, { role: "assistant", content: "Rejected answer." }] }, ctx);
+    assert.equal(service.journal.db.prepare("SELECT completed FROM turns").get().completed, 0);
+    assert.equal(service.journal.db.prepare("SELECT count(*) AS n FROM delivery WHERE path LIKE '%/message'").get().n, 1);
+  }
+});
+
+test("agent_end local admission cannot bypass fresh remote revocation at delivery", async (t) => {
+  const { service, ctx, respond, requests } = setup(t);
+  await service.beforePrompt({ prompt: "Current question.", messages: [] }, ctx);
+  respond((path) => path.endsWith("/source_capabilities") ? { ok: false, status: 403, json: async () => ({ error: "access_revoked" }) } : undefined);
+  await service.agentEnd({ messages: [{ role: "user", content: "Current question." }, { role: "assistant", content: "Admitted answer." }] }, ctx);
+  assert.equal(service.journal.db.prepare("SELECT completed FROM turns").get().completed, 1);
+  const row = service.journal.db.prepare("SELECT * FROM delivery WHERE payload LIKE '%Admitted answer.%'").get();
+  assert.equal(row.state, "rejected");
+  assert.equal(requests.filter((row) => row.path.endsWith("/message") && row.args.role === "assistant").length, 0);
+});
+
 test("missing/changed boundary and mutated immutable input cannot capture borrowed history", async (t) => {
   const { service, ctx, requests, warnings } = setup(t);
   await service.agentEnd({ messages: [{ role: "assistant", content: "old" }] }, ctx);

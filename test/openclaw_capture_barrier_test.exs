@@ -18,6 +18,21 @@ defmodule Backplane.OpenClawCaptureBarrierTest do
     refute OpenClawCaptureBarrier.settled?(pending, turns)
   end
 
+  test "crash recovery waits for durable admission while lost acknowledgements remain pending" do
+    {turns, snapshot} = fixture()
+
+    pending =
+      update_in(snapshot, ["journal", "deliveries"], fn rows ->
+        Enum.map(rows, &Map.merge(&1, %{"state" => "local_pending", "receipt" => nil}))
+      end)
+
+    assert OpenClawCaptureBarrier.admitted?(pending, turns)
+    refute OpenClawCaptureBarrier.settled?(pending, turns)
+    incomplete = put_in(pending, ["journal", "turns", Access.at(0), "completed"], 0)
+    refute OpenClawCaptureBarrier.admitted?(incomplete, turns)
+    refute OpenClawCaptureBarrier.admitted?(%{}, turns)
+  end
+
   test "state labels alone cannot replace exact matching canonical acknowledgements" do
     {turns, snapshot} = fixture()
 
