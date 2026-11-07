@@ -420,10 +420,18 @@ counts and canonical one-effect checks. The host does not mark that error
 `retryable`; this is explicit acceptance-driver handling, not a production
 plugin change or a generic retry of failed mutations.
 
+The fixture model uses the visible `dispatch_action` catalog dispatcher in
+2026.10.10, preserving the requested tool ID and arguments. Recall assertions
+inspect the actual model message containing the submitted input: the host may
+append runtime context with `role=user` after that message. Historical recall
+cannot satisfy the unrelated-query check.
+
 Recovery checks observe completed durable turn admission before terminating the
 plugin, while the fault proxy still withholds requests or acknowledgements. This
 separates a crash before hook admission from recovery of admitted work. They retain
 the immutable-envelope and exact canonical effect-count assertions after restart.
+The lost-ACK barrier observes upstream acceptance of the exact run's user event;
+ordered delivery holds its assistant event until the earlier ACK can settle.
 
 ```bash
 MIX_ENV=test BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=1 \

@@ -12,6 +12,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
   import Ecto.Query
   Code.require_file("support/hermes_semantic_oracle.exs", __DIR__)
   Code.require_file("support/openclaw_capture_barrier.exs", __DIR__)
+  Code.require_file("support/openclaw_prompt_projection.exs", __DIR__)
   Code.require_file("support/openclaw_owned_process.exs", __DIR__)
   alias Backplane.{Repo, Settings}
   alias Backplane.HostAgent.{Config, MemoryProxy, MemoryRouter, Worker}
@@ -1354,7 +1355,7 @@ defmodule Backplane.OpenClawLiveAcceptance do
           responseText: "Acknowledged."
         })
 
-      model = last_user_text(turn)
+      model = Backplane.OpenClawPromptProjection.current_user_text(turn)
       assert!(model =~ "pear", "relevant_current_recall_missing")
 
       block =
@@ -1401,8 +1402,11 @@ defmodule Backplane.OpenClawLiveAcceptance do
           responseText: "Acknowledged."
         })
 
+      irrelevant_model = Backplane.OpenClawPromptProjection.current_user_text(irrelevant)
+      assert!(irrelevant_model != "", "current_user_projection_missing")
+
       assert!(
-        not (last_user_text(irrelevant) =~ "Backplane memory reference data"),
+        not (irrelevant_model =~ "Backplane memory reference data"),
         "irrelevant_query_injected_memory"
       )
 
@@ -1413,22 +1417,6 @@ defmodule Backplane.OpenClawLiveAcceptance do
         token_budget: 1000
       }
     end)
-  end
-
-  defp last_user_text(turn) do
-    turn["finalPrompt"]
-    |> Enum.reverse()
-    |> Enum.find(&(&1["role"] == "user"))
-    |> case do
-      %{"content" => content} when is_binary(content) ->
-        content
-
-      %{"content" => content} when is_list(content) ->
-        Enum.map_join(content, "\n", &Map.get(&1, "text", ""))
-
-      _ ->
-        ""
-    end
   end
 
   defp negotiation_scenarios!(fixture) do
@@ -1856,13 +1844,15 @@ defmodule Backplane.OpenClawLiveAcceptance do
 
         wait_for_capture_admission!([lost])
 
+        # Ordered delivery cannot send the assistant while the preceding user's
+        # canonical ACK is lost. Observe the accepted user mutation before recovery.
         wait!(
           fn ->
             Agent.get(resource(:proxy_state), fn state ->
               Enum.any?(state.payloads, fn row ->
                 row.mode == :lost_ack and row.status in [200, 202] and
                   row.path == "/capture/v1/hooks/openclaw/message" and
-                  row.payload["run_id"] == lost["runId"] and row.payload["role"] == "assistant"
+                  row.payload["run_id"] == lost["runId"] and row.payload["role"] == "user"
               end)
             end)
           end,

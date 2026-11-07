@@ -10,6 +10,30 @@ import { dirname, resolve, join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
+function fixtureToolCall(tool, tools = []) {
+  const visible = tools.map((t) => t.function?.name);
+  const dispatcher = ['dispatch_action', 'tool_call'].find((name) => visible.includes(name));
+  const name = visible.includes(tool.name) ? tool.name : dispatcher || tool.name;
+  const args = name === dispatcher ? { id: tool.name, args: tool.args || {} } : tool.args || {};
+  return { name, arguments: JSON.stringify(args) };
+}
+if (process.argv.includes('--model-tool-self-test')) {
+  const tool = { name: 'backplane_memory_save', args: { content: 'Fixture memory.' } };
+  const visible = (...names) => names.map((name) => ({ type: 'function', function: { name } }));
+  for (const dispatcher of ['dispatch_action', 'tool_call']) {
+    const call = fixtureToolCall(tool, visible(dispatcher));
+    assert.equal(call.name, dispatcher);
+    assert.deepEqual(JSON.parse(call.arguments), { id: tool.name, args: tool.args });
+    const direct = fixtureToolCall(tool, visible(dispatcher, tool.name));
+    assert.equal(direct.name, tool.name);
+    assert.deepEqual(JSON.parse(direct.arguments), tool.args);
+  }
+  assert.equal(fixtureToolCall(tool, visible('tool_call', 'dispatch_action')).name, 'dispatch_action');
+  assert.deepEqual(JSON.parse(fixtureToolCall({ name: tool.name }, visible('dispatch_action')).arguments), { id: tool.name, args: {} });
+  process.stdout.write(JSON.stringify({ ok: true, tool_dispatch_cases: 6 }) + '\n');
+  process.exit(0);
+}
+
 const SESSION_READ_CHANGED = 'SessionEntryChangedDuringReadError: Session entry changed during read';
 async function sendChatWithRecovery(dispatch, args, { maxAttempts = 6, deadlineMs = 5000, backoffMs = 250 } = {}) {
   const immutable = Object.freeze(structuredClone(args));
@@ -209,10 +233,7 @@ function modelReply(body) {
   // Each request consumes one ordered fixture tool. Tool authority is still enforced by the real host.
   if (plan?.tools?.length) {
     const tool = plan.tools.shift();
-    const visible = body.tools?.map((t) => t.function?.name) || [];
-    const name = visible.includes(tool.name) ? tool.name : visible.includes('tool_call') ? 'tool_call' : tool.name;
-    const args = name === 'tool_call' ? { id: tool.name, args: tool.args || {} } : tool.args || {};
-    return { delta: { tool_calls: [{ index: 0, id: 'fixture_' + randomUUID(), type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish: 'tool_calls', isFlush, seen, requestedTool: tool.name };
+    return { delta: { tool_calls: [{ index: 0, id: 'fixture_' + randomUUID(), type: 'function', function: fixtureToolCall(tool, body.tools) }] }, finish: 'tool_calls', isFlush, seen, requestedTool: tool.name };
   }
   return { delta: { content: plan?.responseText ?? (isFlush ? 'NO_REPLY' : 'Fixture acknowledgement.') }, finish: 'stop', isFlush, seen };
 }
@@ -374,7 +395,7 @@ async function turn(params) {
   const history = await rpc(client, 'chat.history', { sessionKey, limit: 200 });
   last = { sessionId: history.sessionId, sessionKey, runId: sent.runId, agentId: params.agentId || fixture.agent_id };
   const actual = requests.slice(requestOffset);
-  return { ...snapshot(), admission, requests: actual, events: events.slice(eventOffset), terminal, history, finalPrompt: actual.at(-1)?.body?.messages || [], toolResults: history.messages?.filter((m) => ['tool', 'toolResult'].includes(m.role)) || [], modelToolResults: actual.flatMap((r) => r.body.messages?.filter((m) => m.role === 'tool') || []) };
+  return { ...snapshot(), prompt: params.prompt, admission, requests: actual, events: events.slice(eventOffset), terminal, history, finalPrompt: actual.at(-1)?.body?.messages || [], toolResults: history.messages?.filter((m) => ['tool', 'toolResult'].includes(m.role)) || [], modelToolResults: actual.flatMap((r) => r.body.messages?.filter((m) => m.role === 'tool') || []) };
 }
 function concurrentModelBarrier(turns) {
   const arrivals = [];
