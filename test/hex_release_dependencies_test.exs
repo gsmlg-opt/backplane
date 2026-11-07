@@ -5,6 +5,38 @@ defmodule Backplane.HexReleaseDependenciesTest do
 
   @packages ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol)
 
+  test "preflight archives contain the standalone project when invoked from an app directory" do
+    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
+
+    step =
+      Enum.find(
+        jobs["hex-preflight"]["steps"],
+        &(&1["name"] == "Build packages and documentation before any publication")
+      )
+
+    [archive] = Regex.run(~r/git[^\n]+archive[^\n]+/, step["run"])
+    workspace = File.cwd!()
+
+    for package <- ~w(backplane_mcp_protocol backplane_agent_runtime) do
+      directory = temporary_directory()
+
+      {log, status} =
+        System.cmd("bash", ["-e", "-o", "pipefail", "-c", archive],
+          cd: Path.join(workspace, "apps/#{package}"),
+          env: [
+            {"GITHUB_WORKSPACE", workspace},
+            {"package", package},
+            {"package_directory", directory}
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, log
+      assert File.read!(Path.join(directory, "mix.exs")) == File.read!("apps/#{package}/mix.exs")
+      assert File.dir?(Path.join(directory, "lib"))
+    end
+  end
+
   test "release and qualified recovery publish the plugin dependency before every consumer" do
     for {path, gate} <- [
           {".github/workflows/release.yml", "publish"},

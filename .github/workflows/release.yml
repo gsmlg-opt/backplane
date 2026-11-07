@@ -376,7 +376,7 @@ jobs:
                 standalone_root="$(mktemp -d "$RUNNER_TEMP/backplane-preflight.XXXXXX")"
                 package_directory="$standalone_root/standalone/$package"
                 mkdir -p "$package_directory"
-                git archive "HEAD:apps/$package" | tar -x -C "$package_directory"
+                git -C "$GITHUB_WORKSPACE" archive "HEAD:apps/$package" | tar -x -C "$package_directory"
                 cd "$package_directory"
               fi
               mix hex.build --output "$GITHUB_WORKSPACE/artifacts/hex/$package-$RELEASE_VERSION.tar"
