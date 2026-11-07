@@ -51,6 +51,17 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
     end
   end
 
+  test "release preparation only installs dependencies and compiles without consulting CI" do
+    workflow = File.read!(".github/workflows/release.yml")
+    steps = YamlElixir.read_from_string!(workflow)["jobs"]["prepare"]["steps"]
+
+    assert Enum.any?(steps, &(&1["run"] == "mix deps.get"))
+    assert Enum.any?(steps, &(&1["run"] == "mix compile"))
+    refute workflow =~ "check_release_source.py"
+    refute workflow =~ "actions/runs"
+    refute workflow =~ "workflow_run"
+  end
+
   test "the version commit is prepared before qualification and all builds use that revision" do
     jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
     assert jobs["build"]["needs"] == ["prepare", "web-assets"]

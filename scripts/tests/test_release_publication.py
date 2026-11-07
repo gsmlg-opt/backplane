@@ -26,23 +26,12 @@ def load_script(name):
     return module
 
 
-source = load_script("check_release_source")
 assets = load_script("manage_release_assets")
 hex_package = load_script("publish_hex_package")
 SHA = "a" * 40
 VERSION = "1.10.59"
 REPO = "gsmlg-opt/backplane"
 INNER_CHECKSUM = "b" * 64
-
-
-def ci_run(path, number=10, attempt=1, revision=SHA, status="completed", conclusion="success", event="push"):
-    return {"path": path, "head_sha": revision, "run_number": number,
-            "run_attempt": attempt, "status": status, "conclusion": conclusion,
-            "event": event, "html_url": f"https://github.com/{REPO}/actions/runs/{number}"}
-
-
-def ci_runs():
-    return [ci_run(path) for path in sorted(source.REQUIRED)]
 
 
 def release_assets(names):
@@ -93,61 +82,6 @@ def hex_tar(inner_checksum=INNER_CHECKSUM):
 def published_hex(blob=None, has_docs=True):
     return {"checksum": hashlib.sha256(blob if blob is not None else hex_tar()).hexdigest(),
             "has_docs": has_docs}
-
-
-class SourceIntegrityTest(unittest.TestCase):
-    def test_only_exact_sha_push_ci_counts_and_latest_success_is_used(self):
-        runs = ci_runs()
-        path = sorted(source.REQUIRED)[0]
-        runs += [ci_run(path, number=9, conclusion="failure"),
-                 ci_run(path, number=10, attempt=2),
-                 ci_run(path, number=99, revision="c" * 40, conclusion="failure"),
-                 ci_run(path, number=99, event="pull_request", conclusion="failure"),
-                 ci_run(path, number=99, event="workflow_dispatch", conclusion="failure"),
-                 ci_run(".github/workflows/memory-plugins.yml", number=99, conclusion="failure"),
-                 ci_run(".github/workflows/memory-test.yml", number=99, status="in_progress", conclusion=None)]
-        result = source.validate_runs(runs, SHA)
-        self.assertEqual(set(result), source.REQUIRED)
-        self.assertEqual(result[path]["run_attempt"], 2)
-
-    def test_missing_or_wrong_sha_required_ci_fails(self):
-        for runs in [ci_runs()[:1], [ci_run(path, revision="c" * 40) for path in source.REQUIRED]]:
-            with self.subTest(runs=runs):
-                with self.assertRaisesRegex(ValueError, "Missing source CI"):
-                    source.validate_runs(runs, SHA)
-
-    def test_latest_failing_or_pending_run_cannot_fall_back_to_old_success(self):
-        for status, conclusion in [("completed", "failure"), ("completed", "cancelled"),
-                                    ("in_progress", None), ("queued", None)]:
-            with self.subTest(status=status, conclusion=conclusion):
-                runs = ci_runs() + [ci_run(sorted(source.REQUIRED)[0], number=11,
-                                          status=status, conclusion=conclusion)]
-                with self.assertRaisesRegex(ValueError, "not successful"):
-                    source.validate_runs(runs, SHA)
-
-    def test_failed_latest_attempt_of_same_run_is_rejected(self):
-        runs = ci_runs() + [ci_run(sorted(source.REQUIRED)[0], attempt=2, conclusion="failure")]
-        with self.assertRaisesRegex(ValueError, "not successful"):
-            source.validate_runs(runs, SHA)
-
-    def test_present_dedicated_package_ci_must_pass(self):
-        path = sorted(source.OPTIONAL)[0]
-        result = source.validate_runs(ci_runs() + [ci_run(path)], SHA)
-        self.assertIn(path, result)
-        with self.assertRaisesRegex(ValueError, "not successful"):
-            source.validate_runs(ci_runs() + [ci_run(path, conclusion="failure")], SHA)
-
-    def test_main_rejects_truncated_evidence_and_already_public_version(self):
-        env = {"SOURCE_REVISION": SHA, "RELEASE_VERSION": VERSION, "GITHUB_REPOSITORY": REPO}
-        for responses, message in [
-            ([{"total_count": 3, "workflow_runs": ci_runs()}], "Incomplete source workflow listing"),
-            ([{"total_count": 2, "workflow_runs": ci_runs()},
-              [{"tag_name": f"v{VERSION}", "draft": False}]], "Version is already public"),
-        ]:
-            with self.subTest(message=message), patch.dict(os.environ, env), \
-                    patch.object(source, "api", side_effect=responses):
-                with self.assertRaisesRegex(ValueError, message):
-                    source.main()
 
 
 class ReleaseAssetsTest(unittest.TestCase):

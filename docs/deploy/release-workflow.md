@@ -12,7 +12,7 @@ same release page after the main release is public. Versions remain unified.
 | `ci.yml`, `test.yml`, package CI | Source compilation, regression tests, lint and type checks |
 | `memory-test.yml` | Memory migrations/readiness, recall evaluation, benchmark, outage and privacy qualification |
 | `memory-plugins.yml` | OpenClaw/Hermes contracts, source lifecycle, real gateway acceptance, packaged plugin verification and logs |
-| `release.yml` | Source CI evidence, immutable release revision, build/package integrity, Hex and Docker publication, final GitHub publication |
+| `release.yml` | Dependency installation, source compilation, immutable release revision, build/package integrity, Hex and Docker publication, final GitHub publication |
 | `host-agent-release.yml` | Four-platform Host Agent packaging and additive publication to the existing release |
 
 Memory and plugin workflows run independently on relevant pushes/PRs or manual
@@ -22,13 +22,13 @@ Test suite may also cover domain unit tests; publication does not rerun that sui
 ## Main publication
 
 1. Dispatch Release on `main` with the requested version. The workflow validates
-   the selection and requires successful existing CI and Test push runs for the
-   exact source SHA, plus any present dedicated package CI runs. Pending, failed
-   or missing required evidence stops publication. No tests run in Release.
+   the selection, then requires only successful `mix deps.get` and `mix compile`
+   before preparing the release. It never queries or waits for CI/Test results.
+   No tests run in Release.
 2. Prepare and push the version-only commit before building. Every following
    build, asset and version tag uses this immutable release commit. The original
    workflow SHA and resulting release SHA are both recorded in the release
-   manifest; CI evidence applies to the original source before version-only edits.
+   manifest. Compilation applies to the original source before version-only edits.
 3. Build shared static assets once, build the two Backplane OTP targets, prepare
    the Docker image, and compile documentation/build the seven Hex packages.
    Runtime and MCP tarballs are prepared outside the umbrella so their published

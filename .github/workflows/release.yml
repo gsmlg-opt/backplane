@@ -32,7 +32,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      actions: read
     outputs:
       gated_sha: ${{ steps.version.outputs.sha }}
       version: ${{ steps.gate.outputs.version }}
@@ -105,12 +104,35 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "release_apps=$release_apps" >> "$GITHUB_OUTPUT"
 
-      - name: Check completed source CI and release conflicts
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.gate.outputs.version }}
-          SOURCE_REVISION: ${{ github.sha }}
-        run: python3 scripts/check_release_source.py
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+
+      - name: Restore compilation cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build/prod
+          key: release-prepare-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-${{ hashFiles('mix.lock', 'mix.exs', 'apps/*/mix.exs') }}
+          restore-keys: |
+            release-prepare-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile release source
+        run: mix compile
 
       - name: Prepare the immutable release version commit
         id: version
