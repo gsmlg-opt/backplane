@@ -1,3 +1,5 @@
+> **Superseded** by [docs/superpowers/specs/2026-11-09-memory-simplification-design.md](../superpowers/specs/2026-11-09-memory-simplification-design.md). Historical; describes the retired memory design.
+
 # Host memory edge operations
 
 Run source commands from the repository root; inspect a host's YAML and its

@@ -54,7 +54,7 @@ This is an umbrella project. Key apps include:
 - **`apps/backplane_mcp`** — MCP transport, upstream pooling, managed service adapters, and MCP logging
 - **`apps/backplane_llama`** — LLM providers, routing, authorization, proxying, and usage logging
 - **`apps/backplane_skills`** — Skills, revisions, sources, host assignments, and agent MCP management
-- **`apps/backplane_memory`** — Memory ingestion, projections, replay, summaries, and crystals
+- **`apps/backplane_memory`** — Memory records, ingestion, and session projections
 - **`apps/backplane_host_agent`** — Standalone host agent and its release/runtime configuration
 - **`apps/backplane_monitor`** — Subscription-plan and API-account monitoring and usage checks
 - **`apps/backplane_telemetry`** (`:backplane_telemetry`) — Observability v2: event envelopes, runtime sink, bounded writers, retention, admin health/metrics
@@ -169,7 +169,7 @@ PostgreSQL with pgvector. Core tables include:
 - `llm_logs` — Insert-only LLM proxy access records (Observability v2 durable writes)
 - `mcp_native_math_config` — Singleton native math limits/timeouts
 - `monitor_api_accounts` — UUID, unique name, provider, API-key/optional management credential names, active flag, and timestamps; schema/context belong to `backplane_monitor`, migration to `backplane_system`
-- `bpm_memory_spaces`, `bpm_observations`, `bpm_memories` — Memory spaces and projected memory data; replay, summary, and crystal tables belong to the memory domain
+- `memory_records` — Global memory store (kind, subjects, property, status, provenance); `bpm_events` and session projections hold captured events; all belong to the memory domain
 
 Use the shared Repo through app-owned contexts. Schema and migration changes belong in the relevant domain and `backplane_system` migration directory respectively.
 
@@ -209,7 +209,7 @@ Key admin routes (see `apps/backplane_admin/lib/backplane/admin/router.ex`):
 - **System → Monitor** — Plan Usage (`/system/monitor/plans`) and API Usage (`/system/monitor/api-usage`); API Usage supports add/edit/pause/delete with `/system/monitor/api-usage/new` and `/system/monitor/api-usage/:id/edit` patch routes
 - **Auth** (`/auth/overview`) — OAuth providers/clients, RBAC, and authentication audit
 - **Skills** (`/skills`) — Browse, sources, drafts, metadata, and uploads
-- **Memory** (`/memory`) — Spaces, observations, replay, summaries, and crystals
+- **Memory** (`/memory`) — Overview, records, events, sessions, and config
 - **Logs** (`/system/logs`) — LLM/MCP access records, audit trails, Styx job history; `/system/logs/sinks` shows Observability v2 writer/buffer health
 - **Settings** (`/system/credentials`) — System settings editor, credentials vault, managed service toggles
 

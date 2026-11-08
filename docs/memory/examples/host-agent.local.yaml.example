@@ -33,7 +33,6 @@ capture:
   enabled: true
   db_path: /ABSOLUTE/LOCAL/RUN/host/capture-spool.db
   upload_interval_ms: 1000
-  inject_context: false
 
 telemetry:
   enabled: false
