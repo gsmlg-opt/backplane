@@ -24,7 +24,7 @@ defmodule Backplane.HostAgent.Connector do
   def connect(config) do
     with {:ok, host_id} <- host_id(config),
          {:ok, socket} <- Channel.start_socket(config) do
-      case connect_socket(socket, host_id) do
+      case connect_socket(socket, host_id, config) do
         {:ok, channel, memory} ->
           {:ok,
            %{
@@ -42,14 +42,14 @@ defmodule Backplane.HostAgent.Connector do
     end
   end
 
-  defp connect_socket(socket, host_id) do
-    with :ok <- wait_for_socket(socket), do: join_channel(socket, host_id)
+  defp connect_socket(socket, host_id, config) do
+    with :ok <- wait_for_socket(socket), do: join_channel(socket, host_id, config)
   catch
     :exit, _reason -> {:error, :not_connected}
   end
 
-  defp join_channel(socket, host_id) do
-    case Channel.join(socket, host_id) do
+  defp join_channel(socket, host_id, config) do
+    case Channel.join(socket, host_id, config) do
       {:ok, reply, channel} when is_map(reply) -> {:ok, channel, reply}
       {:ok, channel} when is_pid(channel) -> {:ok, channel, %{}}
       {:error, reason} -> {:error, reason}

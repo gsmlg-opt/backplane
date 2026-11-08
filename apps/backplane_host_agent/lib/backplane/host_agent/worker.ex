@@ -327,7 +327,7 @@ defmodule Backplane.HostAgent.Worker do
                              socket: Map.get(connection, :socket),
                              edge_syncer: edge_syncer,
                              owns_connection?: true,
-                             memory_negotiation_report: worker_negotiation(connection)
+                             memory_negotiation_report: worker_negotiation(connection, config)
                          }
                          |> monitor_channel(channel)}
 
@@ -387,7 +387,9 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
-  defp worker_negotiation(%{memory: %{"selected" => selected} = memory})
+  defp worker_negotiation(_connection, %{memory: %{enabled: false}}), do: nil
+
+  defp worker_negotiation(%{memory: %{"selected" => selected} = memory}, _config)
        when selected in ["host_memory", "host_memory.v2"] do
     partitions =
       case memory do
@@ -402,7 +404,7 @@ defmodule Backplane.HostAgent.Worker do
     }
   end
 
-  defp worker_negotiation(_connection), do: nil
+  defp worker_negotiation(_connection, _config), do: nil
 
   defp start_and_store(state, key, start_fun) do
     case start_fun.(Map.get(state, key)) do
@@ -586,6 +588,9 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
+  defp set_edge_connection(_connection, %{memory: %{enabled: false}}, state),
+    do: clear_edge_connection(state)
+
   defp set_edge_connection(
          %{memory: %{"selected" => selected}} = connection,
          config,
@@ -618,12 +623,14 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
-  defp set_edge_connection(_connection, _config, %{edge_syncer: pid} = _state) when is_pid(pid) do
+  defp set_edge_connection(_connection, _config, state), do: clear_edge_connection(state)
+
+  defp clear_edge_connection(%{edge_syncer: pid}) when is_pid(pid) do
     if Process.alive?(pid), do: EdgeSyncer.stop(pid)
     {:ok, nil}
   end
 
-  defp set_edge_connection(_connection, _config, _state), do: {:ok, nil}
+  defp clear_edge_connection(_state), do: {:ok, nil}
 
   defp start_edge_syncer(opts, connection) do
     case EdgeSyncer.start_link(opts) do

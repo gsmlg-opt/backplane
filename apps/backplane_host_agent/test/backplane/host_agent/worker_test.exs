@@ -64,7 +64,6 @@ defmodule Backplane.HostAgent.WorkerTest do
        struct!(
          Config,
          Map.put(config, :memory, %{
-           enabled: false,
            host_sync: %{enabled: true, development_plaintext: true, sync_interval_ms: 1_000}
          })
        )}
@@ -744,6 +743,57 @@ defmodule Backplane.HostAgent.WorkerTest do
     refute Process.alive?(second)
     refute Process.alive?(second_socket)
     assert MemoryProxy.channel() == nil
+  end
+
+  test "disabled memory ignores an unsolicited memory selection without starting edge sync" do
+    :persistent_term.put({FakeConnector, :owner}, self())
+    :persistent_term.put({FakeMemoryProxy, :owner}, self())
+    channel = start_supervised!({Agent, fn -> nil end})
+
+    :persistent_term.put(
+      {FakeConnector, :connection},
+      {:ok,
+       %{
+         channel: channel,
+         host_id: "host-1",
+         memory: %{"selected" => "host_memory.v2", "partitions" => []}
+       }}
+    )
+
+    on_exit(fn ->
+      :persistent_term.erase({FakeConnector, :owner})
+      :persistent_term.erase({FakeConnector, :connection})
+      :persistent_term.erase({FakeMemoryProxy, :owner})
+    end)
+
+    {:ok, config} = StructRuntimeConfig.load_default()
+    config = %{config | memory: Map.put(config.memory, :enabled, false)}
+
+    worker =
+      start_supervised!(
+        {Worker,
+         name: nil,
+         connect?: true,
+         config: config,
+         connector_module: FakeConnector,
+         http_server_module: FakeHttpServer,
+         memory_proxy_module: FakeMemoryProxy,
+         sync_on_start?: false}
+      )
+
+    assert_receive {:connect, _}
+
+    assert %{
+             channel: ^channel,
+             edge_syncer: nil,
+             memory_supervisor: nil,
+             memory_negotiation_report: nil
+           } = state = GenServer.call(worker, :status)
+
+    report = Backplane.HostAgent.Reporter.config_report(config, state)
+    assert report["memory"]["enabled"] == false
+    assert report["memory_negotiation"] == nil
+    assert Process.alive?(channel)
   end
 
   test "current selection starts an edge syncer and a non-memory reconnect stops it" do

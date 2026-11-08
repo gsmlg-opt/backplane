@@ -61,6 +61,13 @@ defmodule Backplane.HostAgent.Channel do
 
   @doc "Joins the host-agent channel for the authenticated host."
   def join(socket, host_id) do
+    join(socket, host_id, %{
+      memory: Application.get_env(:backplane_host_agent, :memory_config, %{})
+    })
+  end
+
+  @doc "Joins using the supplied agent configuration for optional capabilities."
+  def join(socket, host_id, config) do
     channel_join_module =
       Application.get_env(
         :backplane_host_agent,
@@ -68,11 +75,13 @@ defmodule Backplane.HostAgent.Channel do
         Phoenix.SocketClient.Channel
       )
 
-    payload = Map.put(join_payload(), "host_api", %{"protocol" => "host_api.v1"})
+    payload = Map.put(join_payload(config), "host_api", %{"protocol" => "host_api.v1"})
     channel_join_module.join(socket, "host_agent:#{host_id}", payload)
   end
 
-  defp join_payload do
+  defp join_payload(%{memory: %{enabled: false}}), do: %{}
+
+  defp join_payload(_config) do
     case edge_offer() do
       {:ok, offer} ->
         Map.put(

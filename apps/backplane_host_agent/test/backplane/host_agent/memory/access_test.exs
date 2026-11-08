@@ -1872,7 +1872,9 @@ defmodule Backplane.HostAgent.Memory.AccessTest do
       machine_name: "test-host",
       manifest_path: Path.join(c.tmp_dir, "manifest.json"),
       interval_ms: 60_000,
-      memory: %{enabled: false, host_sync: %{enabled: false}},
+      # The fixture supplies Access; omit local-store startup rather than explicitly
+      # disabling all memory negotiation, which memory.enabled=false now requires.
+      memory: %{host_sync: %{enabled: false}},
       test_connection: %{channel: channel, host_id: "host-b", memory: negotiated}
     }
 

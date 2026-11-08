@@ -191,8 +191,11 @@ defmodule Backplane.HostAgent.MemoryProxy do
     next = Map.put(next, :memory_generation, connection[:memory_generation])
 
     inventory_result =
-      case connection do
-        %{memory: %{"extensions" => extensions} = memory, memory_generation: generation}
+      case {config, connection} do
+        {%{memory: %{enabled: false}}, _} ->
+          :ok
+
+        {_, %{memory: %{"extensions" => extensions} = memory, memory_generation: generation}}
         when is_list(extensions) ->
           if "memory_access.v1" in extensions,
             do: Access.install_inventory(generation, memory),

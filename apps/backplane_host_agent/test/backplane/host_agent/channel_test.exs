@@ -90,6 +90,7 @@ defmodule Backplane.HostAgent.ChannelTest do
     :persistent_term.put({AlreadyStartedSocketClient, :owner}, self())
     :persistent_term.put({FakeSocketChannelJoin, :owner}, self())
     Application.put_env(:backplane_host_agent, :socket_client_module, FakeSocketClient)
+    Application.put_env(:backplane_host_agent, :memory_config, %{enabled: true})
 
     on_exit(fn ->
       if previous do
@@ -188,6 +189,29 @@ defmodule Backplane.HostAgent.ChannelTest do
     assert elapsed >= 4_900
     assert elapsed < 7_000
     refute Process.alive?(channel)
+  end
+
+  test "disabled memory omits all memory offers while retaining host API" do
+    Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
+    Application.put_env(:backplane_host_agent, :memory_config, %{enabled: false})
+
+    Application.put_env(:backplane_host_agent, :memory_host_sync, %{
+      enabled: true,
+      development_plaintext: true
+    })
+
+    Application.put_env(:backplane_host_agent, :edge_mirror_module, FakeMirror)
+    assert {:ok, %{}, _} = Channel.join(self(), "host-disabled")
+    assert_receive {:join, _, "host_agent:host-disabled", payload}
+    assert payload == %{"host_api" => %{"protocol" => "host_api.v1"}}
+  end
+
+  test "explicit join config takes precedence over previous memory settings" do
+    Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
+    Application.put_env(:backplane_host_agent, :memory_config, %{enabled: true})
+    assert {:ok, %{}, _} = Channel.join(self(), "host-disabled", %{memory: %{enabled: false}})
+    assert_receive {:join, _, "host_agent:host-disabled", payload}
+    refute Map.has_key?(payload, "memory_v2")
   end
 
   test "join offers only commands and access when mirror persistence is unavailable" do

@@ -219,6 +219,47 @@ defmodule Backplane.HostAgent.MemoryProxyTest do
     refute_received {:push, _, "memory_call", _}
   end
 
+  test "disabled memory ignores an unsolicited inventory without an access owner" do
+    refute Process.whereis(Backplane.HostAgent.Memory.Access)
+
+    assert :ok =
+             MemoryProxy.set_connection(
+               %{
+                 channel: self(),
+                 memory_generation: %{id: 1},
+                 memory: %{"extensions" => ["memory_access.v1"]}
+               },
+               %{memory: %{enabled: false}}
+             )
+
+    assert MemoryProxy.channel() == self()
+  end
+
+  @tag :tmp_dir
+  test "enabled memory still installs the negotiated access inventory", %{tmp_dir: directory} do
+    alias Backplane.HostAgent.Memory.Access
+    alias Backplane.HostAgent.MemoryTestFixtures
+
+    fixture = MemoryTestFixtures.start!(directory, owner_name: Access, install?: false)
+
+    generation = %{
+      id: System.unique_integer([:monotonic, :positive]),
+      sent_at_ms: System.monotonic_time(:millisecond),
+      channel: self()
+    }
+
+    assert :ok =
+             MemoryProxy.set_connection(
+               %{channel: self(), memory_generation: generation, memory: fixture.inventory},
+               %{memory: %{enabled: true}}
+             )
+
+    status = Access.status(fixture.owner)
+    assert status.negotiated
+    assert status.default_access_id == fixture.inventory["default_access_id"]
+    assert MemoryProxy.channel() == self()
+  end
+
   test "a negotiated default-access scope mismatch blocks private memory without retiring the channel" do
     connection = %{
       channel: self(),
