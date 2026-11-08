@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an explicitly selected revision-2 native readable-fetch adapter with
+  extraction controls, bounded rich results, exact invocation/deadline context
+  and unchanged document metadata; retain revision-1 raw fetch semantics (#157).
+
 - Stage correlated provider/model intent and adopt it only at a native-owned,
   replay-safe classified failure boundary within the existing turn. Preserve
   canonical history, bounded host compaction views, superseding requests, usage,

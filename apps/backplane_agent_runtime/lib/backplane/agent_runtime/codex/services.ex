@@ -10,9 +10,13 @@ defmodule Backplane.AgentRuntime.Codex.Services do
   alias Backplane.AgentRuntime.ToolCatalog
 
   @spec definitions() :: [map()]
-  def definitions do
+  def definitions, do: definitions(%{})
+
+  @doc "Builds revision-2 readable fetch only when the host explicitly selects `:web_fetch_adapter`."
+  @spec definitions(map()) :: [map()]
+  def definitions(context) when is_map(context) do
     [
-      descriptor("web::fetch", "Fetch an authorized HTTP resource", fetch_schema()),
+      fetch_descriptor(context),
       descriptor("web::search", "Search through an authorized host backend", search_schema()),
       descriptor("web::x_search", "Search an authorized social backend", x_search_schema())
     ]
@@ -20,7 +24,7 @@ defmodule Backplane.AgentRuntime.Codex.Services do
 
   @spec contracts(map()) :: [map()]
   def contracts(context) when is_map(context) do
-    (definitions() ++ pinned_definitions())
+    (definitions(context) ++ pinned_definitions())
     |> Enum.filter(&configured?(&1.tool_name, context))
     |> Enum.map(fn descriptor ->
       {:ok, {namespace, name}} = Contract.split_name(descriptor.tool_name)
@@ -41,8 +45,12 @@ defmodule Backplane.AgentRuntime.Codex.Services do
 
   @spec admitted_definitions(map()) :: {:ok, map()} | {:error, Error.t()}
   def admitted_definitions(authority) when is_map(authority) do
-    ToolCatalog.admit_batch(definitions(), authority: authority)
+    admitted_definitions(%{}, authority)
   end
+
+  @spec admitted_definitions(map(), map()) :: {:ok, map()} | {:error, Error.t()}
+  def admitted_definitions(context, authority) when is_map(context) and is_map(authority),
+    do: ToolCatalog.admit_batch(definitions(context), authority: authority)
 
   @spec call(map(), String.t(), map()) :: {:ok, map()} | {:error, Error.t()}
   def call(context, name, arguments)
@@ -92,7 +100,15 @@ defmodule Backplane.AgentRuntime.Codex.Services do
   defp fetch(context, arguments) do
     with {:ok, url} <- required_string(arguments, "url"),
          {:ok, opts} <- web_options(context, arguments) do
-      Web.fetch(url, opts)
+      case Map.get(context, :web_fetch_adapter, Map.get(context, "web_fetch_adapter")) do
+        nil ->
+          Web.fetch(url, opts)
+
+        adapter ->
+          with {:ok, opts} <- readable_options(context, opts) do
+            Web.fetch_readable(adapter, arguments, opts)
+          end
+      end
     end
   end
 
@@ -153,6 +169,25 @@ defmodule Backplane.AgentRuntime.Codex.Services do
     end
   end
 
+  defp readable_options(context, reserved) do
+    options = Map.get(context, :web_fetch_options, Map.get(context, "web_fetch_options", []))
+
+    reserved =
+      case Map.fetch(context, :runtime_context) do
+        {:ok, runtime_context} -> Keyword.put(reserved, :runtime_context, runtime_context)
+        :error -> reserved
+      end
+
+    if is_list(options) and Keyword.keyword?(options) do
+      {:ok,
+       options
+       |> Keyword.drop([:allowed_hosts, :timeout, :result_limit, :transport, :runtime_context])
+       |> Keyword.merge(reserved)}
+    else
+      {:error, Error.new(:validation, "web_fetch_options must be a keyword list")}
+    end
+  end
+
   defp required_string(arguments, key) do
     atom_key = if key == "url", do: :url, else: :query
 
@@ -210,6 +245,19 @@ defmodule Backplane.AgentRuntime.Codex.Services do
         "instructions" => %{"type" => "string"}
       }
     }
+  end
+
+  defp fetch_descriptor(context) do
+    if Map.get(context, :web_fetch_adapter, Map.get(context, "web_fetch_adapter")) do
+      descriptor(
+        "web::fetch",
+        "Read an authorized HTTP document through the host adapter",
+        Web.ReadableFetch.schema()
+      )
+      |> Map.put(:tool_revision, 2)
+    else
+      descriptor("web::fetch", "Fetch an authorized HTTP resource", fetch_schema())
+    end
   end
 
   defp search_schema do

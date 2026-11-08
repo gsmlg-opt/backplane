@@ -7,6 +7,11 @@ defmodule Backplane.AgentRuntime.Codex.Web do
   @default_max_bytes 1_048_576
   @default_result_limit 1_048_576
 
+  @doc "Calls an explicitly selected revision-2 host readable-fetch adapter. See `Web.ReadableFetch`."
+  @spec fetch_readable(module(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def fetch_readable(adapter, arguments, opts \\ []),
+    do: __MODULE__.ReadableFetch.fetch(adapter, arguments, opts)
+
   @spec fetch(String.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def fetch(url, opts \\ [])
 

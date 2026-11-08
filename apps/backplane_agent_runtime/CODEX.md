@@ -65,6 +65,48 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   `:code_mode`, and `:services` families. Missing families and duplicate
   canonical names fail before admission.
 
+### Readable Web fetch
+
+The default `web::fetch` remains revision 1: bounded raw HTTP, with redirects and
+chunked transfer rejected. Hosts may explicitly select
+`web_fetch_adapter: MyReadableFetch` alongside `web_allowed_hosts` when building
+`Services.contracts/1` or `Codex.profile(:service_compat, context, authority)`.
+This selects revision 2 before admission; grant `"web::fetch" => 2` in
+`authority.tool_revisions`. `Services.definitions(context)` and
+`Services.admitted_definitions(context, authority)` expose the same versioned
+definition; their existing no-context forms retain revision 1.
+
+Implement the `Codex.Web.ReadableFetch` behaviour's `fetch(arguments, opts)`.
+The complete validated input contains `url`, optional `instructions`, optional
+`extract_mode` (`markdown` or `text`) and optional positive `max_chars`. The
+runtime does not insert defaults or mutate controls. Return `{:ok, result}` with
+string-keyed JSON fields `url` (exact requested URL), `final_url`, `text`, and
+`content_type`; add portable title/extractor/type/length/timing/cache metadata as
+needed. Exact UTF-8 text, including JSON number spelling, and all metadata survive
+unchanged through the native result, history and Store. `web_result_limit`
+(default 1 MiB of `:erlang.external_size/1`) bounds the whole result, with no
+silent truncation. Standalone hosts can use `Web.fetch_readable/3`.
+
+The selected host adapter owns acquisition, per-hop destination authorization,
+TLS, redirects, chunked decoding, content-type extraction and caching. The
+runtime checks the initial and final URLs against `web_allowed_hosts`, without
+pretending transformed text is raw transport bytes. This does not relax any
+default raw-transport check or implement Readability in Backplane.
+
+Options carry `allowed_hosts`, `result_limit`, and `timeout`, clamped to
+`web_timeout` (default 5 seconds) and the live ToolEffects allowance. Native calls
+also carry reserved `runtime_context` with actual invocation/catalog identity,
+resource/effect ownership and `effect_deadline` accessor. No model input can
+override those values. Hosts must apply the remaining deadline throughout their
+pipeline and clean up external resources; stopping the bounded adapter task does
+not prove external cleanup. Standalone calls invent no runtime identity. Never
+serialize process-local context into a result.
+
+Private host pipeline configuration can be passed in the `web_fetch_options`
+keyword list (for example an extraction/cache client). Canonical allowlist,
+timeout, result limit, transport and reserved runtime context always override
+these private options. No invocation argument can supply private options.
+
 ### Plugin installation outcomes and Web answers
 
 `request_install(arguments, operation)` remains a host installation boundary.
