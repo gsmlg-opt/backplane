@@ -63,18 +63,16 @@ defmodule Backplane.Repo.Migrations.ReconcileIndexedClientCredentialsTest do
     assert @version in versions(c.prefix)
     assert digest_columns(c.prefix) == [["token_digest", "bytea", "YES"]]
 
-    assert [[definition]] =
+    # The retired recall guard is dropped with the retired memory tables.
+    assert [] =
              @repo.query!(
                """
-               SELECT pg_get_functiondef(p.oid)
+               SELECT 1
                FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                WHERE n.nspname = $1 AND p.proname = 'bpm_assert_memory_recall_candidates_canonical_partition'
                """,
                [c.prefix]
              ).rows
-
-    assert definition =~ "bpm_memory_remember_requests"
-    refute definition =~ ~r/(?<!bpm_)memory_remember_requests/
 
     assert [] =
              Ecto.Migrator.run(@repo, migrations_path(), :up,
