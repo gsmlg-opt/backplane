@@ -51,6 +51,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     def call_tool(_name, _args), do: {:error, "not_found"}
   end
 
+  defmodule ScriptedHubProxy do
+    def list_tools, do: {:ok, []}
+    def call_tool(_name, _args), do: Process.get(:scripted_hub_reply)
+  end
+
   defmodule FakeHubChannel do
     def push(channel, event, payload, _timeout \\ 5_000) do
       send(channel, {:hub_push, event, payload})
@@ -211,6 +216,21 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
                tools_call("/memory/a1/mcp", "memory::get", %{"id" => "x"})
     end
 
+    test "transport and coded gateway errors map to stable reason strings" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ScriptedHubProxy)
+
+      for {reply, text} <- [
+            {{:error, :timeout}, "gateway_timeout"},
+            {{:error, :noproc}, "gateway_unavailable"},
+            {{:error, %{"code" => "unauthorized"}}, "unauthorized"}
+          ] do
+        Process.put(:scripted_hub_reply, reply)
+
+        assert %{"result" => %{"isError" => true, "content" => [%{"text" => ^text}]}} =
+                 tools_call("/memory/a1/mcp", "memory::remember", %{"content" => "c"})
+      end
+    end
+
     test "retired and unknown memory tools are rejected without a hub call" do
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
 
@@ -354,6 +374,22 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       assert conn.status == 503
       assert %{"ok" => false, "error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
+    end
+
+    test "maps coded and timeout gateway errors to HTTP statuses" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ScriptedHubProxy)
+
+      for {reply, status, error} <- [
+            {{:error, %{"code" => "unauthorized"}}, 403, "unauthorized"},
+            {{:error, :timeout}, 504, "gateway_timeout"},
+            {{:error, :noproc}, 503, "gateway_unavailable"}
+          ] do
+        Process.put(:scripted_hub_reply, reply)
+        conn = post_json("/memory/a1/call/remember", %{"content" => "c"})
+
+        assert conn.status == status
+        assert %{"ok" => false, "error" => ^error} = Jason.decode!(conn.resp_body)
+      end
     end
 
     test "maps gateway not_found to 404" do

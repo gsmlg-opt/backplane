@@ -3,6 +3,42 @@ defmodule Backplane.HostAgent.Memory.GitContextTest do
   alias Backplane.HostAgent.Memory.GitContext
   alias Backplane.HostAgent.Memory.Hooks.Codex
 
+  test "subdirectories and worktrees share remote identity while retaining distinct checkout paths" do
+    root =
+      Path.join(System.tmp_dir!(), "backplane-provenance-#{System.unique_integer([:positive])}")
+
+    repo = Path.join(root, "repo")
+    worktree = Path.join(root, "worktree")
+    File.mkdir_p!(Path.join(repo, "sub"))
+    on_exit(fn -> File.rm_rf!(root) end)
+    git!(repo, ["init", "--quiet"])
+
+    git!(repo, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "commit",
+      "--quiet",
+      "--allow-empty",
+      "-m",
+      "fixture"
+    ])
+
+    git!(repo, ["remote", "add", "origin", "https://user:secret@git.example/org/repo.git"])
+    git!(repo, ["worktree", "add", "--quiet", "-b", "test-worktree", worktree])
+
+    assert [first] = GitContext.discover(Path.join(repo, "sub"))
+    assert [second] = GitContext.discover(worktree)
+    assert first["repository_id"] == "git.example/org/repo"
+    assert second["repository_id"] == first["repository_id"]
+    assert File.stat!(first["checkout_root"]).inode == File.stat!(repo).inode
+    assert File.stat!(second["checkout_root"]).inode == File.stat!(worktree).inode
+    assert first["checkout_root"] != second["checkout_root"]
+    assert first["cwd"] == Path.join(repo, "sub")
+    refute inspect([first, second]) =~ "secret"
+  end
+
   test "non-Git, missing Git, failed discovery and missing remote retain paths without rejecting writes" do
     for runner <- [
           fn _, _ -> {"not a git repository", 128} end,
@@ -47,5 +83,9 @@ defmodule Backplane.HostAgent.Memory.GitContextTest do
 
     assert [%{"repository_id" => nil, "cwd" => "/missing/path"}] =
              event.payload["repository_sources"]
+  end
+
+  defp git!(cwd, args) do
+    assert {_output, 0} = System.cmd("git", ["-C", cwd | args], stderr_to_stdout: true)
   end
 end

@@ -254,6 +254,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp direct_error_status("gateway_unavailable"), do: 503
+  defp direct_error_status("gateway_timeout"), do: 504
   defp direct_error_status("not_found"), do: 404
   defp direct_error_status("unauthorized"), do: 403
   defp direct_error_status(_reason), do: 400
@@ -291,13 +292,16 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp memory_error(reason) when is_binary(reason), do: reason
   defp memory_error(%{"reason" => reason}) when is_binary(reason), do: reason
   defp memory_error(%{"message" => reason}) when is_binary(reason), do: reason
+  defp memory_error(%{"code" => code}) when is_binary(code), do: code
+  # A timed-out write may still have been applied by the gateway.
+  defp memory_error(:timeout), do: "gateway_timeout"
 
   defp memory_error(reason) do
     if transport_unavailable?(reason), do: "gateway_unavailable", else: format_error(reason)
   end
 
   defp transport_unavailable?(reason)
-       when reason in [:not_connected, :timeout, :closed, :disconnected, :noproc],
+       when reason in [:not_connected, :closed, :disconnected, :noproc],
        do: true
 
   defp transport_unavailable?({:channel_exit, _reason}), do: true
