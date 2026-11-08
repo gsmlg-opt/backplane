@@ -117,16 +117,18 @@ metadata, which stays in its existing `target` map.
 JSON tools retain the default `input_kind: :function`, `input_schema` map and
 `{:json, bytes}` or `{:structured, map}` arguments. Custom definitions explicitly
 use `input_kind: :custom`, optional bounded `format` metadata, and no JSON schema.
-Custom calls use `raw_arguments: {:custom, text}`; patches and JavaScript remain
-text and are never wrapped in a synthetic JSON object. Constructors validate
+Custom calls use `raw_arguments: {:custom, text}`; canonical patches and JavaScript
+remain raw text. The explicit Anthropic projection wraps text only on the native
+wire and restores it on decode; canonical data is never rewritten. Constructors validate
 UTF-8 and existing portable-value limits (262,144 bytes per string by default).
 
 Names may be unqualified or use a canonical `namespace::name` identity. Responses
 encodes namespace tool declarations and separate native call `namespace`/`name`
 fields, then reconstructs the canonical identity on decode. Chat Completions,
-Anthropic and Google codecs reject custom input and canonical namespaces with
-an incompatible capability and `upstream_outcome: :not_submitted` before a host
-can dispatch the request.
+Anthropic (by default) and Google codecs reject custom input and canonical
+namespaces with an incompatible capability and `upstream_outcome: :not_submitted`
+before a host can dispatch the request. Anthropic's explicit `prepare_request/2`
+projection below is an opt-in exception.
 
 Responses projects `custom_tool_call`, `response.custom_tool_call_input.delta`,
 `response.custom_tool_call_input.done`, and `custom_tool_call_output`. Tool result
@@ -516,3 +518,66 @@ A separate caller-owned reference transport is available in
 `examples/responses_websocket_client`. It uses published HTTP rc.5 in a standalone
 client project. The gateway uses the compatible published RC5 ecosystem. See its README for API, loopback evidence and
 limits. This does not change the pure protocol package's dependencies.
+
+## Explicit Anthropic native-tool projection
+
+Codex custom tools and namespaced names can be projected without a consumer-owned
+translation. Ordinary `Codec.encode_request(:anthropic, ...)` remains strict;
+opt in with the Anthropic preparation API:
+
+```elixir
+alias Backplane.AiProtocol.{Codec, Codec.Anthropic}
+
+{:ok, %{body: body, codec_options: options}} = Anthropic.prepare_request(request, stream: true)
+# Host submits body; it retains options with this exact in-flight request.
+state = Codec.stream_new(:anthropic, options)
+# Nonstreaming instead uses Codec.decode_response(:anthropic, status, headers, body, options).
+```
+
+The returned `:anthropic_tool_projection` value is immutable and request-scoped.
+Keep it intact with the originating request. It contains no credentials or
+execution authorization. There is no global alias registry, automatic HTTP, or
+provider capability claim. Reprepare each new request rather than mutating or
+reusing a context with changed tool identities. Preparation covers active tools
+and historical tool calls, including calls whose definition is no longer active;
+a name cannot change between function and custom input across that history.
+
+Legal Anthropic names (`[a-zA-Z0-9_-]{1,64}`) remain unchanged. Other canonical
+names use `bp_` plus the first 60 lowercase hexadecimal SHA-256 digits. Preparation
+checks every canonical identity, including history and already-legal names, for
+wire-name collisions and rejects conflicts before submission. Forced `tool_choice`
+names use the same mapping and must select an active declaration; a historical
+call alone does not make a tool selectable. Responses with an undeclared alias, malformed
+projection, or incompatible custom input fail explicitly rather than guessing.
+
+A custom/freeform tool becomes a JSON function with exactly one required string
+field, `input`, and `additionalProperties: false`. A `tool_use` input must contain
+exactly that field. The codec returns `raw_arguments: {:custom, text}`; Unicode,
+LF/CRLF and leading/trailing whitespace are preserved. Assistant history wraps
+that exact text again, and tool result IDs remain unchanged. Ordinary functions
+retain their input schema and structured argument representation.
+
+Every projected declaration retains its original description as a verbatim
+prefix. It appends a `[Backplane Anthropic tool metadata v1; ...]` section and JSON
+containing `canonical_name`, `input_kind`, `format`, and all `ToolDefinition.extensions`.
+Use `extensions["codex::output_schema"]` for a Codex output schema. This metadata
+is descriptive: custom formats/grammars and output schemas are advisory, not
+constraints enforced by Anthropic. Hosts retain their own validation policy.
+The projection preserves this information rather than silently dropping it.
+
+For streamed custom calls, start events already carry the canonical tool name.
+JSON wrapper fragments are buffered until the block closes. The codec then emits
+one byte-exact custom `:tool_call_delta` and a `:tool_call_done` whose `content` is
+a canonical `ContentBlock` containing the custom `ToolCall`. All these events
+carry `extensions["anthropic::input_kind"] == "custom"`. Function done events
+continue to contain the decoded input map. `max_tool_input_bytes` bounds each
+serialized JSON input buffer (default 262,144 bytes),
+`max_total_tool_input_bytes` bounds their total (default 1,048,576 bytes), and
+`max_tool_calls` bounds their count (default 128); these options must be positive
+integers. Bounds include initial tool input and prevent accumulation before JSON
+wrappers are decoded. Terminal/transport completion remains
+separate, and a malformed or incomplete wrapper never becomes executable input.
+
+This is codec round-trip support. A real Anthropic-compatible endpoint, model,
+and host transport must be qualified separately; it does not grant provider-side
+freeform/grammar enforcement or change Runtime execution permissions.

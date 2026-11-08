@@ -130,6 +130,9 @@ jobs:
           mix run --no-start -e
           'Enum.each(~w(test/release_config_test.exs test/hex_release_dependencies_test.exs test/release_workflow_split_test.exs), &Code.require_file/1)'
 
+      - name: Verify Codex Anthropic projection
+        run: mix run --no-start test/anthropic_codex_projection_test.exs
+
       - name: Verify publication helpers
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s scripts/tests -p 'test_*publication*.py'

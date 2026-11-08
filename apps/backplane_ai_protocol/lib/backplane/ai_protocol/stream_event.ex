@@ -5,7 +5,11 @@ defmodule Backplane.AiProtocol.StreamEvent do
   `index` is the provider item/tool index. `call_id` is the canonical call identity and
   `native_id` preserves a distinct provider identity. Argument deltas remain raw input bytes. Responses custom deltas carry
   `extensions["openai_responses::input_kind"] == "custom"`; completed calls retain
-  the `{:custom, text}` argument tag.
+  the `{:custom, text}` argument tag. Explicit Anthropic projection events use
+  `extensions["anthropic::input_kind"] == "custom"`; their JSON wrapper fragments
+  are buffered until a complete block produces one decoded raw custom delta and a
+  canonical ContentBlock at done. Ordinary Anthropic function done content remains
+  the decoded input map.
 
   `resolved_model` is the latest non-empty model/version string observed in this
   provider stream, or `nil` until supplied by the provider. It is copied to each

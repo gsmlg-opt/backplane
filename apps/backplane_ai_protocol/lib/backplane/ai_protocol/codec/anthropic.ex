@@ -1,16 +1,59 @@
 defmodule Backplane.AiProtocol.Codec.Anthropic do
-  @moduledoc "Pure Anthropic Messages request, response, error, and SSE codec."
+  @moduledoc """
+  Pure Anthropic Messages request, response, error, and SSE codec.
+
+  `prepare_request/2` explicitly projects custom and namespaced tools into native
+  Anthropic JSON functions. Keep its returned `codec_options` with that HTTP
+  request and pass them unchanged to `decode_response/4` or `stream_new/1`.
+  The context is an immutable request-scoped value, never a global registry.
+
+  Legal names retain their spelling. Other canonical names use `bp_` followed by
+  the first 60 lowercase hexadecimal SHA-256 digits; all declarations and history
+  are collision-checked together. Custom input is exactly `{"input": string}`;
+  decoding and replay preserve the original string without whitespace changes.
+  Original descriptions remain a verbatim prefix; a metadata section appends the
+  canonical identity, input kind, custom format and all tool extensions as JSON.
+  `extensions["codex::output_schema"]` can carry a Codex output schema. Formats,
+  grammar and output schemas are advisory metadata, not Anthropic enforcement.
+
+  Projected custom stream calls emit a canonical name at start, buffer the JSON
+  wrapper, then emit one raw custom delta and a canonical `ContentBlock` at done.
+  Their events carry `extensions["anthropic::input_kind"] == "custom"`. Ordinary
+  function done events retain their existing input-map content shape.
+
+  `encode_request/2` keeps its strict default and rejects custom/namespaced tools
+  unless supplied the options returned by `prepare_request/2`. Nonrepresentable
+  input, stale/invalid contexts and unknown response aliases fail explicitly.
+  """
   @behaviour Backplane.AiProtocol.Codec
 
   alias Backplane.AiProtocol.{ContentBlock, Error, ProviderState, Request, Response, StreamEvent}
   alias Backplane.AiProtocol.Codec.Common
+  alias Backplane.AiProtocol.Codec.Anthropic.ToolProjection
+
+  @doc "Builds an explicit reversible tool projection and its matching decode options."
+  @spec prepare_request(Request.t(), keyword()) ::
+          {:ok, %{body: map(), codec_options: keyword()}} | {:error, Error.t()}
+  def prepare_request(request, opts \\ [])
+
+  def prepare_request(%Request{} = request, opts) do
+    with {:ok, projection} <- ToolProjection.new(request),
+         options = ToolProjection.options(opts, projection),
+         {:ok, body} <- encode_request(request, options) do
+      {:ok, %{body: body, codec_options: options}}
+    end
+  end
+
+  def prepare_request(_, _),
+    do: {:error, Error.invalid!("Anthropic preparation requires a Request")}
 
   @impl true
   def encode_request(%Request{model: model} = request, opts) when is_binary(model) do
     destination = Keyword.put(opts, :model, model)
 
-    with :ok <- Backplane.AiProtocol.Media.preflight(request, :anthropic, opts),
-         :ok <- Common.reject_custom_tools(request),
+    with {:ok, projection} <- ToolProjection.for_request(request, opts),
+         :ok <- Backplane.AiProtocol.Media.preflight(request, :anthropic, opts),
+         :ok <- reject_unprojected_tools(request, projection),
          :ok <- Common.reject_state_references(request),
          :ok <-
            Common.reject_reserved(request.settings, request.output_constraints, [
@@ -21,7 +64,7 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
              "stream"
            ]),
          {:ok, messages} <- encode_messages(request.input, destination),
-         {:ok, tools} <- encode_tools(request.tools) do
+         {:ok, tools} <- encode_tools(request.tools, projection) do
       system =
         request.input
         |> Enum.filter(fn
@@ -41,7 +84,7 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
         wire = if system == [], do: wire, else: Map.put(wire, "system", system)
         wire = if tools == [], do: wire, else: Map.put(wire, "tools", tools)
-        {:ok, merge_settings(wire, request)}
+        ToolProjection.project_choice(merge_settings(wire, request), projection)
       end
     end
   end
@@ -51,8 +94,13 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   @impl true
   def decode_response(status, _headers, body, opts) when status in 200..299 do
-    with {:ok, document} <- Common.decode_json(body),
-         {:ok, output} <- decode_blocks(document["content"], opts),
+    with {:ok, projection} <- ToolProjection.from_options(opts),
+         {:ok, document} <- Common.decode_json(body),
+         {:ok, output} <-
+           decode_blocks(
+             document["content"],
+             Keyword.put(opts, :decoded_tool_projection, projection)
+           ),
          {:ok, usage} <- usage(document["usage"]),
          {:ok, reason} <- completion_reason(document["stop_reason"]),
          {:ok, response} <-
@@ -82,15 +130,30 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   @impl true
   def stream_new(opts) do
+    {projection, error} =
+      case ToolProjection.from_options(opts) do
+        {:ok, projection} -> {projection, nil}
+        {:error, error} -> {nil, error}
+      end
+
     Common.stream_state(opts)
     |> Map.put(:blocks, %{})
     |> Map.put(:stop_reason, nil)
+    |> Map.put(:tool_projection, projection)
+    |> Map.put(:projection_error, error)
+    |> Map.put(:tool_input_bytes, 0)
   end
 
   @impl true
+  def stream_feed(%{projection_error: %Error{} = error} = state, _bytes),
+    do: {:error, error, state}
+
   def stream_feed(state, bytes), do: Common.feed(state, bytes, &decode_frame/2)
 
   @impl true
+  def stream_finish(%{projection_error: %Error{} = error} = state, _reason),
+    do: {:error, error, state}
+
   def stream_finish(state, reason), do: Common.finish(state, reason, &decode_frame/2)
 
   defp encode_messages(messages, opts) do
@@ -154,14 +217,16 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
             }}
   end
 
-  defp encode_block(%ContentBlock{type: :tool_call, tool_call: call}, _opts) do
-    with {:ok, input} <- Common.json_arguments(call.raw_arguments),
+  defp encode_block(%ContentBlock{type: :tool_call, tool_call: call}, opts) do
+    with {:ok, projection} <- ToolProjection.from_options(opts),
+         {:ok, identity} <- ToolProjection.encode_name(call.name, projection),
+         {:ok, input} <- ToolProjection.encode_arguments(call.raw_arguments, identity),
          do:
            {:ok,
             %{
               "type" => "tool_use",
               "id" => call.native_id || call.id,
-              "name" => call.name,
+              "name" => identity.wire_name,
               "input" => input
             }}
   end
@@ -187,18 +252,11 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   defp encode_block(_, _opts),
     do: {:error, Error.incompatible!("Anthropic cannot preserve content block")}
 
-  defp encode_tools(tools),
-    do:
-      tools
-      |> Enum.map(fn tool ->
-        {:ok,
-         %{
-           "name" => tool.name,
-           "description" => tool.description || "",
-           "input_schema" => tool.input_schema || %{"type" => "object"}
-         }}
-      end)
-      |> collect()
+  defp reject_unprojected_tools(request, nil), do: Common.reject_custom_tools(request)
+  defp reject_unprojected_tools(_request, _projection), do: :ok
+
+  defp encode_tools(tools, projection),
+    do: tools |> Enum.map(&ToolProjection.encode_tool(&1, projection)) |> collect()
 
   defp decode_blocks(blocks, opts) when is_list(blocks),
     do: blocks |> Enum.map(&decode_block(&1, opts)) |> collect()
@@ -217,12 +275,16 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
   defp decode_block(%{"type" => "thinking", "thinking" => thinking}, _opts),
     do: ContentBlock.new(%{type: :reasoning, data: thinking})
 
-  defp decode_block(%{"type" => "tool_use", "id" => id, "name" => name, "input" => input}, _opts),
-    do:
+  defp decode_block(%{"type" => "tool_use", "id" => id, "name" => name, "input" => input}, opts) do
+    with {:ok, identity} <-
+           ToolProjection.decode_name(name, Keyword.get(opts, :decoded_tool_projection)),
+         {:ok, arguments} <- ToolProjection.decode_arguments(input, identity) do
       ContentBlock.new(%{
         type: :tool_call,
-        tool_call: %{id: id, native_id: id, name: name, raw_arguments: {:structured, input}}
+        tool_call: %{id: id, native_id: id, name: identity.name, raw_arguments: arguments}
       })
+    end
+  end
 
   defp decode_block(_, _),
     do: {:error, Error.incompatible!("Unsupported Anthropic response content")}
@@ -270,31 +332,35 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
          "index" => index,
          "content_block" => block
        }) do
-    entry = %{
-      type: block["type"],
-      id: block["id"],
-      name: block["name"],
-      arguments: "",
-      initial_input: block["input"],
-      thinking: block["thinking"] || "",
-      signature: block["signature"],
-      closed: false
-    }
+    with :ok <- valid_block_start(state, index, block),
+         {:ok, identity} <- stream_identity(block, state.tool_projection) do
+      entry = %{
+        type: block["type"],
+        id: block["id"],
+        name: identity.name,
+        input_kind: identity.input_kind,
+        arguments: "",
+        initial_input: block["input"],
+        input_bytes: 0,
+        thinking: block["thinking"] || "",
+        signature: block["signature"],
+        closed: false
+      }
 
-    events =
-      if entry.type == "tool_use",
-        do: [
-          %StreamEvent{
-            type: :tool_call_start,
-            index: index,
-            call_id: entry.id,
-            native_id: entry.id,
-            name: entry.name
-          }
-        ],
-        else: []
+      events =
+        if entry.type == "tool_use",
+          do: [tool_stream_event(:tool_call_start, index, entry)],
+          else: []
 
-    {:ok, put_in(state.blocks[index], entry), events}
+      with {:ok, bytes} <- initial_tool_input_bytes(entry),
+           {:ok, entry, state} <- check_tool_budget(state, entry, bytes, true) do
+        {:ok, put_in(state.blocks[index], entry), events}
+      else
+        {:error, error} -> {:error, error, state}
+      end
+    else
+      {:error, error} -> {:error, error, state}
+    end
   end
 
   defp anthropic_event(state, %{
@@ -305,8 +371,10 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
     entry =
       Map.get(state.blocks, index, %{
         type: nil,
+        input_kind: :function,
         arguments: "",
         initial_input: nil,
+        input_bytes: 0,
         thinking: "",
         signature: nil,
         closed: false
@@ -331,21 +399,37 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
          }), []}
 
       "input_json_delta" ->
-        {:ok,
-         put_in(state.blocks[index], %{
-           entry
-           | arguments: entry.arguments <> (delta["partial_json"] || "")
-         }),
-         [
-           %StreamEvent{
-             type: :tool_call_delta,
-             index: index,
-             call_id: entry.id,
-             native_id: entry.id,
-             name: entry.name,
-             arguments_delta: delta["partial_json"]
-           }
-         ]}
+        if entry.type == "tool_use" and not entry.closed and is_binary(delta["partial_json"]) do
+          events =
+            if entry.input_kind == :custom,
+              do: [],
+              else: [
+                %{
+                  tool_stream_event(:tool_call_delta, index, entry)
+                  | arguments_delta: delta["partial_json"]
+                }
+              ]
+
+          bytes = byte_size(entry.arguments) + byte_size(delta["partial_json"])
+          bytes = if bytes == 0, do: entry.input_bytes, else: bytes
+
+          with {:ok, entry, state} <- check_tool_budget(state, entry, bytes, false) do
+            {:ok,
+             put_in(state.blocks[index], %{
+               entry
+               | arguments: entry.arguments <> delta["partial_json"],
+                 initial_input:
+                   if(bytes > 0 and delta["partial_json"] != "",
+                     do: nil,
+                     else: entry.initial_input
+                   )
+             }), events}
+          else
+            {:error, error} -> {:error, error, state}
+          end
+        else
+          {:error, Error.invalid!("Anthropic tool arguments delta has no open tool block"), state}
+        end
 
       _ ->
         {:error, Error.incompatible!("Unsupported Anthropic stream delta"), state}
@@ -354,25 +438,18 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp anthropic_event(state, %{"type" => "content_block_stop", "index" => index}) do
     case state.blocks[index] do
+      nil ->
+        {:error, Error.invalid!("Anthropic content block stop has no matching start"), state}
+
+      %{closed: true} ->
+        {:error, Error.invalid!("Anthropic tool block was already completed"), state}
+
       %{type: "tool_use"} = entry ->
-        case complete_arguments(entry) do
-          {:ok, value} ->
-            state = put_in(state.blocks[index].closed, true)
-
-            {:ok, state,
-             [
-               %StreamEvent{
-                 type: :tool_call_done,
-                 index: index,
-                 call_id: entry.id,
-                 native_id: entry.id,
-                 name: entry.name,
-                 content: value
-               }
-             ]}
-
-          _ ->
-            {:error, Error.invalid!("Anthropic tool arguments are not complete JSON"), state}
+        with {:ok, value} <- complete_arguments(entry),
+             {:ok, events} <- completed_tool_events(index, entry, value) do
+          {:ok, put_in(state.blocks[index].closed, true), events}
+        else
+          {:error, error} -> {:error, error, state}
         end
 
       %{type: "thinking", signature: signature, thinking: thinking} when is_binary(signature) ->
@@ -435,6 +512,110 @@ defmodule Backplane.AiProtocol.Codec.Anthropic do
 
   defp anthropic_event(state, _),
     do: {:error, Error.incompatible!("Unsupported Anthropic stream event"), state}
+
+  defp valid_block_start(state, index, block)
+       when is_integer(index) and index >= 0 and is_map(block) do
+    cond do
+      Map.has_key?(state.blocks, index) ->
+        {:error, Error.invalid!("Anthropic content block index was already started")}
+
+      block["type"] not in ["text", "thinking", "tool_use"] ->
+        {:error, Error.incompatible!("Unsupported Anthropic stream content block")}
+
+      block["type"] == "tool_use" and
+          not (is_binary(block["id"]) and byte_size(block["id"]) in 1..256) ->
+        {:error, Error.invalid!("Anthropic tool call identity is invalid")}
+
+      block["type"] == "tool_use" and
+          Enum.any?(state.blocks, fn {_index, entry} ->
+            entry.type == "tool_use" and entry.id == block["id"]
+          end) ->
+        {:error, Error.invalid!("Anthropic tool call identity was already started")}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp valid_block_start(_state, _index, _block),
+    do: {:error, Error.invalid!("Anthropic content block identity is invalid")}
+
+  defp initial_tool_input_bytes(%{type: "tool_use", initial_input: input}) when is_map(input) do
+    case Jason.encode(input) do
+      {:ok, text} -> {:ok, byte_size(text)}
+      _ -> {:error, Error.invalid!("Anthropic initial tool input cannot be encoded")}
+    end
+  end
+
+  defp initial_tool_input_bytes(_entry), do: {:ok, 0}
+
+  defp check_tool_budget(state, %{type: "tool_use"} = entry, bytes, new?) do
+    total = state.tool_input_bytes - entry.input_bytes + bytes
+    count = Enum.count(state.blocks, fn {_index, block} -> block.type == "tool_use" end)
+    count = if new?, do: count + 1, else: count
+
+    with {:ok, per_call} <- tool_limit(state.opts, :max_tool_input_bytes, 262_144),
+         {:ok, all_calls} <- tool_limit(state.opts, :max_total_tool_input_bytes, 1_048_576),
+         {:ok, calls} <- tool_limit(state.opts, :max_tool_calls, 128),
+         :ok <- within_tool_limit(bytes, per_call, "Anthropic tool input exceeds byte limit"),
+         :ok <-
+           within_tool_limit(total, all_calls, "Anthropic total tool input exceeds byte limit"),
+         :ok <- within_tool_limit(count, calls, "Anthropic tool count exceeds limit") do
+      {:ok, %{entry | input_bytes: bytes}, %{state | tool_input_bytes: total}}
+    end
+  end
+
+  defp check_tool_budget(state, entry, _bytes, _new?), do: {:ok, entry, state}
+
+  defp tool_limit(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      limit when is_integer(limit) and limit > 0 -> {:ok, limit}
+      _ -> {:error, Error.invalid!("Anthropic tool limits must be positive integers")}
+    end
+  end
+
+  defp within_tool_limit(value, limit, _message) when value <= limit, do: :ok
+  defp within_tool_limit(_value, _limit, message), do: {:error, Error.invalid!(message)}
+
+  defp stream_identity(%{"type" => "tool_use", "name" => name}, projection),
+    do: ToolProjection.decode_name(name, projection)
+
+  defp stream_identity(_block, _projection), do: {:ok, %{name: nil, input_kind: :function}}
+
+  defp tool_stream_event(type, index, entry) do
+    %StreamEvent{
+      type: type,
+      index: index,
+      call_id: entry.id,
+      native_id: entry.id,
+      name: entry.name,
+      extensions:
+        if(entry.input_kind == :custom, do: %{"anthropic::input_kind" => "custom"}, else: %{})
+    }
+  end
+
+  defp completed_tool_events(index, %{input_kind: :custom} = entry, value) do
+    with {:ok, {:custom, text} = arguments} <- ToolProjection.decode_arguments(value, entry),
+         {:ok, block} <-
+           ContentBlock.new(%{
+             type: :tool_call,
+             tool_call: %{
+               id: entry.id,
+               native_id: entry.id,
+               name: entry.name,
+               raw_arguments: arguments
+             }
+           }) do
+      {:ok,
+       [
+         %{tool_stream_event(:tool_call_delta, index, entry) | arguments_delta: text},
+         %{tool_stream_event(:tool_call_done, index, entry) | content: block}
+       ]}
+    end
+  end
+
+  defp completed_tool_events(index, entry, value),
+    do: {:ok, [%{tool_stream_event(:tool_call_done, index, entry) | content: value}]}
 
   defp usage(nil), do: {:ok, nil}
 

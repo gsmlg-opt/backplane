@@ -156,3 +156,16 @@ Client0.9 releases resolved the dependency graph. The gateway now composes the
 pure codec with its own supervised session and per-message policy; see
 `docs/responses-websocket.md` for the tested explicit-model contract and remaining
 header/accounting/provider-qualification boundaries. The pure codec is unchanged.
+
+## Anthropic Codex-tool projection
+
+Issue `gsmlg-opt/backplane#160` specifies the reversible mapping between canonical
+Codex custom/namespaced tools and Anthropic JSON-function tool declarations.
+The version-1 projection is independently authored in this package; its source
+of truth is `Codec.Anthropic.prepare_request/2` and the accompanying round-trip
+regression tests. It uses Anthropic's legal tool-name shape, `input_schema`,
+`tool_use.input`, and `input_json_delta` transport structures. It does not copy
+Sigma's provider or add provider HTTP calls. Formats, output schemas and extension
+metadata are explicitly advisory description data. Test fixtures are synthesized
+protocol examples, not captured Claude/MiniMax model output; successful local
+round trips do not claim real endpoint/model compatibility.

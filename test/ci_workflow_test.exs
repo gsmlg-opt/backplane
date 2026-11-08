@@ -673,6 +673,7 @@ defmodule Backplane.CIWorkflowTest do
       "Install dependencies",
       "Verify CI workflow contract",
       "Verify release workflow contract",
+      "Verify Codex Anthropic projection",
       "Verify publication helpers"
     ])
 
@@ -681,6 +682,11 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(job, %{
       "name" => "Verify CI workflow contract",
       "run" => "mix run --no-start test/ci_workflow_test.exs"
+    })
+
+    assert_step(job, %{
+      "name" => "Verify Codex Anthropic projection",
+      "run" => "mix run --no-start test/anthropic_codex_projection_test.exs"
     })
 
     release_contract =
