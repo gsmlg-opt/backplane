@@ -96,13 +96,6 @@ defmodule Backplane.HostAgent.Config do
       # Optional: name of an environment variable containing a Base64-encoded
       # 32-byte AES-256-GCM key. The key itself never belongs in this file.
       # encryption_key_env: BACKPLANE_CAPTURE_SPOOL_KEY
-      # Lifecycle context injection is opt-in. Its synchronous request is
-      # always capped at 1500ms and uses only a bounded volatile fallback cache.
-      inject_context: false
-      context_timeout_ms: 1200
-      recall_cache_max_entries: 128
-      recall_cache_max_bytes: 2097152
-      recall_cache_ttl_ms: 900000
       upload_interval_ms: 5000
       batch_size: 100
       batch_bytes: 524288
@@ -331,11 +324,6 @@ defmodule Backplane.HostAgent.Config do
       enabled: parse_bool(raw["enabled"], memory_enabled_by_default?(http_port)),
       db_path: parse_capture_db_path(raw["db_path"], work_dir),
       encryption_key_env: parse_non_empty_string(raw["encryption_key_env"], nil),
-      inject_context: parse_bool(raw["inject_context"], false),
-      context_timeout_ms: parse_bounded_positive_int(raw["context_timeout_ms"], 1_200, 1_500),
-      recall_cache_max_entries: parse_positive_int(raw["recall_cache_max_entries"], 128),
-      recall_cache_max_bytes: parse_positive_int(raw["recall_cache_max_bytes"], 2 * 1024 * 1024),
-      recall_cache_ttl_ms: parse_positive_int(raw["recall_cache_ttl_ms"], 15 * 60 * 1_000),
       upload_interval_ms: parse_positive_int(raw["upload_interval_ms"], 5_000),
       batch_size: parse_bounded_positive_int(raw["batch_size"], 100, 100),
       batch_bytes: parse_bounded_positive_int(raw["batch_bytes"], 512 * 1024, 512 * 1024),

@@ -30,15 +30,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
-  @memory_descriptions %{
-    "memory::search" =>
-      "Search memory records by text, with optional provenance and time filters.",
-    "memory::get" => "Fetch one memory record and its supersession history.",
-    "memory::recent" => "List recent worklog records, newest first.",
-    "memory::remember" => "Store a memory record; provenance is stamped from the caller.",
-    "memory::forget" => "Mark a memory record as forgotten, with a reason."
-  }
-
   plug(:match)
 
   plug(Plug.Parsers,
@@ -455,7 +446,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp static_memory_tool(name) do
     %{
       "name" => name,
-      "description" => Map.fetch!(@memory_descriptions, name),
+      "description" => Map.fetch!(MemoryToolContract.descriptions(), name),
       "inputSchema" => Map.fetch!(MemoryToolContract.schemas(), name)
     }
   end

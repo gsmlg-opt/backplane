@@ -429,7 +429,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         spool: spool,
         spool_module: Spool,
         memory_proxy_module: LifecycleProxy,
-        config: %{inject_context: true, context_timeout_ms: 1_000}
+        config: %{}
       })
 
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)

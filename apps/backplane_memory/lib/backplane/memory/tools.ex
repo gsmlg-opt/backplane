@@ -4,23 +4,17 @@ defmodule Backplane.Memory.Tools do
   alias Backplane.Memory.{Record, Records}
   alias Backplane.MemoryToolContract
 
-  @descriptions %{
-    "search" => "Search memory records by text, with optional provenance and time filters.",
-    "get" => "Fetch one memory record and its supersession history.",
-    "recent" => "List recent worklog records, newest first.",
-    "remember" => "Store a memory record; provenance is stamped from the caller.",
-    "forget" => "Mark a memory record as forgotten, with a reason."
-  }
-
   def prefix, do: "memory"
 
   def enabled?, do: Backplane.Settings.get("services.memory.enabled") == true
 
   def tools do
     schemas = MemoryToolContract.schemas()
+    descriptions = MemoryToolContract.descriptions()
 
-    for {short, description} <- @descriptions do
+    for short <- ~w(search get recent remember forget) do
       name = prefix() <> "::" <> short
+      description = Map.fetch!(descriptions, name)
 
       %{
         name: name,

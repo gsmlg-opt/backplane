@@ -10,6 +10,15 @@ defmodule Backplane.MemoryToolContract do
   }
   @core_tools ~w(memory::search memory::get memory::recent memory::remember memory::forget)
 
+  @descriptions %{
+    "memory::search" =>
+      "Search memory records by text, with optional provenance and time filters.",
+    "memory::get" => "Fetch one memory record and its supersession history.",
+    "memory::recent" => "List recent worklog records, newest first.",
+    "memory::remember" => "Store a memory record; provenance is stamped from the caller.",
+    "memory::forget" => "Mark a memory record as forgotten, with a reason."
+  }
+
   @kinds ~w(fact procedure worklog note)
   @subject_pattern "^[^:\\s]+:.+$"
 
@@ -97,4 +106,8 @@ defmodule Backplane.MemoryToolContract do
   @doc "Input JSON schemas for the five public tools, keyed by tool name."
   @spec schemas() :: %{String.t() => map()}
   def schemas, do: @schemas
+
+  @doc "Tool descriptions for the five public tools, keyed by tool name."
+  @spec descriptions() :: %{String.t() => String.t()}
+  def descriptions, do: @descriptions
 end

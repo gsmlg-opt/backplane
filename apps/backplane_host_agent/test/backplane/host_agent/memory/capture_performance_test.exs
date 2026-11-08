@@ -31,7 +31,7 @@ defmodule Backplane.HostAgent.Memory.CapturePerformanceTest do
       spool: spool,
       spool_module: Spool,
       memory_proxy_module: UnexpectedRemoteProxy,
-      config: %{inject_context: true, context_timeout_ms: 1_500}
+      config: %{}
     })
 
     on_exit(fn -> restore_env(:capture_runtime, previous_runtime) end)

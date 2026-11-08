@@ -215,11 +215,6 @@ defmodule Backplane.HostAgent.ConfigTest do
              enabled: true,
              db_path: Path.join(work_dir, "memory/capture_spool.db"),
              encryption_key_env: nil,
-             inject_context: false,
-             context_timeout_ms: 1_200,
-             recall_cache_max_entries: 128,
-             recall_cache_max_bytes: 2 * 1024 * 1024,
-             recall_cache_ttl_ms: 15 * 60 * 1_000,
              upload_interval_ms: 5_000,
              batch_size: 100,
              batch_bytes: 524_288,
@@ -255,11 +250,6 @@ defmodule Backplane.HostAgent.ConfigTest do
       enabled: true
       db_path: #{capture_path}
       encryption_key_env: BACKPLANE_CAPTURE_SPOOL_KEY
-      inject_context: true
-      context_timeout_ms: 9000
-      recall_cache_max_entries: 7
-      recall_cache_max_bytes: 8192
-      recall_cache_ttl_ms: 60000
       upload_interval_ms: 250
       batch_size: 8
       batch_bytes: 4096
@@ -276,11 +266,6 @@ defmodule Backplane.HostAgent.ConfigTest do
              enabled: true,
              db_path: capture_path,
              encryption_key_env: "BACKPLANE_CAPTURE_SPOOL_KEY",
-             inject_context: true,
-             context_timeout_ms: 1_500,
-             recall_cache_max_entries: 7,
-             recall_cache_max_bytes: 8_192,
-             recall_cache_ttl_ms: 60_000,
              upload_interval_ms: 250,
              batch_size: 8,
              batch_bytes: 4096,
@@ -316,11 +301,6 @@ defmodule Backplane.HostAgent.ConfigTest do
              enabled: false,
              db_path: Path.join(work_dir, "memory/capture_spool.db"),
              encryption_key_env: nil,
-             inject_context: false,
-             context_timeout_ms: 1_200,
-             recall_cache_max_entries: 128,
-             recall_cache_max_bytes: 2 * 1024 * 1024,
-             recall_cache_ttl_ms: 15 * 60 * 1_000,
              upload_interval_ms: 5_000,
              batch_size: 100,
              batch_bytes: 524_288,
