@@ -1,4 +1,36 @@
-# Optional Linux LocalCommand PTY helper
+# LocalCommand macOS session helper
+
+Build explicitly on the target host with `mix backplane.command.build`. The
+packaged C11 source requires a compiler and the macOS SDK; Linux can also build
+the launcher/probe source. Normal compilation does not run a native build.
+Hex ships source, not generated binaries. `LocalCommand.start_link/1` on macOS
+rejects a missing or incompatible helper with this build instruction.
+`:session_helper_path` accepts a trusted absolute executable snapshot; the path
+is pinned at construction, like Linux bootstrap executable paths.
+
+The helper forks a child, calls `setsid`, then starts the existing blocked shell
+launcher with literal arguments. Before acknowledging execution, Elixir checks
+its parent, process group and session against the Port-owned helper and child
+PIDs using `proc_pidinfo` and `getsid`. Startup does not depend on `/proc`, a
+third-party `setsid`, Python, or PATH-visible process inspection commands.
+
+Cleanup uses `kill(-pgid, 0)`: success or EPERM proves presence, ESRCH proves
+absence, and other failures retain uncertainty. The check includes a group whose
+leader exited. TERM/KILL target that same group. Confirmation additionally waits
+for the original session helper PID to disappear; reused PIDs conservatively
+retain the obligation. Pending-launch and backend-shutdown confirmation use the
+same authoritative liveness boundary. A deliberate new session escapes this
+process-group scope; this is not an OS sandbox.
+
+This helper supports ordinary raw pipe commands. First-party PTY and acknowledged
+pipe half-close remain the Linux capabilities below; macOS hosts can supply their
+own verified PTY adapter. To run the portable lifecycle tests after building:
+
+```sh
+mix test test/backplane/agent_runtime/tools/local_command_portable_test.exs
+```
+
+## Optional Linux LocalCommand PTY helper
 
 Build explicitly with `mix backplane.pty.build`. Normal Mix compilation and
 pipe-only construction do not need a compiler. Requires Linux, C11 headers/libc,

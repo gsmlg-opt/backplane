@@ -261,8 +261,9 @@ mix run --no-start --no-deps-check apps/backplane_agent_runtime/examples/codex_l
 
 On Linux it uses the existing `LocalCommand` process-group backend. On other
 platforms it uses an explicitly labelled one-shot `System.cmd` example adapter
-because production `LocalCommand` currently requires Linux `/proc`, `setsid`,
-and process-group probing. Verified host adapters can opt into PTY; see
+in this example. Production `LocalCommand` also supports macOS after the explicit
+`mix backplane.command.build` native session-helper build; its ordinary pipe
+backend verifies kernel process identity and group absence without `/proc`. Verified host adapters can opt into PTY; see
 `docs/agent-runtime/codex-tools/command-host-adapters.md` for the capability and
 cleanup contract. The default LocalCommand adapter still uses pipes.
 
@@ -286,8 +287,9 @@ Compatibility remains adapted rather than unqualified full parity:
   `codex.tool`/generator interface remains available. The source contract and
   native-engine differential validation limits are documented in
   `docs/agent-runtime/codex-tools/code-mode-conformance.md`.
-- The default native lifecycle adapters require Linux. Other platforms require
-  independently verified host adapters.
+- The default command adapter supports Linux and macOS (with the explicit
+  session-helper build). Native Code Mode and first-party PTY/pipe half-close
+  still require Linux; other platforms require independently verified host adapters.
 - Extension reference state is ephemeral unless a durable host adapter supplies
   and verifies recovery.
 - Full pinned output schemas, all schema property descriptions, and native Codex
@@ -354,7 +356,7 @@ UTF-8 prefixes are not cut inside a character.
 Results retain backend `status`, exit status when available, termination and
 cleanup evidence, and `output_limit_exceeded?`. A hard-limit termination is not
 a successful command merely because an exit code is missing. LocalCommand keeps
-its bounded output buffer and Linux process-group cleanup; descendants that
+its bounded output buffer and process-group cleanup; descendants that
 create a separate session remain outside that backend's cleanup guarantee.
 
 Command output retention is bounded independently from cleanup evidence. A failed

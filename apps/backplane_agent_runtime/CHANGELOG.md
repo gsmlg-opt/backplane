@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Support ordinary LocalCommand pipes on macOS with an explicitly built native
+  session/identity helper and authoritative group/helper cleanup confirmation (#159).
+
 - Add an explicitly selected revision-2 native readable-fetch adapter with
   extraction controls, bounded rich results, exact invocation/deadline context
   and unchanged document metadata; retain revision-1 raw fetch semantics (#157).

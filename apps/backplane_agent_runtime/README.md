@@ -5,6 +5,13 @@ configuration, history, UI and public protocols. Optional tools and their backen
 start only when selected by the host. No Phoenix, database, Sigma or Backplane
 server application is required.
 
+On macOS, build the packaged session launcher/probes explicitly with
+`mix backplane.command.build` before starting `Tools.LocalCommand`. A C compiler
+and macOS SDK are required; no `setsid` command or `/proc` is needed. The helper
+uses kernel identity and process-group probes and confirms both group absence
+and helper exit. Linux keeps its existing `/proc` backend without a native build.
+See [native helper instructions](c_src/README.md).
+
 Optional first-party Linux PTY support uses the existing `exec_command` and
 `write_stdin` tools. Build with `mix backplane.pty.build`, then start
 `Tools.LocalCommand` with `pty: true`; `tty: true` selects the real controlling

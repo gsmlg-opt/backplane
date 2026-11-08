@@ -84,6 +84,7 @@ __pycache__/
 
 # Optional target-native PTY helper (ship source in Hex, assemble into OTP releases).
 /apps/backplane_agent_runtime/priv/bin/backplane-local-command-pty*
+/apps/backplane_agent_runtime/priv/bin/backplane-local-command-session*
 
 # Optional target-native MCP guardian; Hex ships source and the explicit task.
 /apps/backplane_mcp_protocol/priv/bin/backplane-mcp-stdio-guardian*

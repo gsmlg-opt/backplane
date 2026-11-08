@@ -5,17 +5,19 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   @behaviour Backplane.AgentRuntime.Command
 
   alias Backplane.AgentRuntime.Error
-  alias Backplane.AgentRuntime.Tools.LocalCommand.{Procfs, Pty}
+  alias Backplane.AgentRuntime.Tools.LocalCommand.{Platform, Pty}
 
   @moduledoc """
-  Linux local command backend with verified process-group cleanup.
+  Linux and macOS local command backend with verified process-group cleanup.
 
   Commands start behind a fixed launcher handshake. The launcher blocks until
   its process identity has been verified, so a job is returned only after its
   process group is safe to address. This adapter does not provide an OS sandbox;
   commands that create a new session are outside its descendant-cleanup scope.
 
-  Construction accepts trusted absolute `:setsid_path`, `:sh_path`, and
+  macOS requires the packaged native session helper, built explicitly with
+  `mix backplane.command.build`; `:session_helper_path` can pin a trusted build.
+  Linux construction accepts trusted absolute `:setsid_path`, `:sh_path`, and
   `:kill_path` executables. Defaults resolve PATH once during `start_link/1`;
   launch, cleanup and shutdown reuse those fixed paths. Each path must name an
   executable regular file. Hosts own immutable executable/script snapshots;
@@ -26,8 +28,10 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   Cleanup confirms absence through a fresh Linux `/proc` scan, including
   descendants whose leader has exited. A matching live leader avoids that scan
   only when proving presence. ENOENT and ESRCH mean that one proc entry vanished;
-  the remaining group is still scanned. Other probe errors remain uncertain. The default 750 ms
-  cleanup budget is unchanged; timeout errors include the last cleanup phase
+  the remaining group is still scanned. Other probe errors remain uncertain.
+  macOS uses kernel process identity and process-group signal probes; only ESRCH
+  proves absence, including after the leader exits. Helper exit is also required.
+  The default 750 ms cleanup budget is unchanged; timeout errors include the last cleanup phase
   and elapsed timing for diagnosis.
   """
 
@@ -439,7 +443,10 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
         Map.has_key?(state.cancelled_sessions, session_id) ->
           pid = Map.fetch!(state.cancelled_sessions, session_id)
-          if File.exists?("/proc/#{pid}"), do: :pending, else: :confirmed
+
+          if Platform.present_or_uncertain?(pid, state.bootstrap_paths),
+            do: :pending,
+            else: :confirmed
 
         Map.get(state.session_obligations, session_id, %{})[:status] == :confirmed or
             Map.has_key?(state.released_sessions, session_id) ->
@@ -464,7 +471,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     {launchers, cancelled_launchers} =
       state.cancelled_launchers
       |> Map.get(owner_run_id, MapSet.new())
-      |> Enum.split_with(&File.exists?("/proc/#{&1}"))
+      |> Enum.split_with(&Platform.present_or_uncertain?(&1, state.bootstrap_paths))
       |> then(fn {alive, _gone} ->
         {alive,
          if(alive == [],
@@ -617,7 +624,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     pending = Map.fetch!(state.pending, port)
 
     with {:ok, pid} <- parse_handshake(line, pending.nonce),
-         :ok <- validate_process_identity(pid, pending.launcher_pid),
+         :ok <- validate_process_identity(pid, pending.launcher_pid, state.bootstrap_paths),
          :ok <- alive_owner(pending.request),
          {:ok, remaining} <- remaining_deadline(pending),
          true <- Port.command(port, acknowledgement(pending.nonce, pid)) do
@@ -961,14 +968,25 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
       |> Enum.map(& &1.process_group_id)
       |> Enum.uniq()
 
-    Enum.each(group_ids, &shutdown_signal(&1, state.shutdown_signaler))
+    Enum.each(group_ids, &shutdown_signal(&1, state.shutdown_signaler, state.bootstrap_paths))
 
     pending_pids =
       state.pending
       |> Enum.reject(fn {_port, pending} -> pending.transport in [:pty, :pipe_broker] end)
       |> Enum.map(fn {_port, pending} -> pending.launcher_pid end)
 
-    reconcile_shutdown(group_ids, pending_pids, state.shutdown_timeout)
+    pending_pids =
+      if Map.has_key?(state.bootstrap_paths, :session_helper) do
+        pending_pids ++
+          (state.owned_groups
+           |> Map.values()
+           |> Enum.map(&Map.get(&1, :launcher_pid))
+           |> Enum.filter(&is_integer/1))
+      else
+        pending_pids
+      end
+
+    reconcile_shutdown(group_ids, pending_pids, state.shutdown_timeout, state.bootstrap_paths)
     stop_cleanup_supervisor(state.cleanup_supervisor, state.shutdown_timeout)
 
     :ok
@@ -1127,6 +1145,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
     job = %{
       transport: pending.transport,
+      launcher_pid: pending.launcher_pid,
       pty_identity: identity,
       pty_proof: nil,
       broker_exit: nil,
@@ -1172,6 +1191,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
         {:ok,
          Map.drop(job, [
            :process_group_id,
+           :launcher_pid,
            :transport,
            :pty_identity,
            :pty_proof,
@@ -1200,6 +1220,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           owned_groups:
             Map.put(state.owned_groups, port, %{
               transport: pending.transport,
+              launcher_pid: pending.launcher_pid,
               process_group_id: pid,
               workspace: pending.request.workspace,
               owner_run_id: pending.request.owner_run_id,
@@ -1283,14 +1304,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
             {:line, 1024},
             {:args,
              [
-               "--fork",
-               "--wait",
+               state.bootstrap_paths.launch_args,
                state.bootstrap_paths.sh,
                state.launcher_script,
                nonce,
                request.executable
-             ] ++
-               List.wrap(request.arguments)},
+             ]
+             |> List.flatten()
+             |> Kernel.++(List.wrap(request.arguments))},
             {:env, environment},
             {:cd, request.workspace}
           ]
@@ -1481,7 +1502,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
       %Task{pid: task_pid, ref: task_ref} =
         Task.Supervisor.async_nolink(state.cleanup_supervisor, fn ->
-          state.cleanup_reconciler.(owner, port, token, job.process_group_id)
+          reconcile_job(state, owner, port, token, job)
         end)
 
       cleanup_timer =
@@ -1507,6 +1528,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
+  defp reconcile_job(state, owner, port, token, job) do
+    with :ok <- state.cleanup_reconciler.(owner, port, token, job.process_group_id) do
+      Platform.confirm_launcher_exit(Map.get(job, :launcher_pid), state.bootstrap_paths)
+    end
+  end
+
   defp retry_session_cleanup(session_id, state) do
     case Map.get(state.cleanup_evidence, session_id) do
       %{transport: transport} when transport in [:pty, :pipe_broker] ->
@@ -1518,12 +1545,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
         %Task{pid: task_pid, ref: task_ref} =
           Task.Supervisor.async_nolink(state.cleanup_supervisor, fn ->
-            state.cleanup_reconciler.(
-              owner,
-              {:session, session_id},
-              token,
-              evidence.process_group_id
-            )
+            reconcile_job(state, owner, {:session, session_id}, token, evidence)
           end)
 
         cleanup_timer =
@@ -1703,6 +1725,7 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   defp cleanup_evidence(job) do
     %{
       transport: job.transport,
+      launcher_pid: job.launcher_pid,
       pty_identity: job.pty_identity,
       session_id: job.session_id,
       owner_run_id: job.owner_run_id,
@@ -1820,8 +1843,9 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp validate_process_identity(pid, launcher_pid) do
-    with {:ok, %{parent: ^launcher_pid, group: ^pid, session: ^pid}} <- Procfs.identity(pid) do
+  defp validate_process_identity(pid, launcher_pid, paths) do
+    with {:ok, %{parent: ^launcher_pid, group: ^pid, session: ^pid}} <-
+           Platform.identity(pid, paths) do
       :ok
     else
       _other -> :error
@@ -1866,29 +1890,29 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     removed ++ allowed
   end
 
-  defp reconcile_process_group(owner, port, token, process_group_id, kill_path) do
+  defp reconcile_process_group(owner, port, token, process_group_id, paths) do
     send(owner, {:cleanup_phase, port, token, :initial_probe})
 
-    case process_group_exists?(process_group_id) do
+    case Platform.group_exists?(process_group_id, paths) do
       {:ok, false} ->
         :ok
 
       {:ok, true} ->
         send(owner, {:termination_requested, port, token})
         send(owner, {:cleanup_phase, port, token, :term_signal})
-        terminate = signal_process_group(kill_path, process_group_id, "-TERM")
+        terminate = Platform.signal(process_group_id, "-TERM", paths)
         send(owner, {:cleanup_phase, port, token, :term_probe})
 
-        case wait_for_group_absence(process_group_id, @term_grace_ms) do
+        case wait_for_group_absence(process_group_id, @term_grace_ms, paths) do
           :ok ->
             :ok
 
           {:error, :still_running} ->
             send(owner, {:cleanup_phase, port, token, :kill_signal})
-            kill = signal_process_group(kill_path, process_group_id, "-KILL")
+            kill = Platform.signal(process_group_id, "-KILL", paths)
             send(owner, {:cleanup_phase, port, token, :kill_probe})
 
-            case wait_for_group_absence(process_group_id, @kill_grace_ms) do
+            case wait_for_group_absence(process_group_id, @kill_grace_ms, paths) do
               :ok -> :ok
               {:error, reason} -> cleanup_error(process_group_id, terminate, kill, reason)
             end
@@ -1902,13 +1926,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp wait_for_group_absence(process_group_id, limit_ms) do
+  defp wait_for_group_absence(process_group_id, limit_ms, paths) do
     deadline = System.monotonic_time(:millisecond) + limit_ms
-    wait_for_group_absence_until(process_group_id, deadline)
+    wait_for_group_absence_until(process_group_id, deadline, paths)
   end
 
-  defp wait_for_group_absence_until(process_group_id, deadline) do
-    case process_group_exists?(process_group_id) do
+  defp wait_for_group_absence_until(process_group_id, deadline, paths) do
+    case Platform.group_exists?(process_group_id, paths) do
       {:ok, false} ->
         :ok
 
@@ -1917,20 +1941,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
           {:error, :still_running}
         else
           Process.sleep(@cleanup_poll_ms)
-          wait_for_group_absence_until(process_group_id, deadline)
+          wait_for_group_absence_until(process_group_id, deadline, paths)
         end
 
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  defp signal_process_group(kill_path, process_group_id, signal) do
-    System.cmd(kill_path, [signal, "--", "-#{process_group_id}"], stderr_to_stdout: true)
-  end
-
-  defp process_group_exists?(process_group_id) do
-    Procfs.group_exists?(process_group_id)
   end
 
   defp cleanup_progress do
@@ -2165,8 +2181,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
          {:ok, completion_retention} <- completion_retention(opts),
          {:ok, paths} <- bootstrap_paths(opts),
          {:ok, pty} <- Pty.options(opts),
-         {:ok, cleanup_reconciler} <- cleanup_reconciler(opts, paths.kill),
-         {:ok, shutdown_signaler} <- shutdown_signaler(opts, paths.kill),
+         {:ok, cleanup_reconciler} <- cleanup_reconciler(opts, paths),
+         {:ok, shutdown_signaler} <- shutdown_signaler(opts, paths),
          {:ok, receipt_capacity} <- capacity(opts, :receipt_capacity, @default_receipt_capacity),
          {:ok, session_capacity} <- capacity(opts, :session_capacity, @default_session_capacity) do
       {:ok,
@@ -2200,8 +2216,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp cleanup_reconciler(opts, kill_path) do
-    default = &reconcile_process_group(&1, &2, &3, &4, kill_path)
+  defp cleanup_reconciler(opts, paths) do
+    default = &reconcile_process_group(&1, &2, &3, &4, paths)
 
     case Keyword.get(opts, :cleanup_reconciler, default) do
       reconciler when is_function(reconciler, 4) -> {:ok, reconciler}
@@ -2209,8 +2225,8 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp shutdown_signaler(opts, kill_path) do
-    default = &signal_process_group(kill_path, &1, &2)
+  defp shutdown_signaler(opts, paths) do
+    default = &Platform.signal(&1, &2, paths)
 
     case Keyword.get(opts, :shutdown_signaler, default) do
       signaler when is_function(signaler, 2) -> {:ok, signaler}
@@ -2226,13 +2242,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp shutdown_signal(process_group_id, signaler) do
-    case process_group_exists?(process_group_id) do
+  defp shutdown_signal(process_group_id, signaler, paths) do
+    case Platform.group_exists?(process_group_id, paths) do
       {:ok, false} ->
         :ok
 
       {:ok, true} ->
-        signal_existing_group(process_group_id, signaler)
+        signal_existing_group(process_group_id, signaler, paths)
 
       {:error, reason} ->
         Logger.error("local command shutdown group probe failed",
@@ -2242,13 +2258,13 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     end
   end
 
-  defp signal_existing_group(process_group_id, signaler) do
+  defp signal_existing_group(process_group_id, signaler, paths) do
     case safe_shutdown_signal(signaler, process_group_id, "-KILL") do
       {_output, 0} ->
         :ok
 
       result ->
-        case process_group_exists?(process_group_id) do
+        case Platform.group_exists?(process_group_id, paths) do
           {:ok, false} ->
             :ok
 
@@ -2270,14 +2286,14 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp reconcile_shutdown(group_ids, pending_pids, limit_ms) do
+  defp reconcile_shutdown(group_ids, pending_pids, limit_ms, paths) do
     deadline = System.monotonic_time(:millisecond) + limit_ms
-    reconcile_shutdown_until(group_ids, pending_pids, deadline)
+    reconcile_shutdown_until(group_ids, pending_pids, deadline, paths)
   end
 
-  defp reconcile_shutdown_until(group_ids, pending_pids, deadline) do
-    remaining_groups = Enum.filter(group_ids, &group_present_or_uncertain?/1)
-    remaining_pending = Enum.filter(pending_pids, &File.exists?("/proc/#{&1}"))
+  defp reconcile_shutdown_until(group_ids, pending_pids, deadline, paths) do
+    remaining_groups = Enum.filter(group_ids, &group_present_or_uncertain?(&1, paths))
+    remaining_pending = Enum.filter(pending_pids, &Platform.present_or_uncertain?(&1, paths))
 
     cond do
       remaining_groups == [] and remaining_pending == [] ->
@@ -2293,12 +2309,12 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
 
       true ->
         Process.sleep(@cleanup_poll_ms)
-        reconcile_shutdown_until(remaining_groups, remaining_pending, deadline)
+        reconcile_shutdown_until(remaining_groups, remaining_pending, deadline, paths)
     end
   end
 
-  defp group_present_or_uncertain?(process_group_id) do
-    case process_group_exists?(process_group_id) do
+  defp group_present_or_uncertain?(process_group_id, paths) do
+    case Platform.group_exists?(process_group_id, paths) do
       {:ok, false} -> false
       _present_or_error -> true
     end
@@ -2331,14 +2347,45 @@ defmodule Backplane.AgentRuntime.Tools.LocalCommand do
   defp server(command), do: Map.get(command, :server) || __MODULE__
 
   defp bootstrap_paths(opts) do
-    if match?({:unix, :linux}, :os.type()) and File.dir?("/proc/self") do
-      with {:ok, setsid} <- bootstrap_path(opts, :setsid_path, "setsid"),
-           {:ok, sh} <- bootstrap_path(opts, :sh_path, "sh"),
-           {:ok, kill} <- bootstrap_path(opts, :kill_path, "kill") do
-        {:ok, %{setsid: setsid, sh: sh, kill: kill}}
-      end
-    else
-      {:error, Error.new(:unsupported_capability, "local command backend requires Linux /proc")}
+    case :os.type() do
+      {:unix, :linux} ->
+        with true <- File.dir?("/proc/self"),
+             {:ok, setsid} <- bootstrap_path(opts, :setsid_path, "setsid"),
+             {:ok, sh} <- bootstrap_path(opts, :sh_path, "sh"),
+             {:ok, kill} <- bootstrap_path(opts, :kill_path, "kill") do
+          {:ok, %{setsid: setsid, sh: sh, kill: kill, launch_args: ["--fork", "--wait"]}}
+        else
+          false ->
+            {:error, Error.new(:unsupported_capability, "Linux LocalCommand requires /proc")}
+
+          error ->
+            error
+        end
+
+      {:unix, :darwin} ->
+        helper =
+          Application.app_dir(
+            :backplane_agent_runtime,
+            "priv/bin/backplane-local-command-session"
+          )
+
+        opts = Keyword.put_new(opts, :session_helper_path, helper)
+
+        with {:ok, helper} <- bootstrap_path(opts, :session_helper_path, ""),
+             :ok <- Platform.capability(helper),
+             {:ok, sh} <- bootstrap_path(opts, :sh_path, "sh") do
+          {:ok, %{setsid: helper, sh: sh, session_helper: helper, launch_args: ["--run"]}}
+        else
+          _ ->
+            {:error,
+             Error.new(
+               :unsupported_capability,
+               "macOS LocalCommand requires its native helper; run mix backplane.command.build"
+             )}
+        end
+
+      _ ->
+        {:error, Error.new(:unsupported_capability, "LocalCommand requires Linux or macOS")}
     end
   end
 

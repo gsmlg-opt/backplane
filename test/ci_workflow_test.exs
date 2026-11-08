@@ -365,7 +365,7 @@ defmodule Backplane.CIWorkflowTest do
     ])
 
     assert workflow["jobs"] |> Map.keys() |> Enum.sort() ==
-             ~w(agent-runtime-latest native-pty test)
+             ~w(agent-runtime-latest native-pty portable-command test)
 
     job = job!(workflow, "test")
 
@@ -450,6 +450,26 @@ defmodule Backplane.CIWorkflowTest do
     assert_step(native, %{
       "name" => "Verify native PTY source package and consumer",
       "run" => "bash scripts/verify_agent_runtime_package.sh"
+    })
+
+    portable = job!(workflow, "portable-command")
+
+    assert portable["strategy"]["matrix"]["runner"] ==
+             ["ubuntu-24.04", "macos-15-intel", "macos-latest"]
+
+    assert portable["strategy"]["fail-fast"] == false
+    assert portable["runs-on"] == "${{ matrix.runner }}"
+
+    assert_step(portable, %{
+      "name" => "Build portable command helper",
+      "working-directory" => "${{ env.PACKAGE_DIRECTORY }}",
+      "run" => "mix backplane.command.build"
+    })
+
+    assert_step(portable, %{
+      "name" => "Verify command lifecycle and confirmed cleanup",
+      "working-directory" => "${{ env.PACKAGE_DIRECTORY }}",
+      "run" => "mix test test/backplane/agent_runtime/tools/local_command_portable_test.exs"
     })
 
     assert_agent_runtime_latest_job(workflow)

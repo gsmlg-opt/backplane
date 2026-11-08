@@ -145,6 +145,41 @@ jobs:
       - name: Verify native PTY source package and consumer
         run: bash scripts/verify_agent_runtime_package.sh
 
+  portable-command:
+    name: LocalCommand (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - name: Copy standalone Runtime source
+        shell: bash
+        run: |
+          package_directory="$RUNNER_TEMP/local-command-runtime"
+          mkdir -p "$package_directory"
+          git archive HEAD:apps/backplane_agent_runtime | tar -x -C "$package_directory"
+          echo "PACKAGE_DIRECTORY=$package_directory" >> "$GITHUB_ENV"
+      - name: Install standalone dependencies
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
+        run: mix deps.get
+      - name: Compile standalone Runtime strictly
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
+        run: mix compile --warnings-as-errors
+      - name: Build portable command helper
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
+        run: mix backplane.command.build
+      - name: Verify command lifecycle and confirmed cleanup
+        working-directory: ${{ env.PACKAGE_DIRECTORY }}
+        run: mix test test/backplane/agent_runtime/tools/local_command_portable_test.exs
+
   agent-runtime-latest:
     name: Agent Runtime (Elixir 1.20 / OTP 29)
     runs-on: ubuntu-24.04
