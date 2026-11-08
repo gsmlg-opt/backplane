@@ -3,8 +3,6 @@ defmodule Backplane.HostAgent.Memory.V1ToV2UpgradeTest do
 
   alias Backplane.HostAgent.Memory.{Migrator, Store}
   alias Backplane.HostAgent.Memory.Migrations.V1
-  alias Backplane.HostAgent.Memory.Edge
-  alias Backplane.HostAgent.Memory.Edge.Migrations.V1, as: EdgeV1
 
   @moduletag :tmp_dir
   @now "2026-09-01T00:00:00Z"
@@ -223,87 +221,6 @@ defmodule Backplane.HostAgent.Memory.V1ToV2UpgradeTest do
              )
 
     assert Jason.decode!(payload) == %{}
-  end
-
-  test "separate populated edge V1 preserves active canonical rows and resets interrupted snapshot at V3",
-       %{tmp_dir: dir} do
-    store =
-      start_supervised!(
-        {Edge.Store,
-         database: Path.join(dir, "edge.db"),
-         config: %{enabled: true, development_plaintext: true}}
-      )
-
-    Enum.each(EdgeV1.up(), fn sql -> assert {:ok, _} = Edge.Store.execute(store, sql) end)
-    assert {:ok, _} = Edge.Store.execute(store, "PRAGMA user_version = 1")
-
-    assert {:ok, _} =
-             Edge.Store.execute(
-               store,
-               "INSERT INTO edge_partitions(memory_space_id,scope,namespace,applied_revision,active_generation,snapshot_id,snapshot_revision,next_chunk_index,chunk_count,integrity_hash) VALUES ('space','scope','private',7,'active','interrupted',8,1,2,'hash')"
-             )
-
-    for {generation, id} <- [{"active", "canonical-active"}, {"interrupted", "canonical-staging"}] do
-      assert {:ok, _} =
-               Edge.Store.execute(
-                 store,
-                 "INSERT INTO edge_memories(memory_space_id,scope,namespace,generation,canonical_id,memory_type,content,content_hash,confidence,lifecycle_state,tags,metadata,source_refs,server_revision,edge_priority,edge_expires_at,updated_at,byte_size) VALUES ('space','scope','private',?,?,'semantic','retained content','digest',0.8,'active','[\"tag\"]','{\"source\":\"legacy\"}','[\"ref\"]',7,0.8,?,?,16)",
-                 [generation, id, @now, @now]
-               )
-    end
-
-    assert {:ok, _} =
-             Edge.Store.execute(
-               store,
-               "INSERT INTO edge_snapshot_chunks(snapshot_id,chunk_index,chunk_hash,applied_at) VALUES ('interrupted',0,'hash',?)",
-               [@now]
-             )
-
-    assert :ok = Edge.Migrator.migrate(store)
-    assert {:ok, 4} = Edge.Migrator.current_version(store)
-
-    assert {:ok,
-            %{
-              rows: [
-                %{
-                  "applied_revision" => 7,
-                  "active_generation" => "active",
-                  "snapshot_id" => nil,
-                  "sync_status" => "snapshot_required",
-                  "snapshot_received_items" => 0
-                }
-              ]
-            }} =
-             Edge.Store.query(
-               store,
-               "SELECT applied_revision,active_generation,snapshot_id,sync_status,snapshot_received_items FROM edge_partitions"
-             )
-
-    assert {:ok,
-            %{
-              rows: [
-                %{
-                  "canonical_id" => "canonical-active",
-                  "content" => "retained content",
-                  "memory_type" => "semantic",
-                  "metadata" => ~s|{"source":"legacy"}|,
-                  "tags" => ~s|["tag"]|,
-                  "source_refs" => ~s|["ref"]|,
-                  "server_revision" => 7,
-                  "edge_priority" => 0.8,
-                  "edge_expires_at" => @now,
-                  "byte_size" => 16
-                }
-              ]
-            }} =
-             Edge.Store.query(
-               store,
-               "SELECT canonical_id,content,memory_type,metadata,tags,source_refs,server_revision,edge_priority,edge_expires_at,byte_size FROM edge_memories"
-             )
-
-    assert {:ok, %{rows: []}} = Edge.Store.query(store, "SELECT * FROM edge_snapshot_chunks")
-    assert :disabled = Edge.Protection.status(%{})
-    assert :ok = Edge.Migrator.migrate(store)
   end
 
   defp unique_name(prefix), do: String.to_atom("#{prefix}_#{System.unique_integer([:positive])}")

@@ -1,7 +1,6 @@
 defmodule Backplane.HostAgent.Memory.Hooks.Hermes do
   @moduledoc "Normalizes the versioned Hermes provider journal into the existing capture pipeline."
   alias Backplane.HostAgent.Memory.EventEnvelope
-  alias Backplane.MemorySourceContract, as: Contract
 
   @hooks %{
     "session-start" => "agent.session.started",
@@ -78,8 +77,8 @@ defmodule Backplane.HostAgent.Memory.Hooks.Hermes do
   end
 
   defp valid_common?(source, runtime) do
-    source["protocol"] == "hermes_capture.v1" and Contract.uuid?(source["event_id"]) and
-      Contract.uuid?(source["installation_id"]) and text?(source["profile_id"], 512) and
+    source["protocol"] == "hermes_capture.v1" and uuid?(source["event_id"]) and
+      uuid?(source["installation_id"]) and text?(source["profile_id"], 512) and
       text?(source["session_id"], 4096) and text?(runtime[:host_id], 512) and
       is_integer(source["source_sequence"]) and
       source["source_sequence"] in 1..9_223_372_036_854_775_807 and
@@ -126,6 +125,14 @@ defmodule Backplane.HostAgent.Memory.Hooks.Hermes do
 
   defp reserved?(list) when is_list(list), do: Enum.any?(list, &reserved?/1)
   defp reserved?(_), do: false
+
+  defp uuid?(value),
+    do:
+      is_binary(value) and
+        Regex.match?(
+          ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i,
+          value
+        )
 
   defp timestamp?(value),
     do: is_binary(value) and match?({:ok, _, _}, DateTime.from_iso8601(value))

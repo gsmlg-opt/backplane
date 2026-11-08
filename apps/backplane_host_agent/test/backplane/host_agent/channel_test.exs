@@ -63,17 +63,6 @@ defmodule Backplane.HostAgent.ChannelTest do
     end
   end
 
-  defmodule FakeMirror do
-    def offer(_opts),
-      do:
-        {:ok,
-         %{
-           "offers" => ["host_memory.v2"],
-           "max_frame_bytes" => 123_456,
-           "partitions" => []
-         }}
-  end
-
   setup do
     previous = Application.get_env(:backplane_host_agent, :socket_client_module)
     previous_channel = Application.get_env(:backplane_host_agent, :socket_channel_module)
@@ -83,8 +72,6 @@ defmodule Backplane.HostAgent.ChannelTest do
 
     previous_store = Application.get_env(:backplane_host_agent, :memory_store)
     previous_memory_config = Application.get_env(:backplane_host_agent, :memory_config)
-    previous_edge_config = Application.get_env(:backplane_host_agent, :memory_host_sync)
-    previous_edge_mirror = Application.get_env(:backplane_host_agent, :edge_mirror_module)
 
     :persistent_term.put({FakeSocketClient, :owner}, self())
     :persistent_term.put({AlreadyStartedSocketClient, :owner}, self())
@@ -103,8 +90,6 @@ defmodule Backplane.HostAgent.ChannelTest do
       restore_env(:socket_channel_join_module, previous_channel_join)
       restore_env(:memory_store, previous_store)
       restore_env(:memory_config, previous_memory_config)
-      restore_env(:memory_host_sync, previous_edge_config)
-      restore_env(:edge_mirror_module, previous_edge_mirror)
 
       :persistent_term.erase({FakeSocketClient, :owner})
       :persistent_term.erase({AlreadyStartedSocketClient, :owner})
@@ -194,13 +179,6 @@ defmodule Backplane.HostAgent.ChannelTest do
   test "disabled memory omits all memory offers while retaining host API" do
     Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
     Application.put_env(:backplane_host_agent, :memory_config, %{enabled: false})
-
-    Application.put_env(:backplane_host_agent, :memory_host_sync, %{
-      enabled: true,
-      development_plaintext: true
-    })
-
-    Application.put_env(:backplane_host_agent, :edge_mirror_module, FakeMirror)
     assert {:ok, %{}, _} = Channel.join(self(), "host-disabled")
     assert_receive {:join, _, "host_agent:host-disabled", payload}
     assert payload == %{"host_api" => %{"protocol" => "host_api.v1"}}
@@ -214,50 +192,15 @@ defmodule Backplane.HostAgent.ChannelTest do
     refute Map.has_key?(payload, "memory_v2")
   end
 
-  test "join offers only commands and access when mirror persistence is unavailable" do
+  test "join offers only the capture extensions without access or edge negotiation" do
     Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
-    Application.put_env(:backplane_host_agent, :memory_host_sync, %{enabled: false})
     assert {:ok, %{}, _channel} = Channel.join(self(), "host-1")
     assert_receive {:join, _, "host_agent:host-1", payload}
-    assert payload["host_api"] == %{"protocol" => "host_api.v1"}
-    refute Map.has_key?(payload, "memory")
-    assert payload["memory_v2"]["offers"] == ["host_memory.v2"]
-    assert payload["memory_v2"]["partitions"] == []
-    assert "memory_commands.v2" in payload["memory_v2"]["extensions"]
-  end
 
-  test "protected mirror adds its v2 offer without a retired uploader offer" do
-    Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
-
-    Application.put_env(:backplane_host_agent, :memory_host_sync, %{
-      enabled: true,
-      development_plaintext: true
-    })
-
-    Application.put_env(:backplane_host_agent, :edge_mirror_module, FakeMirror)
-    assert {:ok, %{}, _channel} = Channel.join(self(), "host-1")
-    assert_receive {:join, _, "host_agent:host-1", payload}
-    refute Map.has_key?(payload, "memory")
-    assert payload["memory_v2"]["max_frame_bytes"] == 123_456
-  end
-
-  test "shared extensions remain negotiable when protected mirror is disabled" do
-    Application.put_env(:backplane_host_agent, :socket_channel_join_module, FakeSocketChannelJoin)
-    Application.put_env(:backplane_host_agent, :memory_store, __MODULE__.NoStore)
-    Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
-    Application.put_env(:backplane_host_agent, :memory_host_sync, %{enabled: false})
-    assert {:ok, %{}, _} = Channel.join(self(), "host-shared")
-    assert_receive {:join, _, "host_agent:host-shared", %{"memory_v2" => offer}}
-    assert offer["partitions"] == []
-
-    assert offer["extensions"] == [
-             "memory_access.v1",
-             "memory_commands.v2",
-             "memory_sources.v1",
-             "hermes_capture.v1",
-             "openclaw_source.v1",
-             "openclaw_capture.v1"
-           ]
+    assert payload == %{
+             "host_api" => %{"protocol" => "host_api.v1"},
+             "memory_v2" => %{"extensions" => ["hermes_capture.v1", "openclaw_capture.v1"]}
+           }
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:backplane_host_agent, key)

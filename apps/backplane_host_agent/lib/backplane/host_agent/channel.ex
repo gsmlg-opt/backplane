@@ -3,8 +3,6 @@ defmodule Backplane.HostAgent.Channel do
   Thin wrapper around phoenix_socket_client for host-agent channel operations.
   """
 
-  alias Backplane.HostAgent.Memory.{Edge.Protection, Mirror}
-
   @doc "Starts the Phoenix socket connection for a host-agent config."
   def start_socket(config) do
     headers = [{"X-Backplane-Host-Token", Map.fetch!(config, :token)}]
@@ -82,50 +80,7 @@ defmodule Backplane.HostAgent.Channel do
   defp join_payload(%{memory: %{enabled: false}}), do: %{}
 
   defp join_payload(_config) do
-    case edge_offer() do
-      {:ok, offer} ->
-        Map.put(
-          %{},
-          "memory_v2",
-          Map.put(offer, "extensions", [
-            "memory_access.v1",
-            "memory_commands.v2",
-            "memory_sources.v1",
-            "hermes_capture.v1",
-            "openclaw_source.v1",
-            "openclaw_capture.v1"
-          ])
-        )
-
-      :disabled ->
-        Map.put(%{}, "memory_v2", %{
-          "offers" => ["host_memory.v2"],
-          "partitions" => [],
-          "max_frame_bytes" => 524_288,
-          "extensions" => [
-            "memory_access.v1",
-            "memory_commands.v2",
-            "memory_sources.v1",
-            "hermes_capture.v1",
-            "openclaw_source.v1",
-            "openclaw_capture.v1"
-          ]
-        })
-    end
-  end
-
-  defp edge_offer do
-    config = Application.get_env(:backplane_host_agent, :memory_host_sync, %{})
-    mirror_module = Application.get_env(:backplane_host_agent, :edge_mirror_module, Mirror)
-
-    if Protection.plaintext_development?(config) do
-      case mirror_module.offer(config: config) do
-        {:ok, %{"offers" => ["host_memory.v2"], "partitions" => _} = offer} -> {:ok, offer}
-        _ -> :disabled
-      end
-    else
-      :disabled
-    end
+    %{"memory_v2" => %{"extensions" => ["hermes_capture.v1", "openclaw_capture.v1"]}}
   end
 
   @doc "Pushes an event through the joined host-agent channel."

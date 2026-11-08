@@ -4,13 +4,8 @@ defmodule Mix.Tasks.Agent.RunTest do
   alias Mix.Tasks.Agent.Run, as: AgentRun
 
   defmodule FakeMemoryProxy do
-    def set_config(config) do
-      send(owner(), {:set_config, config})
-      :ok
-    end
-
-    def set_connection(connection, config) do
-      send(owner(), {:set_connection, connection, config})
+    def set_connection(connection) do
+      send(owner(), {:set_connection, connection})
       :ok
     end
 
@@ -107,8 +102,6 @@ defmodule Mix.Tasks.Agent.RunTest do
                sleep_fun: fn milliseconds -> send(self(), {:sleep, milliseconds}) end
              )
 
-    assert_receive first
-    assert {:set_config, %{host_id: "host-authoritative"}} = first
     assert_receive second
 
     assert {:capture_start, %{host_id: "host-authoritative", db_path: "/tmp/capture.db"}} =
@@ -124,7 +117,7 @@ defmodule Mix.Tasks.Agent.RunTest do
     assert_receive {:sleep, 0}
     assert_receive {:connect, 2, %{host_id: "host-authoritative"}}
 
-    assert_receive {:set_connection, %{channel: channel}, %{host_id: "host-authoritative"}}
+    assert_receive {:set_connection, %{channel: channel}}
 
     assert_receive {:http_child_started, http_child}
 

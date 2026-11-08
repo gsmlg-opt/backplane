@@ -5,8 +5,6 @@ defmodule Backplane.HostAgent.AgentChannelTest do
 
   setup do
     previous_services = Application.get_env(:backplane_host_agent, :local_services)
-    previous_syncer = Application.get_env(:backplane_host_agent, :edge_syncer_module)
-    previous_edge = Application.get_env(:backplane_host_agent, :memory_host_sync)
     :persistent_term.put({__MODULE__.FakeService, :owner}, self())
     Application.put_env(:backplane_host_agent, :local_services, [__MODULE__.FakeService])
 
@@ -18,15 +16,7 @@ defmodule Backplane.HostAgent.AgentChannelTest do
       end
 
       :persistent_term.erase({__MODULE__.FakeService, :owner})
-      :persistent_term.erase({FakeSyncer, :owner})
-      restore_env(:edge_syncer_module, previous_syncer)
-      restore_env(:memory_host_sync, previous_edge)
     end)
-  end
-
-  defmodule FakeSyncer do
-    def memory_available(hint),
-      do: send(:persistent_term.get({__MODULE__, :owner}), {:wake, hint})
   end
 
   defmodule FakeService do
@@ -126,18 +116,8 @@ defmodule Backplane.HostAgent.AgentChannelTest do
     assert error =~ "invalid plugin call"
   end
 
-  test "memory_available wakes the edge syncer" do
-    :persistent_term.put({FakeSyncer, :owner}, self())
-    Application.put_env(:backplane_host_agent, :edge_syncer_module, FakeSyncer)
-
-    assert {:noreply, %{}} =
-             AgentChannel.handle_message("memory_available", %{"current_revision" => 1}, %{})
-
-    assert_received {:wake, %{"current_revision" => 1}}
-  end
-
-  test "retired facts and wipe events cannot mutate local state or emit acknowledgements" do
-    for event <- ~w(memory_facts memory_wipe) do
+  test "retired memory events cannot mutate local state or emit acknowledgements" do
+    for event <- ~w(memory_facts memory_wipe memory_available memory_access_changed) do
       assert {:noreply, %{}} = AgentChannel.handle_message(event, %{"receipt_key" => "old"}, %{})
     end
 
@@ -145,7 +125,4 @@ defmodule Backplane.HostAgent.AgentChannelTest do
     refute_received {:wipe, _, _}
     refute_received {:ack, _}
   end
-
-  defp restore_env(key, nil), do: Application.delete_env(:backplane_host_agent, key)
-  defp restore_env(key, value), do: Application.put_env(:backplane_host_agent, key, value)
 end

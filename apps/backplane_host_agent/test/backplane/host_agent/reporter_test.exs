@@ -37,28 +37,6 @@ defmodule Backplane.HostAgent.ReporterTest do
     def status(:capture_uploader), do: exit(:uploader_telemetry_unavailable)
   end
 
-  defmodule MemoryDiagnostics do
-    def snapshot(:edge) do
-      {:ok,
-       %{
-         "outbox" => %{"pending" => 2, "inflight" => 1, "retry_wait" => 3, "dead_letter" => 1},
-         "last_successful_sync" => "2026-10-20T01:00:00Z",
-         "failed_outbox" => [%{"last_error" => "provider token=never-render"}],
-         "edge" => %{
-           "status" => "available",
-           "protection_mode" => "plaintext_development",
-           "items" => 4,
-           "bytes" => 512,
-           "revision" => 8,
-           "lag" => 2,
-           "stale_age_seconds" => 7,
-           "retry_count" => 3,
-           "dead_letter_count" => 1
-         }
-       }}
-    end
-  end
-
   test "formats heartbeat payload" do
     config = %{
       machine_name: "t430",
@@ -152,38 +130,8 @@ defmodule Backplane.HostAgent.ReporterTest do
            } = payload["capture"]
   end
 
-  test "heartbeat includes content-free edge and command health" do
-    payload =
-      Reporter.heartbeat(%{
-        machine_name: "t430",
-        memory: %{diagnostics_module: MemoryDiagnostics, diagnostics_opts: :edge}
-      })
-
-    assert %{
-             "protection_mode" => "plaintext_development",
-             "items" => 4,
-             "bytes" => 512,
-             "revision" => 8,
-             "lag" => 2,
-             "stale_age_seconds" => 7,
-             "retry_count" => 3,
-             "dead_letter_count" => 1
-           } = payload["memory"]
-
-    assert payload["memory"]["pending_commands"] == 6
-    assert payload["memory"]["failed_commands"] == 1
-    assert payload["memory"]["last_successful_sync"] == "2026-10-20T01:00:00Z"
-    refute inspect(payload["memory"]) =~ "never-render"
-    refute inspect(payload["memory"]) =~ "last_error"
-    refute inspect(payload["memory"]) =~ "content"
-  end
-
-  test "unavailable memory measurements remain unavailable" do
-    payload =
-      Reporter.heartbeat(%{
-        machine_name: "report-test",
-        memory: %{diagnostics_module: __MODULE__}
-      })
+  test "memory measurements are reported as unavailable" do
+    payload = Reporter.heartbeat(%{machine_name: "report-test", memory: %{enabled: true}})
 
     for key <- ~w(items bytes revision pending_commands failed_commands last_successful_sync) do
       assert payload["memory"][key] == nil
@@ -192,7 +140,7 @@ defmodule Backplane.HostAgent.ReporterTest do
     assert payload["memory"]["status"] == "unavailable"
   end
 
-  test "config reports only allowlisted local settings and worker negotiation" do
+  test "config reports only allowlisted local settings" do
     report =
       Reporter.config_report(
         %{
@@ -203,23 +151,12 @@ defmodule Backplane.HostAgent.ReporterTest do
         },
         %{
           local_settings_applied_at: "2026-10-20T01:00:00Z",
-          memory_negotiation_report: %{
-            "selected" => "host_memory.v2",
-            "applied_at" => "2026-10-20T01:00:01Z",
-            "partitions" => [
-              %{
-                "memory_space_id" => "30000000-0000-0000-0000-000000000013",
-                "scope" => "private",
-                "namespace" => "private"
-              }
-            ],
-            "token" => "hidden-negotiation-token"
-          }
+          memory_negotiation_report: %{"token" => "hidden-negotiation-token"}
         }
       )
 
     assert report["local_settings_applied_at"] == "2026-10-20T01:00:00Z"
-    assert report["memory_negotiation"]["selected"] == "host_memory.v2"
+    refute Map.has_key?(report, "memory_negotiation")
     assert report["agent"]["token"] == "REDACTED"
     refute inspect(report) =~ "hidden-"
     refute inspect(report) =~ "diagnostics_module"

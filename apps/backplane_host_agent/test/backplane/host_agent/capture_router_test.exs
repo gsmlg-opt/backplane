@@ -1,7 +1,6 @@
 defmodule Backplane.HostAgent.CaptureRouterTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.RecallCache
   alias Backplane.HostAgent.Memory.Spool.Turso, as: Spool
   alias Backplane.HostAgent.MemoryRouter
 
@@ -27,22 +26,6 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     def append(_spool, _envelope), do: {:error, :disk_full}
   end
 
-  defmodule LifecycleProxy do
-    def call("lifecycle_context", args, opts) do
-      owner = :persistent_term.get({__MODULE__, :owner})
-      send(owner, {:lifecycle_context, args, opts})
-
-      case :persistent_term.get({__MODULE__, :result}) do
-        {:sleep, milliseconds, result} ->
-          Process.sleep(milliseconds)
-          result
-
-        result ->
-          result
-      end
-    end
-  end
-
   setup %{tmp_dir: dir} do
     spool =
       start_supervised!(
@@ -52,32 +35,19 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
          id: {:capture_router_spool, System.unique_integer([:positive])}}
       )
 
-    cache =
-      start_supervised!(
-        {RecallCache,
-         name: nil, max_entries: 8, max_bytes: 100_000, ttl_ms: 60_000, id: make_ref()}
-      )
-
     runtime = %{
       host_id: "trusted-host",
       spool: spool,
-      spool_module: Spool,
-      recall_cache: cache,
-      memory_proxy_module: LifecycleProxy,
-      config: %{inject_context: false, context_timeout_ms: 100}
+      spool_module: Spool
     }
 
     Application.put_env(:backplane_host_agent, :capture_runtime, runtime)
-    :persistent_term.put({LifecycleProxy, :owner}, self())
-    :persistent_term.put({LifecycleProxy, :result}, {:error, :not_connected})
 
     on_exit(fn ->
       Application.delete_env(:backplane_host_agent, :capture_runtime)
-      :persistent_term.erase({LifecycleProxy, :owner})
-      :persistent_term.erase({LifecycleProxy, :result})
     end)
 
-    {:ok, spool: spool, cache: cache}
+    {:ok, spool: spool}
   end
 
   test "accepts and durably maps all ten hooks", %{spool: spool} do
@@ -176,150 +146,6 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     assert %{status: 400} = request.(["bad-id"])
   end
 
-  test "durably captures before returning live lifecycle context", %{spool: spool} do
-    enable_context(100)
-
-    :persistent_term.put(
-      {LifecycleProxy, :result},
-      {:ok, live_context()}
-    )
-
-    response = post_hook("claude_code", "session-start", fixture("session-start"))
-    assert response.status == 202
-
-    assert %{"lifecycle_context" => %{"context" => "remember this", "cached" => false}} =
-             Jason.decode!(response.resp_body)
-
-    assert_receive {:lifecycle_context,
-                    %{
-                      "kind" => "session_start",
-                      "session_id" => "session-1",
-                      "project" => "/workspace/backplane"
-                    }, opts}
-
-    assert opts[:agent_id] == "claude-main"
-    assert opts[:timeout] == 100
-    assert %{pending_depth: 1} = Spool.stats(spool)
-  end
-
-  test "disabled capture context never calls the hub" do
-    assert %{status: 202} = post_hook("claude_code", "session-start", fixture("session-start"))
-    refute_receive {:lifecycle_context, _, _}
-  end
-
-  test "timeout stays bounded, returns no context, and leaves the event spooled", %{spool: spool} do
-    enable_context(35)
-    :persistent_term.put({LifecycleProxy, :result}, {:sleep, 500, {:ok, live_context()}})
-
-    started = System.monotonic_time(:millisecond)
-    response = post_hook("claude_code", "pre-compact", fixture("pre-compact"))
-    elapsed = System.monotonic_time(:millisecond) - started
-
-    assert response.status == 202
-    refute Map.has_key?(Jason.decode!(response.resp_body), "lifecycle_context")
-    assert elapsed < 200
-    assert %{pending_depth: 1} = Spool.stats(spool)
-  end
-
-  test "transport unavailability uses a kind-isolated visibly stale cache", %{cache: cache} do
-    enable_context(100)
-
-    assert :ok =
-             RecallCache.put(
-               cache,
-               {"session_start", "/workspace/backplane", "claude-main"},
-               live_context()
-             )
-
-    :persistent_term.put({LifecycleProxy, :result}, {:error, :not_connected})
-    response = post_hook("claude_code", "session-start", fixture("session-start"))
-
-    assert %{
-             "lifecycle_context" => %{
-               "context" => context,
-               "source_revision" => "sha256:live",
-               "cached" => true,
-               "stale" => true,
-               "age_seconds" => age
-             }
-           } = Jason.decode!(response.resp_body)
-
-    assert context =~ "Cached memory context (stale)"
-    assert context =~ "sha256:live"
-    assert is_integer(age)
-
-    new_session = fixture("session-start") |> Map.put("session_id", "session-2")
-    response = post_hook("claude_code", "session-start", new_session)
-    assert get_in(Jason.decode!(response.resp_body), ["lifecycle_context", "cached"]) == true
-
-    response = post_hook("claude_code", "pre-compact", fixture("pre-compact"))
-    refute Map.has_key?(Jason.decode!(response.resp_body), "lifecycle_context")
-  end
-
-  test "semantic or authorization errors never use cached context", %{cache: cache} do
-    enable_context(100)
-    key = {"session_start", "/workspace/backplane", "claude-main"}
-    assert :ok = RecallCache.put(cache, key, live_context())
-
-    for error <- [%{"code" => "unauthorized"}, {:validation, :project}] do
-      :persistent_term.put({LifecycleProxy, :result}, {:error, error})
-      response = post_hook("claude_code", "session-start", fixture("session-start"))
-      refute Map.has_key?(Jason.decode!(response.resp_body), "lifecycle_context")
-    end
-  end
-
-  test "only whitelisted channel transport exits use cached context", %{cache: cache} do
-    enable_context(100)
-    key = {"session_start", "/workspace/backplane", "claude-main"}
-    assert :ok = RecallCache.put(cache, key, live_context())
-
-    for error <- [
-          {:channel_exit, :unauthorized},
-          {:channel_exit, {:shutdown, :unauthorized}},
-          {:channel_exit, :unknown_failure}
-        ] do
-      :persistent_term.put({LifecycleProxy, :result}, {:error, error})
-      response = post_hook("claude_code", "session-start", fixture("session-start"))
-      refute Map.has_key?(Jason.decode!(response.resp_body), "lifecycle_context")
-    end
-
-    :persistent_term.put({LifecycleProxy, :result}, {:error, {:channel_exit, :closed}})
-    response = post_hook("claude_code", "session-start", fixture("session-start"))
-
-    assert get_in(Jason.decode!(response.resp_body), ["lifecycle_context", "cached"]) == true
-  end
-
-  test "incomplete, malformed, expired, or incoherent live metadata is never injected or cached",
-       %{cache: cache} do
-    enable_context(100)
-    now = DateTime.utc_now()
-
-    invalid_results = [
-      Map.delete(live_context(), "source_revision"),
-      %{live_context() | "generated_at" => "not-a-timestamp"},
-      %{
-        live_context()
-        | "generated_at" => DateTime.to_iso8601(now),
-          "expires_at" => DateTime.to_iso8601(now)
-      },
-      %{
-        live_context()
-        | "generated_at" => now |> DateTime.add(-120, :second) |> DateTime.to_iso8601(),
-          "expires_at" => now |> DateTime.add(-60, :second) |> DateTime.to_iso8601()
-      }
-    ]
-
-    Enum.each(invalid_results, fn result ->
-      :persistent_term.put({LifecycleProxy, :result}, {:ok, result})
-      response = post_hook("claude_code", "session-start", fixture("session-start"))
-      assert response.status == 202
-      refute Map.has_key?(Jason.decode!(response.resp_body), "lifecycle_context")
-    end)
-
-    assert :miss =
-             RecallCache.get(cache, {"session_start", "/workspace/backplane", "claude-main"})
-  end
-
   test "does not collapse identical hook calls that have no source identity", %{spool: spool} do
     body = fixture("user-prompt-submit") |> Map.drop(["source_event_id", "tool_use_id"])
 
@@ -383,30 +209,6 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
       "cwd" => "/workspace/backplane",
       "tool_use_id" => "tool-1",
       "prompt" => "capture this prompt"
-    }
-  end
-
-  defp enable_context(timeout) do
-    runtime = Application.fetch_env!(:backplane_host_agent, :capture_runtime)
-
-    Application.put_env(
-      :backplane_host_agent,
-      :capture_runtime,
-      put_in(runtime, [:config], %{inject_context: true, context_timeout_ms: timeout})
-    )
-  end
-
-  defp live_context do
-    now = DateTime.utc_now()
-
-    %{
-      "kind" => "session_start",
-      "context" => "remember this",
-      "source_revision" => "sha256:live",
-      "generated_at" => DateTime.to_iso8601(now),
-      "expires_at" => now |> DateTime.add(900, :second) |> DateTime.to_iso8601(),
-      "cached" => false,
-      "stale" => false
     }
   end
 end

@@ -5,7 +5,7 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
 
   use Supervisor
 
-  alias Backplane.HostAgent.Memory.{Access, Migrator, Pruner, Store, Syncer}
+  alias Backplane.HostAgent.Memory.{Migrator, Store}
 
   @default_pool_size 1
   @default_busy_timeout_ms 5_000
@@ -29,30 +29,7 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
        name: store_name,
        pool_size: Map.get(opts, :pool_size, @default_pool_size),
        busy_timeout_ms: Map.get(opts, :busy_timeout_ms, @default_busy_timeout_ms)},
-      {Migrator, store: store_name},
-      {Access,
-       store: store_name,
-       name: Map.get(opts, :access_name, Access),
-       edge_store:
-         get_in(opts, [:host_sync, :store_name]) || Backplane.HostAgent.Memory.Edge.Store,
-       edge_config: Map.get(opts, :host_sync, %{})},
-      {Syncer,
-       store: store_name,
-       access_server: Map.get(opts, :access_name, Access),
-       config: opts,
-       name: Map.fetch!(opts, :syncer_name),
-       interval_ms: Map.get(opts, :sync_interval_ms),
-       batch_size: Map.get(opts, :sync_batch_size),
-       max_attempts: Map.get(opts, :max_attempts)},
-      {Pruner, store: store_name, config: opts, name: Map.fetch!(opts, :pruner_name)},
-      {Backplane.HostAgent.Memory.Edge.Supervisor,
-       opts
-       |> Map.get(:host_sync, %{})
-       |> Map.update(
-         :reserved_db_paths,
-         [Map.fetch!(opts, :db_path)],
-         &[Map.fetch!(opts, :db_path) | &1]
-       )}
+      {Migrator, store: store_name}
     ]
 
     Elixir.Supervisor.init(children, strategy: :one_for_one)
@@ -61,12 +38,6 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
   defp normalize(memory_config) do
     memory_config
     |> Map.put_new(:store_name, Store)
-    |> Map.put_new_lazy(:syncer_name, fn ->
-      :"#{Map.get(memory_config, :store_name, Store)}_syncer"
-    end)
-    |> Map.put_new_lazy(:pruner_name, fn ->
-      :"#{Map.get(memory_config, :store_name, Store)}_pruner"
-    end)
     |> Map.put_new(:pool_size, @default_pool_size)
     |> Map.put_new(:busy_timeout_ms, @default_busy_timeout_ms)
   end

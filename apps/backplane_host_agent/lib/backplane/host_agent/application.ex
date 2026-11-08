@@ -14,16 +14,14 @@ defmodule Backplane.HostAgent.Application do
   end
 
   def child_specs do
-    import_supervisor = Backplane.HostAgent.Memory.ImportSupervisor
-
     api_children = [
       {DynamicSupervisor,
        strategy: :one_for_one, name: Backplane.HostAgent.ApiForwarderSupervisor}
     ]
 
     case Application.get_env(:backplane_host_agent, :start_on_application, true) do
-      true -> api_children ++ [import_supervisor, Backplane.HostAgent.Worker]
-      false -> api_children ++ [import_supervisor]
+      true -> api_children ++ [Backplane.HostAgent.Worker]
+      false -> api_children
     end
   end
 

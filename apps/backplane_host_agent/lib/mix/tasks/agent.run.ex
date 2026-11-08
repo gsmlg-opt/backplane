@@ -125,14 +125,13 @@ defmodule Mix.Tasks.Agent.Run do
     trace_supervisor_module = Keyword.get(opts, :trace_supervisor_module, TraceSupervisor)
     http_server_module = Keyword.get(opts, :http_server_module, HttpServer)
 
-    :ok = memory_proxy_module.set_config(config)
     capture_supervisor = maybe_start_capture(config, capture_supervisor_module)
     memory_supervisor = maybe_start_memory(config, memory_supervisor_module)
     trace_supervisor = maybe_start_trace(config, trace_supervisor_module)
     http_supervisor = maybe_start_http_server(config, http_server_module)
 
     connection = connect_with_retry(config, opts)
-    :ok = memory_proxy_module.set_connection(connection, config)
+    :ok = memory_proxy_module.set_connection(connection)
 
     {:ok,
      %{
