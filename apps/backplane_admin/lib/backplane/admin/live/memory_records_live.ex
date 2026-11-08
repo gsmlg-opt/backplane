@@ -53,9 +53,6 @@ defmodule Backplane.Admin.MemoryRecordsLive do
 
         {:error, :not_found} ->
           {:noreply, put_flash(socket, :error, "Record not found")}
-
-        {:error, %Ecto.Changeset{}} ->
-          {:noreply, put_flash(socket, :error, "Record could not be forgotten")}
       end
     end
   end
