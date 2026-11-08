@@ -11,8 +11,6 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
 
   @impl Styx.Worker
   def perform(%Styx.Job{} = job) do
-    job = convert_legacy_args(job)
-
     Backplane.Memory.PipelineTelemetry.span("projection.repair", job.args, fn ->
       rebuild =
         if host_session_args?(job.args),
@@ -225,17 +223,6 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   end
 
   defp non_empty_binary?(value), do: is_binary(value) and String.trim(value) != ""
-
-  # Pending pre-frontier jobs carry an event id beside the host session; the frontier owns them.
-  defp convert_legacy_args(
-         %Styx.Job{
-           args: %{"event_id" => event_id, "host_id" => host_id, "session_id" => session_id}
-         } = job
-       )
-       when is_binary(event_id) and is_binary(host_id) and is_binary(session_id),
-       do: %{job | args: %{"host_id" => host_id, "session_id" => session_id}}
-
-  defp convert_legacy_args(job), do: job
 
   defp host_session_args?(%{"host_id" => host_id, "session_id" => session_id}),
     do: non_empty_binary?(host_id) and non_empty_binary?(session_id)

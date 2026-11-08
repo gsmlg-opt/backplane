@@ -583,7 +583,7 @@ defmodule Backplane.MCP.Dispatch do
   end
 
   defp memory_service,
-    do: Application.get_env(:backplane_mcp, :memory_service, Backplane.Memory.Service)
+    do: Application.get_env(:backplane_mcp, :memory_service, Backplane.Memory.Tools)
 
   defp list_prompts(auth) do
     managed = PromptRegistry.list()

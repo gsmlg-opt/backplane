@@ -3,7 +3,7 @@ defmodule Backplane.Memory.EventNotifierTest do
 
   import Ecto.Query
 
-  alias Backplane.Memory.{EventNotifier, Operations}
+  alias Backplane.Memory.EventNotifier
   alias Backplane.Memory.Events.{Event, Stream}
   alias Ecto.Adapters.SQL.Sandbox
 
@@ -11,21 +11,20 @@ defmodule Backplane.Memory.EventNotifierTest do
     def append(attrs, opts \\ []),
       do:
         Backplane.Memory.Events.Store.append(
-          Backplane.Memory.EventTestPartition.attrs(attrs),
+          attrs,
           opts
         )
 
     def append_batch(attrs_list, opts \\ []),
       do:
         Backplane.Memory.Events.Store.append_batch(
-          Backplane.Memory.EventTestPartition.attrs_list(attrs_list),
+          attrs_list,
           opts
         )
   end
 
   setup_all do
     :ok = Sandbox.mode(repo(), :auto)
-    Backplane.Memory.EventTestPartition.ensure!()
     on_exit(fn -> :ok = Sandbox.mode(repo(), :manual) end)
     :ok
   end
@@ -194,7 +193,7 @@ defmodule Backplane.Memory.EventNotifierTest do
         event
       end)
 
-    assert {:ok, %{events: events}} = Operations.timeline(%{"project" => project})
+    events = unboxed(fn -> repo().all(from(e in Event, where: e.project == ^project)) end)
     assert Enum.any?(events, &(&1.id == event.id))
     assert_receive {:memory_event_inserted, %{id: id}}, 1_000
     assert id == event.id

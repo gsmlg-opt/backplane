@@ -4,13 +4,11 @@ defmodule Backplane.Memory.Events.PreparationTest do
   defmodule Preparation do
     def prepare(attrs) do
       attrs
-      |> Backplane.Memory.EventTestPartition.attrs()
       |> Backplane.Memory.Events.Preparation.prepare()
     end
 
     def prepare_batch(attrs_list) do
       attrs_list
-      |> Backplane.Memory.EventTestPartition.attrs_list()
       |> Backplane.Memory.Events.Preparation.prepare_batch()
     end
   end

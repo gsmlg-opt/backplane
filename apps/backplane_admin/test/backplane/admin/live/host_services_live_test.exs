@@ -10,8 +10,7 @@ defmodule Backplane.Admin.HostServicesLiveTest do
   setup do
     {:ok, host} =
       Hosts.create_agent(%{
-        name: "api-services-#{System.unique_integer([:positive])}",
-        memory_scope: "host-api-services"
+        name: "api-services-#{System.unique_integer([:positive])}"
       })
 
     %{host: host}
@@ -74,8 +73,7 @@ defmodule Backplane.Admin.HostServicesLiveTest do
 
     {:ok, other_host} =
       Hosts.create_agent(%{
-        name: "other-api-host-#{System.unique_integer([:positive])}",
-        memory_scope: "other-api-host"
+        name: "other-api-host-#{System.unique_integer([:positive])}"
       })
 
     {:ok, service} =

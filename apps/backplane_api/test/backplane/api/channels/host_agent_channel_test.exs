@@ -360,7 +360,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
           module: StubMcpTool
         })
 
-      for name <- ["memory::recall", "memory::remember"] do
+      for name <- ["memory::search", "memory::remember"] do
         ToolRegistry.deregister_native(name)
 
         :ok =
@@ -374,7 +374,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       end
 
       on_exit(fn ->
-        ToolRegistry.deregister_native("memory::recall")
+        ToolRegistry.deregister_native("memory::search")
         ToolRegistry.deregister_native("memory::remember")
       end)
 
@@ -400,7 +400,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       ref = push(socket, "mcp_tools_list", %{})
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"tools" => recall_tools}})
       recall_names = MapSet.new(recall_tools, & &1["name"])
-      assert MapSet.member?(recall_names, "memory::recall")
+      assert MapSet.member?(recall_names, "memory::search")
       refute MapSet.member?(recall_names, "memory::remember")
 
       Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.import"])
@@ -409,7 +409,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert_reply(ref, :ok, %{"ok" => true, "result" => %{"tools" => import_tools}})
       import_names = MapSet.new(import_tools, & &1["name"])
       assert MapSet.member?(import_names, "memory::remember")
-      refute MapSet.member?(import_names, "memory::recall")
+      refute MapSet.member?(import_names, "memory::search")
 
       Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.capture"])
 

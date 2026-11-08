@@ -1,5 +1,8 @@
 # Memory local development runbook
 
+> **Historical.** The `scripts/memory_local_*` harness and its tests were removed in the
+> memory simplification (memory spaces/partitions retired); the commands below no longer run.
+
 Status: **local L01–L18 accepted; v1.10.28 released; all required release gates passed**.
 The evidence levels and retained failures are in [acceptance](local-e2e-acceptance.md).
 

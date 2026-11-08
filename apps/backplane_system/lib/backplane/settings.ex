@@ -28,16 +28,6 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable API account credit and usage fetching"
     },
-    "memory.host_sync.enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable host memory delivery"
-    },
-    "memory.host_sync_max_item_bytes" => %{
-      value: 262_144,
-      type: "integer",
-      desc: "Maximum encoded edge memory item bytes (1..262144)"
-    },
     # LLM auto model target preferences
     "llm.auto_models.fast.targets" => %{
       value: [],
@@ -101,105 +91,7 @@ defmodule Backplane.Settings do
       type: "boolean",
       desc: "Enable the managed Skills MCP service"
     },
-    # Memory background processing controls
-    "memory.pipeline.enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable background memory summaries and extraction"
-    },
-    "memory.window_summaries.enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable Memory window summaries"
-    },
-    "memory.session_summary.enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable Memory session summary generation"
-    },
-    "memory.fact_extraction.enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable Memory fact extraction"
-    },
-    "memory.procedure_extraction.enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable Memory procedure extraction"
-    },
-    "memory.relation_classifier.enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable automatic Memory relation classification"
-    },
-    "memory.recall.enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable memory recall"
-    },
-    "memory.recall_trace_enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Persist privacy-filtered Recall traces"
-    },
-    "memory.recall_trace_retention_days" => %{
-      value: 30,
-      type: "integer",
-      desc: "Recall trace retention in days (allowed range 1..3660)"
-    },
-    "memory.recall_rrf_k" => %{
-      value: 60,
-      type: "integer",
-      desc: "Weighted reciprocal-rank-fusion constant (allowed range 1..1000)"
-    },
-    "memory.recall_channel_weights" => %{
-      value: %{"fts" => 1.0, "vector" => 1.0, "graph" => 1.0},
-      type: "json",
-      desc: "Recall FTS, vector, and graph fusion weights (each allowed range 0..100)"
-    },
-    "memory.recall_channel_limits" => %{
-      value: %{"fts" => 50, "vector" => 50, "graph" => 50},
-      type: "json",
-      desc: "Recall per-channel candidate limits (each allowed range 1..500)"
-    },
-    "memory.recall_max_per_session" => %{
-      value: 3,
-      type: "integer",
-      desc: "Recall diversity maximum per source session (allowed range 1..100)"
-    },
-    "memory.recall_relevance_vector_min" => %{
-      value: 1.0,
-      type: "float",
-      desc:
-        "Minimum raw cosine similarity for the selected embedding model (allowed range -1..1); resets to 1 on model change"
-    },
-    "memory.recall_relevance_reranker_model" => %{
-      value: nil,
-      type: "string",
-      desc:
-        "Literal provider/raw_model reranker route with an operator-calibrated cutoff; aliases and unknown models use lexical fallback"
-    },
-    "memory.recall_relevance_reranker_min" => %{
-      value: 1.0,
-      type: "float",
-      desc:
-        "Calibrated minimum raw reranker relevance (allowed range 0..1); inert without calibrated model"
-    },
-    "memory.recall_token_budget" => %{
-      value: 4_096,
-      type: "integer",
-      desc: "Default Recall context token budget (allowed range 1..100000)"
-    },
-    "memory.recall_reranker_enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable optional Recall top-K reranking"
-    },
-    "memory.recall_reranker_top_k" => %{
-      value: 20,
-      type: "integer",
-      desc: "Maximum Recall candidates sent to the reranker (allowed range 1..500)"
-    },
+    # Memory capture controls
     "memory.event_gap_grace_seconds" => %{
       value: 60,
       type: "integer",
@@ -234,87 +126,6 @@ defmodule Backplane.Settings do
       value: 100,
       type: "integer",
       desc: "Maximum stale-session candidates per fallback sweep (allowed range 1..500)"
-    },
-    "memory.activity_retention_days" => %{
-      value: 730,
-      type: "integer",
-      desc: "Durable memory activity retention in days (allowed range 1..3660)"
-    },
-    "memory.replay_enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable canonical replay reads"
-    },
-    "memory.replay_import_enabled" => %{
-      value: false,
-      type: "boolean",
-      desc: "Allow trusted host-local replay import dispatch"
-    },
-    "memory.replay_max_events" => %{
-      value: 1_000,
-      type: "integer",
-      desc: "Maximum replay events per bounded load (1..10000)"
-    },
-    "memory.replay_import_max_files" => %{
-      value: 200,
-      type: "integer",
-      desc: "Maximum files per host-local replay import (1..1000)"
-    },
-    "memory.replay_import_max_entries" => %{
-      value: 100_000,
-      type: "integer",
-      desc: "Maximum entries per host-local replay import (1..1000000)"
-    },
-    "memory.replay_import_max_bytes" => %{
-      value: 1_073_741_824,
-      type: "integer",
-      desc: "Maximum bytes per host-local replay import (1..1073741824)"
-    },
-    "memory.lesson_auto_extract" => %{
-      value: true,
-      type: "boolean",
-      desc: "Produce automatic lesson candidates when an LLM is configured"
-    },
-    "memory.lesson_auto_promote" => %{
-      value: false,
-      type: "boolean",
-      desc: "Enable threshold-gated automatic lesson promotion"
-    },
-    "memory.lesson_promote_confidence" => %{
-      value: 0.85,
-      type: "float",
-      desc: "Minimum automatic lesson promotion confidence (allowed range 0..1)"
-    },
-    "memory.lesson_promote_sources" => %{
-      value: 2,
-      type: "integer",
-      desc:
-        "Minimum independent evidence and source diversity for lesson promotion (allowed range 1..100)"
-    },
-    "memory.lesson_decay_enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Apply bounded lesson retrieval-utility decay"
-    },
-    "memory.lesson_decay_archive_days" => %{
-      value: 180,
-      type: "integer",
-      desc: "Archive lessons inactive for this many days (allowed range 1..3660)"
-    },
-    "memory.crystals_enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Generate crystals when an LLM is configured"
-    },
-    "memory.crystal_session_enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable session crystallization"
-    },
-    "memory.crystal_action_enabled" => %{
-      value: true,
-      type: "boolean",
-      desc: "Enable action-chain crystallization"
     },
     # Observability v2 policy (PR-04)
     "observability.llm_proxy.enabled" => %{
@@ -529,60 +340,8 @@ defmodule Backplane.Settings do
 
   # --- Private ---
 
-  defp persist_setting("memory.embed_model" = key, value, state) do
-    if resolved_embedding_model(get(key)) == resolved_embedding_model(value) do
-      persist_single_setting(key, value, state)
-    else
-      updates = [{key, value}, {"memory.recall_relevance_vector_min", 1.0}]
-
-      case persist_embedding_selection(updates) do
-        {:ok, _} ->
-          :ets.insert(@table, updates)
-
-          for {changed_key, changed_value} <- updates do
-            Phoenix.PubSub.broadcast(
-              @pubsub,
-              @topic,
-              {:setting_changed, changed_key, changed_value}
-            )
-          end
-
-          {:reply, :ok, state}
-
-        {:error, reason} ->
-          {:reply, {:error, reason}, state}
-      end
-    end
-  end
-
   defp persist_setting(key, value, state) do
     persist_single_setting(key, value, state)
-  end
-
-  defp persist_embedding_selection(updates) do
-    Repo.transaction(fn ->
-      Enum.each(updates, fn {key, value} ->
-        case write_setting(key, value) do
-          {:ok, _} -> :ok
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
-    end)
-  rescue
-    error in [Postgrex.Error, Ecto.ConstraintError] -> {:error, error}
-  end
-
-  defp resolved_embedding_model(value) do
-    case value || Application.get_env(:backplane_memory, :embed_model) do
-      model when is_binary(model) ->
-        case String.trim(model) do
-          "" -> nil
-          normalized -> normalized
-        end
-
-      _ ->
-        nil
-    end
   end
 
   defp persist_single_setting(key, value, state) do

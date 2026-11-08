@@ -25,7 +25,7 @@ defmodule Backplane.Memory.QueryLogPrivacyTest do
       capture_log([level: :debug], fn ->
         assert %{num_rows: 0} =
                  Repo.query!(
-                   "SELECT $1::text, $2::text, $3::text, $4::text FROM bpm_memories LIMIT 0",
+                   "SELECT $1::text, $2::text, $3::text, $4::text FROM memory_records LIMIT 0",
                    memory_markers
                  )
 

@@ -72,7 +72,7 @@ defmodule Backplane.Memory.Embedding.Client do
   end
 
   defp request(req_opts, count) do
-    case Backplane.Memory.LLM.with_capture_suppressed(fn -> Req.post(req_opts) end) do
+    case Req.post(req_opts) do
       {:ok, %{status: 200, body: %{"data" => data}}} ->
         validate_vectors(data, count)
 

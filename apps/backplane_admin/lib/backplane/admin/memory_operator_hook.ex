@@ -5,15 +5,7 @@ defmodule Backplane.Admin.MemoryOperatorHook do
   import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1]
 
   @selection ~w(memory_space_id host client scope namespace project repository)
-  @refresh_views [
-    Backplane.Admin.MemoryMemoriesLive,
-    Backplane.Admin.MemorySessionsLive,
-    Backplane.Admin.MemoryLessonsLive,
-    Backplane.Admin.MemoryCrystalsLive,
-    Backplane.Admin.MemoryProfileLive,
-    Backplane.Admin.MemoryGraphLive,
-    Backplane.Admin.MemoryPipelineLive
-  ]
+  @refresh_views [Backplane.Admin.MemorySessionsLive]
 
   def on_mount(:default, _params, _session, socket) do
     timer = if connected?(socket) and socket.view in @refresh_views, do: schedule()
@@ -53,17 +45,6 @@ defmodule Backplane.Admin.MemoryOperatorHook do
   end
 
   defp refresh(_message, socket), do: {:cont, socket}
-
-  defp refresh_view(%{view: Backplane.Admin.MemoryPipelineLive} = socket) do
-    {:noreply, refreshed} =
-      Backplane.Admin.MemoryPipelineLive.handle_params(
-        socket.assigns.memory_route_params,
-        socket.assigns.memory_route_uri,
-        socket
-      )
-
-    assign(refreshed, :memory_refresh_error, nil)
-  end
 
   defp refresh_view(%{assigns: %{memory_route_uri: nil}} = socket), do: socket
 

@@ -3,17 +3,7 @@ defmodule Backplane.Memory.Application do
 
   use Application
 
-  require Logger
-
-  alias Backplane.Memory.{
-    ActivityNotifier,
-    EventNotifier,
-    GeneratedSkills,
-    QueryLogFilter,
-    ReplayNotifier,
-    Service,
-    ServiceRegistration
-  }
+  alias Backplane.Memory.{EventNotifier, QueryLogFilter, ServiceRegistration, Tools}
 
   alias Backplane.Registry.{PromptRegistry, ToolRegistry}
 
@@ -22,17 +12,11 @@ defmodule Backplane.Memory.Application do
     :ok = QueryLogFilter.install()
 
     children = [
-      {Task.Supervisor, name: Backplane.Memory.Recall.TaskSupervisor},
-      {Task.Supervisor, name: Backplane.Memory.Crystal.TaskSupervisor},
       Supervisor.child_spec(
         {Postgrex.Notifications, EventNotifier.connection_options()},
         id: Backplane.Memory.EventNotifications
       ),
       EventNotifier,
-      Backplane.Memory.EdgeSync.Notifier,
-      ActivityNotifier,
-      ReplayNotifier,
-      GeneratedSkills,
       ServiceRegistration
     ]
 
@@ -40,7 +24,6 @@ defmodule Backplane.Memory.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
-        reconcile_generated_skills()
         {:ok, pid}
 
       error ->
@@ -54,23 +37,13 @@ defmodule Backplane.Memory.Application do
     QueryLogFilter.uninstall()
 
     if Process.whereis(ToolRegistry) do
-      ToolRegistry.deregister_managed(Service.prefix())
+      ToolRegistry.deregister_managed(Tools.prefix())
     end
 
     if Process.whereis(PromptRegistry) do
-      PromptRegistry.deregister_managed(Service.prefix())
+      PromptRegistry.deregister_managed(Tools.prefix())
     end
 
     :ok
-  end
-
-  defp reconcile_generated_skills do
-    case GeneratedSkills.reconcile() do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Memory generated skill reconcile failed", reason: inspect(reason))
-    end
   end
 end

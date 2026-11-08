@@ -3,8 +3,8 @@ defmodule Backplane.Memory.Ingest do
   Authenticated, partial-ACK ingestion of canonical capture events.
 
   The caller must provide the authenticated host token's scopes and the channel `host_id`.
-  Every event must claim that same host. Event `agent_id`, `project`, `scope`, and
-  `client_id` are provenance supplied by the host; none of them partition the store.
+  Every event must claim that same host. Event `agent_id`, `project`, and `client_id` are
+  provenance supplied by the host; none of them partition the store.
   """
 
   @transient_reasons [:database_unavailable, :transaction_rolled_back, :timeout, :disconnected]

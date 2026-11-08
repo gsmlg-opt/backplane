@@ -63,49 +63,8 @@ defmodule Backplane.Admin.Layouts do
       :memory ->
         [
           %{label: "Overview", path: "/memory", match: :exact, icon: "brain"},
-          %{
-            label: "Observe",
-            icon: "monitor-dashboard",
-            items: [
-              %{label: "Activity", path: "/memory/activity", icon: "chart-timeline-variant"},
-              %{label: "Sessions", path: "/memory/sessions", icon: "account-clock-outline"},
-              %{label: "Timeline", path: "/memory/timeline", icon: "timeline-clock-outline"},
-              %{label: "Replay", path: "/memory/replay", icon: "play-circle-outline"}
-            ]
-          },
-          %{
-            label: "Knowledge",
-            icon: "book-open-variant",
-            items: [
-              %{label: "Memories", path: "/memory/memories", icon: "database-outline"},
-              %{label: "Lessons", path: "/memory/lessons", icon: "school-outline"},
-              %{label: "Crystals", path: "/memory/crystals", icon: "diamond-stone"},
-              %{label: "Graph", path: "/memory/graph", icon: "graph-outline"},
-              %{label: "Profile", path: "/memory/profile", icon: "card-account-details-outline"}
-            ]
-          },
-          %{
-            label: "Coordinate",
-            icon: "vector-link",
-            items: [
-              %{
-                label: "Actions",
-                path: "/memory/actions",
-                icon: "checkbox-marked-circle-auto-outline"
-              }
-            ]
-          },
-          %{
-            label: "Operate",
-            icon: "cog-outline",
-            items: [
-              %{label: "Search", path: "/memory/search", icon: "magnify"},
-              %{label: "Pipeline", path: "/memory/pipeline", icon: "pipe"},
-              %{label: "Recall Inspector", path: "/memory/recall", icon: "magnify-scan"},
-              %{label: "Audit", path: "/memory/audit", icon: "text-box-search-outline"},
-              %{label: "Config", path: "/memory/config", icon: "tune-variant"}
-            ]
-          }
+          %{label: "Sessions", path: "/memory/sessions", icon: "account-clock-outline"},
+          %{label: "Config", path: "/memory/config", icon: "tune-variant"}
         ]
 
       :plugins ->

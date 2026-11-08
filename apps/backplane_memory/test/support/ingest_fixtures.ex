@@ -1,6 +1,5 @@
 defmodule Backplane.Memory.IngestFixtures do
   alias Backplane.Memory.Ingest.EventValidator
-  alias Backplane.MemorySpaces.MemorySpace
 
   def ingest_auth_context(host_id, overrides \\ %{}) do
     Map.merge(
@@ -11,27 +10,6 @@ defmodule Backplane.Memory.IngestFixtures do
       },
       overrides
     )
-  end
-
-  def memory_space_id(host_id) do
-    digest = :crypto.hash(:md5, "test-memory-space:" <> host_id)
-    {:ok, memory_space_id} = Ecto.UUID.load(digest)
-    memory_space_id
-  end
-
-  def ensure_memory_space!(host_id) do
-    memory_space_id = memory_space_id(host_id)
-
-    {:ok, _space} =
-      %MemorySpace{}
-      |> MemorySpace.changeset(%{
-        id: memory_space_id,
-        kind: "private",
-        status: "active"
-      })
-      |> repo().insert(on_conflict: :nothing)
-
-    memory_space_id
   end
 
   def valid_event(overrides \\ %{}) do
@@ -63,5 +41,4 @@ defmodule Backplane.Memory.IngestFixtures do
     )
   end
 
-  defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 end

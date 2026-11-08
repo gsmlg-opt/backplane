@@ -22,7 +22,6 @@ defmodule Backplane.LLM.HostServicesTest do
       %{
         id: Ecto.UUID.dump!(id),
         name: "host-services-#{id}",
-        memory_scope: "host-services-#{id}",
         inserted_at: now,
         updated_at: now
       }

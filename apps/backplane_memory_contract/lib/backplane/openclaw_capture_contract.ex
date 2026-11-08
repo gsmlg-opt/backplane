@@ -1,8 +1,6 @@
 defmodule Backplane.OpenClawCaptureContract do
   @moduledoc "Pure, versioned OpenClaw evidence validation shared by host and canonical ingestion."
 
-  alias Backplane.MemorySourceContract, as: Source
-
   @protocol "openclaw_capture.v1"
   @common ~w(protocol event_id installation_id profile_id source_sequence session_id parent_session_id occurred_at captured_at agent_id cwd repository_sources run_id session_key occurrence_id input_provenance binding_fingerprint)
   @message ~w(source_revision role content completeness message_uid source_reference tool_call_uid tool_call_uids absorbed_message_uids tool_call_id author message_index)
@@ -14,6 +12,9 @@ defmodule Backplane.OpenClawCaptureContract do
   }
   @hooks %{"session-start" => "agent.session.started", "session-end" => "agent.session.ended"}
   @max_safe_integer 9_007_199_254_740_991
+  @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
+  @content_bytes 262_144
+  @page_bytes 480_000
 
   def protocol, do: @protocol
   def hooks, do: ["session-start", "message", "session-end"]
@@ -26,8 +27,8 @@ defmodule Backplane.OpenClawCaptureContract do
          true <- valid_hook?(hook, source, opts),
          true <- not reserved?(source),
          true <- safe_integers?(source),
-         {:ok, encoded} <- Source.encode(source),
-         true <- byte_size(encoded) <= Source.limits().page_bytes do
+         {:ok, encoded} <- encode(source),
+         true <- byte_size(encoded) <= @page_bytes do
       {:ok, event_type}
     else
       {:error, :unsupported_hook} = error -> error
@@ -45,8 +46,8 @@ defmodule Backplane.OpenClawCaptureContract do
   defp event_type(_, _), do: {:error, :unsupported_hook}
 
   defp valid_common?(source) do
-    source["protocol"] == @protocol and Source.uuid?(source["event_id"]) and
-      Source.uuid?(source["installation_id"]) and text?(source["profile_id"], 512) and
+    source["protocol"] == @protocol and uuid?(source["event_id"]) and
+      uuid?(source["installation_id"]) and text?(source["profile_id"], 512) and
       text?(source["session_id"], 4096) and text?(source["agent_id"], 512) and
       positive?(source["source_sequence"]) and hash?(source["binding_fingerprint"]) and
       timestamp?(source["occurred_at"]) and timestamp?(source["captured_at"]) and
@@ -61,7 +62,7 @@ defmodule Backplane.OpenClawCaptureContract do
 
   defp valid_hook?("message", source, opts) do
     Map.keys(source) -- (@common ++ @message) == [] and
-      text?(source["content"], Source.limits().content_bytes) and
+      text?(source["content"], @content_bytes) and
       text?(source["occurrence_id"], 4096) and valid_completeness?(source, opts) and
       (not Map.has_key?(source, "source_revision") or positive?(source["source_revision"])) and
       (not Map.has_key?(source, "message_index") or
@@ -129,4 +130,53 @@ defmodule Backplane.OpenClawCaptureContract do
 
   defp safe_integers?(value) when is_list(value), do: Enum.all?(value, &safe_integers?/1)
   defp safe_integers?(_), do: true
+
+  defp uuid?(value), do: is_binary(value) and Regex.match?(@uuid, value)
+
+  # Canonical JSON (sorted keys, no floats) bounds the encoded capture size.
+  defp encode(value) do
+    case canonical(value) do
+      {:ok, io} -> {:ok, IO.iodata_to_binary(io)}
+      error -> error
+    end
+  rescue
+    _ -> {:error, :not_json_safe}
+  end
+
+  defp canonical(map) when is_map(map) and not is_struct(map) do
+    if Enum.all?(Map.keys(map), &(is_binary(&1) and String.valid?(&1))) do
+      map
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.reduce_while({:ok, []}, fn {key, value}, {:ok, acc} ->
+        case canonical(value) do
+          {:ok, encoded} -> {:cont, {:ok, [[JSON.encode!(key), ?:, encoded] | acc]}}
+          error -> {:halt, error}
+        end
+      end)
+      |> wrap(?{, ?})
+    else
+      {:error, :not_json_safe}
+    end
+  end
+
+  defp canonical(list) when is_list(list) do
+    Enum.reduce_while(list, {:ok, []}, fn value, {:ok, acc} ->
+      case canonical(value) do
+        {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> wrap(?[, ?])
+  end
+
+  defp canonical(value)
+       when is_binary(value) or is_integer(value) or is_boolean(value) or is_nil(value),
+       do: {:ok, JSON.encode!(value)}
+
+  defp canonical(_), do: {:error, :not_json_safe}
+
+  defp wrap({:ok, parts}, left, right),
+    do: {:ok, [left, Enum.intersperse(Enum.reverse(parts), ?,), right]}
+
+  defp wrap(error, _, _), do: error
 end

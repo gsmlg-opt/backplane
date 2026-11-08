@@ -13,7 +13,7 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
       "source_client_id" => field(first, :source_client_id),
       "session_id" => field(first, :session_id),
       "project" => first_value(ordered, :project),
-      "repository_sources" => Backplane.Memory.Provenance.event_sources(ordered),
+      "repository_sources" => repository_sources(ordered),
       "agent_id" => first_value(ordered, :agent_id),
       "observations" => Enum.map(ordered, &observation/1)
     }
@@ -27,7 +27,7 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
     %{
       "event_id" => event.id,
       "project" => event.project,
-      "repository_sources" => Backplane.Memory.Provenance.event_sources([event]),
+      "repository_sources" => repository_sources([event]),
       "agent_id" => event.agent_id,
       "source_sequence" => event.source_sequence,
       "event_type" => event.event_type,
@@ -157,4 +157,13 @@ defmodule Backplane.Memory.Projections.ObservationProjector do
   defp iso8601(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp iso8601(value) when is_binary(value), do: value
   defp iso8601(_value), do: nil
+
+  # Distinct repository/path associations carried by canonical event payloads.
+  defp repository_sources(events) do
+    events
+    |> Enum.flat_map(
+      &Backplane.MemoryRepository.sources((&1.payload || %{})["repository_sources"])
+    )
+    |> Backplane.MemoryRepository.sources()
+  end
 end

@@ -139,7 +139,6 @@ defmodule Backplane.Admin.MemoryConfigLive do
           </.form>
         </section>
       </div>
-      <div class="mt-5 flex gap-3 text-sm"><.link navigate={~p"/memory/pipeline"} class="text-primary underline">Pipeline controls</.link><.link navigate={~p"/memory/audit"} class="text-primary underline">Audit</.link></div>
     </div>
     """
   end

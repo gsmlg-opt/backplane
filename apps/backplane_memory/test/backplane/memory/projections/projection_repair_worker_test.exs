@@ -178,49 +178,6 @@ defmodule Backplane.Memory.Projections.ProjectionRepairWorkerTest do
     end)
   end
 
-  test "a converted legacy pending job prevents a second host session job after a new event" do
-    Styx.Testing.with_testing_mode(:manual, fn ->
-      host_id = unique("upgraded-host")
-      session_id = unique("upgraded-session")
-
-      assert %{"server_event_id" => first_event_id} =
-               accepted(captured_event(host_id, session_id, 1, "agent.session.started"))
-
-      repo().delete_all(
-        from(job in Styx.Job,
-          where: job.worker == "Backplane.Memory.Workers.ProjectionRepairWorker"
-        )
-      )
-
-      assert {:ok, %Styx.Job{id: legacy_job_id}} =
-               %{event_id: first_event_id, host_id: host_id, session_id: session_id}
-               |> ProjectionRepairWorker.new(unique: nil)
-               |> Styx.insert()
-
-      assert accepted(captured_event(host_id, session_id, 2, "agent.prompt.submitted"))
-
-      assert [%Styx.Job{id: ^legacy_job_id, args: args}] =
-               Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
-
-      assert args == %{
-               "event_id" => first_event_id,
-               "host_id" => host_id,
-               "session_id" => session_id
-             }
-
-      assert :ok = ProjectionRepairWorker.perform(%Styx.Job{args: args})
-
-      assert %RepairFrontier{requested_generation: 2, completed_generation: 2} =
-               RepairFrontier.get(repo(), host_id, session_id)
-
-      repo().update_all(from(job in Styx.Job, where: job.id == ^legacy_job_id),
-        set: [state: "completed", completed_at: DateTime.utc_now()]
-      )
-
-      assert [] = Styx.Testing.all_enqueued(repo(), worker: ProjectionRepairWorker)
-    end)
-  end
-
   test "an event arriving during repair creates one successor and both executions converge" do
     Styx.Testing.with_testing_mode(:manual, fn ->
       host_id = unique("concurrent-host")
