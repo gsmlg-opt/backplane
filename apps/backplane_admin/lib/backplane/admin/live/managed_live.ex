@@ -26,6 +26,12 @@ defmodule Backplane.Admin.ManagedLive do
       setting_key: "services.skill.enabled"
     },
     %{
+      module: Backplane.Memory.Tools,
+      name: "Memory",
+      description: "Search, read, remember, and forget global memory records",
+      setting_key: "services.memory.enabled"
+    },
+    %{
       module: Backplane.Services.Math,
       name: "Math",
       description: "Evaluate math expressions with the native math engine"
@@ -107,6 +113,10 @@ defmodule Backplane.Admin.ManagedLive do
 
   defp set_enabled(Backplane.Services.Web = mod, enabled) do
     with :ok <- Settings.set("services.web.enabled", enabled), do: sync_registry(mod, enabled)
+  end
+
+  defp set_enabled(Backplane.Memory.Tools = mod, enabled) do
+    with :ok <- Settings.set("services.memory.enabled", enabled), do: sync_registry(mod, enabled)
   end
 
   defp set_enabled(Backplane.Services.Math, enabled), do: MathConfig.save(%{enabled: enabled})

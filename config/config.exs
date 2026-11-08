@@ -31,29 +31,13 @@ config :backplane, Styx,
     sync: 3,
     embeddings: 2,
     llm: 5,
-    memory: 3,
-    memory_relation_classifier: 1,
-    memory_lessons: 1,
-    memory_crystals: 1
+    memory: 3
   ],
   plugins: [
     {Styx.Cron,
      crontab: [
-       # Procedural extraction: nightly at 02:00
-       {"0 2 * * *", Backplane.Memory.Workers.ProceduralWorker},
-       # Resume eligible pending/skipped revisions after live stage/model changes.
-       {"* * * * *", Backplane.Memory.Workers.StageResumeWorker},
-       # Archive weak memories using the existing bounded retention policy.
-       {"0 3 * * *", Backplane.Memory.Workers.EvictionWorker},
-       # Lesson decay: nightly at 03:15, isolated and bounded by exact-partition pages
-       {"15 3 * * *", Backplane.Memory.Workers.LessonDecaySweepWorker},
        # Fallback sweep: every 30 minutes, leaving room for gap grace within the four-hour SLA
        {"*/30 * * * *", Backplane.Memory.Workers.FallbackSweepWorker},
-       # Privacy-safe recall trace retention: bounded daily purge
-       {"30 3 * * *", Backplane.Memory.Workers.RecallTracePurgeWorker},
-       # Durable Activity retention: daily bounded purge with continuation jobs
-       {"45 3 * * *", Backplane.Memory.Workers.ActivityRetentionWorker},
-       {"15 4 * * *", Backplane.Memory.Workers.EdgeSyncRetentionWorker},
        # OAuth credential refresh: every 10 minutes
        {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker},
        # Observability retention workers

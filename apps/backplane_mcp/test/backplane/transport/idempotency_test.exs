@@ -163,7 +163,7 @@ defmodule Backplane.Transport.IdempotencyTest do
       "subject" => "subject-1",
       "client_id" => "client-1",
       "scopes" => ["public::echo"],
-      "principal_metadata" => %{"memory_partition_id" => "host:one"}
+      "principal_metadata" => %{"host_id" => "host:one"}
     }
 
     atom_conn =
@@ -171,7 +171,7 @@ defmodule Backplane.Transport.IdempotencyTest do
         auth:
           auth(:client_token, "subject-1", "client-1",
             scopes: ["public::echo"],
-            principal_metadata: %{"memory_partition_id" => "host:one"}
+            principal_metadata: %{"host_id" => "host:one"}
           )
       )
 
@@ -238,7 +238,7 @@ defmodule Backplane.Transport.IdempotencyTest do
     base_auth =
       auth(:client_token, "subject-1", "client-1",
         scopes: ["public::echo"],
-        principal_metadata: %{"memory_partition_id" => "host:one"}
+        principal_metadata: %{"host_id" => "host:one"}
       )
 
     base = idempotency_conn(key, auth: base_auth)
@@ -247,13 +247,13 @@ defmodule Backplane.Transport.IdempotencyTest do
     changed_scopes =
       auth(:client_token, "subject-1", "client-1",
         scopes: ["secret::echo"],
-        principal_metadata: %{"memory_partition_id" => "host:one"}
+        principal_metadata: %{"host_id" => "host:one"}
       )
 
     changed_partition =
       auth(:client_token, "subject-1", "client-1",
         scopes: ["public::echo"],
-        principal_metadata: %{"memory_partition_id" => "host:two"}
+        principal_metadata: %{"host_id" => "host:two"}
       )
 
     refute idempotency_conn(key, auth: changed_scopes)

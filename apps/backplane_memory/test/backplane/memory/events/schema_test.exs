@@ -8,14 +8,11 @@ defmodule Backplane.Memory.Events.SchemaTest do
 
     assert Stream.__schema__(:fields) == [
              :stream_id,
-             :memory_space_id,
              :project,
              :agent_id,
              :host_id,
              :client_id,
              :source_client_id,
-             :scope,
-             :namespace,
              :session_id,
              :run_id,
              :next_sequence,
@@ -35,16 +32,17 @@ defmodule Backplane.Memory.Events.SchemaTest do
     assert Event.__schema__(:type, :raw_envelope) == :map
     assert Event.__schema__(:type, :source_sequence) == :integer
     assert Event.__schema__(:type, :captured_at) == :utc_datetime_usec
+
+    for field <- [:memory_space_id, :scope, :namespace] do
+      refute field in Event.__schema__(:fields)
+    end
   end
 
   test "event changesets enforce the shared event taxonomy" do
     attrs = %{
       id: Ecto.UUID.generate(),
-      memory_space_id: Ecto.UUID.generate(),
       stream_id: "stream",
       sequence: 1,
-      scope: "global",
-      namespace: "private",
       event_type: "session.started",
       importance: 0,
       payload: %{},

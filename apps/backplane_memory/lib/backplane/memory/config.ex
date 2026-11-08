@@ -4,14 +4,6 @@ defmodule Backplane.Memory.Config do
   alias Backplane.Memory.Audit
   alias Backplane.Settings
 
-  @pipeline "memory.pipeline.enabled"
-  @window_summaries "memory.window_summaries.enabled"
-  @session_summary "memory.session_summary.enabled"
-  @fact_extraction "memory.fact_extraction.enabled"
-  @procedure_extraction "memory.procedure_extraction.enabled"
-  @relation_classifier "memory.relation_classifier.enabled"
-  @recall "memory.recall.enabled"
-
   @event_gap_grace_seconds "memory.event_gap_grace_seconds"
   @host_batch_max_events "memory.host_batch_max_events"
   @host_batch_max_bytes "memory.host_batch_max_bytes"
@@ -19,54 +11,14 @@ defmodule Backplane.Memory.Config do
   @host_spool_max_age_days "memory.host_spool_max_age_days"
   @session_stale_after_seconds "memory.session_stale_after_seconds"
   @fallback_sweep_batch_size "memory.fallback_sweep_batch_size"
-  @activity_retention_days "memory.activity_retention_days"
-  @recall_trace_enabled "memory.recall_trace_enabled"
-  @recall_trace_retention_days "memory.recall_trace_retention_days"
-  @recall_rrf_k "memory.recall_rrf_k"
-  @recall_channel_weights "memory.recall_channel_weights"
-  @recall_channel_limits "memory.recall_channel_limits"
-  @recall_max_per_session "memory.recall_max_per_session"
-  @recall_token_budget "memory.recall_token_budget"
-  @recall_reranker_enabled "memory.recall_reranker_enabled"
-  @recall_reranker_top_k "memory.recall_reranker_top_k"
-  @relevance_vector_min "memory.recall_relevance_vector_min"
-  @relevance_reranker_model "memory.recall_relevance_reranker_model"
-  @relevance_reranker_min "memory.recall_relevance_reranker_min"
-  @lesson_auto_extract "memory.lesson_auto_extract"
-  @lesson_auto_promote "memory.lesson_auto_promote"
-  @lesson_promote_confidence "memory.lesson_promote_confidence"
-  @lesson_promote_sources "memory.lesson_promote_sources"
-  @lesson_decay_enabled "memory.lesson_decay_enabled"
-  @lesson_decay_archive_days "memory.lesson_decay_archive_days"
-  @crystals_enabled "memory.crystals_enabled"
-  @crystal_session_enabled "memory.crystal_session_enabled"
-  @crystal_action_enabled "memory.crystal_action_enabled"
-  @replay_enabled "memory.replay_enabled"
-  @replay_import_enabled "memory.replay_import_enabled"
-  @replay_max_events "memory.replay_max_events"
-  @replay_import_max_files "memory.replay_import_max_files"
-  @replay_import_max_entries "memory.replay_import_max_entries"
-  @replay_import_max_bytes "memory.replay_import_max_bytes"
 
   @default_event_gap_grace_seconds 60
   @default_host_spool_max_bytes 64 * 1024 * 1024
   @default_session_stale_after_seconds 10_800
   @default_fallback_sweep_batch_size 100
-  @default_activity_retention_days 730
-  @default_recall_channel_weights %{fts: 1.0, vector: 1.0, graph: 1.0}
-  @default_recall_channel_limits %{fts: 50, vector: 50, graph: 50}
 
   @editable_settings [
     {"services.memory.enabled", "Memory service", :boolean, nil, nil, :service_enabled?},
-    {@pipeline, "Processing pipeline", :boolean, nil, nil, :pipeline_enabled?},
-    {@window_summaries, "Window summaries", :boolean, nil, nil, :window_summaries_enabled?},
-    {@session_summary, "Session summaries", :boolean, nil, nil, :session_summary_enabled?},
-    {@fact_extraction, "Fact extraction", :boolean, nil, nil, :fact_extraction_enabled?},
-    {@procedure_extraction, "Procedure extraction", :boolean, nil, nil,
-     :procedure_extraction_enabled?},
-    {@relation_classifier, "Graph generation", :boolean, nil, nil, :relation_classifier_enabled?},
-    {@recall, "Recall", :boolean, nil, nil, :recall_enabled?},
-    {"memory.host_sync.enabled", "Host sync", :boolean, nil, nil, :host_sync_enabled?},
     {"memory.llm_model", "Processing model", :model, nil, nil, :llm_model},
     {"memory.embed_model", "Embedding model (2560 dimensions)", :model, nil, nil, :embed_model},
     {"memory.proxy_credential", "Gateway resource credential", :credential, nil, nil,
@@ -75,18 +27,6 @@ defmodule Backplane.Memory.Config do
      :session_stale_after_seconds},
     {@fallback_sweep_batch_size, "Fallback sweep batch", :integer, 1, 500,
      :fallback_sweep_batch_size},
-    {@relevance_vector_min, "Calibrated minimum cosine similarity", :float, -1.0, 1.0,
-     :recall_relevance_vector_min},
-    {@relevance_reranker_model, "Calibrated reranker provider/model route", :model, nil, nil,
-     :recall_relevance_reranker_model},
-    {@relevance_reranker_min, "Calibrated minimum reranker relevance", :float, 0.0, 1.0,
-     :recall_relevance_reranker_min},
-    {@recall_token_budget, "Recall token budget", :integer, 1, 100_000, :recall_token_budget},
-    {@recall_rrf_k, "Recall fusion constant", :integer, 1, 1_000, :recall_rrf_k},
-    {@recall_reranker_enabled, "Recall reranking", :boolean, nil, nil, :recall_reranker_enabled?},
-    {@recall_reranker_top_k, "Recall reranker cap", :integer, 1, 500, :recall_reranker_top_k},
-    {@lesson_decay_archive_days, "Lesson archive age days", :integer, 1, 3_660,
-     :lesson_decay_archive_days},
     {@host_batch_max_events, "Host batch maximum events", :integer, 1, 100,
      :host_batch_max_events},
     {@host_batch_max_bytes, "Host batch maximum bytes", :integer, 1, 524_288,
@@ -96,33 +36,7 @@ defmodule Backplane.Memory.Config do
     {@host_spool_max_age_days, "Host spool maximum age days", :integer, 1, 3_660,
      :host_spool_max_age_days},
     {@event_gap_grace_seconds, "Event gap grace seconds", :integer, 1, 3_600,
-     :event_gap_grace_seconds},
-    {@activity_retention_days, "Activity retention days", :integer, 1, 3_660,
-     :activity_retention_days},
-    {@recall_trace_enabled, "Recall traces", :boolean, nil, nil, :recall_trace_enabled?},
-    {@recall_trace_retention_days, "Recall trace retention days", :integer, 1, 3_660,
-     :recall_trace_retention_days},
-    {@recall_max_per_session, "Recall maximum per session", :integer, 1, 100,
-     :recall_max_per_session},
-    {@lesson_auto_extract, "Lesson auto extraction", :boolean, nil, nil, :lesson_auto_extract?},
-    {@lesson_auto_promote, "Lesson auto promotion", :boolean, nil, nil, :lesson_auto_promote?},
-    {@lesson_promote_confidence, "Lesson promotion confidence", :float, 0.0, 1.0,
-     :lesson_promote_confidence},
-    {@lesson_promote_sources, "Lesson promotion sources", :integer, 1, 100,
-     :lesson_promote_sources},
-    {@lesson_decay_enabled, "Lesson decay", :boolean, nil, nil, :lesson_decay_enabled?},
-    {@crystals_enabled, "Crystals", :boolean, nil, nil, :crystals_enabled?},
-    {@crystal_session_enabled, "Session crystals", :boolean, nil, nil, :crystal_session_enabled?},
-    {@crystal_action_enabled, "Action crystals", :boolean, nil, nil, :crystal_action_enabled?},
-    {@replay_enabled, "Replay", :boolean, nil, nil, :replay_enabled?},
-    {@replay_import_enabled, "Replay import", :boolean, nil, nil, :replay_import_enabled?},
-    {@replay_max_events, "Replay maximum events", :integer, 1, 10_000, :replay_max_events},
-    {@replay_import_max_files, "Replay import maximum files", :integer, 1, 1_000,
-     :replay_import_max_files},
-    {@replay_import_max_entries, "Replay import maximum entries", :integer, 1, 1_000_000,
-     :replay_import_max_entries},
-    {@replay_import_max_bytes, "Replay import maximum bytes", :integer, 1, 1_073_741_824,
-     :replay_import_max_bytes}
+     :event_gap_grace_seconds}
   ]
 
   @doc "Returns the finite typed operator-editable Memory setting inventory."
@@ -164,15 +78,11 @@ defmodule Backplane.Memory.Config do
              changed: previous !== value,
              content_exposed: false
            }) do
-      if previous !== value, do: resume_processing(key)
       {:ok, value}
     end
   end
 
   def update_setting(_key, _raw_value, _context), do: {:error, :unauthorized}
-
-  defp persist_setting(@pipeline, value),
-    do: Backplane.Memory.Operations.set_gate(:pipeline, value)
 
   defp persist_setting(key, value), do: Settings.set(key, value)
 
@@ -190,15 +100,6 @@ defmodule Backplane.Memory.Config do
     with {:ok, integer} <- parse_integer(value),
          true <- integer >= minimum and integer <= maximum do
       {:ok, integer}
-    else
-      _ -> {:error, :invalid_value}
-    end
-  end
-
-  defp parse_setting(value, {:float, minimum, maximum}) do
-    with {:ok, number} <- parse_number(value),
-         true <- number >= minimum and number <= maximum do
-      {:ok, number / 1}
     else
       _ -> {:error, :invalid_value}
     end
@@ -242,16 +143,6 @@ defmodule Backplane.Memory.Config do
   end
 
   defp parse_integer(_value), do: :error
-  defp parse_number(value) when is_number(value), do: {:ok, value}
-
-  defp parse_number(value) when is_binary(value) do
-    case Float.parse(value) do
-      {number, ""} -> {:ok, number}
-      _ -> :error
-    end
-  end
-
-  defp parse_number(_value), do: :error
   defp value_class(true), do: "boolean:true"
   defp value_class(false), do: "boolean:false"
   defp value_class(value) when is_integer(value), do: "integer"
@@ -294,71 +185,7 @@ defmodule Backplane.Memory.Config do
       else: "No resource bearer; requests require an open development resource"
   end
 
-  defp setting_reason(key) do
-    cond do
-      key in [
-        @lesson_auto_extract,
-        @crystals_enabled,
-        @crystal_session_enabled,
-        @crystal_action_enabled
-      ] and not llm_configured?() ->
-        "Blocked: no processing model selected"
-
-      key in [
-        @window_summaries,
-        @session_summary,
-        @fact_extraction,
-        @procedure_extraction,
-        @relation_classifier
-      ] and not pipeline_enabled?() ->
-        "Blocked: processing pipeline disabled"
-
-      true ->
-        "Effective policy shown; queued stages recheck before publication"
-    end
-  end
-
-  defp resume_processing(key) do
-    if key in [
-         @pipeline,
-         @window_summaries,
-         @session_summary,
-         @fact_extraction,
-         @procedure_extraction,
-         @relation_classifier,
-         @lesson_auto_extract,
-         @crystals_enabled,
-         @crystal_session_enabled,
-         "memory.llm_model"
-       ] do
-      Backplane.Memory.Workers.StageResumeWorker.enqueue()
-    end
-
-    :ok
-  rescue
-    _ -> :ok
-  catch
-    :exit, _ -> :ok
-  end
-
-  def pipeline_enabled?, do: enabled?(@pipeline)
-
-  def window_summaries_enabled?,
-    do: pipeline_enabled?() and enabled?(@window_summaries)
-
-  def session_summary_enabled?,
-    do: pipeline_enabled?() and enabled?(@session_summary)
-
-  def fact_extraction_enabled?,
-    do: pipeline_enabled?() and enabled?(@fact_extraction)
-
-  def procedure_extraction_enabled?,
-    do: pipeline_enabled?() and enabled?(@procedure_extraction)
-
-  def relation_classifier_enabled?,
-    do: pipeline_enabled?() and enabled?(@relation_classifier)
-
-  def recall_enabled?, do: enabled?(@recall)
+  defp setting_reason(_key), do: "Effective policy shown"
 
   @doc "Returns the final-processing gap grace in seconds (inclusive range 1..3600; default 60)."
   def event_gap_grace_seconds do
@@ -366,10 +193,6 @@ defmodule Backplane.Memory.Config do
   end
 
   def host_batch_max_events, do: bounded_integer(@host_batch_max_events, 100, 1, 100)
-  def host_sync_enabled?, do: enabled?("memory.host_sync.enabled")
-
-  def host_sync_max_item_bytes,
-    do: bounded_integer("memory.host_sync_max_item_bytes", 262_144, 1, 262_144)
 
   def host_batch_max_bytes, do: bounded_integer(@host_batch_max_bytes, 524_288, 1, 524_288)
 
@@ -398,119 +221,7 @@ defmodule Backplane.Memory.Config do
     )
   end
 
-  @doc "Returns durable activity retention in days (inclusive range 1..3660; default 730)."
-  def activity_retention_days do
-    bounded_integer(@activity_retention_days, @default_activity_retention_days, 1, 3_660)
-  end
-
-  @doc "Whether privacy-filtered recall trace persistence is enabled (default true)."
-  def recall_trace_enabled?, do: strict_boolean(@recall_trace_enabled, true)
-
-  @doc "Returns recall trace retention in days (inclusive range 1..3660; default 30)."
-  def recall_trace_retention_days,
-    do: bounded_integer(@recall_trace_retention_days, 30, 1, 3_660)
-
-  @doc "Returns the weighted RRF constant (inclusive range 1..1000; default 60)."
-  def recall_rrf_k, do: bounded_integer(@recall_rrf_k, 60, 1, 1_000)
-
-  @doc "Returns complete bounded FTS/vector/graph weights."
-  def recall_channel_weights do
-    value =
-      bounded_channel_map(
-        Backplane.Settings.get(@recall_channel_weights),
-        @default_recall_channel_weights,
-        &valid_weight?/1
-      )
-
-    if Enum.any?(value, fn {_channel, weight} -> weight > 0 end),
-      do: value,
-      else: @default_recall_channel_weights
-  end
-
-  @doc "Returns complete bounded FTS/vector/graph candidate limits."
-  def recall_channel_limits do
-    bounded_channel_map(
-      Backplane.Settings.get(@recall_channel_limits),
-      @default_recall_channel_limits,
-      &(is_integer(&1) and &1 in 1..500)
-    )
-  end
-
-  @doc "Returns the per-session diversity cap (inclusive range 1..100; default 3)."
-  def recall_max_per_session,
-    do: bounded_integer(@recall_max_per_session, 3, 1, 100)
-
-  @doc "Returns the default recall token budget (inclusive range 1..100000; default 4096)."
-  def recall_token_budget,
-    do: bounded_integer(@recall_token_budget, 4_096, 1, 100_000)
-
-  @doc "Whether optional top-K recall reranking is enabled (default false)."
-  def recall_reranker_enabled?, do: strict_boolean(@recall_reranker_enabled, false)
-
-  @doc "Returns the reranker input cap (inclusive range 1..500; default 20)."
-  def recall_reranker_top_k,
-    do: bounded_integer(@recall_reranker_top_k, 20, 1, 500)
-
-  @doc "Vector relevance uses the resolved embedding model; unknown or mismatched models require lexical evidence."
-  def recall_relevance do
-    %{
-      vector_model: Backplane.Memory.Embedding.Client.model(),
-      vector_min: recall_relevance_vector_min(),
-      reranker_model: recall_relevance_reranker_model(),
-      reranker_min: recall_relevance_reranker_min()
-    }
-  end
-
-  def recall_relevance_reranker_model, do: calibrated_model(@relevance_reranker_model)
-  def recall_relevance_vector_min, do: bounded_number(@relevance_vector_min, 1.0, -1.0, 1.0)
-  def recall_relevance_reranker_min, do: bounded_number(@relevance_reranker_min, 1.0, 0.0, 1.0)
-
-  defp calibrated_model(key) do
-    case Settings.get(key) do
-      model when is_binary(model) ->
-        if(String.trim(model) == "", do: nil, else: String.trim(model))
-
-      _ ->
-        nil
-    end
-  end
-
-  def lesson_auto_extract?, do: llm_configured?() and strict_boolean(@lesson_auto_extract, true)
-  def lesson_auto_promote?, do: strict_boolean(@lesson_auto_promote, false)
-  def lesson_promote_confidence, do: bounded_number(@lesson_promote_confidence, 0.85, 0.0, 1.0)
-  def lesson_promote_sources, do: bounded_integer(@lesson_promote_sources, 2, 1, 100)
-  def lesson_decay_enabled?, do: strict_boolean(@lesson_decay_enabled, true)
-  def lesson_decay_archive_days, do: bounded_integer(@lesson_decay_archive_days, 180, 1, 3_660)
-  def crystals_enabled?, do: llm_configured?() and strict_boolean(@crystals_enabled, true)
-
-  def crystal_session_enabled?,
-    do: crystals_enabled?() and strict_boolean(@crystal_session_enabled, true)
-
-  def crystal_action_enabled?,
-    do: crystals_enabled?() and strict_boolean(@crystal_action_enabled, true)
-
-  def replay_enabled?, do: pipeline_enabled?() and strict_boolean(@replay_enabled, true)
-
-  def replay_import_enabled?,
-    do: replay_enabled?() and strict_boolean(@replay_import_enabled, false)
-
-  def replay_max_events, do: bounded_integer(@replay_max_events, 1_000, 1, 10_000)
-  def replay_import_max_files, do: bounded_integer(@replay_import_max_files, 200, 1, 1_000)
-
-  def replay_import_max_entries,
-    do: bounded_integer(@replay_import_max_entries, 100_000, 1, 1_000_000)
-
-  def replay_import_max_bytes,
-    do: bounded_integer(@replay_import_max_bytes, 1_073_741_824, 1, 1_073_741_824)
-
   defp enabled?(key), do: Backplane.Settings.get(key) == true
-
-  defp strict_boolean(key, default) do
-    case Backplane.Settings.get(key) do
-      value when is_boolean(value) -> value
-      _invalid -> default
-    end
-  end
 
   defp bounded_integer(key, default, minimum, maximum) do
     case Backplane.Settings.get(key) do
@@ -518,40 +229,4 @@ defmodule Backplane.Memory.Config do
       _invalid -> default
     end
   end
-
-  defp bounded_number(key, default, minimum, maximum) do
-    case Backplane.Settings.get(key) do
-      value when is_number(value) and value >= minimum and value <= maximum -> value / 1
-      _invalid -> default
-    end
-  end
-
-  defp llm_configured? do
-    case Settings.get("memory.llm_model") do
-      model when is_binary(model) -> String.trim(model) != ""
-      _ -> false
-    end
-  end
-
-  defp bounded_channel_map(value, default, validator) when is_map(value) do
-    if map_size(value) == 3 and
-         Enum.all?(~w(fts vector graph), &Map.has_key?(value, &1)) and
-         Enum.all?(value, fn {_key, item} -> validator.(item) end) do
-      %{
-        fts: normalize_number(value["fts"], default.fts),
-        vector: normalize_number(value["vector"], default.vector),
-        graph: normalize_number(value["graph"], default.graph)
-      }
-    else
-      default
-    end
-  end
-
-  defp bounded_channel_map(_value, default, _validator), do: default
-  defp valid_weight?(value), do: is_number(value) and value >= 0 and value <= 100
-
-  defp normalize_number(value, default) when is_float(default) and is_integer(value),
-    do: value / 1
-
-  defp normalize_number(value, _default), do: value
 end

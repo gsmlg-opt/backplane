@@ -5,13 +5,9 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
     queue: :memory,
     max_attempts: 5
 
-  import Ecto.Query
-
   alias Backplane.Memory.Audit
   alias Backplane.Memory.Events.Event
-  alias Backplane.Memory.Config
   alias Backplane.Memory.Projections.{Rebuild, RepairFrontier, Source}
-  alias Backplane.Memory.Workers.{LessonCandidateWorker, SummaryWorker, WindowSummaryWorker}
 
   @impl Styx.Worker
   def perform(%Styx.Job{} = job) do
@@ -21,8 +17,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
           do: &Rebuild.session_locked/2,
           else: &Rebuild.session/2
 
-      case perform(job, rebuild, &SummaryWorker.enqueue/3) do
-        :ok -> maybe_enqueue_legacy_lesson_candidate(job)
+      case perform(job, rebuild) do
         {:ok, :already_complete} -> :ok
         {:ok, :successor_scheduled} -> :ok
         other -> other
@@ -33,59 +28,22 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
   @doc false
   def perform(%Styx.Job{args: %{"event_id" => event_id}}, rebuild)
       when is_binary(event_id) and is_function(rebuild, 2) do
-    perform(
-      %Styx.Job{args: %{"event_id" => event_id}},
-      rebuild,
-      &SummaryWorker.enqueue/3
-    )
-  end
-
-  def perform(%Styx.Job{}, _rebuild), do: {:cancel, :invalid_arguments}
-
-  @doc false
-  def perform(
-        %Styx.Job{
-          args: %{
-            "event_id" => legacy_event_id,
-            "host_id" => host_id,
-            "session_id" => session_id
-          }
-        },
-        rebuild,
-        enqueue_summary
-      )
-      when is_binary(legacy_event_id) and is_binary(host_id) and is_binary(session_id) and
-             is_function(rebuild, 2) and is_function(enqueue_summary, 3) do
-    perform(
-      %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}},
-      rebuild,
-      enqueue_summary
-    )
-  end
-
-  def perform(%Styx.Job{args: %{"event_id" => event_id}}, rebuild, enqueue_summary)
-      when is_binary(event_id) and is_function(rebuild, 2) and is_function(enqueue_summary, 3) do
     case Ecto.UUID.cast(event_id) do
-      {:ok, event_id} -> load_and_repair(event_id, rebuild, enqueue_summary)
+      {:ok, event_id} -> load_and_repair(event_id, rebuild)
       :error -> {:cancel, :invalid_arguments}
     end
   end
 
-  def perform(
-        %Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}},
-        rebuild,
-        enqueue_summary
-      )
-      when is_binary(host_id) and is_binary(session_id) and is_function(rebuild, 2) and
-             is_function(enqueue_summary, 3) do
+  def perform(%Styx.Job{args: %{"host_id" => host_id, "session_id" => session_id}}, rebuild)
+      when is_binary(host_id) and is_binary(session_id) and is_function(rebuild, 2) do
     if non_empty_binary?(host_id) and non_empty_binary?(session_id) do
-      repair_frontier(host_id, session_id, rebuild, enqueue_summary)
+      repair_frontier(host_id, session_id, rebuild)
     else
       {:cancel, :invalid_arguments}
     end
   end
 
-  def perform(%Styx.Job{}, _rebuild, _enqueue_summary), do: {:cancel, :invalid_arguments}
+  def perform(%Styx.Job{}, _rebuild), do: {:cancel, :invalid_arguments}
 
   def enqueue(event_id) when is_binary(event_id) do
     %{event_id: event_id}
@@ -105,7 +63,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
     |> Styx.insert()
   end
 
-  defp repair_frontier(host_id, session_id, rebuild, enqueue_summary) do
+  defp repair_frontier(host_id, session_id, rebuild) do
     case repo().transaction(fn ->
            Source.lock_streams(host_id, session_id)
 
@@ -114,7 +72,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
                {:ok, :already_complete}
 
              frontier ->
-               repair_claimed_frontier(frontier, rebuild, enqueue_summary)
+               repair_claimed_frontier(frontier, rebuild)
            end
          end) do
       {:ok, result} -> result
@@ -122,13 +80,13 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
     end
   end
 
-  defp repair_claimed_frontier(frontier, rebuild, enqueue_summary) do
+  defp repair_claimed_frontier(frontier, rebuild) do
     frontier = initialize_migrated_frontier(frontier)
 
     if frontier.completed_generation >= frontier.requested_generation do
       {:ok, :already_complete}
     else
-      repair_pending_frontier(frontier, rebuild, enqueue_summary)
+      repair_pending_frontier(frontier, rebuild)
     end
   end
 
@@ -141,7 +99,7 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
 
   defp initialize_migrated_frontier(frontier), do: frontier
 
-  defp repair_pending_frontier(frontier, rebuild, enqueue_summary) do
+  defp repair_pending_frontier(frontier, rebuild) do
     {:ok, %{input_revision: authoritative_revision}} =
       Rebuild.authoritative_revision(frontier.host_id, frontier.session_id)
 
@@ -151,21 +109,6 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
       case rebuild.(frontier.host_id, frontier.session_id) do
         {:ok, %{input_revision: ^authoritative_revision} = result} ->
           audit_frontier_repair(frontier, result)
-
-          case maybe_enqueue_summary(frontier, result, enqueue_summary) do
-            :ok -> :ok
-            {:error, reason} -> repo().rollback(reason)
-          end
-
-          case enqueue_windows(frontier.host_id, frontier.session_id, result) do
-            :ok -> :ok
-            {:error, reason} -> repo().rollback(reason)
-          end
-
-          case enqueue_lesson_candidates_for_session(frontier.host_id, frontier.session_id) do
-            :ok -> :ok
-            {:error, reason} -> repo().rollback(reason)
-          end
 
           RepairFrontier.complete(
             repo(),
@@ -210,23 +153,18 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
     end
   end
 
-  defp load_and_repair(event_id, rebuild, enqueue_summary) do
+  defp load_and_repair(event_id, rebuild) do
     case repo().get(Event, event_id) do
-      %Event{} = event -> repair(event, rebuild, enqueue_summary)
+      %Event{} = event -> repair(event, rebuild)
       nil -> :ok
     end
   end
 
-  defp repair(%Event{} = event, rebuild, enqueue_summary) do
+  defp repair(%Event{} = event, rebuild) do
     if canonical_subject?(event) do
       case rebuild_and_audit(event, rebuild) do
-        {:ok, result} ->
-          with :ok <- enqueue_windows(event.host_id, event.session_id, result),
-               :ok <- maybe_enqueue_summary(event, result, enqueue_summary),
-               do: :ok
-
-        {:error, reason} ->
-          {:error, reason}
+        {:ok, _result} -> :ok
+        {:error, reason} -> {:error, reason}
       end
     else
       :ok
@@ -238,12 +176,9 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
            case rebuild.(event.host_id, event.session_id) do
              {:ok, result} ->
                Audit.log_once("projection.repair", "system", [event.id], event.id, %{
-                 memory_space_id: event.memory_space_id,
                  host_id: event.host_id,
                  client_id: event.client_id,
                  source_client_id: event.source_client_id,
-                 scope: event.scope,
-                 namespace: event.namespace,
                  session_id: event.session_id,
                  result: "repaired"
                })
@@ -262,46 +197,6 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
     end
   end
 
-  defp maybe_enqueue_summary(event, result, enqueue_summary) do
-    if summary_eligible?(result) do
-      case enqueue_summary.(event.host_id, event.session_id, result.input_revision) do
-        {:ok, %Styx.Job{state: state}} when state in ["available", "scheduled"] -> :ok
-        {:ok, %Styx.Job{conflict?: true}} -> :ok
-        {:ok, %Styx.Job{} = job} -> {:error, {:summary_job_not_durable, job.state}}
-        {:error, reason} -> {:error, reason}
-        other -> {:error, {:unexpected_summary_enqueue_result, other}}
-      end
-    else
-      :ok
-    end
-  end
-
-  defp enqueue_windows(host_id, session_id, %{input_revision: revision} = result) do
-    partition =
-      Map.take(result, [
-        :memory_space_id,
-        :host_id,
-        :client_id,
-        :source_client_id,
-        :scope,
-        :namespace
-      ])
-
-    case Backplane.Memory.PartitionIdentity.validate_generator(partition) do
-      {:ok, partition} ->
-        case WindowSummaryWorker.enqueue(host_id, session_id, revision, partition) do
-          {:ok, _} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp enqueue_windows(_host_id, _session_id, _result),
-    do: {:error, :invalid_rebuild_result}
-
   defp audit_frontier_repair(frontier, result) do
     Audit.log_once(
       "projection.repair",
@@ -309,33 +204,15 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
       [],
       "#{frontier.host_id}:#{frontier.session_id}:#{frontier.inflight_generation}",
       %{
-        memory_space_id: result.memory_space_id,
         host_id: frontier.host_id,
         client_id: result.client_id,
         source_client_id: result.source_client_id,
-        scope: result.scope,
-        namespace: result.namespace,
         session_id: frontier.session_id,
         input_revision: frontier.inflight_revision,
         result: "repaired"
       }
     )
   end
-
-  defp summary_eligible?(%{
-         input_revision: input_revision,
-         gaps: gaps,
-         session_status: status,
-         last_event_at: %DateTime{} = last_event_at,
-         states: %{"session" => %{status: state_status}}
-       })
-       when is_binary(input_revision) and is_list(gaps) and
-              status in ["completed", "stopped", "abandoned"] and
-              state_status in ["complete", "pending"] do
-    DateTime.diff(DateTime.utc_now(), last_event_at, :second) >= Config.event_gap_grace_seconds()
-  end
-
-  defp summary_eligible?(_result), do: false
 
   defp canonical_subject?(%Event{
          schema_version: schema_version,
@@ -351,43 +228,6 @@ defmodule Backplane.Memory.Workers.ProjectionRepairWorker do
     do: non_empty_binary?(host_id) and non_empty_binary?(session_id)
 
   defp host_session_args?(_args), do: false
-
-  defp maybe_enqueue_legacy_lesson_candidate(%Styx.Job{args: %{"event_id" => event_id}}) do
-    enqueue_lesson_candidate(event_id)
-  end
-
-  defp maybe_enqueue_legacy_lesson_candidate(_job), do: :ok
-
-  defp enqueue_lesson_candidates_for_session(host_id, session_id) do
-    Event
-    |> where([event], event.host_id == ^host_id and event.session_id == ^session_id)
-    |> where([event], not is_nil(event.schema_version))
-    |> order_by([event], asc: event.source_sequence, asc: event.id)
-    |> select([event], event.id)
-    |> repo().all()
-    |> Enum.reduce_while(:ok, fn event_id, :ok ->
-      case enqueue_lesson_candidate(event_id) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp enqueue_lesson_candidate(event_id) do
-    result =
-      case Application.get_env(:backplane_memory, :projection_repair_lesson_enqueue) do
-        enqueue when is_function(enqueue, 1) -> enqueue.(event_id)
-        nil -> LessonCandidateWorker.enqueue(event_id)
-      end
-
-    case result do
-      {:ok, :disabled} -> :ok
-      {:ok, %Styx.Job{state: state}} when state in ["available", "scheduled"] -> :ok
-      {:ok, %Styx.Job{conflict?: true}} -> :ok
-      {:ok, %Styx.Job{} = job} -> {:error, {:lesson_candidate_job_not_durable, job.state}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 end

@@ -2,9 +2,7 @@ defmodule Backplane.Memory.Projections.SourceLockConcurrencyTest do
   use ExUnit.Case, async: false
 
   alias Backplane.Memory.Events.{Store, Stream}
-  alias Backplane.Memory.IngestFixtures
   alias Backplane.Memory.Projections.Source
-  alias Backplane.MemorySpaces.MemorySpace
   alias Ecto.Adapters.SQL.Sandbox
 
   @timeout 10_000
@@ -14,27 +12,12 @@ defmodule Backplane.Memory.Projections.SourceLockConcurrencyTest do
     session_id = Ecto.UUID.generate()
     stream_id = "#{host_id}:#{session_id}"
 
-    memory_space_id =
-      unboxed(fn ->
-        memory_space_id = IngestFixtures.ensure_memory_space!(host_id)
-
-        repo().insert!(%Stream{
-          stream_id: stream_id,
-          memory_space_id: memory_space_id,
-          host_id: host_id,
-          session_id: session_id,
-          scope: "global",
-          namespace: "private"
-        })
-
-        memory_space_id
-      end)
+    unboxed(fn ->
+      repo().insert!(%Stream{stream_id: stream_id, host_id: host_id, session_id: session_id})
+    end)
 
     on_exit(fn ->
-      unboxed(fn ->
-        repo().delete!(repo().get!(Stream, stream_id))
-        repo().delete!(repo().get!(MemorySpace, memory_space_id))
-      end)
+      unboxed(fn -> repo().delete!(repo().get!(Stream, stream_id)) end)
     end)
 
     parent = self()
@@ -54,11 +37,8 @@ defmodule Backplane.Memory.Projections.SourceLockConcurrencyTest do
                          Store.append(
                            %{
                              stream_id: stream_id,
-                             memory_space_id: memory_space_id,
                              host_id: host_id,
                              session_id: session_id,
-                             scope: "global",
-                             namespace: "private",
                              event_type: "observation.recorded",
                              schema_version: 1,
                              source_sequence: 1,

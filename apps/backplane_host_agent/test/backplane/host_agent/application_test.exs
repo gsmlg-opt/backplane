@@ -18,9 +18,7 @@ defmodule Backplane.HostAgent.ApplicationTest do
   test "does not supervise the worker when application autostart is disabled" do
     Application.put_env(:backplane_host_agent, :start_on_application, false)
 
-    assert HostAgentApplication.child_specs() ==
-             api_children() ++
-               [Backplane.HostAgent.Memory.ImportSupervisor]
+    assert HostAgentApplication.child_specs() == api_children()
   end
 
   test "supervises the worker when application autostart is enabled" do
@@ -28,10 +26,7 @@ defmodule Backplane.HostAgent.ApplicationTest do
 
     assert HostAgentApplication.child_specs() ==
              api_children() ++
-               [
-                 Backplane.HostAgent.Memory.ImportSupervisor,
-                 Backplane.HostAgent.Worker
-               ]
+               [Backplane.HostAgent.Worker]
   end
 
   defp api_children do

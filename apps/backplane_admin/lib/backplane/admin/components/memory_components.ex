@@ -61,31 +61,6 @@ defmodule Backplane.Admin.MemoryComponents do
     """
   end
 
-  attr(:title, :string, required: true)
-  attr(:rollout, :map, required: true)
-
-  def memory_empty_state(assigns) do
-    # WORKAROUND(upstream): duskmoon-dev/phoenix-duskmoon-ui#90
-    ~H"""
-    <.dm_card variant="bordered" padding="lg" class="text-center">
-      <h2 class="text-lg font-semibold">{@title}</h2>
-      <p class="mt-2 text-sm text-on-surface-variant">
-        Background processing is {if @rollout.pipeline.effective, do: "enabled", else: "paused"}.
-        Captured events appear here after the first memory activity.
-      </p>
-      <div class="mt-4">
-        <.memory_link_button
-          id="memory-open-pipeline"
-          navigate={~p"/memory/pipeline"}
-          variant="primary"
-        >
-          Open Pipeline
-        </.memory_link_button>
-      </div>
-    </.dm_card>
-    """
-  end
-
   attr(:id, :string, required: true)
   attr(:navigate, :string, default: nil)
   attr(:patch, :string, default: nil)

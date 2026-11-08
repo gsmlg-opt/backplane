@@ -5,12 +5,9 @@ defmodule Backplane.Memory.Projections.ProjectedSession do
 
   @primary_key {:subject_id, :string, autogenerate: false}
   schema "bpm_projected_sessions" do
-    field(:memory_space_id, :binary_id)
     field(:host_id, :string)
     field(:client_id, :string)
     field(:source_client_id, :string)
-    field(:scope, :string)
-    field(:namespace, :string)
     field(:session_id, :string)
     field(:project, :string)
     field(:agent_id, :string)

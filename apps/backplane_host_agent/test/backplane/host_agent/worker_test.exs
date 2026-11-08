@@ -1,7 +1,7 @@
 defmodule Backplane.HostAgent.WorkerTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.{Config, Manifest, MemoryTestFixtures, Worker}
+  alias Backplane.HostAgent.{Config, Manifest, Worker}
 
   defmodule FakeChannel do
     def push(_channel, event, payload) do
@@ -140,14 +140,13 @@ defmodule Backplane.HostAgent.WorkerTest do
   end
 
   defmodule RejectingMemoryProxy do
-    def set_config(_config), do: :ok
-    def set_connection(_connection, _config), do: {:error, :fixture_install_failed}
+    def set_connection(_connection), do: {:error, :fixture_install_failed}
   end
 
   defmodule FakeMemoryProxy do
-    def set_config(config) do
+    def set_connection_owner(owner_pid) do
       owner = :persistent_term.get({__MODULE__, :owner})
-      send(owner, {:set_config, config})
+      send(owner, {:set_connection_owner, owner_pid})
       :ok
     end
 
@@ -205,8 +204,7 @@ defmodule Backplane.HostAgent.WorkerTest do
       send(owner, {
         :http_memory_config,
         Application.get_env(:backplane_host_agent, :memory_config),
-        Application.get_env(:backplane_host_agent, :memory_store),
-        Application.get_env(:backplane_host_agent, :memory_host_sync)
+        Application.get_env(:backplane_host_agent, :memory_store)
       })
 
       Task.child_spec(fn ->
@@ -307,7 +305,7 @@ defmodule Backplane.HostAgent.WorkerTest do
              GenServer.call(pid, :status)
   end
 
-  test "reports local application and only successful worker memory negotiation" do
+  test "reports when local settings were applied" do
     :persistent_term.put({FakeConnector, :owner}, self())
     :persistent_term.put({FakeMemoryProxy, :owner}, self())
 
@@ -315,17 +313,7 @@ defmodule Backplane.HostAgent.WorkerTest do
       {FakeConnector, :connection},
       {:ok,
        %{
-         channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
-         memory: %{
-           "selected" => "host_memory.v2",
-           "partitions" => [
-             %{
-               "memory_space_id" => "30000000-0000-0000-0000-000000000013",
-               "scope" => "private",
-               "namespace" => "private"
-             }
-           ]
-         }
+         channel: start_supervised!({Agent, fn -> nil end}, id: make_ref())
        }}
     )
 
@@ -347,87 +335,12 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     state = GenServer.call(pid, :status)
     assert {:ok, _, _} = DateTime.from_iso8601(state.local_settings_applied_at)
-
-    assert %{"selected" => "host_memory.v2", "applied_at" => timestamp, "partitions" => [_]} =
-             state.memory_negotiation_report
-
-    assert {:ok, _, _} = DateTime.from_iso8601(timestamp)
+    refute Map.has_key?(state, :memory_negotiation_report)
 
     assert state.local_settings_applied_at ==
              GenServer.call(pid, :status).local_settings_applied_at
 
     GenServer.stop(pid)
-  end
-
-  @tag :tmp_dir
-  test "worker preserves authentication rejection through transient retries until authenticated recovery",
-       %{tmp_dir: dir} do
-    alias Backplane.HostAgent.{MemoryFacade, MemoryProxy}
-    alias Backplane.HostAgent.Memory.Access
-    MemoryProxy.set_channel(nil)
-    fixture = MemoryTestFixtures.start!(dir, owner_name: Access, install?: false)
-    :persistent_term.put({FakeConnector, :owner}, self())
-    :persistent_term.put({FakeConnector, :connection}, {:error, :unauthorized})
-
-    on_exit(fn ->
-      MemoryProxy.set_channel(nil)
-      :persistent_term.erase({FakeConnector, :owner})
-      :persistent_term.erase({FakeConnector, :connection})
-    end)
-
-    pid =
-      start_supervised!(
-        {Worker,
-         name: nil,
-         config_module: FakeRuntimeConfig,
-         connector_module: FakeConnector,
-         http_server_module: FakeHttpServer,
-         sync_on_start?: false}
-      )
-
-    assert %{last_error: :unauthorized} = GenServer.call(pid, :status)
-
-    context = MemoryTestFixtures.context(fixture)
-    assert {:error, :unauthorized} = MemoryFacade.call("recall", %{}, context)
-    refute Access.status(fixture.owner).negotiated
-
-    :persistent_term.put({FakeConnector, :connection}, {:error, :socket_timeout})
-    send(pid, :connect_retry)
-    assert %{last_error: :socket_timeout} = GenServer.call(pid, :status)
-    assert {:error, :unauthorized} = MemoryFacade.call("recall", %{}, context)
-
-    channel = start_supervised!({Agent, fn -> nil end})
-
-    :persistent_term.put(
-      {FakeConnector, :connection},
-      {:ok, %{channel: channel, memory: fixture.inventory}}
-    )
-
-    send(pid, :connect_retry)
-    assert %{channel: ^channel, last_error: nil} = GenServer.call(pid, :status)
-    assert MemoryProxy.channel() == channel
-
-    assert %{negotiated: true, global_fenced: false, generation: generation} =
-             Access.status(fixture.owner)
-
-    assert is_integer(generation) and generation > 0
-    fixture = MemoryTestFixtures.populate!(fixture)
-    Agent.stop(channel)
-    assert await_channel_loss(pid)
-
-    # Fresh authenticated inventory and a completed protected snapshot permit bounded offline reads.
-    assert {:ok, %{"mode" => "offline", "consistency" => "bounded_stale", "results" => results}} =
-             MemoryFacade.call("recall", %{"query" => "memory"}, context)
-
-    assert Enum.sort(Enum.map(results, &(&1["canonical_id"] || &1["id"]))) ==
-             Enum.sort([fixture.canonical_id, fixture.pending_id])
-
-    assert Enum.any?(results, &(&1["content"] == "protected mirror memory"))
-
-    assert Enum.any?(
-             results,
-             &(&1["content"] == "protected pending memory" and &1["provisional"] == true)
-           )
   end
 
   test "survives startup connect failure and retries" do
@@ -461,7 +374,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     Enum.each(owners, &:persistent_term.put({&1, :owner}, self()))
     :persistent_term.put({FakeConnector, :connection}, {:error, :hub_down})
 
-    env_keys = [:memory_config, :memory_store, :memory_host_sync]
+    env_keys = [:memory_config, :memory_store]
     previous_env = Map.new(env_keys, &{&1, Application.fetch_env(:backplane_host_agent, &1)})
 
     {:ok, config} = OfflineRuntimeConfig.load_default()
@@ -501,11 +414,9 @@ defmodule Backplane.HostAgent.WorkerTest do
         sync_on_start?: false
       )
 
-    assert_receive {:set_config, ^config}
+    assert_receive {:set_connection_owner, ^worker}
     assert_receive {:capture_start, %{host_id: "host-authoritative"}}
-
-    assert_receive {:http_memory_config, ^memory_config, :standalone_startup_store,
-                    %{enabled: true, development_plaintext: true}}
+    assert_receive {:http_memory_config, ^memory_config, :standalone_startup_store}
 
     assert_receive {:http_ready, http_child, "host-authoritative"}
     assert_receive {:connect, ^config}
@@ -531,8 +442,7 @@ defmodule Backplane.HostAgent.WorkerTest do
          channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
          host_id: config.host_id,
          host_name: config.machine_name,
-         socket: socket_supervisor(:offline_reconnect_socket),
-         memory: %{"selected" => "host_memory.v2", "partitions" => []}
+         socket: socket_supervisor(:offline_reconnect_socket)
        }}
     )
 
@@ -546,12 +456,10 @@ defmodule Backplane.HostAgent.WorkerTest do
              last_error: nil
            } = GenServer.call(worker, :status)
 
-    assert %{edge_syncer: edge_syncer} = GenServer.call(worker, :status)
-    assert is_pid(edge_syncer) and Process.alive?(edge_syncer)
     GenServer.stop(worker)
 
     refute_receive {:capture_start, _}, 50
-    refute_receive {:http_memory_config, _, _, _}, 50
+    refute_receive {:http_memory_config, _, _}, 50
   end
 
   test "late asynchronous channel replies cannot crash the connection owner" do
@@ -670,9 +578,8 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert :ok = Worker.terminate(:normal, owned)
   end
 
-  test "server channel failure automatically reconnects shared providers and the edge syncer" do
+  test "server channel failure automatically reconnects shared providers" do
     alias Backplane.HostAgent.{AgentChannel, MemoryProxy}
-    alias Backplane.HostAgent.Memory.Edge.Syncer
     start_supervised!({Registry, keys: :unique, name: __MODULE__.ReconnectRegistry})
     supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
     args = {nil, nil, "host_agent:reconnect-fixture", %{}, __MODULE__.ReconnectRegistry}
@@ -685,8 +592,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     connection = %{
       channel: first,
       host_id: "host-1",
-      socket: first_socket,
-      memory: %{"selected" => "host_memory.v2", "partitions" => []}
+      socket: first_socket
     }
 
     :persistent_term.put({FakeConnector, :owner}, self())
@@ -711,11 +617,10 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert_receive {:connect, _}
 
-    assert %{socket: ^first_socket, edge_syncer: edge, channel_monitor_ref: old_ref} =
+    assert %{socket: ^first_socket, channel_monitor_ref: old_ref} =
              GenServer.call(worker, :status)
 
     assert MemoryProxy.channel() == first
-    assert Syncer.status(edge).channel == first
 
     # Prepare the next authenticated channel before notifying the first of its
     # server-side closure; no direct connect_retry message drives this recovery.
@@ -729,9 +634,8 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     send(first, %Phoenix.SocketClient.Message{event: "phx_error", payload: %{}})
     assert_receive {:connect, _}, 1_000
-    assert %{channel: ^second, edge_syncer: ^edge} = GenServer.call(worker, :status)
+    assert %{channel: ^second} = GenServer.call(worker, :status)
     assert MemoryProxy.channel() == second
-    assert Syncer.status(edge).channel == second
     refute Process.alive?(first_socket)
     assert Process.alive?(second_socket)
     assert DynamicSupervisor.count_children(supervisor).active == 1
@@ -745,7 +649,7 @@ defmodule Backplane.HostAgent.WorkerTest do
     assert MemoryProxy.channel() == nil
   end
 
-  test "disabled memory ignores an unsolicited memory selection without starting edge sync" do
+  test "disabled memory ignores an unsolicited memory selection" do
     :persistent_term.put({FakeConnector, :owner}, self())
     :persistent_term.put({FakeMemoryProxy, :owner}, self())
     channel = start_supervised!({Agent, fn -> nil end})
@@ -783,121 +687,12 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert_receive {:connect, _}
 
-    assert %{
-             channel: ^channel,
-             edge_syncer: nil,
-             memory_supervisor: nil,
-             memory_negotiation_report: nil
-           } = state = GenServer.call(worker, :status)
+    assert %{channel: ^channel, memory_supervisor: nil} = state = GenServer.call(worker, :status)
 
     report = Backplane.HostAgent.Reporter.config_report(config, state)
     assert report["memory"]["enabled"] == false
-    assert report["memory_negotiation"] == nil
+    refute Map.has_key?(report, "memory_negotiation")
     assert Process.alive?(channel)
-  end
-
-  test "current selection starts an edge syncer and a non-memory reconnect stops it" do
-    :persistent_term.put({FakeConnector, :owner}, self())
-    :persistent_term.put({FakeMemoryProxy, :owner}, self())
-    first_channel = start_supervised!({Agent, fn -> nil end})
-
-    :persistent_term.put(
-      {FakeConnector, :connection},
-      {:ok,
-       %{
-         channel: first_channel,
-         host_id: "host-1",
-         host_name: "t430",
-         socket: socket_supervisor(:v2_socket),
-         memory: %{"selected" => "host_memory.v2", "partitions" => []}
-       }}
-    )
-
-    on_exit(fn ->
-      :persistent_term.erase({FakeConnector, :owner})
-      :persistent_term.erase({FakeConnector, :connection})
-      :persistent_term.erase({FakeMemoryProxy, :owner})
-    end)
-
-    {:ok, worker} =
-      Worker.start_link(
-        name: nil,
-        connect?: true,
-        config_module: StructRuntimeConfig,
-        connector_module: FakeConnector,
-        http_server_module: FakeHttpServer,
-        memory_proxy_module: FakeMemoryProxy,
-        sync_on_start?: false
-      )
-
-    assert_receive {:connect, %Config{}}
-    assert %{edge_syncer: edge_syncer} = GenServer.call(worker, :status)
-    assert is_pid(edge_syncer) and Process.alive?(edge_syncer)
-
-    assert %{
-             poll_interval_ms: 1_000,
-             mirror_opts: [config: %{enabled: true, development_plaintext: true}]
-           } =
-             Backplane.HostAgent.Memory.Edge.Syncer.status(edge_syncer)
-
-    :persistent_term.put(
-      {FakeConnector, :connection},
-      {:ok,
-       %{
-         channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
-         host_id: "host-1",
-         host_name: "t430",
-         socket: socket_supervisor(:non_memory_socket),
-         memory: %{}
-       }}
-    )
-
-    send(worker, :connect_retry)
-    assert_receive {:connect, _}
-    assert %{edge_syncer: nil} = GenServer.call(worker, :status)
-    refute Process.alive?(edge_syncer)
-    GenServer.stop(worker)
-  end
-
-  test "normal worker shutdown promptly terminates its linked edge syncer" do
-    :persistent_term.put({FakeConnector, :owner}, self())
-    :persistent_term.put({FakeMemoryProxy, :owner}, self())
-
-    :persistent_term.put(
-      {FakeConnector, :connection},
-      {:ok,
-       %{
-         channel: start_supervised!({Agent, fn -> nil end}, id: make_ref()),
-         host_id: "host-1",
-         host_name: "t430",
-         socket: socket_supervisor(:shutdown_socket),
-         memory: %{"selected" => "host_memory.v2", "partitions" => []}
-       }}
-    )
-
-    on_exit(fn ->
-      :persistent_term.erase({FakeConnector, :owner})
-      :persistent_term.erase({FakeConnector, :connection})
-      :persistent_term.erase({FakeMemoryProxy, :owner})
-    end)
-
-    {:ok, worker} =
-      Worker.start_link(
-        name: nil,
-        connect?: false,
-        config_module: FakeRuntimeConfig,
-        connector_module: FakeConnector,
-        http_server_module: FakeHttpServer,
-        memory_proxy_module: FakeMemoryProxy,
-        sync_on_start?: false
-      )
-
-    send(worker, :connect_retry)
-    assert_receive {:connect, _}
-    assert %{edge_syncer: edge_syncer} = GenServer.call(worker, :status)
-    ref = Process.monitor(edge_syncer)
-    assert :ok = GenServer.stop(worker, :normal, 1_000)
-    assert_receive {:DOWN, ^ref, :process, ^edge_syncer, :normal}, 1_000
   end
 
   test "starts and retains capture and HTTP while the hub remains offline" do
@@ -918,7 +713,7 @@ defmodule Backplane.HostAgent.WorkerTest do
       )
 
     assert_receive first_message
-    assert {:set_config, %{host_id: "host-authoritative"}} = first_message
+    assert {:set_connection_owner, ^worker} = first_message
 
     assert_receive second_message
 
@@ -944,7 +739,6 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     send(worker, :connect_retry)
 
-    assert_receive {:set_config, %{host_id: "host-authoritative"}}
     assert_receive {:connect_failed, %{host_id: "host-authoritative"}}
     refute_receive {:capture_start, _}, 50
     refute_receive {:http_child_spec_called, _}, 50
@@ -1531,17 +1325,5 @@ defmodule Backplane.HostAgent.WorkerTest do
 
   defp stop_pid(pid) do
     if Process.alive?(pid), do: send(pid, :stop)
-  end
-
-  defp await_channel_loss(worker, attempts \\ 100)
-  defp await_channel_loss(_worker, 0), do: false
-
-  defp await_channel_loss(worker, attempts) do
-    if GenServer.call(worker, :status).channel == nil do
-      true
-    else
-      Process.sleep(10)
-      await_channel_loss(worker, attempts - 1)
-    end
   end
 end

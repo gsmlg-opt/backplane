@@ -4,51 +4,15 @@ defmodule Backplane.Memory.Audit do
   import Ecto.Query
 
   @contract_operations ~w(
-    activity.repair
-    memory.activity.purge
-    coordination.action.create
-    coordination.action.status
-    coordination.heal
-    coordination.lease.acquire
-    coordination.lease.cleanup
-    coordination.signal.read
-    coordination.signal.send
-    crystal.crystallize
-    forget
-    governance_delete
-    hard_delete
-    memory.archive
-    memory.apply
-    lesson.candidate
-    lesson.save
-    lesson.strengthen
-    lesson.transition
-    memory.recall_trace.purge
-    memory_relation.candidate
-    memory_relation.policy
-    memory_relation.resolve
-    projection.repair
-    projection.rebuild
-    remember
-    memory.export
-    memory.activity.summary
     memory.config.set
-    memory.replay.import_dispatched
-    memory.replay.load
-    memory.replay.sessions
-    memory.gate.set
-    memory.import.completed
-    memory.import.failed
-    memory.import.started
-    memory.repair
+    projection.repair
     session.abandoned
     session.lifecycle_transition
-    session.summary_enqueued
   )
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @doc "Enumerates the lifecycle, repair, and coordination operations audited by M14."
+  @doc "Enumerates the operations the memory domain still writes."
   def contract_operations, do: Enum.sort(@contract_operations)
 
   @doc "Append an audit entry."
@@ -111,85 +75,6 @@ defmodule Backplane.Memory.Audit do
     q = if op = opts[:operation], do: where(q, [r], r.operation == ^op), else: q
     q = if actor = opts[:actor], do: where(q, [r], r.actor == ^actor), else: q
 
-    repo().all(q)
-  end
-
-  @doc "List audit entries owned by an exact memory partition before pagination."
-  def list(partition, opts) when is_map(partition) and is_list(opts) do
-    case partition do
-      %{
-        memory_space_id: memory_space_id,
-        host_id: host_id,
-        client_id: client_id,
-        scope: scope,
-        namespace: namespace
-      } ->
-        list_partition(memory_space_id, host_id, client_id, scope, namespace, opts)
-
-      _incomplete ->
-        []
-    end
-  end
-
-  defp list_partition(
-         memory_space_id,
-         host_id,
-         client_id,
-         scope,
-         namespace,
-         opts
-       ) do
-    limit = Keyword.get(opts, :limit, 50)
-    offset = Keyword.get(opts, :offset, 0)
-
-    q =
-      from(r in "memory_audit_log",
-        where:
-          (fragment("?->>'memory_space_id'", r.metadata) == ^memory_space_id and
-             fragment("?->>'host_id'", r.metadata) == ^host_id and
-             fragment("?->>'client_id'", r.metadata) == ^client_id and
-             fragment("?->>'scope'", r.metadata) == ^scope and
-             fragment("?->>'namespace'", r.metadata) == ^namespace) or
-            fragment(
-              """
-              EXISTS (
-                SELECT 1 FROM bpm_memories m
-                WHERE m.memory_space_id::text = ? AND m.host_id = ? AND m.client_id = ?
-                  AND m.scope = ? AND m.namespace = ?
-                  AND CASE jsonb_typeof(?)
-                    WHEN 'array' THEN ? @> jsonb_build_array(m.id::text)
-                    WHEN 'object' THEN EXISTS (
-                      SELECT 1 FROM jsonb_each_text(?) AS target(key, value)
-                      WHERE target.value = m.id::text
-                    )
-                    ELSE false
-                  END
-              )
-              """,
-              ^memory_space_id,
-              ^host_id,
-              ^client_id,
-              ^scope,
-              ^namespace,
-              r.target_ids,
-              r.target_ids,
-              r.target_ids
-            ),
-        order_by: [desc: r.created_at, desc: r.id],
-        limit: ^limit,
-        offset: ^offset,
-        select: %{
-          id: r.id,
-          operation: r.operation,
-          actor: r.actor,
-          target_ids: r.target_ids,
-          metadata: r.metadata,
-          created_at: r.created_at
-        }
-      )
-
-    q = if op = opts[:operation], do: where(q, [r], r.operation == ^op), else: q
-    q = if actor = opts[:actor], do: where(q, [r], r.actor == ^actor), else: q
     repo().all(q)
   end
 

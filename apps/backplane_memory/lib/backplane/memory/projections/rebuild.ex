@@ -4,13 +4,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
   import Ecto.Query
 
   alias Backplane.Memory.Projections.{
-    ActivityProjector,
-    ActivityStore,
     Gaps,
     ObservationProjector,
     ProjectedObservation,
     ProjectedSession,
-    ReplayProjector,
     Revision,
     SessionProjector,
     Snapshot,
@@ -19,16 +16,13 @@ defmodule Backplane.Memory.Projections.Rebuild do
   }
 
   alias Backplane.Memory.Audit
-  alias Backplane.Memory.PartitionIdentity
 
   @subject_type "captured_session"
-  @projector_names ~w(observations session activity replay)
+  @projector_names ~w(observations session)
   @insert_batch_size 1_000
   @processing_versions %{
     "observations" => "observations-v1",
-    "session" => "session-v1",
-    "activity" => "activity-v1",
-    "replay" => "replay-v1"
+    "session" => "session-v1"
   }
 
   def authoritative_revision(host_id, session_id) do
@@ -46,9 +40,6 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
         {:error, :not_found} ->
           {:error, :not_found}
-
-        {:error, :ambiguous_partition} ->
-          {:error, :ambiguous_partition}
 
         {:error, {:projection_failed, input_revision, exception, stacktrace}} ->
           record_failed(host_id, session_id, subject_id, input_revision, exception)
@@ -76,19 +67,13 @@ defmodule Backplane.Memory.Projections.Rebuild do
   defp rebuild_locked(host_id, session_id, subject_id) do
     case Source.events(host_id, session_id) do
       {:ok, [_ | _] = events} ->
-        case canonical_partition(events) do
-          {:ok, partition} ->
-            input_revision = Revision.input_revision(events)
+        input_revision = Revision.input_revision(events)
 
-            try do
-              rebuild(host_id, session_id, subject_id, events, input_revision, partition)
-            rescue
-              exception ->
-                repo().rollback({:projection_failed, input_revision, exception, __STACKTRACE__})
-            end
-
-          {:error, reason} ->
-            repo().rollback(reason)
+        try do
+          rebuild(host_id, session_id, subject_id, events, input_revision)
+        rescue
+          exception ->
+            repo().rollback({:projection_failed, input_revision, exception, __STACKTRACE__})
         end
 
       {:ok, []} ->
@@ -99,28 +84,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
     end
   end
 
-  defp canonical_partition(events) do
-    partitions =
-      events
-      |> Enum.map(
-        &Map.take(&1, [
-          :memory_space_id,
-          :host_id,
-          :client_id,
-          :source_client_id,
-          :scope,
-          :namespace
-        ])
-      )
-      |> Enum.map(&PartitionIdentity.validate/1)
-
-    with true <- Enum.all?(partitions, &match?({:ok, _}, &1)),
-         [partition] <- partitions |> Enum.map(&elem(&1, 1)) |> Enum.uniq() do
-      {:ok, partition}
-    else
-      _ -> {:error, :ambiguous_partition}
-    end
-  end
+  # Provenance of the session's first event; it never scopes or authorizes access.
+  defp provenance([first | _events]),
+    do: Map.take(first, [:host_id, :client_id, :source_client_id])
 
   def all(opts \\ []) do
     on_result = Keyword.get(opts, :on_result, fn _result -> :ok end)
@@ -150,7 +116,8 @@ defmodule Backplane.Memory.Projections.Rebuild do
     end
   end
 
-  defp rebuild(host_id, session_id, subject_id, events, input_revision, partition) do
+  defp rebuild(host_id, session_id, subject_id, events, input_revision) do
+    provenance = provenance(events)
     gaps = Gaps.find(events)
     outputs = outputs(events, gaps)
     output_revisions = output_revisions(outputs)
@@ -164,12 +131,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
     replace_session_row(subject_id, input_revision, events, Map.fetch!(outputs, "session"))
 
-    replace_activity_rows(subject_id, input_revision, partition, Map.fetch!(outputs, "activity"))
-    replace_replay_rows(subject_id, input_revision, events, Map.fetch!(outputs, "replay"))
-
     states =
       Enum.map(@projector_names, fn projector ->
-        state = mark_running(projector, subject_id, input_revision, partition)
+        state = mark_running(projector, subject_id, input_revision, provenance)
 
         replace_snapshot(
           projector,
@@ -177,7 +141,7 @@ defmodule Backplane.Memory.Projections.Rebuild do
           input_revision,
           Map.fetch!(output_revisions, projector),
           Map.fetch!(outputs, projector),
-          partition
+          provenance
         )
 
         finalize_state(
@@ -189,12 +153,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
     %{
       production_read_models: true,
-      memory_space_id: partition.memory_space_id,
       host_id: host_id,
-      client_id: partition[:client_id],
-      source_client_id: partition[:source_client_id],
-      scope: partition.scope,
-      namespace: partition.namespace,
+      client_id: provenance[:client_id],
+      source_client_id: provenance[:source_client_id],
       session_id: session_id,
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -219,12 +180,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
 
     row = %{
       subject_id: subject_id,
-      memory_space_id: read_model["memory_space_id"],
       host_id: read_model["host_id"],
       client_id: read_model["client_id"],
       source_client_id: read_model["source_client_id"],
-      scope: read_model["scope"],
-      namespace: read_model["namespace"],
       session_id: read_model["session_id"],
       project: read_model["project"],
       agent_id: read_model["agent_id"],
@@ -245,12 +203,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
       on_conflict:
         {:replace,
          [
-           :memory_space_id,
            :host_id,
            :client_id,
            :source_client_id,
-           :scope,
-           :namespace,
            :session_id,
            :project,
            :agent_id,
@@ -275,12 +230,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
         [read_model["session_id"]],
         "#{subject_id}:#{input_revision}:#{read_model["status"]}",
         %{
-          memory_space_id: read_model["memory_space_id"],
           host_id: read_model["host_id"],
           client_id: read_model["client_id"],
           source_client_id: read_model["source_client_id"],
-          scope: read_model["scope"],
-          namespace: read_model["namespace"],
           session_id: read_model["session_id"],
           from: previous_status,
           to: read_model["status"],
@@ -293,9 +245,7 @@ defmodule Backplane.Memory.Projections.Rebuild do
   defp outputs(events, gaps) do
     %{
       "observations" => ObservationProjector.project(events),
-      "session" => SessionProjector.project(events, gaps),
-      "activity" => %{"activity" => ActivityProjector.project(events)},
-      "replay" => %{"events" => ReplayProjector.project(events)}
+      "session" => SessionProjector.project(events, gaps)
     }
   end
 
@@ -306,15 +256,12 @@ defmodule Backplane.Memory.Projections.Rebuild do
     end)
   end
 
-  defp mark_running(projector, subject_id, input_revision, partition) do
+  defp mark_running(projector, subject_id, input_revision, provenance) do
     now = now()
 
     attrs = %{
-      memory_space_id: partition.memory_space_id,
-      host_id: partition[:host_id],
-      source_client_id: partition[:source_client_id],
-      scope: partition.scope,
-      namespace: partition.namespace,
+      host_id: provenance[:host_id],
+      source_client_id: provenance[:source_client_id],
       projector: projector,
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -346,14 +293,11 @@ defmodule Backplane.Memory.Projections.Rebuild do
          input_revision,
          output_revision,
          read_model,
-         partition
+         provenance
        ) do
     attrs = %{
-      memory_space_id: partition.memory_space_id,
-      host_id: partition[:host_id],
-      source_client_id: partition[:source_client_id],
-      scope: partition.scope,
-      namespace: partition.namespace,
+      host_id: provenance[:host_id],
+      source_client_id: provenance[:source_client_id],
       projector: projector,
       subject_type: @subject_type,
       subject_id: subject_id,
@@ -383,12 +327,9 @@ defmodule Backplane.Memory.Projections.Rebuild do
         %{
           event_id: observation["event_id"],
           subject_id: subject_id,
-          memory_space_id: read_model["memory_space_id"],
           host_id: read_model["host_id"],
           client_id: read_model["client_id"],
           source_client_id: read_model["source_client_id"],
-          scope: read_model["scope"],
-          namespace: read_model["namespace"],
           session_id: read_model["session_id"],
           project: observation["project"],
           agent_id: observation["agent_id"],
@@ -414,37 +355,6 @@ defmodule Backplane.Memory.Projections.Rebuild do
     rows
     |> Enum.chunk_every(@insert_batch_size)
     |> Enum.each(&repo().insert_all(ProjectedObservation, &1))
-  end
-
-  defp replace_activity_rows(subject_id, input_revision, partition, read_model) do
-    ActivityStore.replace_subject!(
-      subject_id,
-      input_revision,
-      partition,
-      read_model["activity"] || []
-    )
-  end
-
-  defp replace_replay_rows(subject_id, input_revision, events, read_model) do
-    first = List.first(events)
-
-    partition =
-      Map.take(first, [
-        :memory_space_id,
-        :host_id,
-        :client_id,
-        :source_client_id,
-        :scope,
-        :namespace
-      ])
-
-    Backplane.Memory.Replay.Store.put!(
-      subject_id,
-      input_revision,
-      partition,
-      first.session_id,
-      read_model["events"] || []
-    )
   end
 
   defp parse_datetime!(value) do
@@ -505,15 +415,12 @@ defmodule Backplane.Memory.Projections.Rebuild do
       repo().transaction(fn ->
         Source.lock_streams(host_id, session_id)
 
-        with {:ok, ^input_revision, partition} <-
-               current_input_partition(host_id, session_id) do
+        with {:ok, ^input_revision, provenance} <-
+               current_input_provenance(host_id, session_id) do
           Enum.each(@projector_names, fn projector ->
             attrs = %{
-              memory_space_id: partition.memory_space_id,
-              host_id: partition[:host_id],
-              source_client_id: partition[:source_client_id],
-              scope: partition.scope,
-              namespace: partition.namespace,
+              host_id: provenance[:host_id],
+              source_client_id: provenance[:source_client_id],
               projector: projector,
               subject_type: @subject_type,
               subject_id: subject_id,
@@ -556,12 +463,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
     :ok
   end
 
-  defp current_input_partition(host_id, session_id) do
+  defp current_input_provenance(host_id, session_id) do
     case Source.events(host_id, session_id) do
       {:ok, [_ | _] = events} ->
-        with {:ok, partition} <- canonical_partition(events) do
-          {:ok, Revision.input_revision(events), partition}
-        end
+        {:ok, Revision.input_revision(events), provenance(events)}
 
       _other ->
         {:error, :not_found}

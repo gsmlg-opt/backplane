@@ -6,11 +6,10 @@ defmodule Backplane.HostAgent.AgentChannel do
   use Phoenix.SocketClient.Channel
 
   alias Backplane.HostAgent.{ApiForwarder, Services}
-  alias Backplane.HostAgent.Memory.Edge.Syncer
   alias Phoenix.SocketClient.Channel.Helpers
 
-  # Rejoining belongs to Worker, which also refreshes capture/command providers
-  # and the edge syncer. An unjoined restarted channel is not a live connection.
+  # Rejoining belongs to Worker, which also refreshes the capture channel
+  # provider. An unjoined restarted channel is not a live connection.
   def child_spec(args) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, [args]}, restart: :temporary}
   end
@@ -74,16 +73,6 @@ defmodule Backplane.HostAgent.AgentChannel do
     {:noreply, state}
   end
 
-  def handle_message("memory_access_changed", hint, state) when is_map(hint) do
-    syncer_module().memory_access_changed(%{channel: self(), hint: hint})
-    {:noreply, state}
-  end
-
-  def handle_message("memory_available", hint, state) when is_map(hint) do
-    syncer_module().memory_available(hint)
-    {:noreply, state}
-  end
-
   def handle_message(_event, _payload, state), do: {:noreply, state}
 
   def plugin_call_result(payload), do: plugin_call_result(payload, %{})
@@ -131,9 +120,6 @@ defmodule Backplane.HostAgent.AgentChannel do
         end
     end
   end
-
-  defp syncer_module,
-    do: Application.get_env(:backplane_host_agent, :edge_syncer_module, Syncer)
 
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)

@@ -12,14 +12,14 @@ defmodule Backplane.Memory.Events.ConcurrencyTest do
     def append(attrs, opts \\ []),
       do:
         Backplane.Memory.Events.Store.append(
-          Backplane.Memory.EventTestPartition.attrs(attrs),
+          attrs,
           opts
         )
 
     def append_batch(attrs_list, opts \\ []),
       do:
         Backplane.Memory.Events.Store.append_batch(
-          Backplane.Memory.EventTestPartition.attrs_list(attrs_list),
+          attrs_list,
           opts
         )
 
@@ -28,15 +28,10 @@ defmodule Backplane.Memory.Events.ConcurrencyTest do
         Backplane.Memory.Events.Store.append_multi(
           multi,
           name,
-          Backplane.Memory.EventTestPartition.attrs(attrs)
+          attrs
         )
 
     defdelegate list(stream_id), to: Backplane.Memory.Events.Store
-  end
-
-  setup do
-    unboxed(&Backplane.Memory.EventTestPartition.ensure!/0)
-    :ok
   end
 
   test "100 committed writers allocate every sequence exactly once" do

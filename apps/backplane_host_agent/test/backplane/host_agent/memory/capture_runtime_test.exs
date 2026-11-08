@@ -1,7 +1,7 @@
 defmodule Backplane.HostAgent.Memory.CaptureRuntimeTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.{CaptureSupervisor, EventEnvelope, RecallCache}
+  alias Backplane.HostAgent.Memory.{CaptureSupervisor, EventEnvelope}
   alias Backplane.HostAgent.Memory.Spool.Turso, as: Spool
 
   @moduletag :tmp_dir
@@ -55,17 +55,16 @@ defmodule Backplane.HostAgent.Memory.CaptureRuntimeTest do
              host_id: "host",
              config: %{host_id: "host"},
              spool: spool,
-             spool_module: Spool,
-             recall_cache: recall_cache
+             spool_module: Spool
            } =
+             runtime =
              Application.fetch_env!(:backplane_host_agent, :capture_runtime)
 
     assert spool == names.spool
     assert is_pid(Process.whereis(names.spool))
     assert is_pid(Process.whereis(names.uploader))
-    assert recall_cache == names.recall_cache
-    assert is_pid(Process.whereis(names.recall_cache))
-    assert %{entries: 0, bytes: 0} = RecallCache.stats(names.recall_cache)
+    refute Map.has_key?(runtime, :recall_cache)
+    refute Map.has_key?(runtime, :memory_proxy_module)
 
     assert %{
              max_spool_bytes: 67_108_864,
@@ -210,7 +209,6 @@ defmodule Backplane.HostAgent.Memory.CaptureRuntimeTest do
       name: names.supervisor,
       spool_name: names.spool,
       uploader_name: names.uploader,
-      recall_cache_name: names.recall_cache,
       channel_provider: ChannelProvider,
       channel_module: FakeChannel,
       upload_interval_ms: 0,
@@ -225,8 +223,7 @@ defmodule Backplane.HostAgent.Memory.CaptureRuntimeTest do
     %{
       supervisor: :"capture_supervisor_#{suffix}",
       spool: :"capture_spool_#{suffix}",
-      uploader: :"capture_uploader_#{suffix}",
-      recall_cache: :"capture_recall_cache_#{suffix}"
+      uploader: :"capture_uploader_#{suffix}"
     }
   end
 

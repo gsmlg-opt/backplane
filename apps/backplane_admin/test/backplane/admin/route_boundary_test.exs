@@ -3,29 +3,21 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
   @memory_top_paths [
     "/memory",
-    "/memory/search",
-    "/memory/streams",
+    "/memory/records",
     "/memory/events",
     "/memory/sessions",
-    "/memory/timeline",
-    "/memory/memories",
-    "/memory/graph",
-    "/memory/profile",
-    "/memory/actions",
-    "/memory/audit",
-    "/memory/config",
-    "/memory/pipeline",
-    "/memory/activity",
-    "/memory/replay",
-    "/memory/lessons",
-    "/memory/crystals",
-    "/memory/recall"
+    "/memory/config"
   ]
 
   @legacy_memory_paths ~w(
     /memory/browse
     /memory/stats
     /memory/observations
+    /memory/search
+    /memory/memories
+    /memory/lessons
+    /memory/crystals
+    /memory/recall
   )
 
   test "redirects root to the dashboard", %{conn: conn} do
@@ -65,34 +57,20 @@ defmodule Backplane.Admin.RouteBoundaryTest do
     end
   end
 
-  test "Memory sidebar matches the required Observe, Knowledge, Coordinate, and Operate IA", %{
-    conn: conn
-  } do
+  test "Memory sidebar lists the retained pages", %{conn: conn} do
     {:ok, view, html} = live(conn, "/memory")
 
     expected_items = [
       {"Overview", "/memory"},
-      {"Activity", "/memory/activity"},
+      {"Records", "/memory/records"},
+      {"Events", "/memory/events"},
       {"Sessions", "/memory/sessions"},
-      {"Timeline", "/memory/timeline"},
-      {"Replay", "/memory/replay"},
-      {"Memories", "/memory/memories"},
-      {"Lessons", "/memory/lessons"},
-      {"Crystals", "/memory/crystals"},
-      {"Graph", "/memory/graph"},
-      {"Profile", "/memory/profile"},
-      {"Actions", "/memory/actions"},
-      {"Search", "/memory/search"},
-      {"Pipeline", "/memory/pipeline"},
-      {"Recall Inspector", "/memory/recall"},
-      {"Audit", "/memory/audit"},
       {"Config", "/memory/config"}
     ]
 
-    document = Floki.parse_fragment!(html)
-
     desktop_items =
-      document
+      html
+      |> Floki.parse_fragment!()
       |> Floki.find("#admin-sidebar a[aria-label]")
       |> Enum.map(fn link ->
         {
@@ -101,68 +79,9 @@ defmodule Backplane.Admin.RouteBoundaryTest do
         }
       end)
 
-    mobile_items =
-      document
-      |> Floki.find("#memory-mobile-navigation nav a")
-      |> Enum.map(fn link ->
-        {
-          link |> Floki.text() |> String.trim(),
-          link |> Floki.attribute("href") |> List.first()
-        }
-      end)
-
     assert desktop_items == expected_items
-    assert mobile_items == expected_items
-
-    assert has_element?(
-             view,
-             ~s(#admin-sidebar[aria-label="Memory navigation"])
-           )
-
-    assert has_element?(
-             view,
-             ~s(#admin-sidebar [data-left-menu-toggle][aria-controls="admin-sidebar-scroll"][aria-expanded="true"])
-           )
-
-    assert has_element?(view, "#admin-sidebar-scroll")
+    assert has_element?(view, ~s(#admin-sidebar[aria-label="Memory navigation"]))
     assert has_element?(view, ~s(#admin-sidebar a[href="/memory"][aria-current="page"]))
-
-    for group <- ~w(Observe Knowledge Coordinate Operate) do
-      id = String.downcase(group)
-
-      assert has_element?(view, "#admin-sidebar-group-#{id} > summary", group)
-      assert has_element?(view, "#memory-mobile-navigation .memory-eyebrow", group)
-    end
-
-    assert has_element?(
-             view,
-             ~s(#admin-sidebar-group-operate a[href="/memory/search"]),
-             "Search"
-           )
-
-    {:ok, search, _html} = live(recycle(conn), "/memory/search")
-
-    assert has_element?(search, ~s(#admin-sidebar a[href="/memory/search"][aria-current="page"]))
-    refute has_element?(search, ~s(#admin-sidebar a[href="/memory"][aria-current="page"]))
-
-    assert has_element?(
-             search,
-             ~s(#admin-sidebar-navigation[data-active-nav="memory-search"])
-           )
-  end
-
-  test "mobile Memory navigation preserves the same source selection as desktop", %{conn: conn} do
-    query = %{"host" => "navigation-host", "repository" => "navigation-repo"}
-    {:ok, view, html} = live(conn, "/memory/search?" <> URI.encode_query(query))
-    document = Floki.parse_fragment!(html)
-
-    desktop_paths = Floki.attribute(document, "#admin-sidebar a[aria-label]", "href")
-    mobile_paths = Floki.attribute(document, "#memory-mobile-navigation nav a", "href")
-    assert mobile_paths == desktop_paths
-    assert Enum.all?(mobile_paths, &(URI.decode_query(URI.parse(&1).query) == query))
-    assert has_element?(view, "#memory-mobile-navigation summary", "Search")
-    refute has_element?(view, "#memory-mobile-navigation[open]")
-    assert has_element?(view, ~s(#memory-mobile-navigation a[aria-current="page"]), "Search")
   end
 
   test "Memory pages accept client theme changes without disconnecting", %{conn: conn} do
@@ -304,19 +223,6 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
       assert response(response_conn, 404) == "not found"
       assert Plug.Conn.get_resp_header(response_conn, "location") == []
-    end
-  end
-
-  test "Memory V2 detail routes return literal not found", %{conn: conn} do
-    for path <- [
-          "/memory/streams/missing-stream",
-          "/memory/events/#{Ecto.UUID.generate()}",
-          "/memory/events/not-a-uuid"
-        ] do
-      assert conn
-             |> recycle()
-             |> get(path)
-             |> response(404) == "not found"
     end
   end
 

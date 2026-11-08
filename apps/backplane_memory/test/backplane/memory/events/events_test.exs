@@ -5,18 +5,13 @@ defmodule Backplane.Memory.EventsTest do
 
   defmodule Events do
     def append(attrs),
-      do: Backplane.Memory.Events.append(Backplane.Memory.EventTestPartition.attrs(attrs))
+      do: Backplane.Memory.Events.append(attrs)
 
     def append_batch(attrs_list),
       do:
         Backplane.Memory.Events.append_batch(
-          Backplane.Memory.EventTestPartition.attrs_list(attrs_list)
+          attrs_list
         )
-  end
-
-  setup do
-    Backplane.Memory.EventTestPartition.ensure!()
-    :ok
   end
 
   test "append persists and allocates stream-local sequences" do

@@ -1,159 +1,10 @@
 defmodule Backplane.HostAgent.Memory.SupervisorTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.{Access, Migrator}
+  alias Backplane.HostAgent.Memory.Migrator
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
 
   @moduletag :tmp_dir
-
-  defmodule CanonicalRemote do
-    def call("recall", _args, opts),
-      do:
-        {:ok,
-         %{
-           "access" => opts[:access],
-           "partition" => partition(),
-           "result" => %{"results" => [%{"id" => "canonical", "content" => "online"}]}
-         }}
-
-    def partition,
-      do: %{
-        "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        "scope" => "proj_local",
-        "namespace" => "private"
-      }
-  end
-
-  test "edge cannot reuse the command database", %{tmp_dir: dir} do
-    path = Path.join(dir, "command.db")
-
-    {:ok, pid} =
-      MemorySupervisor.start_link(%{
-        enabled: true,
-        db_path: path,
-        name: nil,
-        store_name: :collision_command_store,
-        host_sync: %{
-          enabled: true,
-          development_plaintext: true,
-          db_path: path,
-          name: nil,
-          store_name: :collision_edge_store
-        }
-      })
-
-    refute Process.whereis(:collision_edge_store)
-    assert {:ok, _} = Migrator.current_version(:collision_command_store)
-    Supervisor.stop(pid)
-  end
-
-  test "edge open failure preserves command services", %{tmp_dir: dir} do
-    previous_runtime = Application.get_env(:backplane_host_agent, :capture_runtime)
-
-    on_exit(fn ->
-      if previous_runtime,
-        do: Application.put_env(:backplane_host_agent, :capture_runtime, previous_runtime),
-        else: Application.delete_env(:backplane_host_agent, :capture_runtime)
-    end)
-
-    {:ok, capture} =
-      Backplane.HostAgent.Memory.CaptureSupervisor.start_link(%{
-        enabled: true,
-        name: nil,
-        host_id: "host",
-        db_path: Path.join(dir, "capture.db"),
-        spool_name: :edge_failure_capture_spool,
-        uploader_name: :edge_failure_uploader,
-        recall_cache_name: :edge_failure_cache
-      })
-
-    blocked = Path.join(dir, "blocked")
-    File.write!(blocked, "file")
-
-    {:ok, pid} =
-      MemorySupervisor.start_link(%{
-        enabled: true,
-        db_path: Path.join(dir, "command.db"),
-        name: nil,
-        store_name: :failure_command_store,
-        host_sync: %{
-          enabled: true,
-          development_plaintext: true,
-          db_path: Path.join(blocked, "edge.db"),
-          name: nil
-        }
-      })
-
-    assert {:ok, _} = Migrator.current_version(:failure_command_store)
-    assert is_pid(Process.whereis(:failure_command_store_syncer))
-    assert is_pid(Process.whereis(:failure_command_store_pruner))
-    assert Process.alive?(capture)
-    assert is_pid(Process.whereis(:edge_failure_uploader))
-
-    assert %{pending_depth: 0} =
-             Backplane.HostAgent.Memory.Spool.Turso.stats(:edge_failure_capture_spool)
-
-    access_id = "11111111-1111-4111-8111-111111111111"
-
-    assert :ok =
-             Access.install_inventory(
-               %{id: 1, sent_at_ms: System.monotonic_time(:millisecond)},
-               %{
-                 "extensions" => ~w(memory_access.v1 memory_commands.v2),
-                 "default_access_id" => access_id,
-                 "accesses" => [
-                   %{
-                     "access_id" => access_id,
-                     "authority_version" => 1,
-                     "status" => "active",
-                     "partition" => CanonicalRemote.partition(),
-                     "capabilities" => ~w(read remember forget),
-                     "offline_read_lease_seconds" => 0
-                   }
-                 ]
-               }
-             )
-
-    assert {:ok,
-            %{
-              "results" => [%{"id" => "canonical"}],
-              "authority" => "canonical",
-              "history_available" => true
-            }} =
-             Backplane.HostAgent.MemoryFacade.call("recall", %{"query" => "memory"}, %{
-               agent_id: "agent",
-               store: :failure_command_store,
-               remote_adapter: CanonicalRemote,
-               config: %{bound_scope: "proj_local"}
-             })
-
-    Supervisor.stop(pid)
-    Supervisor.stop(capture)
-  end
-
-  test "edge rejection leaves command store and syncer available", %{tmp_dir: dir} do
-    store = :edge_rejection_command_store
-
-    {:ok, pid} =
-      MemorySupervisor.start_link(%{
-        enabled: true,
-        db_path: Path.join(dir, "command.db"),
-        name: nil,
-        store_name: store,
-        host_sync: %{enabled: true, db_path: Path.join(dir, "rejected/edge.db")}
-      })
-
-    assert Process.alive?(pid)
-    assert {:ok, _} = Migrator.current_version(store)
-    assert is_pid(Process.whereis(:edge_rejection_command_store_syncer))
-    refute File.exists?(Path.join(dir, "rejected"))
-
-    assert Enum.any?(Supervisor.which_children(pid), fn {id, child, _, _} ->
-             id == Backplane.HostAgent.Memory.Edge.Supervisor and child == :undefined
-           end)
-
-    Supervisor.stop(pid)
-  end
 
   test "config defaults edge persistence off and parses explicit bounded opt-in", %{tmp_dir: dir} do
     path = Path.join(dir, "config.yaml")
@@ -208,9 +59,6 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
 
     {:ok, config} = Backplane.HostAgent.Config.load(path)
     assert config.memory.host_sync.enabled
-
-    assert Backplane.HostAgent.Memory.Edge.Protection.status(config.memory.host_sync) ==
-             :protection_unavailable
   end
 
   test "removed versioned host-sync keys do not enable or migrate persistence", %{tmp_dir: dir} do
@@ -237,7 +85,6 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
   test "starts the store and completes migrations before returning", %{tmp_dir: tmp_dir} do
     supervisor_name = :"host_agent_memory_supervisor_#{System.unique_integer([:positive])}"
     store_name = :"host_agent_memory_supervisor_store_#{System.unique_integer([:positive])}"
-    pruner_name = :"host_agent_memory_supervisor_pruner_#{System.unique_integer([:positive])}"
     db_path = Path.join(tmp_dir, "memory.db")
 
     assert {:ok, pid} =
@@ -246,13 +93,14 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
                enabled: true,
                name: supervisor_name,
                store_name: store_name,
-               pruner_name: pruner_name,
                prune_interval_ms: 60_000
              })
 
     latest = Migrator.latest_version()
     assert {:ok, ^latest} = Migrator.current_version(store_name)
-    assert is_pid(Process.whereis(pruner_name))
+
+    child_ids = pid |> Supervisor.which_children() |> Enum.map(&elem(&1, 0))
+    assert child_ids -- [Migrator] == [Backplane.HostAgent.Memory.Store]
 
     Supervisor.stop(pid)
   end

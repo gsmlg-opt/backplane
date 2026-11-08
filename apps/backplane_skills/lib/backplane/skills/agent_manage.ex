@@ -536,7 +536,6 @@ defmodule Backplane.Skills.AgentManage do
       bounded_payload?(config) and
         Enum.all?(sections, &(not Map.has_key?(config, &1) or is_map(config[&1]))) and
         timestamp?(config["local_settings_applied_at"]) and
-        valid_negotiation?(config["memory_negotiation"]) and
         (not Map.has_key?(config, "targets") or
            (is_list(config["targets"]) and length(config["targets"]) <= 50 and
               Enum.all?(config["targets"], &is_map/1)))
@@ -571,7 +570,7 @@ defmodule Backplane.Skills.AgentManage do
          "capture" =>
            safe_config_section(
              config["capture"],
-             ~w(enabled db_path inject_context context_timeout_ms recall_cache_max_entries recall_cache_max_bytes recall_cache_ttl_ms upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
+             ~w(enabled db_path upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
            ),
          "telemetry" =>
            safe_config_section(
@@ -583,8 +582,7 @@ defmodule Backplane.Skills.AgentManage do
              config["targets"] || [],
              &safe_config_section(&1, ~w(name runtime path enabled))
            ),
-         "local_settings_applied_at" => config["local_settings_applied_at"],
-         "memory_negotiation" => safe_negotiation(config["memory_negotiation"])
+         "local_settings_applied_at" => config["local_settings_applied_at"]
        }}
     else
       {:error, :invalid_payload}
@@ -617,17 +615,6 @@ defmodule Backplane.Skills.AgentManage do
       is_boolean(value) or is_integer(value) or (is_binary(value) and byte_size(value) <= 4096)
     end)
   end
-
-  defp valid_negotiation?(nil), do: true
-
-  defp valid_negotiation?(report) when is_map(report) do
-    report["selected"] in ["host_memory", "host_memory.v2"] and timestamp?(report["applied_at"]) and
-      partitions?(report["partitions"] || [])
-  end
-
-  defp valid_negotiation?(_), do: false
-  defp safe_negotiation(nil), do: nil
-  defp safe_negotiation(report), do: Map.take(report, ~w(selected applied_at partitions))
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

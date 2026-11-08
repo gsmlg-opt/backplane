@@ -1,3 +1,5 @@
+> **Superseded** by [docs/superpowers/specs/2026-11-09-memory-simplification-design.md](../superpowers/specs/2026-11-09-memory-simplification-design.md). Historical; describes the retired memory design.
+
 # Memory local development acceptance
 
 Objective: `/Users/gao/.codex/attachments/c26bf667-2a43-4eca-9a69-d232965d2a21/goal-objective.md` (2026-10-19).

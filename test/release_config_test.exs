@@ -1058,19 +1058,7 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
-  test "independent plugin qualification retains the Hermes semantic oracle" do
-    steps = workflow_steps(".github/workflows/memory-plugins.yml")
-    name = "Verify Hermes live semantic oracle"
-
-    assert [step] = Enum.filter(steps, &(&1["name"] == name))
-
-    assert step["run"] ==
-             "MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs"
-
-    refute File.read!(".github/workflows/release.yml") =~ "hermes_memory_live_oracle_test.exs"
-  end
-
-  test "independent plugin qualification retains pinned OpenClaw contracts and canonical path" do
+  test "independent plugin qualification retains pinned OpenClaw contracts" do
     steps = workflow_steps(".github/workflows/memory-plugins.yml")
     setup = Enum.find(steps, &(&1["name"] == "Set up qualified OpenClaw Node runtime"))
     assert setup["uses"] == "actions/setup-node@v6"
@@ -1082,20 +1070,9 @@ defmodule Backplane.ReleaseConfigTest do
     lifecycle = Enum.find(steps, &(&1["name"] == "Verify memory plugin source lifecycle"))
     assert lifecycle["run"] =~ "openclaw_capture_contract_test.exs"
     assert lifecycle["run"] =~ "openclaw_hook_test.exs"
-    assert File.read!(".github/workflows/memory-plugins.yml") =~ "v1_to_v2_upgrade_test.exs"
     packaged = Enum.find(steps, &(&1["name"] == "Verify packaged OpenClaw provider"))
     assert packaged["run"] =~ "backplane_host_agent-*/priv/integrations/memory"
     assert packaged["run"] =~ ~s(node --test "${roots[0]}"/tests/test_openclaw*.mjs)
-
-    runtime = Enum.find(steps, &(&1["name"] == "Install pinned OpenClaw qualification runtime"))
-    assert runtime["run"] =~ "openclaw@2026.10.10"
-    live = Enum.find(steps, &(&1["name"] == "Verify real OpenClaw canonical path"))
-    assert live["env"]["OPENCLAW_LIVE_MODE"] == "deterministic"
-    assert live["env"]["OPENROUTER_API_KEY"] == ""
-    assert live["env"]["BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL"] == "1"
-    assert live["run"] =~ "test/openclaw_memory_live_acceptance.exs"
-    assert live["run"] =~ "_openclawlive_$(openssl rand -hex 8)"
-    assert live["run"] =~ "artifacts/openclaw/openclaw-live.log"
 
     for path <- [".github/workflows/release.yml", ".github/workflows/host-agent-release.yml"] do
       commands = workflow_steps(path) |> Enum.map_join("\n", &(&1["run"] || ""))
@@ -1103,82 +1080,6 @@ defmodule Backplane.ReleaseConfigTest do
       refute commands =~ "test_hermes"
       refute commands =~ "openclaw_memory_live_acceptance"
     end
-  end
-
-  test "OpenClaw logs preserve the qualified Hex archive and release asset inventory" do
-    jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
-    steps = workflow_steps(".github/workflows/memory-plugins.yml")
-    live = Enum.find(steps, &(&1["name"] == "Verify real OpenClaw canonical path"))
-
-    memory =
-      workflow_steps(".github/workflows/memory-test.yml")
-      |> Enum.find(&(&1["with"]["name"] == "memory-qualification"))
-
-    [_, log_path] = Regex.run(~r/>\s+(\S+openclaw-live\.log)/, live["run"])
-
-    verification = ~S"""
-    import hashlib, io, json, pathlib, runpy, sys, zipfile
-    contract = runpy.run_path("scripts/verify_qualified_hex_publication.py")
-    revision = "a" * 40
-    files = {name: b"{}\n" for name in contract["REPORTS"]}
-    manifest = [
-        "revision=" + revision,
-        "qualification_tests=apps/backplane_memory/test/backplane/memory/qualification_test.exs",
-        "outage_test=apps/backplane_api/test/backplane/api/memory_m18_outage_qualification_test.exs",
-    ] + [hashlib.sha256(files[name]).hexdigest() + "  artifacts/memory/" + name
-         for name in sorted(files)]
-    files["qualification-manifest.txt"] = ("\n".join(manifest) + "\n").encode()
-    try:
-        log_name = pathlib.Path(sys.argv[1]).relative_to(pathlib.Path(sys.argv[2]))
-    except ValueError:
-        pass
-    else:
-        files[str(log_name)] = b"OpenClaw qualification evidence\n"
-    blob = io.BytesIO()
-    with zipfile.ZipFile(blob, "w") as archive:
-        for name, content in files.items():
-            archive.writestr(name, content)
-    data = blob.getvalue()
-    contract["verify_qualification"](data, "sha256:" + hashlib.sha256(data).hexdigest(), revision)
-    assets = contract["release_assets"]("9.8.7") | set(files)
-    assert len(assets) == 25, "OpenClaw log changes the qualified release asset inventory"
-    print(json.dumps({"qualification_files": len(files), "release_assets": len(assets)}))
-    """
-
-    {output, status} =
-      System.cmd("python3", ["-c", verification, log_path, memory["with"]["path"]],
-        stderr_to_stdout: true,
-        env: [{"PYTHONDONTWRITEBYTECODE", "1"}]
-      )
-
-    assert status == 0, output
-
-    assert Jason.decode!(String.trim(output)) == %{
-             "qualification_files" => 6,
-             "release_assets" => 25
-           }
-
-    assert [openclaw] =
-             Enum.filter(steps, &(&1["with"]["name"] == "openclaw-memory-qualification"))
-
-    assert openclaw["if"] == "always()"
-    assert openclaw["uses"] == "actions/upload-artifact@v7"
-
-    assert openclaw["with"] == %{
-             "name" => "openclaw-memory-qualification",
-             "path" => "artifacts/openclaw/",
-             "if-no-files-found" => "warn",
-             "retention-days" => 90
-           }
-
-    download =
-      Enum.find(jobs["publish"]["steps"], &(&1["name"] == "Download release artifacts"))
-
-    assert download["with"]["pattern"] == "backplane-*"
-
-    refute Enum.any?(workflow_steps(".github/workflows/release.yml"), fn step ->
-             step["with"]["name"] in ["memory-qualification", "openclaw-memory-qualification"]
-           end)
   end
 
   @tag :tmp_dir
@@ -1231,48 +1132,13 @@ defmodule Backplane.ReleaseConfigTest do
            ]
   end
 
-  test "server memory CI retains migration and readiness qualification outside release" do
+  test "server memory CI runs the Memory app suite outside release" do
     workflow = File.read!(".github/workflows/memory-test.yml")
 
-    for contract <- [
-          "m18_migration_chain_test.exs",
-          "memory_v2_upgrade_test.exs",
-          "coalesce_projection_repairs_migration_test.exs",
-          "projection_repair_worker_test.exs",
-          "--exclude memory_qualification_runtime",
-          "memory_m18_outage_qualification_test.exs",
-          "memory_v2_edge_qualification_test.exs",
-          "mix backplane.memory.edge_cutover_check",
-          "bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))",
-          "size_limit_chars <> 2000",
-          "host_id IS NOT NULL OR client_id IS NOT NULL",
-          "source_client_id IS NOT NULL OR memory_space_id IS NOT NULL",
-          "mix memory.replay.browser_qualify",
-          "mix memory.eval",
-          "memory-m18-ci-smoke.json"
-        ] do
-      assert workflow =~ contract
-    end
-
-    {migration_offset, _} = :binary.match(workflow, "mix ecto.migrate")
-
-    {seed_resolution_offset, _} =
-      :binary.match(workflow, "- name: Resolve migration-seeded empty memory slots")
-
-    {cutover_offset, _} =
-      :binary.match(workflow, "- name: Verify revisioned edge cutover readiness")
-
-    assert migration_offset < seed_resolution_offset and seed_resolution_offset < cutover_offset
-    refute workflow =~ "capture_performance_test.exs"
-    assert workflow =~ "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify"
-    assert workflow =~ ~r/mix memory\.qualify \\\s+--profile ci/
-    assert workflow =~ ~r/mix memory\.eval \\\s+--profile ci/
-    {seed_offset, _} = :binary.match(workflow, "mix memory.seed_bench")
-
-    {qualification_offset, _} =
-      :binary.match(workflow, "BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL=true mix memory.qualify")
-
-    assert seed_offset < qualification_offset
+    assert workflow =~ "mix do --app backplane_memory cmd mix test"
+    refute workflow =~ "memory_slots"
+    refute workflow =~ "edge_cutover_check"
+    refute workflow =~ "mix memory.qualify"
     assert Backplane.Repo.config()[:pool_size] >= 10
     assert workflow =~ "postgresql-17"
     assert workflow =~ "CREATE EXTENSION IF NOT EXISTS vector"
@@ -1295,11 +1161,11 @@ defmodule Backplane.ReleaseConfigTest do
     end
   end
 
-  test "GitHub test workflow excludes the authoritative local performance suite" do
+  test "GitHub test workflow runs every app suite without exclusions" do
     workflow = File.read!(".github/workflows/test.yml")
 
-    assert workflow =~
-             ~s(mix "do" --app backplane_memory test --exclude memory_qualification_runtime)
+    assert workflow =~ ~s(mix "do" --app ${{ matrix.app }} test)
+    refute workflow =~ "memory_qualification_runtime"
   end
 
   test "release integrity prepares one main-branch version SHA before builds" do

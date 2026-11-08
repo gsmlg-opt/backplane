@@ -31,36 +31,7 @@ defmodule Backplane.MCP.DispatchTest do
     def get_prompt("failing_prompt", _arguments, _auth), do: {:error, :backend_failed}
   end
 
-  defmodule ResourceService do
-    def resources(_auth) do
-      [
-        %{
-          uri: "fixture://resource",
-          name: "fixture-resource",
-          description: "Fixture resource",
-          mime_type: "application/json"
-        }
-      ]
-    end
-
-    def resource_templates(_auth) do
-      [
-        %{
-          uri_template: "fixture://resource/{id}",
-          name: "fixture-template",
-          description: "Fixture template",
-          mime_type: "application/json"
-        }
-      ]
-    end
-
-    def read_resource("fixture://resource", _auth), do: {:ok, ~s({"fixture":true})}
-    def read_resource(_uri, _auth), do: {:error, :not_found}
-  end
-
   setup do
-    previous_memory_service = Application.get_env(:backplane_mcp, :memory_service)
-    Application.put_env(:backplane_mcp, :memory_service, ResourceService)
 
     :ets.delete_all_objects(:backplane_tools)
     PromptRegistry.clear()
@@ -84,12 +55,6 @@ defmodule Backplane.MCP.DispatchTest do
     on_exit(fn ->
       :ets.delete_all_objects(:backplane_tools)
       PromptRegistry.clear()
-
-      if is_nil(previous_memory_service) do
-        Application.delete_env(:backplane_mcp, :memory_service)
-      else
-        Application.put_env(:backplane_mcp, :memory_service, previous_memory_service)
-      end
     end)
 
     :ok
@@ -183,43 +148,14 @@ defmodule Backplane.MCP.DispatchTest do
     refute Map.has_key?(fixture, "_meta")
   end
 
-  test "lists and reads resources with string-keyed payloads" do
-    assert {:ok,
-            %{
-              "resources" => [
-                %{
-                  "uri" => "fixture://resource",
-                  "name" => "fixture-resource",
-                  "mimeType" => "application/json"
-                }
-              ]
-            }} = Dispatch.execute("resources/list", %{}, context())
+  test "resources have no providers" do
+    assert {:ok, %{"resources" => []}} = Dispatch.execute("resources/list", %{}, context())
 
-    assert {:ok,
-            %{
-              "resourceTemplates" => [
-                %{
-                  "uriTemplate" => "fixture://resource/{id}",
-                  "name" => "fixture-template"
-                }
-              ]
-            }} = Dispatch.execute("resources/templates/list", %{}, context())
+    assert {:ok, %{"resourceTemplates" => []}} =
+             Dispatch.execute("resources/templates/list", %{}, context())
 
-    assert {:ok,
-            %{
-              "contents" => [
-                %{
-                  "uri" => "fixture://resource",
-                  "mimeType" => "application/json",
-                  "text" => ~s({"fixture":true})
-                }
-              ]
-            }} =
-             Dispatch.execute(
-               "resources/read",
-               %{"uri" => "fixture://resource"},
-               context()
-             )
+    assert {:error, :not_found, _} =
+             Dispatch.execute("resources/read", %{"uri" => "fixture://resource"}, context())
   end
 
   test "lists and gets authorized prompts with string-keyed payloads" do

@@ -150,8 +150,4 @@ jobs:
 
       - name: Run tests
         run: |
-          if [ "${{ matrix.app }}" = "backplane_memory" ]; then
-            mix "do" --app backplane_memory test --exclude memory_qualification_runtime
-          else
-            mix "do" --app ${{ matrix.app }} test
-          fi
+          mix "do" --app ${{ matrix.app }} test

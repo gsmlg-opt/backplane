@@ -1,35 +1,34 @@
 defmodule Backplane.HostAgent.MemoryRouter do
   @moduledoc """
-  Local HTTP API exposed by the host agent for managing agent memory.
+  Local HTTP API exposed by the host agent for agent memory and capture.
 
-  Two endpoint families, both scoped by `:agent_id`:
+  Two memory endpoint families, both scoped by `:agent_id`:
 
-  * `POST /memory/:agent_id/call/:method` — direct method invocation. The
-    JSON request body becomes the method's argument map; `agent_id` is
-    injected automatically.
+  * `POST /memory/:agent_id/call/:method` — direct invocation of one of the
+    five memory tools (`search`, `get`, `recent`, `remember`, `forget`). The
+    JSON request body becomes the tool's argument map.
 
-  * `POST /memory/:agent_id/mcp` — JSON-RPC subset speaking MCP. Supports
-    `tools/list` (lists memory tools) and `tools/call` (routes to the same
-    handler as `/call/:method`).
+  * `POST /memory/:agent_id/mcp` — JSON-RPC subset speaking MCP. `tools/list`
+    advertises the five `memory::*` tools alongside local host-agent services;
+    `tools/call` forwards `memory::*` calls to the gateway over the host channel.
 
-  Core memory operations use the canonical memory facade. Host-only slot
-  and replay operations remain local, while Hub-only memory tools are forwarded.
+  `memory::remember` is stamped with `"agent" => agent_id` when the caller did
+  not supply one. Reads are never implicitly filtered by agent. While the
+  gateway channel is down, memory calls fail with `gateway_unavailable`.
   """
 
   use Plug.Router
 
   alias Backplane.HostAgent.HubProxy
   alias Backplane.HostAgent.Memory.Hooks
-  alias Backplane.HostAgent.Memory.RecallCache
   alias Backplane.HostAgent.Memory.Spool.Turso, as: CaptureSpool
-  alias Backplane.HostAgent.MemoryProxy
   alias Backplane.HostAgent.Services
-  alias Backplane.HostAgent.Services.Memory, as: MemoryService
   alias Backplane.HostAgent.Trace
   alias Backplane.MemoryToolContract
 
   @mcp_protocol_version "2025-11-25"
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+  @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
   plug(:match)
 
@@ -40,10 +39,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
   )
 
   plug(:dispatch)
-
-  post "/memory/diagnostics" do
-    handle_memory_diagnostics(conn)
-  end
 
   post "/capture/v1/hooks/:integration/:hook" do
     handle_capture(conn, integration, hook)
@@ -77,26 +72,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
     send_json(conn, 404, %{"ok" => false, "error" => "not found"})
   end
 
-  defp handle_memory_diagnostics(%{remote_ip: peer} = conn)
-       when peer == {127, 0, 0, 1} or peer == {0, 0, 0, 0, 0, 0, 0, 1} do
-    case Backplane.HostAgent.Memory.Diagnostics.targeted(conn.body_params) do
-      {:ok, result} ->
-        send_json(conn, 200, %{"ok" => true, "result" => result})
-
-      {:error, :invalid_diagnostic_request} ->
-        send_json(conn, 400, %{"ok" => false, "error" => "invalid diagnostic request"})
-
-      {:error, :diagnostic_partition_mismatch} ->
-        send_json(conn, 403, %{"ok" => false, "error" => "diagnostic partition mismatch"})
-
-      {:error, _} ->
-        send_json(conn, 503, %{"ok" => false, "error" => "diagnostics unavailable"})
-    end
-  end
-
-  defp handle_memory_diagnostics(conn),
-    do: send_json(conn, 403, %{"ok" => false, "error" => "loopback diagnostics only"})
-
   defp handle_capture(conn, integration, hook) do
     with {:ok, runtime} <- capture_runtime(),
          {:ok, source} <- capture_body(conn.body_params),
@@ -109,7 +84,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
           "event_id" => map_value(persisted, :event_id),
           "idempotency_key" => map_value(persisted, :idempotency_key)
         }
-        |> maybe_add_lifecycle_context(runtime, envelope)
 
       send_json(conn, 202, response)
     else
@@ -135,18 +109,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
           "error" => "malformed capture payload",
           "fields" => Enum.map(fields, &to_string/1)
         })
-
-      {:error, reason} when reason in [:unauthorized, :authority_changed] ->
-        send_json(conn, 403, %{"ok" => false, "error" => Atom.to_string(reason)})
-
-      {:error, reason}
-      when reason in [
-             :unsupported_capability,
-             :not_connected,
-             :access_owner_unavailable,
-             :access_storage_unavailable
-           ] ->
-        send_json(conn, 503, %{"ok" => false, "error" => Atom.to_string(reason)})
 
       {:error, :capture_unavailable} ->
         capture_unavailable(conn)
@@ -174,7 +136,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
              length(ids) in 1..100,
          true <-
            Map.get(args, "protocol", "hermes_capture.v1") in ~w(hermes_capture.v1 openclaw_capture.v1),
-         true <- Enum.all?(ids, &Backplane.MemorySourceContract.uuid?/1),
+         true <- Enum.all?(ids, &uuid?/1),
          {:ok, runtime} <- capture_runtime() do
       items =
         Enum.map(ids, fn id ->
@@ -228,24 +190,12 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp capture_error_code(_), do: "capture_rejected"
 
-  defp capture_body(%{"memory_access_id" => _}), do: {:error, {:malformed, [:memory_access_id]}}
+  defp uuid?(value), do: is_binary(value) and Regex.match?(@uuid_pattern, value)
+
   defp capture_body(body) when is_map(body), do: {:ok, body}
   defp capture_body(_body), do: {:error, {:malformed, [:payload]}}
 
-  defp append_capture(
-         runtime,
-         %{integration: "openclaw", payload: %{"source" => source}} = envelope
-       ) do
-    Backplane.HostAgent.Memory.OpenClawBinding.admit(
-      source["binding_fingerprint"],
-      fn -> do_append_capture(runtime, envelope) end,
-      Map.get(runtime, :access_server, Backplane.HostAgent.Memory.Access)
-    )
-  end
-
-  defp append_capture(runtime, envelope), do: do_append_capture(runtime, envelope)
-
-  defp do_append_capture(runtime, envelope) do
+  defp append_capture(runtime, envelope) do
     spool_module = Map.fetch!(runtime, :spool_module)
     spool = Map.fetch!(runtime, :spool)
 
@@ -272,278 +222,81 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp map_value(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
 
-  defp maybe_add_lifecycle_context(response, runtime, envelope) do
-    with {:ok, request} <- lifecycle_request(runtime, envelope),
-         {:ok, context} <- request_lifecycle_context(runtime, request) do
-      Map.put(response, "lifecycle_context", context)
-    else
-      _ -> response
-    end
-  end
-
-  defp lifecycle_request(runtime, envelope) do
-    config = Map.get(runtime, :config, %{})
-
-    with true <- Map.get(config, :inject_context, false) == true,
-         {:ok, kind} <- lifecycle_kind(map_value(envelope, :event_type)),
-         session_id when is_binary(session_id) and session_id != "" <-
-           map_value(envelope, :session_id),
-         project when is_binary(project) and project != "" <- map_value(envelope, :project),
-         agent_id when is_binary(agent_id) and agent_id != "" <- map_value(envelope, :agent_id) do
-      timeout = config |> Map.get(:context_timeout_ms, 1_200) |> bounded_context_timeout()
-
-      {:ok,
-       %{
-         kind: kind,
-         agent_id: agent_id,
-         timeout: timeout,
-         key: lifecycle_cache_key(kind, project, agent_id, session_id),
-         arguments: %{
-           "kind" => kind,
-           "session_id" => session_id,
-           "project" => project
-         }
-       }}
-    else
-      _ -> :skip
-    end
-  end
-
-  defp lifecycle_kind("agent.session.started"), do: {:ok, "session_start"}
-  defp lifecycle_kind("agent.context.pre_compact"), do: {:ok, "pre_compact"}
-  defp lifecycle_kind(_event_type), do: :skip
-
-  defp lifecycle_cache_key("session_start", project, agent_id, _session_id),
-    do: {"session_start", project, agent_id}
-
-  defp lifecycle_cache_key("pre_compact", project, agent_id, session_id),
-    do: {"pre_compact", project, agent_id, session_id}
-
-  defp request_lifecycle_context(runtime, request) do
-    proxy = Map.get(runtime, :memory_proxy_module, MemoryProxy)
-
-    task =
-      Task.async(fn ->
-        try do
-          proxy.call("lifecycle_context", request.arguments,
-            agent_id: request.agent_id,
-            timeout: request.timeout
-          )
-        rescue
-          error -> {:error, {:proxy_exception, error}}
-        catch
-          kind, reason -> {:error, {:proxy_exception, kind, reason}}
-        end
-      end)
-
-    case Task.yield(task, request.timeout) do
-      {:ok, {:ok, result}} ->
-        live_context(runtime, request, result)
-
-      {:ok, {:error, reason}} ->
-        maybe_cached_context(runtime, request.key, reason)
-
-      {:ok, _other} ->
-        :skip
-
-      {:exit, reason} ->
-        maybe_cached_context(runtime, request.key, {:task_exit, reason})
-
-      nil ->
-        _ = Task.shutdown(task, :brutal_kill)
-        :timeout
-    end
-  rescue
-    _error -> :skip
-  catch
-    :exit, _reason -> :skip
-  end
-
-  defp live_context(runtime, request, result) when is_map(result) do
-    case {map_value(result, :kind), map_value(result, :context)} do
-      {kind, context} when kind == request.kind and is_binary(context) ->
-        if String.trim(context) == "" do
-          :skip
-        else
-          normalized = stringify_context_metadata(result)
-
-          if cacheable_context?(normalized) do
-            maybe_cache_context(runtime, request.key, normalized)
-            {:ok, normalized}
-          else
-            :skip
-          end
-        end
-
-      _ ->
-        :skip
-    end
-  end
-
-  defp live_context(_runtime, _request, _result), do: :skip
-
-  defp stringify_context_metadata(result) do
-    %{
-      "kind" => map_value(result, :kind),
-      "context" => map_value(result, :context),
-      "source_revision" => map_value(result, :source_revision),
-      "generated_at" => map_value(result, :generated_at),
-      "expires_at" => map_value(result, :expires_at),
-      "cached" => false,
-      "stale" => false
-    }
-  end
-
-  defp cacheable_context?(context) do
-    strings_present? =
-      Enum.all?(~w(context source_revision generated_at expires_at), fn key ->
-        case Map.get(context, key) do
-          value when is_binary(value) -> String.trim(value) != ""
-          _ -> false
-        end
-      end)
-
-    with true <- strings_present?,
-         {:ok, generated_at, _offset} <- DateTime.from_iso8601(context["generated_at"]),
-         {:ok, expires_at, _offset} <- DateTime.from_iso8601(context["expires_at"]),
-         :gt <- DateTime.compare(expires_at, generated_at),
-         :gt <- DateTime.compare(expires_at, DateTime.utc_now()) do
-      true
-    else
-      _ -> false
-    end
-  end
-
-  defp maybe_cache_context(runtime, key, context) do
-    case Map.get(runtime, :recall_cache) do
-      nil -> :ok
-      cache -> RecallCache.put(cache, key, context)
-    end
-  catch
-    :exit, _reason -> :ok
-  end
-
-  defp maybe_cached_context(runtime, key, reason) do
-    if transport_unavailable?(reason) do
-      cached_context(runtime, key)
-    else
-      :skip
-    end
-  end
-
-  defp cached_context(runtime, key) do
-    with cache when not is_nil(cache) <- Map.get(runtime, :recall_cache),
-         {:ok, %{context: context, age_seconds: age_seconds}} <- RecallCache.get(cache, key),
-         cached_text when is_binary(cached_text) <- map_value(context, :context) do
-      revision = map_value(context, :source_revision) || "unknown"
-
-      label =
-        "[Cached memory context (stale); revision=#{revision}; age=#{age_seconds}s]"
-
-      {:ok,
-       context
-       |> Map.put("context", label <> "\n\n" <> cached_text)
-       |> Map.put("cached", true)
-       |> Map.put("stale", true)
-       |> Map.put("age_seconds", age_seconds)}
-    else
-      _ -> :skip
-    end
-  catch
-    :exit, _reason -> :skip
-  end
-
-  defp transport_unavailable?(reason)
-       when reason in [
-              :not_connected,
-              :closed,
-              :disconnected,
-              :econnrefused,
-              :econnreset,
-              :enetunreach,
-              :nxdomain,
-              :hub_down
-            ],
-       do: true
-
-  defp transport_unavailable?({:reconnect_failed, reason}), do: transport_unavailable?(reason)
-  defp transport_unavailable?({:reconnect_lock_failed, _reason}), do: true
-  defp transport_unavailable?({:transport, reason}), do: transport_unavailable?(reason)
-  defp transport_unavailable?({:task_exit, {:noproc, _}}), do: true
-  defp transport_unavailable?({:task_exit, :noproc}), do: true
-  defp transport_unavailable?({:channel_exit, reason}), do: transport_exit?(reason)
-  defp transport_unavailable?({:socket_closed, _reason}), do: true
-  defp transport_unavailable?(_reason), do: false
-
-  defp transport_exit?(reason)
-       when reason in [
-              :noproc,
-              :closed,
-              :disconnected,
-              :econnrefused,
-              :econnreset,
-              :enetdown,
-              :enetunreach,
-              :nxdomain
-            ],
-       do: true
-
-  defp transport_exit?({:noproc, _detail}), do: true
-  defp transport_exit?({:socket_closed, _detail}), do: true
-  defp transport_exit?({:transport, reason}), do: transport_exit?(reason)
-  defp transport_exit?({:shutdown, reason}), do: transport_exit?(reason)
-  defp transport_exit?(_reason), do: false
-
-  defp bounded_context_timeout(timeout) when is_integer(timeout) and timeout > 0,
-    do: min(timeout, 1_500)
-
-  defp bounded_context_timeout(_timeout), do: 1_200
-
   defp handle_call(conn, agent_id, method) do
     args =
       case conn.body_params do
-        %Plug.Conn.Unfetched{} -> %{}
-        map when is_map(map) -> direct_call_args(map, method)
+        map when is_map(map) and not is_struct(map) -> direct_call_args(map, method)
         _ -> %{}
       end
 
-    case direct_memory_call(conn, agent_id, method, args) do
-      {:ok, result} ->
-        send_json(conn, 200, %{"ok" => true, "result" => result})
+    name = "memory::" <> method
 
-      {:error, {:unknown_method, name}} ->
-        send_json(conn, 404, %{"ok" => false, "error" => "unknown method: #{name}"})
+    if memory_tool?(name) do
+      case forward_memory_tool(name, args, agent_id) do
+        {:ok, result} ->
+          send_json(conn, 200, %{"ok" => true, "result" => result})
 
-      {:error, {:memory_unavailable, _reason}} ->
-        send_json(conn, 503, %{"ok" => false, "error" => "local memory is not configured"})
-
-      {:error, {:memory_facade_unavailable, _reason}} ->
-        send_json(conn, 503, %{
-          "ok" => false,
-          "error" => "canonical memory facade is unavailable"
-        })
-
-      {:error, {:hub_unavailable, _reason}} ->
-        send_json(conn, 503, %{"ok" => false, "error" => "canonical memory is unavailable"})
-
-      {:error, reason} ->
-        status = if method == "get", do: get_error_status(reason), else: 400
-        send_json(conn, status, %{"ok" => false, "error" => format_error(reason)})
+        {:error, reason} ->
+          send_json(conn, direct_error_status(reason), %{"ok" => false, "error" => reason})
+      end
+    else
+      send_json(conn, 404, %{"ok" => false, "error" => "unknown method: #{method}"})
     end
   end
 
-  defp get_error_status(reason) when reason in [:not_found, "not_found"], do: 404
-  defp get_error_status(reason) when reason in [:unauthorized, "unauthorized"], do: 403
+  defp direct_error_status("gateway_unavailable"), do: 503
+  defp direct_error_status("gateway_timeout"), do: 504
+  defp direct_error_status("not_found"), do: 404
+  defp direct_error_status("unauthorized"), do: 403
+  defp direct_error_status(_reason), do: 400
 
-  defp get_error_status(reason) when reason in [:canonical_unavailable, "canonical_unavailable"],
-    do: 503
+  defp direct_call_args(
+         %{"jsonrpc" => "2.0", "method" => body_method, "params" => params} = body,
+         path_method
+       )
+       when is_binary(body_method) and is_map(params) do
+    if strip_prefix(body_method) == path_method, do: params, else: body
+  end
 
-  defp get_error_status(reason) when reason in [:payload_too_large, "payload_too_large"], do: 413
+  defp direct_call_args(args, _method), do: args
 
-  defp get_error_status(reason) when reason in [:unsupported_operation, "unsupported_operation"],
-    do: 501
+  defp strip_prefix("memory::" <> rest), do: rest
+  defp strip_prefix(name), do: name
 
-  defp get_error_status(_reason), do: 400
+  defp memory_tool?(name), do: name in MemoryToolContract.tools()
+
+  defp forward_memory_tool(name, args, agent_id) do
+    case hub_proxy().call_tool(name, put_agent(name, args, agent_id)) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, memory_error(reason)}
+    end
+  end
+
+  # Only writes are stamped with the calling agent; reads stay unfiltered
+  # unless the caller passes an explicit `agent` filter.
+  defp put_agent("memory::remember", args, agent_id)
+       when is_binary(agent_id) and agent_id != "",
+       do: Map.put_new(args, "agent", agent_id)
+
+  defp put_agent(_name, args, _agent_id), do: args
+
+  defp memory_error(reason) when is_binary(reason), do: reason
+  defp memory_error(%{"reason" => reason}) when is_binary(reason), do: reason
+  defp memory_error(%{"message" => reason}) when is_binary(reason), do: reason
+  defp memory_error(%{"code" => code}) when is_binary(code), do: code
+  # A timed-out write may still have been applied by the gateway.
+  defp memory_error(:timeout), do: "gateway_timeout"
+
+  defp memory_error(reason) do
+    if transport_unavailable?(reason), do: "gateway_unavailable", else: format_error(reason)
+  end
+
+  defp transport_unavailable?(reason)
+       when reason in [:not_connected, :closed, :disconnected, :noproc],
+       do: true
+
+  defp transport_unavailable?({:channel_exit, _reason}), do: true
+  defp transport_unavailable?(_reason), do: false
 
   defp handle_mcp(conn, agent_id) do
     body = conn.body_params || %{}
@@ -603,22 +356,29 @@ defmodule Backplane.HostAgent.MemoryRouter do
     )
   end
 
+  defp tool_call(conn, id, agent_id, %{"name" => "memory::" <> _ = name, "arguments" => args})
+       when is_map(args) do
+    result =
+      if memory_tool?(name) do
+        case forward_memory_tool(name, args, agent_id) do
+          {:ok, result} -> tool_result(result, false)
+          {:error, reason} -> tool_result(reason, true)
+        end
+      else
+        tool_result("unknown tool: #{name}", true)
+      end
+
+    send_json(conn, 200, jsonrpc_result(id, result))
+  end
+
   defp tool_call(conn, id, agent_id, %{"name" => name, "arguments" => args})
        when is_binary(name) and is_map(args) do
-    if forbidden_authority?(args) do
-      error = if name == "memory::get", do: "invalid_arguments", else: "invalid_request"
-      send_json(conn, 200, jsonrpc_result(id, tool_result(error, true)))
-    else
-      case MemoryToolContract.route_class(name) do
-        :canonical_overlap ->
-          call_resolved_local_tool(conn, id, agent_id, name, args)
+    case Services.resolve(name) do
+      {:ok, service, bare} ->
+        call_local_tool(conn, id, service, bare, name, args, tool_ctx(agent_id, args))
 
-        :server_only ->
-          route_remote_memory_tool(conn, id, agent_id, name, args)
-
-        _other ->
-          call_resolved_local_tool(conn, id, agent_id, name, args)
-      end
+      :error ->
+        route_unknown_tool(conn, id, name, args)
     end
   end
 
@@ -626,153 +386,17 @@ defmodule Backplane.HostAgent.MemoryRouter do
     send_json(conn, 200, jsonrpc_error(id, -32_602, "Invalid params for tools/call"))
   end
 
-  defp call_resolved_local_tool(conn, id, agent_id, name, args) do
-    case Services.resolve(name) do
-      {:ok, service, bare} ->
-        call_local_tool(
-          conn,
-          id,
-          service,
-          bare,
-          name,
-          args,
-          local_service_ctx(service, conn, agent_id, args)
-        )
-
-      :error ->
-        route_unknown_tool(conn, id, name, args)
-    end
-  end
-
-  defp route_remote_memory_tool(conn, id, _agent_id, _name, %{"memory_access_id" => _}) do
-    send_json(conn, 200, jsonrpc_result(id, tool_result("invalid_request", true)))
-  end
-
-  defp route_remote_memory_tool(conn, id, agent_id, name, args) do
-    case hub_proxy().call_tool(name, remote_memory_args(name, args, agent_id)) do
-      {:ok, result} ->
-        send_json(conn, 200, jsonrpc_result(id, tool_result(result, false)))
-
-      {:error, reason} ->
-        send_json(
-          conn,
-          200,
-          jsonrpc_result(id, tool_result(hub_unreachable_message(reason), true))
-        )
-    end
-  end
-
-  defp direct_memory_call(_conn, _agent_id, method, %{"memory_access_id" => _})
-       when method not in ~w(remember recall list get stats forget source_capabilities source_mutate source_reconcile source_status),
-       do: {:error, :invalid_request}
-
-  defp direct_memory_call(conn, agent_id, method, args) do
-    if forbidden_authority?(args),
-      do: {:error, if(method == "get", do: :invalid_arguments, else: :invalid_request)},
-      else: do_direct_memory_call(conn, agent_id, method, args)
-  end
-
-  defp forbidden_authority?(args),
-    do:
-      Enum.any?(
-        ~w(memory_space_id host_id client_id partition_id namespace),
-        &Map.has_key?(args, &1)
-      )
-
-  defp do_direct_memory_call(conn, agent_id, method, args) do
-    name = "memory::" <> method
-    context = memory_service_ctx(conn, agent_id, args)
-
-    case MemoryToolContract.route_class(name) do
-      class when class in [:device_local, :canonical_overlap] ->
-        MemoryService.call(method, args, context)
-
-      :server_only ->
-        case hub_proxy().call_tool(name, remote_memory_args(name, args, agent_id)) do
-          {:ok, result} ->
-            {:ok, result}
-
-          {:error, reason} ->
-            {:error, {:hub_unavailable, reason}}
-        end
-
-      :unknown ->
-        MemoryService.call(method, args, context)
-    end
-  end
-
-  defp remote_memory_args(name, args, agent_id) do
-    case MemoryToolContract.tool(name) do
-      {:ok, %{input_schema: %{"properties" => properties}}} when is_map(properties) ->
-        if Map.has_key?(properties, "agent_id") do
-          put_remote_agent_id(args, agent_id)
-        else
-          args
-        end
-
-      :error ->
-        args
-    end
-  end
-
-  defp put_remote_agent_id(args, agent_id) when is_binary(agent_id) and agent_id != "",
-    do: Map.put(args, "agent_id", agent_id)
-
-  defp put_remote_agent_id(args, _agent_id), do: Map.put_new(args, "agent_id", "local")
-
-  defp strip_prefix("memory::" <> rest), do: rest
-  defp strip_prefix(name), do: name
-
-  defp direct_call_args(
-         %{"jsonrpc" => "2.0", "method" => body_method, "params" => params} = body,
-         path_method
-       )
-       when is_binary(body_method) and is_map(params) do
-    if strip_prefix(body_method) == path_method do
-      params
-    else
-      body
-    end
-  end
-
-  defp direct_call_args(args, _method), do: args
-
   defp call_local_tool(conn, id, service, method, full_name, args, ctx) do
     case service.call(method, args, ctx) do
       {:ok, result} ->
-        send_json(
-          conn,
-          200,
-          jsonrpc_result(id, %{
-            "content" => [%{"type" => "text", "text" => Jason.encode!(result)}],
-            "isError" => false
-          })
-        )
+        send_json(conn, 200, jsonrpc_result(id, tool_result(result, false)))
 
       {:error, {:unknown_method, _}} ->
         route_unknown_tool(conn, id, full_name, args)
 
-      {:error, {:memory_unavailable, _reason}} ->
-        send_json(conn, 200, jsonrpc_error(id, -32_002, "local memory is not configured"))
-
-      {:error, {:memory_facade_unavailable, _reason}} ->
-        send_json(
-          conn,
-          200,
-          jsonrpc_error(id, -32_003, "canonical memory facade is unavailable")
-        )
-
       {:error, reason} ->
         send_json(conn, 200, jsonrpc_error(id, -32_000, format_error(reason)))
     end
-  end
-
-  defp route_unknown_tool(conn, id, "memory::" <> method, _args) do
-    send_json(
-      conn,
-      200,
-      jsonrpc_result(id, tool_result("unknown method: #{method}", true))
-    )
   end
 
   defp route_unknown_tool(conn, id, name, args) do
@@ -790,33 +414,41 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp list_tools do
+    hub_tools =
+      case hub_proxy().list_tools() do
+        {:ok, tools} when is_list(tools) ->
+          Enum.filter(tools, &match?({:ok, _}, valid_tool_name(&1)))
+
+        _other ->
+          []
+      end
+
+    hub_by_name = Map.new(hub_tools, &{tool_name(&1), &1})
     local_tools = Services.list_tools()
+    local_names = MapSet.new(local_tools, &tool_name/1)
 
-    case hub_proxy().list_tools() do
-      {:ok, hub_tools} when is_list(hub_tools) -> merge_hub_tools(local_tools, hub_tools)
-      {:error, _reason} -> local_tools
-      _other -> local_tools
-    end
-  end
-
-  defp merge_hub_tools(local_tools, hub_tools) do
-    {_seen, accepted} =
-      Enum.reduce(hub_tools, {MapSet.new(), []}, fn tool, {names, accepted} ->
-        case valid_tool_name(tool) do
-          {:ok, name} ->
-            if MapSet.member?(names, name) or
-                 MemoryToolContract.route_class(name) in [:canonical_overlap, :device_local] do
-              {names, accepted}
-            else
-              {MapSet.put(names, name), [tool | accepted]}
-            end
-
-          :error ->
-            {names, accepted}
-        end
+    memory_tools =
+      Enum.map(MemoryToolContract.tools(), fn name ->
+        Map.get_lazy(hub_by_name, name, fn -> static_memory_tool(name) end)
       end)
 
-    local_tools ++ Enum.reverse(accepted)
+    other_hub_tools =
+      hub_tools
+      |> Enum.reject(fn tool ->
+        name = tool_name(tool)
+        String.starts_with?(name, "memory::") or MapSet.member?(local_names, name)
+      end)
+      |> Enum.uniq_by(&tool_name/1)
+
+    memory_tools ++ local_tools ++ other_hub_tools
+  end
+
+  defp static_memory_tool(name) do
+    %{
+      "name" => name,
+      "description" => Map.fetch!(MemoryToolContract.descriptions(), name),
+      "inputSchema" => Map.fetch!(MemoryToolContract.schemas(), name)
+    }
   end
 
   defp tool_name(%{"name" => name}) when is_binary(name), do: name
@@ -850,23 +482,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp tool_ctx(nil, args), do: %{agent_id: Map.get(args, "agent_id", "local")}
   defp tool_ctx(agent_id, _args), do: %{agent_id: agent_id}
-
-  defp local_service_ctx(MemoryService, conn, agent_id, args),
-    do: memory_service_ctx(conn, agent_id, args)
-
-  defp local_service_ctx(_service, _conn, agent_id, args), do: tool_ctx(agent_id, args)
-
-  defp memory_service_ctx(conn, agent_id, args) do
-    context = tool_ctx(agent_id, args)
-
-    case conn.private[:backplane_memory_facade] do
-      facade when is_atom(facade) and not is_nil(facade) ->
-        Map.put(context, :memory_facade, facade)
-
-      _other ->
-        context
-    end
-  end
 
   defp trace_context(conn) do
     conn
@@ -926,7 +541,6 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_error({:invalid_args, message}) when is_binary(message), do: message
-  defp format_error({:storage_error, _reason}), do: "local memory storage error"
   defp format_error(%{"reason" => reason}) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
 

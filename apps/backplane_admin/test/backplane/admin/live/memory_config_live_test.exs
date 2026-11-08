@@ -83,7 +83,7 @@ defmodule Backplane.Admin.MemoryConfigLiveTest do
 
     render_change(view, "filter", %{"filters" => %{"q" => "model"}})
 
-    for key <- ~w(memory.llm_model memory.recall_relevance_reranker_model) do
+    for key <- ~w(memory.llm_model) do
       id = String.replace(key, ".", "-")
       selector = "#memory-config-value-#{id}"
       assert has_element?(view, "#{selector} option[value='#{llm_id}']", llm_id)
@@ -109,22 +109,18 @@ defmodule Backplane.Admin.MemoryConfigLiveTest do
     :ok
   end
 
-  test "configuration exposes one current control for each memory capability", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/memory/config")
-    tree = Floki.parse_fragment!(html)
+  test "configuration exposes only the retained memory controls", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/memory/config")
 
-    for key <- ~w(host_sync recall session_summary fact_extraction procedure_extraction) do
-      assert length(Floki.find(tree, "#memory-config-value-memory-#{key}-enabled")) == 1
+    for key <-
+          ~w(services.memory.enabled memory.session_stale_after_seconds memory.event_gap_grace_seconds) do
+      assert has_element?(view, "#memory-config-value-#{String.replace(key, ".", "-")}")
     end
 
     for key <-
-          ~w(host_sync_v1 host_sync_v2 recall_v2 session_summary_v2 fact_extraction_v2 procedure_extraction_v2) do
-      refute has_element?(view, "#memory-config-value-memory-#{key}-enabled")
+          ~w(host_sync.enabled pipeline.enabled recall.enabled session_summary.enabled fact_extraction.enabled) do
+      refute has_element?(view, "#memory-config-value-memory-#{String.replace(key, ".", "-")}")
     end
-
-    refute html =~ "Host sync V1"
-    refute html =~ "Host sync V2"
-    refute html =~ "Recall V2"
   end
 
   test "model readiness is explicit and unavailable selected models remain visible", %{conn: conn} do
@@ -163,13 +159,8 @@ defmodule Backplane.Admin.MemoryConfigLiveTest do
     assert Settings.get("memory.proxy_credential") == service
   end
 
-  test "configured stage explains disabled parent and live service discovery", %{conn: conn} do
-    :ets.insert(:backplane_settings, {"memory.pipeline.enabled", false})
-    :ets.insert(:backplane_settings, {"memory.fact_extraction.enabled", true})
-    {:ok, view, _} = live(conn, "/memory/config?q=Fact+extraction")
-    assert render(view) =~ "Blocked: processing pipeline disabled"
-    assert has_element?(view, "#memory-config-value-memory-fact_extraction-enabled")
-    render_change(view, "filter", %{"filters" => %{"q" => "Memory service"}})
+  test "service toggle explains live discovery", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/memory/config?q=Memory+service")
     assert render(view) =~ "Live; updates tool and prompt discovery"
   end
 end

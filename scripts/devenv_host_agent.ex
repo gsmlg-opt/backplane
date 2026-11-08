@@ -3,7 +3,7 @@ defmodule Backplane.Scripts.DevenvHostAgent do
   Provisions the project-local development host agent through existing contexts.
   """
 
-  alias Backplane.{MemorySpaces, Repo}
+  alias Backplane.Repo
   alias Backplane.Skills.{AgentManage, Host, Hosts}
 
   def prepare(config_path) do
@@ -14,23 +14,22 @@ defmodule Backplane.Scripts.DevenvHostAgent do
 
     name = "backplane-devenv-#{suffix}"
 
-    with {:ok, host, token} <- ensure_host(name, "devenv_#{suffix}"),
+    with {:ok, host, token} <- ensure_host(name),
          :ok <- validate_host(host, token),
          :ok <- publish_config(config_path, config_yaml(host, token, config_path)) do
       {:ok,
        %{
          host_id: host.id,
          name: host.name,
-         memory_scope: host.memory_scope,
          config_path: config_path
        }}
     end
   end
 
-  defp ensure_host(name, scope) do
+  defp ensure_host(name) do
     case Repo.get_by(Host, name: name) do
       nil ->
-        case Hosts.create_agent_with_token(%{name: name, memory_scope: scope}) do
+        case Hosts.create_agent_with_token(%{name: name}) do
           {:ok, host, _auth_token, token} -> {:ok, host, token}
           {:error, _changeset} -> {:error, :host_registration_failed}
         end
@@ -56,13 +55,11 @@ defmodule Backplane.Scripts.DevenvHostAgent do
     end
   end
 
-  defp validate_host(%Host{id: host_id, memory_scope: scope} = host, token) do
+  defp validate_host(%Host{id: host_id} = host, token) do
     with {:ok, %Host{id: ^host_id}, auth_token} <- Hosts.verify_token(token),
          {:ok, _manager} <- AgentManage.ensure_agent(host),
          {:ok, %Host{id: ^host_id}, %{id: token_id}} <- AgentManage.authenticate(host_id, token),
-         true <- token_id == auth_token.id,
-         {:ok, %{scope: ^scope, namespace: "private"}} <-
-           MemorySpaces.resolve_host_partition(host_id, scope, "private") do
+         true <- token_id == auth_token.id do
       :ok
     else
       _ -> {:error, :host_validation_failed}
@@ -84,7 +81,6 @@ defmodule Backplane.Scripts.DevenvHostAgent do
       http_port: 4222
     memory:
       enabled: true
-      bound_scope: #{Jason.encode!(host.memory_scope)}
       db_path: #{Jason.encode!(Path.join(directory, "memory.db"))}
     targets: []
     """

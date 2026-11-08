@@ -21,7 +21,6 @@ defmodule Backplane.HostAgent.Worker do
   }
 
   alias Backplane.HostAgent.Memory.CaptureSupervisor
-  alias Backplane.HostAgent.Memory.Edge.Syncer, as: EdgeSyncer
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
   alias Backplane.HostAgent.TraceSupervisor
 
@@ -214,11 +213,6 @@ defmodule Backplane.HostAgent.Worker do
          function_exported?(memory_proxy_module, :clear_connection_owner, 1),
        do: memory_proxy_module.clear_connection_owner(self())
 
-    case Map.get(state, :edge_syncer) do
-      pid when is_pid(pid) -> if Process.alive?(pid), do: EdgeSyncer.stop(pid)
-      _ -> :ok
-    end
-
     :ok
   end
 
@@ -302,39 +296,18 @@ defmodule Backplane.HostAgent.Worker do
                memory_proxy_module
              ) do
           {:ok, local_state} ->
-            memory_generation = %{
-              id: System.unique_integer([:monotonic, :positive]),
-              sent_at_ms: System.monotonic_time(:millisecond)
-            }
-
             case connector_module.connect(config) do
               {:ok, %{channel: channel} = connection} ->
-                connection =
-                  Map.put(
-                    connection,
-                    :memory_generation,
-                    Map.put(memory_generation, :channel, channel)
-                  )
-
-                case set_memory_connection(memory_proxy_module, connection, config) do
+                case set_memory_connection(memory_proxy_module, connection) do
                   :ok ->
-                    case set_edge_connection(connection, config, local_state) do
-                      {:ok, edge_syncer} ->
-                        {:ok,
-                         %{
-                           local_state
-                           | channel: channel,
-                             socket: Map.get(connection, :socket),
-                             edge_syncer: edge_syncer,
-                             owns_connection?: true,
-                             memory_negotiation_report: worker_negotiation(connection, config)
-                         }
-                         |> monitor_channel(channel)}
-
-                      {:error, reason} ->
-                        retire_unpublished_connection(connection)
-                        {:error, reason, local_state}
-                    end
+                    {:ok,
+                     %{
+                       local_state
+                       | channel: channel,
+                         socket: Map.get(connection, :socket),
+                         owns_connection?: true
+                     }
+                     |> monitor_channel(channel)}
 
                   {:error, reason} ->
                     retire_unpublished_connection(connection)
@@ -363,7 +336,7 @@ defmodule Backplane.HostAgent.Worker do
        ) do
     configure_memory_router(Map.get(config, :memory) || %{})
 
-    with :ok <- set_memory_config(memory_proxy_module, config),
+    with :ok <- set_connection_owner(memory_proxy_module),
          {:ok, state} <-
            start_and_store(state, :capture_supervisor, fn existing_pid ->
              maybe_start_capture(capture_supervisor_module, config, existing_pid)
@@ -387,25 +360,6 @@ defmodule Backplane.HostAgent.Worker do
     end
   end
 
-  defp worker_negotiation(_connection, %{memory: %{enabled: false}}), do: nil
-
-  defp worker_negotiation(%{memory: %{"selected" => selected} = memory}, _config)
-       when selected in ["host_memory", "host_memory.v2"] do
-    partitions =
-      case memory do
-        %{"partitions" => partitions} when is_list(partitions) -> partitions
-        _ -> []
-      end
-
-    %{
-      "selected" => selected,
-      "partitions" => Enum.take(partitions, 50),
-      "applied_at" => DateTime.to_iso8601(DateTime.utc_now())
-    }
-  end
-
-  defp worker_negotiation(_connection, _config), do: nil
-
   defp start_and_store(state, key, start_fun) do
     case start_fun.(Map.get(state, key)) do
       {:ok, pid} -> {:ok, Map.put(state, key, pid)}
@@ -423,7 +377,6 @@ defmodule Backplane.HostAgent.Worker do
       capture_supervisor: Keyword.get(opts, :capture_supervisor),
       http_supervisor: Keyword.get(opts, :http_supervisor),
       memory_supervisor: Keyword.get(opts, :memory_supervisor),
-      edge_syncer: Keyword.get(opts, :edge_syncer),
       trace_supervisor: Keyword.get(opts, :trace_supervisor),
       installer_module: Keyword.get(opts, :installer_module, Installer),
       config_module: Keyword.get(opts, :config_module, Config),
@@ -434,7 +387,6 @@ defmodule Backplane.HostAgent.Worker do
       connect_opts: opts,
       owns_connection?: Keyword.get(opts, :owns_connection?, false),
       local_settings_applied_at: nil,
-      memory_negotiation_report: nil,
       last_sync: nil,
       last_error: nil,
       sync_on_start?: Keyword.get(opts, :sync_on_start?, true),
@@ -470,7 +422,6 @@ defmodule Backplane.HostAgent.Worker do
         {:stop, reason, state}
 
       {:error, reason, failed_state} ->
-        publish_connection_error(failed_state, reason)
         Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
 
         {:noreply,
@@ -479,18 +430,9 @@ defmodule Backplane.HostAgent.Worker do
          |> schedule_connect_retry()}
 
       {:error, reason} ->
-        publish_connection_error(state, reason)
         Logger.warning("Host agent connect failed; retrying later: #{inspect(reason)}")
         {:noreply, schedule_connect_retry(%{state | last_error: reason})}
     end
-  end
-
-  defp publish_connection_error(state, reason) do
-    proxy = state.memory_proxy_module
-    _ = Code.ensure_loaded(proxy)
-
-    if function_exported?(proxy, :set_connection_error, 2),
-      do: proxy.set_connection_error(reason, self())
   end
 
   defp schedule_connect_retry(%{connect_retry_ref: ref} = state) when is_reference(ref), do: state
@@ -561,90 +503,22 @@ defmodule Backplane.HostAgent.Worker do
     |> min(60_000)
   end
 
-  defp set_memory_connection(memory_proxy_module, connection, config) do
+  defp set_memory_connection(memory_proxy_module, connection) do
     _ = Code.ensure_loaded(memory_proxy_module)
 
-    if function_exported?(memory_proxy_module, :set_connection, 2) do
-      memory_proxy_module.set_connection(connection, config)
+    if function_exported?(memory_proxy_module, :set_connection, 1) do
+      memory_proxy_module.set_connection(connection)
     else
       memory_proxy_module.set_channel(connection.channel)
     end
   end
 
-  defp set_memory_config(memory_proxy_module, config) do
+  defp set_connection_owner(memory_proxy_module) do
     _ = Code.ensure_loaded(memory_proxy_module)
 
-    owner_result =
-      if function_exported?(memory_proxy_module, :set_connection_owner, 1),
-        do: memory_proxy_module.set_connection_owner(self()),
-        else: :ok
-
-    with :ok <- owner_result do
-      if function_exported?(memory_proxy_module, :set_config, 1) do
-        memory_proxy_module.set_config(config)
-      else
-        :ok
-      end
-    end
-  end
-
-  defp set_edge_connection(_connection, %{memory: %{enabled: false}}, state),
-    do: clear_edge_connection(state)
-
-  defp set_edge_connection(
-         %{memory: %{"selected" => selected}} = connection,
-         config,
-         state
-       )
-       when selected in ["host_memory", "host_memory.v2"] do
-    edge_config = Map.get(Map.get(config, :memory) || %{}, :host_sync) || %{}
-
-    opts = [
-      channel: connection.channel,
-      selected: selected,
-      partitions: Map.get(connection.memory, "partitions", []),
-      generation: connection[:memory_generation],
-      extensions: Map.get(connection.memory, "extensions", []),
-      poll_interval_ms: Map.get(edge_config, :sync_interval_ms, 60_000),
-      mirror_opts: [config: edge_config]
-    ]
-
-    case state.edge_syncer do
-      pid when is_pid(pid) ->
-        if Process.alive?(pid) do
-          EdgeSyncer.set_connection(pid, connection)
-          {:ok, pid}
-        else
-          start_edge_syncer(opts, connection)
-        end
-
-      _ ->
-        start_edge_syncer(opts, connection)
-    end
-  end
-
-  defp set_edge_connection(_connection, _config, state), do: clear_edge_connection(state)
-
-  defp clear_edge_connection(%{edge_syncer: pid}) when is_pid(pid) do
-    if Process.alive?(pid), do: EdgeSyncer.stop(pid)
-    {:ok, nil}
-  end
-
-  defp clear_edge_connection(_state), do: {:ok, nil}
-
-  defp start_edge_syncer(opts, connection) do
-    case EdgeSyncer.start_link(opts) do
-      {:ok, pid} ->
-        EdgeSyncer.set_connection(pid, connection)
-        {:ok, pid}
-
-      {:error, {:already_started, pid}} ->
-        EdgeSyncer.set_connection(pid, connection)
-        {:ok, pid}
-
-      {:error, reason} ->
-        {:error, {:edge_syncer_start_failed, reason}}
-    end
+    if function_exported?(memory_proxy_module, :set_connection_owner, 1),
+      do: memory_proxy_module.set_connection_owner(self()),
+      else: :ok
   end
 
   defp cancel_timer(ref) when is_reference(ref), do: Process.cancel_timer(ref)
@@ -736,12 +610,6 @@ defmodule Backplane.HostAgent.Worker do
       :backplane_host_agent,
       :memory_store,
       Map.get(memory_config, :store_name, Backplane.HostAgent.Memory.Store)
-    )
-
-    Application.put_env(
-      :backplane_host_agent,
-      :memory_host_sync,
-      Map.get(memory_config, :host_sync, %{})
     )
   end
 

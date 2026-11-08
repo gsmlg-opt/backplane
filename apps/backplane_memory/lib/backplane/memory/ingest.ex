@@ -2,9 +2,9 @@ defmodule Backplane.Memory.Ingest do
   @moduledoc """
   Authenticated, partial-ACK ingestion of canonical capture events.
 
-  The caller must provide the authenticated host token's scopes and a trusted partition.
-  Canonical host, client, scope, and namespace fields come only from that partition. Event
-  `agent_id`, `project`, `scope`, and `client_id` remain provenance supplied by the host.
+  The caller must provide the authenticated host token's scopes and the channel `host_id`.
+  Every event must claim that same host. Event `agent_id`, `project`, and `client_id` are
+  provenance supplied by the host; none of them partition the store.
   """
 
   @transient_reasons [:database_unavailable, :transaction_rolled_back, :timeout, :disconnected]
@@ -33,13 +33,10 @@ defmodule Backplane.Memory.Ingest do
     :invalid_utf8,
     :conflicting_keys
   ]
-  @v1_authority_keys ~w(memory_space_id partition_id namespace)
-  @v1_authority_atom_keys ~w(memory_space_id partition_id namespace)a
-  @prepared_partition_fields ~w(memory_space_id host_id client_id scope namespace integration ingest_auth_token_id)a
+  @prepared_required_fields ~w(host_id integration ingest_auth_token_id)a
 
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Ingest.{EventValidator, Upcaster}
-  alias Backplane.Memory.PartitionIdentity
   alias Backplane.Memory.Privacy.Filter
 
   def ingest_batch(auth_context, batch, opts \\ [])
@@ -63,18 +60,7 @@ defmodule Backplane.Memory.Ingest do
         {:error, :invalid_batch}
 
       true ->
-        results =
-          case resolve_partition(auth_context) do
-            {:ok, partition} ->
-              auth_context
-              |> Map.put(:partition, partition)
-              |> ingest_events(events, opts)
-
-            {:error, :invalid_partition} ->
-              Enum.map(events, &rejected(get(&1, :event_id), "invalid_partition"))
-          end
-
-        {:ok, %{"batch_id" => batch_id, "results" => results}}
+        {:ok, %{"batch_id" => batch_id, "results" => ingest_events(auth_context, events, opts)}}
     end
   end
 
@@ -95,18 +81,18 @@ defmodule Backplane.Memory.Ingest do
     event_id = get(event, :event_id)
 
     try do
-      with :ok <- authorize_partition_claims(auth_context, event),
+      with :ok <- authorize_host_claims(auth_context, event),
            {:ok, event} <- EventValidator.validate(event),
            {:ok, event} <- server_filter(event),
            {:ok, attrs} <- Upcaster.V1.upcast(event, auth_context),
-           :ok <- validate_prepared_partition(attrs) do
+           :ok <- validate_prepared(attrs) do
         {:persist, event_id, attrs}
       else
-        {:error, :partition_mismatch} ->
-          {:reply, rejected(event_id, "partition_mismatch")}
+        {:error, :host_mismatch} ->
+          {:reply, rejected(event_id, "host_mismatch")}
 
-        {:error, :invalid_partition} ->
-          {:reply, rejected(event_id, "invalid_partition")}
+        {:error, :invalid_event} ->
+          {:reply, rejected(event_id, "invalid_event")}
 
         {:error, :unsupported_schema} ->
           {:reply, rejected(event_id, "unsupported_schema")}
@@ -202,15 +188,13 @@ defmodule Backplane.Memory.Ingest do
         else: reraise(error, __STACKTRACE__)
   end
 
-  defp authorize_partition_claims(auth_context, event) do
-    partition = get(auth_context, :partition)
-    authenticated = get(partition, :host_id)
+  defp authorize_host_claims(auth_context, event) do
+    authenticated = get(auth_context, :host_id)
     host_claims = present_claims(event, :host_id)
 
-    if host_claims != [] and Enum.all?(host_claims, &(&1 == authenticated)) and
-         not authority_claim?(event),
-       do: :ok,
-       else: {:error, :partition_mismatch}
+    if host_claims != [] and Enum.all?(host_claims, &(&1 == authenticated)),
+      do: :ok,
+      else: {:error, :host_mismatch}
   end
 
   defp present_claims(map, key) when is_map(map) do
@@ -225,41 +209,6 @@ defmodule Backplane.Memory.Ingest do
 
   defp present_claims(_map, _key), do: []
 
-  defp authority_claim?(event) when is_map(event) do
-    Enum.any?(@v1_authority_keys, &Map.has_key?(event, &1)) or
-      Enum.any?(@v1_authority_atom_keys, &Map.has_key?(event, &1))
-  end
-
-  defp authority_claim?(_event), do: false
-
-  defp resolve_partition(auth_context) do
-    host_id = get(auth_context, :host_id)
-    partition = get(auth_context, :partition)
-    partition_host_id = get(partition, :host_id)
-    partition_id = get(partition, :partition_id)
-    memory_space_id = get(partition, :memory_space_id)
-    scope = get(partition, :scope)
-    namespace = get(partition, :namespace)
-
-    candidate = %{
-      memory_space_id: memory_space_id,
-      host_id: partition_host_id,
-      client_id: partition_id,
-      scope: scope,
-      namespace: namespace
-    }
-
-    with true <- non_empty_binary?(host_id),
-         true <- partition_host_id == host_id,
-         true <- partition_id == "host:#{host_id}",
-         true <- namespace == "private",
-         {:ok, validated} <- PartitionIdentity.validate(candidate) do
-      {:ok, Map.put(validated, :partition_id, partition_id)}
-    else
-      _invalid -> {:error, :invalid_partition}
-    end
-  end
-
   defp capture_authorized?(auth_context) do
     "host_agent.capture" in (get(auth_context, :scopes) || []) and
       non_empty_binary?(get(auth_context, :auth_token_id))
@@ -270,8 +219,7 @@ defmodule Backplane.Memory.Ingest do
 
   defp server_filter(event) do
     with {:ok, payload} <- Filter.apply_payload(event["payload"]),
-         {:ok, source_client_id} <- filter_optional_provenance(event["client_id"]),
-         {:ok, source_scope} <- filter_optional_provenance(event["scope"]) do
+         {:ok, source_client_id} <- filter_optional_provenance(event["client_id"]) do
       payload = Backplane.MemoryRepository.metadata(payload)
       payload_hash = EventValidator.payload_hash(payload)
 
@@ -280,7 +228,6 @@ defmodule Backplane.Memory.Ingest do
        |> Map.put("payload", payload)
        |> Map.put("payload_hash", payload_hash)
        |> maybe_put_provenance("client_id", source_client_id)
-       |> maybe_put_provenance("scope", source_scope)
        |> Map.update(
          "privacy",
          %{"server_filtered" => true},
@@ -295,16 +242,16 @@ defmodule Backplane.Memory.Ingest do
   defp maybe_put_provenance(event, _key, nil), do: event
   defp maybe_put_provenance(event, key, value), do: Map.put(event, key, value)
 
-  defp validate_prepared_partition(attrs) when is_map(attrs) do
+  defp validate_prepared(attrs) when is_map(attrs) do
     complete_fields? =
-      Enum.all?(@prepared_partition_fields, &non_empty_binary?(Map.get(attrs, &1)))
+      Enum.all?(@prepared_required_fields, &non_empty_binary?(Map.get(attrs, &1)))
 
     raw_envelope = Map.get(attrs, :raw_envelope)
 
     if complete_fields? and is_map(raw_envelope) and not is_struct(raw_envelope) and
          map_size(raw_envelope) > 0,
        do: :ok,
-       else: {:error, :invalid_partition}
+       else: {:error, :invalid_event}
   end
 
   defp persist(event_id, attrs, opts) do

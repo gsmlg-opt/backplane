@@ -3,7 +3,6 @@ defmodule Backplane.Transport.McpHandlerTest do
 
   import Backplane.Auth.Fixtures
   import Backplane.SkillArchiveCase
-  import Ecto.Query
   import ExUnit.CaptureLog
 
   alias Backplane.Audit.SkillLoadLog
@@ -11,9 +10,7 @@ defmodule Backplane.Transport.McpHandlerTest do
   alias BackplaneMcp.Fixtures
   alias Backplane.Repo
   alias Backplane.Skills
-  alias Backplane.Skills.Hosts
   alias Backplane.Skills.Skill
-  alias Backplane.Memory.Memories.Memory, as: MemorySchema
   alias Backplane.Transport.McpPlug
 
   @moduletag :tmp_dir
@@ -470,25 +467,6 @@ defmodule Backplane.Transport.McpHandlerTest do
     end
   end
 
-  describe "resources/templates/list" do
-    test "lists only dynamic Memory templates authorized by the OAuth partition" do
-      host = create_memory_host!("resource-templates", "scope:resource-templates")
-      read_token = oauth_memory_token!(host, ["memory.read"])
-      write_token = oauth_memory_token!(host, ["memory.write"])
-
-      assert %{"result" => %{"resourceTemplates" => templates}} =
-               mcp_request("resources/templates/list", nil, auth_token: read_token.value)
-
-      assert Enum.map(templates, & &1["uriTemplate"]) |> Enum.sort() == [
-               "memory://recall/{id}/trace",
-               "memory://session/{id}/handoff"
-             ]
-
-      assert %{"result" => %{"resourceTemplates" => []}} =
-               mcp_request("resources/templates/list", nil, auth_token: write_token.value)
-    end
-  end
-
   describe "resources/list pagination" do
     test "returns resources without nextCursor when under page size" do
       resp = mcp_request("resources/list")
@@ -927,7 +905,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       {_client, token} =
         Fixtures.insert_client(
           name: "logging-admin",
-          scopes: ["memory.admin", "test::*"]
+          scopes: ["admin::*", "test::*"]
         )
 
       %{token: token}
@@ -1243,7 +1221,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "batch completion/complete and logging/setLevel" do
       {_client, token} =
-        Fixtures.insert_client(name: "batch-logging-admin", scopes: ["memory.admin"])
+        Fixtures.insert_client(name: "batch-logging-admin", scopes: ["admin::*"])
 
       batch = [
         %{
@@ -1677,268 +1655,6 @@ defmodule Backplane.Transport.McpHandlerTest do
   end
 
   describe "scoped tools/call" do
-    test "PAT JSON and batch managed remember calls receive the same trusted metadata context" do
-      host = create_memory_host!("pat-dispatch", "scope:pat")
-      register_memory_remember_tool!()
-
-      {_client, token} =
-        BackplaneMcp.Fixtures.insert_client(
-          name: "memory-pat-dispatch",
-          scopes: ["memory::remember"],
-          metadata: %{"memory_partition_id" => "host:#{host.id}"}
-        )
-
-      args = %{"content" => "pat json", "agent_id" => "agent", "scope" => "scope:pat"}
-
-      json =
-        mcp_request(
-          "tools/call",
-          %{"name" => "memory::remember", "arguments" => args},
-          auth_token: token
-        )
-
-      refute json["result"]["isError"]
-
-      batch = [
-        %{
-          "jsonrpc" => "2.0",
-          "method" => "tools/call",
-          "id" => 2,
-          "params" => %{
-            "name" => "memory::remember",
-            "arguments" => %{args | "content" => "pat batch"}
-          }
-        }
-      ]
-
-      conn = direct_mcp_conn(batch, token)
-      assert [%{"result" => result}] = Jason.decode!(conn.resp_body)
-      refute result["isError"]
-
-      assert [first, second] =
-               MemorySchema
-               |> order_by([memory], asc: memory.content)
-               |> Repo.all()
-
-      assert {first.content, second.content} == {"pat batch", "pat json"}
-
-      for memory <- [first, second] do
-        assert memory.host_id == host.id
-        assert memory.client_id == "host:#{host.id}"
-        assert memory.namespace == "private"
-        assert memory.scope == "scope:pat"
-      end
-    end
-
-    test "OAuth managed remember resolves server metadata and rejects spoofed ownership" do
-      host = create_memory_host!("oauth-dispatch", "scope:oauth")
-      register_memory_remember_tool!()
-      token = oauth_memory_token!(host, ["memory::remember"])
-
-      accepted =
-        mcp_request(
-          "tools/call",
-          %{
-            "name" => "memory::remember",
-            "arguments" => %{
-              "content" => "oauth memory",
-              "agent_id" => "agent",
-              "scope" => "scope:oauth"
-            }
-          },
-          auth_token: token.value
-        )
-
-      refute accepted["result"]["isError"]
-      assert %MemorySchema{host_id: host_id, client_id: partition} = Repo.one!(MemorySchema)
-      assert host_id == host.id
-      assert partition == "host:#{host.id}"
-
-      rejected =
-        mcp_request(
-          "tools/call",
-          %{
-            "name" => "memory::remember",
-            "arguments" => %{
-              "content" => "spoof",
-              "agent_id" => "agent",
-              "host_id" => Ecto.UUID.generate(),
-              "client_id" => "host:attacker"
-            }
-          },
-          auth_token: token.value
-        )
-
-      assert rejected["error"]["code"] == -32_602
-      assert rejected["error"]["message"] =~ "Unexpected arguments"
-      assert Repo.aggregate(MemorySchema, :count) == 1
-    end
-
-    test "SSE managed remember receives the same verified PAT context" do
-      host = create_memory_host!("sse-dispatch", "scope:sse")
-      register_memory_remember_tool!()
-
-      {_client, token} =
-        BackplaneMcp.Fixtures.insert_client(
-          name: "memory-sse-dispatch",
-          scopes: ["memory::remember"],
-          metadata: %{"memory_partition_id" => "host:#{host.id}"}
-        )
-
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "method" => "tools/call",
-          "id" => 1,
-          "params" => %{
-            "name" => "memory::remember",
-            "arguments" => %{
-              "content" => "sse memory",
-              "agent_id" => "agent",
-              "scope" => "scope:sse"
-            }
-          }
-        })
-
-      conn =
-        conn(:post, "/", body)
-        |> put_req_header("content-type", "application/json")
-        |> put_req_header("accept", "text/event-stream")
-        |> put_req_header("authorization", "Bearer #{token}")
-        |> McpPlug.call(McpPlug.init([]))
-
-      assert conn.status == 200
-      assert %MemorySchema{host_id: host_id, client_id: partition} = Repo.one!(MemorySchema)
-      assert host_id == host.id
-      assert partition == "host:#{host.id}"
-    end
-
-    test "PAT and OAuth credentials share one live host partition across JSON batch SSE and prompts" do
-      host = create_memory_host!("credential-rotation", "scope:credential-rotation")
-      register_memory_surface!()
-
-      {_client, pat} =
-        BackplaneMcp.Fixtures.insert_client(
-          name: "memory-credential-rotation-pat",
-          scopes: ["memory::*"],
-          metadata: %{"memory_partition_id" => "host:#{host.id}"}
-        )
-
-      oauth = oauth_memory_token!(host, ["memory::*"])
-      args = %{"agent_id" => "agent", "scope" => host.memory_scope}
-
-      json =
-        mcp_request(
-          "tools/call",
-          %{
-            "name" => "memory::remember",
-            "arguments" => Map.put(args, "content", "credential rotation json")
-          },
-          auth_token: pat
-        )
-
-      refute json["result"]["isError"]
-
-      batch = [
-        %{
-          "jsonrpc" => "2.0",
-          "method" => "tools/call",
-          "id" => 2,
-          "params" => %{
-            "name" => "memory::remember",
-            "arguments" => Map.put(args, "content", "credential rotation batch")
-          }
-        }
-      ]
-
-      assert [%{"result" => batch_result}] =
-               batch |> direct_mcp_conn(oauth.value) |> then(&Jason.decode!(&1.resp_body))
-
-      refute batch_result["isError"]
-
-      sse =
-        sse_mcp_conn(
-          %{
-            "name" => "memory::remember",
-            "arguments" => Map.put(args, "content", "credential rotation sse")
-          },
-          pat
-        )
-
-      assert sse.status == 200
-
-      for token <- [pat, oauth.value] do
-        prompt =
-          mcp_request(
-            "prompts/get",
-            %{
-              "name" => "recall_context",
-              "arguments" => %{"query" => "credential rotation"}
-            },
-            auth_token: token
-          )
-
-        assert prompt["result"]["messages"] != []
-      end
-
-      memories = Repo.all(MemorySchema)
-      assert length(memories) == 3
-
-      assert Enum.all?(memories, fn memory ->
-               memory.host_id == host.id and memory.client_id == "host:#{host.id}" and
-                 memory.namespace == "private" and memory.scope == host.memory_scope
-             end)
-    end
-
-    test "deleted metadata host fails closed over JSON batch SSE and managed prompts" do
-      host = create_memory_host!("deleted-metadata", "scope:deleted-metadata")
-      register_memory_surface!()
-
-      {_client, pat} =
-        BackplaneMcp.Fixtures.insert_client(
-          name: "memory-deleted-host-pat",
-          scopes: ["memory::*"],
-          metadata: %{"memory_partition_id" => "host:#{host.id}"}
-        )
-
-      oauth = oauth_memory_token!(host, ["memory::*"])
-      assert {:ok, _deleted} = Hosts.delete_agent(host)
-
-      params = %{
-        "name" => "memory::remember",
-        "arguments" => %{
-          "content" => "must not persist",
-          "agent_id" => "agent",
-          "scope" => host.memory_scope
-        }
-      }
-
-      json = mcp_request("tools/call", params, auth_token: pat)
-      assert json["result"]["isError"] == true
-
-      batch = [%{"jsonrpc" => "2.0", "method" => "tools/call", "id" => 2, "params" => params}]
-
-      assert [%{"result" => %{"isError" => true}}] =
-               batch |> direct_mcp_conn(oauth.value) |> then(&Jason.decode!(&1.resp_body))
-
-      sse = sse_mcp_conn(params, pat)
-      assert sse.status == 200
-      assert sse.resp_body =~ ~s|"isError":true|
-      assert Repo.aggregate(MemorySchema, :count) == 0
-
-      for token <- [pat, oauth.value] do
-        hidden =
-          mcp_request(
-            "prompts/get",
-            %{"name" => "recall_context", "arguments" => %{"query" => "anything"}},
-            auth_token: token
-          )
-
-        absent = mcp_request("prompts/get", %{"name" => "does-not-exist"}, auth_token: token)
-        assert hidden["error"] == absent["error"]
-      end
-    end
-
     test "allows call for in-scope tool" do
       {_client, token} =
         BackplaneMcp.Fixtures.insert_client(name: "skill-access", scopes: ["skill::*"])
@@ -2044,60 +1760,6 @@ defmodule Backplane.Transport.McpHandlerTest do
     user = auth_user_fixture!()
     client = oauth_client_fixture!(resources: [:mcp], scopes: scopes)
     resource_access_token_fixture!(user, client, scopes, :mcp)
-  end
-
-  defp oauth_memory_token!(host, scopes) do
-    user = auth_user_fixture!()
-
-    client =
-      oauth_client_fixture!(
-        resources: [:mcp],
-        scopes: scopes,
-        metadata: %{"memory_partition_id" => "host:#{host.id}"}
-      )
-
-    resource_access_token_fixture!(user, client, scopes, :mcp)
-  end
-
-  defp create_memory_host!(suffix, memory_scope) do
-    {:ok, host, _auth_token, _plaintext} =
-      Hosts.create_agent_with_token(%{
-        "name" => "mcp-memory-#{suffix}-#{System.unique_integer([:positive])}",
-        "memory_scope" => memory_scope
-      })
-
-    host
-  end
-
-  defp register_memory_remember_tool! do
-    remember = Enum.find(Backplane.Memory.Service.tools(), &(&1.name == "memory::remember"))
-    Backplane.Registry.ToolRegistry.register_managed("memory", [remember])
-  end
-
-  defp register_memory_surface! do
-    register_memory_remember_tool!()
-
-    Backplane.Registry.PromptRegistry.register_managed(
-      "memory",
-      Backplane.Memory.Service.prompts(),
-      Backplane.Memory.Service
-    )
-  end
-
-  defp sse_mcp_conn(params, token) do
-    body =
-      Jason.encode!(%{
-        "jsonrpc" => "2.0",
-        "method" => "tools/call",
-        "id" => 1,
-        "params" => params
-      })
-
-    conn(:post, "/", body)
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("accept", "text/event-stream")
-    |> put_req_header("authorization", "Bearer #{token}")
-    |> McpPlug.call(McpPlug.init([]))
   end
 
   defp direct_mcp_conn(body, token) do

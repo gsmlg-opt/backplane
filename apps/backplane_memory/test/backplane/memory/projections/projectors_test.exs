@@ -4,7 +4,6 @@ defmodule Backplane.Memory.Projections.ProjectorsTest do
   alias Backplane.Memory.Events.Event
 
   alias Backplane.Memory.Projections.{
-    ActivityProjector,
     Gaps,
     ObservationProjector,
     Revision,
@@ -312,62 +311,6 @@ defmodule Backplane.Memory.Projections.ProjectorsTest do
     assert Gaps.find(sparse) == [
              %{"from" => 1, "to" => 9_223_372_036_854_774_999}
            ]
-  end
-
-  test "activity projection aggregates by stable date/project/agent/host/type keys" do
-    events = [
-      event(
-        "00000000-0000-4000-8000-000000000004",
-        2,
-        "agent.tool.failed",
-        ~U[2026-08-05 01:00:00Z],
-        %{"source" => %{"tool_name" => "Bash"}},
-        %{session_id: "session-2"}
-      ),
-      event(
-        "00000000-0000-4000-8000-000000000003",
-        2,
-        "agent.tool.failed",
-        ~U[2026-08-04 03:00:00Z],
-        %{"source" => %{"tool_name" => "Bash"}},
-        %{session_id: "session-2"}
-      ),
-      event(
-        "00000000-0000-4000-8000-000000000002",
-        2,
-        "agent.tool.failed",
-        ~U[2026-08-04 02:00:00Z],
-        %{"source" => %{"tool_name" => "Bash"}}
-      ),
-      event(
-        "00000000-0000-4000-8000-000000000001",
-        1,
-        "agent.prompt.submitted",
-        ~U[2026-08-04 01:00:00Z],
-        %{}
-      )
-    ]
-
-    activity = ActivityProjector.project(events)
-    assert activity == ActivityProjector.project(Enum.reverse(events))
-
-    assert [prompt, failed_day_one, failed_day_two] = activity
-    assert prompt["date"] == "2026-08-04"
-    assert prompt["event_type"] == "agent.prompt.submitted"
-    assert prompt["event_count"] == 1
-    assert prompt["error_count"] == 0
-
-    assert failed_day_one["date"] == "2026-08-04"
-    assert failed_day_one["event_type"] == "agent.tool.failed"
-    assert failed_day_one["event_count"] == 2
-    assert failed_day_one["session_count"] == 2
-    assert failed_day_one["error_count"] == 2
-
-    assert failed_day_two["date"] == "2026-08-05"
-    assert failed_day_two["event_count"] == 1
-
-    non_session = %{List.first(events) | session_id: nil, event_type: "git.commit.created"}
-    assert [%{"session_count" => 0}] = ActivityProjector.project([non_session])
   end
 
   defp event(id, sequence, type, occurred_at, payload, overrides \\ %{}) do

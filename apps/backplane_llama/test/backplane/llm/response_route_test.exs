@@ -78,7 +78,7 @@ defmodule Backplane.LLM.ResponseRouteTest do
         kind: :oauth,
         client_id: "oauth-client",
         subject: subject,
-        principal_metadata: %{"memory_partition_id" => tenant}
+        principal_metadata: %{"host_id" => tenant}
       })
     end
 

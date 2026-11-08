@@ -144,11 +144,7 @@ defmodule Backplane.CIWorkflowTest do
   """
 
   @test_run ~S"""
-  if [ "${{ matrix.app }}" = "backplane_memory" ]; then
-    mix "do" --app backplane_memory test --exclude memory_qualification_runtime
-  else
-    mix "do" --app ${{ matrix.app }} test
-  fi
+  mix "do" --app ${{ matrix.app }} test
   """
 
   setup_all do
@@ -698,7 +694,6 @@ defmodule Backplane.CIWorkflowTest do
     helpers = Enum.find(job["steps"], &(&1["name"] == "Verify publication helpers"))
     assert helpers["run"] =~ "test_*publication*.py"
     assert helpers["run"] =~ "test_stage_docker_image.py"
-    refute Enum.any?(job["steps"], &((&1["run"] || "") =~ "hermes_memory_live_oracle"))
   end
 
   defp assert_common_steps(job, native?, cache_key, cache_prefix, native_run \\ @native_build_run) do

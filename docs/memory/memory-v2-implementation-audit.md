@@ -1,3 +1,5 @@
+> **Superseded** by [docs/superpowers/specs/2026-11-09-memory-simplification-design.md](../superpowers/specs/2026-11-09-memory-simplification-design.md). Historical; describes the retired memory design.
+
 # Memory V2 Implementation Audit
 
 > Historical PR0 baseline audit. Its “current defect,” provisional target SQL,

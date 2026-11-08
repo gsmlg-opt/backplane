@@ -453,7 +453,6 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp normalize_agent_params(params) do
     params
     |> Map.update("name", "", &String.trim/1)
-    |> Map.update("memory_scope", "proj_local", &String.trim/1)
   end
 
   defp normalize_token_params(params) do
@@ -497,7 +496,6 @@ defmodule Backplane.Admin.HostAgentsLive do
         <:title>Name</:title>
         <form id="agent-name-form" phx-submit="rename_agent" class="space-y-4">
           <.dm_input id="agent-name" name="agent[name]" label="Name" value={@entry.host.name} />
-          <.dm_input id="agent-memory-scope" name="agent[memory_scope]" label="Memory scope" value={@entry.host.memory_scope} />
           <p :if={@error} class="text-sm text-error">{@error}</p>
           <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
         </form>
@@ -605,7 +603,6 @@ defmodule Backplane.Admin.HostAgentsLive do
           <p :if={config_stale?(@entry)} id="host-report-stale" class="text-sm text-warning">Last-known report; stale since disconnect or reconnect.</p>
           <dl class="space-y-2 text-sm">
             <div id="host-local-settings-report"><dt class="font-medium">Local settings applied</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || "Unavailable"}</dd><dd>Report received: {report_timestamp(Map.get(@entry, :config_reported_at))}</dd></div>
-            <div id="host-memory-negotiation"><dt class="font-medium">Last worker negotiation</dt><dd>{get_in(@entry.config, ["memory_negotiation", "selected"]) || "Unavailable"}</dd><dd>{get_in(@entry.config, ["memory_negotiation", "applied_at"]) || "Unavailable"}</dd><dd>Memory proxy connections may negotiate independently.</dd></div>
           </dl>
           <pre
             id="reported-config-yaml"
@@ -790,9 +787,8 @@ defmodule Backplane.Admin.HostAgentsLive do
         <p :for={partition <- @memory_partitions} class="break-all">{partition["memory_space_id"]} · {partition["scope"]} / {partition["namespace"]} · Revision {partition["applied_revision"] || "Unavailable"} · Last sync {partition["last_sync_at"] || "Unavailable"}</p>
       </div>
       <dl :if={@entry.config} class="mt-3 space-y-2 text-sm">
-        <div :if={config_stale?(@entry)} class="text-warning">Last-known local settings and worker negotiation; stale.</div>
+        <div :if={config_stale?(@entry)} class="text-warning">Last-known local settings; stale.</div>
         <div><dt class="font-medium">Local settings applied</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || "Unavailable"}</dd></div>
-        <div><dt class="font-medium">Last worker negotiation</dt><dd>{get_in(@entry.config, ["memory_negotiation", "selected"]) || "Unavailable"} · {get_in(@entry.config, ["memory_negotiation", "applied_at"]) || "Unavailable"}</dd></div>
       </dl>
     </.dm_card>
     """
@@ -911,7 +907,6 @@ defmodule Backplane.Admin.HostAgentsLive do
         <div class="px-5 py-5">
           <form id="host-agent-form" phx-submit="create_agent" class="space-y-4">
             <.dm_input id="agent-name" name="agent[name]" label="Name" value="" placeholder="workstation" />
-            <.dm_input id="agent-memory-scope" name="agent[memory_scope]" label="Memory scope" value="proj_local" />
             <p :if={@error} class="text-sm text-error">{@error}</p>
             <div class="flex flex-wrap justify-end gap-2">
               <.dm_btn type="button" variant="outline" size="sm" phx-click="close_agent_modal">

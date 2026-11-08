@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.Reporter do
   Formats host-agent status payloads for the Backplane host channel.
   """
 
-  alias Backplane.HostAgent.Memory.{CaptureUploader, Diagnostics, Spool}
+  alias Backplane.HostAgent.Memory.{CaptureUploader, Spool}
   alias Backplane.HostAgent.Telemetry
 
   @doc "Builds the host-agent heartbeat payload."
@@ -14,7 +14,7 @@ defmodule Backplane.HostAgent.Reporter do
       "machine_name" => Map.fetch!(config, :machine_name),
       "metadata" => %{"otp_release" => System.otp_release()},
       "capture" => capture_status(config),
-      "memory" => memory_status(config),
+      "memory" => memory_defaults(),
       "targets" => Enum.map(Map.get(config, :targets, []), &stringify_keys/1)
     }
   end
@@ -35,12 +35,11 @@ defmodule Backplane.HostAgent.Reporter do
           "http_port" => field(config, :http_port)
         }),
       "local_settings_applied_at" => Map.get(context, :local_settings_applied_at),
-      "memory_negotiation" => negotiation_report(Map.get(context, :memory_negotiation_report)),
       "memory" => memory_settings(field(config, :memory)),
       "capture" =>
         safe_settings(
           field(config, :capture),
-          ~w(enabled db_path inject_context context_timeout_ms recall_cache_max_entries recall_cache_max_bytes recall_cache_ttl_ms upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
+          ~w(enabled db_path upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
         ),
       "telemetry" =>
         safe_settings(
@@ -112,52 +111,6 @@ defmodule Backplane.HostAgent.Reporter do
     end
   end
 
-  defp memory_status(config) do
-    memory = field(config, :memory) || %{}
-    diagnostics = field(memory, :diagnostics_module) || Diagnostics
-    opts = field(memory, :diagnostics_opts) || []
-
-    case safe_capture_call(fn -> diagnostics.snapshot(opts) end, nil) do
-      {:ok, %{"edge" => edge, "outbox" => outbox} = snapshot}
-      when is_map(edge) and is_map(outbox) ->
-        measured =
-          if edge["status"] == "available",
-            do:
-              Map.take(
-                edge,
-                ~w(status protection_mode items bytes revision lag lag_status stale_age_seconds)
-              ),
-            else: %{}
-
-        memory_defaults()
-        |> Map.merge(measured)
-        |> Map.put("protection_mode", edge["protection_mode"] || "disabled")
-        |> Map.put(
-          "pending_commands",
-          Enum.sum(Enum.map(~w(pending inflight retry_wait), &Map.get(outbox, &1, 0)))
-        )
-        |> Map.put("failed_commands", Map.get(outbox, "dead_letter", 0))
-        |> Map.put("retry_count", Map.get(outbox, "retry_wait", 0))
-        |> Map.put("dead_letter_count", Map.get(outbox, "dead_letter", 0))
-        |> Map.put("last_successful_sync", snapshot["last_successful_sync"])
-        |> Map.put(
-          "partitions",
-          edge
-          |> Map.get("partitions", [])
-          |> Enum.take(50)
-          |> Enum.map(
-            &Map.take(
-              &1,
-              ~w(memory_space_id scope namespace applied_revision last_sync_at stale_age_seconds)
-            )
-          )
-        )
-
-      _ ->
-        memory_defaults()
-    end
-  end
-
   defp memory_defaults do
     Map.new(
       ~w(items bytes revision lag stale_age_seconds retry_count dead_letter_count pending_commands failed_commands last_successful_sync),
@@ -200,22 +153,6 @@ defmodule Backplane.HostAgent.Reporter do
         field(memory, :host_sync),
         ~w(enabled development_plaintext db_path max_frame_bytes max_changes max_items max_bytes max_items_per_partition max_age_days sync_interval_ms)
       )
-    )
-  end
-
-  defp negotiation_report(nil), do: nil
-
-  defp negotiation_report(report) when is_map(report) do
-    report = stringify_keys(report)
-
-    report
-    |> Map.take(~w(selected applied_at))
-    |> Map.put(
-      "partitions",
-      report
-      |> Map.get("partitions", [])
-      |> Enum.take(50)
-      |> Enum.map(&Map.take(&1, ~w(memory_space_id scope namespace)))
     )
   end
 

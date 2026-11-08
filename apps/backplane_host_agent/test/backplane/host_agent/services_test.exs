@@ -1,36 +1,27 @@
 defmodule Backplane.HostAgent.ServicesTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.{Access, Migrator, Store}
   alias Backplane.HostAgent.{MemoryProxy, Services}
   alias Backplane.HostAgent.Services.Day, as: DayService
   alias Backplane.HostAgent.Services.Math, as: MathService
-  alias Backplane.HostAgent.Services.Memory, as: MemoryService
   alias Backplane.HostAgent.Services.Plugins, as: PluginsService
-  alias Turso.Result
 
   @moduletag :tmp_dir
 
-  setup %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
+  setup do
     MemoryProxy.set_channel(nil)
-
-    Application.put_env(:backplane_host_agent, :memory_store, store)
-    Application.put_env(:backplane_host_agent, :memory_config, %{bound_scope: "proj_local"})
 
     on_exit(fn ->
       Application.delete_env(:backplane_host_agent, :local_services)
-      Application.delete_env(:backplane_host_agent, :memory_store)
-      Application.delete_env(:backplane_host_agent, :memory_config)
       Application.delete_env(:backplane_host_agent, :home_dir)
       MemoryProxy.set_channel(nil)
     end)
 
-    {:ok, store: store}
+    :ok
   end
 
-  test "resolve returns the registered service and bare tool name" do
-    assert {:ok, MemoryService, "recall"} = Services.resolve("memory::recall")
+  test "memory tools are not served by a local service" do
+    assert :error = Services.resolve("memory::search")
   end
 
   test "resolve returns day and math local services" do
@@ -49,75 +40,6 @@ defmodule Backplane.HostAgent.ServicesTest do
 
   test "resolve returns error for names without namespace separator" do
     assert :error = Services.resolve("recall")
-  end
-
-  test "memory service exposes prefixed tool descriptors" do
-    tool_names = Enum.map(MemoryService.tools(), & &1["name"])
-
-    assert "memory::remember" in tool_names
-    assert "memory::recall" in tool_names
-  end
-
-  test "memory service binds context agent_id into an authenticated canonical command", %{
-    store: store
-  } do
-    owner = start_supervised!({Access, name: nil, store: store, now_fun: fn -> 10_000 end})
-    access_id = "11111111-1111-4111-8111-111111111111"
-
-    partition = %{
-      "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "scope" => "proj_local",
-      "namespace" => "private"
-    }
-
-    context = %{agent_id: "service-agent", access_server: owner}
-
-    assert {:error, :unauthorized} =
-             MemoryService.call("remember", %{"content" => "cold memory"}, context)
-
-    assert :ok =
-             Access.install_inventory(
-               %{id: 1, sent_at_ms: 10_000},
-               %{
-                 "extensions" => ~w(memory_access.v1 memory_commands.v2),
-                 "default_access_id" => access_id,
-                 "accesses" => [
-                   %{
-                     "access_id" => access_id,
-                     "authority_version" => 1,
-                     "status" => "active",
-                     "partition" => partition,
-                     "capabilities" => ~w(read remember forget),
-                     "offline_read_lease_seconds" => 0
-                   }
-                 ]
-               },
-               owner
-             )
-
-    assert {:ok,
-            %{
-              "id" => id,
-              "scope" => "proj_local",
-              "status" => "pending",
-              "sync_state" => "pending"
-            }} =
-             MemoryService.call("remember", %{"content" => "service memory"}, context)
-
-    assert {:ok,
-            %Result{
-              rows: [%{"command_id" => ^id, "access_id" => ^access_id, "payload" => payload}]
-            }} =
-             Store.query(store, "SELECT command_id,access_id,payload FROM memory_outbox")
-
-    command = Jason.decode!(payload)
-    assert command["arguments"]["agent_id"] == "service-agent"
-    assert command["arguments"]["content"] == "service memory"
-    assert command["partition"] == partition
-    assert command["access"] == %{"access_id" => access_id, "authority_version" => 1}
-
-    assert {:ok, %Result{rows: [%{"count" => 0}]}} =
-             Store.query(store, "SELECT count(*) AS count FROM memories")
   end
 
   test "plugin service exposes install tools and installs a plugin", %{tmp_dir: tmp_dir} do
@@ -213,18 +135,6 @@ defmodule Backplane.HostAgent.ServicesTest do
   test "math service returns errors for invalid args" do
     assert {:error, {:bad_request, :missing_expression}} =
              MathService.call("evaluate", %{}, %{})
-  end
-
-  defp start_memory!(tmp_dir) do
-    name = :"host_agent_services_#{System.unique_integer([:positive])}"
-    db_path = Path.join(tmp_dir, "#{name}.db")
-
-    start_supervised!(
-      {Store, database: db_path, name: name, pool_size: 1, busy_timeout_ms: 5_000}
-    )
-
-    assert :ok = Migrator.migrate(name)
-    name
   end
 
   defp plugin_source_root!(tmp_dir) do

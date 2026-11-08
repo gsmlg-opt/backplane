@@ -14,8 +14,6 @@ defmodule Backplane.Transport.TaskManager do
 
   require Logger
 
-  alias Backplane.Repo
-  alias Backplane.Skills.Host
   alias Backplane.Transport.SensitiveResults
 
   @table :backplane_mcp_tasks
@@ -274,28 +272,8 @@ defmodule Backplane.Transport.TaskManager do
   end
 
   defp owner_key(auth) do
-    {
-      auth[:kind],
-      auth[:client_id],
-      auth[:subject],
-      resolved_partition_identity(auth)
-    }
+    {auth[:kind], auth[:client_id], auth[:subject]}
   end
-
-  defp resolved_partition_identity(%{
-         principal_metadata: %{"memory_partition_id" => partition_id}
-       })
-       when is_binary(partition_id) do
-    with "host:" <> host_id <- partition_id,
-         {:ok, ^host_id} <- Ecto.UUID.cast(host_id),
-         %Host{} = host <- Repo.get(Host, host_id) do
-      {host.id, partition_id, host.memory_scope, "private"}
-    else
-      _invalid_or_missing -> :unresolved
-    end
-  end
-
-  defp resolved_partition_identity(_auth), do: :unresolved
 
   defp generate_task_id do
     Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)

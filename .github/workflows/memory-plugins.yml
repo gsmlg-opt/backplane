@@ -16,8 +16,6 @@ on:
       - "mix.exs"
       - "mix.lock"
       - "integrations/memory/**"
-      - "test/hermes_memory_live_oracle_test.exs"
-      - "test/openclaw_memory_live_acceptance.exs"
       - "test/support/**"
       - "test/openclaw_capture_barrier_test.exs"
       - "test/openclaw_owned_process_test.exs"
@@ -37,8 +35,6 @@ on:
       - "mix.exs"
       - "mix.lock"
       - "integrations/memory/**"
-      - "test/hermes_memory_live_oracle_test.exs"
-      - "test/openclaw_memory_live_acceptance.exs"
       - "test/support/**"
       - "test/openclaw_capture_barrier_test.exs"
       - "test/openclaw_owned_process_test.exs"
@@ -138,77 +134,6 @@ jobs:
       - name: Verify OpenClaw provider contract
         run: node --test integrations/memory/tests/test_openclaw*.mjs
 
-      - name: Verify Hermes live semantic oracle
-        run: MIX_ENV=test mix run --no-start test/hermes_memory_live_oracle_test.exs
-
-      - name: Prepare qualification database
-        run: |
-          mix ecto.create
-          psql --dbname backplane_test --command "CREATE EXTENSION IF NOT EXISTS vector"
-          mix ecto.migrate
-
-      # Migration 20260525000050 creates eight empty legacy slots without a
-      # host. Resolve only those exact fresh-install fixtures in this CI database;
-      # real installations must investigate their own backfill issues.
-
-      # These are the exact empty fresh-install fixtures, never operator data.
-      - name: Resolve migration-seeded empty memory slots in the qualification database
-        run: |
-          psql -X -v ON_ERROR_STOP=1 --dbname backplane_test <<'SQL'
-          DO $qualification$
-          DECLARE
-            names text[];
-            issues integer;
-            removed integer;
-            settled integer;
-          BEGIN
-            SELECT array_agg(name ORDER BY name) INTO names FROM memory_slots;
-            IF names IS DISTINCT FROM ARRAY[
-              'guidance', 'pending_items', 'persona', 'project_context',
-              'self_notes', 'session_patterns', 'tool_guidelines', 'user_preferences'
-            ]::text[] OR EXISTS (
-              SELECT 1 FROM memory_slots
-              WHERE content <> '' OR updated_by IS NOT NULL OR size_limit_chars <> 2000
-                 OR host_id IS NOT NULL OR client_id IS NOT NULL
-                 OR source_client_id IS NOT NULL OR memory_space_id IS NOT NULL
-                 OR scope IS NOT NULL OR namespace IS NOT NULL
-            ) THEN
-              RAISE EXCEPTION 'unexpected legacy slot data in fresh qualification database';
-            END IF;
-
-            SELECT count(*) INTO issues
-            FROM bpm_memory_space_backfill_issues issue
-            JOIN memory_slots slot
-              ON issue.source_id = bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot))
-            WHERE issue.source_table = 'memory_slots' AND issue.reason = 'missing_mapping'
-              AND issue.disposition = 'pending';
-            IF issues <> 8 OR (SELECT count(*) FROM bpm_memory_space_backfill_issues) <> 8 THEN
-              RAISE EXCEPTION 'unexpected backfill issues in fresh qualification database';
-            END IF;
-
-            WITH deleted AS (
-              DELETE FROM memory_slots AS slot
-              RETURNING bpm_memory_backfill_source_id('memory_slots', to_jsonb(slot)) AS source_id
-            ), resolved AS (
-              UPDATE bpm_memory_space_backfill_issues AS issue
-              SET disposition = 'resolved', resolved_at = now(), updated_at = now()
-              FROM deleted
-              WHERE issue.source_table = 'memory_slots' AND issue.source_id = deleted.source_id
-                AND issue.disposition = 'pending'
-              RETURNING issue.source_id
-            )
-            SELECT (SELECT count(*) FROM deleted), (SELECT count(*) FROM resolved)
-            INTO removed, settled;
-            IF removed <> 8 OR settled <> 8 THEN
-              RAISE EXCEPTION 'fresh qualification slot resolution was incomplete';
-            END IF;
-          END
-          $qualification$;
-          SQL
-
-      - name: Verify revisioned edge cutover readiness
-        run: mix backplane.memory.edge_cutover_check
-
       - name: Verify outage, privacy, performance, and integration adapters
         run: |
           mix test \
@@ -216,37 +141,17 @@ jobs:
             apps/backplane_host_agent/test/backplane/host_agent/memory/event_envelope_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/claude_code_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/codex_hook_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/v1_to_v2_upgrade_test.exs
+            apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs
 
       - name: Verify memory plugin source lifecycle
         run: |
           mix test \
             apps/backplane_memory_contract/test/backplane/openclaw_capture_contract_test.exs \
-            apps/backplane_memory/test/backplane/memory/workers/hermes_pipeline_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/access_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/hermes_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/openclaw_hook_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/spool_turso_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/context_packer_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory_facade_test.exs \
-            apps/backplane_api/test/backplane/api/host_agent_memory_sync_test.exs
+            apps/backplane_host_agent/test/backplane/host_agent/memory/spool_turso_test.exs
 
-      - name: Install pinned OpenClaw qualification runtime
-        run: npm install --prefix "$RUNNER_TEMP/backplane-openclaw-runtime" --no-audit --no-fund openclaw@2026.10.10
-
-      - name: Verify real OpenClaw canonical path
-        env:
-          BACKPLANE_MEMORY_QUALIFICATION_REAL_POOL: "1"
-          OPENCLAW_LIVE_MODE: deterministic
-          OPENROUTER_API_KEY: ""
-        run: |
-          mkdir -p artifacts/openclaw
-          OPENCLAW_NODE="$(command -v node)" \
-          OPENCLAW_RUNTIME="$RUNNER_TEMP/backplane-openclaw-runtime/node_modules/openclaw" \
-          MIX_TEST_PARTITION="_openclawlive_$(openssl rand -hex 8)" \
-            mix run --no-start test/openclaw_memory_live_acceptance.exs \
-            > artifacts/openclaw/openclaw-live.log
+      # OpenClaw live acceptance removed until Plan 5 (new live tests).
 
       - name: Assemble host-agent package for provider contract tests
         env:
@@ -277,12 +182,3 @@ jobs:
           roots=(_build/prod/rel/host_agent/lib/backplane_host_agent-*/priv/integrations/memory)
           test "${#roots[@]}" -eq 1
           node --test "${roots[0]}"/tests/test_openclaw*.mjs
-
-      - name: Upload OpenClaw memory qualification artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: openclaw-memory-qualification
-          path: artifacts/openclaw/
-          if-no-files-found: warn
-          retention-days: 90

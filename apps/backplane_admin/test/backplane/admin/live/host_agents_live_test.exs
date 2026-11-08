@@ -66,18 +66,16 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     refute inspect(event) =~ "bha_"
   end
 
-  test "creating an agent persists its registered memory scope", %{conn: conn} do
+  test "creating an agent has no memory scope input", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/system/host-agents")
     view |> element("#open-agent-modal") |> render_click()
+    refute has_element?(view, "#agent-memory-scope")
 
     view
-    |> form("#host-agent-form", %{
-      "agent" => %{"name" => "scoped-host", "memory_scope" => "  project:trusted  "}
-    })
+    |> form("#host-agent-form", %{"agent" => %{"name" => "  scoped-host  "}})
     |> render_submit()
 
-    assert %{memory_scope: "project:trusted"} =
-             Enum.find(Hosts.list_hosts(), &(&1.name == "scoped-host"))
+    assert %{name: "scoped-host"} = Enum.find(Hosts.list_hosts(), &(&1.name == "scoped-host"))
   end
 
   test "host config and memory sync show last known reports as stale without secrets", %{
@@ -102,17 +100,11 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     :ok =
       AgentManage.report_config(host.id, %{
         "memory" => %{"enabled" => true, "api_key" => "secret-not-rendered"},
-        "local_settings_applied_at" => "2026-10-20T01:00:00Z",
-        "memory_negotiation" => %{
-          "selected" => "host_memory.v2",
-          "applied_at" => "2026-10-20T01:00:01Z",
-          "partitions" => []
-        }
+        "local_settings_applied_at" => "2026-10-20T01:00:00Z"
       })
 
     {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/config")
     assert has_element?(view, "#host-local-settings-report", "2026-10-20T01:00:00Z")
-    assert has_element?(view, "#host-memory-negotiation", "host_memory.v2")
     refute render(view) =~ "secret-not-rendered"
     :ok = AgentManage.disconnect(host.id)
     assert has_element?(view, "#host-report-stale", "stale")

@@ -2,7 +2,6 @@ defmodule Backplane.HostAgent.MemoryDisabledConnectionTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.{MemoryProxy, Worker}
-  alias Backplane.HostAgent.Memory.Access
 
   defmodule HubSocket do
     def init(owner), do: {:ok, owner}
@@ -83,7 +82,6 @@ defmodule Backplane.HostAgent.MemoryDisabledConnectionTest do
   test "memory-disabled worker retains its real connection and syncs across an interval", %{
     tmp_dir: directory
   } do
-    refute Process.whereis(Access)
     hub = start_supervised!({Gaoxy.HTTP, plug: {HubPlug, self()}, ip: {127, 0, 0, 1}, port: 0})
     %{local: {:ok, {_ip, hub_port}}} = Gaoxy.info(hub, :http)
     http_port = unused_port()
@@ -125,7 +123,6 @@ defmodule Backplane.HostAgent.MemoryDisabledConnectionTest do
     assert is_pid(first.channel)
     assert is_pid(first.http_supervisor)
     assert first.memory_supervisor == nil
-    assert first.edge_syncer == nil
     assert first.last_error == nil
     assert Process.alive?(first.channel)
     assert Process.alive?(first.socket)
@@ -145,7 +142,6 @@ defmodule Backplane.HostAgent.MemoryDisabledConnectionTest do
     assert second.channel == first.channel
     assert second.socket == first.socket
     assert second.last_error == nil
-    refute Process.whereis(Access)
     refute_received {:hub_connect, _}
     refute_received {:hub_event, _, "phx_join", _}
 

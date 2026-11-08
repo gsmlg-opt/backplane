@@ -8,7 +8,7 @@ defmodule Backplane.Admin.LogsLiveTest do
   alias Backplane.Audit
   alias Backplane.Clients
   alias Backplane.LLM.UsageAccumulator
-  alias Backplane.Memory.Workers.GraphExtractWorker
+  alias Backplane.Memory.Workers.FallbackSweepWorker
   alias Backplane.Repo
 
   setup do
@@ -492,7 +492,7 @@ defmodule Backplane.Admin.LogsLiveTest do
 
   test "jobs page preserves failed job detail with sanitized error", %{conn: conn} do
     job =
-      GraphExtractWorker.new(%{"memory_id" => Ecto.UUID.generate()})
+      FallbackSweepWorker.new(%{})
       |> Repo.insert!()
 
     Repo.update_all(from(j in Styx.Job, where: j.id == ^job.id),
@@ -511,7 +511,7 @@ defmodule Backplane.Admin.LogsLiveTest do
 
     {:ok, view, html} = live_with_sandbox(conn, "/system/logs/jobs?job_id=#{job.id}")
 
-    assert has_element?(view, "#job-detail-#{job.id}", "GraphExtractWorker")
+    assert has_element?(view, "#job-detail-#{job.id}", "FallbackSweepWorker")
     assert html =~ "upload failed"
     assert html =~ "[REDACTED]"
     refute html =~ "super-secret"

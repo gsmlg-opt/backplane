@@ -1,113 +1,36 @@
 defmodule Backplane.HostAgent.MemoryRouterTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.HostAgent.Memory.{Access, Migrator, Store}
+  alias Backplane.HostAgent.Memory.Spool.Turso, as: Spool
   alias Backplane.HostAgent.MemoryProxy
   alias Backplane.HostAgent.MemoryRouter
   alias Backplane.HostAgent.Trace
   alias Backplane.MemoryToolContract
-  alias Turso.Result
 
   import Plug.Conn
   import Plug.Test
 
   @moduletag :tmp_dir
 
-  setup %{tmp_dir: tmp_dir} do
-    store = start_memory!(tmp_dir)
-    MemoryProxy.set_channel(nil)
-    owner = start_supervised!({Access, name: nil, store: store, now_fun: fn -> 10_000 end})
-    Process.put(:router_access_owner, owner)
-
-    :ok =
-      Access.install_inventory(
-        %{id: 1, sent_at_ms: 10_000},
-        %{
-          "extensions" => ~w(memory_access.v1 memory_commands.v2),
-          "default_access_id" => "11111111-1111-4111-8111-111111111111",
-          "accesses" => [
-            %{
-              "access_id" => "11111111-1111-4111-8111-111111111111",
-              "authority_version" => 1,
-              "status" => "active",
-              "partition" => __MODULE__.BoundFacade.partition(),
-              "capabilities" => ~w(read remember forget),
-              "offline_read_lease_seconds" => 0
-            }
-          ]
-        },
-        owner
-      )
-
-    Application.put_env(:backplane_host_agent, :memory_store, store)
-
-    Application.put_env(:backplane_host_agent, :memory_config, %{
-      bound_scope: "proj_local",
-      tombstone_relearn: "block"
-    })
-
-    on_exit(fn ->
-      Application.delete_env(:backplane_host_agent, :memory_store)
-      Application.delete_env(:backplane_host_agent, :memory_config)
-      Application.delete_env(:backplane_host_agent, :local_services)
-      Application.delete_env(:backplane_host_agent, :hub_proxy_module)
-      Application.delete_env(:backplane_host_agent, :channel_module)
-      MemoryProxy.set_channel(nil)
-      _ = :persistent_term.erase({__MODULE__.StubHubProxy, :owner})
-    end)
-
-    {:ok, store: store}
-  end
-
-  defmodule BoundFacade do
-    def partition,
-      do: %{
-        "memory_space_id" => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        "scope" => "proj_local",
-        "namespace" => "private"
-      }
-
-    def call(method, args, ctx) when is_map(ctx),
-      do:
-        Backplane.HostAgent.MemoryFacade.call(
-          method,
-          args,
-          Map.merge(ctx, %{
-            access_server: Process.get(:router_access_owner),
-            remote_adapter: __MODULE__,
-            sync_opts: [channel: nil]
-          })
-        )
-
-    def call(_method, _args, opts) when is_list(opts),
-      do:
-        {:ok,
-         %{"access" => opts[:access], "partition" => partition(), "result" => %{"results" => []}}}
-  end
-
   defmodule StubHubProxy do
     def list_tools do
       owner = :persistent_term.get({__MODULE__, :owner})
-
       send(owner, :list_tools)
 
       {:ok,
        [
-         %{"name" => "memory::recall", "description" => "must not replace local recall"},
-         server_only_descriptor("memory::recall_explain"),
-         %{"name" => "memory::recall_explain", "description" => "duplicate must be dropped"}
-       ] ++
-         Enum.map(MemoryToolContract.server_only_names() -- ["memory::recall_explain"], fn name ->
-           server_only_descriptor(name)
-         end) ++
-         [
-           %{"name" => "memory::semantic_search", "description" => "hub-only memory tool"},
-           %{"name" => "hub::remote", "description" => "remote hub tool"},
-           %{"description" => "missing name"},
-           %{"name" => "", "description" => "empty name"},
-           %{"name" => "   ", "description" => "blank name"},
-           "not a tool descriptor"
-         ]}
+         %{
+           "name" => "memory::search",
+           "description" => "hub search",
+           "inputSchema" => %{"type" => "object", "x-hub" => true}
+         },
+         %{"name" => "memory::recall", "description" => "retired legacy tool"},
+         %{"name" => "memory::slot_write", "description" => "retired device-local tool"},
+         %{"name" => "hub::remote", "description" => "remote hub tool"},
+         %{"description" => "missing name"},
+         %{"name" => "", "description" => "empty name"},
+         "not a tool descriptor"
+       ]}
     end
 
     def call_tool(name, args) do
@@ -116,16 +39,21 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
       {:ok, %{"echo" => name, "arguments" => args}}
     end
-
-    defp server_only_descriptor(name) do
-      {:ok, meta} = Backplane.MemoryToolContract.metadata(name)
-      %{"name" => name, "description" => "hub-only memory tool", "_meta" => meta}
-    end
   end
 
   defmodule ErrorHubProxy do
     def list_tools, do: {:error, :not_connected}
     def call_tool(_name, _args), do: {:error, :not_connected}
+  end
+
+  defmodule RejectingHubProxy do
+    def list_tools, do: {:ok, []}
+    def call_tool(_name, _args), do: {:error, "not_found"}
+  end
+
+  defmodule ScriptedHubProxy do
+    def list_tools, do: {:ok, []}
+    def call_tool(_name, _args), do: Process.get(:scripted_hub_reply)
   end
 
   defmodule FakeHubChannel do
@@ -135,39 +63,24 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
-  defmodule FakeMemoryFacade do
-    def call("recall", args, ctx) do
-      send(self(), {:memory_facade_call, "recall", args, ctx})
+  defmodule LifecycleProxy do
+    def call(method, args, opts) do
+      send(
+        :persistent_term.get({Backplane.HostAgent.MemoryRouterTest.StubHubProxy, :owner}),
+        {:lifecycle_context, method, args, opts}
+      )
+
+      now = DateTime.utc_now()
 
       {:ok,
        %{
-         "mode" => "online",
-         "authority" => "canonical",
-         "consistency" => "canonical",
-         "history_available" => true,
-         "pending_operations" => 0,
-         "recall_run_id" => "run-router-1",
-         "hits" => [
-           %{
-             "id" => "canonical-1",
-             "content" => "canonical router result",
-             "score" => 0.97
-           }
-         ]
+         "kind" => "session_start",
+         "context" => "injected",
+         "source_revision" => "sha256:live",
+         "generated_at" => DateTime.to_iso8601(now),
+         "expires_at" => now |> DateTime.add(900, :second) |> DateTime.to_iso8601()
        }}
     end
-  end
-
-  defmodule RaisingMemoryFacade do
-    def call(_method, _args, _ctx), do: raise("canonical facade crashed")
-  end
-
-  defmodule ExitingMemoryFacade do
-    def call(_method, _args, _ctx), do: exit(:canonical_facade_down)
-  end
-
-  defmodule MalformedMemoryFacade do
-    def call(_method, _args, _ctx), do: {:ok, nil}
   end
 
   defmodule ContextProbeService do
@@ -182,745 +95,180 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     @impl true
     def call("context", _args, ctx) do
       send(self(), {:probe_context, ctx})
-      {:ok, %{"has_memory_facade" => Map.has_key?(ctx, :memory_facade)}}
+      {:ok, %{"ok" => true}}
     end
 
     def call(method, _args, _ctx), do: {:error, {:unknown_method, method}}
   end
 
-  describe "POST /memory/:agent_id/call/:method" do
-    test "routes canonical facet direct calls through a connected hub" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+  setup do
+    MemoryProxy.set_channel(nil)
+    :persistent_term.put({StubHubProxy, :owner}, self())
 
-      for name <- ~w(memory::facet_query memory::facet_tag) do
-        method = String.replace_prefix(name, "memory::", "")
-
-        conn =
-          :post
-          |> conn(
-            "/memory/agt_42/call/#{method}",
-            Jason.encode!(%{"request" => method})
-          )
-          |> put_req_header("content-type", "application/json")
-          |> call_router()
-
-        assert conn.status == 200
-
-        assert %{"ok" => true, "result" => %{"echo" => ^name}} = Jason.decode!(conn.resp_body)
-
-        assert_received {:call_tool, ^name, forwarded_args}
-        assert forwarded_args == expected_remote_args(name, %{"request" => method})
-      end
-
+    on_exit(fn ->
+      Application.delete_env(:backplane_host_agent, :local_services)
+      Application.delete_env(:backplane_host_agent, :hub_proxy_module)
+      Application.delete_env(:backplane_host_agent, :channel_module)
+      Application.delete_env(:backplane_host_agent, :capture_runtime)
+      MemoryProxy.set_channel(nil)
       _ = :persistent_term.erase({StubHubProxy, :owner})
+    end)
+
+    :ok
+  end
+
+  describe "POST /memory/:agent_id/mcp tools/list" do
+    test "tools/list returns exactly the five memory tools" do
+      for proxy <- [StubHubProxy, ErrorHubProxy] do
+        Application.put_env(:backplane_host_agent, :hub_proxy_module, proxy)
+
+        tools = mcp_tools("/memory/a1/mcp")
+
+        memory_names =
+          tools |> Map.keys() |> Enum.filter(&String.starts_with?(&1, "memory::")) |> Enum.sort()
+
+        assert memory_names == Enum.sort(MemoryToolContract.tools())
+
+        for name <- MemoryToolContract.tools() do
+          assert %{"name" => ^name, "description" => description, "inputSchema" => schema} =
+                   Map.fetch!(tools, name)
+
+          assert is_binary(description) and description != ""
+          assert is_map(schema)
+        end
+      end
     end
 
-    test "forwards direct server-only arguments without fabricating agent_id" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
+    test "uses hub schemas while connected and contract schemas while disconnected" do
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+      connected = mcp_tools("/memory/a1/mcp")
+      assert_received :list_tools
 
-      for {method, args} <- [
-            {"replay_import", %{"profile" => "approved"}},
-            {"apply",
-             %{
-               "memory_id" => "memory-1",
-               "application_id" => "application-1",
-               "applied_by" => "operator"
-             }}
-          ] do
-        conn =
-          :post
-          |> conn("/memory/agt_42/call/#{method}", Jason.encode!(args))
-          |> put_req_header("content-type", "application/json")
-          |> call_router()
+      assert connected["memory::search"]["inputSchema"] == %{"type" => "object", "x-hub" => true}
 
-        assert conn.status == 200
-        assert_received {:call_tool, "memory::" <> ^method, ^args}
-      end
+      assert connected["memory::remember"]["inputSchema"] ==
+               Map.fetch!(MemoryToolContract.schemas(), "memory::remember")
 
-      _ = :persistent_term.erase({StubHubProxy, :owner})
-    end
-
-    test "does not run server-only direct calls locally while disconnected" do
       Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
+      disconnected = mcp_tools("/memory/a1/mcp")
 
-      conn =
-        :post
-        |> conn(
-          "/memory/agt_42/call/replay_import",
-          Jason.encode!(%{"profile" => "approved"})
-        )
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 503
-
-      assert %{"ok" => false, "error" => "canonical memory is unavailable"} =
-               Jason.decode!(conn.resp_body)
+      for name <- MemoryToolContract.tools() do
+        assert disconnected[name]["inputSchema"] == Map.fetch!(MemoryToolContract.schemas(), name)
+      end
     end
 
-    test "returns a stable canonical-facade error when the facade raises" do
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "canonical"}))
-        |> put_req_header("content-type", "application/json")
-        |> put_private(:backplane_memory_facade, RaisingMemoryFacade)
-        |> call_router()
+    test "keeps non-memory local and hub tools" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+      tools = mcp_tools("/memory/a1/mcp")
 
-      assert conn.status == 503
-
-      assert %{"ok" => false, "error" => "canonical memory facade is unavailable"} =
-               Jason.decode!(conn.resp_body)
-    end
-
-    test "returns a stable canonical-facade error for a malformed successful result" do
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "canonical"}))
-        |> put_req_header("content-type", "application/json")
-        |> put_private(:backplane_memory_facade, MalformedMemoryFacade)
-        |> call_router()
-
-      assert conn.status == 503
-
-      assert %{"ok" => false, "error" => "canonical memory facade is unavailable"} =
-               Jason.decode!(conn.resp_body)
-    end
-
-    test "queues a bound command with the route agent_id", %{store: store} do
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/remember", Jason.encode!(%{"content" => "hello"}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{"ok" => true, "result" => %{"command_id" => id, "status" => "pending"}} =
-               Jason.decode!(conn.resp_body)
-
-      assert {:ok, %Result{rows: [%{"agent_id" => "agt_42"}]}} =
-               Store.query(
-                 store,
-                 "SELECT json_extract(payload,'$.arguments.agent_id') AS agent_id FROM memory_outbox WHERE command_id=?",
-                 [id]
-               )
-    end
-
-    test "returns 404 for unknown memory methods" do
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/teleport", Jason.encode!(%{}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 404
-
-      assert %{"ok" => false, "error" => "unknown method: teleport"} =
-               Jason.decode!(conn.resp_body)
-    end
-
-    test "does not expose historical local rows through canonical online reads", %{store: store} do
-      assert {:ok, _} =
-               Store.execute(
-                 store,
-                 """
-                 INSERT INTO memories(id, content, content_hash, scope, agent_id, inserted_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 """,
-                 [
-                   "mem_1",
-                   "offline local recall",
-                   hash("offline local recall"),
-                   "proj_local",
-                   "agt_42",
-                   "2026-06-17T00:00:00Z",
-                   "2026-06-17T00:00:00Z"
-                 ]
-               )
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "offline"}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "ok" => true,
-               "result" => %{
-                 "mode" => "online",
-                 "authority" => "canonical",
-                 "consistency" => "canonical",
-                 "history_available" => true,
-                 "pending_operations" => 0,
-                 "hits" => []
-               }
-             } = Jason.decode!(conn.resp_body)
-    end
-
-    test "recall accepts query and limit and overlays bound pending commands" do
-      remember!("hello world")
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/recall", Jason.encode!(%{"query" => "hello", "limit" => 5}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "ok" => true,
-               "result" => %{
-                 "mode" => "online",
-                 "authority" => "canonical_with_provisional",
-                 "consistency" => "read_your_writes",
-                 "history_available" => true,
-                 "pending_operations" => 1,
-                 "hits" => [%{"content" => "hello world", "source" => "shared_command"}]
-               }
-             } = Jason.decode!(conn.resp_body)
-    end
-
-    test "list keeps provisional rows distinct from canonical items" do
-      remember!("older", tags: ["ops"])
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/list", Jason.encode!(%{"tag" => "ops", "limit" => 10}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{"ok" => true, "result" => %{"provisional_results" => [%{"content" => "older"}]}} =
-               Jason.decode!(conn.resp_body)
-    end
-
-    test "forget queues a dependency on the bound remember command" do
-      id = remember!("delete me")
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/forget", Jason.encode!(%{"id" => id}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{"ok" => true, "result" => %{"status" => "pending", "command_id" => forget_id}} =
-               Jason.decode!(conn.resp_body)
-
-      refute forget_id == id
-    end
-
-    test "stats reports pending commands without claiming local history" do
-      remember!("stats memory")
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/stats", Jason.encode!(%{}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "ok" => true,
-               "result" =>
-                 %{
-                   "mode" => "online",
-                   "authority" => "canonical_with_provisional",
-                   "consistency" => "read_your_writes",
-                   "history_available" => true,
-                   "pending_operations" => 1,
-                   "overlay_truncated" => false
-                 } = result
-             } = Jason.decode!(conn.resp_body)
-
-      refute Map.has_key?(result, "upserts")
-      refute inspect(result) =~ "stats memory"
-    end
-
-    test "returns validation errors as 400" do
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/remember", Jason.encode!(%{}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 400
-      assert %{"ok" => false, "error" => "invalid_request"} = Jason.decode!(conn.resp_body)
-    end
-
-    test "accepts requests with no JSON body" do
-      conn =
-        :post
-        |> conn("/memory/agt_42/call/stats", "")
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "ok" => true,
-               "result" => %{
-                 "mode" => "online",
-                 "consistency" => "canonical",
-                 "pending_operations" => 0
-               }
-             } = Jason.decode!(conn.resp_body)
-    end
-
-    test "keeps the root call path as a compatibility alias" do
-      conn =
-        :post
-        |> conn("/agt_42/call/stats", Jason.encode!(%{}))
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "ok" => true,
-               "result" => %{
-                 "mode" => "online",
-                 "consistency" => "canonical",
-                 "pending_operations" => 0
-               }
-             } = Jason.decode!(conn.resp_body)
-    end
-
-    test "unwraps JSON-RPC params when posted to the direct call endpoint" do
-      remember!("json rpc direct")
-
-      conn =
-        :post
-        |> conn(
-          "/memory/agt_42/call/list",
-          Jason.encode!(%{
-            "jsonrpc" => "2.0",
-            "id" => 1,
-            "method" => "list",
-            "params" => %{"q" => "json", "limit" => 5}
-          })
-        )
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "ok" => true,
-               "result" => %{"provisional_results" => [%{"content" => "json rpc direct"}]}
-             } =
-               Jason.decode!(conn.resp_body)
+      assert Map.has_key?(tools, "host_agent::install_plugin")
+      assert Map.has_key?(tools, "hub::remote")
     end
   end
 
-  describe "POST /memory/:agent_id/mcp" do
-    test "initialize reports the running host-agent application version" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "initialize"})
+  describe "POST /memory/:agent_id/mcp tools/call" do
+    test "tools/call memory::remember forwards to hub with agent injected" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
 
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
+      decoded = tools_call("/memory/a1/mcp", "memory::remember", %{"content" => "note"})
 
-      assert conn.status == 200
-
-      assert Jason.decode!(conn.resp_body)["result"]["serverInfo"] == %{
-               "name" => "backplane-host-agent-memory",
-               "version" => Application.spec(:backplane_host_agent, :vsn) |> to_string()
-             }
+      assert decoded["result"]["isError"] == false
+      assert_received {:call_tool, "memory::remember", %{"content" => "note", "agent" => "a1"}}
     end
 
-    test "advertises shared contract definitions while disconnected" do
+    test "tools/call keeps a caller-supplied agent" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      tools_call("/memory/a1/mcp", "memory::remember", %{"content" => "n", "agent" => "other"})
+
+      assert_received {:call_tool, "memory::remember", %{"content" => "n", "agent" => "other"}}
+    end
+
+    test "tools/call does not add an implicit agent filter to reads" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      tools_call("/memory/a1/mcp", "memory::search", %{"query" => "q"})
+      tools_call("/memory/a1/mcp", "memory::recent", %{})
+
+      assert_received {:call_tool, "memory::search", %{"query" => "q"} = search_args}
+      refute Map.has_key?(search_args, "agent")
+      assert_received {:call_tool, "memory::recent", recent_args}
+      assert recent_args == %{}
+    end
+
+    test "when channel is down, tools/call returns gateway_unavailable" do
       Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
 
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => "contract", "method" => "tools/list"})
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      tools =
-        conn.resp_body
-        |> Jason.decode!()
-        |> get_in(["result", "tools"])
-        |> Map.new(&{&1["name"], &1})
-
-      assert %{
-               "inputSchema" => %{"required" => ["content", "agent_id"]},
-               "_meta" => %{
-                 "backplane" => %{
-                   "permission" => "memory.write",
-                   "authority" => "canonical",
-                   "consistency" => "canonical_or_bounded_stale",
-                   "availability" => "online_or_offline"
+      for name <- MemoryToolContract.tools() do
+        assert %{
+                 "result" => %{
+                   "isError" => true,
+                   "content" => [%{"type" => "text", "text" => "gateway_unavailable"}]
                  }
-               }
-             } = Map.fetch!(tools, "memory::remember")
-
-      assert %{"_meta" => %{"backplane" => %{"authority" => "device_local"}}} =
-               Map.fetch!(tools, "memory::slot_read")
-
-      refute Map.has_key?(tools, "memory::replay_import")
-    end
-
-    test "has exact contract discovery parity while connected and disconnected" do
-      for proxy <- [ErrorHubProxy, StubHubProxy] do
-        if proxy == StubHubProxy, do: :persistent_term.put({StubHubProxy, :owner}, self())
-        Application.put_env(:backplane_host_agent, :hub_proxy_module, proxy)
-
-        tools = memory_mcp_tools()
-
-        for name <-
-              MemoryToolContract.canonical_overlap_names() ++
-                MemoryToolContract.device_local_names() do
-          contract = MemoryToolContract.tool!(name)
-          %{description: description, input_schema: input_schema, meta: meta} = contract
-
-          assert %{
-                   "name" => ^name,
-                   "description" => ^description,
-                   "inputSchema" => ^input_schema,
-                   "_meta" => ^meta
-                 } = Map.fetch!(tools, name)
-        end
-
-        if proxy == ErrorHubProxy do
-          for name <- MemoryToolContract.server_only_names(),
-              do: refute(Map.has_key?(tools, name))
-        else
-          for name <- MemoryToolContract.server_only_names() do
-            {:ok, meta} = MemoryToolContract.metadata(name)
-
-            assert %{"name" => ^name, "description" => "hub-only memory tool", "_meta" => ^meta} =
-                     Map.fetch!(tools, name)
-          end
-        end
+               } = tools_call("/memory/a1/mcp", name, %{})
       end
-
-      _ = :persistent_term.erase({StubHubProxy, :owner})
     end
 
-    test "lists local memory tools via tools/list" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
+    test "gateway tool errors are returned as reason strings" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, RejectingHubProxy)
 
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-      decoded = Jason.decode!(conn.resp_body)
-      assert decoded["jsonrpc"] == "2.0"
-      assert decoded["id"] == 1
-
-      tool_names = Enum.map(decoded["result"]["tools"], & &1["name"])
-      assert "memory::remember" in tool_names
-      assert "memory::slot_write" in tool_names
-      assert "memory::facet_query" in tool_names
-      assert "host_agent::install_plugin" in tool_names
-      assert "host_agent::remove_plugin" in tool_names
+      assert %{"result" => %{"isError" => true, "content" => [%{"text" => "not_found"}]}} =
+               tools_call("/memory/a1/mcp", "memory::get", %{"id" => "x"})
     end
 
-    test "routes tools/call through local memory" do
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => "abc",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "memory::remember",
-            "arguments" => %{"content" => "hi"}
-          }
-        })
+    test "transport and coded gateway errors map to stable reason strings" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ScriptedHubProxy)
 
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-      decoded = Jason.decode!(conn.resp_body)
-      assert decoded["id"] == "abc"
-      assert decoded["result"]["isError"] == false
-
-      assert %{"command_id" => _id, "status" => "pending"} =
-               decoded["result"]["content"]
-               |> hd()
-               |> Map.fetch!("text")
-               |> Jason.decode!()
-    end
-
-    test "routes canonical facet MCP calls through a connected hub" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
-      for name <- ~w(memory::facet_query memory::facet_tag) do
-        body =
-          Jason.encode!(%{
-            "jsonrpc" => "2.0",
-            "id" => name,
-            "method" => "tools/call",
-            "params" => %{"name" => name, "arguments" => %{"request" => name}}
-          })
-
-        conn =
-          :post
-          |> conn("/memory/agt_42/mcp", body)
-          |> put_req_header("content-type", "application/json")
-          |> call_router()
-
-        assert conn.status == 200
-        assert %{"result" => %{"isError" => false}} = Jason.decode!(conn.resp_body)
-        assert_received {:call_tool, ^name, forwarded_args}
-        assert forwarded_args == expected_remote_args(name, %{"request" => name})
-      end
-
-      _ = :persistent_term.erase({StubHubProxy, :owner})
-    end
-
-    test "forwards server-only MCP arguments without fabricating agent_id" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
-      for {name, args} <- [
-            {"memory::replay_import", %{"profile" => "approved"}},
-            {"memory::apply",
-             %{
-               "memory_id" => "memory-1",
-               "application_id" => "application-1",
-               "applied_by" => "operator"
-             }}
+      for {reply, text} <- [
+            {{:error, :timeout}, "gateway_timeout"},
+            {{:error, :noproc}, "gateway_unavailable"},
+            {{:error, %{"code" => "unauthorized"}}, "unauthorized"}
           ] do
-        body =
-          Jason.encode!(%{
-            "jsonrpc" => "2.0",
-            "id" => name,
-            "method" => "tools/call",
-            "params" => %{"name" => name, "arguments" => args}
-          })
+        Process.put(:scripted_hub_reply, reply)
 
-        conn =
-          :post
-          |> conn("/memory/agt_42/mcp", body)
-          |> put_req_header("content-type", "application/json")
-          |> call_router()
+        assert %{"result" => %{"isError" => true, "content" => [%{"text" => ^text}]}} =
+                 tools_call("/memory/a1/mcp", "memory::remember", %{"content" => "c"})
+      end
+    end
 
-        assert conn.status == 200
-        assert_received {:call_tool, ^name, ^args}
+    test "retired and unknown memory tools are rejected without a hub call" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      for name <- ~w(memory::recall memory::slot_write memory::bogus) do
+        assert %{"result" => %{"isError" => true, "content" => [%{"text" => text}]}} =
+                 tools_call("/memory/a1/mcp", name, %{})
+
+        assert text == "unknown tool: #{name}"
       end
 
-      _ = :persistent_term.erase({StubHubProxy, :owner})
+      refute_received {:call_tool, _, _}
     end
 
-    test "returns a stable canonical-facade MCP error when the facade exits" do
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => "facade-down",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "memory::recall",
-            "arguments" => %{"query" => "canonical"}
-          }
-        })
+    test "routes non-memory local service tools locally" do
+      Application.put_env(:backplane_host_agent, :local_services, [ContextProbeService])
 
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> put_private(:backplane_memory_facade, ExitingMemoryFacade)
-        |> call_router()
+      assert %{"result" => %{"isError" => false}} =
+               tools_call("/memory/agt_42/mcp", "probe::context", %{})
 
-      assert conn.status == 200
-
-      assert %{
-               "jsonrpc" => "2.0",
-               "id" => "facade-down",
-               "error" => %{
-                 "code" => -32_003,
-                 "message" => "canonical memory facade is unavailable"
-               }
-             } = Jason.decode!(conn.resp_body)
-    end
-
-    test "returns a stable canonical-facade MCP error for a malformed successful result" do
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => "facade-malformed",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "memory::recall",
-            "arguments" => %{"query" => "canonical"}
-          }
-        })
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> put_private(:backplane_memory_facade, MalformedMemoryFacade)
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{
-               "jsonrpc" => "2.0",
-               "id" => "facade-malformed",
-               "error" => %{
-                 "code" => -32_003,
-                 "message" => "canonical memory facade is unavailable"
-               }
-             } = Jason.decode!(conn.resp_body)
-    end
-
-    test "does not inject the memory facade into other local services" do
-      Application.put_env(:backplane_host_agent, :local_services, [
-        Backplane.HostAgent.Services.Memory,
-        ContextProbeService
-      ])
-
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => "probe-context",
-          "method" => "tools/call",
-          "params" => %{"name" => "probe::context", "arguments" => %{}}
-        })
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> put_private(:backplane_memory_facade, FakeMemoryFacade)
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{"result" => %{"isError" => false, "content" => [%{"text" => text}]}} =
-               Jason.decode!(conn.resp_body)
-
-      assert %{"has_memory_facade" => false} = Jason.decode!(text)
       assert_received {:probe_context, %{agent_id: "agt_42"}}
     end
 
-    test "routes Hub-only memory tools through the hub" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => 7,
-          "method" => "tools/call",
-          "params" => %{"name" => "memory::recall_explain", "arguments" => %{}}
-        })
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-      decoded = Jason.decode!(conn.resp_body)
-      assert decoded["result"]["isError"] == false
-
-      assert %{"echo" => "memory::recall_explain", "arguments" => %{}} =
-               decoded["result"]["content"] |> hd() |> Map.fetch!("text") |> Jason.decode!()
-
-      assert_received {:call_tool, "memory::recall_explain", %{}}
-      _ = :persistent_term.erase({StubHubProxy, :owner})
-    end
-
-    @tag :unknown_memory_parity
-    test "unknown memory methods match direct errors without a hub call regardless of local registration" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
-      for services <- [[], [Backplane.HostAgent.Services.Memory]] do
-        Application.put_env(:backplane_host_agent, :local_services, services)
-        method = "negative_parity_unknown_operation"
-
-        direct =
-          :post
-          |> conn("/memory/agt_42/call/#{method}", Jason.encode!(%{}))
-          |> put_req_header("content-type", "application/json")
-          |> call_router()
-
-        assert direct.status == 404
-        assert %{"ok" => false, "error" => message} = Jason.decode!(direct.resp_body)
-        assert message == "unknown method: #{method}"
-
-        body =
-          Jason.encode!(%{
-            "jsonrpc" => "2.0",
-            "id" => 77,
-            "method" => "tools/call",
-            "params" => %{"name" => "memory::" <> method, "arguments" => %{}}
-          })
-
-        mcp =
-          :post
-          |> conn("/memory/agt_42/mcp", body)
-          |> put_req_header("content-type", "application/json")
-          |> call_router()
-
-        assert mcp.status == 200
-
-        assert %{
-                 "jsonrpc" => "2.0",
-                 "id" => 77,
-                 "result" => %{
-                   "isError" => true,
-                   "content" => [%{"type" => "text", "text" => ^message}]
-                 }
-               } = Jason.decode!(mcp.resp_body)
-
-        refute_received {:call_tool, _, _}
-      end
-    end
-
     test "proxies unknown service tools through the hub" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
 
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => 8,
-          "method" => "tools/call",
-          "params" => %{"name" => "unknown::tool", "arguments" => %{"x" => 1}}
-        })
+      decoded = tools_call("/memory/agt_42/mcp", "unknown::tool", %{"x" => 1})
 
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-      decoded = Jason.decode!(conn.resp_body)
       assert decoded["result"]["isError"] == false
-
-      assert %{"echo" => "unknown::tool", "arguments" => %{"x" => 1}} =
-               decoded["result"]["content"] |> hd() |> Map.fetch!("text") |> Jason.decode!()
-
       assert_received {:call_tool, "unknown::tool", %{"x" => 1}}
-      _ = :persistent_term.erase({StubHubProxy, :owner})
+    end
+
+    test "returns a tool error result when the hub proxy is disconnected" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
+
+      assert %{"result" => %{"isError" => true, "content" => [%{"text" => message}]}} =
+               tools_call("/memory/agt_42/mcp", "unknown::tool", %{})
+
+      assert message == "hub unreachable: not_connected"
     end
 
     test "sets context from incoming traceparent and propagates it to hub calls" do
@@ -929,7 +277,6 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       <<trace_id::binary-size(32), _rest::binary>> = trace_id_and_rest
 
       MemoryProxy.set_channel(self())
-      Application.delete_env(:backplane_host_agent, :hub_proxy_module)
       Application.put_env(:backplane_host_agent, :channel_module, FakeHubChannel)
 
       body =
@@ -937,7 +284,7 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
           "jsonrpc" => "2.0",
           "id" => 9,
           "method" => "tools/call",
-          "params" => %{"name" => "unknown::tool", "arguments" => %{"x" => 1}}
+          "params" => %{"name" => "memory::search", "arguments" => %{"query" => "q"}}
         })
 
       conn =
@@ -950,293 +297,190 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert conn.status == 200
 
       assert_receive {:hub_push, "mcp_tool_call",
-                      %{
-                        "name" => "unknown::tool",
-                        "arguments" => %{"x" => 1},
-                        "traceparent" => outgoing
-                      }}
+                      %{"name" => "memory::search", "traceparent" => outgoing}}
 
       assert outgoing =~ "00-#{trace_id}-"
       assert outgoing != incoming
     end
+  end
 
-    test "returns a tool error result when the hub proxy is disconnected" do
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
+  describe "POST /memory/:agent_id/mcp protocol" do
+    test "initialize reports the running host-agent application version" do
+      decoded = jsonrpc("/memory/agt_42/mcp", %{"id" => 1, "method" => "initialize"})
 
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => 8,
-          "method" => "tools/call",
-          "params" => %{"name" => "unknown::tool", "arguments" => %{}}
-        })
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{"result" => %{"isError" => true, "content" => [%{"text" => message}]}} =
-               Jason.decode!(conn.resp_body)
-
-      assert message == "hub unreachable: not_connected"
-    end
-
-    test "merges tools/list with hub tools by exact name" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      tools =
-        conn.resp_body
-        |> Jason.decode!()
-        |> get_in(["result", "tools"])
-
-      tool_names = Enum.map(tools, & &1["name"])
-
-      assert "memory::remember" in tool_names
-      assert "memory::recall_explain" in tool_names
-      assert "memory::semantic_search" in tool_names
-      assert Enum.count(tool_names, &(&1 == "memory::recall")) == 1
-      assert Enum.count(tool_names, &(&1 == "memory::recall_explain")) == 1
-      assert "hub::remote" in tool_names
-
-      assert Enum.all?(tools, fn tool ->
-               is_map(tool) and is_binary(tool["name"]) and String.trim(tool["name"]) != ""
-             end)
-
-      assert %{"description" => "hub-only memory tool"} =
-               Enum.find(tools, &(&1["name"] == "memory::recall_explain"))
-
-      recall = MemoryToolContract.tool!("memory::recall")
-      %{description: description, input_schema: input_schema, meta: meta} = recall
-
-      assert %{
-               "description" => ^description,
-               "inputSchema" => ^input_schema,
-               "_meta" => ^meta
-             } = Enum.find(tools, &(&1["name"] == "memory::recall"))
-
-      assert Enum.find_index(tool_names, &(&1 == "memory::recall_explain")) <
-               Enum.find_index(tool_names, &(&1 == "memory::semantic_search"))
-
-      assert Enum.find_index(tool_names, &(&1 == "memory::semantic_search")) <
-               Enum.find_index(tool_names, &(&1 == "hub::remote"))
-
-      assert_received :list_tools
-      _ = :persistent_term.erase({StubHubProxy, :owner})
-    end
-
-    test "forwards canonical facet arguments without fabricating agent_id" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => "facet-remote",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "memory::facet_tag",
-            "arguments" => %{
-              "memory_id" => "canonical-memory",
-              "facets" => [%{"dimension" => "project", "value" => "backplane"}]
-            }
-          }
-        })
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert_received {:call_tool, "memory::facet_tag",
-                       %{
-                         "memory_id" => "canonical-memory",
-                         "facets" => [%{"dimension" => "project", "value" => "backplane"}]
-                       }}
-
-      _ = :persistent_term.erase({StubHubProxy, :owner})
-    end
-
-    test "executes device-local tools locally while the hub is connected" do
-      :persistent_term.put({StubHubProxy, :owner}, self())
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => "slot-local",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "memory::slot_write",
-            "arguments" => %{"name" => "session", "content" => "local"}
-          }
-        })
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-      assert %{"result" => %{"isError" => false}} = Jason.decode!(conn.resp_body)
-      refute_received {:call_tool, "memory::slot_write", _args}
-
-      _ = :persistent_term.erase({StubHubProxy, :owner})
-    end
-
-    test "tools/list returns local tools only when hub proxy is disconnected" do
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
-
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      tool_names =
-        conn.resp_body
-        |> Jason.decode!()
-        |> get_in(["result", "tools"])
-        |> Enum.map(& &1["name"])
-
-      assert "memory::remember" in tool_names
-      refute "hub::remote" in tool_names
-    end
-
-    test "root /mcp defaults tool context agent_id to local", %{store: store} do
-      body =
-        Jason.encode!(%{
-          "jsonrpc" => "2.0",
-          "id" => "local-agent",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "memory::remember",
-            "arguments" => %{"content" => "root mcp"}
-          }
-        })
-
-      conn =
-        :post
-        |> conn("/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-
-      assert %{"result" => %{"isError" => false, "content" => [%{"text" => text}]}} =
-               Jason.decode!(conn.resp_body)
-
-      assert %{"command_id" => id} = Jason.decode!(text)
-
-      assert {:ok, %Result{rows: [%{"agent_id" => "local"}]}} =
-               Store.query(
-                 store,
-                 "SELECT json_extract(payload,'$.arguments.agent_id') AS agent_id FROM memory_outbox WHERE command_id=?",
-                 [id]
-               )
+      assert decoded["result"]["serverInfo"] == %{
+               "name" => "backplane-host-agent-memory",
+               "version" => Application.spec(:backplane_host_agent, :vsn) |> to_string()
+             }
     end
 
     test "returns JSON-RPC error for unknown JSON-RPC method" do
-      body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => 7, "method" => "unsupported"})
-
-      conn =
-        :post
-        |> conn("/memory/agt_42/mcp", body)
-        |> put_req_header("content-type", "application/json")
-        |> call_router()
-
-      assert conn.status == 200
-      decoded = Jason.decode!(conn.resp_body)
+      decoded = jsonrpc("/memory/agt_42/mcp", %{"id" => 7, "method" => "unsupported"})
       assert decoded["error"]["code"] == -32_601
     end
   end
 
-  defp remember!(content, opts \\ []) do
-    tags = Keyword.get(opts, :tags, [])
+  describe "POST /memory/:agent_id/call/:method" do
+    test "call/search maps to memory::search" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
 
-    conn =
-      :post
-      |> conn(
-        "/memory/agt_42/call/remember",
-        Jason.encode!(%{"content" => content, "tags" => tags})
-      )
-      |> put_req_header("content-type", "application/json")
-      |> call_router()
+      conn = post_json("/memory/a1/call/search", %{"query" => "deploy"})
 
-    assert conn.status == 200
-    %{"ok" => true, "result" => %{"command_id" => id}} = Jason.decode!(conn.resp_body)
-    id
+      assert conn.status == 200
+
+      assert %{"ok" => true, "result" => %{"echo" => "memory::search"}} =
+               Jason.decode!(conn.resp_body)
+
+      assert_received {:call_tool, "memory::search", %{"query" => "deploy"}}
+    end
+
+    test "call/remember injects the route agent" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      assert %{status: 200} = post_json("/memory/a1/call/remember", %{"content" => "c"})
+      assert_received {:call_tool, "memory::remember", %{"content" => "c", "agent" => "a1"}}
+    end
+
+    test "unwraps JSON-RPC params posted to the direct call endpoint" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      body = %{
+        "jsonrpc" => "2.0",
+        "id" => 1,
+        "method" => "memory::forget",
+        "params" => %{"id" => "r1", "reason" => "stale"}
+      }
+
+      assert %{status: 200} = post_json("/memory/a1/call/forget", body)
+      assert_received {:call_tool, "memory::forget", %{"id" => "r1", "reason" => "stale"}}
+    end
+
+    test "returns 404 for unknown and retired methods" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      for method <- ~w(recall slot_write not-a-method) do
+        conn = post_json("/memory/a1/call/#{method}", %{})
+        assert conn.status == 404
+        assert %{"error" => "unknown method: " <> ^method} = Jason.decode!(conn.resp_body)
+      end
+
+      refute_received {:call_tool, _, _}
+    end
+
+    test "returns 503 gateway_unavailable when the channel is down" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ErrorHubProxy)
+
+      conn = post_json("/memory/a1/call/recent", %{})
+
+      assert conn.status == 503
+      assert %{"ok" => false, "error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
+    end
+
+    test "maps coded and timeout gateway errors to HTTP statuses" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ScriptedHubProxy)
+
+      for {reply, status, error} <- [
+            {{:error, %{"code" => "unauthorized"}}, 403, "unauthorized"},
+            {{:error, :timeout}, 504, "gateway_timeout"},
+            {{:error, :noproc}, 503, "gateway_unavailable"}
+          ] do
+        Process.put(:scripted_hub_reply, reply)
+        conn = post_json("/memory/a1/call/remember", %{"content" => "c"})
+
+        assert conn.status == status
+        assert %{"ok" => false, "error" => ^error} = Jason.decode!(conn.resp_body)
+      end
+    end
+
+    test "maps gateway not_found to 404" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, RejectingHubProxy)
+
+      conn = post_json("/memory/a1/call/get", %{"id" => "missing"})
+
+      assert conn.status == 404
+      assert %{"ok" => false, "error" => "not_found"} = Jason.decode!(conn.resp_body)
+    end
+
+    test "accepts requests with no JSON body" do
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      conn =
+        :post
+        |> conn("/memory/a1/call/recent")
+        |> call_router()
+
+      assert conn.status == 200
+      assert_received {:call_tool, "memory::recent", %{}}
+    end
   end
 
-  defp memory_mcp_tools do
-    body = Jason.encode!(%{"jsonrpc" => "2.0", "id" => "parity", "method" => "tools/list"})
+  describe "POST /capture/v1/hooks" do
+    test "capture hook returns 202 without context injection", %{tmp_dir: tmp_dir} do
+      spool =
+        start_supervised!(
+          {Spool,
+           database: Path.join(tmp_dir, "capture.db"),
+           name: nil,
+           id: {:memory_router_spool, System.unique_integer([:positive])}}
+        )
 
-    :post
-    |> conn("/memory/agt_42/mcp", body)
-    |> put_req_header("content-type", "application/json")
-    |> call_router()
-    |> then(&Jason.decode!(&1.resp_body))
+      Application.put_env(:backplane_host_agent, :capture_runtime, %{
+        host_id: "trusted-host",
+        spool: spool,
+        spool_module: Spool,
+        memory_proxy_module: LifecycleProxy,
+        config: %{}
+      })
+
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
+
+      conn =
+        post_json("/capture/v1/hooks/claude_code/session-start", %{
+          "hook" => "session-start",
+          "session_id" => "session-1",
+          "agent_id" => "claude-main",
+          "source_event_id" => "source-session-start",
+          "occurred_at" => "2026-08-04T01:00:00Z",
+          "cwd" => "/workspace/backplane"
+        })
+
+      assert conn.status == 202
+      body = Jason.decode!(conn.resp_body)
+      assert %{"ok" => true, "status" => "accepted"} = body
+      refute Map.has_key?(body, "lifecycle_context")
+      refute_received {:call_tool, _, _}
+      refute_received {:lifecycle_context, _, _, _}
+      assert %{pending_depth: 1} = Spool.stats(spool)
+    end
+  end
+
+  defp mcp_tools(path) do
+    path
+    |> jsonrpc(%{"id" => "list", "method" => "tools/list"})
     |> get_in(["result", "tools"])
     |> Map.new(&{&1["name"], &1})
   end
 
-  defp expected_remote_args(name, args) do
-    case MemoryToolContract.tool(name) do
-      {:ok, %{input_schema: %{"properties" => properties}}} when is_map(properties) ->
-        if Map.has_key?(properties, "agent_id"),
-          do: Map.put(args, "agent_id", "agt_42"),
-          else: args
-
-      :error ->
-        args
-    end
+  defp tools_call(path, name, args) do
+    jsonrpc(path, %{
+      "id" => "call",
+      "method" => "tools/call",
+      "params" => %{"name" => name, "arguments" => args}
+    })
   end
 
-  defp call_router(conn) do
-    conn =
-      if conn.private[:backplane_memory_facade],
-        do: conn,
-        else: put_private(conn, :backplane_memory_facade, BoundFacade)
-
-    MemoryRouter.call(conn, MemoryRouter.init([]))
+  defp jsonrpc(path, body) do
+    conn = post_json(path, Map.put(body, "jsonrpc", "2.0"))
+    assert conn.status == 200
+    Jason.decode!(conn.resp_body)
   end
 
-  defp start_memory!(tmp_dir) do
-    name = :"host_agent_memory_router_#{System.unique_integer([:positive])}"
-    db_path = Path.join(tmp_dir, "#{name}.db")
-
-    start_supervised!(
-      {Store, database: db_path, name: name, pool_size: 1, busy_timeout_ms: 5_000}
-    )
-
-    assert :ok = Migrator.migrate(name)
-    name
+  defp post_json(path, body) do
+    :post
+    |> conn(path, Jason.encode!(body))
+    |> put_req_header("content-type", "application/json")
+    |> call_router()
   end
 
-  defp hash(content) do
-    :crypto.hash(:sha256, content)
-    |> Base.encode16(case: :lower)
-  end
+  defp call_router(conn), do: MemoryRouter.call(conn, MemoryRouter.init([]))
 end

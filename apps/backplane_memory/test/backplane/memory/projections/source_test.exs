@@ -14,7 +14,7 @@ defmodule Backplane.Memory.Projections.SourceTest do
     second_host = "#{prefix}ab"
     second_session = "c"
 
-    assert {:error, :incomplete_partition} =
+    assert {:ok, _legacy} =
              Store.append(%{
                stream_id: "legacy-#{Ecto.UUID.generate()}",
                event_type: "conversation.user_message",
