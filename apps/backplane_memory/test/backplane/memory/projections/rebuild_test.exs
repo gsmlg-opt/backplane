@@ -3,8 +3,6 @@ defmodule Backplane.Memory.Projections.RebuildTest do
 
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Ingest
-  alias Backplane.Memory.LegacyFixtures.{Observation, Session}
-  alias Backplane.Memory.Replay.Event, as: ReplayEvent
 
   alias Backplane.Memory.Projections.{
     ProjectedObservation,
@@ -36,42 +34,8 @@ defmodule Backplane.Memory.Projections.RebuildTest do
     assert length(lifecycle_entries(session_id)) == 2
   end
 
-  test "targeted rebuild writes four production read-model projections" do
+  test "targeted rebuild writes the observation and session read models" do
     session_id = unique("target")
-    legacy_partition = canonical_partition("legacy-target")
-
-    repo().insert!(%Session{
-      memory_space_id: legacy_partition.memory_space_id,
-      host_id: legacy_partition.host_id,
-      source_client_id: legacy_partition.source_client_id,
-      scope: legacy_partition.scope,
-      namespace: legacy_partition.namespace,
-      session_id: session_id,
-      project: "/legacy/project",
-      started_at: ~U[2026-08-04 00:59:00.000000Z],
-      ended_at: ~U[2026-08-04 01:10:00.000000Z],
-      observation_count: 7
-    })
-
-    repo().insert!(%Observation{
-      memory_space_id: legacy_partition.memory_space_id,
-      host_id: legacy_partition.host_id,
-      source_client_id: legacy_partition.source_client_id,
-      scope: legacy_partition.scope,
-      namespace: legacy_partition.namespace,
-      session_id: session_id,
-      content: "legacy one"
-    })
-
-    repo().insert!(%Observation{
-      memory_space_id: legacy_partition.memory_space_id,
-      host_id: legacy_partition.host_id,
-      source_client_id: legacy_partition.source_client_id,
-      scope: legacy_partition.scope,
-      namespace: legacy_partition.namespace,
-      session_id: session_id,
-      content: "legacy two"
-    })
 
     first = captured_event("host-target", session_id, 1, "agent.session.started")
 
@@ -84,7 +48,6 @@ defmodule Backplane.Memory.Projections.RebuildTest do
     ingest!(third)
 
     raw_before = raw_events("host-target", session_id)
-    legacy_before = legacy_rows(session_id)
 
     assert {:ok, result} = Rebuild.session("host-target", session_id)
     assert result.production_read_models
@@ -93,13 +56,16 @@ defmodule Backplane.Memory.Projections.RebuildTest do
     assert result.subject_type == "captured_session"
     assert result.subject_id == Source.subject_id!("host-target", session_id)
     assert result.gaps == [%{"from" => 2, "to" => 2}]
-    assert Map.keys(result.output_revisions) == ~w(activity observations replay session)
+    assert Map.keys(result.output_revisions) == ~w(observations session)
+    refute Map.has_key?(result, :memory_space_id)
+    refute Map.has_key?(result, :scope)
+    refute Map.has_key?(result, :namespace)
     assert Enum.all?(result.states, fn {_projector, state} -> state.status == "pending" end)
     assert processing_versions(result.states) == expected_processing_versions()
 
     subject_id = result.subject_id
-    assert 4 == count_subject_rows(State, subject_id)
-    assert 4 == count_subject_rows(Snapshot, subject_id)
+    assert 2 == count_subject_rows(State, subject_id)
+    assert 2 == count_subject_rows(Snapshot, subject_id)
     assert 2 == count_subject_rows(ProjectedObservation, subject_id)
 
     assert %ProjectedSession{
@@ -129,19 +95,14 @@ defmodule Backplane.Memory.Projections.RebuildTest do
                  "gaps" => [%{"from" => 2, "to" => 2}],
                  "counts" => %{"events" => 2, "errors" => 1}
                }
-             },
-             "activity" => %{read_model: %{"activity" => activity}},
-             "replay" => %{read_model: %{"events" => replay_events}}
+             }
            } = snapshots
 
     assert first_observation["event_id"] == first["event_id"]
     assert third_observation["event_id"] == third["event_id"]
     assert third_observation["is_error"]
-    assert Enum.map(replay_events, & &1["kind"]) == ["session_boundary", "error"]
-    assert Enum.map(activity, &{&1["event_count"], &1["session_count"]}) == [{1, 1}, {1, 1}]
 
     assert raw_events("host-target", session_id) == raw_before
-    assert legacy_rows(session_id) == legacy_before
   end
 
   test "a late event replaces only its subject snapshots, clears gaps, and completes states" do
@@ -155,7 +116,6 @@ defmodule Backplane.Memory.Projections.RebuildTest do
     assert {:ok, first} = Rebuild.session("host-repair", repaired_session)
     assert {:ok, unrelated} = Rebuild.session("host-other", unrelated_session)
     assert first.gaps == [%{"from" => 2, "to" => 2}]
-    assert 2 == count_subject_rows(ReplayEvent, first.subject_id)
 
     unrelated_before = projection_rows(unrelated.subject_id)
 
@@ -168,8 +128,6 @@ defmodule Backplane.Memory.Projections.RebuildTest do
     assert {:ok, repaired} = Rebuild.session("host-repair", repaired_session)
     assert repaired.gaps == []
     assert repaired.input_revision != first.input_revision
-    assert 5 == count_subject_rows(ReplayEvent, repaired.subject_id)
-    assert 2 == replay_revision_count(repaired.subject_id)
     assert Enum.all?(repaired.states, fn {_projector, state} -> state.status == "complete" end)
     assert processing_versions(repaired.states) == expected_processing_versions()
 
@@ -203,56 +161,16 @@ defmodule Backplane.Memory.Projections.RebuildTest do
                {name, Map.take(snapshot, [:input_revision, :output_revision, :read_model])}
              end)
 
-    assert 4 == count_subject_rows(State, first.subject_id)
-    assert 4 == count_subject_rows(Snapshot, first.subject_id)
+    assert 2 == count_subject_rows(State, first.subject_id)
+    assert 2 == count_subject_rows(Snapshot, first.subject_id)
     assert 2 == count_subject_rows(ProjectedObservation, first.subject_id)
     assert 1 == count_subject_rows(ProjectedSession, first.subject_id)
-    assert 2 == count_subject_rows(ReplayEvent, first.subject_id)
-    assert 1 == replay_revision_count(first.subject_id)
 
     assert Enum.all?(second.states, fn {_name, state} ->
              state.status == "complete" and state.attempt_count == 2
            end)
 
     assert processing_versions(second.states) == expected_processing_versions()
-  end
-
-  test "persists both deterministic replay rows for a terminal agent run failure" do
-    host_id = "host-run-failure"
-    session_id = unique("run-failure")
-
-    failed =
-      captured_event(host_id, session_id, 1, "agent.run.failed", %{
-        "source" => %{"error" => "terminal failure"}
-      })
-
-    ingest!(failed)
-
-    assert {:ok, result} = Rebuild.session(host_id, session_id)
-
-    assert %{
-             "replay" => %{
-               read_model: %{
-                 "events" => [
-                   %{"event_id" => event_id, "kind" => "error", "position" => 1},
-                   %{"event_id" => event_id, "kind" => "session_boundary", "position" => 2}
-                 ]
-               }
-             }
-           } = snapshots(result.subject_id)
-
-    assert event_id == failed["event_id"]
-
-    assert repo().all(
-             from(row in ReplayEvent,
-               where: row.subject_id == ^result.subject_id,
-               order_by: row.position,
-               select: {row.event_id, row.kind, row.position}
-             )
-           ) == [
-             {failed["event_id"], "error", 1},
-             {failed["event_id"], "session_boundary", 2}
-           ]
   end
 
   test "validates identifiers, reports missing captures, and rebuilds all subjects stably" do
@@ -296,17 +214,6 @@ defmodule Backplane.Memory.Projections.RebuildTest do
     refute_receive {^callback_ref, :rebuilt, _result}
   end
 
-  defp replay_revision_count(subject_id) do
-    repo().aggregate(
-      from(row in ReplayEvent,
-        where: row.subject_id == ^subject_id,
-        distinct: row.input_revision
-      ),
-      :count,
-      :input_revision
-    )
-  end
-
   test "concurrent first rebuilds serialize without failed-state corruption" do
     session_id = unique("concurrent")
     ingest!(captured_event("host-concurrent", session_id, 1, "agent.session.started"))
@@ -322,8 +229,8 @@ defmodule Backplane.Memory.Projections.RebuildTest do
     assert Enum.all?(results, &match?({:ok, %{gaps: []}}, &1))
 
     subject_id = Source.subject_id!("host-concurrent", session_id)
-    assert 4 == count_subject_rows(State, subject_id)
-    assert 4 == count_subject_rows(Snapshot, subject_id)
+    assert 2 == count_subject_rows(State, subject_id)
+    assert 2 == count_subject_rows(Snapshot, subject_id)
 
     assert Enum.all?(repo().all(from(s in State, where: s.subject_id == ^subject_id)), fn state ->
              state.status == "complete" and state.attempt_count == 4 and is_nil(state.last_error)
@@ -446,7 +353,7 @@ defmodule Backplane.Memory.Projections.RebuildTest do
   end
 
   defp ingest!(event) do
-    auth = ingest_auth_context(event["host_id"], %{partition: %{scope: event["scope"]}})
+    auth = ingest_auth_context(event["host_id"])
 
     assert {:ok, %{"results" => [%{"status" => "accepted"}]}} =
              Ingest.ingest_batch(auth, %{
@@ -464,20 +371,6 @@ defmodule Backplane.Memory.Projections.RebuildTest do
         select: {e.id, e.source_sequence, e.payload_hash, e.payload, e.inserted_at}
       )
     )
-  end
-
-  defp legacy_rows(session_id) do
-    %{
-      observations:
-        repo().all(
-          from(o in Observation,
-            where: o.session_id == ^session_id,
-            order_by: [asc: o.id],
-            select: {o.id, o.content, o.tool_name, o.is_error, o.files, o.created_at}
-          )
-        ),
-      session: repo().get(Session, session_id)
-    }
   end
 
   defp count_subject_rows(schema, subject_id) do
@@ -526,9 +419,7 @@ defmodule Backplane.Memory.Projections.RebuildTest do
   defp expected_processing_versions do
     %{
       "observations" => "observations-v1",
-      "session" => "session-v1",
-      "activity" => "activity-v1",
-      "replay" => "replay-v1"
+      "session" => "session-v1"
     }
   end
 end

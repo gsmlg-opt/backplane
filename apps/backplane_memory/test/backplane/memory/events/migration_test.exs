@@ -74,7 +74,7 @@ defmodule Backplane.Memory.Events.MigrationTest do
     first_stream_id = "global-key-stream-a-#{suffix}"
     second_stream_id = "global-key-stream-b-#{suffix}"
     idempotency_key = "global-key-#{suffix}"
-    partition = canonical_partition("event-migration-host")
+    partition = %{host_id: "event-migration-host", client_id: "event-migration-client"}
 
     assert {:ok, _stream} =
              repo().insert(
@@ -160,7 +160,7 @@ defmodule Backplane.Memory.Events.MigrationTest do
       WHERE table_schema = current_schema()
         AND table_name = 'bpm_events'
         AND column_name IN (
-          'schema_version', 'integration', 'scope', 'parent_session_id',
+          'schema_version', 'integration', 'parent_session_id',
           'source_sequence', 'captured_at', 'payload_hash', 'privacy', 'trace',
           'raw_envelope', 'ingest_auth_token_id'
         )
@@ -169,7 +169,7 @@ defmodule Backplane.Memory.Events.MigrationTest do
 
     assert Enum.map(columns, &hd/1) ==
              Enum.sort(
-               ~w(schema_version integration scope parent_session_id source_sequence captured_at payload_hash privacy trace raw_envelope ingest_auth_token_id)
+               ~w(schema_version integration parent_session_id source_sequence captured_at payload_hash privacy trace raw_envelope ingest_auth_token_id)
              )
 
     assert [[definition]] =

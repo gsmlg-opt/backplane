@@ -8,24 +8,6 @@ defmodule Backplane.Memory.IngestTest do
   alias Backplane.Memory.Ingest.EventValidator
   import Backplane.Memory.IngestFixtures
 
-  setup do
-    now = DateTime.utc_now()
-
-    spaces =
-      for host_id <- ["host-1", "host-2"] do
-        %{
-          id: Backplane.Memory.IngestFixtures.memory_space_id(host_id),
-          kind: "private",
-          status: "active",
-          inserted_at: now,
-          updated_at: now
-        }
-      end
-
-    repo().insert_all(Backplane.MemorySpaces.MemorySpace, spaces, on_conflict: :nothing)
-    :ok
-  end
-
   test "100 sequential authenticated deliveries create one durable captured-event effect" do
     event = valid_event()
     batch = %{"batch_id" => Ecto.UUID.generate(), "host_id" => "host-1", "events" => [event]}
@@ -46,7 +28,6 @@ defmodule Backplane.Memory.IngestTest do
     assert [
              %Event{
                id: ^server_event_id,
-               memory_space_id: memory_space_id,
                host_id: "host-1",
                source_client_id: "codex-cli",
                idempotency_key: "capture:6:host-1:codex:session-1:1",
@@ -61,10 +42,7 @@ defmodule Backplane.Memory.IngestTest do
                )
              )
 
-    assert memory_space_id == Backplane.Memory.IngestFixtures.memory_space_id("host-1")
-
-    assert [%Stream{memory_space_id: ^memory_space_id, scope: "proj_local", namespace: "private"}] =
-             repo().all(Stream)
+    assert [%Stream{host_id: "host-1", client_id: "codex-cli"}] = repo().all(Stream)
   end
 
   test "persists accepted events, returns exact duplicates, and rejects identity conflicts" do
@@ -143,28 +121,25 @@ defmodule Backplane.Memory.IngestTest do
     accepted = valid_event()
     future = valid_event(%{"schema_version" => 2})
     spoofed = valid_event(%{"host_id" => "host-2"})
-    authority_claim = valid_event(%{"partition_id" => "host:host-1"})
     malformed = valid_event() |> Map.put("event_id", "bad")
 
     assert {:ok, %{"batch_id" => "batch-1", "results" => results}} =
              Ingest.ingest_batch(auth_context("host-1"), %{
                "batch_id" => "batch-1",
                "host_id" => "host-1",
-               "events" => [accepted, future, spoofed, authority_claim, malformed]
+               "events" => [accepted, future, spoofed, malformed]
              })
 
     assert Enum.map(results, & &1["status"]) == [
              "accepted",
              "rejected",
              "rejected",
-             "rejected",
              "rejected"
            ]
 
     assert Enum.at(results, 1)["reason"] == "unsupported_schema"
-    assert Enum.at(results, 2)["reason"] == "partition_mismatch"
-    assert Enum.at(results, 3)["reason"] == "partition_mismatch"
-    assert Enum.at(results, 4)["reason"] == "invalid_event"
+    assert Enum.at(results, 2)["reason"] == "host_mismatch"
+    assert Enum.at(results, 3)["reason"] == "invalid_event"
     assert Enum.all?(Enum.drop(results, 1), &(&1["retryable"] == false))
   end
 
@@ -306,7 +281,27 @@ defmodule Backplane.Memory.IngestTest do
     end
   end
 
-  test "binds canonical authority to the trusted partition and retains filtered provenance" do
+  test "event whose host_id differs from channel host is rejected as host_mismatch" do
+    event = valid_event(%{"host_id" => "host-2"})
+
+    assert {:ok, %{"results" => [result]}} =
+             Ingest.ingest_batch(auth_context("host-1"), %{
+               "batch_id" => "host-mismatch",
+               "host_id" => "host-1",
+               "events" => [event]
+             })
+
+    assert result == %{
+             "event_id" => event["event_id"],
+             "status" => "rejected",
+             "retryable" => false,
+             "reason" => "host_mismatch"
+           }
+
+    assert repo().aggregate(Event, :count) == 0
+  end
+
+  test "stamps the channel host and retains filtered provenance" do
     event =
       valid_event(%{
         "agent_id" => "host-attested-agent",
@@ -322,20 +317,17 @@ defmodule Backplane.Memory.IngestTest do
              })
 
     stored = repo().get!(Event, id)
-    assert stored.memory_space_id == Backplane.Memory.IngestFixtures.memory_space_id("host-1")
-    assert stored.client_id == "host:host-1"
+    assert stored.host_id == "host-1"
+    assert stored.client_id == "spoofed-client [REDACTED]"
     assert stored.source_client_id == "spoofed-client [REDACTED]"
-    assert stored.raw_envelope["client_id"] == "host:host-1"
-    assert stored.scope == "proj_local"
-    assert stored.raw_envelope["scope"] == "proj_local"
-    assert stored.raw_envelope["namespace"] == "private"
-    assert stored.raw_envelope["source_client_id"] == "spoofed-client [REDACTED]"
-    assert stored.raw_envelope["source_scope"] == "project:host-attested-scope [REDACTED]"
+    assert stored.raw_envelope["host_id"] == "host-1"
+    assert stored.raw_envelope["client_id"] == "spoofed-client [REDACTED]"
+    assert stored.raw_envelope["scope"] == "project:host-attested-scope [REDACTED]"
     assert stored.ingest_auth_token_id == "trusted-token"
     assert stored.agent_id == "host-attested-agent"
   end
 
-  test "omitted source authority persists only the authenticated canonical partition" do
+  test "omitted source provenance stays absent" do
     event = valid_event() |> Map.delete("client_id") |> Map.delete("scope")
 
     assert {:ok, %{"results" => [%{"status" => "accepted", "server_event_id" => id}]}} =
@@ -346,13 +338,12 @@ defmodule Backplane.Memory.IngestTest do
              })
 
     stored = repo().get!(Event, id)
-    assert stored.client_id == "host:host-1"
-    assert stored.scope == "proj_local"
-    refute Map.has_key?(stored.raw_envelope, "source_client_id")
-    refute Map.has_key?(stored.raw_envelope, "source_scope")
+    assert stored.client_id == nil
+    refute Map.has_key?(stored.raw_envelope, "client_id")
+    refute Map.has_key?(stored.raw_envelope, "scope")
   end
 
-  test "accepts a normalized Claude Code hook project scope as provenance under the host scope" do
+  test "accepts a normalized Claude Code hook project scope as provenance" do
     cwd = "/home/gao/Workspace/gsmlg-opt/backplane"
     occurred_at = "2026-08-04T01:00:00.000Z"
 
@@ -400,32 +391,9 @@ defmodule Backplane.Memory.IngestTest do
 
     stored = repo().get!(Event, id)
     assert stored.integration == "claude_code"
-    assert stored.scope == "proj_local"
-    assert stored.raw_envelope["source_scope"] == "project:#{cwd}"
+    assert stored.raw_envelope["scope"] == "project:#{cwd}"
     assert stored.payload["hook"] == "user-prompt-submit"
     assert stored.payload["source"]["cwd"] == cwd
-  end
-
-  test "rejects explicit v1 authority fields before persistence" do
-    for authority_key <- ~w(memory_space_id partition_id namespace) do
-      event = valid_event(%{authority_key => "attacker-selected"})
-
-      assert {:ok, %{"results" => [result]}} =
-               Ingest.ingest_batch(auth_context("host-1"), %{
-                 "batch_id" => "authority-#{authority_key}",
-                 "host_id" => "host-1",
-                 "events" => [event]
-               })
-
-      assert result == %{
-               "event_id" => event["event_id"],
-               "status" => "rejected",
-               "retryable" => false,
-               "reason" => "partition_mismatch"
-             }
-    end
-
-    assert repo().aggregate(Event, :count) == 0
   end
 
   test "accepts atom-only and matching dual host claims" do
@@ -489,59 +457,16 @@ defmodule Backplane.Memory.IngestTest do
              %{
                "status" => "rejected",
                "retryable" => false,
-               "reason" => "partition_mismatch"
+               "reason" => "host_mismatch"
              },
              %{
                "status" => "rejected",
                "retryable" => false,
-               "reason" => "partition_mismatch"
+               "reason" => "host_mismatch"
              }
            ]
 
     assert repo().aggregate(Event, :count) == 0
-  end
-
-  test "missing or malformed trusted partitions cannot produce accepted events" do
-    event = valid_event()
-
-    invalid_auth_contexts = [
-      Map.delete(auth_context("host-1"), :partition),
-      auth_context("host-1", %{partition: nil}),
-      auth_context("host-1", %{partition: %{}}),
-      auth_context("host-1", %{
-        partition: Map.delete(trusted_partition("host-1"), :memory_space_id)
-      }),
-      auth_context("host-1", %{partition: trusted_partition("host-2")}),
-      auth_context("host-1", %{
-        partition: %{trusted_partition("host-1") | partition_id: "host:other"}
-      }),
-      auth_context("host-1", %{
-        partition: %{trusted_partition("host-1") | scope: ""}
-      }),
-      auth_context("host-1", %{
-        partition: %{trusted_partition("host-1") | namespace: "shared"}
-      })
-    ]
-
-    for {auth, index} <- Enum.with_index(invalid_auth_contexts) do
-      assert {:ok, %{"results" => [result]}} =
-               Ingest.ingest_batch(
-                 auth,
-                 %{
-                   "batch_id" => "invalid-partition-#{index}",
-                   "host_id" => "host-1",
-                   "events" => [event]
-                 },
-                 store: Backplane.Memory.IngestTest.BuggyStore
-               )
-
-      assert result == %{
-               "event_id" => event["event_id"],
-               "status" => "rejected",
-               "retryable" => false,
-               "reason" => "invalid_partition"
-             }
-    end
   end
 
   test "permanent Store errors are rejected while known rollback errors remain retryable" do
@@ -776,21 +701,10 @@ defmodule Backplane.Memory.IngestTest do
       %{
         host_id: host_id,
         auth_token_id: "token-1",
-        scopes: ["host_agent.capture"],
-        partition: trusted_partition(host_id)
+        scopes: ["host_agent.capture"]
       },
       overrides
     )
-  end
-
-  defp trusted_partition(host_id) do
-    %{
-      memory_space_id: Backplane.Memory.IngestFixtures.memory_space_id(host_id),
-      host_id: host_id,
-      partition_id: "host:#{host_id}",
-      scope: "proj_local",
-      namespace: "private"
-    }
   end
 
   defmodule RollbackStore do

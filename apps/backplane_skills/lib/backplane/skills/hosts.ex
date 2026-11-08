@@ -6,7 +6,6 @@ defmodule Backplane.Skills.Hosts do
   import Ecto.Changeset
   import Ecto.Query
 
-  alias Backplane.MemorySpaces
   alias Backplane.Repo
   alias Backplane.Settings.Encryption
   alias Backplane.Skills.{AgentManage, Host, HostAgentToken, HostAuthToken}
@@ -177,8 +176,7 @@ defmodule Backplane.Skills.Hosts do
     result =
       Repo.transaction(fn ->
         with {:ok, host} <- %Host{} |> Host.changeset(host_attrs) |> Repo.insert(),
-             :ok <- sync_auth_tokens(host, auth_token_ids, host_attrs),
-             :ok <- provision_memory_space(host, host_attrs) do
+             :ok <- sync_auth_tokens(host, auth_token_ids, host_attrs) do
           host
         else
           {:error, changeset} -> Repo.rollback(changeset)
@@ -208,8 +206,7 @@ defmodule Backplane.Skills.Hosts do
       Repo.transaction(fn ->
         with {:ok, host} <- %Host{} |> Host.changeset(host_attrs) |> Repo.insert(),
              {:ok, auth_token} <- insert_auth_token(%{"name" => token_name}, plaintext),
-             :ok <- replace_auth_tokens(host, [auth_token.id]),
-             :ok <- provision_memory_space(host, host_attrs) do
+             :ok <- replace_auth_tokens(host, [auth_token.id]) do
           {host, auth_token}
         else
           {:error, changeset} -> Repo.rollback(changeset)
@@ -237,7 +234,6 @@ defmodule Backplane.Skills.Hosts do
           normalized_attrs =
             requested_attrs
             |> Map.put_new("name", locked_host.name)
-            |> Map.put_new("memory_scope", locked_host.memory_scope)
             |> normalize_agent_attrs()
 
           auth_token_ids =
@@ -251,8 +247,7 @@ defmodule Backplane.Skills.Hosts do
 
           with {:ok, updated_host} <-
                  locked_host |> Host.changeset(host_attrs) |> Repo.update(),
-               :ok <- sync_auth_tokens(updated_host, auth_token_ids, host_attrs),
-               :ok <- update_memory_space_scope(locked_host, updated_host, host_attrs) do
+               :ok <- sync_auth_tokens(updated_host, auth_token_ids, host_attrs) do
             updated_host
           else
             {:error, changeset} -> Repo.rollback(changeset)
@@ -277,8 +272,7 @@ defmodule Backplane.Skills.Hosts do
   def delete_agent(%Host{} = host) do
     result =
       Repo.transaction(fn ->
-        with {:ok, locked_host} <- lock_host(host),
-             :ok <- revoke_memory_space(locked_host) do
+        with {:ok, locked_host} <- lock_host(host) do
           auth_token_ids = auth_token_ids_for_host(locked_host)
 
           HostAgentToken
@@ -320,37 +314,6 @@ defmodule Backplane.Skills.Hosts do
       error ->
         error
     end
-  end
-
-  defp provision_memory_space(%Host{} = host, attrs) do
-    case MemorySpaces.provision_private_host(host.id, host.memory_scope) do
-      {:ok, _partition} -> :ok
-      {:error, reason} -> {:error, memory_space_changeset(host, attrs, reason)}
-    end
-  end
-
-  defp update_memory_space_scope(%Host{} = previous, %Host{} = updated, attrs) do
-    if previous.memory_scope == updated.memory_scope do
-      :ok
-    else
-      case MemorySpaces.update_default_scope(updated.id, updated.memory_scope) do
-        :ok -> :ok
-        {:error, reason} -> {:error, memory_space_changeset(updated, attrs, reason)}
-      end
-    end
-  end
-
-  defp revoke_memory_space(%Host{} = host) do
-    case MemorySpaces.revoke_host(host.id, "host_deleted") do
-      :ok -> :ok
-      {:error, reason} -> {:error, memory_space_changeset(host, %{}, reason)}
-    end
-  end
-
-  defp memory_space_changeset(host, attrs, reason) do
-    host
-    |> Host.changeset(attrs)
-    |> add_error(:memory_scope, "could not update memory ownership", reason: inspect(reason))
   end
 
   defp lock_host(%Host{} = host) do
@@ -498,7 +461,6 @@ defmodule Backplane.Skills.Hosts do
     attrs
     |> stringify_keys()
     |> Map.update("name", "", &String.trim/1)
-    |> Map.update("memory_scope", "proj_local", &String.trim/1)
   end
 
   defp normalize_auth_token_params(attrs) do

@@ -1,6 +1,7 @@
 defmodule Backplane.Memory.Ingest.Upcaster.V1 do
   @moduledoc "Maps canonical capture envelope version 1 into event-store attributes."
 
+  # Server-derived alias names a host must not smuggle into the stored envelope.
   @reserved_provenance_aliases [
     "source_client_id",
     :source_client_id,
@@ -9,37 +10,24 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
   ]
 
   def upcast(%{"schema_version" => 1} = event, auth_context) do
-    partition = fetch(auth_context, :partition)
-    host_id = fetch(partition, :host_id)
-    memory_space_id = fetch(partition, :memory_space_id)
+    host_id = fetch(auth_context, :host_id)
     auth_token_id = fetch(auth_context, :auth_token_id)
-    partition_id = fetch(partition, :partition_id)
-    scope = fetch(partition, :scope)
-    namespace = fetch(partition, :namespace)
     session_id = event["session_id"]
 
     raw_envelope =
       event
       |> Map.drop(@reserved_provenance_aliases)
-      |> maybe_put("source_client_id", event["client_id"])
-      |> maybe_put("source_scope", event["scope"])
       |> Map.put("host_id", host_id)
-      |> Map.put("client_id", partition_id)
-      |> Map.put("memory_space_id", memory_space_id)
-      |> Map.put("scope", scope)
-      |> Map.put("namespace", namespace)
       |> wire_envelope()
 
     {:ok,
      %{
        id: event["event_id"],
-       memory_space_id: memory_space_id,
        stream_id: stream_id(host_id, session_id, event["event_id"]),
        project: event["project"],
-       namespace: namespace,
        agent_id: event["agent_id"],
        host_id: host_id,
-       client_id: partition_id,
+       client_id: event["client_id"],
        source_client_id: event["client_id"],
        session_id: session_id,
        event_type: event["event_type"],
@@ -51,7 +39,6 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
        occurred_at: event["occurred_at"],
        schema_version: 1,
        integration: event["integration"],
-       scope: scope,
        parent_session_id: event["parent_session_id"],
        source_sequence: event["sequence"],
        captured_at: event["captured_at"],
@@ -94,9 +81,6 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
 
   defp namespaced_idempotency_key(host_id, idempotency_key),
     do: "capture:#{byte_size(host_id)}:#{host_id}:#{idempotency_key}"
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp wire_envelope(event) do
     Map.new(event, fn

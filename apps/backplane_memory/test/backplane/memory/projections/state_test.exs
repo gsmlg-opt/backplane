@@ -13,9 +13,6 @@ defmodule Backplane.Memory.Projections.StateTest do
   end
 
   @subject %{
-    memory_space_id: "00000000-0000-4000-8000-000000000001",
-    scope: "global",
-    namespace: "private",
     projector: "session",
     subject_type: "captured_session",
     subject_id: "host-1/session-1",
@@ -40,11 +37,11 @@ defmodule Backplane.Memory.Projections.StateTest do
   end
 
   test "persists each precise processing transition and rejects generic skipped" do
-    partition = canonical_partition("projection-state")
+    provenance = %{host_id: "projection-state"}
 
     attrs =
       @subject
-      |> Map.merge(partition)
+      |> Map.merge(provenance)
       |> Map.put(:input_revision, String.duplicate("a", 64))
 
     for status <- State.statuses() do
@@ -57,10 +54,10 @@ defmodule Backplane.Memory.Projections.StateTest do
   end
 
   test "a newer revision replaces active state while late terminal writes stay stale" do
-    partition = canonical_partition("projection-state-revision")
+    provenance = %{host_id: "projection-state-revision"}
 
     attrs =
-      @subject |> Map.merge(partition) |> Map.put(:input_revision, String.duplicate("a", 64))
+      @subject |> Map.merge(provenance) |> Map.put(:input_revision, String.duplicate("a", 64))
 
     newer = Map.put(attrs, :input_revision, String.duplicate("b", 64))
     old_revision = attrs.input_revision
@@ -80,8 +77,8 @@ defmodule Backplane.Memory.Projections.StateTest do
   end
 
   test "transition_current permits current revisions and rejects a stale snapshot" do
-    partition = canonical_partition("projection-state-current")
-    old = @subject |> Map.merge(partition) |> Map.put(:input_revision, String.duplicate("a", 64))
+    provenance = %{host_id: "projection-state-current"}
+    old = @subject |> Map.merge(provenance) |> Map.put(:input_revision, String.duplicate("a", 64))
     current = Map.put(old, :input_revision, String.duplicate("b", 64))
 
     assert {:ok, %State{input_revision: old_revision}} =
@@ -133,8 +130,8 @@ defmodule Backplane.Memory.Projections.StateTest do
   end
 
   test "persist_current rejects stale authority without invoking persistence" do
-    partition = canonical_partition("projection-state-persist-stale")
-    old = @subject |> Map.merge(partition) |> Map.put(:input_revision, String.duplicate("a", 64))
+    provenance = %{host_id: "projection-state-persist-stale"}
+    old = @subject |> Map.merge(provenance) |> Map.put(:input_revision, String.duplicate("a", 64))
     current = Map.put(old, :input_revision, String.duplicate("b", 64))
     parent = self()
 
@@ -155,11 +152,11 @@ defmodule Backplane.Memory.Projections.StateTest do
   end
 
   test "persist_current rolls back output when the persistence callback fails" do
-    partition = canonical_partition("projection-state-persist-rollback")
+    provenance = %{host_id: "projection-state-persist-rollback"}
 
     attrs =
       @subject
-      |> Map.merge(partition)
+      |> Map.merge(provenance)
       |> Map.put(:subject_id, "host-1/session-rollback")
       |> Map.put(:input_revision, String.duplicate("a", 64))
 

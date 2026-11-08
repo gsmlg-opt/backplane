@@ -1,6 +1,6 @@
 defmodule Backplane.Memory.Sessions.FallbackSweep do
   @moduledoc """
-  Closes stale canonical sessions and starts final processing from bounded indexed candidates.
+  Closes stale canonical sessions from bounded indexed candidates.
 
   The worker never scans legacy `memory_sessions`. Every candidate is rebuilt while its
   canonical stream is locked, so concurrent capture and multiple sweep nodes cannot create
@@ -13,16 +13,7 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
   alias Backplane.Memory.Events.Store
   alias Backplane.Memory.Ingest.EventValidator
 
-  alias Backplane.Memory.Projections.{
-    ProjectedSession,
-    Rebuild,
-    Source,
-    State
-  }
-
-  alias Backplane.Memory.Workers.SummaryWorker
-
-  @subject_type "captured_session"
+  alias Backplane.Memory.Projections.{ProjectedSession, Rebuild, Source}
 
   def run(now \\ now(), opts \\ [])
 
@@ -39,20 +30,9 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
   def candidate_query(now, limit)
       when is_struct(now, DateTime) and is_integer(limit) and limit > 0 do
     stale_before = DateTime.add(now, -Config.session_stale_after_seconds(), :second)
-    grace_before = DateTime.add(now, -Config.event_gap_grace_seconds(), :second)
 
     from(session in ProjectedSession,
-      left_join: summary_state in State,
-      on:
-        summary_state.projector == "summary" and
-          summary_state.subject_type == ^@subject_type and
-          summary_state.subject_id == session.subject_id and
-          summary_state.input_revision == session.input_revision,
-      where:
-        (session.status == "active" and session.last_event_at <= ^stale_before) or
-          (session.status in ["stopped", "completed", "abandoned"] and
-             session.last_event_at <= ^grace_before and
-             (is_nil(summary_state.id) or summary_state.status == "failed")),
+      where: session.status == "active" and session.last_event_at <= ^stale_before,
       order_by: [asc: session.last_event_at, asc: session.subject_id],
       limit: ^limit,
       select: {session.host_id, session.session_id}
@@ -79,11 +59,7 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
 
     with {:ok, _result} <- Rebuild.session(host_id, session_id),
          %ProjectedSession{} = session <- locked_session(host_id, session_id) do
-      cond do
-        stale_active?(session, now) -> abandon(session, now)
-        summary_ready?(session, now) -> enqueue_summary(session)
-        true -> :skipped
-      end
+      if stale_active?(session, now), do: abandon(session, now), else: :skipped
     else
       nil -> :skipped
       {:error, :not_found} -> :skipped
@@ -106,19 +82,6 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
 
   defp stale_active?(_session, _now), do: false
 
-  defp summary_ready?(
-         %ProjectedSession{
-           status: status,
-           last_event_at: last_event_at
-         },
-         now
-       )
-       when status in ["stopped", "completed", "abandoned"] do
-    DateTime.diff(now, last_event_at, :second) >= Config.event_gap_grace_seconds()
-  end
-
-  defp summary_ready?(_session, _now), do: false
-
   defp abandon(session, now) do
     {:ok, events} = Source.events(session.host_id, session.session_id)
     source = List.first(events)
@@ -134,9 +97,7 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
     attrs = %{
       id: Ecto.UUID.generate(),
       stream_id: source.stream_id,
-      memory_space_id: source.memory_space_id,
       project: session.project,
-      namespace: source.namespace,
       agent_id: session.agent_id,
       host_id: session.host_id,
       client_id: source.client_id,
@@ -152,7 +113,6 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
       occurred_at: now,
       schema_version: 1,
       integration: "backplane",
-      scope: source.scope,
       source_sequence: (session.source_sequence_max || 0) + 1,
       captured_at: now,
       payload_hash: EventValidator.payload_hash(payload),
@@ -179,12 +139,9 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
           %{
             "correlation_id" => correlation_id,
             "input_revision" => session.input_revision,
-            "memory_space_id" => session.memory_space_id,
             "host_id" => session.host_id,
             "client_id" => session.client_id,
             "source_client_id" => session.source_client_id,
-            "scope" => session.scope,
-            "namespace" => session.namespace,
             "stale_after_seconds" => Config.session_stale_after_seconds()
           }
         )
@@ -201,41 +158,6 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
     end
   end
 
-  defp enqueue_summary(session) do
-    case SummaryWorker.enqueue(session.host_id, session.session_id, session.input_revision) do
-      {:ok, %Styx.Job{state: state}} when state in ["available", "scheduled"] ->
-        Audit.log(
-          "session.summary_enqueued",
-          "system:fallback_sweep",
-          %{
-            "subject_id" => session.subject_id,
-            "host_id" => session.host_id,
-            "session_id" => session.session_id
-          },
-          %{
-            "input_revision" => session.input_revision,
-            "memory_space_id" => session.memory_space_id,
-            "host_id" => session.host_id,
-            "client_id" => session.client_id,
-            "source_client_id" => session.source_client_id,
-            "scope" => session.scope,
-            "namespace" => session.namespace
-          }
-        )
-
-        :enqueued
-
-      {:ok, %Styx.Job{conflict?: true}} ->
-        :skipped
-
-      {:ok, %Styx.Job{} = job} ->
-        repo().rollback({:summary_job_not_durable, job.state})
-
-      {:error, reason} ->
-        repo().rollback(reason)
-    end
-  end
-
   defp summarize(results, candidate_count) do
     case Enum.find(results, &match?({:error, _reason}, &1)) do
       {:error, reason} ->
@@ -243,15 +165,13 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
 
       nil ->
         abandoned = Enum.count(results, &(&1 == :abandoned))
-        enqueued = Enum.count(results, &(&1 == :enqueued))
 
         {:ok,
          %{
            candidates: candidate_count,
            abandoned: abandoned,
-           enqueued: enqueued,
            skipped: Enum.count(results, &(&1 == :skipped)),
-           swept: abandoned + enqueued
+           swept: abandoned
          }}
     end
   end
@@ -261,7 +181,7 @@ defmodule Backplane.Memory.Sessions.FallbackSweep do
 end
 
 defmodule Backplane.Memory.Workers.FallbackSweepWorker do
-  @moduledoc "Styx entry point for bounded canonical stale-session closure and processing."
+  @moduledoc "Styx entry point for bounded canonical stale-session closure."
 
   use Styx.Worker, queue: :memory, max_attempts: 2
 

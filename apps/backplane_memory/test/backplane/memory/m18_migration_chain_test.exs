@@ -91,7 +91,8 @@ defmodule Backplane.Memory.M18MigrationChainTest do
         end)
 
       assert_receive :eviction_table_lock_held, 5_000
-      migration = Task.async(fn -> migrate(migration_repo, prefix, all: true) end)
+      # Later migrations drop the M18 partition columns this cutover scenario captures with.
+      migration = Task.async(fn -> migrate(migration_repo, prefix, to: @last_m18_version) end)
 
       try do
         assert_eventually(fn -> migration_waiting_at_eviction_index?(migration_repo, prefix) end)

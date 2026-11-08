@@ -10,23 +10,22 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
 
     assert attrs.id == raw["event_id"]
-    assert attrs.memory_space_id == memory_space_id("host-1")
+    refute Map.has_key?(attrs, :memory_space_id)
+    refute Map.has_key?(attrs, :scope)
+    refute Map.has_key?(attrs, :namespace)
     assert attrs.stream_id == "capture:host-1:session-1"
-    assert attrs.namespace == "private"
+    assert attrs.host_id == "host-1"
     refute Map.has_key?(attrs, :sequence)
     assert attrs.source_sequence == 1
     assert attrs.importance == 0
     assert attrs.event_type == "agent.prompt.submitted"
     assert attrs.idempotency_key == "capture:6:host-1:codex:session-1:1"
     assert attrs.raw_envelope["payload"] == raw["payload"]
-    assert attrs.client_id == "host:host-1"
+    assert attrs.client_id == "codex-cli"
     assert attrs.source_client_id == "codex-cli"
-    assert attrs.raw_envelope["client_id"] == "host:host-1"
-    assert attrs.scope == "proj_local"
-    assert attrs.raw_envelope["scope"] == "proj_local"
-    assert attrs.raw_envelope["namespace"] == "private"
-    assert attrs.raw_envelope["source_client_id"] == "codex-cli"
-    assert attrs.raw_envelope["source_scope"] == "project:backplane"
+    assert attrs.raw_envelope["host_id"] == "host-1"
+    assert attrs.raw_envelope["client_id"] == "codex-cli"
+    assert attrs.raw_envelope["scope"] == "project:backplane"
     assert attrs.ingest_auth_token_id == "token-1"
   end
 
@@ -62,7 +61,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     end
   end
 
-  test "host ownership survives token rotation and ignores the wire client id" do
+  test "host stamp survives token rotation and the wire client id stays provenance" do
     raw = valid_event(%{"client_id" => "host:attacker"})
     assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)
 
@@ -71,12 +70,13 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert {:ok, rotated} =
              V1.upcast(event, auth_context("host-1", %{auth_token_id: "token-2"}))
 
-    assert first.client_id == "host:host-1"
+    assert first.host_id == "host-1"
+    assert rotated.host_id == first.host_id
+    assert first.client_id == "host:attacker"
     assert rotated.client_id == first.client_id
     assert first.ingest_auth_token_id == "token-1"
     assert rotated.ingest_auth_token_id == "token-2"
-    assert first.raw_envelope["source_client_id"] == "host:attacker"
-    assert first.raw_envelope["client_id"] == "host:host-1"
+    assert first.raw_envelope["client_id"] == "host:attacker"
   end
 
   test "omits provenance fields that were absent from the source envelope" do
@@ -84,10 +84,9 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert {:ok, event} = Backplane.Memory.Ingest.EventValidator.validate(raw)
     assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
 
-    refute Map.has_key?(attrs.raw_envelope, "source_client_id")
-    refute Map.has_key?(attrs.raw_envelope, "source_scope")
-    assert attrs.raw_envelope["client_id"] == "host:host-1"
-    assert attrs.raw_envelope["scope"] == "proj_local"
+    assert attrs.client_id == nil
+    refute Map.has_key?(attrs.raw_envelope, "client_id")
+    refute Map.has_key?(attrs.raw_envelope, "scope")
   end
 
   test "drops untrusted provenance aliases when the actual source fields are absent" do
@@ -130,14 +129,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     Map.merge(
       %{
         host_id: host_id,
-        auth_token_id: "token-1",
-        partition: %{
-          memory_space_id: memory_space_id(host_id),
-          host_id: host_id,
-          partition_id: "host:#{host_id}",
-          scope: "proj_local",
-          namespace: "private"
-        }
+        auth_token_id: "token-1"
       },
       overrides
     )

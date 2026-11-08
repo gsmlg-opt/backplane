@@ -3010,11 +3010,9 @@ defmodule Backplane.Memory.Service do
         end
       end)
 
-    partition = partition_from_args(args)
-
     entries =
-      partition
-      |> Backplane.Memory.Audit.list(opts)
+      opts
+      |> Backplane.Memory.Audit.list()
       |> Enum.map(&serialize_audit_entry/1)
 
     {:ok, %{entries: entries}}

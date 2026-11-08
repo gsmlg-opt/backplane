@@ -4,11 +4,10 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
   import Backplane.Memory.IngestFixtures
 
   alias Backplane.Memory.{Audit, Config, Ingest}
-  alias Backplane.Memory.LegacyFixtures.Session, as: LegacySession
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Projections.{ProjectedSession, Rebuild}
   alias Backplane.Memory.Sessions.FallbackSweep
-  alias Backplane.Memory.Workers.{FallbackSweepWorker, SummaryWorker}
+  alias Backplane.Memory.Workers.{FallbackSweepWorker, ProjectionRepairWorker}
 
   @settings_table :backplane_settings
   @stale_key "memory.session_stale_after_seconds"
@@ -51,14 +50,14 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
              4 * 3_600
   end
 
-  test "stale canonical activity is abandoned once, audited, and summarized after gap grace" do
+  test "stale canonical activity is abandoned once and audited without summary jobs" do
     now = ~U[2026-08-12 08:00:00.000000Z]
     session_id = unique("stale")
     ingest!(event("host-stale", session_id, 1, "agent.session.started", shift(now, -61)))
     assert {:ok, %{session_status: "active"}} = Rebuild.session("host-stale", session_id)
 
-    assert {:ok, %{abandoned: 1, enqueued: 0, swept: 1}} = sweep(now)
-    assert {:ok, %{abandoned: 0, enqueued: 0, swept: 0}} = sweep(now)
+    assert {:ok, %{abandoned: 1, swept: 1}} = sweep(now)
+    assert {:ok, %{abandoned: 0, swept: 0}} = sweep(now)
 
     assert [abandonment] = abandonment_events("host-stale", session_id)
     assert abandonment.correlation_id == abandonment.trace["correlation_id"]
@@ -70,30 +69,15 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert [audit] = Audit.list(operation: "session.abandoned")
     assert audit.target_ids["event_id"] == abandonment.id
     assert audit.metadata["correlation_id"] == abandonment.correlation_id
-    assert audit.metadata["memory_space_id"] == abandonment.memory_space_id
     assert audit.metadata["host_id"] == abandonment.host_id
     assert audit.metadata["client_id"] == abandonment.client_id
     assert audit.metadata["source_client_id"] == abandonment.source_client_id
-    assert audit.metadata["scope"] == abandonment.scope
-    assert audit.metadata["namespace"] == abandonment.namespace
+    refute Map.has_key?(audit.metadata, "memory_space_id")
+    refute Map.has_key?(audit.metadata, "scope")
+    refute Map.has_key?(audit.metadata, "namespace")
 
-    assert [] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
-
-    assert {:ok, %{abandoned: 0, enqueued: 1, swept: 1}} = sweep(shift(now, 60))
-    assert [_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
-
-    assert [%{metadata: summary_metadata}] =
-             Audit.list(operation: "session.summary_enqueued")
-
-    assert summary_metadata["memory_space_id"] == abandonment.memory_space_id
-    assert summary_metadata["host_id"] == abandonment.host_id
-    assert summary_metadata["client_id"] == abandonment.client_id
-    assert summary_metadata["source_client_id"] == abandonment.source_client_id
-    assert summary_metadata["scope"] == abandonment.scope
-    assert summary_metadata["namespace"] == abandonment.namespace
-
-    assert {:ok, %{enqueued: 0, swept: 0}} = sweep(shift(now, 61))
-    assert [_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert {:ok, %{swept: 0}} = sweep(shift(now, 61))
+    assert [] = non_repair_jobs()
   end
 
   test "threshold is inclusive" do
@@ -111,7 +95,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert [_event] = abandonment_events("host-threshold", exact)
   end
 
-  test "stale active gaps are abandoned and summarized when grace expires" do
+  test "stale active gaps are abandoned without summary jobs" do
     now = ~U[2026-08-12 09:15:00.000000Z]
     session_id = unique("stale-gap")
 
@@ -122,7 +106,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert {:ok, %{session_status: "active", gaps: [%{"from" => 2, "to" => 2}]}} =
              Rebuild.session("host-stale-gap", session_id)
 
-    assert {:ok, %{abandoned: 1, enqueued: 0}} = sweep(now)
+    assert {:ok, %{abandoned: 1}} = sweep(now)
 
     assert %ProjectedSession{status: "abandoned", gap_count: 1} =
              repo().get_by!(ProjectedSession,
@@ -130,10 +114,8 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
                session_id: session_id
              )
 
-    assert [] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
-    assert {:ok, %{enqueued: 0}} = sweep(shift(now, 59))
-    assert {:ok, %{enqueued: 1}} = sweep(shift(now, 60))
-    assert [_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert {:ok, %{swept: 0}} = sweep(shift(now, 60))
+    assert [] = non_repair_jobs()
   end
 
   test "an event arriving after candidate selection prevents false abandonment" do
@@ -164,7 +146,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
     assert [] = abandonment_events("host-refresh", session_id)
   end
 
-  test "same session id on two hosts is independently closed while legacy decoys are ignored" do
+  test "same session id on two hosts is independently closed" do
     now = ~U[2026-08-12 10:00:00.000000Z]
     session_id = unique("shared")
 
@@ -173,29 +155,12 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
       assert {:ok, _} = Rebuild.session(host_id, session_id)
     end
 
-    legacy_partition = canonical_partition("legacy-decoy")
-
-    repo().insert!(
-      struct(
-        LegacySession,
-        Map.merge(legacy_partition, %{
-          session_id: session_id,
-          project: "legacy-decoy",
-          started_at: shift(now, -120),
-          ended_at: shift(now, -61)
-        })
-      )
-    )
-
     assert {:ok, %{candidates: 2, abandoned: 2, swept: 2}} = sweep(now)
     assert [_event] = abandonment_events("host-a", session_id)
     assert [_event] = abandonment_events("host-b", session_id)
-
-    legacy = repo().get!(LegacySession, session_id)
-    assert is_nil(legacy.consolidated_at)
   end
 
-  test "stopped and completed sessions enqueue processing without false abandonment" do
+  test "stopped and completed sessions are neither abandoned nor summarized" do
     now = ~U[2026-08-12 11:00:00.000000Z]
 
     for {host_id, session_id, terminal} <- [
@@ -207,40 +172,46 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
       assert {:ok, _} = Rebuild.session(host_id, session_id)
     end
 
-    assert {:ok, %{abandoned: 0, enqueued: 2, swept: 2}} = sweep(now)
+    assert {:ok, %{candidates: 0, abandoned: 0, swept: 0}} = sweep(now)
 
     assert [] =
              repo().all(
                from(event in Event, where: event.event_type == "agent.session.abandoned")
              )
 
-    assert [_, _] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
+    assert [] = non_repair_jobs()
   end
 
-  test "sequence gaps defer only until grace and a late repair gets a new summary revision" do
+  test "a captured session closes on SessionEnd and via fallback sweep without summary jobs" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    ended = unique("session-end")
+    stale = unique("sweep-close")
+
+    ingest!(event("host-close", ended, 1, "agent.session.started", shift(now, -300)))
+
+    {:ok, %{"results" => [%{"server_event_id" => end_event_id}]}} =
+      ingest!(event("host-close", ended, 2, "agent.session.ended", shift(now, -240)))
+
+    assert :ok =
+             Styx.Testing.with_testing_mode(:manual, fn ->
+               ProjectionRepairWorker.perform(%Styx.Job{args: %{"event_id" => end_event_id}})
+             end)
+
+    assert %ProjectedSession{status: "completed"} =
+             repo().get_by!(ProjectedSession, host_id: "host-close", session_id: ended)
+
+    ingest!(event("host-close", stale, 1, "agent.session.started", shift(now, -120)))
+    assert {:ok, _} = Rebuild.session("host-close", stale)
+    assert {:ok, %{abandoned: 1}} = sweep(now)
+
+    assert %ProjectedSession{status: "abandoned"} =
+             repo().get_by!(ProjectedSession, host_id: "host-close", session_id: stale)
+
+    assert [] = non_repair_jobs()
+  end
+
+  test "a late session end after abandonment rebuilds as completed" do
     now = ~U[2026-08-12 12:00:00.000000Z]
-    gapped = unique("gapped")
-
-    ingest!(event("host-gap", gapped, 1, "agent.session.started", shift(now, -180)))
-    ingest!(event("host-gap", gapped, 3, "agent.session.ended", shift(now, -30)))
-    assert {:ok, %{gaps: [_gap]}} = Rebuild.session("host-gap", gapped)
-    assert {:ok, %{enqueued: 0}} = sweep(now)
-    assert [] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
-
-    assert {:ok, %{enqueued: 1}} = sweep(shift(now, 30))
-    assert [incomplete_job] = Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
-
-    ingest!(event("host-gap", gapped, 2, "agent.tool.completed", shift(now, -29)))
-    assert {:ok, repaired} = Rebuild.session("host-gap", gapped)
-    refute repaired.input_revision == incomplete_job.args["input_revision"]
-    assert {:ok, %{enqueued: 1}} = sweep(shift(now, 31))
-
-    assert [first_job, second_job] =
-             Styx.Testing.all_enqueued(repo(), worker: SummaryWorker)
-             |> Enum.sort_by(& &1.id)
-
-    assert first_job.args["input_revision"] != second_job.args["input_revision"]
-
     abandoned = unique("late-end")
     ingest!(event("host-late", abandoned, 1, "agent.session.started", shift(now, -180)))
     assert {:ok, _} = Rebuild.session("host-late", abandoned)
@@ -253,7 +224,8 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
 
     assert late.gaps == []
     assert [_event] = abandonment_events("host-late", abandoned)
-    assert {:ok, %{enqueued: 1}} = sweep(shift(now, 61))
+    assert {:ok, %{swept: 0}} = sweep(shift(now, 61))
+    assert [] = non_repair_jobs()
   end
 
   test "two sweep nodes serialize on canonical streams and report one actual closure" do
@@ -342,7 +314,7 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
   end
 
   defp ingest!(event) do
-    auth = ingest_auth_context(event["host_id"], %{partition: %{scope: event["scope"]}})
+    auth = ingest_auth_context(event["host_id"])
 
     assert {:ok, %{"results" => [%{"status" => "accepted"}]}} =
              Ingest.ingest_batch(auth, %{
@@ -350,6 +322,12 @@ defmodule Backplane.Memory.Workers.FallbackSweepWorkerTest do
                "host_id" => event["host_id"],
                "events" => [event]
              })
+  end
+
+  defp non_repair_jobs do
+    repo()
+    |> Styx.Testing.all_enqueued([])
+    |> Enum.reject(&(&1.worker == inspect(ProjectionRepairWorker)))
   end
 
   defp abandonment_events(host_id, session_id) do

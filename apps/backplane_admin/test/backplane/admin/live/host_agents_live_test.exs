@@ -66,18 +66,16 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     refute inspect(event) =~ "bha_"
   end
 
-  test "creating an agent persists its registered memory scope", %{conn: conn} do
+  test "creating an agent has no memory scope input", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/system/host-agents")
     view |> element("#open-agent-modal") |> render_click()
+    refute has_element?(view, "#agent-memory-scope")
 
     view
-    |> form("#host-agent-form", %{
-      "agent" => %{"name" => "scoped-host", "memory_scope" => "  project:trusted  "}
-    })
+    |> form("#host-agent-form", %{"agent" => %{"name" => "  scoped-host  "}})
     |> render_submit()
 
-    assert %{memory_scope: "project:trusted"} =
-             Enum.find(Hosts.list_hosts(), &(&1.name == "scoped-host"))
+    assert %{name: "scoped-host"} = Enum.find(Hosts.list_hosts(), &(&1.name == "scoped-host"))
   end
 
   test "host config and memory sync show last known reports as stale without secrets", %{

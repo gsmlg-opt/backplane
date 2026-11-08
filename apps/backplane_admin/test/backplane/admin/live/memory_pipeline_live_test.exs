@@ -191,11 +191,8 @@ defmodule Backplane.Admin.MemoryPipelineLiveTest do
         last_event_at: DateTime.utc_now(),
         processing_version: "session-v1",
         input_revision: "r1",
-        memory_space_id: @partition["memory_space_id"],
         host_id: host,
-        client_id: @partition["client"],
-        scope: @partition["scope"],
-        namespace: @partition["namespace"]
+        client_id: @partition["client"]
       }
       |> Backplane.Repo.insert!()
     end

@@ -12,7 +12,6 @@ defmodule Backplane.Memory.Events.Types do
     "identity_id" => :identity_id,
     "content" => :content,
     "payload" => :payload,
-    "namespace" => :namespace,
     "importance" => :importance,
     "occurred_at" => :occurred_at,
     "id" => :id,
@@ -30,7 +29,6 @@ defmodule Backplane.Memory.Events.Types do
     "idempotency_key" => :idempotency_key,
     "schema_version" => :schema_version,
     "integration" => :integration,
-    "scope" => :scope,
     "parent_session_id" => :parent_session_id,
     "source_sequence" => :source_sequence,
     "captured_at" => :captured_at,
@@ -109,7 +107,6 @@ defmodule Backplane.Memory.Events.Types do
       Map.merge(
         %{
           id: Ecto.UUID.generate(),
-          namespace: "private",
           payload: %{},
           importance: 0,
           occurred_at: DateTime.utc_now()

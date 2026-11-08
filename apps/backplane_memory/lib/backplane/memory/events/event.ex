@@ -6,11 +6,9 @@ defmodule Backplane.Memory.Events.Event do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "bpm_events" do
-    field :memory_space_id, :binary_id
     field :stream_id, :string
     field :sequence, :integer
     field :project, :string
-    field :namespace, :string, default: "private"
     field :agent_id, :string
     field :host_id, :string
     field :client_id, :string
@@ -29,7 +27,6 @@ defmodule Backplane.Memory.Events.Event do
     field :payload, :map, default: %{}
     field :schema_version, :integer
     field :integration, :string
-    field :scope, :string
     field :parent_session_id, :string
     field :source_sequence, :integer
     field :captured_at, :utc_datetime_usec
@@ -48,11 +45,8 @@ defmodule Backplane.Memory.Events.Event do
     |> cast(attrs, __schema__(:fields) -- [:inserted_at])
     |> validate_required([
       :id,
-      :memory_space_id,
       :stream_id,
       :sequence,
-      :namespace,
-      :scope,
       :event_type,
       :importance,
       :payload,

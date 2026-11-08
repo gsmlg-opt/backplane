@@ -96,16 +96,8 @@ defmodule Backplane.Memory.EventTestPartition do
     Backplane.Memory.IngestFixtures.ensure_memory_space!(@host_id)
   end
 
-  def attrs(attrs) when is_map(attrs) do
-    Map.merge(
-      %{
-        memory_space_id: Backplane.Memory.IngestFixtures.memory_space_id(@host_id),
-        scope: "global",
-        namespace: "private"
-      },
-      attrs
-    )
-  end
+  # Capture events carry no partition; kept as the shared entry point for event tests.
+  def attrs(attrs) when is_map(attrs), do: attrs
 
   def attrs_list(attrs_list) when is_list(attrs_list), do: Enum.map(attrs_list, &attrs/1)
 end

@@ -5,8 +5,6 @@ defmodule Backplane.Scripts.DevenvHostAgentTest do
 
   import Bitwise, only: [band: 2]
 
-  alias Backplane.MemorySpaces
-  alias Backplane.MemorySpaces.Entitlement
   alias Backplane.Scripts.DevenvHostAgent
   alias Backplane.Skills.{AgentManage, Hosts, HostAuthToken}
 
@@ -24,11 +22,10 @@ defmodule Backplane.Scripts.DevenvHostAgentTest do
     assert {:ok, metadata} = DevenvHostAgent.prepare(path)
     assert metadata.config_path == path
     assert String.starts_with?(metadata.name, "backplane-devenv-")
-    assert String.starts_with?(metadata.memory_scope, "devenv_")
+    refute Map.has_key?(metadata, :memory_scope)
 
     host = Hosts.get_host(metadata.host_id)
     assert host.name == metadata.name
-    assert host.memory_scope == metadata.memory_scope
     assert [auth_token_id] = Hosts.auth_token_ids_for_host(host)
     assert {:ok, config} = YamlElixir.read_from_file(path)
     token = config["agent"]["token"]
@@ -40,14 +37,7 @@ defmodule Backplane.Scripts.DevenvHostAgentTest do
     assert authenticated.id == host.id
     assert cached_token.id == auth_token_id
 
-    assert {:ok, partition} =
-             MemorySpaces.resolve_host_partition(
-               host.id,
-               config["memory"]["bound_scope"],
-               "private"
-             )
-
-    assert partition.scope == host.memory_scope
+    refute Map.has_key?(config["memory"], "bound_scope")
     assert config["agent"]["host_id"] == host.id
     assert config["agent"]["machine_name"] == host.name
     assert config["agent"]["hub_url"] == "http://127.0.0.1:4220"
@@ -65,62 +55,22 @@ defmodule Backplane.Scripts.DevenvHostAgentTest do
     assert File.ls!(Path.dirname(path)) == [Path.basename(path)]
   end
 
-  test "repeat setup and missing configuration reuse the same identity, token and partition", %{
+  test "repeat setup and missing configuration reuse the same identity and token", %{
     config_path: path
   } do
     assert {:ok, metadata} = DevenvHostAgent.prepare(path)
     contents = File.read!(path)
     token_ids = Hosts.auth_token_ids_for_host(metadata.host_id)
 
-    assert {:ok, partition} =
-             MemorySpaces.resolve_host_partition(
-               metadata.host_id,
-               metadata.memory_scope,
-               "private"
-             )
-
     for remove_config? <- [false, true] do
       if remove_config?, do: File.rm!(path)
       assert {:ok, ^metadata} = DevenvHostAgent.prepare(path)
       assert File.read!(path) == contents
       assert Hosts.auth_token_ids_for_host(metadata.host_id) == token_ids
-
-      assert {:ok, ^partition} =
-               MemorySpaces.resolve_host_partition(
-                 metadata.host_id,
-                 metadata.memory_scope,
-                 "private"
-               )
     end
 
     assert length(Hosts.list_hosts()) == 1
     assert Repo.aggregate(HostAuthToken, :count) == 1
-
-    assert Repo.aggregate(
-             from(entitlement in Entitlement, where: entitlement.host_id == ^metadata.host_id),
-             :count
-           ) == 1
-  end
-
-  test "uses the registered scope when regenerating configuration", %{config_path: path} do
-    assert {:ok, metadata} = DevenvHostAgent.prepare(path)
-    host = Hosts.get_host(metadata.host_id)
-    token_ids = Hosts.auth_token_ids_for_host(host)
-    assert {:ok, updated} = Hosts.update_agent(host, %{memory_scope: "registered:custom"})
-
-    assert {:ok, refreshed} = DevenvHostAgent.prepare(path)
-    assert refreshed.host_id == host.id
-    assert refreshed.memory_scope == updated.memory_scope
-    assert Hosts.auth_token_ids_for_host(host) == token_ids
-    assert {:ok, config} = YamlElixir.read_from_file(path)
-    assert config["memory"]["bound_scope"] == "registered:custom"
-
-    assert {:ok, %{scope: "registered:custom"}} =
-             MemorySpaces.resolve_host_partition(
-               host.id,
-               config["memory"]["bound_scope"],
-               "private"
-             )
   end
 
   test "repairs a generated host without an assigned token", %{config_path: path} do

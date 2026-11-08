@@ -360,7 +360,7 @@ defmodule Backplane.Admin.MemoryLessonsLiveTest do
         })
       )
 
-    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
+    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, "team")
     source_client_id = "host:#{host.id}"
 
     Map.merge(canonical, %{

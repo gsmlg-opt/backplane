@@ -246,12 +246,9 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
 
     Backplane.Repo.insert!(%ProjectedSession{
       subject_id: "crystal-ui-session:#{crystal.id}",
-      memory_space_id: partition.memory_space_id,
       host_id: partition.host_id,
       client_id: partition.client_id,
       source_client_id: partition.source_client_id,
-      scope: partition.scope,
-      namespace: partition.namespace,
       session_id: crystal.source_session_id,
       project: "backplane",
       agent_id: "ui-agent",
@@ -299,7 +296,7 @@ defmodule Backplane.Admin.MemoryCrystalsLiveTest do
         })
       )
 
-    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
+    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, "team")
     source_client_id = "host:#{host.id}"
 
     Map.merge(canonical, %{

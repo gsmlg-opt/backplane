@@ -328,7 +328,7 @@ defmodule Backplane.Admin.MemoryRecallInspectorLiveTest do
         })
       )
 
-    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, host.memory_scope)
+    assert {:ok, canonical} = MemorySpaces.provision_private_host(host.id, scope)
 
     if namespace != "private" do
       Backplane.Repo.insert!(

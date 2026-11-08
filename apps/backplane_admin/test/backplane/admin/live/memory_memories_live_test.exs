@@ -497,11 +497,8 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
 
     Backplane.Repo.insert!(%Backplane.Memory.Projections.ProjectedSession{
       subject_id: subject,
-      memory_space_id: @space,
       host_id: memory.host_id,
       client_id: memory.client_id,
-      scope: memory.scope,
-      namespace: memory.namespace,
       session_id: memory.session_id,
       input_revision: "R2",
       status: "completed",
@@ -958,7 +955,7 @@ defmodule Backplane.Admin.MemoryMemoriesLiveTest do
       assert {:ok, partition} =
                Backplane.MemorySpaces.resolve_host_partition(
                  host.id,
-                 host.memory_scope,
+                 nil,
                  "private"
                )
 

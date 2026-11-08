@@ -9,18 +9,14 @@ defmodule Backplane.Memory.Events.Store do
   alias Backplane.Memory.Workers.ProjectionRepairWorker
 
   @metadata_fields [
-    :memory_space_id,
     :project,
     :agent_id,
     :host_id,
     :client_id,
     :source_client_id,
-    :scope,
-    :namespace,
     :session_id,
     :run_id
   ]
-  @subject_owner_fields [:memory_space_id, :client_id, :source_client_id, :scope, :namespace]
   @idempotency_constraint "bpm_events_idempotency_key_uniq"
 
   def append(attrs, opts \\ []) do
@@ -33,11 +29,6 @@ defmodule Backplane.Memory.Events.Store do
     with {:ok, event} <- Preparation.prepare(attrs) do
       repo().transaction(fn ->
         lock_subjects(repo(), [event])
-
-        case ensure_subject_metadata_consistent(repo(), event) do
-          :ok -> :ok
-          {:error, reason} -> repo().rollback(reason)
-        end
 
         stream = create_and_lock_stream(repo(), event.stream_id, event)
 
@@ -467,15 +458,12 @@ defmodule Backplane.Memory.Events.Store do
     Enum.all?(
       [
         :schema_version,
-        :memory_space_id,
         :host_id,
         :agent_id,
         :client_id,
         :source_client_id,
-        :namespace,
         :integration,
         :project,
-        :scope,
         :session_id,
         :parent_session_id,
         :source_sequence,
@@ -509,15 +497,12 @@ defmodule Backplane.Memory.Events.Store do
       event_type: event.event_type,
       event_fingerprint: fingerprint(event),
       schema_version: event.schema_version,
-      memory_space_id: event.memory_space_id,
       host_id: event.host_id,
       agent_id: event.agent_id,
       client_id: event.client_id,
       source_client_id: event.source_client_id,
-      namespace: event.namespace,
       integration: event.integration,
       project: event.project,
-      scope: event.scope,
       session_id: event.session_id,
       parent_session_id: event.parent_session_id,
       source_sequence: event.source_sequence,
@@ -617,7 +602,7 @@ defmodule Backplane.Memory.Events.Store do
        when not is_nil(version) do
     mismatch? =
       Enum.any?(
-        [:memory_space_id, :host_id, :client_id, :scope, :namespace, :session_id],
+        [:host_id, :session_id],
         fn key ->
           left = Map.get(stream, key)
           right = Map.get(event, key)
@@ -629,34 +614,6 @@ defmodule Backplane.Memory.Events.Store do
   end
 
   defp ensure_stream_metadata_consistent(_stream, _event), do: :ok
-
-  defp ensure_subject_metadata_consistent(repo, event) do
-    mismatch =
-      Enum.reduce(@subject_owner_fields, dynamic(false), fn key, mismatch ->
-        case Map.get(event, key) do
-          nil ->
-            dynamic([existing], ^mismatch or not is_nil(field(existing, ^key)))
-
-          value ->
-            dynamic(
-              [existing],
-              ^mismatch or is_nil(field(existing, ^key)) or field(existing, ^key) != ^value
-            )
-        end
-      end)
-
-    conflict? =
-      repo.exists?(
-        from(existing in Event,
-          where:
-            not is_nil(existing.schema_version) and existing.host_id == ^event.host_id and
-              existing.session_id == ^event.session_id,
-          where: ^mismatch
-        )
-      )
-
-    if conflict?, do: {:error, :stream_metadata_conflict}, else: :ok
-  end
 
   defp lock_subjects(repo, events) do
     events

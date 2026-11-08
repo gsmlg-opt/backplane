@@ -62,7 +62,7 @@ defmodule Backplane.Memory.Events.TypesTest do
              Types.normalize(%{"event_type" => "session.started", "session_id" => "s1"})
 
     assert attrs.stream_id == "session:s1"
-    assert attrs.namespace == "private"
+    refute Map.has_key?(attrs, :namespace)
     assert attrs.payload == %{}
     assert attrs.importance == 0
     assert %DateTime{} = attrs.occurred_at
@@ -211,14 +211,12 @@ defmodule Backplane.Memory.Events.TypesTest do
                stream_id: "s",
                event_type: "legacy.observation",
                id: String.upcase(id),
-               namespace: "project",
                payload: payload,
                importance: 7,
                occurred_at: "2026-01-01T00:00:00+02:00"
              })
 
     assert attrs.id == id
-    assert attrs.namespace == "project"
     assert attrs.payload == payload
     assert attrs.importance == 7
     assert DateTime.compare(attrs.occurred_at, ~U[2025-12-31 22:00:00Z]) == :eq

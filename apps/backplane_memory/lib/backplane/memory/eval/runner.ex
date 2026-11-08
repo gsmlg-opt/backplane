@@ -178,13 +178,10 @@ defmodule Backplane.Memory.Eval.Runner do
         repo().insert!(
           EventStream.changeset(%EventStream{}, %{
             stream_id: stream_id,
-            memory_space_id: memory_space_id,
             project: "memory-eval-derived",
             host_id: memory["host_id"],
             client_id: memory["client_id"],
             source_client_id: memory["client_id"],
-            scope: memory["scope"],
-            namespace: memory["namespace"],
             session_id: session_id
           })
         )
@@ -193,13 +190,10 @@ defmodule Backplane.Memory.Eval.Runner do
           id: event_id,
           stream_id: stream_id,
           sequence: 1,
-          memory_space_id: memory_space_id,
           project: "memory-eval-derived",
-          namespace: memory["namespace"],
           host_id: memory["host_id"],
           client_id: memory["client_id"],
           source_client_id: memory["client_id"],
-          scope: memory["scope"],
           session_id: session_id,
           event_type: "agent.prompt.submitted",
           importance: 1,
@@ -212,13 +206,10 @@ defmodule Backplane.Memory.Eval.Runner do
         repo().insert!(%ProjectedSession{
           subject_id: subject_id,
           session_id: session_id,
-          memory_space_id: memory_space_id,
           project: "memory-eval-derived",
           host_id: memory["host_id"],
           client_id: memory["client_id"],
           source_client_id: memory["client_id"],
-          scope: memory["scope"],
-          namespace: memory["namespace"],
           status: "closed",
           last_event_at: now,
           processing_version: "eval-v2",
