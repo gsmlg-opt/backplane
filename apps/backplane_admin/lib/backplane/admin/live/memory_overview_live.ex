@@ -7,21 +7,34 @@ defmodule Backplane.Admin.MemoryOverviewLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    counts = AdminQueries.record_counts()
-
     {:ok,
      assign(socket,
        current_path: "/memory",
-       counts: counts,
-       rows: counts |> Enum.sort() |> Enum.map(fn {{kind, status}, n} -> {kind, status, n} end),
-       events_24h: AdminQueries.event_count_since(DateTime.add(DateTime.utc_now(), -86_400)),
-       open_sessions: AdminQueries.open_session_count(),
-       llm_unset?: is_nil(Config.llm_model())
+       rows: [],
+       events_24h: 0,
+       open_sessions: 0,
+       llm_unset?: false
      )}
   end
 
   @impl true
-  def handle_params(_params, _uri, socket), do: {:noreply, socket}
+  def handle_params(_params, _uri, socket) do
+    {:noreply, if(connected?(socket), do: load(socket), else: socket)}
+  end
+
+  defp load(socket) do
+    rows =
+      AdminQueries.record_counts()
+      |> Enum.sort()
+      |> Enum.map(fn {{kind, status}, n} -> {kind, status, n} end)
+
+    assign(socket,
+      rows: rows,
+      events_24h: AdminQueries.event_count_since(DateTime.add(DateTime.utc_now(), -86_400)),
+      open_sessions: AdminQueries.open_session_count(),
+      llm_unset?: is_nil(Config.llm_model())
+    )
+  end
 
   @impl true
   def render(assigns) do

@@ -12,19 +12,23 @@ defmodule Backplane.Admin.MemoryRecordsLive do
     {:ok,
      socket
      |> assign(current_path: "/memory/records", kinds: @kinds)
-     |> assign(form: %{"q" => "", "host_id" => "", "agent_id" => "", "kind" => ""})
-     |> assign(include_inactive: false, selected: nil)
-     |> load()}
+     |> assign(form: %{"q" => "", "host_id" => "", "agent_id" => "", "kind" => "", "since" => ""})
+     |> assign(include_inactive: false, selected: nil, records: [])}
+  end
+
+  @impl true
+  def handle_params(_params, _uri, socket) do
+    {:noreply, if(connected?(socket), do: load(socket), else: socket)}
   end
 
   @impl true
   def handle_event("search", params, socket) do
-    form = Map.take(params, ["q", "host_id", "agent_id", "kind"])
+    form = Map.take(params, ["q", "host_id", "agent_id", "kind", "since"])
 
     {:noreply,
      socket
      |> assign(form: Map.merge(socket.assigns.form, form))
-     |> assign(include_inactive: params["include_inactive"] in ["true", "on"])
+     |> assign(include_inactive: params["include_inactive"] in ["true", "on"], selected: nil)
      |> load()}
   end
 
@@ -49,6 +53,9 @@ defmodule Backplane.Admin.MemoryRecordsLive do
 
         {:error, :not_found} ->
           {:noreply, put_flash(socket, :error, "Record not found")}
+
+        {:error, %Ecto.Changeset{}} ->
+          {:noreply, put_flash(socket, :error, "Record could not be forgotten")}
       end
     end
   end
@@ -58,7 +65,7 @@ defmodule Backplane.Admin.MemoryRecordsLive do
 
     filters =
       form
-      |> Map.take(["host_id", "agent_id", "kind"])
+      |> Map.take(["host_id", "agent_id", "kind", "since"])
       |> Enum.reject(fn {_k, v} -> v == "" end)
       |> Map.new()
       |> Map.put("include_inactive", socket.assigns.include_inactive)
@@ -81,30 +88,30 @@ defmodule Backplane.Admin.MemoryRecordsLive do
   defp subjects(%{subject_keys: keys}), do: Enum.join(keys || [], ", ")
 
   @impl true
-  def handle_params(_params, _uri, socket), do: {:noreply, socket}
-
-  @impl true
   def render(assigns) do
     ~H"""
     <div class="memory-page">
       <.memory_page_header title="Records" subtitle="Search and review the global memory record store" />
 
-      <.form id="memory-records-search" for={%{}} phx-change="search" phx-submit="search" class="grid gap-3 md:grid-cols-5">
+      <.form id="memory-records-search" for={%{}} phx-change="search" phx-submit="search" class="grid gap-3 md:grid-cols-6">
         <.dm_input id="memory-records-q" name="q" label="Search" value={@form["q"]} phx-debounce="300" />
         <.dm_input id="memory-records-host" name="host_id" label="Host" value={@form["host_id"]} phx-debounce="300" />
         <.dm_input id="memory-records-agent" name="agent_id" label="Agent" value={@form["agent_id"]} phx-debounce="300" />
-        <label class="flex flex-col gap-1 text-sm">
-          Kind
-          <select id="memory-records-kind" name="kind" class="select select-bordered">
-            <option value="" selected={@form["kind"] == ""}>All</option>
-            <option :for={k <- @kinds} value={k} selected={@form["kind"] == k}>{k}</option>
-          </select>
-        </label>
-        <label class="flex items-end gap-2 text-sm">
-          <input type="hidden" name="include_inactive" value="false" />
-          <input id="memory-records-inactive" type="checkbox" name="include_inactive" value="true" checked={@include_inactive} />
-          Include inactive
-        </label>
+        <.dm_input id="memory-records-since" name="since" label="Since (ISO 8601)" value={@form["since"]} phx-debounce="300" />
+        <.dm_select
+          id="memory-records-kind"
+          name="kind"
+          label="Kind"
+          prompt="All"
+          options={Enum.map(@kinds, &{&1, &1})}
+          value={@form["kind"]}
+        />
+        <.dm_checkbox
+          id="memory-records-inactive"
+          name="include_inactive"
+          label="Include inactive"
+          checked={@include_inactive}
+        />
       </.form>
 
       <.memory_blank_state
@@ -166,4 +173,3 @@ defmodule Backplane.Admin.MemoryRecordsLive do
     """
   end
 end
-

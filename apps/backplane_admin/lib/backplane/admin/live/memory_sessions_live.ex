@@ -8,11 +8,15 @@ defmodule Backplane.Admin.MemorySessionsLive do
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
-     assign(socket, current_path: "/memory/sessions", sessions: AdminQueries.recent_sessions(100))}
+     assign(socket, current_path: "/memory/sessions", sessions: [])}
   end
 
   @impl true
-  def handle_params(_params, _uri, socket), do: {:noreply, socket}
+  def handle_params(_params, _uri, socket) do
+    if connected?(socket),
+      do: {:noreply, assign(socket, sessions: AdminQueries.recent_sessions(100))},
+      else: {:noreply, socket}
+  end
 
   @impl true
   def render(assigns) do

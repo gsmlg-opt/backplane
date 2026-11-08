@@ -24,7 +24,9 @@ defmodule Backplane.Memory.RecordsListTest do
     assert [old.id] == Enum.map(Records.list(%{"host_id" => "h1"}), & &1.id)
     assert [new.id] == Enum.map(Records.list(%{"kind" => "worklog"}), & &1.id)
     assert length(Records.list(%{"include_inactive" => true})) == 3
+    assert [new.id] == Enum.map(Records.list(%{"since" => "2026-01-15T00:00:00Z"}), & &1.id)
     assert_raise ArgumentError, fn -> Records.list(%{"limit" => -1}) end
+    assert_raise ArgumentError, fn -> Records.list(%{"since" => "nope"}) end
   end
 
   test "record_counts/0 groups by kind and status" do

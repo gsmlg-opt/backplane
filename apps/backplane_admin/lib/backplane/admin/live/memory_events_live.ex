@@ -8,11 +8,15 @@ defmodule Backplane.Admin.MemoryEventsLive do
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
-     assign(socket, current_path: "/memory/events", events: AdminQueries.recent_events(100))}
+     assign(socket, current_path: "/memory/events", events: [])}
   end
 
   @impl true
-  def handle_params(_params, _uri, socket), do: {:noreply, socket}
+  def handle_params(_params, _uri, socket) do
+    if connected?(socket),
+      do: {:noreply, assign(socket, events: AdminQueries.recent_events(100))},
+      else: {:noreply, socket}
+  end
 
   @impl true
   def render(assigns) do

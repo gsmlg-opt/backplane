@@ -88,6 +88,8 @@ defmodule Backplane.Memory.Records do
     |> Search.filter_equal(:host_id, filters["host_id"])
     |> Search.filter_equal(:agent_id, filters["agent_id"])
     |> Search.filter_equal(:kind, filters["kind"])
+    |> Search.filter_time(:since, filters["since"])
+    |> Search.filter_time(:until, filters["until"])
     |> order_by([r], desc: r.observed_at, desc: r.inserted_at)
     |> limit(^limit)
     |> repo().all()

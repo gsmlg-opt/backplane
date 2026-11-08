@@ -2,6 +2,7 @@ defmodule Backplane.Admin.MemoryRecordsLiveTest do
   use Backplane.Admin.LiveCase, async: false
 
   alias Backplane.Memory.Records
+  alias Backplane.Settings
 
   defp remember(attrs) do
     {:ok, r} = Records.remember(Map.merge(%{"content" => "c", "writer" => "agent"}, attrs))
@@ -44,16 +45,37 @@ defmodule Backplane.Admin.MemoryRecordsLiveTest do
     assert html =~ "Stale fact"
   end
 
+  test "forget with an unknown id flashes not found", %{conn: conn} do
+    {:ok, view, _} = live_with_sandbox(conn, "/memory/records")
+
+    html =
+      render_submit(view, "forget", %{
+        "record_id" => Ecto.UUID.generate(),
+        "reason" => "gone"
+      })
+
+    assert html =~ "Record not found"
+    assert Process.alive?(view.pid)
+  end
+
+  test "an invalid filter flashes an error instead of crashing", %{conn: conn} do
+    {:ok, view, _} = live_with_sandbox(conn, "/memory/records")
+
+    html = view |> form("#memory-records-search", %{"since" => "not-a-date"}) |> render_change()
+
+    assert html =~ "Invalid filter"
+    assert Process.alive?(view.pid)
+  end
+
   describe "overview" do
     test "warns when memory.llm_model is unset and hides the warning when set", %{conn: conn} do
-      :ets.insert(:backplane_settings, {"memory.llm_model", nil})
-      on_exit(fn -> :ets.delete(:backplane_settings, "memory.llm_model") end)
+      assert :ok = Settings.set("memory.llm_model", "")
 
       {:ok, view, html} = live_with_sandbox(conn, "/memory")
       assert html =~ "提炼未启用：未配置 memory.llm_model"
       assert has_element?(view, "#memory-llm-model-warning")
 
-      :ets.insert(:backplane_settings, {"memory.llm_model", "prov/model"})
+      assert :ok = Settings.set("memory.llm_model", "prov/model")
       {:ok, view, html} = live_with_sandbox(Phoenix.ConnTest.build_conn(), "/memory")
       refute html =~ "提炼未启用"
       refute has_element?(view, "#memory-llm-model-warning")
