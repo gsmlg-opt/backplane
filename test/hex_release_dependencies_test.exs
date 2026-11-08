@@ -174,10 +174,10 @@ defmodule Backplane.HexReleaseDependenciesTest do
 
   test "retry-safe publication delegates package and documentation uploads to Hex" do
     script = File.read!("scripts/publish_hex_package.py")
-    assert script =~ ~r/subprocess\.run\(\[['"]mix['"],\s*['"]hex\.publish['"],\s*['"]--yes['"]\]/
+    assert script =~ ~r/subprocess\.run\(\[['"]mix['"],\s*['"]hex\.publish['"],\s*\*arguments\]/
+    assert script =~ "publish(['--yes'], package, version)"
 
-    assert script =~
-             ~r/subprocess\.run\(\[['"]mix['"],\s*['"]hex\.publish['"],\s*['"]docs['"],\s*['"]--yes['"]\]/
+    assert script =~ "publish(['docs', '--yes'], package, version)"
 
     assert script =~ "compare_release(release, expected, package, version)"
     assert script =~ "await_registry(package, version, expected)"

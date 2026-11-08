@@ -1,5 +1,5 @@
 defmodule Backplane.LLM.ResponsesWebsocketConfigTest do
-  use ExUnit.Case, async: true
+  use BackplaneLlama.DataCase, async: true
 
   alias Backplane.LLM.ProviderApi
 

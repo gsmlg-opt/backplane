@@ -357,14 +357,20 @@ class HexPublicationTest(unittest.TestCase):
         os.chdir(self.directory)
         self.addCleanup(os.chdir, self.old_directory)
 
-    def run_main(self, release, local_checksum=INNER_CHECKSUM, verification_error=None):
+    def run_main(self, release, local_checksum=INNER_CHECKSUM, verification_error=None,
+                 publish_output="", publish_status=0):
         calls = []
         self.mix_calls = calls
 
-        def mix(command, **_kwargs):
+        def mix(command, **kwargs):
             calls.append(command)
             if command[:2] == ["mix", "hex.build"]:
                 Path(command[3]).write_bytes(hex_tar(local_checksum))
+            if command[:2] == ["mix", "hex.publish"]:
+                result = subprocess.CompletedProcess(command, publish_status, stdout=publish_output)
+                if kwargs.get("check"):
+                    result.check_returncode()
+                return result
             return subprocess.CompletedProcess(command, 0)
 
         with patch.object(sys, "argv", ["publish_hex_package.py", str(self.artifacts), VERSION]), \
@@ -374,6 +380,7 @@ class HexPublicationTest(unittest.TestCase):
                 patch.object(hex_package, "await_registry") as wait, contextlib.redirect_stdout(io.StringIO()):
             self.registry_lookup = lookup
             self.registry_verification = verify
+            self.registry_wait = wait
             hex_package.main()
         return calls, wait
 
@@ -416,6 +423,28 @@ class HexPublicationTest(unittest.TestCase):
                     self.registry_verification.assert_not_called()
                 else:
                     self.registry_verification.assert_called_once_with(self.package, VERSION, INNER_CHECKSUM, release)
+
+    def test_staged_package_or_docs_reports_approval_instead_of_waiting_for_registry(self):
+        for release, label, suffix in [(None, "Package", ""),
+                                       (published_hex(has_docs=False), "Documentation", "/docs")]:
+            with self.subTest(label=label):
+                url = f"https://hex.pm/dashboard/staged-releases/hexpm/{self.package}/{VERSION}{suffix}"
+                output = f"\x1b[32m{label} staged for approval at {url} (expires tomorrow)\x1b[0m\n"
+                summary = self.directory / "summary.md"
+                summary.write_text("")
+                with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+                    with self.assertRaisesRegex(ValueError, "Hex approval required") as error:
+                        self.run_main(release, publish_output=output)
+                self.assertIn(url, str(error.exception))
+                self.assertIn("Re-run failed jobs", summary.read_text())
+                self.assertIn(f"https://hex.pm/packages/{self.package}/staged-publishing", summary.read_text())
+                self.registry_wait.assert_not_called()
+
+    def test_failed_publish_keeps_its_exit_status_and_does_not_wait_for_registry(self):
+        with self.assertRaises(subprocess.CalledProcessError) as error:
+            self.run_main(None, publish_status=1, publish_output="** (Mix) authentication failed\n")
+        self.assertEqual(error.exception.returncode, 1)
+        self.registry_wait.assert_not_called()
 
     def test_registry_download_verifies_api_outer_checksum_and_qualified_inner_checksum(self):
         blob = hex_tar(INNER_CHECKSUM.upper() + "\n")

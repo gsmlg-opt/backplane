@@ -56,6 +56,25 @@ Docker image are available. Host Agent status is displayed separately. Publicati
 across registries is not transactional; a failure can leave Hex packages or an
 image published while GitHub remains a draft.
 
+## Hex staged publishing
+
+Hex.pm enables staged publishing by default for new packages. The setting also
+applies to later versions until a full package owner disables it under the
+package's **Settings → Staged publishing** page. Changing it requires a signed-in
+owner and fresh 2FA verification; `mix hex.publish --yes` and the workflow's API
+key cannot disable or bypass it. See [Hex's publishing documentation](https://hex.pm/docs/publish#staged-publishing).
+
+When Hex stages a package or documentation for approval, the helper stops with an
+explicit approval message and adds the review link to the Actions job summary.
+It does not wait for public-registry propagation or treat staging as publication.
+Approve the staged publication on Hex.pm, then use **Re-run failed jobs** on the
+original Release run. The helper reuses the approved matching package and docs.
+
+For unattended publication of an existing package, disable its staged publishing
+setting separately on Hex.pm. First publication of another new package may need
+approval again. The GitHub draft is a separate mechanism and remains private until
+all required Hex packages and the Docker image are available.
+
 ## Recovery
 
 Use **Re-run failed jobs** on the original Release run. This retains its prepared

@@ -2,6 +2,7 @@
 """Publish only a preflight-matching Hex package; safely resume an existing version."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -66,6 +67,29 @@ def await_registry(package, version, expected, attempts=12):
     raise ValueError('Hex publication or documentation is not available after the bounded wait')
 
 
+def publish(arguments, package, version):
+    result = subprocess.run(['mix', 'hex.publish', *arguments],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(result.stdout, end='', flush=True)
+    result.check_returncode()
+    staged = re.search(r'https://hex\.pm/dashboard/staged-releases/[-A-Za-z0-9_./+%]+', result.stdout)
+    if staged:
+        approval_url = staged.group()
+        message = (f'Hex approval required for {package} {version}: {approval_url}. '
+                   'Approve on Hex.pm, then use Re-run failed jobs on the original Release run.')
+        print(message, flush=True)
+        if summary := os.environ.get('GITHUB_STEP_SUMMARY'):
+            with open(summary, 'a', encoding='utf-8') as output:
+                output.write(f'\n### Hex approval required: {package} {version}\n\n'
+                             f'[Review the staged publication]({approval_url}), approve it, '
+                             'then use **Re-run failed jobs** on the original Release run. '
+                             'This publication is not yet available in the public registry.\n\n'
+                             'For future direct CI publication, a full package owner can disable '
+                             f'[Settings → Staged publishing](https://hex.pm/packages/{package}/staged-publishing). '
+                             'Hex requires login and fresh 2FA verification for this setting.\n')
+        raise ValueError(message)
+
+
 def main():
     directory, version = sys.argv[1:]
     # Work in the package selected by the workflow, including standalone runtime staging.
@@ -82,9 +106,9 @@ def main():
     release = published(package, version)
     compare_release(release, expected, package, version)
     if release is None:
-        subprocess.run(['mix', 'hex.publish', '--yes'], check=True)
+        publish(['--yes'], package, version)
     elif not release.get('has_docs'):
-        subprocess.run(['mix', 'hex.publish', 'docs', '--yes'], check=True)
+        publish(['docs', '--yes'], package, version)
     else:
         print(f'{package} {version}: matching package and documentation already published')
     await_registry(package, version, expected)
