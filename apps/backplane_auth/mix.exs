@@ -1,7 +1,7 @@
 defmodule BackplaneAuth.MixProject do
   use Mix.Project
 
-  @version "1.10.60"
+  @version "1.10.61"
 
   def project do
     [
