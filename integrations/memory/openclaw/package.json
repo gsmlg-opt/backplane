@@ -1,6 +1,6 @@
 {
   "name": "backplane-memory",
-  "version": "1.10.61",
+  "version": "1.10.62",
   "type": "module",
   "openclaw": {
     "extensions": [
