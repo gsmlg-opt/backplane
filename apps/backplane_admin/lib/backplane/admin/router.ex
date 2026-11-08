@@ -105,15 +105,11 @@ defmodule Backplane.Admin.Router do
     # The admin endpoint is an intentionally open trusted-operator surface. Config still
     # receives an explicit server-owned capability so it fails closed outside this router.
     live_session :memory,
-      on_mount: [Backplane.Admin.MemoryOperatorHook],
       session: %{"memory_config_authorized" => true} do
       live("/memory", MemoryOverviewLive, :index)
-      live("/memory/streams", MemoryStreamsLive, :index)
-      live("/memory/streams/:stream_id", MemoryStreamsLive, :show)
+      live("/memory/records", MemoryRecordsLive, :index)
       live("/memory/events", MemoryEventsLive, :index)
-      live("/memory/events/:event_id", MemoryEventsLive, :show)
       live("/memory/sessions", MemorySessionsLive, :index)
-      live("/memory/sessions/:session_id", MemorySessionsLive, :show)
       live("/memory/config", MemoryConfigLive, :index)
     end
   end

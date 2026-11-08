@@ -3,7 +3,7 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
   @memory_top_paths [
     "/memory",
-    "/memory/streams",
+    "/memory/records",
     "/memory/events",
     "/memory/sessions",
     "/memory/config"
@@ -62,6 +62,8 @@ defmodule Backplane.Admin.RouteBoundaryTest do
 
     expected_items = [
       {"Overview", "/memory"},
+      {"Records", "/memory/records"},
+      {"Events", "/memory/events"},
       {"Sessions", "/memory/sessions"},
       {"Config", "/memory/config"}
     ]

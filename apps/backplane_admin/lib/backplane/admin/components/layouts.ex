@@ -63,6 +63,8 @@ defmodule Backplane.Admin.Layouts do
       :memory ->
         [
           %{label: "Overview", path: "/memory", match: :exact, icon: "brain"},
+          %{label: "Records", path: "/memory/records", icon: "notebook-outline"},
+          %{label: "Events", path: "/memory/events", icon: "timeline-clock-outline"},
           %{label: "Sessions", path: "/memory/sessions", icon: "account-clock-outline"},
           %{label: "Config", path: "/memory/config", icon: "tune-variant"}
         ]

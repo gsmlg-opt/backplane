@@ -74,6 +74,26 @@ defmodule Backplane.Memory.Records do
   end
 
   @doc """
+  Lists records newest-first without a text query. Accepts the same string-key
+  filters as `search/2` (`host_id`, `agent_id`, `kind`, `include_inactive`, `limit`).
+  """
+  @spec list(map()) :: [Record.t()]
+  def list(filters \\ %{}) do
+    limit = Search.clamp(filters["limit"], @default_recent_limit, @max_recent_limit)
+
+    Record
+    |> then(fn q ->
+      if filters["include_inactive"] == true, do: q, else: where(q, [r], r.status == "active")
+    end)
+    |> Search.filter_equal(:host_id, filters["host_id"])
+    |> Search.filter_equal(:agent_id, filters["agent_id"])
+    |> Search.filter_equal(:kind, filters["kind"])
+    |> order_by([r], desc: r.observed_at, desc: r.inserted_at)
+    |> limit(^limit)
+    |> repo().all()
+  end
+
+  @doc """
   Normalizes subjects to lowercase `type`/`key` maps and returns them with
   sorted, deduplicated `"type:key"` strings.
   """
