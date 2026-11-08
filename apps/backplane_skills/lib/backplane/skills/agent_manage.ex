@@ -571,7 +571,7 @@ defmodule Backplane.Skills.AgentManage do
          "capture" =>
            safe_config_section(
              config["capture"],
-             ~w(enabled db_path inject_context context_timeout_ms recall_cache_max_entries recall_cache_max_bytes recall_cache_ttl_ms upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
+             ~w(enabled db_path upload_interval_ms batch_size batch_bytes spool_max_bytes spool_max_age_days retry_base_ms retry_max_ms compaction_batch_size)
            ),
          "telemetry" =>
            safe_config_section(

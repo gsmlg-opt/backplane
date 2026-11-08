@@ -22,13 +22,9 @@ defmodule Backplane.Memory.Application do
 
     opts = [strategy: :rest_for_one, name: Backplane.Memory.Supervisor]
 
-    case Supervisor.start_link(children, opts) do
-      {:ok, pid} ->
-        {:ok, pid}
-
-      error ->
-        QueryLogFilter.uninstall()
-        error
+    with {:error, _reason} = error <- Supervisor.start_link(children, opts) do
+      QueryLogFilter.uninstall()
+      error
     end
   end
 

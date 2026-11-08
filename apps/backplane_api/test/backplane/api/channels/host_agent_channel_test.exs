@@ -94,12 +94,11 @@ defmodule Backplane.Api.HostAgentChannelTest do
              subscribe_and_join(socket, "host_agent:#{host.id}", %{})
   end
 
-  test "memory_events from a host with no memory_scope are ingested", %{
+  test "memory_events are ingested", %{
     host: host,
     socket: socket
   } do
     Application.delete_env(:backplane_api, :host_event_ingest_adapter)
-    refute Map.has_key?(Repo.reload!(host), :memory_scope)
 
     assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
 

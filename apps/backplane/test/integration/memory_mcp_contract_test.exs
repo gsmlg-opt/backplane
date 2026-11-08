@@ -58,7 +58,8 @@ defmodule Backplane.Integration.MemoryMcpContractTest do
         auth_token: token
       )
 
-    assert %{"error" => %{"code" => -32_001}} = response
+    assert %{"error" => %{"code" => -32_001} = error} = response
+    assert error["message"] =~ "memory::remember"
   end
 
   defp call_tool(token, name, arguments) do
