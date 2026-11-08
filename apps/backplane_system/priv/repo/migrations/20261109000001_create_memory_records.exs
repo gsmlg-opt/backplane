@@ -41,17 +41,19 @@ defmodule Backplane.Repo.Migrations.CreateMemoryRecords do
            )
 
     # array_to_string is only STABLE; generated columns need an IMMUTABLE wrapper.
+    p = quoted_prefix()
+
     execute """
-    CREATE FUNCTION memory_records_immutable_join(text[]) RETURNS text
+    CREATE FUNCTION #{quoted_prefix()}.memory_records_immutable_join(text[]) RETURNS text
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
     AS $$ SELECT array_to_string($1, ' ') $$
     """
 
     execute """
-    ALTER TABLE memory_records ADD COLUMN search_tsv tsvector
+    ALTER TABLE #{p}.memory_records ADD COLUMN search_tsv tsvector
     GENERATED ALWAYS AS (
       to_tsvector('simple',
-        coalesce(title, '') || ' ' || content || ' ' || coalesce(memory_records_immutable_join(subject_keys), ''))
+        coalesce(title, '') || ' ' || content || ' ' || coalesce(#{p}.memory_records_immutable_join(subject_keys), ''))
     ) STORED
     """
 
@@ -66,6 +68,8 @@ defmodule Backplane.Repo.Migrations.CreateMemoryRecords do
 
   def down do
     drop table(:memory_records)
-    execute "DROP FUNCTION memory_records_immutable_join(text[])"
+    execute "DROP FUNCTION #{quoted_prefix()}.memory_records_immutable_join(text[])"
   end
+
+  defp quoted_prefix, do: ~s("#{String.replace(prefix() || "public", "\"", "\"\"")}")
 end

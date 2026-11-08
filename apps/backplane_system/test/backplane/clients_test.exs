@@ -510,7 +510,9 @@ defmodule Backplane.ClientsTest do
 
       assert Clients.scope_matches?(["memory.read"], "memory::search")
       assert Clients.scope_matches?(["memory.write"], "memory::remember")
+      assert Clients.scope_matches?(["memory.write"], "memory::forget")
       refute Clients.scope_matches?(["memory.read"], "memory::remember")
+      refute Clients.scope_matches?(["memory.write"], "memory::search")
     end
 
     test "host-agent permissions are exact and independently assignable" do

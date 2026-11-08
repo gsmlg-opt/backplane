@@ -64,7 +64,10 @@ defmodule Backplane.Memory.ToolsTest do
 
   test "recent returns worklog records" do
     assert {:ok, _} = call("remember", %{"content" => "did stuff", "kind" => "worklog"})
-    assert {:ok, %{"results" => [%{"kind" => "worklog"} | _]}} = call("recent", %{})
+    assert {:ok, _} = call("remember", %{"content" => "plain note", "kind" => "note"})
+    assert {:ok, %{"results" => results}} = call("recent", %{})
+    assert results != []
+    assert Enum.all?(results, &(&1["kind"] == "worklog"))
   end
 
   test "registration: with no settings row, memory tools are registered" do
