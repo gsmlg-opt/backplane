@@ -574,7 +574,7 @@ defmodule Backplane.Transport.McpHandler do
   end
 
   defp logging_authorized?(scopes) when is_list(scopes) do
-    Enum.any?(scopes, &(&1 in ["*", "memory.admin", "admin::*"]))
+    Enum.any?(scopes, &(&1 in ["*", "admin::*"]))
   end
 
   defp logging_authorized?(_scopes), do: false

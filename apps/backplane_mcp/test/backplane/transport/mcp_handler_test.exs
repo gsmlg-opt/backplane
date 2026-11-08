@@ -927,7 +927,7 @@ defmodule Backplane.Transport.McpHandlerTest do
       {_client, token} =
         Fixtures.insert_client(
           name: "logging-admin",
-          scopes: ["memory.admin", "test::*"]
+          scopes: ["admin::*", "test::*"]
         )
 
       %{token: token}
@@ -1243,7 +1243,7 @@ defmodule Backplane.Transport.McpHandlerTest do
 
     test "batch completion/complete and logging/setLevel" do
       {_client, token} =
-        Fixtures.insert_client(name: "batch-logging-admin", scopes: ["memory.admin"])
+        Fixtures.insert_client(name: "batch-logging-admin", scopes: ["admin::*"])
 
       batch = [
         %{

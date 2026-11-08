@@ -502,6 +502,17 @@ defmodule Backplane.ClientsTest do
       refute Clients.scope_matches?(["memory.admin"], "docs::query-docs")
     end
 
+    test "retired memory scopes are invalid and memory.read/write map to the five tools" do
+      assert {:error, changeset} =
+               Clients.create_client(%{name: "retired-#{System.unique_integer([:positive])}", scopes: ["memory.replay"]})
+
+      assert %{scopes: [_ | _]} = errors_on(changeset)
+
+      assert Clients.scope_matches?(["memory.read"], "memory::search")
+      assert Clients.scope_matches?(["memory.write"], "memory::remember")
+      refute Clients.scope_matches?(["memory.read"], "memory::remember")
+    end
+
     test "host-agent permissions are exact and independently assignable" do
       for permission <- ~w(host_agent.capture host_agent.recall host_agent.import) do
         assert Clients.scope_matches?([permission], permission)

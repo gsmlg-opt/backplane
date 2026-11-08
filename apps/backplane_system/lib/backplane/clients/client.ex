@@ -10,7 +10,7 @@ defmodule Backplane.Clients.Client do
   @timestamps_opts [type: :utc_datetime_usec]
 
   @scope_pattern ~r/^(\*|[\w-]+::\*|[\w-]+::[\w-]+)$/
-  @memory_permissions ~w(memory.read memory.write memory.coordinate memory.replay memory.admin)
+  @memory_permissions ~w(memory.read memory.write)
   @host_agent_permissions ~w(host_agent.capture host_agent.recall host_agent.import)
 
   schema "clients" do

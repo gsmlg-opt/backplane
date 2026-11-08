@@ -3,11 +3,11 @@ defmodule Backplane.Memory.ServiceRegistration do
 
   use GenServer
 
-  alias Backplane.Memory.Service
+  alias Backplane.Memory.Tools
   alias Backplane.Registry.{PromptRegistry, ToolRegistry}
   alias Backplane.Settings
 
-  @settings ~w(services.memory.enabled memory.tools memory.pipeline.enabled memory.replay_enabled memory.replay_import_enabled)
+  @settings ~w(services.memory.enabled)
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -48,9 +48,7 @@ defmodule Backplane.Memory.ServiceRegistration do
         with {:ok, values} <- state.settings.fetch_many(@settings),
              :ok <- deregister() do
           if values["services.memory.enabled"] == true do
-            with :ok <- ToolRegistry.register_managed(Service.prefix(), Service.tools()) do
-              PromptRegistry.register_managed(Service.prefix(), Service.prompts(), Service)
-            end
+            ToolRegistry.register_managed(Tools.prefix(), Tools.tools())
           else
             :ok
           end
@@ -66,8 +64,8 @@ defmodule Backplane.Memory.ServiceRegistration do
   end
 
   defp deregister do
-    tools = safely(fn -> ToolRegistry.deregister_managed(Service.prefix()) end)
-    prompts = safely(fn -> PromptRegistry.deregister_managed(Service.prefix()) end)
+    tools = safely(fn -> ToolRegistry.deregister_managed(Tools.prefix()) end)
+    prompts = safely(fn -> PromptRegistry.deregister_managed(Tools.prefix()) end)
     if tools == :ok and prompts == :ok, do: :ok, else: {:error, :registry_unavailable}
   end
 
