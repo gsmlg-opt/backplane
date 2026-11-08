@@ -29,7 +29,7 @@ defmodule Backplane.Memory.Records do
   def forget(id, reason) do
     with {:ok, uuid} <- Ecto.UUID.cast(id),
          %Record{} = record <- repo().get(Record, uuid) do
-      if record.status == "forgotten" do
+      if record.status != "active" do
         {:ok, record}
       else
         record
@@ -131,7 +131,8 @@ defmodule Backplane.Memory.Records do
     end
   end
 
-  defp supersede(%Record{kind: "fact", property: property} = record) when is_binary(property) do
+  defp supersede(%Record{kind: "fact", property: property, subject_keys: [_ | _]} = record)
+       when is_binary(property) do
     Record
     |> where(
       [r],

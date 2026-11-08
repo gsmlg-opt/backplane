@@ -44,8 +44,7 @@ defmodule Backplane.Memory.Record do
     timestamps(type: :utc_datetime_usec)
   end
 
-  @castable ~w(kind title content subjects subject_keys property tags confidence status
-               superseded_by forgotten_reason forgotten_at writer host_id agent_id integration
+  @castable ~w(kind title content subjects subject_keys property tags confidence writer host_id agent_id integration
                session_id client_id source_event_ids request_key observed_at)a
 
   def changeset(record, attrs) do

@@ -204,4 +204,42 @@ defmodule Backplane.Memory.RecordsTest do
   end
 
   defp ids(rs), do: Enum.map(rs, & &1.id)
+
+  test "forget/2 leaves superseded records unchanged" do
+    {:ok, a} = Records.remember(fact(%{"subjects" => [@repo_x], "content" => "old"}))
+    {:ok, _} = Records.remember(fact(%{"subjects" => [@repo_x], "content" => "new"}))
+    assert {:ok, r} = Records.forget(a.id, "why")
+    assert r.status == "superseded"
+    assert is_nil(r.forgotten_reason)
+    assert repo().get!(Record, a.id).status == "superseded"
+  end
+
+  test "remember/1 ignores lifecycle attrs from callers" do
+    {:ok, r} =
+      Records.remember(
+        base(%{
+          "status" => "forgotten",
+          "forgotten_reason" => "x",
+          "forgotten_at" => DateTime.utc_now(),
+          "superseded_by" => Ecto.UUID.generate()
+        })
+      )
+
+    r = repo().get!(Record, r.id)
+    assert r.status == "active"
+    assert is_nil(r.forgotten_reason) and is_nil(r.forgotten_at) and is_nil(r.superseded_by)
+  end
+
+  test "subject-less facts do not supersede each other" do
+    {:ok, a} = Records.remember(fact(%{"content" => "one"}))
+    {:ok, _} = Records.remember(fact(%{"content" => "two"}))
+    assert repo().get!(Record, a.id).status == "active"
+  end
+
+  test "search/2 rejects invalid limit, since and token_budget" do
+    assert_raise ArgumentError, fn -> Records.search("a", %{"limit" => 0}) end
+    assert_raise ArgumentError, fn -> Records.search("a", %{"token_budget" => -1}) end
+    assert_raise ArgumentError, fn -> Records.search("a", %{"token_budget" => "x"}) end
+    assert_raise ArgumentError, fn -> Records.search("a", %{"since" => "yesterday"}) end
+  end
 end

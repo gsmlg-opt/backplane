@@ -21,7 +21,7 @@ defmodule Backplane.Memory.Records.Search do
   @spec search(String.t(), map()) :: [Record.t()]
   def search(query, filters \\ %{}) when is_binary(query) do
     limit = clamp(filters["limit"], @default_limit, @max_limit)
-    budget = filters["token_budget"] || @default_budget
+    budget = clamp(filters["token_budget"], @default_budget, :infinity)
     patterns = patterns(query)
 
     Record
@@ -48,8 +48,11 @@ defmodule Backplane.Memory.Records.Search do
 
   @doc false
   def clamp(nil, default, _max), do: default
+  def clamp(n, _default, :infinity) when is_integer(n) and n > 0, do: n
   def clamp(n, _default, max) when is_integer(n) and n > 0, do: min(n, max)
-  def clamp(n, _default, _max), do: raise(ArgumentError, "invalid limit: #{inspect(n)}")
+
+  def clamp(n, _default, _max),
+    do: raise(ArgumentError, "invalid positive integer: #{inspect(n)}")
 
   @doc false
   def filter_equal(q, _field, nil), do: q
