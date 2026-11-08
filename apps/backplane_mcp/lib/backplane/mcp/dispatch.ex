@@ -132,20 +132,16 @@ defmodule Backplane.MCP.Dispatch do
     end
   end
 
-  defp do_execute("resources/list", _params, context) do
-    {:ok, %{"resources" => list_resources(context.auth)}}
+  defp do_execute("resources/list", _params, _context) do
+    {:ok, %{"resources" => []}}
   end
 
-  defp do_execute("resources/templates/list", _params, context) do
-    {:ok,
-     %{
-       "resourceTemplates" => list_resource_templates(context.auth)
-     }}
+  defp do_execute("resources/templates/list", _params, _context) do
+    {:ok, %{"resourceTemplates" => []}}
   end
 
-  defp do_execute("resources/read", %{"uri" => uri}, context) when is_binary(uri) do
-    read_resource(uri, context.auth)
-  end
+  defp do_execute("resources/read", %{"uri" => uri}, _context) when is_binary(uri),
+    do: {:error, :not_found, "Resource not found: #{uri}"}
 
   defp do_execute("resources/read", _params, _context),
     do: {:error, :invalid_params, "Invalid params: 'uri' is required"}
@@ -520,70 +516,6 @@ defmodule Backplane.MCP.Dispatch do
   end
 
   defp maybe_put_client(attrs, _client), do: attrs
-
-  defp list_resources(auth) do
-    service = memory_service()
-
-    resources =
-      if Code.ensure_loaded?(service) and function_exported?(service, :resources, 1),
-        do: apply(service, :resources, [auth]),
-        else: []
-
-    Enum.map(resources, fn resource ->
-      %{
-        "uri" => resource.uri,
-        "name" => resource.name,
-        "description" => resource.description,
-        "mimeType" => resource.mime_type
-      }
-    end)
-  end
-
-  defp list_resource_templates(auth) do
-    service = memory_service()
-
-    templates =
-      if Code.ensure_loaded?(service) and function_exported?(service, :resource_templates, 1),
-        do: apply(service, :resource_templates, [auth]),
-        else: []
-
-    Enum.map(templates, fn template ->
-      %{
-        "uriTemplate" => template.uri_template,
-        "name" => template.name,
-        "description" => template.description,
-        "mimeType" => template.mime_type
-      }
-    end)
-  end
-
-  defp read_resource(uri, auth) do
-    service = memory_service()
-
-    result =
-      if Code.ensure_loaded?(service) and function_exported?(service, :read_resource, 2),
-        do: apply(service, :read_resource, [uri, auth]),
-        else: {:error, :not_found}
-
-    case result do
-      {:ok, text} ->
-        {:ok,
-         %{
-           "contents" => [
-             %{"uri" => uri, "mimeType" => "application/json", "text" => text}
-           ]
-         }}
-
-      {:error, :not_found} ->
-        {:error, :not_found, "Resource not found: #{uri}"}
-
-      {:error, _reason} ->
-        {:error, :not_found, "Resource unavailable"}
-    end
-  end
-
-  defp memory_service,
-    do: Application.get_env(:backplane_mcp, :memory_service, Backplane.Memory.Tools)
 
   defp list_prompts(auth) do
     managed = PromptRegistry.list()

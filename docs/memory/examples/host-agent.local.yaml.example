@@ -1,3 +1,4 @@
+# Superseded keys removed; see docs/superpowers/specs/2026-11-09-memory-simplification-design.md
 # Synthetic local development only. Copy to a gitignored .devenv path.
 # Replace host_id/token using the supported host registration workflow.
 # Use absolute dedicated paths; command, capture, and mirror stores MUST differ.
@@ -15,19 +16,9 @@ agent:
 memory:
   enabled: true
   db_path: /ABSOLUTE/LOCAL/RUN/host/commands.db
-  bound_scope: memory_local_acceptance
   sync_interval_ms: 1000
   sync_batch_size: 50
   max_attempts: 5
-  tombstone_relearn: block
-  host_sync:
-    enabled: true
-    db_path: /ABSOLUTE/LOCAL/RUN/host/mirror.db
-    # Supported dev/test plaintext opt-in; NEVER use for production.
-    development_plaintext: true
-    sync_interval_ms: 1000
-    max_frame_bytes: 524288
-    max_changes: 100
 
 capture:
   enabled: true

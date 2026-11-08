@@ -28,18 +28,8 @@ defmodule Backplane.MCP.ModernServerTest do
     def get_prompt("failing_prompt", _arguments, _auth), do: {:error, :backend_failed}
   end
 
-  defmodule ResourceService do
-    @moduledoc false
-
-    def resources(_auth), do: []
-    def resource_templates(_auth), do: []
-    def read_resource(_uri, _auth), do: {:error, :not_found}
-  end
-
   setup do
     task_supervisor = start_supervised!({Task.Supervisor, []})
-    previous_memory_service = Application.get_env(:backplane_mcp, :memory_service)
-    Application.put_env(:backplane_mcp, :memory_service, ResourceService)
 
     :ets.delete_all_objects(:backplane_tools)
     PromptRegistry.clear()
@@ -55,12 +45,6 @@ defmodule Backplane.MCP.ModernServerTest do
     on_exit(fn ->
       :ets.delete_all_objects(:backplane_tools)
       PromptRegistry.clear()
-
-      if is_nil(previous_memory_service) do
-        Application.delete_env(:backplane_mcp, :memory_service)
-      else
-        Application.put_env(:backplane_mcp, :memory_service, previous_memory_service)
-      end
     end)
 
     %{task_supervisor: task_supervisor}

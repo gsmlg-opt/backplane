@@ -1,6 +1,8 @@
 defmodule Backplane.Memory.ServiceRegistrationTest do
   use Backplane.Memory.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias Backplane.Memory.{ServiceRegistration, Tools}
   alias Backplane.Registry.{PromptRegistry, ToolRegistry}
   alias Backplane.Settings
@@ -93,6 +95,18 @@ defmodule Backplane.Memory.ServiceRegistrationTest do
     send(pid, {:setting_changed, @key, true})
     :sys.get_state(pid)
     assert hidden?()
+  end
+
+  test "a failure streak logs one warning with the reason, not one per retry" do
+    log =
+      capture_log(fn ->
+        pid = start_registration(settings_module: UnavailableSettings)
+        Process.sleep(100)
+        :sys.get_state(pid)
+      end)
+
+    assert [_] = Regex.scan(~r/memory service registration failed/, log)
+    assert log =~ "load_failed"
   end
 
   test "persisted runtime toggles update tools and prompts and stale events cannot enable them" do

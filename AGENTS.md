@@ -27,7 +27,6 @@ The public dev endpoint listens on `http://localhost:4220`; the admin dev endpoi
 | `*` | `/skills/*` | Public (`dev 4220`) | Skill library HTTP surface |
 | `*` | `/host-agent/*` | Public (`dev 4220`) | Host-agent HTTP surface |
 | `*` | `/skill-protocol/v1/*` | Public (`dev 4220`) | Authenticated skill protocol API |
-| `*` | `/api/memory/*` | Public (`dev 4220`) | Memory API, authenticated as the MCP resource |
 | `*` | `/oauth/*` | Public (`dev 4220`) | OAuth/OIDC authorization and token endpoints |
 | `*` | `/` | Admin (`dev 4221`) | Admin UI (LiveView) |
 

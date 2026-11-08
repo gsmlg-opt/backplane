@@ -23,30 +23,9 @@ defmodule Backplane.Transport.ModernMcpTest do
     def get_prompt("fixture_prompt", _arguments, _auth), do: {:error, :invalid_arguments}
   end
 
-  defmodule ResourceService do
-    @moduledoc false
-
-    def resources(_auth) do
-      [
-        %{
-          uri: "fixture://resource",
-          name: "fixture-resource",
-          description: "Fixture resource",
-          mime_type: "application/json"
-        }
-      ]
-    end
-
-    def resource_templates(_auth), do: []
-    def read_resource("fixture://resource", _auth), do: {:ok, ~s({"fixture":true})}
-    def read_resource(_uri, _auth), do: {:error, :not_found}
-  end
-
   setup do
-    previous_memory_service = Application.get_env(:backplane_mcp, :memory_service)
     previous_tools = :ets.tab2list(:backplane_tools)
 
-    Application.put_env(:backplane_mcp, :memory_service, ResourceService)
     :ets.delete_all_objects(:backplane_tools)
     PromptRegistry.clear()
     register_tools()
@@ -68,12 +47,6 @@ defmodule Backplane.Transport.ModernMcpTest do
       :ets.delete_all_objects(:backplane_tools)
       :ets.insert(:backplane_tools, previous_tools)
       PromptRegistry.clear()
-
-      if is_nil(previous_memory_service) do
-        Application.delete_env(:backplane_mcp, :memory_service)
-      else
-        Application.put_env(:backplane_mcp, :memory_service, previous_memory_service)
-      end
     end)
 
     :ok
@@ -275,16 +248,9 @@ defmodule Backplane.Transport.ModernMcpTest do
            }
   end
 
-  test "serves modern resources, prompts, and completions" do
+  test "serves modern empty resources, prompts, and completions" do
     resources = modern_conn("resources/list", %{}) |> call_mcp() |> response()
-    assert get_in(resources, ["result", "resources", Access.at(0), "uri"]) == "fixture://resource"
-
-    resource =
-      modern_conn("resources/read", %{"uri" => "fixture://resource"})
-      |> call_mcp()
-      |> response()
-
-    assert get_in(resource, ["result", "contents", Access.at(0), "text"]) == ~s({"fixture":true})
+    assert get_in(resources, ["result", "resources"]) == []
 
     prompts = modern_conn("prompts/list", %{}) |> call_mcp() |> response()
 

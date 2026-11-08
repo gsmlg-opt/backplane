@@ -64,31 +64,10 @@ defmodule Backplane.HostAgent.Config do
     memory:
       enabled: true
       db_path: #{Path.join(work_dir, "memory/host_agent_memory.db")}
-      bound_scope: proj_local
       local_ttl_days: 90
       sync_interval_ms: 5000
       sync_batch_size: 50
       max_attempts: 5
-      tombstone_relearn: block
-      host_sync:
-        enabled: false
-        db_path: #{Path.join(work_dir, "memory/edge_memory.db")}
-        development_plaintext: false
-        max_frame_bytes: 524288
-        max_changes: 100
-        max_items: 10000
-        max_bytes: 67108864
-        max_items_per_partition: 5000
-        max_age_days: 90
-        type_quotas: {}
-        sync_interval_ms: 5000
-      # Server-triggered imports name an opaque profile; only this host config
-      # resolves that profile to a path and approved roots.
-      import_profiles:
-        claude_default:
-          path: #{Path.join(System.user_home!(), ".claude/projects")}
-          approved_roots:
-            - #{Path.join(System.user_home!(), ".claude/projects")}
 
     capture:
       enabled: true

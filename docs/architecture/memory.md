@@ -24,6 +24,8 @@ integration and session are recorded as **provenance**, never as access control.
   (reason and time kept; never physically deleted)
 - provenance: host, agent, integration, session, source event ids, writer
   (`agent`, `memory_agent`, `user`, `host_collector`)
+- records written via a host agent carry `client = <host id>`, because the
+  host is the authenticated principal
 - full-text search column; embeddings optional
 
 Context module: `Backplane.Memory.Records`.

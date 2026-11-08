@@ -3,6 +3,8 @@ defmodule Backplane.Memory.ServiceRegistration do
 
   use GenServer
 
+  require Logger
+
   alias Backplane.Memory.Tools
   alias Backplane.Registry.{PromptRegistry, ToolRegistry}
   alias Backplane.Settings
@@ -23,7 +25,8 @@ defmodule Backplane.Memory.ServiceRegistration do
      %{
        settings: settings,
        retry_interval_ms: Keyword.get(opts, :retry_interval_ms, 1_000),
-       retry: nil
+       retry: nil,
+       failing: false
      }}
   end
 
@@ -56,10 +59,15 @@ defmodule Backplane.Memory.ServiceRegistration do
       end)
 
     if result == :ok do
-      state
+      %{state | failing: false}
     else
       deregister()
-      %{state | retry: Process.send_after(self(), :reconcile, state.retry_interval_ms)}
+      # Warn once per failure streak; later retries stay quiet until a success.
+      unless state.failing do
+        Logger.warning("memory service registration failed: #{inspect(result)}; retrying")
+      end
+
+      %{state | failing: true, retry: Process.send_after(self(), :reconcile, state.retry_interval_ms)}
     end
   end
 

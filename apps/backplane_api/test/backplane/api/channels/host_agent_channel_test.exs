@@ -525,7 +525,6 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert host_id == host.id
       assert auth_token_id == auth_token.id
       assert "host_agent.capture" in scopes
-      refute Map.has_key?(auth_context, :partition)
     end
 
     test "memory_events fails closed when the durable host registration disappears", %{

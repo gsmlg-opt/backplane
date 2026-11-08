@@ -339,11 +339,8 @@ defmodule Backplane.Api.HostAgentChannel do
     end
   end
 
-  defp authorized_memory_events?(%{"events" => events}) when is_list(events) do
-    authorized?("host_agent.capture", host_agent_scopes()) or
-      (authorized?("host_agent.import", host_agent_scopes()) and events != [] and
-         Enum.all?(events, &(is_map(&1) and Map.get(&1, "integration") == "claude_code_import")))
-  end
+  defp authorized_memory_events?(%{"events" => events}) when is_list(events),
+    do: authorized?("host_agent.capture", host_agent_scopes())
 
   defp authorized_memory_events?(_payload), do: false
 

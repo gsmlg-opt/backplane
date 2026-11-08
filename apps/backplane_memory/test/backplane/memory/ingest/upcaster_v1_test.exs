@@ -25,7 +25,7 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
     assert attrs.source_client_id == "codex-cli"
     assert attrs.raw_envelope["host_id"] == "host-1"
     assert attrs.raw_envelope["client_id"] == "codex-cli"
-    assert attrs.raw_envelope["scope"] == "project:backplane"
+    refute Map.has_key?(attrs.raw_envelope, "scope")
     assert attrs.ingest_auth_token_id == "token-1"
   end
 
@@ -97,18 +97,15 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1Test do
       event
       |> Map.put("source_client_id", "password=string-client-secret")
       |> Map.put(:source_client_id, "password=atom-client-secret")
-      |> Map.put("source_scope", "token=string-scope-secret")
-      |> Map.put(:source_scope, "token=atom-scope-secret")
 
     assert {:ok, attrs} = V1.upcast(event, auth_context("host-1"))
 
-    for key <- ["source_client_id", :source_client_id, "source_scope", :source_scope] do
+    for key <- ["source_client_id", :source_client_id] do
       refute Map.has_key?(attrs.raw_envelope, key)
     end
 
     encoded = Jason.encode!(attrs.raw_envelope)
     refute encoded =~ "client-secret"
-    refute encoded =~ "scope-secret"
   end
 
   test "host namespaces cannot collide through delimiter ambiguity" do

@@ -219,8 +219,7 @@ defmodule Backplane.Memory.Ingest do
 
   defp server_filter(event) do
     with {:ok, payload} <- Filter.apply_payload(event["payload"]),
-         {:ok, source_client_id} <- filter_optional_provenance(event["client_id"]),
-         {:ok, source_scope} <- filter_optional_provenance(event["scope"]) do
+         {:ok, source_client_id} <- filter_optional_provenance(event["client_id"]) do
       payload = Backplane.MemoryRepository.metadata(payload)
       payload_hash = EventValidator.payload_hash(payload)
 
@@ -229,7 +228,6 @@ defmodule Backplane.Memory.Ingest do
        |> Map.put("payload", payload)
        |> Map.put("payload_hash", payload_hash)
        |> maybe_put_provenance("client_id", source_client_id)
-       |> maybe_put_provenance("scope", source_scope)
        |> Map.update(
          "privacy",
          %{"server_filtered" => true},

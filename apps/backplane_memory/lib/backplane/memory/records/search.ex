@@ -80,6 +80,9 @@ defmodule Backplane.Memory.Records.Search do
 
   defp filter_subject(q, nil), do: q
 
+  defp filter_subject(_q, subject) when not is_binary(subject),
+    do: raise(ArgumentError, "invalid subject")
+
   defp filter_subject(q, subject) do
     key = subject |> String.trim() |> String.downcase()
     where(q, [r], ^key in r.subject_keys)
@@ -110,7 +113,7 @@ defmodule Backplane.Memory.Records.Search do
       |> Enum.take(@max_terms)
 
     [trimmed | terms]
-    |> Enum.reject(&(&1 == ""))
+    |> Enum.filter(&(String.length(&1) >= 2))
     |> Enum.uniq()
     |> Enum.map(&("%" <> escape_like(&1) <> "%"))
   end

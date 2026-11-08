@@ -322,7 +322,7 @@ defmodule Backplane.Memory.IngestTest do
     assert stored.source_client_id == "spoofed-client [REDACTED]"
     assert stored.raw_envelope["host_id"] == "host-1"
     assert stored.raw_envelope["client_id"] == "spoofed-client [REDACTED]"
-    assert stored.raw_envelope["scope"] == "project:host-attested-scope [REDACTED]"
+    refute Map.has_key?(stored.raw_envelope, "scope")
     assert stored.ingest_auth_token_id == "trusted-token"
     assert stored.agent_id == "host-attested-agent"
   end
@@ -391,7 +391,7 @@ defmodule Backplane.Memory.IngestTest do
 
     stored = repo().get!(Event, id)
     assert stored.integration == "claude_code"
-    assert stored.raw_envelope["scope"] == "project:#{cwd}"
+    refute Map.has_key?(stored.raw_envelope, "scope")
     assert stored.payload["hook"] == "user-prompt-submit"
     assert stored.payload["source"]["cwd"] == cwd
   end

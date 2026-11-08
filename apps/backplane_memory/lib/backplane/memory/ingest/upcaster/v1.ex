@@ -2,11 +2,12 @@ defmodule Backplane.Memory.Ingest.Upcaster.V1 do
   @moduledoc "Maps canonical capture envelope version 1 into event-store attributes."
 
   # Server-derived alias names a host must not smuggle into the stored envelope.
+  # The retired event "scope" field is likewise never stored.
   @reserved_provenance_aliases [
     "source_client_id",
     :source_client_id,
-    "source_scope",
-    :source_scope
+    "scope",
+    :scope
   ]
 
   def upcast(%{"schema_version" => 1} = event, auth_context) do

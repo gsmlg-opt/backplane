@@ -100,17 +100,11 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     :ok =
       AgentManage.report_config(host.id, %{
         "memory" => %{"enabled" => true, "api_key" => "secret-not-rendered"},
-        "local_settings_applied_at" => "2026-10-20T01:00:00Z",
-        "memory_negotiation" => %{
-          "selected" => "host_memory.v2",
-          "applied_at" => "2026-10-20T01:00:01Z",
-          "partitions" => []
-        }
+        "local_settings_applied_at" => "2026-10-20T01:00:00Z"
       })
 
     {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/config")
     assert has_element?(view, "#host-local-settings-report", "2026-10-20T01:00:00Z")
-    assert has_element?(view, "#host-memory-negotiation", "host_memory.v2")
     refute render(view) =~ "secret-not-rendered"
     :ok = AgentManage.disconnect(host.id)
     assert has_element?(view, "#host-report-stale", "stale")

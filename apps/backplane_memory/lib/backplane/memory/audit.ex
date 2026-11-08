@@ -4,51 +4,15 @@ defmodule Backplane.Memory.Audit do
   import Ecto.Query
 
   @contract_operations ~w(
-    activity.repair
-    memory.activity.purge
-    coordination.action.create
-    coordination.action.status
-    coordination.heal
-    coordination.lease.acquire
-    coordination.lease.cleanup
-    coordination.signal.read
-    coordination.signal.send
-    crystal.crystallize
-    forget
-    governance_delete
-    hard_delete
-    memory.archive
-    memory.apply
-    lesson.candidate
-    lesson.save
-    lesson.strengthen
-    lesson.transition
-    memory.recall_trace.purge
-    memory_relation.candidate
-    memory_relation.policy
-    memory_relation.resolve
-    projection.repair
-    projection.rebuild
-    remember
-    memory.export
-    memory.activity.summary
     memory.config.set
-    memory.replay.import_dispatched
-    memory.replay.load
-    memory.replay.sessions
-    memory.gate.set
-    memory.import.completed
-    memory.import.failed
-    memory.import.started
-    memory.repair
+    projection.repair
     session.abandoned
     session.lifecycle_transition
-    session.summary_enqueued
   )
 
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
 
-  @doc "Enumerates the lifecycle, repair, and coordination operations audited by M14."
+  @doc "Enumerates the operations the memory domain still writes."
   def contract_operations, do: Enum.sort(@contract_operations)
 
   @doc "Append an audit entry."

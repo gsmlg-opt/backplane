@@ -242,4 +242,22 @@ defmodule Backplane.Memory.RecordsTest do
     assert_raise ArgumentError, fn -> Records.search("a", %{"token_budget" => "x"}) end
     assert_raise ArgumentError, fn -> Records.search("a", %{"since" => "yesterday"}) end
   end
+
+  test "search/2 does not match everything for a single-character query" do
+    {:ok, _} = Records.remember(base(%{"content" => "alpha beta gamma"}))
+    {:ok, _} = Records.remember(base(%{"content" => "delta epsilon"}))
+
+    assert Records.search("a", %{}) == []
+    assert Records.search("  e ", %{}) == []
+  end
+
+  test "search/2 rejects a non-string subject filter" do
+    assert_raise ArgumentError, "invalid subject", fn ->
+      Records.search("alpha", %{"subject" => 123})
+    end
+
+    assert_raise ArgumentError, "invalid subject", fn ->
+      Records.search("alpha", %{"subject" => %{"type" => "repo"}})
+    end
+  end
 end
