@@ -95,8 +95,34 @@ defmodule Backplane.Memory.DistillationsTest do
       assert row("host-d", s).status == "pending"
     end
 
+    test "resume arriving in one batch (completed -> completed) reschedules" do
+      s = unique("resume")
+      ingest!("host-d", s, 1, "agent.session.started")
+      ingest!("host-d", s, 2, "agent.session.ended")
+      Rebuild.session("host-d", s)
+      id = Source.subject_id!("host-d", s)
+      :ok = Distillations.complete(id)
+
+      ingest!("host-d", s, 3, "agent.session.started")
+      ingest!("host-d", s, 4, "agent.session.ended")
+      assert {:ok, %{session_status: "completed"}} = Rebuild.session("host-d", s)
+      assert row("host-d", s).status == "pending"
+    end
+
+    test "rebuilding an unchanged closed session does not reschedule" do
+      s = unique("idem")
+      ingest!("host-d", s, 1, "agent.session.started")
+      ingest!("host-d", s, 2, "agent.session.ended")
+      Rebuild.session("host-d", s)
+      :ok = Distillations.complete(Source.subject_id!("host-d", s))
+
+      Rebuild.session("host-d", s)
+      assert row("host-d", s).status == "completed"
+    end
+
     test "mode is review when the agent self-wrote records for the session" do
       s = unique("review")
+
       {:ok, _} =
         Records.remember(%{
           "kind" => "note",

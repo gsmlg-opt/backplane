@@ -173,10 +173,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
     now = now()
     first = List.first(events)
 
-    previous_status =
+    {previous_status, previous_sequence_max} =
       case repo().get(ProjectedSession, subject_id) do
-        %ProjectedSession{status: status} -> status
-        nil -> nil
+        %ProjectedSession{status: status, source_sequence_max: seq} -> {status, seq}
+        nil -> {nil, nil}
       end
 
     row = %{
@@ -240,10 +240,20 @@ defmodule Backplane.Memory.Projections.Rebuild do
           input_revision: input_revision
         }
       )
+    end
 
+    # Re-distill on a terminal transition, and also when a closed session
+    # grew (a resume whose start..end arrived in one batch stays terminal).
+    if previous_status != row.status or
+         grew?(row.source_sequence_max, previous_sequence_max) do
       maybe_schedule_distillation(subject_id, row)
     end
   end
+
+  defp grew?(current, previous) when is_integer(current) and is_integer(previous),
+    do: current > previous
+
+  defp grew?(_current, _previous), do: false
 
   defp maybe_schedule_distillation(subject_id, %{status: status} = row)
        when status in ["completed", "abandoned"] do
