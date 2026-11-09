@@ -55,14 +55,17 @@ forward `memory::*` calls to the gateway (`/memory/:agent_id/call/:method`).
 ## Offline host memory
 
 Each host agent keeps a local store (host schema V8, `Memory.Local`) so
-`memory::*` calls keep working while the gateway is unreachable.
+`memory::*` calls keep working while the gateway is unreachable. Local tables:
+`local_records`, `memory_outbox`, `memory_sync_state`.
 
-- **Writes**: `remember` / `forget` are applied locally first and appended to a
-  durable on-disk outbox. Results of offline writes carry `"sync": "pending"`.
-  Every `remember` carries a `request_key` (`"host-agent:" <> UUIDv7`) created
-  before the first attempt and reused on each retry, so a resend after a
-  timeout returns the same gateway record (no duplicates).
-- **Outbox flush** (`Memory.OutboxSync`): entries flush in order on reconnect.
+- **Writes**: `remember` / `forget` go to the gateway first and are cached
+  locally on success. Only when the call fails with a transport error (gateway
+  unavailable or timeout) is the write queued in the durable on-disk outbox; its
+  result is marked `"sync": "pending"`. A caller-supplied or generated
+  `request_key` (`"host-agent:" <> UUIDv7`, created before the first attempt and
+  reused on each retry) makes retries idempotent, so a resend after a timeout
+  returns the same gateway record (no duplicates).
+- **Outbox flush** (`Memory.OutboxSync`): entries flush in order on each sync tick while the host channel is connected (and immediately on reconnect).
   A `forget` of a record not yet synced waits for its `remember` and then uses
   the resolved `remote_id`. Transport errors keep the entry pending; other
   gateway errors (e.g. validation) mark it `failed` with `last_error`, without
@@ -72,8 +75,8 @@ Each host agent keeps a local store (host schema V8, `Memory.Local`) so
   mirrors records whose `host_id` is this host (including superseded/forgotten
   status changes). Other hosts' memories are not mirrored.
 - **Offline reads**: `search` / `get` / `recent` read the local store and return
-  `"offline": true, "source": "local"`; non-active records are excluded by
-  default.
+  `"offline": true, "source": "local"`. `search` and `recent` exclude non-active
+  records by default; `get` returns the record in any status, as the gateway does.
 - **Health**: the host reports `outbox_pending`, `outbox_failed`,
   `local_records`, `last_sync_at` and `last_error`; the admin Memory page shows
   them.
