@@ -72,6 +72,28 @@ defmodule Backplane.Memory.Records.SearchTest do
     assert [r.id] == ids(Records.search("giraffe", %{}))
   end
 
+  test "a blank query never calls the proxy and does not count as a breaker failure" do
+    configure(fn _conn -> flunk("blank query must not be embedded") end)
+
+    for _ <- 1..10, do: assert(Records.search("   ", %{}) == [])
+
+    assert CircuitBreaker.allow_request?()
+  end
+
+  test "records loaded through the schema do not carry the embedding vector" do
+    a = remember!("alpha axis:3")
+    configure(&EmbeddingStub.plug/1)
+    assert :ok = EmbedRecordsWorker.perform(%Styx.Job{args: %{}})
+
+    assert %{rows: [[true]]} =
+             repo().query!("SELECT embedding IS NOT NULL FROM memory_records WHERE id = $1", [
+               Ecto.UUID.dump!(a.id)
+             ])
+
+    assert %Record{embedding: nil} = repo().get!(Record, a.id)
+    assert [%Record{embedding: nil}] = Records.search("alpha", %{})
+  end
+
   test "worker fills embeddings for active records" do
     a = remember!("alpha axis:3", %{"title" => "T"})
     gone = remember!("beta axis:4")

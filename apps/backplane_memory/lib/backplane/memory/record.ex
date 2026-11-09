@@ -40,7 +40,9 @@ defmodule Backplane.Memory.Record do
     field(:source_event_ids, {:array, :binary_id}, default: [])
     field(:request_key, :string)
     field(:observed_at, :utc_datetime_usec)
-    field(:embedding, Pgvector.Ecto.Vector)
+    # Not loaded by default: up to 2560 floats per row. Queries that need it
+    # reference `r.embedding` explicitly.
+    field(:embedding, Pgvector.Ecto.Vector, load_in_query: false)
 
     timestamps(type: :utc_datetime_usec)
   end

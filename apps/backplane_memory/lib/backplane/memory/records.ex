@@ -30,9 +30,14 @@ defmodule Backplane.Memory.Records do
   @doc """
   Inserts `attrs` (same path as `remember/1`) and marks the active record `old_id`
   superseded by it, in one transaction.
+
+  When `attrs["request_key"]` hits a different record that is no longer active,
+  nothing changes and `{:error, :replacement_not_active}` is returned, so an
+  active record is never superseded by an inactive one.
   """
   @spec replace(Ecto.UUID.t(), map()) ::
-          {:ok, Record.t()} | {:error, :not_found | :not_active | Ecto.Changeset.t()}
+          {:ok, Record.t()}
+          | {:error, :not_found | :not_active | :replacement_not_active | Ecto.Changeset.t()}
   def replace(old_id, attrs) when is_map(attrs) do
     with {:ok, uuid} <- Ecto.UUID.cast(old_id),
          %Record{} <- repo().get(Record, uuid) do
@@ -55,6 +60,9 @@ defmodule Backplane.Memory.Records do
 
   # A request_key hit returns the old row itself; it must stay active.
   defp supersede_old(%Record{id: id} = old, %Record{id: id}), do: {:ok, old}
+
+  defp supersede_old(_old, %Record{status: status}) when status != "active",
+    do: {:error, :replacement_not_active}
 
   defp supersede_old(old, new) do
     old

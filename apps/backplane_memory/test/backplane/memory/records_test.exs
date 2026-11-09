@@ -411,6 +411,27 @@ defmodule Backplane.Memory.RecordsTest do
       assert reloaded.superseded_by == nil
     end
 
+    test "does not supersede by an already inactive record hit through its request_key" do
+      {:ok, old} = Records.remember(base(%{"kind" => "procedure", "content" => "old steps"}))
+
+      {:ok, inactive} =
+        Records.remember(
+          base(%{"kind" => "procedure", "content" => "x", "request_key" => "rk-gone"})
+        )
+
+      {:ok, _} = Records.forget(inactive.id, "gone")
+
+      assert {:error, :replacement_not_active} =
+               Records.replace(
+                 old.id,
+                 base(%{"kind" => "procedure", "content" => "x", "request_key" => "rk-gone"})
+               )
+
+      reloaded = repo().get!(Record, old.id)
+      assert reloaded.status == "active"
+      assert reloaded.superseded_by == nil
+    end
+
     test "returns :not_found for an unknown id" do
       assert {:error, :not_found} = Records.replace(Ecto.UUID.generate(), base())
     end

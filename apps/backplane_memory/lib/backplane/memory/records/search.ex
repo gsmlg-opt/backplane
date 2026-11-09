@@ -75,8 +75,13 @@ defmodule Backplane.Memory.Records.Search do
   end
 
   # Embeds the query and returns the nearest ids; any problem yields :unavailable so the
-  # caller silently uses full-text only (the embed worker carries the warning).
+  # caller silently uses full-text only (the embed worker carries the warning). A blank
+  # query is never embedded and never touches the circuit breaker.
   defp vector_ids(query, filters) do
+    if String.trim(query) == "", do: :unavailable, else: nearest_ids(query, filters)
+  end
+
+  defp nearest_ids(query, filters) do
     with true <- Client.configured?(),
          true <- CircuitBreaker.allow_request?(),
          {:ok, [vector]} <- embed_query(query) do
@@ -104,12 +109,8 @@ defmodule Backplane.Memory.Records.Search do
   end
 
   defp embed_query(query) do
-    if String.trim(query) == "" do
-      {:error, :blank_query}
-    else
-      req_options = Application.get_env(:backplane_memory, :embedding_req_options, [])
-      Client.embed([query], :query, req_options: req_options)
-    end
+    req_options = Application.get_env(:backplane_memory, :embedding_req_options, [])
+    Client.embed([query], :query, req_options: req_options)
   end
 
   defp fuse(vector_ids, text_ids, filters, limit) do
