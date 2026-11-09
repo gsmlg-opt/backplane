@@ -3,6 +3,7 @@ defmodule Backplane.Memory.AdminQueries do
 
   import Ecto.Query
 
+  alias Backplane.Memory.Distillations
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.Projections.ProjectedSession
   alias Backplane.Memory.Record
@@ -39,7 +40,9 @@ defmodule Backplane.Memory.AdminQueries do
   end
 
   @doc "Recent sessions with a captured event count."
-  @spec recent_sessions(pos_integer()) :: [%{session: struct(), event_count: integer()}]
+  @spec recent_sessions(pos_integer()) :: [
+          %{session: struct(), event_count: integer(), distillation: struct() | nil}
+        ]
   def recent_sessions(limit \\ @default_limit) do
     sessions =
       ProjectedSession
@@ -57,8 +60,14 @@ defmodule Backplane.Memory.AdminQueries do
       |> repo().all()
       |> Map.new()
 
+    distillations = Distillations.for_subjects(Enum.map(sessions, & &1.subject_id))
+
     Enum.map(sessions, fn s ->
-      %{session: s, event_count: Map.get(counts, {s.host_id, s.session_id}, 0)}
+      %{
+        session: s,
+        event_count: Map.get(counts, {s.host_id, s.session_id}, 0),
+        distillation: Map.get(distillations, s.subject_id)
+      }
     end)
   end
 

@@ -92,11 +92,44 @@ Each host agent keeps a local store (host schema V9, `Memory.Local`) so
   newest failed upload's reason); the admin Host Agents page (host detail,
   Memory health card) shows them.
 
+## Distillation
+
+A background memory agent turns captured sessions into records.
+
+- **Trigger**: a session closing as `completed` or `abandoned` schedules a row
+  in `memory_distillations` (one per session), due after
+  `memory.distill_delay_seconds`. A reopened session returns to `pending`.
+- **Scheduler and worker**: a scheduler claims due rows (at most
+  `memory.distill_max_concurrency` running) and runs each through the memory
+  agent over the proxy using `memory.llm_model`.
+- **Modes**: `distill` for a fresh session; `review` when the agent already
+  wrote records for it, so it reconciles instead of duplicating.
+- **Chunking**: long sessions are split into event chunks, one agent run each;
+  `source_event_ids` come only from the chunk being processed. Candidates are
+  idempotent through a content-derived `request_key`.
+- **Agent tools**: act only on the memory domain (no git, shell or workspace).
+  Merge rules: facts supersede by subject and property, procedures merge via
+  `Records.replace/2`, worklogs are append-only.
+- **Failures are never silent**: a failed or blocked run stores `last_error`
+  and logs a warning. A missing `memory.llm_model` marks due rows `blocked`
+  (`memory.llm_model not configured`); setting it unblocks them. The admin
+  Overview shows alerts for failed/blocked counts; the Sessions page shows
+  status, mode, error and records written, with a manual Retry.
+- **Settings**: `memory.llm_model`, `memory.distill_delay_seconds`,
+  `memory.distill_max_concurrency` (Config page).
+
+## Recall
+
+`memory::search` combines Postgres full-text search with vector similarity when
+`memory.embed_model` is configured; records are embedded in the background and
+the two rankings are fused with Reciprocal Rank Fusion. If no embedding model
+is configured, the proxy errors, or vectors are missing, search falls back to
+full-text results only.
+
 ## Not yet built
 
-Automatic distillation by a memory maintenance agent, host-side collectors and
-the Codex / Cursor / Claude Code / Sigma / Synapsis plugins are described in the
-spec and are delivered in later plans.
+Host-side collectors and the Codex / Cursor / Claude Code / Sigma / Synapsis
+plugins are described in the spec and are delivered in later plans.
 
 ## Historical documents
 
