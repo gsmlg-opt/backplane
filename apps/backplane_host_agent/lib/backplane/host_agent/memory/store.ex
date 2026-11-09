@@ -41,6 +41,7 @@ defmodule Backplane.HostAgent.Memory.Store do
   end
 
   @doc "Rolls back the current transaction with `reason`."
+  @spec rollback(DBConnection.t(), term()) :: no_return()
   def rollback(conn, reason), do: DBConnection.rollback(conn, reason)
 
   @doc "Applies the SQLite pragmas required for local host-agent memory."
