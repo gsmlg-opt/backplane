@@ -13,7 +13,8 @@ defmodule Backplane.HostAgent.Memory.Migrator do
     Migrations.V4,
     Migrations.V5,
     Migrations.V6,
-    Migrations.V7
+    Migrations.V7,
+    Migrations.V8
   ]
 
   @doc false
