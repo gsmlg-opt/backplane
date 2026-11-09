@@ -120,28 +120,5 @@ defmodule Backplane.Memory.Tools do
     |> Enum.join("; ")
   end
 
-  defp render(%Record{} = r) do
-    %{
-      "id" => r.id,
-      "kind" => r.kind,
-      "title" => r.title,
-      "content" => r.content,
-      "subjects" => r.subjects,
-      "property" => r.property,
-      "tags" => r.tags,
-      "status" => r.status,
-      "superseded_by" => r.superseded_by,
-      "forgotten_reason" => r.forgotten_reason,
-      "observed_at" => r.observed_at,
-      "provenance" => %{
-        "writer" => r.writer,
-        "host" => r.host_id,
-        "agent" => r.agent_id,
-        "integration" => r.integration,
-        "session" => r.session_id,
-        "client" => r.client_id,
-        "source_event_ids" => r.source_event_ids
-      }
-    }
-  end
+  defp render(%Record{} = r), do: Records.to_map(r)
 end

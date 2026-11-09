@@ -6,6 +6,7 @@ defmodule Backplane.Api.HostAgentChannel do
 
   alias Backplane.AgentTraces
   alias Backplane.Clients
+  alias Backplane.Memory.Records
   alias Backplane.PubSubBroadcaster
   alias Backplane.Registry.ToolRegistry
   alias Backplane.Skills.{AgentManage, DesiredState, Hosts, SyncStatuses}
@@ -160,7 +161,7 @@ defmodule Backplane.Api.HostAgentChannel do
   end
 
   def handle_in(event, payload, socket)
-      when event in ~w(mcp_tools_list mcp_tool_call memory_events) do
+      when event in ~w(mcp_tools_list mcp_tool_call memory_events memory_pull) do
     if active_token?(socket) do
       handle_memory_in(event, payload, socket)
     else
@@ -207,6 +208,28 @@ defmodule Backplane.Api.HostAgentChannel do
   defp handle_memory_in("mcp_tool_call", _payload, socket) do
     invalid_payload(socket)
   end
+
+  defp handle_memory_in("memory_pull", payload, socket) when is_map(payload) do
+    with true <- authorized?("host_agent.recall", host_agent_scopes()),
+         {:ok, cursor} <- parse_pull_cursor(payload["cursor"]) do
+      limit = if is_integer(payload["limit"]), do: payload["limit"], else: 100
+      records = Records.changed_since(socket.assigns.host.id, cursor, limit)
+
+      next =
+        case List.last(records) do
+          nil -> payload["cursor"]
+          last -> %{"updated_at" => DateTime.to_iso8601(last.updated_at), "id" => last.id}
+        end
+
+      {:reply, {:ok, %{"records" => Enum.map(records, &Records.to_map/1), "cursor" => next}},
+       socket}
+    else
+      false -> {:reply, {:error, %{"code" => "unauthorized", "retryable" => false}}, socket}
+      :error -> {:reply, {:error, %{"code" => "invalid_cursor", "retryable" => false}}, socket}
+    end
+  end
+
+  defp handle_memory_in("memory_pull", _payload, socket), do: invalid_payload(socket)
 
   defp handle_memory_in("memory_events", payload, socket) when is_map(payload) do
     case validate_and_authorize_memory_events(payload, socket) do
@@ -301,6 +324,19 @@ defmodule Backplane.Api.HostAgentChannel do
 
   defp authorized?(permission, scopes),
     do: is_list(scopes) and (permission in scopes or "*" in scopes)
+
+  defp parse_pull_cursor(nil), do: {:ok, nil}
+
+  defp parse_pull_cursor(%{"updated_at" => at, "id" => id}) when is_binary(at) and is_binary(id) do
+    with {:ok, dt, _} <- DateTime.from_iso8601(at),
+         {:ok, uuid} <- Ecto.UUID.cast(id) do
+      {:ok, %{updated_at: dt, id: uuid}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp parse_pull_cursor(_), do: :error
 
   defp validate_memory_events_payload(
          %{

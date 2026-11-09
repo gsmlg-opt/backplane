@@ -710,6 +710,54 @@ defmodule Backplane.Api.HostAgentChannelTest do
     end
   end
 
+  describe "memory_pull" do
+    setup %{host: host, socket: socket} do
+      assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})
+      %{socket: socket}
+    end
+
+    test "memory_pull returns socket host records and a cursor", %{host: host, socket: socket} do
+      {:ok, mine} =
+        Backplane.Memory.Records.remember(%{
+          "content" => "mine",
+          "writer" => "agent",
+          "host_id" => host.id
+        })
+
+      {:ok, _other} =
+        Backplane.Memory.Records.remember(%{
+          "content" => "other",
+          "writer" => "agent",
+          "host_id" => "someone-else"
+        })
+
+      ref = push(socket, "memory_pull", %{"cursor" => nil, "limit" => 10, "host_id" => "someone-else"})
+      assert_reply(ref, :ok, %{"records" => [rec], "cursor" => cursor})
+      assert rec["id"] == mine.id
+      assert rec["content"] == "mine"
+      assert is_binary(rec["updated_at"])
+      assert cursor == %{"updated_at" => rec["updated_at"], "id" => mine.id}
+
+      ref = push(socket, "memory_pull", %{"cursor" => cursor, "limit" => 10})
+      assert_reply(ref, :ok, %{"records" => [], "cursor" => ^cursor})
+    end
+
+    test "memory_pull without recall scope is unauthorized", %{socket: socket} do
+      Application.put_env(:backplane_api, :host_agent_scopes, ["host_agent.capture"])
+      on_exit(fn -> Application.delete_env(:backplane_api, :host_agent_scopes) end)
+
+      ref = push(socket, "memory_pull", %{"cursor" => nil, "limit" => 10})
+      assert_reply(ref, :error, %{"code" => "unauthorized"})
+    end
+
+    test "memory_pull with malformed cursor returns invalid_cursor", %{socket: socket} do
+      for bad <- [%{"updated_at" => "nope", "id" => "x"}, %{"id" => Ecto.UUID.generate()}, "str"] do
+        ref = push(socket, "memory_pull", %{"cursor" => bad, "limit" => 10})
+        assert_reply(ref, :error, %{"code" => "invalid_cursor"})
+      end
+    end
+  end
+
   describe "host trace sync" do
     test "trace_sync persists items and returns per-item ok acks", %{host: host, socket: socket} do
       assert {:ok, _reply, socket} = subscribe_and_join(socket, "host_agent:#{host.id}", %{})

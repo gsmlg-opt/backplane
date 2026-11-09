@@ -260,4 +260,48 @@ defmodule Backplane.Memory.RecordsTest do
       Records.search("alpha", %{"subject" => %{"type" => "repo"}})
     end
   end
+
+  describe "changed_since/3" do
+    defp stamp(record, sec) do
+      at = DateTime.add(~U[2026-01-01 00:00:00.000000Z], sec, :second)
+      import Ecto.Query
+      repo().update_all(from(r in Record, where: r.id == ^record.id), set: [updated_at: at])
+      %{record | updated_at: at}
+    end
+
+    defp host_rec(host, n) do
+      {:ok, r} = Records.remember(base(%{"host_id" => host, "content" => "c#{n}"}))
+      stamp(r, n)
+    end
+
+    test "changed_since returns only the host's records after the cursor in order" do
+      a1 = host_rec("A", 1)
+      a2 = host_rec("A", 2)
+      a3 = host_rec("A", 3)
+      _b = host_rec("B", 2)
+
+      assert Enum.map(Records.changed_since("A", nil, 10), & &1.id) == [a1.id, a2.id, a3.id]
+
+      cursor = %{updated_at: a1.updated_at, id: a1.id}
+      assert Enum.map(Records.changed_since("A", cursor, 10), & &1.id) == [a2.id, a3.id]
+    end
+
+    test "changed_since includes superseded and forgotten records" do
+      {:ok, f} = Records.remember(fact(%{"host_id" => "A", "subjects" => [@repo_x]}))
+      {:ok, g} = Records.remember(base(%{"host_id" => "A"}))
+      {:ok, _} = Records.forget(g.id, "gone")
+      {:ok, _} = Records.remember(fact(%{"host_id" => "A", "subjects" => [@repo_x], "content" => "n"}))
+
+      statuses = "A" |> Records.changed_since(nil, 10) |> Enum.map(& &1.status) |> Enum.sort()
+      assert statuses == ["active", "forgotten", "superseded"]
+      assert Enum.any?(Records.changed_since("A", nil, 10), &(&1.id == f.id))
+    end
+
+    test "changed_since respects limit and clamps 0/1000" do
+      for n <- 1..3, do: host_rec("A", n)
+      assert length(Records.changed_since("A", nil, 2)) == 2
+      assert length(Records.changed_since("A", nil, 0)) == 1
+      assert length(Records.changed_since("A", nil, 1000)) == 3
+    end
+  end
 end

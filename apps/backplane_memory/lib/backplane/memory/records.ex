@@ -12,6 +12,7 @@ defmodule Backplane.Memory.Records do
 
   @default_recent_limit 20
   @max_recent_limit 100
+  @max_changed_limit 500
 
   @spec remember(map()) :: {:ok, Record.t()} | {:error, Ecto.Changeset.t()}
   def remember(attrs) when is_map(attrs) do
@@ -93,6 +94,57 @@ defmodule Backplane.Memory.Records do
     |> order_by([r], desc: r.observed_at, desc: r.inserted_at)
     |> limit(^limit)
     |> repo().all()
+  end
+
+  @doc """
+  Records written by `host_id` (all statuses), ordered `updated_at, id` ascending and
+  strictly after the optional `(updated_at, id)` cursor. `limit` is clamped to 1..500.
+  """
+  @spec changed_since(String.t(), nil | %{updated_at: DateTime.t(), id: Ecto.UUID.t()}, integer()) ::
+          [Record.t()]
+  def changed_since(host_id, cursor, limit) do
+    limit = limit |> max(1) |> min(@max_changed_limit)
+
+    Record
+    |> where([r], r.host_id == ^host_id)
+    |> after_cursor(cursor)
+    |> order_by([r], asc: r.updated_at, asc: r.id)
+    |> limit(^limit)
+    |> repo().all()
+  end
+
+  defp after_cursor(query, nil), do: query
+
+  defp after_cursor(query, %{updated_at: at, id: id}) do
+    where(query, [r], r.updated_at > ^at or (r.updated_at == ^at and r.id > ^id))
+  end
+
+  @doc "Serializes a record to the string-keyed map returned by the memory tools and host pull."
+  @spec to_map(Record.t()) :: map()
+  def to_map(%Record{} = r) do
+    %{
+      "id" => r.id,
+      "kind" => r.kind,
+      "title" => r.title,
+      "content" => r.content,
+      "subjects" => r.subjects,
+      "property" => r.property,
+      "tags" => r.tags,
+      "status" => r.status,
+      "superseded_by" => r.superseded_by,
+      "forgotten_reason" => r.forgotten_reason,
+      "observed_at" => r.observed_at,
+      "updated_at" => DateTime.to_iso8601(r.updated_at),
+      "provenance" => %{
+        "writer" => r.writer,
+        "host" => r.host_id,
+        "agent" => r.agent_id,
+        "integration" => r.integration,
+        "session" => r.session_id,
+        "client" => r.client_id,
+        "source_event_ids" => r.source_event_ids
+      }
+    }
   end
 
   @doc """
