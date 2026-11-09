@@ -111,7 +111,6 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
         :compaction_grace_ms,
         :delivery_receipt_days,
         :max_delivery_receipts,
-        :max_import_fingerprints,
         :clock,
         :jitter_fun
       ])
@@ -141,7 +140,6 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
               retry_max_ms: Keyword.get(opts, :retry_max_ms, 300_000),
               compaction_batch_size: Keyword.get(opts, :compaction_batch_size, 100),
               compaction_grace_ms: Keyword.get(opts, :compaction_grace_ms, 60_000),
-              max_import_fingerprints: Keyword.get(opts, :max_import_fingerprints, 100_000),
               delivery_receipt_days: Keyword.get(opts, :delivery_receipt_days, 30),
               max_delivery_receipts: Keyword.get(opts, :max_delivery_receipts, 100_000),
               compaction_timer: nil,
@@ -186,14 +184,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
         {:ok, filtered_attrs} ->
           case duplicate(store, filtered_attrs, state.cipher, state.clock.() |> iso8601()) do
             {:ok, nil} ->
-              insert(
-                store,
-                filtered_attrs,
-                state.max_spool_bytes,
-                state.max_import_fingerprints,
-                state.clock,
-                state.cipher
-              )
+              insert(store, filtered_attrs, state.max_spool_bytes, state.clock, state.cipher)
 
             {:ok, envelope} ->
               {:duplicate, envelope}
@@ -413,23 +404,16 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
     end
   end
 
-  defp insert(store, attrs, max_spool_bytes, max_import_fingerprints, clock, cipher) do
+  defp insert(store, attrs, max_spool_bytes, clock, cipher) do
     case safe_transaction(store, fn conn ->
-           insert_transaction(
-             conn,
-             attrs,
-             max_spool_bytes,
-             max_import_fingerprints,
-             clock,
-             cipher
-           )
+           insert_transaction(conn, attrs, max_spool_bytes, clock, cipher)
          end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp insert_transaction(conn, attrs, max_spool_bytes, max_import_fingerprints, clock, cipher) do
+  defp insert_transaction(conn, attrs, max_spool_bytes, clock, cipher) do
     session_id = value(attrs, :session_id)
 
     sequence =
@@ -465,9 +449,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
                ) do
             {:ok, _} ->
               with :ok <- increment_counter(conn, "captured_count", 1),
-                   :ok <- increment_counter(conn, "redacted_count", redacted_count(envelope)),
-                   :ok <- record_import_fingerprint(conn, envelope, stored_envelope, now),
-                   :ok <- prune_import_fingerprints(conn, max_import_fingerprints) do
+                   :ok <- increment_counter(conn, "redacted_count", redacted_count(envelope)) do
                 {:ok, envelope}
               else
                 {:error, reason} -> DBConnection.rollback(conn, reason)
@@ -526,21 +508,21 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
            "SELECT event_id, idempotency_key, envelope_json FROM capture_event_spool WHERE event_id = ? OR idempotency_key = ?",
            [value(attrs, :event_id), value(attrs, :idempotency_key)]
          ) do
-      {:ok, %Result{rows: []}} -> delivery_duplicate(store, attrs, cipher, now)
+      {:ok, %Result{rows: []}} -> delivery_duplicate(store, attrs, now)
       {:ok, %Result{rows: [row]}} -> compare_duplicate(row, attrs, cipher)
       {:ok, %Result{rows: _rows}} -> {:error, :identity_collision}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp delivery_duplicate(store, attrs, cipher, now) do
+  defp delivery_duplicate(store, attrs, now) do
     case safe_query(
            store,
            "SELECT * FROM capture_delivery_receipts WHERE (event_id=? OR idempotency_key=?) AND expires_at>?",
            [value(attrs, :event_id), value(attrs, :idempotency_key), now]
          ) do
       {:ok, %Result{rows: []}} ->
-        import_duplicate(store, attrs, cipher)
+        {:ok, nil}
 
       {:ok, %Result{rows: [row]}} ->
         if row["fingerprint"] == delivery_fingerprint(attrs),
@@ -604,60 +586,6 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
       :ok
     end
   end
-
-  defp import_duplicate(store, attrs, cipher) do
-    if value(attrs, :integration) == "claude_code_import" do
-      case safe_query(
-             store,
-             "SELECT event_id, idempotency_key, envelope_json FROM capture_import_fingerprints WHERE event_id = ? OR idempotency_key = ?",
-             [value(attrs, :event_id), value(attrs, :idempotency_key)]
-           ) do
-        {:ok, %Result{rows: []}} -> {:ok, nil}
-        {:ok, %Result{rows: [row]}} -> compare_duplicate(row, attrs, cipher)
-        {:ok, %Result{rows: _rows}} -> {:error, :identity_collision}
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp record_import_fingerprint(
-         conn,
-         %{"integration" => "claude_code_import"} = envelope,
-         stored,
-         now
-       ) do
-    case Store.execute(
-           conn,
-           "INSERT INTO capture_import_fingerprints(idempotency_key,event_id,envelope_json,recorded_at) VALUES (?,?,?,?)",
-           [envelope["idempotency_key"], envelope["event_id"], stored, now]
-         ) do
-      {:ok, _result} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp record_import_fingerprint(_conn, _envelope, _stored, _now), do: :ok
-
-  defp prune_import_fingerprints(conn, limit) when is_integer(limit) and limit > 0 do
-    with {:ok, %Result{rows: [%{"count" => count}]}} <-
-           Store.query(conn, "SELECT COUNT(*) AS count FROM capture_import_fingerprints", []),
-         excess when excess > 0 <- number(count) - limit,
-         {:ok, _result} <-
-           Store.execute(
-             conn,
-             "DELETE FROM capture_import_fingerprints WHERE idempotency_key IN (SELECT idempotency_key FROM capture_import_fingerprints ORDER BY recorded_at, idempotency_key LIMIT ?)",
-             [excess]
-           ) do
-      :ok
-    else
-      excess when excess <= 0 -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp prune_import_fingerprints(_conn, _limit), do: {:error, :invalid_import_fingerprint_limit}
 
   defp compare_duplicate(row, attrs, cipher) do
     with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], cipher),

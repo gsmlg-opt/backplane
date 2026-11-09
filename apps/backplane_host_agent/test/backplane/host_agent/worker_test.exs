@@ -416,7 +416,8 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert_receive {:set_connection_owner, ^worker}
     assert_receive {:capture_start, %{host_id: "host-authoritative"}}
-    assert_receive {:http_memory_config, ^memory_config, :standalone_startup_store}
+    expected_memory_config = Map.put(memory_config, :host_id, "host-authoritative")
+    assert_receive {:http_memory_config, ^expected_memory_config, :standalone_startup_store}
 
     assert_receive {:http_ready, http_child, "host-authoritative"}
     assert_receive {:connect, ^config}
@@ -961,7 +962,7 @@ defmodule Backplane.HostAgent.WorkerTest do
                         "machine_name" => "t430",
                         "token" => "REDACTED"
                       },
-                      "memory" => %{"bound_scope" => "proj_local"},
+                      "memory" => %{"sync_interval_ms" => 5_000},
                       "telemetry" => %{"dir" => telemetry_dir},
                       "targets" => [%{"name" => "agents", "path" => ^tmp_dir}]
                     }}
@@ -1285,12 +1286,8 @@ defmodule Backplane.HostAgent.WorkerTest do
       memory: %{
         enabled: true,
         db_path: Path.join(tmp_dir, "memory/host_agent_memory.db"),
-        bound_scope: "proj_local",
-        local_ttl_days: 90,
         sync_interval_ms: 5_000,
-        sync_batch_size: 50,
-        max_attempts: 5,
-        tombstone_relearn: "block"
+        sync_batch_size: 50
       },
       telemetry: %{
         enabled: true,

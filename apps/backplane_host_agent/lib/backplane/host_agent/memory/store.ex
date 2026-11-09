@@ -40,6 +40,10 @@ defmodule Backplane.HostAgent.Memory.Store do
     DBConnection.transaction(store, fun, opts)
   end
 
+  @doc "Rolls back the current transaction with `reason`."
+  @spec rollback(DBConnection.t(), term()) :: no_return()
+  def rollback(conn, reason), do: DBConnection.rollback(conn, reason)
+
   @doc "Applies the SQLite pragmas required for local host-agent memory."
   def configure(store, busy_timeout_ms \\ @default_busy_timeout_ms)
       when is_integer(busy_timeout_ms) and busy_timeout_ms >= 0 do

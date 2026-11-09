@@ -12,6 +12,7 @@ defmodule Backplane.Memory.Records do
 
   @default_recent_limit 20
   @max_recent_limit 100
+  @max_changed_limit 500
 
   @spec remember(map()) :: {:ok, Record.t()} | {:error, Ecto.Changeset.t()}
   def remember(attrs) when is_map(attrs) do
@@ -96,6 +97,57 @@ defmodule Backplane.Memory.Records do
   end
 
   @doc """
+  Records written by `host_id` (all statuses), ordered `updated_at, id` ascending and
+  strictly after the optional `(updated_at, id)` cursor. `limit` is clamped to 1..500.
+  """
+  @spec changed_since(String.t(), nil | %{updated_at: DateTime.t(), id: Ecto.UUID.t()}, integer()) ::
+          [Record.t()]
+  def changed_since(host_id, cursor, limit) do
+    limit = limit |> max(1) |> min(@max_changed_limit)
+
+    Record
+    |> where([r], r.host_id == ^host_id)
+    |> after_cursor(cursor)
+    |> order_by([r], asc: r.updated_at, asc: r.id)
+    |> limit(^limit)
+    |> repo().all()
+  end
+
+  defp after_cursor(query, nil), do: query
+
+  defp after_cursor(query, %{updated_at: at, id: id}) do
+    where(query, [r], r.updated_at > ^at or (r.updated_at == ^at and r.id > ^id))
+  end
+
+  @doc "Serializes a record to the string-keyed map returned by the memory tools and host pull."
+  @spec to_map(Record.t()) :: map()
+  def to_map(%Record{} = r) do
+    %{
+      "id" => r.id,
+      "kind" => r.kind,
+      "title" => r.title,
+      "content" => r.content,
+      "subjects" => r.subjects,
+      "property" => r.property,
+      "tags" => r.tags,
+      "status" => r.status,
+      "superseded_by" => r.superseded_by,
+      "forgotten_reason" => r.forgotten_reason,
+      "observed_at" => r.observed_at,
+      "updated_at" => DateTime.to_iso8601(r.updated_at),
+      "provenance" => %{
+        "writer" => r.writer,
+        "host" => r.host_id,
+        "agent" => r.agent_id,
+        "integration" => r.integration,
+        "session" => r.session_id,
+        "client" => r.client_id,
+        "source_event_ids" => r.source_event_ids
+      }
+    }
+  end
+
+  @doc """
   Normalizes subjects to lowercase `type`/`key` maps and returns them with
   sorted, deduplicated `"type:key"` strings.
   """
@@ -133,7 +185,6 @@ defmodule Backplane.Memory.Records do
         case %Record{} |> Record.changeset(attrs) |> repo().insert() do
           {:ok, record} ->
             supersede(record)
-            record
 
           {:error, changeset} ->
             repo().rollback(changeset)
@@ -153,18 +204,45 @@ defmodule Backplane.Memory.Records do
     end
   end
 
+  # Supersession follows observation time, not arrival order: a fact observed
+  # earlier than an active same-slot fact (e.g. an offline write uploaded late)
+  # is stored already superseded by the newer one. Every status change bumps
+  # `updated_at` so host pulls (`changed_since/3`) re-send the old row.
   defp supersede(%Record{kind: "fact", property: property, subject_keys: [_ | _]} = record)
        when is_binary(property) do
-    Record
-    |> where(
-      [r],
-      r.kind == "fact" and r.status == "active" and r.property == ^property and
-        r.subject_keys == ^record.subject_keys and r.id != ^record.id
-    )
-    |> repo().update_all(set: [status: "superseded", superseded_by: record.id])
+    same_slot =
+      where(
+        Record,
+        [r],
+        r.kind == "fact" and r.status == "active" and r.property == ^property and
+          r.subject_keys == ^record.subject_keys and r.id != ^record.id
+      )
+
+    newer =
+      same_slot
+      |> where([r], r.observed_at > ^record.observed_at)
+      |> order_by([r], desc: r.observed_at, desc: r.inserted_at)
+      |> limit(1)
+      |> repo().one()
+
+    case newer do
+      nil ->
+        same_slot
+        |> where([r], r.observed_at <= ^record.observed_at)
+        |> repo().update_all(
+          set: [status: "superseded", superseded_by: record.id, updated_at: DateTime.utc_now()]
+        )
+
+        record
+
+      %Record{id: newer_id} ->
+        record
+        |> Ecto.Changeset.change(%{status: "superseded", superseded_by: newer_id})
+        |> repo().update!()
+    end
   end
 
-  defp supersede(_record), do: :ok
+  defp supersede(record), do: record
 
   defp history([], acc), do: acc |> Enum.sort_by(&{&1.observed_at, &1.inserted_at}, :desc)
 

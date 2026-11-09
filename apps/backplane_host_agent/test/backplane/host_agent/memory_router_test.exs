@@ -1,6 +1,7 @@
 defmodule Backplane.HostAgent.MemoryRouterTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.HostAgent.Memory.{Local, Migrator, Store}
   alias Backplane.HostAgent.Memory.Spool.Turso, as: Spool
   alias Backplane.HostAgent.MemoryProxy
   alias Backplane.HostAgent.MemoryRouter
@@ -41,6 +42,19 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
+  defmodule OnlineProxy do
+    def list_tools, do: {:ok, []}
+
+    def call_tool(_name, args) do
+      send(
+        :persistent_term.get({Backplane.HostAgent.MemoryRouterTest.StubHubProxy, :owner}),
+        {:args, args}
+      )
+
+      {:ok, :persistent_term.get({__MODULE__, :record})}
+    end
+  end
+
   defmodule ErrorHubProxy do
     def list_tools, do: {:error, :not_connected}
     def call_tool(_name, _args), do: {:error, :not_connected}
@@ -53,7 +67,12 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
   defmodule ScriptedHubProxy do
     def list_tools, do: {:ok, []}
-    def call_tool(_name, _args), do: Process.get(:scripted_hub_reply)
+
+    def call_tool(_name, args) do
+      owner = :persistent_term.get({Backplane.HostAgent.MemoryRouterTest.StubHubProxy, :owner})
+      send(owner, {:scripted_args, args})
+      Process.get(:scripted_hub_reply)
+    end
   end
 
   defmodule FakeHubChannel do
@@ -108,6 +127,8 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     on_exit(fn ->
       Application.delete_env(:backplane_host_agent, :local_services)
       Application.delete_env(:backplane_host_agent, :hub_proxy_module)
+      Application.delete_env(:backplane_host_agent, :memory_store)
+      Application.delete_env(:backplane_host_agent, :memory_config)
       Application.delete_env(:backplane_host_agent, :channel_module)
       Application.delete_env(:backplane_host_agent, :capture_runtime)
       MemoryProxy.set_channel(nil)
@@ -414,6 +435,304 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
+  describe "offline memory" do
+    setup %{tmp_dir: dir} do
+      name = :"router_local_store_#{System.unique_integer([:positive])}"
+
+      start_supervised!(
+        {Store,
+         database: Path.join(dir, "local.db"), name: name, pool_size: 1, busy_timeout_ms: 5_000},
+        id: name
+      )
+
+      :ok = Migrator.migrate(name)
+      Application.put_env(:backplane_host_agent, :memory_store, name)
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, ScriptedHubProxy)
+      {:ok, store: name}
+    end
+
+    test "offline remember returns pending 200 and queues an outbox row", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn =
+        post_json("/memory/a1/call/remember", %{"content" => "saved offline", "kind" => "fact"})
+
+      assert conn.status == 200
+
+      assert %{"ok" => true, "result" => %{"sync" => "pending", "content" => "saved offline"}} =
+               Jason.decode!(conn.resp_body)
+
+      assert length(Local.pending_outbox(store, 10)) == 1
+    end
+
+    test "timeout remember queues too", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, :timeout})
+      conn = post_json("/memory/a1/call/remember", %{"content" => "maybe written"})
+
+      assert conn.status == 200
+      assert length(Local.pending_outbox(store, 10)) == 1
+    end
+
+    test "online remember sends a request_key and caches the record", %{store: store} do
+      remote = %{
+        "id" => "remote-1",
+        "kind" => "fact",
+        "content" => "online",
+        "status" => "active",
+        "subjects" => [],
+        "tags" => []
+      }
+
+      :persistent_term.put({OnlineProxy, :record}, remote)
+      on_exit(fn -> :persistent_term.erase({OnlineProxy, :record}) end)
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, OnlineProxy)
+
+      conn = post_json("/memory/a1/call/remember", %{"content" => "online"})
+      assert conn.status == 200
+      assert_received {:args, %{"request_key" => "host-agent:" <> _}}
+      assert {:ok, %{"content" => "online"}} = Local.get(store, "remote-1")
+      assert Local.pending_outbox(store, 10) == []
+    end
+
+    test "validation errors are returned and nothing is queued", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, %{"code" => "invalid"}})
+      conn = post_json("/memory/a1/call/remember", %{"content" => "c"})
+
+      assert conn.status == 400
+      assert %{"error" => "invalid"} = Jason.decode!(conn.resp_body)
+      assert Local.pending_outbox(store, 10) == []
+    end
+
+    test "offline search answers from local active records", %{store: store} do
+      {:ok, _} =
+        Local.queue_remember(
+          store,
+          %{"content" => "alpha banana", "kind" => "fact"},
+          "host-agent:k"
+        )
+
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn = post_json("/memory/a1/call/search", %{"query" => "banana"})
+      assert conn.status == 200
+
+      assert %{
+               "result" => %{
+                 "offline" => true,
+                 "source" => "local",
+                 "results" => [%{"content" => "alpha banana"}]
+               }
+             } =
+               Jason.decode!(conn.resp_body)
+    end
+
+    test "offline get and recent answer locally", %{store: store} do
+      {:ok, rec} =
+        Local.queue_remember(store, %{"content" => "w", "kind" => "worklog"}, "host-agent:k")
+
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn = post_json("/memory/a1/call/get", %{"id" => rec["id"]})
+
+      assert %{"result" => %{"record" => %{"content" => "w"}, "history" => [], "offline" => true}} =
+               Jason.decode!(conn.resp_body)
+
+      conn = post_json("/memory/a1/call/get", %{"id" => "nope"})
+      assert conn.status == 404
+
+      conn = post_json("/memory/a1/call/recent", %{})
+      assert %{"result" => %{"offline" => true, "results" => [_]}} = Jason.decode!(conn.resp_body)
+    end
+
+    test "offline forget queues known records and rejects unknown ones", %{store: store} do
+      {:ok, rec} =
+        Local.queue_remember(store, %{"content" => "x", "kind" => "fact"}, "host-agent:k")
+
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn = post_json("/memory/a1/call/forget", %{"id" => rec["id"], "reason" => "stale"})
+      assert conn.status == 200
+
+      assert %{"result" => %{"status" => "forgotten", "sync" => "pending"}} =
+               Jason.decode!(conn.resp_body)
+
+      conn = post_json("/memory/a1/call/forget", %{"id" => "unknown", "reason" => "r"})
+      assert conn.status == 503
+      assert %{"error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
+    end
+
+    test "timeout remember keeps the sent request_key and agent stamp in the queued payload", %{
+      store: store
+    } do
+      Process.put(:scripted_hub_reply, {:error, :timeout})
+      conn = post_json("/memory/a1/call/remember", %{"content" => "maybe written"})
+
+      assert conn.status == 200
+      assert_received {:scripted_args, %{"request_key" => "host-agent:" <> _ = key}}
+
+      assert [%{"payload" => %{"request_key" => ^key, "agent" => "a1"}}] =
+               Local.pending_outbox(store, 10)
+    end
+
+    test "non-binary caller request_key is replaced" do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+      post_json("/memory/a1/call/remember", %{"content" => "c", "request_key" => 5})
+      assert_received {:scripted_args, %{"request_key" => "host-agent:" <> _}}
+    end
+
+    test "offline remember with invalid subjects is rejected and not queued", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+      conn = post_json("/memory/a1/call/remember", %{"content" => "c", "subjects" => "bad"})
+
+      assert conn.status == 400
+      assert %{"error" => "invalid_subjects"} = Jason.decode!(conn.resp_body)
+      assert Local.pending_outbox(store, 10) == []
+    end
+
+    test "offline mcp tools/call remember returns a pending result", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+      resp = tools_call("/memory/a1/mcp", "memory::remember", %{"content" => "via mcp"})
+
+      assert %{"result" => %{"isError" => false}} = resp
+      assert Jason.encode!(resp) =~ "pending"
+      assert length(Local.pending_outbox(store, 10)) == 1
+    end
+
+    test "local store failure after a gateway write still succeeds" do
+      :persistent_term.put({OnlineProxy, :record}, %{
+        "id" => "r2",
+        "content" => "x",
+        "subjects" => []
+      })
+
+      on_exit(fn -> :persistent_term.erase({OnlineProxy, :record}) end)
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, OnlineProxy)
+
+      bogus = :"bogus_store_#{System.unique_integer([:positive])}"
+      register_crashing_store(bogus)
+      Application.put_env(:backplane_host_agent, :memory_store, bogus)
+
+      conn = post_json("/memory/a1/call/remember", %{"content" => "x"})
+      assert conn.status == 200
+      assert %{"ok" => true, "result" => %{"id" => "r2"}} = Jason.decode!(conn.resp_body)
+    end
+
+    test "local store failure while offline reports local_store_error" do
+      bogus = :"bogus_store_#{System.unique_integer([:positive])}"
+      register_crashing_store(bogus)
+      Application.put_env(:backplane_host_agent, :memory_store, bogus)
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn = post_json("/memory/a1/call/remember", %{"content" => "x"})
+      assert conn.status == 500
+      assert %{"error" => "local_store_error"} = Jason.decode!(conn.resp_body)
+    end
+
+    test "offline remember stamps the configured host id and keeps observed_at", %{store: store} do
+      Application.put_env(:backplane_host_agent, :memory_config, %{host_id: "host-cfg-1"})
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn =
+        post_json("/memory/a1/call/remember", %{
+          "content" => "with provenance",
+          "observed_at" => "2026-01-02T03:04:05Z"
+        })
+
+      assert conn.status == 200
+
+      assert %{"result" => %{"provenance" => %{"host" => "host-cfg-1", "agent" => "a1"}} = rec} =
+               Jason.decode!(conn.resp_body)
+
+      assert rec["observed_at"] == "2026-01-02T03:04:05Z"
+
+      assert [%{"payload" => %{"observed_at" => "2026-01-02T03:04:05Z"}}] =
+               Local.pending_outbox(store, 10)
+    end
+
+    test "while the outbox has pending writes, online writes queue behind them and kick a sync",
+         %{store: store} do
+      sync_name = :"router_sync_#{System.unique_integer([:positive])}"
+      Process.register(self(), sync_name)
+      Application.put_env(:backplane_host_agent, :memory_config, %{sync_name: sync_name})
+
+      {:ok, first} = Local.queue_remember(store, %{"content" => "first"}, "host-agent:first")
+
+      :persistent_term.put({OnlineProxy, :record}, %{"id" => "never", "content" => "x"})
+      on_exit(fn -> :persistent_term.erase({OnlineProxy, :record}) end)
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, OnlineProxy)
+
+      conn = post_json("/memory/a1/call/remember", %{"content" => "second"})
+      assert conn.status == 200
+      assert %{"result" => %{"sync" => "pending"}} = Jason.decode!(conn.resp_body)
+      assert_receive {:"$gen_cast", :sync_now}
+
+      conn = post_json("/memory/a1/call/forget", %{"id" => first["id"], "reason" => "stale"})
+      assert conn.status == 200
+      assert_receive {:"$gen_cast", :sync_now}
+
+      refute_received {:args, _}
+
+      assert [
+               %{"op" => "remember", "payload" => %{"content" => "first"}},
+               %{"op" => "remember", "payload" => %{"content" => "second"}},
+               %{"op" => "forget", "local_id" => forgotten}
+             ] = Local.pending_outbox(store, 10)
+
+      assert forgotten == first["local_id"]
+
+      # Reads still go to the gateway while online.
+      post_json("/memory/a1/call/search", %{"query" => "first"})
+      assert_received {:args, %{"query" => "first"}}
+
+      # A forget for a record not cached locally cannot be ordered, so it goes direct.
+      post_json("/memory/a1/call/forget", %{"id" => "remote-only", "reason" => "r"})
+      assert_received {:args, %{"id" => "remote-only"}}
+    end
+
+    test "queued writes are validated like the gateway tools", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      for {args, error} <- [
+            {%{}, "invalid: content is required"},
+            {%{"content" => 5}, "invalid: content is required"},
+            {%{"content" => "  "}, "invalid: content can't be blank"},
+            {%{"content" => "c", "kind" => "bogus"}, "invalid: kind is invalid"},
+            {%{"content" => "c", "observed_at" => "later"}, "invalid: observed_at"}
+          ] do
+        conn = post_json("/memory/a1/call/remember", args)
+        assert conn.status == 400
+        assert %{"error" => ^error} = Jason.decode!(conn.resp_body)
+      end
+
+      {:ok, rec} = Local.queue_remember(store, %{"content" => "x"}, "host-agent:v")
+      before = Local.pending_outbox(store, 10)
+
+      for {args, error} <- [
+            {%{"id" => rec["id"]}, "invalid: reason is required"},
+            {%{"id" => rec["id"], "reason" => ""}, "invalid: reason is required"},
+            {%{"reason" => "r"}, "invalid: id and reason are required"}
+          ] do
+        conn = post_json("/memory/a1/call/forget", args)
+        assert conn.status == 400
+        assert %{"error" => ^error} = Jason.decode!(conn.resp_body)
+      end
+
+      assert Local.pending_outbox(store, 10) == before
+    end
+
+    test "store disabled behaves like plan 1" do
+      Application.put_env(:backplane_host_agent, :memory_store, :no_such_store_process)
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn = post_json("/memory/a1/call/remember", %{"content" => "c"})
+      assert conn.status == 503
+      assert %{"error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
+
+      conn = post_json("/memory/a1/call/search", %{"query" => "c"})
+      assert conn.status == 503
+    end
+  end
+
   describe "POST /capture/v1/hooks" do
     test "capture hook returns 202 without context injection", %{tmp_dir: tmp_dir} do
       spool =
@@ -459,6 +778,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     |> jsonrpc(%{"id" => "list", "method" => "tools/list"})
     |> get_in(["result", "tools"])
     |> Map.new(&{&1["name"], &1})
+  end
+
+  defp register_crashing_store(name) do
+    pid = spawn(fn -> receive do: (_ -> exit(:boom)) end)
+    Process.register(pid, name)
   end
 
   defp tools_call(path, name, args) do

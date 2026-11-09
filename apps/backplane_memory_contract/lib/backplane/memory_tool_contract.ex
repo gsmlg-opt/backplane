@@ -78,7 +78,11 @@ defmodule Backplane.MemoryToolContract do
         "host" => %{"type" => "string"},
         "agent" => %{"type" => "string"},
         "integration" => %{"type" => "string"},
-        "request_key" => %{"type" => "string"}
+        "request_key" => %{"type" => "string"},
+        "observed_at" => %{
+          "type" => "string",
+          "description" => "ISO 8601 timestamp of when the memory was observed; defaults to now"
+        }
       },
       "required" => ["content"]
     },

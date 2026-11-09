@@ -2,346 +2,61 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Migrator, Store}
-  alias Backplane.HostAgent.Memory.Migrations.{V1, V2}
+  alias Backplane.HostAgent.Memory.Migrations.{V1, V8}
   alias Turso.Result
 
   @moduletag :tmp_dir
 
-  test "migrates a clean database and re-runs idempotently", %{tmp_dir: tmp_dir} do
+  test "migrates a clean database to the latest schema and re-runs idempotently", %{
+    tmp_dir: tmp_dir
+  } do
     store = start_store!(tmp_dir)
 
     assert {:ok, 0} = Migrator.current_version(store)
     assert :ok = Migrator.migrate(store)
-    refute MapSet.member?(table_names(store), "memory_outbox_sequence_v2")
-
-    latest = Migrator.latest_version()
-    assert {:ok, ^latest} = Migrator.current_version(store)
+    assert Migrator.latest_version() == 9
+    assert {:ok, 9} = Migrator.current_version(store)
 
     assert MapSet.subset?(
-             MapSet.new(~w(memories facts memory_outbox tombstones slots)),
+             MapSet.new(~w(local_records memory_outbox memory_sync_state)),
              table_names(store)
            )
 
+    for legacy <- ~w(memories facts tombstones slots memory_request_keys canonical_memory_receipts) do
+      refute MapSet.member?(table_names(store), legacy)
+    end
+
     assert MapSet.subset?(
-             MapSet.new(~w(
-                 memories_content_scope_live_uniq
-                 memories_scope_inserted_idx
-                 memories_sync_state_idx
-                 memories_deleted_idx
-                 facts_scope_updated_idx
-                 memory_outbox_due_seq_idx
-                 memory_outbox_retention_idx
-                 memory_outbox_memory_id_idx
-               )),
+             MapSet.new(~w(local_records_status_observed_idx local_records_kind_status_idx)),
              index_names(store)
            )
 
-    assert table_columns(store, "tombstones") ==
-             ~w(content_hash scope wiped_at directive_id)
-
-    assert Enum.take(table_columns(store, "memories"), -4) ==
-             ~w(remote_revision facets memory_space_id namespace)
-
-    assert table_sql(store, "tombstones") =~ "PRIMARY KEY (scope, content_hash)"
-
     assert table_columns(store, "memory_outbox") ==
-             ~w(
-               seq op memory_id state attempts next_attempt_at last_error completed_at
-               dead_lettered_at inserted_at updated_at payload ack_partition ack_canonical_id ack_revision
-               command_id access_id authority_version target_partition payload_digest request_key request_agent_id ack_result migration_state migration_reason
-             )
-
-    assert index_columns(store, "memory_outbox_due_seq_idx") == ~w(state next_attempt_at seq)
-
-    assert index_columns(store, "memory_outbox_retention_idx") ==
-             ~w(state completed_at dead_lettered_at seq)
-
-    assert index_columns(store, "memory_outbox_memory_id_idx") == ["memory_id"]
-
-    assert table_sql(store, "memory_outbox") =~
-             ~r/CHECK\s*\(state IN \('pending', 'inflight', 'retry_wait', 'done', 'dead_letter'\)\)/
+             ~w(seq op local_id payload state attempts last_error inserted_at updated_at)
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, ^latest} = Migrator.current_version(store)
+    assert {:ok, 9} = Migrator.current_version(store)
   end
 
-  test "creates the PR1 memory tables with defaults and constraints", %{tmp_dir: tmp_dir} do
+  test "V8 tables enforce sync_state and outbox constraints", %{tmp_dir: tmp_dir} do
     store = start_store!(tmp_dir)
     assert :ok = Migrator.migrate(store)
-
     now = "2026-06-17T00:00:00Z"
-    content_hash = String.duplicate("a", 64)
 
-    insert_memory_sql = """
-    INSERT INTO memories(id, content, content_hash, scope, agent_id, inserted_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT DO NOTHING
+    insert = """
+    INSERT INTO local_records(local_id, kind, content, writer, observed_at, updated_at, sync_state)
+    VALUES (?, 'note', 'c', 'agent', ?, ?, ?)
     """
 
-    assert {:ok, %Result{num_rows: 1}} =
-             Store.execute(store, insert_memory_sql, [
-               "mem_1",
-               "remember this",
-               content_hash,
-               "proj_local",
-               "agent_1",
-               now,
-               now
-             ])
-
-    assert {:ok,
-            %Result{
-              rows: [
-                %{
-                  "memory_type" => "episodic",
-                  "sync_state" => "pending",
-                  "tags" => "[]",
-                  "metadata" => "{}",
-                  "confidence" => confidence
-                }
-              ]
-            }} =
-             Store.query(
-               store,
-               "SELECT memory_type, sync_state, tags, metadata, confidence FROM memories WHERE id = ?",
-               ["mem_1"]
-             )
-
-    assert confidence in [1, 1.0]
-
-    assert {:ok, %Result{num_rows: 0}} =
-             Store.execute(store, insert_memory_sql, [
-               "mem_duplicate",
-               "duplicate",
-               content_hash,
-               "proj_local",
-               "agent_1",
-               now,
-               now
-             ])
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "UPDATE memories SET deleted_at = ?, updated_at = ? WHERE id = ?",
-               [now, now, "mem_1"]
-             )
-
-    assert {:ok, %Result{num_rows: 1}} =
-             Store.execute(store, insert_memory_sql, [
-               "mem_2",
-               "remember this again",
-               content_hash,
-               "proj_local",
-               "agent_1",
-               now,
-               now
-             ])
+    assert {:ok, %Result{num_rows: 1}} = Store.execute(store, insert, ["l1", now, now, "pending"])
+    assert {:error, %Turso.Error{}} = Store.execute(store, insert, ["l2", now, now, "bogus"])
 
     assert {:error, %Turso.Error{}} =
              Store.execute(
                store,
-               """
-               INSERT INTO memory_outbox(op, memory_id, inserted_at, updated_at)
-               VALUES (?, ?, ?, ?)
-               """,
-               ["update", "mem_2", now, now]
+               "INSERT INTO memory_outbox(op, local_id, payload, inserted_at, updated_at) VALUES ('update', 'l1', '{}', ?, ?)",
+               [now, now]
              )
-
-    assert {:ok, %Result{num_rows: 1}} =
-             Store.execute(
-               store,
-               """
-               INSERT INTO memory_outbox(op, memory_id, inserted_at, updated_at)
-               VALUES (?, ?, ?, ?)
-               """,
-               ["remember", "mem_2", now, now]
-             )
-
-    assert {:ok, %Result{rows: [%{"state" => "pending", "attempts" => 0}]}} =
-             Store.query(
-               store,
-               "SELECT state, attempts FROM memory_outbox WHERE memory_id = ?",
-               ["mem_2"]
-             )
-  end
-
-  test "upgrades historical tombstones and quarantines unbound outbox states without losing rows",
-       %{
-         tmp_dir: tmp_dir
-       } do
-    store = start_store!(tmp_dir)
-    now = "2026-06-17T00:00:00Z"
-
-    assert :ok = apply_v1!(store)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id) VALUES (?, ?, ?, ?)",
-               ["same-hash", "scope-a", now, "wipe-a"]
-             )
-
-    for {state, seq} <- Enum.with_index(~w(pending inflight done failed), 1) do
-      assert {:ok, _} =
-               Store.execute(
-                 store,
-                 """
-                 INSERT INTO memory_outbox(seq, op, memory_id, state, attempts, last_error, inserted_at, updated_at)
-                 VALUES (?, 'remember', ?, ?, ?, ?, ?, ?)
-                 """,
-                 [seq, "memory-#{state}", state, seq, "#{state} error", now, now]
-               )
-    end
-
-    assert :ok = Migrator.migrate(store)
-    assert Migrator.current_version(store) == {:ok, Migrator.latest_version()}
-
-    assert MapSet.subset?(
-             MapSet.new(
-               ~w(memory_outbox_due_seq_idx memory_outbox_retention_idx memory_outbox_memory_id_idx)
-             ),
-             index_names(store)
-           )
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "INSERT INTO tombstones(content_hash, scope, wiped_at, directive_id) VALUES (?, ?, ?, ?)",
-               ["same-hash", "scope-b", now, "wipe-b"]
-             )
-
-    assert {:ok, %Result{rows: [%{"count" => 2}]}} =
-             Store.query(
-               store,
-               "SELECT COUNT(*) AS count FROM tombstones WHERE content_hash = ?",
-               ["same-hash"]
-             )
-
-    assert {:ok,
-            %Result{
-              rows: [
-                %{
-                  "state" => "dead_letter",
-                  "migration_state" => "pending",
-                  "attempts" => 1,
-                  "last_error" => "pending error"
-                },
-                %{
-                  "state" => "dead_letter",
-                  "migration_state" => "inflight",
-                  "attempts" => 2,
-                  "last_error" => "inflight error"
-                },
-                %{
-                  "state" => "done",
-                  "migration_state" => "done",
-                  "attempts" => 3,
-                  "completed_at" => ^now
-                },
-                %{
-                  "state" => "dead_letter",
-                  "migration_state" => "dead_letter",
-                  "attempts" => 4,
-                  "last_error" => "failed error",
-                  "dead_lettered_at" => ^now
-                }
-              ]
-            }} =
-             Store.query(
-               store,
-               "SELECT state, migration_state, attempts, last_error, completed_at, dead_lettered_at FROM memory_outbox ORDER BY seq"
-             )
-
-    assert :ok = Migrator.migrate(store)
-    assert Migrator.current_version(store) == {:ok, Migrator.latest_version()}
-  end
-
-  test "upgrades populated V2 command memories to V3 without changing data", %{tmp_dir: tmp_dir} do
-    store = start_store!(tmp_dir)
-    now = "2026-06-17T00:00:00Z"
-    assert :ok = apply_v1!(store)
-
-    assert {:ok, _} =
-             Store.transaction(store, fn conn ->
-               Enum.each(V2.up(), fn sql ->
-                 assert {:ok, _} = Store.execute(conn, sql)
-               end)
-
-               assert {:ok, _} = Store.execute(conn, "PRAGMA user_version = 2")
-             end)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "INSERT INTO memories(id, content, content_hash, scope, agent_id, remote_id, sync_state, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-               [
-                 "mem_old",
-                 "old",
-                 String.duplicate("a", 64),
-                 "proj_local",
-                 "agent_1",
-                 "hub_old",
-                 "synced",
-                 now,
-                 now
-               ]
-             )
-
-    assert :ok = Migrator.migrate(store)
-    assert Migrator.current_version(store) == {:ok, Migrator.latest_version()}
-
-    assert {:ok,
-            %Result{
-              rows: [
-                %{
-                  "id" => "mem_old",
-                  "remote_id" => "hub_old",
-                  "sync_state" => "synced",
-                  "remote_revision" => nil
-                }
-              ]
-            }} =
-             Store.query(store, "SELECT id, remote_id, sync_state, remote_revision FROM memories")
-
-    assert :ok = Migrator.migrate(store)
-  end
-
-  test "preserves the V1 outbox sequence high-water when all rows were deleted", %{
-    tmp_dir: tmp_dir
-  } do
-    store = start_store!(tmp_dir)
-    now = "2026-06-17T00:00:00Z"
-    assert :ok = apply_v1!(store)
-
-    for index <- 1..3 do
-      assert {:ok, _} =
-               Store.execute(
-                 store,
-                 "INSERT INTO memory_outbox(op, memory_id, inserted_at, updated_at) VALUES (?, ?, ?, ?)",
-                 ["remember", "legacy-memory-#{index}", now, now]
-               )
-    end
-
-    assert {:ok, %Result{rows: [%{"seq" => high_water}]}} =
-             Store.query(store, "SELECT seq FROM sqlite_sequence WHERE name = 'memory_outbox'")
-
-    assert {:ok, _} = Store.execute(store, "DELETE FROM memory_outbox")
-    assert :ok = Migrator.migrate(store)
-
-    assert {:ok, _} =
-             Store.execute(
-               store,
-               "INSERT INTO memory_outbox(op, memory_id, inserted_at, updated_at) VALUES (?, ?, ?, ?)",
-               ["remember", "post-upgrade-memory", now, now]
-             )
-
-    assert {:ok, %Result{rows: [%{"seq" => next_seq}]}} =
-             Store.query(store, "SELECT seq FROM memory_outbox WHERE memory_id = ?", [
-               "post-upgrade-memory"
-             ])
-
-    assert next_seq > high_water
   end
 
   test "fails closed rather than dropping or inventing a sentinel for a NULL V1 tombstone identity",
@@ -432,6 +147,48 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              Store.query(store, "SELECT seq FROM sqlite_sequence WHERE name = 'memory_outbox'")
   end
 
+  test "V8 -> V9 adds provenance columns, keeps rows and clears the pull cursor", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_store!(tmp_dir)
+    now = "2026-06-17T00:00:00Z"
+
+    assert {:ok, _} =
+             Store.transaction(store, fn conn ->
+               Enum.each(V8.up(), fn sql -> assert {:ok, _} = Store.execute(conn, sql) end)
+               assert {:ok, _} = Store.execute(conn, "PRAGMA user_version = 8")
+             end)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO local_records(local_id, kind, content, writer, observed_at, updated_at, sync_state) VALUES ('l1', 'note', 'c', 'agent', ?, ?, 'synced')",
+               [now, now]
+             )
+
+    for {key, value} <- [{"pull_cursor", ~s({"id":"x"})}, {"last_sync_at", now}] do
+      assert {:ok, _} =
+               Store.execute(store, "INSERT INTO memory_sync_state(key, value) VALUES (?, ?)", [
+                 key,
+                 value
+               ])
+    end
+
+    assert :ok = Migrator.migrate(store)
+    assert {:ok, 9} = Migrator.current_version(store)
+
+    columns = table_columns(store, "local_records")
+    assert Enum.take(columns, -3) == ~w(host_id client_id source_event_ids)
+
+    assert {:ok, %Result{rows: [row]}} =
+             Store.query(store, "SELECT host_id, client_id, source_event_ids FROM local_records")
+
+    assert row == %{"host_id" => nil, "client_id" => nil, "source_event_ids" => "[]"}
+
+    assert {:ok, %Result{rows: [%{"key" => "last_sync_at"}]}} =
+             Store.query(store, "SELECT key FROM memory_sync_state")
+  end
+
   defp table_names(store) do
     {:ok, %Result{rows: rows}} =
       Store.query(store, "SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -452,22 +209,6 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
 
   defp table_columns(store, table) do
     assert {:ok, %Result{rows: rows}} = Store.query(store, "PRAGMA table_info(#{table})")
-    Enum.map(rows, & &1["name"])
-  end
-
-  defp table_sql(store, table) do
-    assert {:ok, %Result{rows: [%{"sql" => sql}]}} =
-             Store.query(
-               store,
-               "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-               [table]
-             )
-
-    sql
-  end
-
-  defp index_columns(store, index) do
-    assert {:ok, %Result{rows: rows}} = Store.query(store, "PRAGMA index_info(#{index})")
     Enum.map(rows, & &1["name"])
   end
 

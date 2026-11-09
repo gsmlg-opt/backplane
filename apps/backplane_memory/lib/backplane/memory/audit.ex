@@ -3,17 +3,7 @@ defmodule Backplane.Memory.Audit do
 
   import Ecto.Query
 
-  @contract_operations ~w(
-    memory.config.set
-    projection.repair
-    session.abandoned
-    session.lifecycle_transition
-  )
-
   defp repo, do: Application.fetch_env!(:backplane_memory, :repo)
-
-  @doc "Enumerates the operations the memory domain still writes."
-  def contract_operations, do: Enum.sort(@contract_operations)
 
   @doc "Append an audit entry."
   def log(operation, actor, target_ids, metadata \\ %{}) when is_binary(operation) do

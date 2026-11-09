@@ -3,7 +3,7 @@ defmodule Backplane.HostAgent.Reporter do
   Formats host-agent status payloads for the Backplane host channel.
   """
 
-  alias Backplane.HostAgent.Memory.{CaptureUploader, Spool}
+  alias Backplane.HostAgent.Memory.{CaptureUploader, Local, Spool, Store}
   alias Backplane.HostAgent.Telemetry
 
   @doc "Builds the host-agent heartbeat payload."
@@ -14,7 +14,7 @@ defmodule Backplane.HostAgent.Reporter do
       "machine_name" => Map.fetch!(config, :machine_name),
       "metadata" => %{"otp_release" => System.otp_release()},
       "capture" => capture_status(config),
-      "memory" => memory_defaults(),
+      "memory" => memory_status(field(config, :memory)),
       "targets" => Enum.map(Map.get(config, :targets, []), &stringify_keys/1)
     }
   end
@@ -111,18 +111,41 @@ defmodule Backplane.HostAgent.Reporter do
     end
   end
 
-  defp memory_defaults do
-    Map.new(
-      ~w(items bytes revision lag stale_age_seconds retry_count dead_letter_count pending_commands failed_commands last_successful_sync),
-      &{&1, nil}
-    )
-    |> Map.merge(%{
-      "status" => "unavailable",
-      "protection_mode" => "disabled",
-      "lag_status" => "unavailable",
-      "partitions" => []
-    })
+  defp memory_status(memory) do
+    if field(memory, :enabled) == false do
+      %{"status" => "disabled"}
+    else
+      store = field(memory, :store_name) || Store
+
+      case safe_capture_call(fn -> store_stats(store) end, nil) do
+        stats when is_map(stats) ->
+          %{
+            "status" => "available",
+            "outbox_pending" => stats["outbox_pending"],
+            "outbox_failed" => stats["outbox_failed"],
+            "local_records" => stats["local_records"],
+            "last_sync_at" => blank_to_nil(stats["last_sync_at"]),
+            "last_error" => stats["last_error"] |> blank_to_nil() |> Local.truncate_error(),
+            "last_failed_error" =>
+              stats["last_failed_error"] |> blank_to_nil() |> Local.truncate_error()
+          }
+
+        _ ->
+          Map.new(
+            ~w(outbox_pending outbox_failed local_records last_sync_at last_error last_failed_error),
+            &{&1, nil}
+          )
+          |> Map.put("status", "unavailable")
+      end
+    end
   end
+
+  defp store_stats(store) do
+    if GenServer.whereis(store), do: Local.stats(store)
+  end
+
+  defp blank_to_nil(value) when value in [nil, ""], do: nil
+  defp blank_to_nil(value), do: value
 
   defp safe_settings(config, keys) do
     config
@@ -142,19 +165,8 @@ defmodule Backplane.HostAgent.Reporter do
     |> URI.to_string()
   end
 
-  defp memory_settings(memory) do
-    safe_settings(
-      memory,
-      ~w(enabled db_path bound_scope local_ttl_days sync_interval_ms sync_batch_size max_attempts tombstone_relearn)
-    )
-    |> Map.put(
-      "host_sync",
-      safe_settings(
-        field(memory, :host_sync),
-        ~w(enabled development_plaintext db_path max_frame_bytes max_changes max_items max_bytes max_items_per_partition max_age_days sync_interval_ms)
-      )
-    )
-  end
+  defp memory_settings(memory),
+    do: safe_settings(memory, ~w(enabled db_path sync_interval_ms sync_batch_size))
 
   defp capture_connection_state(status) when is_map(status),
     do: to_string(status[:connection_state] || "disconnected")

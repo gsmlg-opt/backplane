@@ -86,13 +86,11 @@ defmodule Backplane.Skills.AgentManageTest do
 
     memory = %{
       "status" => "available",
-      "pending_commands" => 3,
-      "failed_commands" => 1,
-      "revision" => 7,
-      "retry_count" => 2,
-      "dead_letter_count" => 1,
-      "last_successful_sync" => "2026-10-20T01:00:00Z",
-      "partitions" => []
+      "outbox_pending" => 3,
+      "outbox_failed" => 1,
+      "local_records" => 7,
+      "last_sync_at" => "2026-10-20T01:00:00Z",
+      "last_error" => "sync: boom"
     }
 
     assert :ok = AgentManage.update_runtime(host.id, %{"memory" => memory})
@@ -119,42 +117,34 @@ defmodule Backplane.Skills.AgentManageTest do
     refute Map.has_key?(refreshed.runtime, :memory)
   end
 
-  test "reports one current host sync configuration with bounded safe settings and no secrets" do
+  test "reports bounded memory settings and drops removed or unknown keys" do
     {:ok, host, auth_token, _} = Hosts.create_agent_with_token(%{"name" => "current-sync-report"})
     :ok = AgentManage.register_connection(host, auth_token, self(), %{})
-
-    safe_sync = %{
-      "enabled" => true,
-      "development_plaintext" => false,
-      "db_path" => "/tmp/current-memory.db",
-      "max_frame_bytes" => 262_144,
-      "max_changes" => 100,
-      "max_items" => 500,
-      "max_bytes" => 1_048_576,
-      "max_items_per_partition" => 100,
-      "max_age_days" => 30,
-      "sync_interval_ms" => 5_000
-    }
 
     assert :ok =
              AgentManage.report_config(host.id, %{
                "memory" => %{
                  "enabled" => true,
+                 "db_path" => "/tmp/current-memory.db",
+                 "sync_interval_ms" => 5_000,
+                 "sync_batch_size" => 50,
                  "api_key" => "hidden-memory-secret",
-                 "host_sync_v1" => %{"enabled" => true},
-                 "host_sync_v2" => %{"enabled" => false},
-                 "host_sync" =>
-                   Map.merge(safe_sync, %{
-                     "token" => "hidden-sync-token",
-                     "api_key" => "hidden-sync-secret"
-                   })
+                 "bound_scope" => "proj_local",
+                 "host_sync" => %{"enabled" => true, "token" => "hidden-sync-token"}
                },
                "agent" => %{"token" => "hidden-agent-token"},
                "capture" => %{"db_path" => String.duplicate("x", 4_097)}
              })
 
     assert {:ok, entry} = AgentManage.get_agent(host.id)
-    assert entry.config["memory"] == %{"enabled" => true, "host_sync" => safe_sync}
+
+    assert entry.config["memory"] == %{
+             "enabled" => true,
+             "db_path" => "/tmp/current-memory.db",
+             "sync_interval_ms" => 5_000,
+             "sync_batch_size" => 50
+           }
+
     assert entry.config["agent"]["token"] == "REDACTED"
     assert entry.config["capture"] == %{}
     refute inspect(entry.config) =~ "hidden-"
@@ -168,12 +158,12 @@ defmodule Backplane.Skills.AgentManageTest do
 
     for memory <- [
           [],
-          %{"revision" => -1},
-          %{"pending_commands" => 1.5},
-          %{"last_error" => "raw secret"},
-          %{"last_successful_sync" => "not-a-time"},
-          %{"partitions" => List.duplicate(%{}, 51)},
-          %{"revision" => String.duplicate("9", 40_000)}
+          %{"local_records" => -1},
+          %{"outbox_pending" => 1.5},
+          %{"last_error" => 5},
+          %{"last_sync_at" => "not-a-time"},
+          %{"last_failed_error" => 5},
+          %{"local_records" => String.duplicate("9", 40_000)}
         ] do
       assert {:error, :invalid_payload} =
                AgentManage.update_runtime(host.id, %{"memory" => memory})
@@ -181,11 +171,61 @@ defmodule Backplane.Skills.AgentManageTest do
 
     assert :ok =
              AgentManage.update_runtime(host.id, %{
-               "memory" => %{"status" => "unavailable", "revision" => nil}
+               "memory" => %{"status" => "unavailable", "outbox_pending" => nil}
              })
+
+    assert :ok = AgentManage.update_runtime(host.id, %{"memory" => %{"status" => "disabled"}})
 
     assert {:error, :invalid_payload} =
              AgentManage.report_config(host.id, %{"memory" => String.duplicate("x", 40_000)})
+  end
+
+  test "drops unknown memory keys instead of rejecting the report" do
+    {:ok, host, auth_token, _} = Hosts.create_agent_with_token(%{"name" => "rolling-upgrade"})
+    :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+
+    assert :ok =
+             AgentManage.update_runtime(host.id, %{
+               "memory" => %{
+                 "status" => "available",
+                 "outbox_failed" => 1,
+                 "last_failed_error" => "invalid: kind is invalid",
+                 "partitions" => [],
+                 "future_field" => %{"content" => "secret"}
+               }
+             })
+
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+
+    assert entry.runtime.memory == %{
+             "status" => "available",
+             "outbox_failed" => 1,
+             "last_failed_error" => "invalid: kind is invalid"
+           }
+  end
+
+  test "truncates an over-long memory last_error instead of rejecting the report" do
+    {:ok, host, auth_token, _} = Hosts.create_agent_with_token(%{"name" => "long-error"})
+    :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+    long = String.duplicate("é", 3_000)
+
+    assert :ok =
+             AgentManage.update_runtime(host.id, %{
+               "memory" => %{
+                 "status" => "available",
+                 "last_error" => long,
+                 "last_failed_error" => long
+               }
+             })
+
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+
+    for key <- ~w(last_error last_failed_error) do
+      error = entry.runtime.memory[key]
+      assert byte_size(error) <= 1_000
+      assert String.valid?(error)
+      assert String.ends_with?(error, "…")
+    end
   end
 
   test "records live connection IP, runtime, config, and channel exits" do

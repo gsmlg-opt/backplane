@@ -19,6 +19,14 @@ defmodule Backplane.HostAgent.HubProxy do
     |> normalize_tool_call()
   end
 
+  @doc "Pulls this host's gateway records changed after `cursor`."
+  @spec pull_memory(map() | nil, pos_integer()) ::
+          {:ok, %{String.t() => list() | map() | nil}} | {:error, term()}
+  def pull_memory(cursor, limit) when (is_map(cursor) or is_nil(cursor)) and is_integer(limit) do
+    push("memory_pull", %{"cursor" => cursor, "limit" => limit})
+    |> normalize_pull()
+  end
+
   defp push(event, payload) do
     with channel when is_pid(channel) <- MemoryProxy.channel(),
          true <- Process.alive?(channel) do
@@ -51,6 +59,13 @@ defmodule Backplane.HostAgent.HubProxy do
   defp normalize_tool_call({:ok, %{"error" => error}}), do: {:error, error}
   defp normalize_tool_call({:error, reason}), do: {:error, reason}
   defp normalize_tool_call(other), do: {:error, {:unexpected_reply, other}}
+
+  defp normalize_pull({:ok, %{"records" => records} = reply}) when is_list(records),
+    do: {:ok, %{"records" => records, "cursor" => Map.get(reply, "cursor")}}
+
+  defp normalize_pull({:error, %{"code" => code}}) when is_binary(code), do: {:error, code}
+  defp normalize_pull({:error, reason}), do: {:error, reason}
+  defp normalize_pull(other), do: {:error, {:unexpected_reply, other}}
 
   defp push_exit_reason({reason, _stack}), do: reason
   defp push_exit_reason(reason), do: reason

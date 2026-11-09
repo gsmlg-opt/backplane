@@ -18,7 +18,6 @@ memory:
   db_path: /ABSOLUTE/LOCAL/RUN/host/commands.db
   sync_interval_ms: 1000
   sync_batch_size: 50
-  max_attempts: 5
 
 capture:
   enabled: true

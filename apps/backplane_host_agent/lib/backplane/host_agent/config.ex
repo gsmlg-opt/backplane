@@ -64,10 +64,8 @@ defmodule Backplane.HostAgent.Config do
     memory:
       enabled: true
       db_path: #{Path.join(work_dir, "memory/host_agent_memory.db")}
-      local_ttl_days: 90
       sync_interval_ms: 5000
       sync_batch_size: 50
-      max_attempts: 5
 
     capture:
       enabled: true
@@ -170,9 +168,6 @@ defmodule Backplane.HostAgent.Config do
     capture = parse_capture(raw["capture"], work_dir, http_port)
     memory = parse_memory(raw["memory"], work_dir, http_port)
 
-    memory =
-      put_in(memory, [:host_sync, :reserved_db_paths], [memory.db_path, capture.db_path])
-
     %__MODULE__{
       host_id: host_id,
       machine_name: agent["machine_name"],
@@ -214,77 +209,10 @@ defmodule Backplane.HostAgent.Config do
     %{
       enabled: parse_bool(raw["enabled"], memory_enabled_by_default?(http_port)),
       db_path: expand_path(raw["db_path"] || default_memory_db_path(work_dir)),
-      bound_scope: parse_non_empty_string(raw["bound_scope"], "proj_local"),
-      local_ttl_days: parse_positive_int(raw["local_ttl_days"], 90),
       sync_interval_ms: parse_positive_int(raw["sync_interval_ms"], 5_000),
-      sync_batch_size: parse_positive_int(raw["sync_batch_size"], 50),
-      max_attempts: parse_positive_int(raw["max_attempts"], 5),
-      tombstone_relearn: parse_tombstone_relearn(raw["tombstone_relearn"]),
-      host_sync: parse_edge(sync_config(raw, "host_sync"), work_dir),
-      import_profiles: parse_import_profiles(raw["import_profiles"])
+      sync_batch_size: parse_positive_int(raw["sync_batch_size"], 50)
     }
   end
-
-  defp sync_config(raw, key) do
-    case raw[key] do
-      value when is_map(value) -> value
-      _ -> %{}
-    end
-  end
-
-  defp parse_edge(raw, work_dir) do
-    %{
-      enabled: parse_bool(raw["enabled"], false),
-      development_plaintext: parse_bool(raw["development_plaintext"], false),
-      db_path:
-        expand_path(
-          parse_non_empty_string(
-            raw["db_path"],
-            Path.join(work_dir || default_work_dir(), "memory/edge_memory.db")
-          )
-        ),
-      max_frame_bytes: parse_bounded_positive_int(raw["max_frame_bytes"], 524_288, 524_288),
-      max_changes: parse_bounded_positive_int(raw["max_changes"], 100, 100),
-      max_items: parse_positive_int(raw["max_items"], 10_000),
-      max_bytes: parse_positive_int(raw["max_bytes"], 64 * 1024 * 1024),
-      max_items_per_partition: parse_positive_int(raw["max_items_per_partition"], 5_000),
-      max_age_days: parse_positive_int(raw["max_age_days"], 90),
-      type_quotas: parse_type_quotas(raw["type_quotas"]),
-      sync_interval_ms: parse_positive_int(raw["sync_interval_ms"], 5_000)
-    }
-  end
-
-  defp parse_type_quotas(quotas) when is_map(quotas) do
-    quotas
-    |> Enum.filter(fn {type, quota} -> is_binary(type) and is_integer(quota) and quota > 0 end)
-    |> Map.new()
-  end
-
-  defp parse_type_quotas(_quotas), do: %{}
-
-  defp parse_import_profiles(profiles) when is_map(profiles) do
-    profiles
-    |> Enum.filter(fn {name, value} ->
-      is_binary(name) and Regex.match?(~r/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/, name) and
-        is_map(value)
-    end)
-    |> Map.new(fn {name, value} ->
-      {name,
-       %{
-         path: expand_path(value["path"]),
-         approved_roots:
-           value
-           |> Map.get("approved_roots", [])
-           |> List.wrap()
-           |> Enum.filter(&is_binary/1)
-           |> Enum.map(&expand_path/1),
-         allow_symlinks: parse_bool(value["allow_symlinks"], false),
-         max_depth: parse_positive_int(value["max_depth"], 12)
-       }}
-    end)
-  end
-
-  defp parse_import_profiles(_profiles), do: %{}
 
   defp memory_enabled_by_default?(port) when is_integer(port) and port > 0, do: true
   defp memory_enabled_by_default?(_port), do: false
@@ -344,9 +272,6 @@ defmodule Backplane.HostAgent.Config do
   end
 
   defp parse_non_empty_string(_value, default), do: default
-
-  defp parse_tombstone_relearn("allow_with_log"), do: "allow_with_log"
-  defp parse_tombstone_relearn(_value), do: "block"
 
   defp parse_telemetry(raw, work_dir) do
     raw = if is_map(raw), do: raw, else: %{}

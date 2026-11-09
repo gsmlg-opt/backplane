@@ -756,36 +756,40 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   def memory_health(assigns) do
     memory = get_in(assigns.entry, [:runtime, :memory]) || %{}
-
-    assigns = assign(assigns, :memory_partitions, memory["partitions"] || [])
+    failed = memory["outbox_failed"]
 
     assigns =
-      assign(assigns, :memory_rows, [
-        {"Pending commands", memory["pending_commands"]},
-        {"Failed commands", memory["failed_commands"]},
-        {"Mirror revision", memory["revision"]},
-        {"Mirror items / bytes",
-         if(is_integer(memory["items"]) and is_integer(memory["bytes"]),
-           do: "#{memory["items"]} / #{memory["bytes"]}"
-         )},
-        {"Retries", memory["retry_count"]},
-        {"Dead letters", memory["dead_letter_count"]},
-        {"Last successful command sync", memory["last_successful_sync"]},
-        {"Mirror age (seconds)", memory["stale_age_seconds"]},
-        {"Last heartbeat", report_timestamp(assigns.entry.last_heartbeat_at)}
-      ])
+      assigns
+      |> assign(:memory, memory)
+      |> assign(:memory_disabled, memory["status"] == "disabled")
+      |> assign(:memory_unavailable, memory["status"] == "unavailable")
+      |> assign(:failed_uploads, failed)
+      |> assign(:failed_warning, is_integer(failed) and failed > 0)
+      |> assign(:last_error, memory["last_error"])
+      |> assign(:last_failed_error, memory["last_failed_error"])
 
     ~H"""
     <.dm_card variant="bordered">
       <:title>Memory health</:title>
       <p :if={is_map(get_in(@entry, [:runtime, :memory])) and report_stale?(@entry)} class="mb-3 text-sm text-warning">Last-known Memory report; stale since disconnect or reconnect.</p>
-      <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-        <div :for={{label, value} <- @memory_rows}><dt class="font-medium">{label}</dt><dd class="text-on-surface-variant">{if is_nil(value), do: "Unavailable", else: value}</dd></div>
+      <p :if={@memory_disabled} class="mb-3 text-sm text-on-surface-variant">Local memory is disabled on this host.</p>
+      <p :if={@memory_unavailable} class="mb-3 text-sm text-on-surface-variant">Local memory store is not running.</p>
+      <dl :if={not @memory_disabled and not @memory_unavailable} class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+        <div><dt class="font-medium">Pending uploads: {memory_value(@memory["outbox_pending"])}</dt></div>
+        <div>
+          <dt class="font-medium">
+            Failed uploads: {memory_value(@failed_uploads)}
+            <.dm_badge :if={@failed_warning} variant="warning">Needs attention</.dm_badge>
+          </dt>
+          <dd :if={@failed_warning and is_binary(@last_failed_error) and @last_failed_error != ""} id="host-memory-failed-error" class="break-all text-warning">{@last_failed_error}</dd>
+        </div>
+        <div><dt class="font-medium">Local records: {memory_value(@memory["local_records"])}</dt></div>
+        <div><dt class="font-medium">Last sync: {memory_value(@memory["last_sync_at"])}</dt></div>
+        <div :if={is_binary(@last_error) and @last_error != ""}><dt class="font-medium">Last error</dt><dd class="break-all text-on-surface-variant">{@last_error}</dd></div>
       </dl>
-      <div :if={@memory_partitions != []} class="mt-3 space-y-2 text-xs">
-        <p class="font-medium">Reported mirror partitions (up to 50)</p>
-        <p :for={partition <- @memory_partitions} class="break-all">{partition["memory_space_id"]} · {partition["scope"]} / {partition["namespace"]} · Revision {partition["applied_revision"] || "Unavailable"} · Last sync {partition["last_sync_at"] || "Unavailable"}</p>
-      </div>
+      <dl class="mt-3 text-sm">
+        <div><dt class="font-medium">Last heartbeat: {report_timestamp(@entry.last_heartbeat_at)}</dt></div>
+      </dl>
       <dl :if={@entry.config} class="mt-3 space-y-2 text-sm">
         <div :if={config_stale?(@entry)} class="text-warning">Last-known local settings; stale.</div>
         <div><dt class="font-medium">Local settings applied</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || "Unavailable"}</dd></div>
@@ -793,6 +797,9 @@ defmodule Backplane.Admin.HostAgentsLive do
     </.dm_card>
     """
   end
+
+  defp memory_value(nil), do: "Unavailable"
+  defp memory_value(value), do: value
 
   defp report_timestamp(%DateTime{} = time), do: DateTime.to_iso8601(time)
   defp report_timestamp(_), do: "Unavailable"
@@ -954,12 +961,8 @@ defmodule Backplane.Admin.HostAgentsLive do
     memory:
       enabled: true
       db_path: ~/.local/share/backplane/host_agent/memory/host_agent_memory.db
-      bound_scope: proj_local
-      local_ttl_days: 90
       sync_interval_ms: 5000
       sync_batch_size: 50
-      max_attempts: 5
-      tombstone_relearn: block
 
     telemetry:
       enabled: true
@@ -1173,12 +1176,8 @@ defmodule Backplane.Admin.HostAgentsLive do
       "memory",
       "enabled",
       "db_path",
-      "bound_scope",
-      "local_ttl_days",
       "sync_interval_ms",
       "sync_batch_size",
-      "max_attempts",
-      "tombstone_relearn",
       "telemetry",
       "dir",
       "retention_days",

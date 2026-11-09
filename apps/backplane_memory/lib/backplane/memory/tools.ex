@@ -59,19 +59,22 @@ defmodule Backplane.Memory.Tools do
   def remember(%{"content" => content} = args, auth) when is_binary(content) do
     metadata = Map.get(auth, :principal_metadata) || %{}
 
-    attrs =
-      args
-      |> Map.take(~w(content kind title subjects property tags session_id integration request_key))
-      |> Map.put("writer", writer(args["writer"]))
-      |> Map.put("client_id", Map.get(auth, :client_id))
-      |> Map.put("host_id", metadata["host_id"] || args["host"])
-      |> Map.put("agent_id", args["agent"])
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-      |> Map.new()
+    with {:ok, observed_at} <- observed_at(args["observed_at"]) do
+      attrs =
+        args
+        |> Map.take(~w(content kind title subjects property tags session_id integration request_key))
+        |> Map.put("writer", writer(args["writer"]))
+        |> Map.put("client_id", Map.get(auth, :client_id))
+        |> Map.put("host_id", metadata["host_id"] || args["host"])
+        |> Map.put("agent_id", args["agent"])
+        |> Map.put("observed_at", observed_at)
+        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+        |> Map.new()
 
-    case Records.remember(attrs) do
-      {:ok, record} -> {:ok, render(record)}
-      {:error, changeset} -> {:error, "invalid: " <> changeset_errors(changeset)}
+      case Records.remember(attrs) do
+        {:ok, record} -> {:ok, render(record)}
+        {:error, changeset} -> {:error, "invalid: " <> changeset_errors(changeset)}
+      end
     end
   end
 
@@ -87,6 +90,19 @@ defmodule Backplane.Memory.Tools do
 
   def forget(%{"id" => _}, _auth), do: {:error, "invalid: reason is required"}
   def forget(_args, _auth), do: {:error, "invalid: id and reason are required"}
+
+  # Optional caller-supplied observation time (e.g. an offline host write
+  # uploaded later); defaults to now in `Records.remember/1`.
+  defp observed_at(nil), do: {:ok, nil}
+
+  defp observed_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      {:error, _} -> {:error, "invalid: observed_at"}
+    end
+  end
+
+  defp observed_at(_value), do: {:error, "invalid: observed_at"}
 
   defp writer("user"), do: "user"
   defp writer(_), do: "agent"
@@ -120,28 +136,5 @@ defmodule Backplane.Memory.Tools do
     |> Enum.join("; ")
   end
 
-  defp render(%Record{} = r) do
-    %{
-      "id" => r.id,
-      "kind" => r.kind,
-      "title" => r.title,
-      "content" => r.content,
-      "subjects" => r.subjects,
-      "property" => r.property,
-      "tags" => r.tags,
-      "status" => r.status,
-      "superseded_by" => r.superseded_by,
-      "forgotten_reason" => r.forgotten_reason,
-      "observed_at" => r.observed_at,
-      "provenance" => %{
-        "writer" => r.writer,
-        "host" => r.host_id,
-        "agent" => r.agent_id,
-        "integration" => r.integration,
-        "session" => r.session_id,
-        "client" => r.client_id,
-        "source_event_ids" => r.source_event_ids
-      }
-    }
-  end
+  defp render(%Record{} = r), do: Records.to_map(r)
 end

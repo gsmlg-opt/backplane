@@ -1,7 +1,7 @@
 # Backplane Memory 精简重建 — 设计
 
 - 日期：2026-11-09
-- 状态：待用户确认
+- 状态：待用户确认；Plan 2（host 离线记忆：本地存储、outbox、pull）已实现
 - 范围：`apps/backplane_memory`、`apps/backplane_host_agent` 的 memory/capture 部分、`apps/backplane_api` 的 host-agent memory 通道、`apps/backplane_system` 中 memory 相关表与 settings、`apps/backplane_admin` 的 Memory 页面、`integrations/memory/*`、CI 中 memory 相关步骤。
 - 标注约定：**[用户决定]** 来自用户明确表态；**[设计者决定]** 是我（设计者）的选择，用户可推翻；**[留给实施者]** 由实施者自行判断。
 

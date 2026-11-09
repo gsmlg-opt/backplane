@@ -391,13 +391,13 @@ defmodule Backplane.Skills.AgentManage do
   end
 
   defp normalize_runtime(payload) do
-    payload = stringify_keys(payload)
+    payload = payload |> stringify_keys() |> truncate_memory_error()
 
     with :ok <- validate_agent_version(payload),
          :ok <- validate_targets(payload),
          :ok <- validate_metadata(payload),
          :ok <- validate_capture(payload),
-         :ok <- validate_memory(payload) do
+         {:ok, payload} <- validate_memory(payload) do
       runtime =
         %{}
         |> maybe_put(:status, payload["status"] || "online")
@@ -409,6 +409,34 @@ defmodule Backplane.Skills.AgentManage do
 
       {:ok, runtime}
     end
+  end
+
+  @max_error_bytes 1_000
+
+  defp truncate_memory_error(%{"memory" => memory} = payload) when is_map(memory) do
+    memory =
+      Enum.reduce(~w(last_error last_failed_error), memory, fn key, acc ->
+        case acc do
+          %{^key => error} when is_binary(error) and byte_size(error) > @max_error_bytes ->
+            keep = trim_to_valid_utf8(binary_part(error, 0, @max_error_bytes - 3))
+            %{acc | key => keep <> "…"}
+
+          _ ->
+            acc
+        end
+      end)
+
+    %{payload | "memory" => memory}
+  end
+
+  defp truncate_memory_error(payload), do: payload
+
+  defp trim_to_valid_utf8(<<>>), do: <<>>
+
+  defp trim_to_valid_utf8(binary) do
+    if String.valid?(binary),
+      do: binary,
+      else: trim_to_valid_utf8(binary_part(binary, 0, byte_size(binary) - 1))
   end
 
   defp validate_agent_version(%{"agent_version" => version})
@@ -456,37 +484,31 @@ defmodule Backplane.Skills.AgentManage do
   defp validate_capture(%{"capture" => _capture}), do: {:error, :invalid_payload}
   defp validate_capture(_payload), do: :ok
 
-  defp validate_memory(%{"memory" => memory}) when is_map(memory) do
-    counters =
-      ~w(items bytes revision lag stale_age_seconds retry_count dead_letter_count pending_commands failed_commands)
+  @memory_counters ~w(outbox_pending outbox_failed local_records)
+  @memory_errors ~w(last_error last_failed_error)
+  @memory_keys ["status", "last_sync_at" | @memory_counters ++ @memory_errors]
+
+  # Unknown keys are dropped rather than rejected so a newer host agent can
+  # report extra fields during a rolling upgrade.
+  defp validate_memory(%{"memory" => memory} = payload) when is_map(memory) do
+    memory = Map.take(memory, @memory_keys)
 
     valid =
       bounded_payload?(memory) and
         Enum.all?(memory, fn
-          {"status", value} ->
-            value in ~w(available unavailable)
-
-          {"protection_mode", value} ->
-            value in ~w(disabled plaintext_development protection_unavailable encrypted)
-
-          {"lag_status", value} ->
-            value in ~w(known unavailable)
-
-          {"last_successful_sync", value} ->
-            timestamp?(value)
-
-          {"partitions", value} ->
-            partitions?(value)
-
-          {key, value} ->
-            key in counters and counter?(value)
+          {"status", value} -> value in ~w(available unavailable disabled)
+          {"last_sync_at", value} -> timestamp?(value)
+          {key, value} when key in @memory_errors -> memory_error?(value)
+          {_counter, value} -> counter?(value)
         end)
 
-    if valid, do: :ok, else: {:error, :invalid_payload}
+    if valid, do: {:ok, %{payload | "memory" => memory}}, else: {:error, :invalid_payload}
   end
 
   defp validate_memory(%{"memory" => _}), do: {:error, :invalid_payload}
-  defp validate_memory(_), do: :ok
+  defp validate_memory(payload), do: {:ok, payload}
+
+  defp memory_error?(value), do: is_nil(value) or (is_binary(value) and byte_size(value) <= 1_024)
 
   defp counter?(nil), do: true
 
@@ -500,24 +522,6 @@ defmodule Backplane.Skills.AgentManage do
   end
 
   defp timestamp?(_), do: false
-
-  defp partitions?(partitions) when is_list(partitions) and length(partitions) <= 50 do
-    Enum.all?(partitions, fn partition ->
-      is_map(partition) and
-        Enum.all?(
-          ~w(memory_space_id scope namespace),
-          &(is_binary(partition[&1]) and byte_size(partition[&1]) in 1..256)
-        ) and
-        Enum.all?(partition, fn
-          {key, _} when key in ~w(memory_space_id scope namespace) -> true
-          {key, value} when key in ~w(applied_revision stale_age_seconds) -> counter?(value)
-          {"last_sync_at", value} -> timestamp?(value)
-          _ -> false
-        end)
-    end)
-  end
-
-  defp partitions?(_), do: false
 
   defp bounded_payload?(payload) do
     case Jason.encode(payload) do
@@ -589,24 +593,8 @@ defmodule Backplane.Skills.AgentManage do
     end
   end
 
-  defp safe_memory_settings(memory) do
-    memory = memory || %{}
-
-    safe_config_section(
-      memory,
-      ~w(enabled db_path bound_scope local_ttl_days sync_interval_ms sync_batch_size max_attempts tombstone_relearn)
-    )
-    |> Map.put(
-      "host_sync",
-      safe_config_section(
-        map_section(memory["host_sync"]),
-        ~w(enabled development_plaintext db_path max_frame_bytes max_changes max_items max_bytes max_items_per_partition max_age_days sync_interval_ms)
-      )
-    )
-  end
-
-  defp map_section(value) when is_map(value), do: value
-  defp map_section(_), do: %{}
+  defp safe_memory_settings(memory),
+    do: safe_config_section(memory, ~w(enabled db_path sync_interval_ms sync_batch_size))
 
   defp safe_config_section(section, keys) do
     (section || %{})
