@@ -100,7 +100,9 @@ defmodule Backplane.HostAgent.Memory.SupervisorTest do
     assert {:ok, ^latest} = Migrator.current_version(store_name)
 
     child_ids = pid |> Supervisor.which_children() |> Enum.map(&elem(&1, 0))
-    assert child_ids -- [Migrator] == [Backplane.HostAgent.Memory.Store]
+
+    assert Enum.sort(child_ids -- [Migrator]) ==
+             [Backplane.HostAgent.Memory.OutboxSync, Backplane.HostAgent.Memory.Store]
 
     Supervisor.stop(pid)
   end

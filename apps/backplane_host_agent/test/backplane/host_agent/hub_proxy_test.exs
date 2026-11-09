@@ -6,8 +6,16 @@ defmodule Backplane.HostAgent.HubProxyTest do
   defmodule FakeChannel do
     def push(channel, event, payload, _timeout \\ 5_000) do
       send(channel, {:push, event, payload})
-      {:ok, %{"ok" => true, "result" => %{"status" => "ok"}}}
+      reply(event, payload)
     end
+
+    defp reply("memory_pull", %{"cursor" => %{"id" => "bad"}}),
+      do: {:error, %{"code" => "invalid_cursor", "retryable" => false}}
+
+    defp reply("memory_pull", _payload),
+      do: {:ok, %{"records" => [%{"id" => "r1"}], "cursor" => %{"id" => "r1"}}}
+
+    defp reply(_event, _payload), do: {:ok, %{"ok" => true, "result" => %{"status" => "ok"}}}
   end
 
   setup do
@@ -44,5 +52,19 @@ defmodule Backplane.HostAgent.HubProxyTest do
     assert {:ok, child} = Trace.parse_traceparent(traceparent)
     assert child.trace_id == ctx.trace_id
     assert child.parent_id != nil
+  end
+
+  test "pull_memory pushes memory_pull and normalizes the reply" do
+    assert {:ok, %{"records" => [%{"id" => "r1"}], "cursor" => %{"id" => "r1"}}} =
+             HubProxy.pull_memory(nil, 200)
+
+    assert_receive {:push, "memory_pull", %{"cursor" => nil, "limit" => 200}}
+
+    assert {:error, "invalid_cursor"} = HubProxy.pull_memory(%{"id" => "bad"}, 200)
+  end
+
+  test "pull_memory reports not_connected without a channel" do
+    MemoryProxy.set_channel(nil)
+    assert {:error, :not_connected} = HubProxy.pull_memory(nil, 200)
   end
 end

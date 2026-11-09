@@ -21,6 +21,7 @@ defmodule Backplane.HostAgent.Worker do
   }
 
   alias Backplane.HostAgent.Memory.CaptureSupervisor
+  alias Backplane.HostAgent.Memory.OutboxSync
   alias Backplane.HostAgent.Memory.Supervisor, as: MemorySupervisor
   alias Backplane.HostAgent.TraceSupervisor
 
@@ -300,6 +301,8 @@ defmodule Backplane.HostAgent.Worker do
               {:ok, %{channel: channel} = connection} ->
                 case set_memory_connection(memory_proxy_module, connection) do
                   :ok ->
+                    OutboxSync.sync_async()
+
                     {:ok,
                      %{
                        local_state

@@ -1,14 +1,18 @@
 defmodule Backplane.HostAgent.Memory.Supervisor do
   @moduledoc """
-  Starts the local memory store and runs boot migrations before returning.
+  Starts the local memory store, runs boot migrations before returning, then
+  starts the outbox sync loop.
   """
 
   use Supervisor
 
-  alias Backplane.HostAgent.Memory.{Migrator, Store}
+  alias Backplane.HostAgent.{HubProxy, MemoryProxy}
+  alias Backplane.HostAgent.Memory.{Migrator, OutboxSync, Store}
 
   @default_pool_size 1
   @default_busy_timeout_ms 5_000
+  @default_sync_interval_ms 5_000
+  @default_sync_batch_size 50
 
   def start_link(%{enabled: false}), do: :ignore
 
@@ -29,7 +33,14 @@ defmodule Backplane.HostAgent.Memory.Supervisor do
        name: store_name,
        pool_size: Map.get(opts, :pool_size, @default_pool_size),
        busy_timeout_ms: Map.get(opts, :busy_timeout_ms, @default_busy_timeout_ms)},
-      {Migrator, store: store_name}
+      {Migrator, store: store_name},
+      {OutboxSync,
+       name: Map.get(opts, :sync_name, OutboxSync),
+       store: store_name,
+       hub_proxy: Map.get(opts, :hub_proxy, HubProxy),
+       memory_proxy: Map.get(opts, :memory_proxy, MemoryProxy),
+       interval_ms: Map.get(opts, :sync_interval_ms, @default_sync_interval_ms),
+       batch_size: Map.get(opts, :sync_batch_size, @default_sync_batch_size)}
     ]
 
     Elixir.Supervisor.init(children, strategy: :one_for_one)
