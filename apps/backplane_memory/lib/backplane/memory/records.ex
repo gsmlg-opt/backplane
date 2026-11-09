@@ -35,18 +35,13 @@ defmodule Backplane.Memory.Records do
           {:ok, Record.t()} | {:error, :not_found | :not_active | Ecto.Changeset.t()}
   def replace(old_id, attrs) when is_map(attrs) do
     with {:ok, uuid} <- Ecto.UUID.cast(old_id),
-         %Record{} = old <- repo().get(Record, uuid) do
+         %Record{} <- repo().get(Record, uuid) do
       repo().transaction(fn ->
+        old = Record |> where([r], r.id == ^uuid) |> lock("FOR UPDATE") |> repo().one!()
+
         with {:active, true} <- {:active, old.status == "active"},
              {:ok, new} <- remember(attrs),
-             {:ok, _} <-
-               old
-               |> Ecto.Changeset.change(%{
-                 status: "superseded",
-                 superseded_by: new.id,
-                 updated_at: DateTime.utc_now()
-               })
-               |> repo().update() do
+             {:ok, _} <- supersede_old(old, new) do
           new
         else
           {:active, false} -> repo().rollback(:not_active)
@@ -56,6 +51,19 @@ defmodule Backplane.Memory.Records do
     else
       _ -> {:error, :not_found}
     end
+  end
+
+  # A request_key hit returns the old row itself; it must stay active.
+  defp supersede_old(%Record{id: id} = old, %Record{id: id}), do: {:ok, old}
+
+  defp supersede_old(old, new) do
+    old
+    |> Ecto.Changeset.change(%{
+      status: "superseded",
+      superseded_by: new.id,
+      updated_at: DateTime.utc_now()
+    })
+    |> repo().update()
   end
 
   @doc "Active agent-written records of a session, optionally restricted to `host_id`."

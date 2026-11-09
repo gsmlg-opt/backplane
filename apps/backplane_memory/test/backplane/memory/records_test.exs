@@ -399,6 +399,18 @@ defmodule Backplane.Memory.RecordsTest do
       assert repo().get!(Record, old.id).status == "active"
     end
 
+    test "keeps the record active when replaced with its own request_key" do
+      {:ok, old} = Records.remember(base(%{"kind" => "procedure", "request_key" => "rk-self"}))
+
+      assert {:ok, same} =
+               Records.replace(old.id, base(%{"kind" => "procedure", "request_key" => "rk-self"}))
+
+      assert same.id == old.id
+      reloaded = repo().get!(Record, old.id)
+      assert reloaded.status == "active"
+      assert reloaded.superseded_by == nil
+    end
+
     test "returns :not_found for an unknown id" do
       assert {:error, :not_found} = Records.replace(Ecto.UUID.generate(), base())
     end
