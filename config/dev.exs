@@ -53,6 +53,8 @@ config :backplane_api, Backplane.Api.Endpoint,
     duskmoon_bundler_api: {Mix.Tasks.DuskmoonBundler.Dev, :run, [["backplane_api", "--tailwind"]]}
   ]
 
+config :backplane_memory, llm_proxy_url: "http://localhost:4220"
+
 config :backplane_admin, Backplane.Admin.Endpoint,
   http: [ip: {0, 0, 0, 0}, port: 4221],
   check_origin: false,

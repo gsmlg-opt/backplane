@@ -13,6 +13,7 @@ defmodule Backplane.Memory.Records do
   @default_recent_limit 20
   @max_recent_limit 100
   @max_changed_limit 500
+  @future_tolerance_seconds 300
 
   @spec remember(map()) :: {:ok, Record.t()} | {:error, Ecto.Changeset.t()}
   def remember(attrs) when is_map(attrs) do
@@ -24,6 +25,47 @@ defmodule Backplane.Memory.Records do
     else
       _ -> insert(attrs)
     end
+  end
+
+  @doc """
+  Inserts `attrs` (same path as `remember/1`) and marks the active record `old_id`
+  superseded by it, in one transaction.
+  """
+  @spec replace(Ecto.UUID.t(), map()) ::
+          {:ok, Record.t()} | {:error, :not_found | :not_active | Ecto.Changeset.t()}
+  def replace(old_id, attrs) when is_map(attrs) do
+    with {:ok, uuid} <- Ecto.UUID.cast(old_id),
+         %Record{} = old <- repo().get(Record, uuid) do
+      repo().transaction(fn ->
+        with {:active, true} <- {:active, old.status == "active"},
+             {:ok, new} <- remember(attrs),
+             {:ok, _} <-
+               old
+               |> Ecto.Changeset.change(%{
+                 status: "superseded",
+                 superseded_by: new.id,
+                 updated_at: DateTime.utc_now()
+               })
+               |> repo().update() do
+          new
+        else
+          {:active, false} -> repo().rollback(:not_active)
+          {:error, reason} -> repo().rollback(reason)
+        end
+      end)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc "Active agent-written records of a session, optionally restricted to `host_id`."
+  @spec agent_written_for_session(String.t() | nil, String.t()) :: [Record.t()]
+  def agent_written_for_session(host_id, session_id) do
+    Record
+    |> where([r], r.writer == "agent" and r.status == "active" and r.session_id == ^session_id)
+    |> then(fn q -> if host_id, do: where(q, [r], r.host_id == ^host_id), else: q end)
+    |> order_by([r], asc: r.inserted_at, asc: r.id)
+    |> repo().all()
   end
 
   @spec forget(Ecto.UUID.t(), String.t()) :: {:ok, Record.t()} | {:error, :not_found}
@@ -175,9 +217,32 @@ defmodule Backplane.Memory.Records do
     attrs
     |> Map.put_new("kind", "note")
     |> Map.put_new_lazy("observed_at", &DateTime.utc_now/0)
+    |> Map.update!("observed_at", &clamp_future/1)
     |> Map.put("subjects", subjects)
     |> Map.put("subject_keys", keys)
   end
+
+  defp clamp_future(observed_at) do
+    now = DateTime.utc_now()
+
+    with {:ok, at} <- to_datetime(observed_at),
+         :gt <- DateTime.compare(at, DateTime.add(now, @future_tolerance_seconds, :second)) do
+      now
+    else
+      _ -> observed_at
+    end
+  end
+
+  defp to_datetime(%DateTime{} = dt), do: {:ok, dt}
+
+  defp to_datetime(s) when is_binary(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _offset} -> {:ok, dt}
+      error -> error
+    end
+  end
+
+  defp to_datetime(_), do: :error
 
   defp insert(attrs) do
     result =
