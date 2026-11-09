@@ -52,6 +52,32 @@ forward `memory::*` calls to the gateway (`/memory/:agent_id/call/:method`).
 
 `/memory`: Overview, Records, Events, Sessions, Config.
 
+## Offline host memory
+
+Each host agent keeps a local store (host schema V8, `Memory.Local`) so
+`memory::*` calls keep working while the gateway is unreachable.
+
+- **Writes**: `remember` / `forget` are applied locally first and appended to a
+  durable on-disk outbox. Results of offline writes carry `"sync": "pending"`.
+  Every `remember` carries a `request_key` (`"host-agent:" <> UUIDv7`) created
+  before the first attempt and reused on each retry, so a resend after a
+  timeout returns the same gateway record (no duplicates).
+- **Outbox flush** (`Memory.OutboxSync`): entries flush in order on reconnect.
+  A `forget` of a record not yet synced waits for its `remember` and then uses
+  the resolved `remote_id`. Transport errors keep the entry pending; other
+  gateway errors (e.g. validation) mark it `failed` with `last_error`, without
+  blocking later entries. The outbox survives host restarts.
+- **Pull**: after the outbox drains, the host calls the gateway `memory_pull`
+  (`Records.changed_since/3`) with a cursor stored in `memory_sync_state`, and
+  mirrors records whose `host_id` is this host (including superseded/forgotten
+  status changes). Other hosts' memories are not mirrored.
+- **Offline reads**: `search` / `get` / `recent` read the local store and return
+  `"offline": true, "source": "local"`; non-active records are excluded by
+  default.
+- **Health**: the host reports `outbox_pending`, `outbox_failed`,
+  `local_records`, `last_sync_at` and `last_error`; the admin Memory page shows
+  them.
+
 ## Not yet built
 
 Automatic distillation by a memory maintenance agent, host-side collectors and
