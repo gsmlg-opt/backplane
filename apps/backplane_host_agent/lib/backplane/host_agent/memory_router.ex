@@ -21,6 +21,9 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   alias Backplane.HostAgent.HubProxy
   alias Backplane.HostAgent.Memory.Hooks
+  alias Backplane.HostAgent.Memory.Local
+  alias Backplane.HostAgent.Memory.Store
+  alias Backplane.HostAgent.Memory.UUID7
   alias Backplane.HostAgent.Memory.Spool.Turso, as: CaptureSpool
   alias Backplane.HostAgent.Services
   alias Backplane.HostAgent.Trace
@@ -28,6 +31,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   @mcp_protocol_version "2025-11-25"
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+  @transport_errors ["gateway_unavailable", "gateway_timeout"]
+  @local_read_tools ["memory::search", "memory::get", "memory::recent"]
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
   plug(:match)
@@ -266,10 +271,101 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp memory_tool?(name), do: name in MemoryToolContract.tools()
 
   defp forward_memory_tool(name, args, agent_id) do
+    case local_store() do
+      nil -> forward_raw(name, args, agent_id)
+      store -> forward_with_local(store, name, args, agent_id)
+    end
+  end
+
+  defp forward_raw(name, args, agent_id) do
     case hub_proxy().call_tool(name, put_agent(name, args, agent_id)) do
       {:ok, result} -> {:ok, result}
       {:error, reason} -> {:error, memory_error(reason)}
     end
+  end
+
+  # Offline-capable path: successful writes are cached locally, transport
+  # failures are queued (writes) or answered from the local cache (reads).
+  defp forward_with_local(store, "memory::remember", args, agent_id) do
+    request_key = args["request_key"] || "host-agent:" <> UUID7.generate()
+    args = Map.put(args, "request_key", request_key)
+
+    case forward_raw("memory::remember", args, agent_id) do
+      {:ok, record} ->
+        cache_remote(store, record)
+        {:ok, record}
+
+      {:error, reason} when reason in @transport_errors ->
+        queued_write(
+          Local.queue_remember(store, put_agent("memory::remember", args, agent_id), request_key),
+          reason
+        )
+
+      error ->
+        error
+    end
+  end
+
+  defp forward_with_local(store, "memory::forget" = name, args, agent_id) do
+    case forward_raw(name, args, agent_id) do
+      {:ok, record} ->
+        cache_remote(store, record)
+        {:ok, record}
+
+      {:error, reason} when reason in @transport_errors ->
+        queued_write(
+          Local.queue_forget(store, args["id"], args["reason"] || "forgotten"),
+          "gateway_unavailable"
+        )
+
+      error ->
+        error
+    end
+  end
+
+  defp forward_with_local(store, name, args, agent_id) when name in @local_read_tools do
+    case forward_raw(name, args, agent_id) do
+      {:error, reason} when reason in @transport_errors -> local_read(store, name, args, reason)
+      other -> other
+    end
+  end
+
+  defp forward_with_local(_store, name, args, agent_id), do: forward_raw(name, args, agent_id)
+
+  defp cache_remote(store, record) when is_map(record) do
+    Local.upsert_remote(store, record)
+    :ok
+  end
+
+  defp cache_remote(_store, _record), do: :ok
+
+  # A record that cannot be forgotten offline (unknown locally) keeps the
+  # original transport error.
+  defp queued_write({:ok, record}, _reason), do: {:ok, record}
+  defp queued_write({:error, _}, reason), do: {:error, reason}
+
+  defp local_read(store, "memory::search", args, _reason) do
+    results = Local.search(store, args["query"] || "", args)
+    {:ok, %{"results" => results, "offline" => true, "source" => "local"}}
+  end
+
+  defp local_read(store, "memory::recent", args, _reason) do
+    {:ok, %{"results" => Local.recent(store, args), "offline" => true, "source" => "local"}}
+  end
+
+  defp local_read(store, "memory::get", args, _reason) do
+    case Local.get(store, args["id"]) do
+      {:ok, record} ->
+        {:ok, %{"record" => record, "history" => [], "offline" => true, "source" => "local"}}
+
+      {:error, :not_found} ->
+        {:error, "not_found"}
+    end
+  end
+
+  defp local_store do
+    store = Application.get_env(:backplane_host_agent, :local_store, Store)
+    if is_atom(store) and Process.whereis(store), do: store
   end
 
   # Only writes are stamped with the calling agent; reads stay unfiltered
