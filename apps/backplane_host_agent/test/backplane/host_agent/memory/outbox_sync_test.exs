@@ -184,6 +184,40 @@ defmodule Backplane.HostAgent.Memory.OutboxSyncTest do
     assert Jason.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
   end
 
+  test "a gateway supersede after a pull is pulled again and offline search excludes it", %{
+    store: store,
+    sync: sync
+  } do
+    old = remote("r-old", "deploy path /srv", "active")
+
+    ScriptedHub.set_handler(fn
+      {:pull_memory, nil, 200} -> {:ok, %{"records" => [old], "cursor" => cursor(1)}}
+      call -> default_handler(call)
+    end)
+
+    assert :ok = OutboxSync.sync_now(sync)
+    assert [%{"id" => "r-old"}] = Local.search(store, "deploy")
+
+    # The gateway superseded r-old, which bumped its updated_at past the cursor.
+    superseded = %{old | "status" => "superseded"} |> Map.put("superseded_by", "r-new")
+    new = remote("r-new", "deploy path /opt", "active")
+
+    ScriptedHub.set_handler(fn
+      {:pull_memory, c, 200} when c == %{"updated_at" => "t1", "id" => "c1"} ->
+        {:ok, %{"records" => [superseded, new], "cursor" => cursor(2)}}
+
+      call ->
+        default_handler(call)
+    end)
+
+    assert :ok = OutboxSync.sync_now(sync)
+
+    assert {:ok, %{"status" => "superseded", "superseded_by" => "r-new"}} =
+             Local.get(store, "r-old")
+
+    assert [%{"id" => "r-new"}] = Local.search(store, "deploy")
+  end
+
   test "pull pages until a short page and resumes from the saved cursor", %{
     store: store,
     sync: sync

@@ -125,12 +125,14 @@ defmodule Backplane.HostAgent.Reporter do
             "outbox_failed" => stats["outbox_failed"],
             "local_records" => stats["local_records"],
             "last_sync_at" => blank_to_nil(stats["last_sync_at"]),
-            "last_error" => stats["last_error"] |> blank_to_nil() |> Local.truncate_error()
+            "last_error" => stats["last_error"] |> blank_to_nil() |> Local.truncate_error(),
+            "last_failed_error" =>
+              stats["last_failed_error"] |> blank_to_nil() |> Local.truncate_error()
           }
 
         _ ->
           Map.new(
-            ~w(outbox_pending outbox_failed local_records last_sync_at last_error),
+            ~w(outbox_pending outbox_failed local_records last_sync_at last_error last_failed_error),
             &{&1, nil}
           )
           |> Map.put("status", "unavailable")

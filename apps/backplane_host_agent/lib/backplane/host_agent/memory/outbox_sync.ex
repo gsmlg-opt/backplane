@@ -87,9 +87,9 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
     :exit, reason -> Logger.warning("memory outbox sync failed: #{inspect(reason)}")
   end
 
-  # A pulled copy of a written-but-unacknowledged remember carries no
-  # request_key and would orphan its pending local row, so the pull waits
-  # until the outbox is drained; the next cycle keeps flushing.
+  # The pull waits until the outbox is drained so pulled copies never race
+  # in-flight uploads (pulled records carry request_key, so an overlap would
+  # still merge onto the pending row); the next cycle keeps flushing.
   defp maybe_pull(state) do
     if Local.pending_outbox(state.store, 1) == [] do
       pull(state, decode_cursor(Local.get_state(state.store, "pull_cursor")))

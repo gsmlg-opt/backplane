@@ -416,7 +416,8 @@ defmodule Backplane.HostAgent.WorkerTest do
 
     assert_receive {:set_connection_owner, ^worker}
     assert_receive {:capture_start, %{host_id: "host-authoritative"}}
-    assert_receive {:http_memory_config, ^memory_config, :standalone_startup_store}
+    expected_memory_config = Map.put(memory_config, :host_id, "host-authoritative")
+    assert_receive {:http_memory_config, ^expected_memory_config, :standalone_startup_store}
 
     assert_receive {:http_ready, http_child, "host-authoritative"}
     assert_receive {:connect, ^config}

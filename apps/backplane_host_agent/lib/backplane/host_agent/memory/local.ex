@@ -13,17 +13,30 @@ defmodule Backplane.HostAgent.Memory.Local do
   @default_store Store
   @columns ~w(local_id remote_id request_key kind title content subjects subject_keys property tags status
               superseded_by forgotten_reason writer agent_id integration session_id observed_at
-              updated_at sync_state)
+              updated_at sync_state host_id client_id source_event_ids)
 
-  @spec queue_remember(GenServer.server(), map(), String.t()) :: {:ok, map()} | {:error, term()}
-  def queue_remember(store \\ @default_store, args, request_key) when is_map(args) do
+  @doc """
+  Stores a pending local record and its `remember` outbox entry. Idempotent on
+  `request_key`: an existing row with that key is returned unchanged.
+
+  Options: `:host_id` — this host's id, kept as the record's provenance host.
+  """
+  @spec queue_remember(GenServer.server(), map(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def queue_remember(store \\ @default_store, args, request_key, opts \\ []) when is_map(args) do
     with {:ok, subjects} <- normalize_subjects(args["subjects"]) do
-      do_queue_remember(store, args, request_key, subjects)
+      tx(store, fn conn ->
+        case find_by(conn, "request_key", request_key) do
+          nil -> do_queue_remember(conn, args, request_key, subjects, opts)
+          existing -> to_map(existing)
+        end
+      end)
     end
   end
 
-  defp do_queue_remember(store, args, request_key, subjects) do
+  defp do_queue_remember(conn, args, request_key, subjects, opts) do
     now = now()
+    observed_at = observed_at(args["observed_at"]) || now
     local_id = UUID7.generate()
 
     row = %{
@@ -44,17 +57,31 @@ defmodule Backplane.HostAgent.Memory.Local do
       "agent_id" => args["agent"],
       "integration" => args["integration"],
       "session_id" => args["session_id"],
-      "observed_at" => now,
+      "observed_at" => observed_at,
       "updated_at" => now,
-      "sync_state" => "pending"
+      "sync_state" => "pending",
+      "host_id" => Keyword.get(opts, :host_id),
+      "client_id" => nil,
+      "source_event_ids" => encode([])
     }
 
-    tx(store, fn conn ->
-      insert_row(conn, row)
-      enqueue(conn, "remember", local_id, Map.put(args, "request_key", request_key), now)
-      to_map(row)
-    end)
+    # The original observation time travels with the upload so the gateway
+    # orders supersession by when the memory was written, not when it synced.
+    payload = Map.merge(args, %{"request_key" => request_key, "observed_at" => observed_at})
+
+    insert_row(conn, row)
+    enqueue(conn, "remember", local_id, payload, now)
+    to_map(row)
   end
+
+  defp observed_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> DateTime.to_iso8601(datetime)
+      {:error, _} -> nil
+    end
+  end
+
+  defp observed_at(_value), do: nil
 
   @spec queue_forget(GenServer.server(), String.t(), String.t()) ::
           {:ok, map()} | {:error, :not_found | term()}
@@ -257,9 +284,20 @@ defmodule Backplane.HostAgent.Memory.Local do
         []
       )
 
+    last_failed_error =
+      case select_rows(
+             store,
+             "SELECT last_error FROM memory_outbox WHERE state = 'failed' ORDER BY updated_at DESC, seq DESC LIMIT 1",
+             []
+           ) do
+        [%{"last_error" => error}] -> truncate_error(error)
+        [] -> nil
+      end
+
     Map.merge(counts, %{
       "last_sync_at" => get_state(store, "last_sync_at"),
-      "last_error" => get_state(store, "last_error")
+      "last_error" => get_state(store, "last_error"),
+      "last_failed_error" => last_failed_error
     })
   end
 
@@ -269,10 +307,8 @@ defmodule Backplane.HostAgent.Memory.Local do
     id = record["id"]
     prov = record["provenance"] || %{}
     request_key = record["request_key"]
-
-    target =
-      find_by(conn, "remote_id", id) ||
-        (request_key && find_by(conn, "request_key", request_key))
+    {target, duplicate} = upsert_target(conn, id, request_key)
+    merge_duplicate(conn, target, duplicate)
 
     row = %{
       "local_id" => (target && target["local_id"]) || UUID7.generate(),
@@ -294,10 +330,13 @@ defmodule Backplane.HostAgent.Memory.Local do
       "session_id" => prov["session"],
       "observed_at" => record["observed_at"] || now(),
       "updated_at" => record["updated_at"] || now(),
-      "sync_state" => "synced"
+      "sync_state" => "synced",
+      "host_id" => prov["host"],
+      "client_id" => prov["client"],
+      "source_event_ids" => encode(prov["source_event_ids"] || [])
     }
 
-    row = keep_local_forget(conn, target, row)
+    row = keep_local_forget(conn, target, duplicate, row)
 
     if target do
       sets = @columns -- ["local_id"]
@@ -314,11 +353,40 @@ defmodule Backplane.HostAgent.Memory.Local do
     to_map(row)
   end
 
+  # The row matching the remote id and the row matching the request key can be
+  # different (a pulled copy cached before its pending remember completed, or
+  # data from before pulls carried request_key). The request_key row wins: it
+  # keeps its local_id and absorbs the other row and its outbox entries.
+  defp upsert_target(conn, id, request_key) do
+    by_remote = is_binary(id) && find_by(conn, "remote_id", id)
+    by_key = is_binary(request_key) && find_by(conn, "request_key", request_key)
+
+    case {by_remote || nil, by_key || nil} do
+      {nil, key_row} -> {key_row, nil}
+      {remote_row, nil} -> {remote_row, nil}
+      {%{"local_id" => same}, %{"local_id" => same} = key_row} -> {key_row, nil}
+      {remote_row, key_row} -> {key_row, remote_row}
+    end
+  end
+
+  defp merge_duplicate(_conn, _target, nil), do: :ok
+
+  defp merge_duplicate(conn, target, duplicate) do
+    exec!(conn, "UPDATE memory_outbox SET local_id = ? WHERE local_id = ?", [
+      target["local_id"],
+      duplicate["local_id"]
+    ])
+
+    exec!(conn, "DELETE FROM local_records WHERE local_id = ?", [duplicate["local_id"]])
+  end
+
   # A locally forgotten record whose forget has not synced must not be
   # resurrected by a remote copy that still says active.
-  defp keep_local_forget(_conn, nil, row), do: row
+  defp keep_local_forget(_conn, nil, _duplicate, row), do: row
 
-  defp keep_local_forget(conn, target, row) do
+  defp keep_local_forget(conn, target, duplicate, row) do
+    forgotten = Enum.find([target, duplicate], &(&1 && &1["status"] == "forgotten")) || target
+
     case select_rows(
            conn,
            "SELECT state FROM memory_outbox WHERE local_id = ? AND op = 'forget' ORDER BY seq DESC LIMIT 1",
@@ -327,8 +395,8 @@ defmodule Backplane.HostAgent.Memory.Local do
       [%{"state" => state}] ->
         %{
           row
-          | "status" => target["status"],
-            "forgotten_reason" => target["forgotten_reason"],
+          | "status" => forgotten["status"],
+            "forgotten_reason" => forgotten["forgotten_reason"],
             "sync_state" => if(state == "failed", do: "failed", else: "pending")
         }
 
@@ -389,12 +457,12 @@ defmodule Backplane.HostAgent.Memory.Local do
       "updated_at" => row["updated_at"],
       "provenance" => %{
         "writer" => row["writer"],
-        "host" => nil,
+        "host" => row["host_id"],
         "agent" => row["agent_id"],
         "integration" => row["integration"],
         "session" => row["session_id"],
-        "client" => nil,
-        "source_event_ids" => []
+        "client" => row["client_id"],
+        "source_event_ids" => decode(row["source_event_ids"])
       }
     }
   end

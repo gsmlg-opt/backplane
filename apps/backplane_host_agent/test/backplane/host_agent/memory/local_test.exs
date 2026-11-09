@@ -13,7 +13,7 @@ defmodule Backplane.HostAgent.Memory.LocalTest do
     {:ok, store: store}
   end
 
-  test "V7 database migrates to V8 leaving only the new tables", %{tmp_dir: tmp_dir} do
+  test "V7 database migrates to the latest schema leaving only the new tables", %{tmp_dir: tmp_dir} do
     store = start_store!(Path.join(tmp_dir, "legacy"))
 
     for {mod, v} <- Enum.with_index([V1, V2, V3, V4, V5, V6, V7], 1) do
@@ -25,7 +25,7 @@ defmodule Backplane.HostAgent.Memory.LocalTest do
     end
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 8} = Migrator.current_version(store)
+    assert {:ok, 9} = Migrator.current_version(store)
 
     assert {:ok, %Result{rows: rows}} =
              Store.query(
@@ -259,6 +259,112 @@ defmodule Backplane.HostAgent.Memory.LocalTest do
     assert :ok = Local.put_state(store, "last_sync_at", "2026-01-02T00:00:00Z")
     assert Local.get_state(store, "last_sync_at") == "2026-01-02T00:00:00Z"
     assert Local.stats(store)["last_sync_at"] == "2026-01-02T00:00:00Z"
+  end
+
+  test "stats reports the newest failed upload's error, truncated", %{store: store} do
+    assert Local.stats(store)["last_failed_error"] == nil
+
+    {:ok, _} = Local.queue_remember(store, %{"content" => "a"}, "k-a")
+    {:ok, _} = Local.queue_remember(store, %{"content" => "b"}, "k-b")
+    [oa, ob] = Local.pending_outbox(store, 10)
+
+    assert :ok = Local.fail(store, oa["seq"], "invalid: kind is invalid")
+    assert Local.stats(store)["last_failed_error"] == "invalid: kind is invalid"
+
+    assert :ok = Local.fail(store, ob["seq"], String.duplicate("é", 900))
+    error = Local.stats(store)["last_failed_error"]
+    assert byte_size(error) <= 1_000
+    assert String.valid?(error)
+    assert String.ends_with?(error, "…")
+  end
+
+  test "queue_remember is idempotent on request_key", %{store: store} do
+    {:ok, first} = Local.queue_remember(store, %{"content" => "once"}, "host-agent:same")
+    assert {:ok, again} = Local.queue_remember(store, %{"content" => "twice"}, "host-agent:same")
+    assert again["local_id"] == first["local_id"]
+    assert again["content"] == "once"
+    assert length(Local.pending_outbox(store, 10)) == 1
+    assert count(store, "local_records") == 1
+  end
+
+  test "queue_remember keeps the configured host and caller observed_at", %{store: store} do
+    {:ok, rec} =
+      Local.queue_remember(
+        store,
+        %{"content" => "c", "observed_at" => "2026-03-04T05:06:07Z"},
+        "k-h",
+        host_id: "host-7"
+      )
+
+    assert rec["provenance"]["host"] == "host-7"
+    assert rec["provenance"]["client"] == nil
+    assert rec["provenance"]["source_event_ids"] == []
+    assert rec["observed_at"] == "2026-03-04T05:06:07Z"
+
+    assert [%{"payload" => %{"observed_at" => "2026-03-04T05:06:07Z"}}] =
+             Local.pending_outbox(store, 10)
+
+    {:ok, now_rec} = Local.queue_remember(store, %{"content" => "d"}, "k-now")
+    [_, %{"payload" => payload}] = Local.pending_outbox(store, 10)
+    assert payload["observed_at"] == now_rec["observed_at"]
+  end
+
+  test "pulled records keep host, client and source_event_ids", %{store: store} do
+    prov = %{
+      "writer" => "host_collector",
+      "host" => "host-1",
+      "agent" => "a",
+      "client" => "client-1",
+      "source_event_ids" => ["e-1", "e-2"]
+    }
+
+    {:ok, rec} = Local.upsert_remote(store, remote(%{"id" => "r-p", "provenance" => prov}, nil))
+    assert rec["provenance"] == Map.merge(prov, %{"integration" => nil, "session" => nil})
+    assert {:ok, ^rec} = Local.get(store, "r-p")
+  end
+
+  test "a pulled copy carrying request_key lands on the pending row before complete", %{
+    store: store
+  } do
+    {:ok, pending} = Local.queue_remember(store, %{"content" => "p"}, "host-agent:race")
+    [entry] = Local.pending_outbox(store, 10)
+
+    {:ok, pulled} = Local.upsert_remote(store, remote(%{"id" => "r-race"}, "host-agent:race"))
+    assert pulled["local_id"] == pending["local_id"]
+
+    assert :ok = Local.complete(store, entry["seq"], remote(%{"id" => "r-race"}, "host-agent:race"))
+    assert count(store, "local_records") == 1
+    assert {:ok, %{"id" => "r-race", "sync" => "synced"}} = Local.get(store, pending["local_id"])
+  end
+
+  test "a remote_id row and a request_key row are merged into the request_key row", %{
+    store: store
+  } do
+    # Legacy: a pull without request_key cached the remote copy as its own row.
+    {:ok, pending} = Local.queue_remember(store, %{"content" => "p"}, "host-agent:legacy")
+    {:ok, orphan} = Local.upsert_remote(store, remote(%{"id" => "r-legacy"}, nil))
+    refute orphan["local_id"] == pending["local_id"]
+    # A forget queued against the orphan row must survive the merge.
+    {:ok, _} = Local.queue_forget(store, "r-legacy", "stale")
+    assert count(store, "local_records") == 2
+
+    [remember | _] = Local.pending_outbox(store, 10)
+
+    assert :ok =
+             Local.complete(
+               store,
+               remember["seq"],
+               remote(%{"id" => "r-legacy", "content" => "p"}, "host-agent:legacy")
+             )
+
+    assert count(store, "local_records") == 1
+    assert {:ok, merged} = Local.get(store, "r-legacy")
+    assert merged["local_id"] == pending["local_id"]
+    assert merged["status"] == "forgotten"
+    assert merged["sync"] == "pending"
+
+    assert [%{"op" => "forget", "local_id" => lid}] = Local.pending_outbox(store, 10)
+    assert lid == pending["local_id"]
   end
 
   defp remote(attrs, request_key) do

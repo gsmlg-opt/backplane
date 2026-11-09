@@ -339,7 +339,7 @@ defmodule Backplane.HostAgent.Worker do
          http_server_module,
          memory_proxy_module
        ) do
-    configure_memory_router(Map.get(config, :memory) || %{})
+    configure_memory_router(config)
 
     with :ok <- set_connection_owner(memory_proxy_module),
          {:ok, state} <-
@@ -608,7 +608,11 @@ defmodule Backplane.HostAgent.Worker do
     Application.put_env(:backplane_host_agent, :telemetry_config, telemetry_config)
   end
 
-  defp configure_memory_router(memory_config) do
+  # The router stamps offline-queued records with this host's id.
+  defp configure_memory_router(config) do
+    memory_config =
+      (Map.get(config, :memory) || %{}) |> Map.put(:host_id, field(config, :host_id))
+
     Application.put_env(:backplane_host_agent, :memory_config, memory_config)
 
     Application.put_env(

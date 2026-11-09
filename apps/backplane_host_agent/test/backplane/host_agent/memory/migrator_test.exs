@@ -2,20 +2,20 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
   use ExUnit.Case, async: false
 
   alias Backplane.HostAgent.Memory.{Migrator, Store}
-  alias Backplane.HostAgent.Memory.Migrations.V1
+  alias Backplane.HostAgent.Memory.Migrations.{V1, V8}
   alias Turso.Result
 
   @moduletag :tmp_dir
 
-  test "migrates a clean database to the V8 schema and re-runs idempotently", %{
+  test "migrates a clean database to the latest schema and re-runs idempotently", %{
     tmp_dir: tmp_dir
   } do
     store = start_store!(tmp_dir)
 
     assert {:ok, 0} = Migrator.current_version(store)
     assert :ok = Migrator.migrate(store)
-    assert Migrator.latest_version() == 8
-    assert {:ok, 8} = Migrator.current_version(store)
+    assert Migrator.latest_version() == 9
+    assert {:ok, 9} = Migrator.current_version(store)
 
     assert MapSet.subset?(
              MapSet.new(~w(local_records memory_outbox memory_sync_state)),
@@ -35,7 +35,7 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
              ~w(seq op local_id payload state attempts last_error inserted_at updated_at)
 
     assert :ok = Migrator.migrate(store)
-    assert {:ok, 8} = Migrator.current_version(store)
+    assert {:ok, 9} = Migrator.current_version(store)
   end
 
   test "V8 tables enforce sync_state and outbox constraints", %{tmp_dir: tmp_dir} do
@@ -145,6 +145,48 @@ defmodule Backplane.HostAgent.Memory.MigratorTest do
 
     assert {:ok, %Result{rows: [%{"seq" => ^high_water}]}} =
              Store.query(store, "SELECT seq FROM sqlite_sequence WHERE name = 'memory_outbox'")
+  end
+
+  test "V8 -> V9 adds provenance columns, keeps rows and clears the pull cursor", %{
+    tmp_dir: tmp_dir
+  } do
+    store = start_store!(tmp_dir)
+    now = "2026-06-17T00:00:00Z"
+
+    assert {:ok, _} =
+             Store.transaction(store, fn conn ->
+               Enum.each(V8.up(), fn sql -> assert {:ok, _} = Store.execute(conn, sql) end)
+               assert {:ok, _} = Store.execute(conn, "PRAGMA user_version = 8")
+             end)
+
+    assert {:ok, _} =
+             Store.execute(
+               store,
+               "INSERT INTO local_records(local_id, kind, content, writer, observed_at, updated_at, sync_state) VALUES ('l1', 'note', 'c', 'agent', ?, ?, 'synced')",
+               [now, now]
+             )
+
+    for {key, value} <- [{"pull_cursor", ~s({"id":"x"})}, {"last_sync_at", now}] do
+      assert {:ok, _} =
+               Store.execute(store, "INSERT INTO memory_sync_state(key, value) VALUES (?, ?)", [
+                 key,
+                 value
+               ])
+    end
+
+    assert :ok = Migrator.migrate(store)
+    assert {:ok, 9} = Migrator.current_version(store)
+
+    columns = table_columns(store, "local_records")
+    assert Enum.take(columns, -3) == ~w(host_id client_id source_event_ids)
+
+    assert {:ok, %Result{rows: [row]}} =
+             Store.query(store, "SELECT host_id, client_id, source_event_ids FROM local_records")
+
+    assert row == %{"host_id" => nil, "client_id" => nil, "source_event_ids" => "[]"}
+
+    assert {:ok, %Result{rows: [%{"key" => "last_sync_at"}]}} =
+             Store.query(store, "SELECT key FROM memory_sync_state")
   end
 
   defp table_names(store) do

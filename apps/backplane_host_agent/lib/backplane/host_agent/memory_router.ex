@@ -24,6 +24,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   alias Backplane.HostAgent.HubProxy
   alias Backplane.HostAgent.Memory.Hooks
   alias Backplane.HostAgent.Memory.Local
+  alias Backplane.HostAgent.Memory.OutboxSync
   alias Backplane.HostAgent.Memory.Spool.Turso, as: CaptureSpool
   alias Backplane.HostAgent.Memory.Store
   alias Backplane.HostAgent.Memory.UUID7
@@ -35,6 +36,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   @supported_versions ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
   @transport_errors ["gateway_unavailable", "gateway_timeout"]
   @local_read_tools ["memory::search", "memory::get", "memory::recent"]
+  @kinds ~w(fact procedure worklog note)
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
   plug(:match)
@@ -289,6 +291,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   # Offline-capable path: successful writes are cached locally, transport
   # failures are queued (writes) or answered from the local cache (reads).
+  # While earlier writes are still queued, new writes are queued behind them
+  # (and a sync is kicked) so the gateway receives them in order.
   defp forward_with_local(store, "memory::remember", args, agent_id) do
     request_key =
       case args["request_key"] do
@@ -298,42 +302,32 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
     args = Map.put(args, "request_key", request_key)
 
-    case forward_raw("memory::remember", args, agent_id) do
-      {:ok, record} ->
-        cache_remote(store, record)
-        {:ok, record}
+    if outbox_pending?(store) do
+      queue_remember(store, args, agent_id, request_key) |> kick_sync()
+    else
+      case forward_raw("memory::remember", args, agent_id) do
+        {:ok, record} ->
+          cache_remote(store, record)
+          {:ok, record}
 
-      {:error, reason} when reason in @transport_errors ->
-        store
-        |> safe_local(fn ->
-          Local.queue_remember(
-            store,
-            put_agent("memory::remember", args, agent_id),
-            request_key
-          )
-        end)
-        |> queued_write()
+        {:error, reason} when reason in @transport_errors ->
+          queue_remember(store, args, agent_id, request_key)
 
-      error ->
-        error
+        error ->
+          error
+      end
     end
   end
 
   defp forward_with_local(store, "memory::forget" = name, args, agent_id) do
-    case forward_raw(name, args, agent_id) do
-      {:ok, record} ->
-        cache_remote(store, record)
-        {:ok, record}
-
-      {:error, reason} when reason in @transport_errors ->
-        store
-        |> safe_local(fn ->
-          Local.queue_forget(store, args["id"], args["reason"] || "forgotten")
-        end)
-        |> queued_write()
-
-      error ->
-        error
+    if outbox_pending?(store) do
+      case queue_forget(store, args) do
+        # Not cached locally, so it cannot be ordered behind queued writes.
+        {:error, "gateway_unavailable"} -> forward_forget(store, name, args, agent_id)
+        result -> kick_sync(result)
+      end
+    else
+      forward_forget(store, name, args, agent_id)
     end
   end
 
@@ -348,6 +342,90 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp forward_with_local(_store, name, args, agent_id), do: forward_raw(name, args, agent_id)
+
+  defp forward_forget(store, name, args, agent_id) do
+    case forward_raw(name, args, agent_id) do
+      {:ok, record} ->
+        cache_remote(store, record)
+        {:ok, record}
+
+      {:error, reason} when reason in @transport_errors ->
+        queue_forget(store, args)
+
+      error ->
+        error
+    end
+  end
+
+  defp queue_remember(store, args, agent_id, request_key) do
+    with :ok <- validate_remember(args) do
+      store
+      |> safe_local(fn ->
+        Local.queue_remember(
+          store,
+          put_agent("memory::remember", args, agent_id),
+          request_key,
+          host_id: memory_config(:host_id)
+        )
+      end)
+      |> queued_write()
+    end
+  end
+
+  defp queue_forget(store, args) do
+    with :ok <- validate_forget(args) do
+      store
+      |> safe_local(fn -> Local.queue_forget(store, args["id"], args["reason"]) end)
+      |> queued_write()
+    end
+  end
+
+  # Mirrors Backplane.Memory.Tools validation so a queued write fails now
+  # rather than later in the outbox.
+  defp validate_remember(args) do
+    cond do
+      not is_binary(args["content"]) -> {:error, "invalid: content is required"}
+      String.trim(args["content"]) == "" -> {:error, "invalid: content can't be blank"}
+      (args["kind"] || "note") not in @kinds -> {:error, "invalid: kind is invalid"}
+      not valid_observed_at?(args["observed_at"]) -> {:error, "invalid: observed_at"}
+      true -> :ok
+    end
+  end
+
+  defp valid_observed_at?(nil), do: true
+
+  defp valid_observed_at?(value) when is_binary(value),
+    do: match?({:ok, _, _}, DateTime.from_iso8601(value))
+
+  defp valid_observed_at?(_value), do: false
+
+  defp validate_forget(%{"id" => id, "reason" => reason})
+       when is_binary(id) and is_binary(reason) and reason != "",
+       do: :ok
+
+  defp validate_forget(%{"id" => _}), do: {:error, "invalid: reason is required"}
+  defp validate_forget(_args), do: {:error, "invalid: id and reason are required"}
+
+  defp outbox_pending?(store) do
+    case safe_local(store, fn -> Local.pending_outbox(store, 1) end) do
+      [_ | _] -> true
+      _ -> false
+    end
+  end
+
+  defp kick_sync({:ok, _} = result) do
+    OutboxSync.sync_async(memory_config(:sync_name) || OutboxSync)
+    result
+  end
+
+  defp kick_sync(result), do: result
+
+  defp memory_config(key) do
+    case Application.get_env(:backplane_host_agent, :memory_config) do
+      config when is_map(config) -> Map.get(config, key)
+      _ -> nil
+    end
+  end
 
   # The gateway already accepted the write; a local caching failure must not
   # turn it into an error.
@@ -405,7 +483,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   end
 
   defp local_store do
-    store = Application.get_env(:backplane_host_agent, :local_store, Store)
+    store = Application.get_env(:backplane_host_agent, :memory_store, Store)
     if is_atom(store) and Process.whereis(store), do: store
   end
 

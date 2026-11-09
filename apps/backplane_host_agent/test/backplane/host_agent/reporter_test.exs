@@ -140,7 +140,7 @@ defmodule Backplane.HostAgent.ReporterTest do
 
     assert payload["memory"]["status"] == "unavailable"
 
-    for key <- ~w(outbox_pending outbox_failed local_records last_sync_at last_error) do
+    for key <- ~w(outbox_pending outbox_failed local_records last_sync_at last_error last_failed_error) do
       assert payload["memory"][key] == nil
     end
 
@@ -174,15 +174,20 @@ defmodule Backplane.HostAgent.ReporterTest do
              "outbox_failed" => 0,
              "local_records" => 1,
              "last_sync_at" => "2026-11-09T01:00:00Z",
-             "last_error" => nil
+             "last_error" => nil,
+             "last_failed_error" => nil
            } = payload["memory"]
 
     assert :ok = Local.put_state(name, "last_error", "sync: boom")
+    [entry] = Local.pending_outbox(name, 1)
+    assert :ok = Local.fail(name, entry["seq"], "invalid: kind is invalid")
 
     payload =
       Reporter.heartbeat(%{machine_name: "report-test", memory: %{enabled: true, store_name: name}})
 
     assert payload["memory"]["last_error"] == "sync: boom"
+    assert payload["memory"]["last_failed_error"] == "invalid: kind is invalid"
+    assert payload["memory"]["outbox_failed"] == 1
   end
 
   @tag :tmp_dir
