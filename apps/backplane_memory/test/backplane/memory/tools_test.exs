@@ -32,6 +32,20 @@ defmodule Backplane.Memory.ToolsTest do
     assert r["provenance"]["client"] == nil
   end
 
+  test "remember accepts an optional ISO 8601 observed_at" do
+    assert {:ok, r} =
+             call("remember", %{"content" => "late", "observed_at" => "2026-01-02T03:04:05Z"})
+
+    assert {:ok, at, _} = DateTime.from_iso8601(r["observed_at"] |> to_string())
+    assert DateTime.compare(at, ~U[2026-01-02 03:04:05Z]) == :eq
+
+    assert {:error, "invalid: observed_at"} =
+             call("remember", %{"content" => "x", "observed_at" => "yesterday"})
+
+    assert {:error, "invalid: observed_at"} =
+             call("remember", %{"content" => "x", "observed_at" => 123})
+  end
+
   test "remember reports invalid attrs" do
     assert {:error, "invalid: " <> _} = call("remember", %{"content" => "x", "kind" => "bogus"})
   end

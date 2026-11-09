@@ -721,7 +721,8 @@ defmodule Backplane.Api.HostAgentChannelTest do
         Backplane.Memory.Records.remember(%{
           "content" => "mine",
           "writer" => "agent",
-          "host_id" => host.id
+          "host_id" => host.id,
+          "request_key" => "host-agent:pull-key"
         })
 
       {:ok, _other} =
@@ -735,6 +736,7 @@ defmodule Backplane.Api.HostAgentChannelTest do
       assert_reply(ref, :ok, %{"records" => [rec], "cursor" => cursor})
       assert rec["id"] == mine.id
       assert rec["content"] == "mine"
+      assert rec["request_key"] == "host-agent:pull-key"
       assert is_binary(rec["updated_at"])
       assert cursor == %{"updated_at" => rec["updated_at"], "id" => mine.id}
 

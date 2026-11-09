@@ -185,7 +185,6 @@ defmodule Backplane.Memory.Records do
         case %Record{} |> Record.changeset(attrs) |> repo().insert() do
           {:ok, record} ->
             supersede(record)
-            record
 
           {:error, changeset} ->
             repo().rollback(changeset)
@@ -205,18 +204,45 @@ defmodule Backplane.Memory.Records do
     end
   end
 
+  # Supersession follows observation time, not arrival order: a fact observed
+  # earlier than an active same-slot fact (e.g. an offline write uploaded late)
+  # is stored already superseded by the newer one. Every status change bumps
+  # `updated_at` so host pulls (`changed_since/3`) re-send the old row.
   defp supersede(%Record{kind: "fact", property: property, subject_keys: [_ | _]} = record)
        when is_binary(property) do
-    Record
-    |> where(
-      [r],
-      r.kind == "fact" and r.status == "active" and r.property == ^property and
-        r.subject_keys == ^record.subject_keys and r.id != ^record.id
-    )
-    |> repo().update_all(set: [status: "superseded", superseded_by: record.id])
+    same_slot =
+      where(
+        Record,
+        [r],
+        r.kind == "fact" and r.status == "active" and r.property == ^property and
+          r.subject_keys == ^record.subject_keys and r.id != ^record.id
+      )
+
+    newer =
+      same_slot
+      |> where([r], r.observed_at > ^record.observed_at)
+      |> order_by([r], desc: r.observed_at, desc: r.inserted_at)
+      |> limit(1)
+      |> repo().one()
+
+    case newer do
+      nil ->
+        same_slot
+        |> where([r], r.observed_at <= ^record.observed_at)
+        |> repo().update_all(
+          set: [status: "superseded", superseded_by: record.id, updated_at: DateTime.utc_now()]
+        )
+
+        record
+
+      %Record{id: newer_id} ->
+        record
+        |> Ecto.Changeset.change(%{status: "superseded", superseded_by: newer_id})
+        |> repo().update!()
+    end
   end
 
-  defp supersede(_record), do: :ok
+  defp supersede(record), do: record
 
   defp history([], acc), do: acc |> Enum.sort_by(&{&1.observed_at, &1.inserted_at}, :desc)
 

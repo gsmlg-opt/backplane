@@ -221,8 +221,7 @@ defmodule Backplane.Api.HostAgentChannel do
           last -> %{"updated_at" => DateTime.to_iso8601(last.updated_at), "id" => last.id}
         end
 
-      {:reply, {:ok, %{"records" => Enum.map(records, &Records.to_map/1), "cursor" => next}},
-       socket}
+      {:reply, {:ok, %{"records" => Enum.map(records, &pull_record/1), "cursor" => next}}, socket}
     else
       false -> {:reply, {:error, %{"code" => "unauthorized", "retryable" => false}}, socket}
       :error -> {:reply, {:error, %{"code" => "invalid_cursor", "retryable" => false}}, socket}
@@ -253,6 +252,11 @@ defmodule Backplane.Api.HostAgentChannel do
   defp handle_memory_in("memory_events", _payload, socket) do
     invalid_payload(socket)
   end
+
+  # The host matches a pulled copy to its own pending row by request_key, so
+  # pull replies carry it; MCP tool output does not.
+  defp pull_record(record),
+    do: record |> Records.to_map() |> Map.put("request_key", record.request_key)
 
   @impl true
   def handle_info(event, socket) when event in [:host_api_services, :host_api_services_changed] do

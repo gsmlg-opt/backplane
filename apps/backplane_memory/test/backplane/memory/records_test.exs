@@ -76,6 +76,41 @@ defmodule Backplane.Memory.RecordsTest do
     assert h.id == a.id
   end
 
+  test "remember/1 supersession follows observed_at, not arrival order" do
+    {:ok, newer} =
+      Records.remember(
+        fact(%{"subjects" => [@repo_x], "content" => "new", "observed_at" => ~U[2026-01-02 00:00:00Z]})
+      )
+
+    {:ok, late} =
+      Records.remember(
+        fact(%{"subjects" => [@repo_x], "content" => "old", "observed_at" => ~U[2026-01-01 00:00:00Z]})
+      )
+
+    assert late.status == "superseded"
+    assert late.superseded_by == newer.id
+    assert repo().get!(Record, late.id).status == "superseded"
+    assert repo().get!(Record, newer.id).status == "active"
+
+    {:ok, newest} =
+      Records.remember(
+        fact(%{"subjects" => [@repo_x], "content" => "newest", "observed_at" => ~U[2026-01-03 00:00:00Z]})
+      )
+
+    assert newest.status == "active"
+    assert repo().get!(Record, newer.id).superseded_by == newest.id
+    # The already-superseded late record keeps pointing at the fact that superseded it.
+    assert repo().get!(Record, late.id).superseded_by == newer.id
+  end
+
+  test "remember/1 an equal observed_at supersedes the existing fact" do
+    at = ~U[2026-01-02 00:00:00Z]
+    {:ok, a} = Records.remember(fact(%{"subjects" => [@repo_x], "observed_at" => at}))
+    {:ok, b} = Records.remember(fact(%{"subjects" => [@repo_x], "observed_at" => at, "content" => "b"}))
+    assert b.status == "active"
+    assert repo().get!(Record, a.id).superseded_by == b.id
+  end
+
   test "remember/1 does not supersede other properties, kinds or forgotten facts" do
     {:ok, a} = Records.remember(fact(%{"subjects" => [@repo_x]}))
     {:ok, _} = Records.remember(fact(%{"subjects" => [@repo_x], "property" => "owner"}))
@@ -295,6 +330,39 @@ defmodule Backplane.Memory.RecordsTest do
       statuses = "A" |> Records.changed_since(nil, 10) |> Enum.map(& &1.status) |> Enum.sort()
       assert statuses == ["active", "forgotten", "superseded"]
       assert Enum.any?(Records.changed_since("A", nil, 10), &(&1.id == f.id))
+    end
+
+    test "a cursor taken after the first fact re-sends it once superseded" do
+      {:ok, old} = Records.remember(fact(%{"host_id" => "A", "subjects" => [@repo_x]}))
+      old = stamp(old, 1)
+      cursor = %{updated_at: old.updated_at, id: old.id}
+      assert Records.changed_since("A", cursor, 10) == []
+
+      {:ok, new} =
+        Records.remember(fact(%{"host_id" => "A", "subjects" => [@repo_x], "content" => "n"}))
+
+      changed = Records.changed_since("A", cursor, 10)
+      assert Enum.map(changed, & &1.id) |> Enum.sort() == Enum.sort([old.id, new.id])
+      resent = Enum.find(changed, &(&1.id == old.id))
+      assert resent.status == "superseded"
+      assert resent.superseded_by == new.id
+    end
+
+    test "a cursor taken before forget re-sends the forgotten record" do
+      r = host_rec("A", 1)
+      cursor = %{updated_at: r.updated_at, id: r.id}
+      {:ok, _} = Records.forget(r.id, "gone")
+      assert [%{id: id, status: "forgotten"}] = Records.changed_since("A", cursor, 10)
+      assert id == r.id
+    end
+
+    test "records with identical updated_at are ordered by id and the cursor is a tie-break" do
+      [first, second] =
+        [host_rec("A", 5), host_rec("A", 5)] |> Enum.sort_by(& &1.id)
+
+      assert first.updated_at == second.updated_at
+      cursor = %{updated_at: first.updated_at, id: first.id}
+      assert Enum.map(Records.changed_since("A", cursor, 10), & &1.id) == [second.id]
     end
 
     test "changed_since respects limit and clamps 0/1000" do
