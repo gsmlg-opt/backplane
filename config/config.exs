@@ -40,6 +40,8 @@ config :backplane, Styx,
        {"*/30 * * * *", Backplane.Memory.Workers.FallbackSweepWorker},
        # Memory distillation: claim due session distillations every minute
        {"* * * * *", Backplane.Memory.Workers.DistillSchedulerWorker},
+       # Memory embeddings: fill missing record embeddings every 5 minutes
+       {"*/5 * * * *", Backplane.Memory.Workers.EmbedRecordsWorker},
        # OAuth credential refresh: every 10 minutes
        {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker},
        # Observability retention workers

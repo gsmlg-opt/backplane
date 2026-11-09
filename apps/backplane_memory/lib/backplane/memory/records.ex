@@ -266,6 +266,7 @@ defmodule Backplane.Memory.Records do
 
     case result do
       {:ok, record} ->
+        enqueue_embedding()
         {:ok, record}
 
       {:error, %Ecto.Changeset{} = changeset} ->
@@ -275,6 +276,19 @@ defmodule Backplane.Memory.Records do
           _ -> {:error, changeset}
         end
     end
+  end
+
+  # Best-effort: a failed enqueue never fails the write; the cron worker catches up.
+  defp enqueue_embedding do
+    if Backplane.Memory.Embedding.Client.configured?() do
+      %{}
+      |> Backplane.Memory.Workers.EmbedRecordsWorker.new()
+      |> Styx.insert()
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   # Supersession follows observation time, not arrival order: a fact observed

@@ -40,6 +40,7 @@ defmodule Backplane.Memory.Record do
     field(:source_event_ids, {:array, :binary_id}, default: [])
     field(:request_key, :string)
     field(:observed_at, :utc_datetime_usec)
+    field(:embedding, Pgvector.Ecto.Vector)
 
     timestamps(type: :utc_datetime_usec)
   end
