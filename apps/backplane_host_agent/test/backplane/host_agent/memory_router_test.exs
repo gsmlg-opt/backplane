@@ -42,6 +42,19 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
   end
 
+  defmodule OnlineProxy do
+    def list_tools, do: {:ok, []}
+
+    def call_tool(_name, args) do
+      send(
+        :persistent_term.get({Backplane.HostAgent.MemoryRouterTest.StubHubProxy, :owner}),
+        {:args, args}
+      )
+
+      {:ok, :persistent_term.get({__MODULE__, :record})}
+    end
+  end
+
   defmodule ErrorHubProxy do
     def list_tools, do: {:error, :not_connected}
     def call_tool(_name, _args), do: {:error, :not_connected}
@@ -54,7 +67,12 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
 
   defmodule ScriptedHubProxy do
     def list_tools, do: {:ok, []}
-    def call_tool(_name, _args), do: Process.get(:scripted_hub_reply)
+
+    def call_tool(_name, args) do
+      owner = :persistent_term.get({Backplane.HostAgent.MemoryRouterTest.StubHubProxy, :owner})
+      send(owner, {:scripted_args, args})
+      Process.get(:scripted_hub_reply)
+    end
   end
 
   defmodule FakeHubChannel do
@@ -455,8 +473,6 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     end
 
     test "online remember sends a request_key and caches the record", %{store: store} do
-      Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
-
       remote = %{
         "id" => "remote-1",
         "kind" => "fact",
@@ -465,19 +481,6 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
         "subjects" => [],
         "tags" => []
       }
-
-      defmodule OnlineProxy do
-        def list_tools, do: {:ok, []}
-
-        def call_tool(_name, args) do
-          send(
-            :persistent_term.get({Backplane.HostAgent.MemoryRouterTest.StubHubProxy, :owner}),
-            {:args, args}
-          )
-
-          {:ok, :persistent_term.get({__MODULE__, :record})}
-        end
-      end
 
       :persistent_term.put({OnlineProxy, :record}, remote)
       on_exit(fn -> :persistent_term.erase({OnlineProxy, :record}) end)
@@ -557,6 +560,73 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       assert %{"error" => "gateway_unavailable"} = Jason.decode!(conn.resp_body)
     end
 
+    test "timeout remember keeps the sent request_key and agent stamp in the queued payload", %{
+      store: store
+    } do
+      Process.put(:scripted_hub_reply, {:error, :timeout})
+      conn = post_json("/memory/a1/call/remember", %{"content" => "maybe written"})
+
+      assert conn.status == 200
+      assert_received {:scripted_args, %{"request_key" => "host-agent:" <> _ = key}}
+
+      assert [%{"payload" => %{"request_key" => ^key, "agent" => "a1"}}] =
+               Local.pending_outbox(store, 10)
+    end
+
+    test "non-binary caller request_key is replaced" do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+      post_json("/memory/a1/call/remember", %{"content" => "c", "request_key" => 5})
+      assert_received {:scripted_args, %{"request_key" => "host-agent:" <> _}}
+    end
+
+    test "offline remember with invalid subjects is rejected and not queued", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+      conn = post_json("/memory/a1/call/remember", %{"content" => "c", "subjects" => "bad"})
+
+      assert conn.status == 400
+      assert %{"error" => "invalid_subjects"} = Jason.decode!(conn.resp_body)
+      assert Local.pending_outbox(store, 10) == []
+    end
+
+    test "offline mcp tools/call remember returns a pending result", %{store: store} do
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+      resp = tools_call("/memory/a1/mcp", "memory::remember", %{"content" => "via mcp"})
+
+      assert %{"result" => %{"isError" => false}} = resp
+      assert Jason.encode!(resp) =~ "pending"
+      assert length(Local.pending_outbox(store, 10)) == 1
+    end
+
+    test "local store failure after a gateway write still succeeds" do
+      :persistent_term.put({OnlineProxy, :record}, %{
+        "id" => "r2",
+        "content" => "x",
+        "subjects" => []
+      })
+
+      on_exit(fn -> :persistent_term.erase({OnlineProxy, :record}) end)
+      Application.put_env(:backplane_host_agent, :hub_proxy_module, OnlineProxy)
+
+      bogus = :"bogus_store_#{System.unique_integer([:positive])}"
+      register_crashing_store(bogus)
+      Application.put_env(:backplane_host_agent, :local_store, bogus)
+
+      conn = post_json("/memory/a1/call/remember", %{"content" => "x"})
+      assert conn.status == 200
+      assert %{"ok" => true, "result" => %{"id" => "r2"}} = Jason.decode!(conn.resp_body)
+    end
+
+    test "local store failure while offline reports local_store_error" do
+      bogus = :"bogus_store_#{System.unique_integer([:positive])}"
+      register_crashing_store(bogus)
+      Application.put_env(:backplane_host_agent, :local_store, bogus)
+      Process.put(:scripted_hub_reply, {:error, :noproc})
+
+      conn = post_json("/memory/a1/call/remember", %{"content" => "x"})
+      assert conn.status == 500
+      assert %{"error" => "local_store_error"} = Jason.decode!(conn.resp_body)
+    end
+
     test "store disabled behaves like plan 1" do
       Application.put_env(:backplane_host_agent, :local_store, :no_such_store_process)
       Process.put(:scripted_hub_reply, {:error, :noproc})
@@ -615,6 +685,11 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
     |> jsonrpc(%{"id" => "list", "method" => "tools/list"})
     |> get_in(["result", "tools"])
     |> Map.new(&{&1["name"], &1})
+  end
+
+  defp register_crashing_store(name) do
+    pid = spawn(fn -> receive do: (_ -> exit(:boom)) end)
+    Process.register(pid, name)
   end
 
   defp tools_call(path, name, args) do

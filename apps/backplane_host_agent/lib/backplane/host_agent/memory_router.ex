@@ -19,12 +19,14 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   use Plug.Router
 
+  require Logger
+
   alias Backplane.HostAgent.HubProxy
   alias Backplane.HostAgent.Memory.Hooks
   alias Backplane.HostAgent.Memory.Local
+  alias Backplane.HostAgent.Memory.Spool.Turso, as: CaptureSpool
   alias Backplane.HostAgent.Memory.Store
   alias Backplane.HostAgent.Memory.UUID7
-  alias Backplane.HostAgent.Memory.Spool.Turso, as: CaptureSpool
   alias Backplane.HostAgent.Services
   alias Backplane.HostAgent.Trace
   alias Backplane.MemoryToolContract
@@ -253,6 +255,7 @@ defmodule Backplane.HostAgent.MemoryRouter do
   defp direct_error_status("gateway_timeout"), do: 504
   defp direct_error_status("not_found"), do: 404
   defp direct_error_status("unauthorized"), do: 403
+  defp direct_error_status("local_store_error"), do: 500
   defp direct_error_status(_reason), do: 400
 
   defp direct_call_args(
@@ -287,7 +290,12 @@ defmodule Backplane.HostAgent.MemoryRouter do
   # Offline-capable path: successful writes are cached locally, transport
   # failures are queued (writes) or answered from the local cache (reads).
   defp forward_with_local(store, "memory::remember", args, agent_id) do
-    request_key = args["request_key"] || "host-agent:" <> UUID7.generate()
+    request_key =
+      case args["request_key"] do
+        key when is_binary(key) and key != "" -> key
+        _ -> "host-agent:" <> UUID7.generate()
+      end
+
     args = Map.put(args, "request_key", request_key)
 
     case forward_raw("memory::remember", args, agent_id) do
@@ -296,10 +304,15 @@ defmodule Backplane.HostAgent.MemoryRouter do
         {:ok, record}
 
       {:error, reason} when reason in @transport_errors ->
-        queued_write(
-          Local.queue_remember(store, put_agent("memory::remember", args, agent_id), request_key),
-          reason
-        )
+        store
+        |> safe_local(fn ->
+          Local.queue_remember(
+            store,
+            put_agent("memory::remember", args, agent_id),
+            request_key
+          )
+        end)
+        |> queued_write()
 
       error ->
         error
@@ -313,10 +326,11 @@ defmodule Backplane.HostAgent.MemoryRouter do
         {:ok, record}
 
       {:error, reason} when reason in @transport_errors ->
-        queued_write(
-          Local.queue_forget(store, args["id"], args["reason"] || "forgotten"),
-          "gateway_unavailable"
-        )
+        store
+        |> safe_local(fn ->
+          Local.queue_forget(store, args["id"], args["reason"] || "forgotten")
+        end)
+        |> queued_write()
 
       error ->
         error
@@ -325,24 +339,51 @@ defmodule Backplane.HostAgent.MemoryRouter do
 
   defp forward_with_local(store, name, args, agent_id) when name in @local_read_tools do
     case forward_raw(name, args, agent_id) do
-      {:error, reason} when reason in @transport_errors -> local_read(store, name, args, reason)
-      other -> other
+      {:error, reason} when reason in @transport_errors ->
+        store |> safe_local(fn -> local_read(store, name, args, reason) end) |> read_result()
+
+      other ->
+        other
     end
   end
 
   defp forward_with_local(_store, name, args, agent_id), do: forward_raw(name, args, agent_id)
 
+  # The gateway already accepted the write; a local caching failure must not
+  # turn it into an error.
   defp cache_remote(store, record) when is_map(record) do
-    Local.upsert_remote(store, record)
-    :ok
+    case safe_local(store, fn -> Local.upsert_remote(store, record) end) do
+      {:ok, _} -> :ok
+      {:error, reason} -> Logger.warning("memory local cache update failed: #{inspect(reason)}")
+    end
   end
 
   defp cache_remote(_store, _record), do: :ok
 
-  # A record that cannot be forgotten offline (unknown locally) keeps the
-  # original transport error.
-  defp queued_write({:ok, record}, _reason), do: {:ok, record}
-  defp queued_write({:error, _}, reason), do: {:error, reason}
+  defp safe_local(_store, fun) do
+    fun.()
+  rescue
+    error -> {:error, {:local_store, error}}
+  catch
+    :exit, reason -> {:error, {:local_store, reason}}
+  end
+
+  defp read_result({:error, {:local_store, reason}}) do
+    Logger.warning("memory local read failed: #{inspect(reason)}")
+    {:error, "local_store_error"}
+  end
+
+  defp read_result(other), do: other
+
+  defp queued_write({:ok, record}), do: {:ok, record}
+  # Cannot forget an unknown record offline.
+  defp queued_write({:error, :not_found}), do: {:error, "gateway_unavailable"}
+  defp queued_write({:error, :invalid_subjects}), do: {:error, "invalid_subjects"}
+
+  defp queued_write({:error, reason}) do
+    Logger.warning("memory local queue failed: #{inspect(reason)}")
+    {:error, "local_store_error"}
+  end
 
   defp local_read(store, "memory::search", args, _reason) do
     results = Local.search(store, args["query"] || "", args)
