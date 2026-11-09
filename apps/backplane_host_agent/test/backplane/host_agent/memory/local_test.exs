@@ -156,6 +156,78 @@ defmodule Backplane.HostAgent.Memory.LocalTest do
     assert [%{"kind" => "worklog"}] = Local.recent(store, %{})
   end
 
+  test "complete of the remember does not resurrect a locally forgotten record", %{store: store} do
+    {:ok, a} = Local.queue_remember(store, %{"content" => "zombie text"}, "k-z")
+    {:ok, _} = Local.queue_forget(store, a["local_id"], "nope")
+    [rem | _] = Local.pending_outbox(store, 10)
+    assert rem["op"] == "remember"
+
+    assert :ok = Local.complete(store, rem["seq"], remote(%{"id" => "r-z"}, "k-z"))
+    assert {:ok, rec} = Local.get(store, "r-z")
+    assert rec["status"] == "forgotten"
+    assert rec["forgotten_reason"] == "nope"
+    assert rec["sync"] == "pending"
+    assert rec["local_id"] == a["local_id"]
+    assert [] = Local.search(store, "zombie", %{})
+  end
+
+  test "pull upsert does not resurrect a record with a pending forget", %{store: store} do
+    {:ok, _} = Local.upsert_remote(store, remote(%{"id" => "r-p", "content" => "pulled"}, nil))
+    {:ok, _} = Local.queue_forget(store, "r-p", "bye")
+
+    assert {:ok, rec} =
+             Local.upsert_remote(store, remote(%{"id" => "r-p", "content" => "pulled v2"}, nil))
+
+    assert rec["status"] == "forgotten"
+    assert rec["sync"] == "pending"
+    assert rec["content"] == "pulled v2"
+    assert [] = Local.search(store, "pulled", %{})
+  end
+
+  test "completing the forget accepts the remote status", %{store: store} do
+    {:ok, _} = Local.upsert_remote(store, remote(%{"id" => "r-f"}, nil))
+    {:ok, _} = Local.queue_forget(store, "r-f", "bye")
+    [fg] = Local.pending_outbox(store, 10)
+
+    :ok =
+      Local.complete(
+        store,
+        fg["seq"],
+        remote(%{"id" => "r-f", "status" => "forgotten", "forgotten_reason" => "bye"}, nil)
+      )
+
+    assert {:ok, %{"status" => "forgotten", "sync" => "synced"}} = Local.get(store, "r-f")
+  end
+
+  test "subject terms match only subject keys and the subject filter limits in SQL", %{
+    store: store
+  } do
+    for n <- 1..3 do
+      {:ok, _} =
+        Local.queue_remember(
+          store,
+          %{"content" => "item #{n}", "subjects" => [%{"type" => "repo", "key" => "bp"}]},
+          "k#{n}"
+        )
+    end
+
+    {:ok, _} = Local.queue_remember(store, %{"content" => "plain"}, "kp")
+
+    assert [] = Local.search(store, "type", %{})
+    assert [] = Local.search(store, "key", %{})
+    assert [_] = Local.search(store, "repo:bp", %{"limit" => 1})
+    assert [_, _] = Local.search(store, "", %{"subject" => "Repo:BP", "limit" => 2})
+    assert [] = Local.search(store, "", %{"subject" => "repo:b"})
+  end
+
+  test "invalid subjects return an error", %{store: store} do
+    assert {:error, :invalid_subjects} =
+             Local.queue_remember(store, %{"content" => "x", "subjects" => ["bad"]}, "k")
+
+    assert {:error, :invalid_subjects} =
+             Local.upsert_remote(store, remote(%{"subjects" => [1]}, nil))
+  end
+
   test "get returns not_found", %{store: store} do
     assert {:error, :not_found} = Local.get(store, "missing")
   end

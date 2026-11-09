@@ -23,6 +23,7 @@ defmodule Backplane.HostAgent.Memory.Migrations.V8 do
           title TEXT,
           content TEXT NOT NULL,
           subjects TEXT NOT NULL DEFAULT '[]',
+          subject_keys TEXT NOT NULL DEFAULT '',
           property TEXT,
           tags TEXT NOT NULL DEFAULT '[]',
           status TEXT NOT NULL DEFAULT 'active',

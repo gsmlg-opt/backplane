@@ -11,12 +11,18 @@ defmodule Backplane.HostAgent.Memory.Local do
   alias Turso.Result
 
   @default_store Store
-  @columns ~w(local_id remote_id request_key kind title content subjects property tags status
+  @columns ~w(local_id remote_id request_key kind title content subjects subject_keys property tags status
               superseded_by forgotten_reason writer agent_id integration session_id observed_at
               updated_at sync_state)
 
   @spec queue_remember(GenServer.server(), map(), String.t()) :: {:ok, map()} | {:error, term()}
   def queue_remember(store \\ @default_store, args, request_key) when is_map(args) do
+    with {:ok, subjects} <- normalize_subjects(args["subjects"]) do
+      do_queue_remember(store, args, request_key, subjects)
+    end
+  end
+
+  defp do_queue_remember(store, args, request_key, subjects) do
     now = now()
     local_id = UUID7.generate()
 
@@ -27,7 +33,8 @@ defmodule Backplane.HostAgent.Memory.Local do
       "kind" => args["kind"] || "note",
       "title" => args["title"],
       "content" => args["content"],
-      "subjects" => encode(normalize_subjects(args["subjects"])),
+      "subjects" => encode(subjects),
+      "subject_keys" => subject_keys(subjects),
       "property" => args["property"],
       "tags" => encode(args["tags"] || []),
       "status" => "active",
@@ -84,7 +91,9 @@ defmodule Backplane.HostAgent.Memory.Local do
 
   @spec upsert_remote(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def upsert_remote(store \\ @default_store, record) when is_map(record) do
-    tx(store, fn conn -> do_upsert(conn, record) end)
+    with {:ok, subjects} <- normalize_subjects(record["subjects"]) do
+      tx(store, fn conn -> do_upsert(conn, record, subjects) end)
+    end
   end
 
   @spec search(GenServer.server(), String.t(), map()) :: [map()]
@@ -96,12 +105,11 @@ defmodule Backplane.HostAgent.Memory.Local do
       Enum.reduce(terms, {[], []}, fn term, {sqls, params} ->
         like = "%" <> escape_like(term) <> "%"
 
-        {["(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR subjects LIKE ? ESCAPE '\\')" | sqls],
+        {["(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR subject_keys LIKE ? ESCAPE '\\')" | sqls],
          params ++ [like, like, like]}
       end)
 
     {filter_sql, filter_params} = filter_clauses(filters)
-    subject = normalize_subject_key(filters["subject"])
     limit = clamp(filters["limit"], 10, 50)
 
     where = Enum.join(term_sql ++ filter_sql ++ status_clause(filters["include_inactive"]), " AND ")
@@ -109,15 +117,11 @@ defmodule Backplane.HostAgent.Memory.Local do
     rows =
       select_rows(
         store,
-        "SELECT * FROM local_records #{where_sql(where)} ORDER BY observed_at DESC, local_id DESC" <>
-          if(subject, do: "", else: " LIMIT #{limit}"),
+        "SELECT * FROM local_records #{where_sql(where)} ORDER BY observed_at DESC, local_id DESC LIMIT #{limit}",
         term_params ++ filter_params
       )
 
-    rows
-    |> Enum.map(&to_map/1)
-    |> Enum.filter(fn r -> is_nil(subject) or subject_match?(r, subject) end)
-    |> Enum.take(limit)
+    Enum.map(rows, &to_map/1)
   end
 
   @spec get(GenServer.server(), String.t()) :: {:ok, map()} | {:error, :not_found}
@@ -143,7 +147,7 @@ defmodule Backplane.HostAgent.Memory.Local do
   end
 
   @spec pending_outbox(GenServer.server(), pos_integer()) :: [map()]
-  def pending_outbox(store \\ @default_store, limit) do
+  def pending_outbox(store \\ @default_store, limit) when is_integer(limit) and limit > 0 do
     store
     |> select_rows(
       "SELECT * FROM memory_outbox WHERE state = 'pending' ORDER BY seq LIMIT #{limit}",
@@ -154,10 +158,11 @@ defmodule Backplane.HostAgent.Memory.Local do
 
   @spec complete(GenServer.server(), integer(), map()) :: :ok | {:error, term()}
   def complete(store \\ @default_store, seq, remote) do
-    with {:ok, _} <-
+    with {:ok, subjects} <- normalize_subjects(remote["subjects"]),
+         {:ok, _} <-
            tx(store, fn conn ->
              exec!(conn, "DELETE FROM memory_outbox WHERE seq = ?", [seq])
-             do_upsert(conn, remote)
+             do_upsert(conn, remote, subjects)
            end),
          do: :ok
   end
@@ -242,7 +247,7 @@ defmodule Backplane.HostAgent.Memory.Local do
 
   # -- internals --
 
-  defp do_upsert(conn, record) do
+  defp do_upsert(conn, record, subjects) do
     id = record["id"]
     prov = record["provenance"] || %{}
     request_key = record["request_key"]
@@ -258,7 +263,8 @@ defmodule Backplane.HostAgent.Memory.Local do
       "kind" => record["kind"] || "note",
       "title" => record["title"],
       "content" => record["content"],
-      "subjects" => encode(record["subjects"] || []),
+      "subjects" => encode(subjects),
+      "subject_keys" => subject_keys(subjects),
       "property" => record["property"],
       "tags" => encode(record["tags"] || []),
       "status" => record["status"] || "active",
@@ -273,6 +279,8 @@ defmodule Backplane.HostAgent.Memory.Local do
       "sync_state" => "synced"
     }
 
+    row = keep_local_forget(conn, target, row)
+
     if target do
       sets = @columns -- ["local_id"]
 
@@ -286,6 +294,29 @@ defmodule Backplane.HostAgent.Memory.Local do
     end
 
     to_map(row)
+  end
+
+  # A locally forgotten record whose forget has not synced must not be
+  # resurrected by a remote copy that still says active.
+  defp keep_local_forget(_conn, nil, row), do: row
+
+  defp keep_local_forget(conn, target, row) do
+    case select_rows(
+           conn,
+           "SELECT state FROM memory_outbox WHERE local_id = ? AND op = 'forget' ORDER BY seq DESC LIMIT 1",
+           [target["local_id"]]
+         ) do
+      [%{"state" => state}] ->
+        %{
+          row
+          | "status" => target["status"],
+            "forgotten_reason" => target["forgotten_reason"],
+            "sync_state" => if(state == "failed", do: "failed", else: "pending")
+        }
+
+      [] ->
+        row
+    end
   end
 
   defp insert_row(conn, row) do
@@ -351,7 +382,11 @@ defmodule Backplane.HostAgent.Memory.Local do
   end
 
   defp filter_clauses(filters) do
+    subject = normalize_subject_key(filters["subject"])
+
     [
+      {"subject", "(' ' || subject_keys || ' ') LIKE ? ESCAPE '\\'",
+       subject && "% " <> escape_like(subject) <> " %"},
       {"kind", "kind = ?", filters["kind"]},
       {"agent", "agent_id = ?", filters["agent"]},
       {"since", "observed_at >= ?", filters["since"]}
@@ -367,26 +402,31 @@ defmodule Backplane.HostAgent.Memory.Local do
   defp where_sql(""), do: ""
   defp where_sql(where), do: "WHERE " <> where
 
+  defp normalize_subjects(nil), do: {:ok, []}
+
   defp normalize_subjects(subjects) when is_list(subjects) do
-    subjects
-    |> Enum.map(fn s -> {norm(s["type"]), norm(s["key"])} end)
-    |> Enum.reject(fn {t, k} -> t == "" or k == "" end)
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> Enum.map(fn {t, k} -> %{"type" => t, "key" => k} end)
+    if Enum.all?(subjects, &is_map/1) do
+      {:ok,
+       subjects
+       |> Enum.map(fn s -> {norm(s["type"]), norm(s["key"])} end)
+       |> Enum.reject(fn {t, k} -> t == "" or k == "" end)
+       |> Enum.uniq()
+       |> Enum.sort()
+       |> Enum.map(fn {t, k} -> %{"type" => t, "key" => k} end)}
+    else
+      {:error, :invalid_subjects}
+    end
   end
 
-  defp normalize_subjects(_), do: []
+  defp normalize_subjects(_), do: {:error, :invalid_subjects}
+
+  defp subject_keys(subjects), do: Enum.map_join(subjects, " ", &"#{&1["type"]}:#{&1["key"]}")
 
   defp norm(nil), do: ""
   defp norm(v), do: v |> to_string() |> String.trim() |> String.downcase()
 
   defp normalize_subject_key(nil), do: nil
   defp normalize_subject_key(s) when is_binary(s), do: s |> String.trim() |> String.downcase()
-
-  defp subject_match?(record, key) do
-    Enum.any?(record["subjects"], fn s -> "#{s["type"]}:#{s["key"]}" == key end)
-  end
 
   defp clamp(n, _default, max) when is_integer(n) and n > 0, do: min(n, max)
   defp clamp(_, default, _max), do: default
