@@ -14,7 +14,9 @@ defmodule Backplane.Memory.ConfigTest do
     {:host_spool_max_bytes, "memory.host_spool_max_bytes", 67_108_864, 1, 1_073_741_824},
     {:host_spool_max_age_days, "memory.host_spool_max_age_days", 30, 1, 3_660},
     {:session_stale_after_seconds, "memory.session_stale_after_seconds", 10_800, 60, 10_800},
-    {:fallback_sweep_batch_size, "memory.fallback_sweep_batch_size", 100, 1, 500}
+    {:fallback_sweep_batch_size, "memory.fallback_sweep_batch_size", 100, 1, 500},
+    {:distill_delay_seconds, "memory.distill_delay_seconds", 600, 0, 86_400},
+    {:distill_max_concurrency, "memory.distill_max_concurrency", 2, 1, 8}
   ]
 
   @editable_keys ~w(
@@ -22,6 +24,7 @@ defmodule Backplane.Memory.ConfigTest do
     memory.session_stale_after_seconds memory.fallback_sweep_batch_size
     memory.host_batch_max_events memory.host_batch_max_bytes memory.host_spool_max_bytes
     memory.host_spool_max_age_days memory.event_gap_grace_seconds
+    memory.distill_delay_seconds memory.distill_max_concurrency
   )
 
   setup do

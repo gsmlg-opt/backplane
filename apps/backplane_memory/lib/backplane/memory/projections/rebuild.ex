@@ -16,6 +16,7 @@ defmodule Backplane.Memory.Projections.Rebuild do
   }
 
   alias Backplane.Memory.Audit
+  alias Backplane.Memory.Distillations
 
   @subject_type "captured_session"
   @projector_names ~w(observations session)
@@ -172,10 +173,10 @@ defmodule Backplane.Memory.Projections.Rebuild do
     now = now()
     first = List.first(events)
 
-    previous_status =
+    {previous_status, previous_sequence_max} =
       case repo().get(ProjectedSession, subject_id) do
-        %ProjectedSession{status: status} -> status
-        nil -> nil
+        %ProjectedSession{status: status, source_sequence_max: seq} -> {status, seq}
+        nil -> {nil, nil}
       end
 
     row = %{
@@ -240,7 +241,35 @@ defmodule Backplane.Memory.Projections.Rebuild do
         }
       )
     end
+
+    # Re-distill on a terminal transition, and also when a closed session
+    # grew (a resume whose start..end arrived in one batch stays terminal).
+    if previous_status != row.status or
+         grew?(row.source_sequence_max, previous_sequence_max) do
+      maybe_schedule_distillation(subject_id, row)
+    end
   end
+
+  defp grew?(current, previous) when is_integer(current) and is_integer(previous),
+    do: current > previous
+
+  defp grew?(_current, _previous), do: false
+
+  defp maybe_schedule_distillation(subject_id, %{status: status} = row)
+       when status in ["completed", "abandoned"] do
+    {:ok, _} =
+      Distillations.schedule(%{
+        subject_id: subject_id,
+        host_id: row.host_id,
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        integration: row.integration
+      })
+
+    :ok
+  end
+
+  defp maybe_schedule_distillation(_subject_id, _row), do: :ok
 
   defp outputs(events, gaps) do
     %{

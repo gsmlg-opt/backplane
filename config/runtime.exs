@@ -91,6 +91,8 @@ if config_env() == :prod do
       port_str -> String.to_integer(port_str)
     end
 
+  config :backplane_memory, llm_proxy_url: "http://127.0.0.1:#{api_port}"
+
   api_url = System.get_env("BACKPLANE_API_URL", "http://#{host}:#{api_port}")
   admin_url = System.get_env("BACKPLANE_ADMIN_URL", "http://#{host}:#{admin_port}")
   bootstrap_admin_emails = parse_csv_env.("BACKPLANE_BOOTSTRAP_ADMIN_EMAILS")

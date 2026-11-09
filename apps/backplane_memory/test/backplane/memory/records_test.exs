@@ -372,4 +372,105 @@ defmodule Backplane.Memory.RecordsTest do
       assert length(Records.changed_since("A", nil, 1000)) == 3
     end
   end
+
+  describe "replace/2" do
+    test "supersedes an active procedure and links superseded_by" do
+      {:ok, old} = Records.remember(base(%{"kind" => "procedure", "content" => "old steps"}))
+
+      assert {:ok, new} =
+               Records.replace(old.id, base(%{"kind" => "procedure", "content" => "new steps"}))
+
+      assert new.status == "active"
+      old = repo().get!(Record, old.id)
+      assert old.status == "superseded"
+      assert old.superseded_by == new.id
+      assert DateTime.compare(old.updated_at, new.updated_at) in [:gt, :eq]
+    end
+
+    test "returns :not_active for a forgotten record" do
+      {:ok, old} = Records.remember(base(%{"kind" => "procedure"}))
+      {:ok, _} = Records.forget(old.id, "gone")
+      assert {:error, :not_active} = Records.replace(old.id, base(%{"kind" => "procedure"}))
+    end
+
+    test "returns the changeset and leaves the old record active when attrs are invalid" do
+      {:ok, old} = Records.remember(base(%{"kind" => "procedure"}))
+      assert {:error, %Ecto.Changeset{}} = Records.replace(old.id, %{"writer" => "agent"})
+      assert repo().get!(Record, old.id).status == "active"
+    end
+
+    test "keeps the record active when replaced with its own request_key" do
+      {:ok, old} = Records.remember(base(%{"kind" => "procedure", "request_key" => "rk-self"}))
+
+      assert {:ok, same} =
+               Records.replace(old.id, base(%{"kind" => "procedure", "request_key" => "rk-self"}))
+
+      assert same.id == old.id
+      reloaded = repo().get!(Record, old.id)
+      assert reloaded.status == "active"
+      assert reloaded.superseded_by == nil
+    end
+
+    test "does not supersede by an already inactive record hit through its request_key" do
+      {:ok, old} = Records.remember(base(%{"kind" => "procedure", "content" => "old steps"}))
+
+      {:ok, inactive} =
+        Records.remember(
+          base(%{"kind" => "procedure", "content" => "x", "request_key" => "rk-gone"})
+        )
+
+      {:ok, _} = Records.forget(inactive.id, "gone")
+
+      assert {:error, :replacement_not_active} =
+               Records.replace(
+                 old.id,
+                 base(%{"kind" => "procedure", "content" => "x", "request_key" => "rk-gone"})
+               )
+
+      reloaded = repo().get!(Record, old.id)
+      assert reloaded.status == "active"
+      assert reloaded.superseded_by == nil
+    end
+
+    test "returns :not_found for an unknown id" do
+      assert {:error, :not_found} = Records.replace(Ecto.UUID.generate(), base())
+    end
+  end
+
+  describe "agent_written_for_session/2" do
+    test "returns only agent-written active records of the session" do
+      s = %{"session_id" => "s1", "host_id" => "h1"}
+      {:ok, mine} = Records.remember(base(Map.put(s, "content", "mine")))
+      {:ok, _} = Records.remember(base(Map.merge(s, %{"writer" => "memory_agent"})))
+      {:ok, _} = Records.remember(base(Map.merge(s, %{"writer" => "user"})))
+      {:ok, _} = Records.remember(base(%{"session_id" => "s2", "host_id" => "h1"}))
+      {:ok, _} = Records.remember(base(%{"session_id" => "s1", "host_id" => "h2"}))
+      {:ok, gone} = Records.remember(base(Map.put(s, "content", "gone")))
+      {:ok, _} = Records.forget(gone.id, "x")
+
+      assert [%{id: id}] = Records.agent_written_for_session("h1", "s1")
+      assert id == mine.id
+      assert length(Records.agent_written_for_session(nil, "s1")) == 2
+    end
+  end
+
+  describe "observed_at clamp" do
+    test "far-future observed_at is clamped to now" do
+      future = DateTime.add(DateTime.utc_now(), 86_400, :second)
+      {:ok, r} = Records.remember(base(%{"observed_at" => future}))
+      assert abs(DateTime.diff(r.observed_at, DateTime.utc_now())) < 5
+    end
+
+    test "ISO8601 string in the far future is clamped" do
+      future = DateTime.utc_now() |> DateTime.add(86_400, :second) |> DateTime.to_iso8601()
+      {:ok, r} = Records.remember(base(%{"observed_at" => future}))
+      assert abs(DateTime.diff(r.observed_at, DateTime.utc_now())) < 5
+    end
+
+    test "observed_at within 5 minutes is unchanged" do
+      near = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.truncate(:microsecond)
+      {:ok, r} = Records.remember(base(%{"observed_at" => near}))
+      assert DateTime.compare(r.observed_at, near) == :eq
+    end
+  end
 end

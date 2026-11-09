@@ -17,6 +17,7 @@ defmodule Backplane.Memory.Application do
         id: Backplane.Memory.EventNotifications
       ),
       EventNotifier,
+      {Task.Supervisor, name: Backplane.Memory.Distill.TaskSupervisor},
       ServiceRegistration
     ]
 

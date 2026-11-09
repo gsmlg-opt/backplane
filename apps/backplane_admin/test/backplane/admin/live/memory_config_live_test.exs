@@ -163,4 +163,12 @@ defmodule Backplane.Admin.MemoryConfigLiveTest do
     {:ok, view, _} = live(conn, "/memory/config?q=Memory+service")
     assert render(view) =~ "Live; updates tool and prompt discovery"
   end
+
+  test "lists the distillation scheduling settings", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/memory/config")
+
+    for key <- ~w(memory.distill_delay_seconds memory.distill_max_concurrency) do
+      assert has_element?(view, "#memory-config-value-#{String.replace(key, ".", "-")}")
+    end
+  end
 end

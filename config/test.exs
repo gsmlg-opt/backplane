@@ -16,6 +16,7 @@ config :backplane_auth, allow_insecure_resource_origins: true
 config :backplane, llm_route_loader_enabled: false
 config :backplane, Styx, testing: :inline
 config :backplane_memory, projection_repair_enabled: false
+config :backplane_memory, llm_proxy_url: "http://localhost:4220"
 
 secret_key_base =
   "test_secret_key_base_that_is_at_least_64_bytes_long_for_testing_only_please"

@@ -33,6 +33,7 @@ defmodule Backplane.Memory.MixProject do
       {:backplane_memory_contract, in_umbrella: true},
       {:backplane_system, in_umbrella: true},
       {:backplane_skills, in_umbrella: true},
+      {:backplane_agent_runtime, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:pgvector, "~> 0.3"},
       {:jason, "~> 1.4"},

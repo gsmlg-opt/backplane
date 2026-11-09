@@ -3,6 +3,8 @@ defmodule Backplane.Memory.Projections.ProjectedObservation do
 
   use Ecto.Schema
 
+  @type t :: %__MODULE__{}
+
   @primary_key {:event_id, :binary_id, autogenerate: false}
   schema "bpm_projected_observations" do
     field(:subject_id, :string)

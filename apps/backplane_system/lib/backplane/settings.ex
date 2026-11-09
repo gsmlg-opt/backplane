@@ -127,6 +127,16 @@ defmodule Backplane.Settings do
       type: "integer",
       desc: "Maximum stale-session candidates per fallback sweep (allowed range 1..500)"
     },
+    "memory.distill_delay_seconds" => %{
+      value: 600,
+      type: "integer",
+      desc: "Delay after session close before background distillation in seconds (allowed range 0..86400)"
+    },
+    "memory.distill_max_concurrency" => %{
+      value: 2,
+      type: "integer",
+      desc: "Maximum concurrent background distillation runs (allowed range 1..8)"
+    },
     # Observability v2 policy (PR-04)
     "observability.llm_proxy.enabled" => %{
       value: true,

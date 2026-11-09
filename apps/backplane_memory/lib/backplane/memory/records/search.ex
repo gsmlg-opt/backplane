@@ -9,12 +9,18 @@ defmodule Backplane.Memory.Records.Search do
 
   import Ecto.Query
 
+  alias Backplane.Memory.Embedding.{CircuitBreaker, Client}
   alias Backplane.Memory.Record
+
+  require Logger
 
   @default_limit 10
   @max_limit 50
   @default_budget 4000
   @max_terms 10
+
+  @leg_size 50
+  @rrf_k 60
 
   # The base query's first binding is always aliased `m0` by Ecto; the generated
   # tsvector column is not a schema field, so it is referenced by that alias.
@@ -22,10 +28,25 @@ defmodule Backplane.Memory.Records.Search do
   def search(query, filters \\ %{}) when is_binary(query) do
     limit = clamp(filters["limit"], @default_limit, @max_limit)
     budget = clamp(filters["token_budget"], @default_budget, :infinity)
-    patterns = patterns(query)
 
+    query
+    |> hybrid_or_text(filters, limit)
+    |> within_budget(budget)
+  end
+
+  defp hybrid_or_text(query, filters, limit) do
+    case vector_ids(query, filters) do
+      {:ok, vector_ids} ->
+        fuse(vector_ids, text_ids(query, filters), filters, limit)
+
+      :unavailable ->
+        query |> text_query(filters) |> limit(^limit) |> repo().all()
+    end
+  end
+
+  # Shared filter pipeline for both retrieval legs.
+  defp filtered(filters) do
     Record
-    |> match(query, patterns)
     |> status_filter(filters["include_inactive"])
     |> filter_equal(:host_id, filters["host_id"])
     |> filter_equal(:agent_id, filters["agent_id"])
@@ -33,6 +54,12 @@ defmodule Backplane.Memory.Records.Search do
     |> filter_subject(filters["subject"])
     |> filter_time(:since, filters["since"])
     |> filter_time(:until, filters["until"])
+  end
+
+  defp text_query(query, filters) do
+    filters
+    |> filtered()
+    |> match(query, patterns(query))
     |> order_by([r],
       desc:
         fragment(
@@ -41,9 +68,64 @@ defmodule Backplane.Memory.Records.Search do
         ),
       desc: r.observed_at
     )
-    |> limit(^limit)
-    |> repo().all()
-    |> within_budget(budget)
+  end
+
+  defp text_ids(query, filters) do
+    query |> text_query(filters) |> limit(^@leg_size) |> select([r], r.id) |> repo().all()
+  end
+
+  # Embeds the query and returns the nearest ids; any problem yields :unavailable so the
+  # caller silently uses full-text only (the embed worker carries the warning). A blank
+  # query is never embedded and never touches the circuit breaker.
+  defp vector_ids(query, filters) do
+    if String.trim(query) == "", do: :unavailable, else: nearest_ids(query, filters)
+  end
+
+  defp nearest_ids(query, filters) do
+    with true <- Client.configured?(),
+         true <- CircuitBreaker.allow_request?(),
+         {:ok, [vector]} <- embed_query(query) do
+      CircuitBreaker.record_success()
+
+      ids =
+        filters
+        |> filtered()
+        |> where([r], not is_nil(r.embedding))
+        |> order_by([r], asc: fragment("? <=> ?", r.embedding, ^Pgvector.new(vector)))
+        |> limit(^@leg_size)
+        |> select([r], r.id)
+        |> repo().all()
+
+      {:ok, ids}
+    else
+      false ->
+        :unavailable
+
+      {:error, reason} ->
+        CircuitBreaker.record_failure()
+        Logger.debug("memory search: embedding unavailable, using full-text: #{inspect(reason)}")
+        :unavailable
+    end
+  end
+
+  defp embed_query(query) do
+    req_options = Application.get_env(:backplane_memory, :embedding_req_options, [])
+    Client.embed([query], :query, req_options: req_options)
+  end
+
+  defp fuse(vector_ids, text_ids, filters, limit) do
+    scores =
+      [vector_ids, text_ids]
+      |> Enum.flat_map(fn ids -> Enum.with_index(ids, 1) end)
+      |> Enum.reduce(%{}, fn {id, rank}, acc ->
+        Map.update(acc, id, 1 / (@rrf_k + rank), &(&1 + 1 / (@rrf_k + rank)))
+      end)
+
+    top = scores |> Enum.sort_by(fn {_id, score} -> -score end) |> Enum.take(limit)
+    ids = Enum.map(top, &elem(&1, 0))
+    by_id = filters |> filtered() |> where([r], r.id in ^ids) |> repo().all() |> Map.new(&{&1.id, &1})
+
+    ids |> Enum.map(&Map.get(by_id, &1)) |> Enum.reject(&is_nil/1)
   end
 
   @doc false
