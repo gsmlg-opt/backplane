@@ -766,6 +766,7 @@ defmodule Backplane.Admin.HostAgentsLive do
       |> assign(:failed_uploads, failed)
       |> assign(:failed_warning, is_integer(failed) and failed > 0)
       |> assign(:last_error, memory["last_error"])
+      |> assign(:last_failed_error, memory["last_failed_error"])
 
     ~H"""
     <.dm_card variant="bordered">
@@ -780,11 +781,13 @@ defmodule Backplane.Admin.HostAgentsLive do
             Failed uploads: {memory_value(@failed_uploads)}
             <.dm_badge :if={@failed_warning} variant="warning">Needs attention</.dm_badge>
           </dt>
-          <dd :if={@failed_warning and is_binary(@last_error) and @last_error != ""} class="break-all text-warning">{@last_error}</dd>
+          <dd :if={@failed_warning and is_binary(@last_failed_error) and @last_failed_error != ""} id="host-memory-failed-error" class="break-all text-warning">{@last_failed_error}</dd>
         </div>
         <div><dt class="font-medium">Local records: {memory_value(@memory["local_records"])}</dt></div>
         <div><dt class="font-medium">Last sync: {memory_value(@memory["last_sync_at"])}</dt></div>
-        <div :if={not @failed_warning and is_binary(@last_error) and @last_error != ""}><dt class="font-medium">Last error</dt><dd class="break-all text-on-surface-variant">{@last_error}</dd></div>
+        <div :if={is_binary(@last_error) and @last_error != ""}><dt class="font-medium">Last error</dt><dd class="break-all text-on-surface-variant">{@last_error}</dd></div>
+      </dl>
+      <dl class="mt-3 text-sm">
         <div><dt class="font-medium">Last heartbeat: {report_timestamp(@entry.last_heartbeat_at)}</dt></div>
       </dl>
       <dl :if={@entry.config} class="mt-3 space-y-2 text-sm">

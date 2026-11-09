@@ -159,6 +159,25 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     :ok = AgentManage.update_runtime(host.id, %{"memory" => %{"status" => "unavailable"}})
     {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/sync")
     assert has_element?(view, "#host-memory-health", "Local memory store is not running")
+    assert has_element?(view, "#host-memory-health", "Last heartbeat")
+  end
+
+  test "failed uploads show the newest failed upload's reason", %{conn: conn} do
+    {:ok, host, token, _} = Hosts.create_agent_with_token(%{"name" => "failed-reason-host"})
+    :ok = AgentManage.register_connection(host, token, self(), %{})
+
+    :ok =
+      AgentManage.update_runtime(host.id, %{
+        "memory" => %{
+          "status" => "available",
+          "outbox_failed" => 1,
+          "last_failed_error" => "invalid: kind is invalid"
+        }
+      })
+
+    {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/sync")
+    assert has_element?(view, "#host-memory-failed-error", "invalid: kind is invalid")
+    refute has_element?(view, "#host-memory-health", "Last error")
   end
 
   test "disabled memory health says disabled", %{conn: conn} do
