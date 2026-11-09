@@ -12,6 +12,9 @@ defmodule Backplane.Memory.Config do
   @session_stale_after_seconds "memory.session_stale_after_seconds"
   @fallback_sweep_batch_size "memory.fallback_sweep_batch_size"
 
+  @distill_delay_seconds "memory.distill_delay_seconds"
+  @distill_max_concurrency "memory.distill_max_concurrency"
+
   @default_event_gap_grace_seconds 60
   @default_host_spool_max_bytes 64 * 1024 * 1024
   @default_session_stale_after_seconds 10_800
@@ -36,7 +39,11 @@ defmodule Backplane.Memory.Config do
     {@host_spool_max_age_days, "Host spool maximum age days", :integer, 1, 3_660,
      :host_spool_max_age_days},
     {@event_gap_grace_seconds, "Event gap grace seconds", :integer, 1, 3_600,
-     :event_gap_grace_seconds}
+     :event_gap_grace_seconds},
+    {@distill_delay_seconds, "Distillation delay seconds", :integer, 0, 86_400,
+     :distill_delay_seconds},
+    {@distill_max_concurrency, "Distillation concurrency", :integer, 1, 8,
+     :distill_max_concurrency}
   ]
 
   @doc "Returns the finite typed operator-editable Memory setting inventory."
@@ -191,6 +198,10 @@ defmodule Backplane.Memory.Config do
   def event_gap_grace_seconds do
     bounded_integer(@event_gap_grace_seconds, @default_event_gap_grace_seconds, 1, 3_600)
   end
+
+  def distill_delay_seconds, do: bounded_integer(@distill_delay_seconds, 600, 0, 86_400)
+
+  def distill_max_concurrency, do: bounded_integer(@distill_max_concurrency, 2, 1, 8)
 
   def host_batch_max_events, do: bounded_integer(@host_batch_max_events, 100, 1, 100)
 

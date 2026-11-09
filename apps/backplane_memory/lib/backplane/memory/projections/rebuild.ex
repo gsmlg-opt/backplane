@@ -16,6 +16,7 @@ defmodule Backplane.Memory.Projections.Rebuild do
   }
 
   alias Backplane.Memory.Audit
+  alias Backplane.Memory.Distillations
 
   @subject_type "captured_session"
   @projector_names ~w(observations session)
@@ -239,8 +240,26 @@ defmodule Backplane.Memory.Projections.Rebuild do
           input_revision: input_revision
         }
       )
+
+      maybe_schedule_distillation(subject_id, row)
     end
   end
+
+  defp maybe_schedule_distillation(subject_id, %{status: status} = row)
+       when status in ["completed", "abandoned"] do
+    {:ok, _} =
+      Distillations.schedule(%{
+        subject_id: subject_id,
+        host_id: row.host_id,
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        integration: row.integration
+      })
+
+    :ok
+  end
+
+  defp maybe_schedule_distillation(_subject_id, _row), do: :ok
 
   defp outputs(events, gaps) do
     %{
