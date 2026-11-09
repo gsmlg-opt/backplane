@@ -10,15 +10,29 @@ defmodule Backplane.Memory.Workers.DistillSchedulerWorkerTest do
   @settings_table :backplane_settings
   @keys ["memory.llm_model", "memory.distill_max_concurrency"]
 
+  # Reads the chunk once, then finishes without writing.
   defmodule OkProvider do
     @behaviour Backplane.AgentRuntime.ConversationAdapter
 
     @impl true
-    def stream(_request, _context) do
-      [
-        %{type: :response_started},
-        %{type: :response_completed, message: %{role: :assistant, content: "Done."}}
-      ]
+    def stream(request, _context) do
+      if Enum.any?(request.messages, &(&1[:role] == :tool)) do
+        [
+          %{type: :response_started},
+          %{type: :response_completed, message: %{role: :assistant, content: "Done."}}
+        ]
+      else
+        call = %{id: "c0", name: "read_chunk", arguments: %{}}
+
+        [
+          %{type: :response_started},
+          %{type: :tool_call_completed, tool_call: call},
+          %{
+            type: :response_completed,
+            message: %{role: :assistant, content: [Map.put(call, :type, :tool_call)]}
+          }
+        ]
+      end
     end
   end
 

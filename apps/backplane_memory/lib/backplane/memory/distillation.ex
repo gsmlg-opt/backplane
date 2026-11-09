@@ -20,6 +20,8 @@ defmodule Backplane.Memory.Distillation do
     field(:finished_at, :utc_datetime_usec)
     field(:last_error, :string)
     field(:records_written, :integer, default: 0)
+    field(:heartbeat_at, :utc_datetime_usec)
+    field(:distilled_through_sequence, :integer, default: 0)
 
     timestamps(type: :utc_datetime_usec)
   end

@@ -67,4 +67,47 @@ defmodule Backplane.Memory.Distill.ChunkerTest do
     assert length(chunks) > 1
     assert Enum.all?(chunks, &(byte_size(Jason.encode!(&1)) <= 24_000))
   end
+
+  test "renders tool input, error flag and file paths when present" do
+    o =
+      obs(1, %{
+        event_type: "agent.tool.completed",
+        content: "ok",
+        is_error: true,
+        file_paths: ["/srv/app/config.exs"]
+      })
+
+    plain = obs(2, %{is_error: false, file_paths: []})
+
+    assert [[rendered, rendered_plain]] =
+             Chunker.chunks([{o, %{"command" => "mix test", "timeout" => 5}}, {plain, nil}])
+
+    assert rendered["input"] == ~s({"command":"mix test","timeout":5})
+    assert rendered["error"] == true
+    assert rendered["files"] == ["/srv/app/config.exs"]
+
+    refute Map.has_key?(rendered_plain, "input")
+    refute Map.has_key?(rendered_plain, "error")
+    refute Map.has_key?(rendered_plain, "files")
+  end
+
+  test "truncates tool input to 1500 bytes, UTF-8 safe" do
+    o = obs(1)
+    assert [[rendered]] = Chunker.chunks([{o, %{"command" => String.duplicate("é", 2_000)}}])
+
+    assert byte_size(rendered["input"]) <= 1_500
+    assert byte_size(rendered["input"]) >= 1_498
+    assert String.valid?(rendered["input"])
+  end
+
+  test "drops observations whose content is only the event type and that have no input" do
+    bare = obs(1, %{event_type: "agent.tool.completed", content: "agent.tool.completed"})
+    with_input = obs(2, %{event_type: "agent.tool.completed", content: "agent.tool.completed"})
+    kept = obs(3)
+
+    assert [[a, b]] = Chunker.chunks([{bare, nil}, {with_input, %{"command" => "ls"}}, kept])
+    assert a["event_id"] == with_input.event_id
+    assert b["event_id"] == kept.event_id
+    assert Chunker.chunks([{bare, nil}]) == []
+  end
 end

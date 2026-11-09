@@ -30,7 +30,9 @@ defmodule Backplane.Memory.Workers.DistillSchedulerWorker do
 
   defp enqueue(row) do
     %{"subject_id" => row.subject_id}
-    |> DistillWorker.new(unique: [period: 900, keys: [:subject_id]])
+    # Only an unfinished job blocks a new one: a row requeued after the chunk cap, a
+    # retry or a reopened session must get a job even if its last one just completed.
+    |> DistillWorker.new(unique: [period: 900, keys: [:subject_id], states: :incomplete])
     |> Styx.insert()
   end
 end

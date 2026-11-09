@@ -228,7 +228,8 @@ defmodule Backplane.Memory.Distill.ToolBackendTest do
              decoded(call(ctx, "search_memory", %{"query" => "postgres", "kind" => "procedure"}))
   end
 
-  test "forget_memory requires a reason and forgets the duplicate", %{ctx: ctx, e1: e1} do
+  test "forget_memory requires a reason and an active duplicate_of and forgets the duplicate",
+       %{ctx: ctx, e1: e1, e2: e2} do
     rec =
       decoded(
         call(ctx, "write_memory", %{
@@ -238,15 +239,119 @@ defmodule Backplane.Memory.Distill.ToolBackendTest do
         })
       )
 
-    assert {:ok, %{content: "error: " <> _}} = call(ctx, "forget_memory", %{"id" => rec["id"]})
+    original =
+      decoded(
+        call(ctx, "write_memory", %{
+          "kind" => "worklog",
+          "content" => "dup (original)",
+          "source_event_ids" => [e2]
+        })
+      )
+
+    assert {:ok, %{content: "error: " <> _}} =
+             call(ctx, "forget_memory", %{"id" => rec["id"], "duplicate_of" => original["id"]})
+
+    assert {:ok, %{content: "error: duplicate_of is required"}} =
+             call(ctx, "forget_memory", %{"id" => rec["id"], "reason" => "duplicate"})
 
     assert %{"status" => "forgotten"} =
-             decoded(call(ctx, "forget_memory", %{"id" => rec["id"], "reason" => "duplicate"}))
+             decoded(
+               call(ctx, "forget_memory", %{
+                 "id" => rec["id"],
+                 "reason" => "duplicate",
+                 "duplicate_of" => original["id"]
+               })
+             )
 
     assert repo().get!(Record, rec["id"]).forgotten_reason == "duplicate"
 
     assert {:ok, %{content: "error: " <> _}} =
-             call(ctx, "forget_memory", %{"id" => Ecto.UUID.generate(), "reason" => "dup"})
+             call(ctx, "forget_memory", %{
+               "id" => Ecto.UUID.generate(),
+               "reason" => "dup",
+               "duplicate_of" => original["id"]
+             })
+  end
+
+  test "forget_memory refuses a duplicate_of that is itself, inactive or another kind",
+       %{ctx: ctx, e1: e1, e2: e2} do
+    target =
+      decoded(
+        call(ctx, "write_memory", %{
+          "kind" => "worklog",
+          "content" => "target",
+          "source_event_ids" => [e1]
+        })
+      )
+
+    procedure =
+      decoded(
+        call(ctx, "write_memory", %{
+          "kind" => "procedure",
+          "content" => "target",
+          "source_event_ids" => [e2]
+        })
+      )
+
+    gone =
+      decoded(
+        call(ctx, "write_memory", %{
+          "kind" => "worklog",
+          "content" => "gone",
+          "source_event_ids" => [e2]
+        })
+      )
+
+    {:ok, _} = Records.forget(gone["id"], "x")
+
+    for duplicate_of <- [target["id"], procedure["id"], gone["id"], Ecto.UUID.generate()] do
+      assert {:ok, %{content: "error: " <> _}} =
+               call(ctx, "forget_memory", %{
+                 "id" => target["id"],
+                 "reason" => "dup",
+                 "duplicate_of" => duplicate_of
+               })
+    end
+
+    assert repo().get!(Record, target["id"]).status == "active"
+  end
+
+  test "forget_memory and replace_memory refuse user-written records", %{ctx: ctx, e1: e1} do
+    {:ok, user} =
+      Records.remember(%{
+        "kind" => "procedure",
+        "content" => "deploy with make deploy",
+        "writer" => "user"
+      })
+
+    copy =
+      decoded(
+        call(ctx, "write_memory", %{
+          "kind" => "procedure",
+          "content" => "deploy with make deploy (copy)",
+          "source_event_ids" => [e1]
+        })
+      )
+
+    assert {:ok, %{content: "error: " <> forget_error}} =
+             call(ctx, "forget_memory", %{
+               "id" => user.id,
+               "reason" => "dup",
+               "duplicate_of" => copy["id"]
+             })
+
+    assert forget_error =~ "user"
+
+    assert {:ok, %{content: "error: " <> replace_error}} =
+             call(ctx, "replace_memory", %{
+               "id" => user.id,
+               "kind" => "procedure",
+               "content" => "deploy differently",
+               "source_event_ids" => [e1]
+             })
+
+    assert replace_error =~ "user"
+    assert repo().get!(Record, user.id).status == "active"
   end
 
   test "unknown tool returns an error text", %{ctx: ctx} do

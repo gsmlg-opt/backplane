@@ -7,6 +7,8 @@ defmodule Backplane.Memory.Distill.Prompts do
   You have no shell, no git and no workspace; your only tools are read_chunk, \
   search_memory, write_memory, replace_memory and forget_memory.
 
+  In read_chunk observations, "input" holds the tool call input (e.g. the command run).
+
   Rules:
   - Always call search_memory before writing, so you merge with what is already known \
   (memory is global across hosts).

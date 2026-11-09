@@ -83,7 +83,7 @@ defmodule Backplane.Memory.DistillationsTest do
       ingest!("host-d", s, 2, "agent.session.ended")
       Rebuild.session("host-d", s)
       id = Source.subject_id!("host-d", s)
-      :ok = Distillations.complete(id, 3)
+      :ok = Distillations.complete(id)
       assert row("host-d", s).status == "completed"
 
       ingest!("host-d", s, 3, "agent.session.started")
@@ -125,6 +125,7 @@ defmodule Backplane.Memory.DistillationsTest do
       assert claimed.status == "running"
       assert claimed.attempts == 1
       assert claimed.started_at
+      assert claimed.heartbeat_at
 
       assert [second] = Distillations.claim_due(now, 5)
       assert second.subject_id == b.subject_id
@@ -181,7 +182,7 @@ defmodule Backplane.Memory.DistillationsTest do
       assert Distillations.counts()["pending"] == 2
     end
 
-    test "fail logs and stores the reason; complete stores count" do
+    test "fail logs and stores the reason; complete keeps recorded progress" do
       a = insert_row(%{status: "running"})
 
       assert ExUnit.CaptureLog.capture_log(fn -> Distillations.fail(a.subject_id, "boom") end) =~
@@ -189,8 +190,12 @@ defmodule Backplane.Memory.DistillationsTest do
 
       assert %{status: "failed", last_error: "boom"} = repo().get(Distillation, a.subject_id)
 
-      :ok = Distillations.complete(a.subject_id, 4)
-      assert %{status: "completed", records_written: 4} = repo().get(Distillation, a.subject_id)
+      :ok = Distillations.record_progress(a.subject_id, 7, 4)
+      :ok = Distillations.complete(a.subject_id)
+
+      assert %{status: "completed", records_written: 4, distilled_through_sequence: 7} =
+               repo().get(Distillation, a.subject_id)
+
       assert %{} = Distillations.for_subjects([a.subject_id])
     end
 
@@ -202,6 +207,21 @@ defmodule Backplane.Memory.DistillationsTest do
       assert Distillations.reset_stale_running(DateTime.add(now, -3600)) == 1
       assert repo().get(Distillation, a.subject_id).status == "pending"
       assert repo().get(Distillation, fresh.subject_id).status == "running"
+
+      # A long multi-chunk run keeps its heartbeat fresh and is not reset.
+      long =
+        insert_row(%{status: "running", started_at: DateTime.add(now, -7200), heartbeat_at: now})
+
+      stale =
+        insert_row(%{
+          status: "running",
+          started_at: DateTime.add(now, -7200),
+          heartbeat_at: DateTime.add(now, -7200)
+        })
+
+      assert Distillations.reset_stale_running(DateTime.add(now, -3600)) == 1
+      assert repo().get(Distillation, long.subject_id).status == "running"
+      assert repo().get(Distillation, stale.subject_id).status == "pending"
 
       f = insert_row(%{status: "failed", last_error: "x"})
       assert {:ok, %{status: "pending", last_error: nil}} = Distillations.retry(f.subject_id)

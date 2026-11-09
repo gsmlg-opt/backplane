@@ -12,7 +12,12 @@ defmodule Backplane.Memory.Distill.ToolBackend do
   Writes carry `writer: "memory_agent"`, the session provenance and an idempotent
   `request_key` (`"distill:" <> subject_id <> ":" <> sha256(kind|subject_keys|property|content)`),
   so a retried run does not duplicate records. `backend_context.written` is a
-  `:counters` ref counting newly inserted records.
+  `:counters` ref counting newly inserted records and `backend_context.reads` one
+  counting `read_chunk` calls.
+
+  Destructive tools are narrowed against prompt injection: `forget_memory` needs
+  `duplicate_of`, an active different record of the same kind, and neither
+  `forget_memory` nor `replace_memory` touches a record written by the user.
   """
 
   import Ecto.Query, only: [from: 2]
@@ -37,7 +42,8 @@ defmodule Backplane.Memory.Distill.ToolBackend do
       chunk_event_ids: MapSet.new(chunk, & &1["event_id"]),
       mode: mode,
       subject_id: field(session, :subject_id),
-      written: :counters.new(1, [])
+      written: :counters.new(1, []),
+      reads: :counters.new(1, [])
     }
   end
 
@@ -73,6 +79,7 @@ defmodule Backplane.Memory.Distill.ToolBackend do
   # -- tools ----------------------------------------------------------------
 
   defp run("read_chunk", _args, ctx) do
+    :counters.add(ctx.reads, 1, 1)
     body = %{"observations" => ctx.chunk}
 
     body =
@@ -125,6 +132,7 @@ defmodule Backplane.Memory.Distill.ToolBackend do
         {:ok, record} -> written(record, new?, ctx)
         {:error, :not_found} -> error("memory #{id} not found")
         {:error, :not_active} -> error("memory #{id} is not active")
+        {:error, :replacement_not_active} -> error("an identical memory was already removed")
         {:error, %Ecto.Changeset{} = changeset} -> invalid(changeset)
       end
     end
@@ -132,8 +140,11 @@ defmodule Backplane.Memory.Distill.ToolBackend do
 
   defp run("forget_memory", args, _ctx) do
     with {:ok, id} <- required_string(args, "id"),
-         {:ok, reason} <- required_string(args, "reason") do
-      case Records.forget(id, reason) do
+         {:ok, reason} <- required_string(args, "reason"),
+         {:ok, duplicate_of} <- required_string(args, "duplicate_of"),
+         {:ok, target} <- forgettable(id),
+         :ok <- duplicate(target, duplicate_of) do
+      case Records.forget(target.id, reason) do
         {:ok, record} -> ok(Records.to_map(record))
         {:error, :not_found} -> error("memory #{id} not found")
       end
@@ -239,8 +250,43 @@ defmodule Backplane.Memory.Distill.ToolBackend do
     end
   end
 
+  defp forgettable(id) do
+    case Records.get(id) do
+      {:ok, %{record: %Record{writer: "user"}}} ->
+        error("memory #{id} was written by the user and cannot be forgotten by the memory agent")
+
+      {:ok, %{record: record}} ->
+        {:ok, record}
+
+      {:error, :not_found} ->
+        error("memory #{id} not found")
+    end
+  end
+
+  defp duplicate(%Record{id: id}, id),
+    do: error("duplicate_of must be a different memory than the one being forgotten")
+
+  defp duplicate(%Record{kind: kind}, duplicate_of) do
+    case Records.get(duplicate_of) do
+      {:ok, %{record: %Record{status: "active", kind: ^kind}}} ->
+        :ok
+
+      {:ok, %{record: %Record{status: "active", kind: other}}} ->
+        error("duplicate_of #{duplicate_of} is a #{other}, not a #{kind}")
+
+      {:ok, %{record: %Record{status: status}}} ->
+        error("duplicate_of #{duplicate_of} is #{status}, not active")
+
+      {:error, :not_found} ->
+        error("duplicate_of #{duplicate_of} not found")
+    end
+  end
+
   defp replaceable(id) do
     case Records.get(id) do
+      {:ok, %{record: %Record{writer: "user"}}} ->
+        error("memory #{id} was written by the user and cannot be replaced by the memory agent")
+
       {:ok, %{record: %Record{status: "active", kind: kind} = record}}
       when kind in @replaceable_kinds ->
         {:ok, record}
@@ -410,11 +456,18 @@ defmodule Backplane.Memory.Distill.ToolBackend do
   end
 
   defp spec("forget_memory") do
-    {"Forget a memory that is an exact duplicate of another active memory. A reason is required.",
+    {"Forget a memory that is an exact duplicate of another active memory of the same kind (duplicate_of). A reason is required.",
      %{
        "type" => "object",
-       "properties" => %{"id" => %{"type" => "string"}, "reason" => %{"type" => "string"}},
-       "required" => ["id", "reason"]
+       "properties" => %{
+         "id" => %{"type" => "string", "description" => "Id of the duplicate to forget."},
+         "reason" => %{"type" => "string"},
+         "duplicate_of" => %{
+           "type" => "string",
+           "description" => "Id of the active memory that is kept and that this one duplicates."
+         }
+       },
+       "required" => ["id", "reason", "duplicate_of"]
      }, %{read_only: false, retry_safe: true, parallel_safe: false}}
   end
 end

@@ -71,6 +71,7 @@ defmodule Backplane.Memory.Distill.AgentTest do
        %{chunk: chunk, session: session, event_id: event_id} do
     steps =
       script([
+        {:tool, "c0", "read_chunk", %{}},
         {:tool, "c1", "search_memory", %{"query" => "backplane repo"}},
         {:tool, "c2", "write_memory",
          %{
@@ -106,6 +107,7 @@ defmodule Backplane.Memory.Distill.AgentTest do
        %{chunk: chunk, session: session} do
     steps =
       script([
+        {:tool, "c0", "read_chunk", %{}},
         {:tool, "c1", "write_memory",
          %{"kind" => "fact", "content" => "x", "source_event_ids" => ["nope"]}},
         {:text, "Nothing worth remembering."}
@@ -118,10 +120,11 @@ defmodule Backplane.Memory.Distill.AgentTest do
              )
 
     assert_received {:provider_request, _}
-    assert_received {:provider_request, second}
+    assert_received {:provider_request, _}
+    assert_received {:provider_request, third}
 
     assert %{result: %{content: "error: " <> _, is_error: false}} =
-             Enum.find(second.messages, &(&1[:role] == :tool))
+             third.messages |> Enum.filter(&(&1[:role] == :tool)) |> List.last()
 
     assert repo().aggregate(Record, :count) == 0
   end
@@ -137,5 +140,20 @@ defmodule Backplane.Memory.Distill.AgentTest do
 
     assert is_binary(reason)
     assert reason =~ "HTTP 400"
+  end
+
+  test "a model that completes without calling read_chunk is an error naming the model",
+       %{chunk: chunk, session: session} do
+    steps = script([{:text, "Nothing to do."}])
+
+    assert {:error, reason} =
+             DistillAgent.run_chunk(session, chunk, "distill",
+               provider: ScriptedProvider,
+               provider_context: %{script: steps, test_pid: self()},
+               model: "text-only-model"
+             )
+
+    assert reason ==
+             "model text-only-model made no tool calls; memory.llm_model must support tool calling"
   end
 end

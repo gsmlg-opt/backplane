@@ -67,7 +67,7 @@ defmodule Backplane.Memory.Distillations do
         on: d.subject_id == s.subject_id,
         select: d,
         update: [
-          set: [status: "running", started_at: ^now, updated_at: ^now],
+          set: [status: "running", started_at: ^now, heartbeat_at: ^now, updated_at: ^now],
           inc: [attempts: 1]
         ]
       )
@@ -89,17 +89,40 @@ defmodule Backplane.Memory.Distillations do
     end)
   end
 
-  @spec complete(String.t(), non_neg_integer()) :: :ok
-  def complete(subject_id, records_written) do
+  @doc """
+  Records one completed chunk: advances the watermark to `through_sequence`,
+  refreshes the heartbeat and adds `records_written` to the session total.
+  """
+  @spec record_progress(String.t(), integer(), non_neg_integer()) :: :ok
+  def record_progress(subject_id, through_sequence, records_written) do
+    now = now()
+
+    from(d in Distillation, where: d.subject_id == ^subject_id)
+    |> repo().update_all(
+      set: [distilled_through_sequence: through_sequence, heartbeat_at: now, updated_at: now],
+      inc: [records_written: records_written]
+    )
+
+    :ok
+  end
+
+  @spec complete(String.t()) :: :ok
+  def complete(subject_id) do
     now = now()
 
     update_row(subject_id,
       status: "completed",
-      records_written: records_written,
       finished_at: now,
       last_error: nil,
       updated_at: now
     )
+  end
+
+  @doc "Returns a run that stopped at the per-run chunk cap to `pending`, due now."
+  @spec requeue(String.t()) :: :ok
+  def requeue(subject_id) do
+    now = now()
+    update_row(subject_id, status: "pending", due_at: now, last_error: nil, updated_at: now)
   end
 
   @spec fail(String.t(), String.t()) :: :ok
@@ -130,10 +153,15 @@ defmodule Backplane.Memory.Distillations do
     count
   end
 
+  @doc "Resets running rows whose heartbeat (claim or last completed chunk) is older than `older_than`."
   @spec reset_stale_running(DateTime.t()) :: non_neg_integer()
   def reset_stale_running(older_than) do
     {count, _} =
-      from(d in Distillation, where: d.status == "running" and d.started_at < ^older_than)
+      from(d in Distillation,
+        where:
+          d.status == "running" and
+            coalesce(d.heartbeat_at, d.started_at) < ^older_than
+      )
       |> repo().update_all(set: [status: "pending", updated_at: now()])
 
     count

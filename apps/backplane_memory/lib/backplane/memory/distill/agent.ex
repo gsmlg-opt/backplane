@@ -6,14 +6,18 @@ defmodule Backplane.Memory.Distill.Agent do
   five memory tools, `work: 40`, `run_timeout: 240_000`) owned by a task under
   `Backplane.Memory.Distill.TaskSupervisor`. The result counts records newly
   inserted by `write_memory` / `replace_memory`; idempotent request_key hits are
-  not counted.
+  not counted. A run that completes without ever calling `read_chunk` means the
+  model ignored the tools, so it is an error naming the model rather than a
+  silent zero-record success.
 
   Options: `:provider` (default `:distill_provider` app env, else
   `Backplane.Memory.Distill.Provider`), `:provider_context` (merged into the
-  provider context), `:chunk_index` (default 0).
+  provider context), `:chunk_index` (default 0), `:model` (name used in errors;
+  default `memory.llm_model`).
   """
 
   alias Backplane.AgentRuntime.{Conversation, EphemeralStore, Error, ToolRegistry}
+  alias Backplane.Memory.Config
   alias Backplane.Memory.Distill.{Prompts, ToolBackend}
 
   @work 40
@@ -44,7 +48,7 @@ defmodule Backplane.Memory.Distill.Agent do
          {:ok, store} <- EphemeralStore.new(1),
          {:ok, pid} <- start_conversation(run_id, store, registry, mode, opts) do
       try do
-        await(pid, run_id, context)
+        await(pid, run_id, context, opts)
       after
         stop(pid)
       end
@@ -82,11 +86,11 @@ defmodule Backplane.Memory.Distill.Agent do
     )
   end
 
-  defp await(pid, run_id, context) do
+  defp await(pid, run_id, context, opts) do
     with {:ok, _} <- Conversation.prompt(pid, @prompt) do
       receive do
         {:agent_runtime, ^run_id, %{type: :run_completed}} ->
-          {:ok, %{records_written: :counters.get(context.written, 1)}}
+          completed(context, opts)
 
         {:agent_runtime, ^run_id, %{type: type} = event}
         when type in [:run_failed, :run_cancelled] ->
@@ -96,6 +100,15 @@ defmodule Backplane.Memory.Distill.Agent do
       end
     else
       {:error, error} -> {:error, "memory agent prompt rejected: " <> reason(error)}
+    end
+  end
+
+  defp completed(context, opts) do
+    if :counters.get(context.reads, 1) == 0 do
+      model = Keyword.get(opts, :model) || Config.llm_model() || "(unset)"
+      {:error, "model #{model} made no tool calls; memory.llm_model must support tool calling"}
+    else
+      {:ok, %{records_written: :counters.get(context.written, 1)}}
     end
   end
 
