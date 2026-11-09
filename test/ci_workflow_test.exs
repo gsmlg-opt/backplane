@@ -468,6 +468,19 @@ defmodule Backplane.CIWorkflowTest do
       "run" => "mix test test/backplane/agent_runtime/tools/local_command_portable_test.exs"
     })
 
+    assert_step(portable, %{
+      "name" => "Set up Deno",
+      "uses" => "denoland/setup-deno@v2",
+      "with" => %{"deno-version" => "2.8.3"}
+    })
+
+    assert [code_mode] =
+             Enum.filter(portable["steps"], &(&1["name"] == "Verify Code Mode process lifecycle"))
+
+    assert code_mode["working-directory"] == "${{ env.PACKAGE_DIRECTORY }}"
+    assert code_mode["run"] =~ "lifecycle_capability(%{}) != :verified"
+    assert code_mode["run"] =~ "codex_code_mode_os_cleanup_test.exs"
+
     assert_agent_runtime_latest_job(workflow)
   end
 

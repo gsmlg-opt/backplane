@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Verify and clean up the native Code Mode Deno process on macOS through the
+  packaged session helper's new `--process` start-time/zombie probe. Rebuild the
+  helper with `mix backplane.command.build` after upgrading (#161).
+
 - Support ordinary LocalCommand pipes on macOS with an explicitly built native
   session/identity helper and authoritative group/helper cleanup confirmation (#159).
 

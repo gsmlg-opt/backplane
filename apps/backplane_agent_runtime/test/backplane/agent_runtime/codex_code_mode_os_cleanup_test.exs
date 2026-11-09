@@ -46,9 +46,7 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
       ])
 
     {:os_pid, os_pid} = Port.info(port, :os_pid)
-    {:ok, stat} = File.read("/proc/#{os_pid}/stat")
-    [_, fields] = Regex.run(~r/^\d+ \(.*\) (.+)$/s, stat)
-    starttime = fields |> String.split() |> Enum.at(19)
+    {:ok, %{starttime: starttime}} = CodeMode.ProcessObserver.identity(os_pid)
 
     assert Port.command(port, "release\n")
     assert_receive {^port, {:exit_status, 0}}, 2_000
@@ -87,9 +85,9 @@ defmodule Backplane.AgentRuntime.CodexCodeModeOSCleanupTest do
   end
 
   defp running?(pid) do
-    case File.read("/proc/#{pid}/stat") do
-      {:ok, stat} -> not Regex.match?(~r/\) [ZX] /, stat)
-      {:error, :enoent} -> false
+    case CodeMode.ProcessObserver.identity(pid) do
+      {:ok, %{state: state}} -> state not in ["Z", "X"]
+      {:error, reason} when reason in [:enoent, :esrch] -> false
     end
   end
 end

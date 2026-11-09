@@ -9,7 +9,10 @@ On macOS, build the packaged session launcher/probes explicitly with
 `mix backplane.command.build` before starting `Tools.LocalCommand`. A C compiler
 and macOS SDK are required; no `setsid` command or `/proc` is needed. The helper
 uses kernel identity and process-group probes and confirms both group absence
-and helper exit. Linux keeps its existing `/proc` backend without a native build.
+and helper exit. The same helper lets native Code Mode verify and clean up its
+Deno process on macOS; rebuild it after upgrading, since an older helper without
+the `--process` probe reports Code Mode lifecycle as unsupported. Linux keeps its
+existing `/proc` backend without a native build.
 See [native helper instructions](c_src/README.md).
 
 Optional first-party Linux PTY support uses the existing `exec_command` and

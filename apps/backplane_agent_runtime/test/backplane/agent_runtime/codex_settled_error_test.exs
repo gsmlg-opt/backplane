@@ -146,13 +146,16 @@ defmodule Backplane.AgentRuntime.CodexSettledErrorTest do
   test "settled context and active marker update before an encoding failure", _ctx do
     port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
     {:os_pid, pid} = Port.info(port, :os_pid)
-    [_, fields] = Regex.run(~r/^\d+ \(.*\) (.+)$/s, File.read!("/proc/#{pid}/stat"))
+
+    {:ok, %{starttime: starttime}} =
+      Backplane.AgentRuntime.Codex.CodeMode.ProcessObserver.identity(pid)
+
     reply = make_ref()
     ref = make_ref()
 
     state = %{
       port: port,
-      os_identity: %{pid: pid, starttime: Enum.at(String.split(fields), 19)},
+      os_identity: %{pid: pid, starttime: starttime},
       os_cleanup_status: :not_requested,
       active_tool: %{ref: ref, id: "1"},
       context: %{revision: 1},

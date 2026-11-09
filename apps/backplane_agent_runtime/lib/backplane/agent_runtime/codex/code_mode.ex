@@ -523,14 +523,7 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
     end
   end
 
-  defp detect_lifecycle_capability do
-    cond do
-      :os.type() != {:unix, :linux} -> {:unsupported, :linux_process_identity_required}
-      not is_binary(System.find_executable("kill")) -> {:unsupported, :kill_unavailable}
-      not File.dir?("/proc") -> {:unsupported, :proc_unavailable}
-      true -> :verified
-    end
-  end
+  defp detect_lifecycle_capability, do: __MODULE__.ProcessObserver.capability()
 
   defp validate_code(code, opts) do
     limit = Keyword.get(opts, :code_limit, @default_code_limit)
@@ -1493,18 +1486,8 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
       end
     end
 
-    defp proc_identity(pid) do
-      with {:ok, stat} <- File.read("/proc/#{pid}/stat"),
-           [_, fields] <- Regex.run(~r/^\d+ \(.*\) (.+)$/s, stat),
-           parts <- String.split(fields),
-           state when is_binary(state) <- Enum.at(parts, 0),
-           starttime when is_binary(starttime) <- Enum.at(parts, 19) do
-        {:ok, %{state: state, starttime: starttime}}
-      else
-        {:error, reason} -> {:error, reason}
-        _ -> {:error, :malformed_proc_stat}
-      end
-    end
+    defp proc_identity(pid),
+      do: Backplane.AgentRuntime.Codex.CodeMode.ProcessObserver.identity(pid)
 
     defp send_command(port, command), do: Port.command(port, JSON.encode!(command) <> "\n")
 

@@ -162,8 +162,11 @@ defmodule Backplane.AgentRuntime.CodexFramingTest do
     # terminal transition also has truthful process-cleanup evidence.
     port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
     {:os_pid, pid} = Port.info(port, :os_pid)
-    [_, fields] = Regex.run(~r/^\d+ \(.*\) (.+)$/s, File.read!("/proc/#{pid}/stat"))
-    identity = %{pid: pid, starttime: Enum.at(String.split(fields), 19)}
+
+    {:ok, %{starttime: starttime}} =
+      Backplane.AgentRuntime.Codex.CodeMode.ProcessObserver.identity(pid)
+
+    identity = %{pid: pid, starttime: starttime}
 
     %{
       port: port,

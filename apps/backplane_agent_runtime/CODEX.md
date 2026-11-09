@@ -287,9 +287,10 @@ Compatibility remains adapted rather than unqualified full parity:
   `codex.tool`/generator interface remains available. The source contract and
   native-engine differential validation limits are documented in
   `docs/agent-runtime/codex-tools/code-mode-conformance.md`.
-- The default command adapter supports Linux and macOS (with the explicit
-  session-helper build). Native Code Mode and first-party PTY/pipe half-close
-  still require Linux; other platforms require independently verified host adapters.
+- The default command adapter and native Code Mode support Linux and macOS (macOS
+  with the explicit `mix backplane.command.build` session-helper build).
+  First-party PTY/pipe half-close still require Linux; other platforms require
+  independently verified host adapters.
 - Extension reference state is ephemeral unless a durable host adapter supplies
   and verifies recovery.
 - Full pinned output schemas, all schema property descriptions, and native Codex

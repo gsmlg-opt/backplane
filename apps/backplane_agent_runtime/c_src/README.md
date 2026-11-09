@@ -22,6 +22,11 @@ retain the obligation. Pending-launch and backend-shutdown confirmation use the
 same authoritative liveness boundary. A deliberate new session escapes this
 process-group scope; this is not an OS sandbox.
 
+`--process PID` serves native Code Mode: it prints the kernel start time and `R`
+or `Z` (exited, unreaped) from `sysctl(KERN_PROC_PID)`, which also reads zombies,
+or `absent` when the PID does not exist. Code Mode pairs PID with that start time,
+so a reused PID is never mistaken for its Deno worker; probe failures stay uncertain.
+
 This helper supports ordinary raw pipe commands. First-party PTY and acknowledged
 pipe half-close remain the Linux capabilities below; macOS hosts can supply their
 own verified PTY adapter. To run the portable lifecycle tests after building:

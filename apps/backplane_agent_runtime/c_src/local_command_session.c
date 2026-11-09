@@ -13,6 +13,7 @@
 #include <unistd.h>
 #ifdef __APPLE__
 #include <libproc.h>
+#include <sys/sysctl.h>
 #endif
 
 /* No shell interpretation: arguments pass unchanged into the blocked launcher. */
@@ -69,6 +70,28 @@ static int identity(pid_t pid) {
 #endif
 }
 
+/* Code Mode identity: start time plus Z for zombies, which libproc cannot read. */
+static int process(pid_t pid) {
+#ifdef __APPLE__
+  struct kinfo_proc info;
+  size_t size = sizeof(info);
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+  if (sysctl(mib, 4, &info, &size, NULL, 0) != 0) return 1;
+  if (size == 0) {
+    puts("absent");
+    return 0;
+  }
+  if (size != sizeof(info) || info.kp_proc.p_pid != pid) return 1;
+  printf("%llu:%llu %s\n", (unsigned long long)info.kp_proc.p_starttime.tv_sec,
+         (unsigned long long)info.kp_proc.p_starttime.tv_usec,
+         info.kp_proc.p_stat == SZOMB ? "Z" : "R");
+  return 0;
+#else
+  (void)pid;
+  return 1;
+#endif
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "--probe") == 0) {
     puts("BACKPLANE_SESSION 1");
@@ -80,6 +103,7 @@ int main(int argc, char **argv) {
   if (strcmp(argv[1], "--term") == 0) return kill(-pid, SIGTERM) == 0 ? 0 : 1;
   if (strcmp(argv[1], "--kill") == 0) return kill(-pid, SIGKILL) == 0 ? 0 : 1;
   if (strcmp(argv[1], "--identity") == 0) return identity(pid);
+  if (strcmp(argv[1], "--process") == 0) return process(pid);
   if (strcmp(argv[1], "--alive") == 0) return exists(pid);
   if (strcmp(argv[1], "--group-exists") == 0) return exists(-pid);
   return 2;
