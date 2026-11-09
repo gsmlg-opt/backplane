@@ -246,6 +246,79 @@ defmodule Backplane.HostAgent.Memory.OutboxSyncTest do
     assert :ok = OutboxSync.sync_now(sync)
     assert Local.get_state(store, "last_error") =~ "invalid_cursor"
     assert Local.get_state(store, "last_sync_at") == nil
+
+    # A later fully successful cycle clears the stale error.
+    ScriptedHub.set_handler(&default_handler/1)
+    assert :ok = OutboxSync.sync_now(sync)
+    assert Local.get_state(store, "last_error") == ""
+    assert is_binary(Local.get_state(store, "last_sync_at"))
+  end
+
+  test "the pull waits until the outbox is drained so a written remember is not duplicated", %{
+    store: store
+  } do
+    sync = start_sync!(store, batch_size: 1)
+    {:ok, _} = Local.queue_remember(store, %{"content" => "one"}, "host-agent:o1")
+    {:ok, _} = Local.queue_remember(store, %{"content" => "two"}, "host-agent:o2")
+
+    # The gateway already holds o2 (an earlier timed-out send), and the pull
+    # returns its copy without a request_key.
+    {:ok, written} =
+      default_handler(
+        {:call_tool, "memory::remember", %{"request_key" => "host-agent:o2", "content" => "two"}}
+      )
+
+    ScriptedHub.set_handler(fn
+      {:pull_memory, _, _} -> {:ok, %{"records" => [written], "cursor" => cursor(1)}}
+      call -> default_handler(call)
+    end)
+
+    assert :ok = OutboxSync.sync_now(sync)
+    assert Enum.filter(ScriptedHub.calls(), &match?({:pull_memory, _, _}, &1)) == []
+
+    assert :ok = OutboxSync.sync_now(sync)
+    assert :ok = OutboxSync.sync_now(sync)
+
+    assert %{"outbox_pending" => 0, "local_records" => 2} = Local.stats(store)
+
+    assert [
+             %{"n" => 1, "request_key" => "host-agent:o1"},
+             %{"n" => 1, "request_key" => "host-agent:o2"}
+           ] =
+             outbox_rows(
+               store,
+               "SELECT request_key, COUNT(*) AS n FROM local_records WHERE sync_state = 'synced' GROUP BY request_key ORDER BY request_key"
+             )
+  end
+
+  test "pull skips invalid records but halts without advancing the cursor on store errors", %{
+    store: store,
+    sync: sync
+  } do
+    invalid = Map.put(remote("bad-1", "x", "active"), "subjects", "not-a-list")
+
+    ScriptedHub.set_handler(fn
+      {:pull_memory, _, _} ->
+        {:ok, %{"records" => [invalid, remote("ok-1", "fine", "active")], "cursor" => cursor(1)}}
+
+      call ->
+        default_handler(call)
+    end)
+
+    assert :ok = OutboxSync.sync_now(sync)
+    assert {:ok, _} = Local.get(store, "ok-1")
+    assert Jason.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
+
+    broken = Map.put(remote("bad-2", "x", "active"), "content", %{"not" => "bindable"})
+
+    ScriptedHub.set_handler(fn
+      {:pull_memory, _, _} -> {:ok, %{"records" => [broken], "cursor" => cursor(2)}}
+      call -> default_handler(call)
+    end)
+
+    assert :ok = OutboxSync.sync_now(sync)
+    assert Jason.decode!(Local.get_state(store, "pull_cursor")) == cursor(1)
+    assert Local.get_state(store, "last_error") =~ "pull"
   end
 
   test "no calls are made while the channel is down", %{store: store, sync: sync} do
@@ -312,16 +385,18 @@ defmodule Backplane.HostAgent.Memory.OutboxSyncTest do
     rows
   end
 
-  defp start_sync!(store) do
+  defp start_sync!(store, opts \\ []) do
     name = :"outbox_sync_#{System.unique_integer([:positive])}"
 
     start_supervised!(
       {OutboxSync,
-       store: store,
-       name: name,
-       hub_proxy: ScriptedHub,
-       memory_proxy: ScriptedHub,
-       interval_ms: :infinity},
+       [
+         store: store,
+         name: name,
+         hub_proxy: ScriptedHub,
+         memory_proxy: ScriptedHub,
+         interval_ms: :infinity
+       ] ++ opts},
       id: name
     )
 

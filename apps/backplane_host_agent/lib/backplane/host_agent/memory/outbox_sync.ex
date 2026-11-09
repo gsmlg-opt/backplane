@@ -75,7 +75,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
   defp run_cycle(state) do
     if channel_alive?(state.memory_proxy) do
       case flush(state) do
-        :ok -> pull(state, decode_cursor(Local.get_state(state.store, "pull_cursor")))
+        :ok -> maybe_pull(state)
         {:stopped, reason} -> record_error(state, "flush", reason)
       end
     end
@@ -85,6 +85,17 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
     error -> Logger.warning("memory outbox sync failed: #{Exception.message(error)}")
   catch
     :exit, reason -> Logger.warning("memory outbox sync failed: #{inspect(reason)}")
+  end
+
+  # A pulled copy of a written-but-unacknowledged remember carries no
+  # request_key and would orphan its pending local row, so the pull waits
+  # until the outbox is drained; the next cycle keeps flushing.
+  defp maybe_pull(state) do
+    if Local.pending_outbox(state.store, 1) == [] do
+      pull(state, decode_cursor(Local.get_state(state.store, "pull_cursor")))
+    else
+      :ok
+    end
   end
 
   defp channel_alive?(memory_proxy) do
@@ -141,7 +152,11 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
 
   defp handle_result({:error, reason}, state, entry, _prepare) do
     if transport_error?(reason) do
-      :ok = Local.bump_attempt(state.store, entry["seq"], reason_string(reason))
+      case Local.bump_attempt(state.store, entry["seq"], reason_string(reason)) do
+        :ok -> :ok
+        {:error, store_reason} -> record_error(state, "bump_attempt", store_reason)
+      end
+
       {:stop, reason}
     else
       fail(state, entry, reason_string(reason))
@@ -153,7 +168,11 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
 
   defp fail(state, entry, reason) do
     Logger.warning("memory outbox entry #{entry["seq"]} (#{entry["op"]}) failed: #{reason}")
-    :ok = Local.fail(state.store, entry["seq"], reason)
+
+    case Local.fail(state.store, entry["seq"], reason) do
+      :ok -> :ok
+      {:error, store_reason} -> record_error(state, "fail", store_reason)
+    end
   end
 
   defp remote_id(store, local_id) do
@@ -180,14 +199,13 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
   defp pull(state, cursor) do
     case state.hub_proxy.pull_memory(cursor, @pull_limit) do
       {:ok, %{"records" => records} = reply} when is_list(records) ->
-        Enum.each(records, &apply_remote(state.store, &1))
         next = Map.get(reply, "cursor")
-        :ok = Local.put_state(state.store, "pull_cursor", Jason.encode!(next))
 
-        if length(records) < @pull_limit do
-          :ok = Local.put_state(state.store, "last_sync_at", now())
+        with :ok <- apply_remotes(state.store, records),
+             :ok <- Local.put_state(state.store, "pull_cursor", Jason.encode!(next)) do
+          if length(records) < @pull_limit, do: finish(state), else: pull(state, next)
         else
-          pull(state, next)
+          {:error, reason} -> record_error(state, "pull", reason)
         end
 
       {:error, reason} ->
@@ -198,13 +216,30 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
     end
   end
 
-  defp apply_remote(store, record) do
-    case Local.upsert_remote(store, record) do
-      {:ok, _} ->
-        :ok
+  # Records failing validation are skipped; a store error halts the page so
+  # the cursor is not advanced and the record is retried next cycle.
+  defp apply_remotes(store, records) do
+    Enum.reduce_while(records, :ok, fn record, :ok ->
+      case Local.upsert_remote(store, record) do
+        {:ok, _} ->
+          {:cont, :ok}
 
-      {:error, reason} ->
-        Logger.warning("memory pull skipped record #{inspect(record["id"])}: #{inspect(reason)}")
+        {:error, :invalid_subjects} ->
+          Logger.warning("memory pull skipped record #{inspect(record["id"])}: invalid_subjects")
+          {:cont, :ok}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp finish(state) do
+    with :ok <- Local.put_state(state.store, "last_sync_at", now()),
+         :ok <- Local.put_state(state.store, "last_error", "") do
+      :ok
+    else
+      {:error, reason} -> record_error(state, "sync_state", reason)
     end
   end
 

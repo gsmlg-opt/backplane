@@ -301,6 +301,8 @@ defmodule Backplane.HostAgent.Worker do
               {:ok, %{channel: channel} = connection} ->
                 case set_memory_connection(memory_proxy_module, connection) do
                   :ok ->
+                    # Flush the memory outbox now; a no-op when the default-named
+                    # OutboxSync is not running (memory disabled).
                     OutboxSync.sync_async()
 
                     {:ok,
