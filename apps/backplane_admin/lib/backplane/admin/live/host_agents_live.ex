@@ -762,6 +762,7 @@ defmodule Backplane.Admin.HostAgentsLive do
       assigns
       |> assign(:memory, memory)
       |> assign(:memory_disabled, memory["status"] == "disabled")
+      |> assign(:memory_unavailable, memory["status"] == "unavailable")
       |> assign(:failed_uploads, failed)
       |> assign(:failed_warning, is_integer(failed) and failed > 0)
       |> assign(:last_error, memory["last_error"])
@@ -771,18 +772,19 @@ defmodule Backplane.Admin.HostAgentsLive do
       <:title>Memory health</:title>
       <p :if={is_map(get_in(@entry, [:runtime, :memory])) and report_stale?(@entry)} class="mb-3 text-sm text-warning">Last-known Memory report; stale since disconnect or reconnect.</p>
       <p :if={@memory_disabled} class="mb-3 text-sm text-on-surface-variant">Local memory is disabled on this host.</p>
-      <dl :if={not @memory_disabled} class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+      <p :if={@memory_unavailable} class="mb-3 text-sm text-on-surface-variant">Local memory store is not running.</p>
+      <dl :if={not @memory_disabled and not @memory_unavailable} class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
         <div><dt class="font-medium">Pending uploads: {memory_value(@memory["outbox_pending"])}</dt></div>
         <div>
           <dt class="font-medium">
             Failed uploads: {memory_value(@failed_uploads)}
             <.dm_badge :if={@failed_warning} variant="warning">Needs attention</.dm_badge>
           </dt>
-          <dd :if={@failed_warning and is_binary(@last_error)} class="break-all text-warning">{@last_error}</dd>
+          <dd :if={@failed_warning and is_binary(@last_error) and @last_error != ""} class="break-all text-warning">{@last_error}</dd>
         </div>
         <div><dt class="font-medium">Local records: {memory_value(@memory["local_records"])}</dt></div>
         <div><dt class="font-medium">Last sync: {memory_value(@memory["last_sync_at"])}</dt></div>
-        <div :if={not @failed_warning and is_binary(@last_error)}><dt class="font-medium">Last error</dt><dd class="break-all text-on-surface-variant">{@last_error}</dd></div>
+        <div :if={not @failed_warning and is_binary(@last_error) and @last_error != ""}><dt class="font-medium">Last error</dt><dd class="break-all text-on-surface-variant">{@last_error}</dd></div>
         <div><dt class="font-medium">Last heartbeat: {report_timestamp(@entry.last_heartbeat_at)}</dt></div>
       </dl>
       <dl :if={@entry.config} class="mt-3 space-y-2 text-sm">

@@ -167,6 +167,24 @@ defmodule Backplane.HostAgent.Memory.Local do
          do: :ok
   end
 
+  @max_error_bytes 1_000
+
+  @doc "Truncates an error string to at most 1000 bytes, UTF-8 safe, with a trailing ellipsis."
+  @spec truncate_error(term()) :: term()
+  def truncate_error(error) when is_binary(error) and byte_size(error) > @max_error_bytes do
+    trim_utf8(binary_part(error, 0, @max_error_bytes - 3)) <> "…"
+  end
+
+  def truncate_error(error), do: error
+
+  defp trim_utf8(<<>>), do: <<>>
+
+  defp trim_utf8(binary) do
+    if String.valid?(binary),
+      do: binary,
+      else: trim_utf8(binary_part(binary, 0, byte_size(binary) - 1))
+  end
+
   @spec fail(GenServer.server(), integer(), String.t()) :: :ok | {:error, term()}
   def fail(store \\ @default_store, seq, reason) do
     with {:ok, _} <-
@@ -178,7 +196,7 @@ defmodule Backplane.HostAgent.Memory.Local do
                  exec!(
                    conn,
                    "UPDATE memory_outbox SET state = 'failed', last_error = ?, attempts = attempts + 1, updated_at = ? WHERE seq = ?",
-                   [reason, now, seq]
+                   [truncate_error(reason), now, seq]
                  )
 
                  exec!(
@@ -201,7 +219,7 @@ defmodule Backplane.HostAgent.Memory.Local do
              exec!(
                conn,
                "UPDATE memory_outbox SET attempts = attempts + 1, last_error = ?, updated_at = ? WHERE seq = ?",
-               [reason, now(), seq]
+               [truncate_error(reason), now(), seq]
              )
            end),
          do: :ok

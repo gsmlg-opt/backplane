@@ -391,7 +391,7 @@ defmodule Backplane.Skills.AgentManage do
   end
 
   defp normalize_runtime(payload) do
-    payload = stringify_keys(payload)
+    payload = payload |> stringify_keys() |> truncate_memory_error()
 
     with :ok <- validate_agent_version(payload),
          :ok <- validate_targets(payload),
@@ -409,6 +409,25 @@ defmodule Backplane.Skills.AgentManage do
 
       {:ok, runtime}
     end
+  end
+
+  @max_error_bytes 1_000
+
+  defp truncate_memory_error(%{"memory" => %{"last_error" => error} = memory} = payload)
+       when is_binary(error) and byte_size(error) > @max_error_bytes do
+    keep = binary_part(error, 0, @max_error_bytes - 3)
+    keep = trim_to_valid_utf8(keep)
+    %{payload | "memory" => %{memory | "last_error" => keep <> "…"}}
+  end
+
+  defp truncate_memory_error(payload), do: payload
+
+  defp trim_to_valid_utf8(<<>>), do: <<>>
+
+  defp trim_to_valid_utf8(binary) do
+    if String.valid?(binary),
+      do: binary,
+      else: trim_to_valid_utf8(binary_part(binary, 0, byte_size(binary) - 1))
   end
 
   defp validate_agent_version(%{"agent_version" => version})

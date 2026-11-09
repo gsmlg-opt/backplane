@@ -255,7 +255,7 @@ defmodule Backplane.HostAgent.Memory.OutboxSync do
   defp record_error(state, phase, reason) do
     message = "#{phase}: #{reason_string(reason)}"
     Logger.warning("memory outbox sync #{message}")
-    _ = Local.put_state(state.store, "last_error", message)
+    _ = Local.put_state(state.store, "last_error", Local.truncate_error(message))
     :ok
   end
 

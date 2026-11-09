@@ -125,7 +125,7 @@ defmodule Backplane.HostAgent.Reporter do
             "outbox_failed" => stats["outbox_failed"],
             "local_records" => stats["local_records"],
             "last_sync_at" => blank_to_nil(stats["last_sync_at"]),
-            "last_error" => blank_to_nil(stats["last_error"])
+            "last_error" => stats["last_error"] |> blank_to_nil() |> Local.truncate_error()
           }
 
         _ ->

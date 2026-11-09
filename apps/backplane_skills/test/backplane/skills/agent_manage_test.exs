@@ -160,7 +160,6 @@ defmodule Backplane.Skills.AgentManageTest do
           [],
           %{"local_records" => -1},
           %{"outbox_pending" => 1.5},
-          %{"last_error" => String.duplicate("x", 1_025)},
           %{"last_error" => 5},
           %{"last_sync_at" => "not-a-time"},
           %{"partitions" => []},
@@ -180,6 +179,23 @@ defmodule Backplane.Skills.AgentManageTest do
 
     assert {:error, :invalid_payload} =
              AgentManage.report_config(host.id, %{"memory" => String.duplicate("x", 40_000)})
+  end
+
+  test "truncates an over-long memory last_error instead of rejecting the report" do
+    {:ok, host, auth_token, _} = Hosts.create_agent_with_token(%{"name" => "long-error"})
+    :ok = AgentManage.register_connection(host, auth_token, self(), %{})
+    long = String.duplicate("é", 3_000)
+
+    assert :ok =
+             AgentManage.update_runtime(host.id, %{
+               "memory" => %{"status" => "available", "last_error" => long}
+             })
+
+    assert {:ok, entry} = AgentManage.get_agent(host.id)
+    error = entry.runtime.memory["last_error"]
+    assert byte_size(error) <= 1_000
+    assert String.valid?(error)
+    assert String.ends_with?(error, "…")
   end
 
   test "records live connection IP, runtime, config, and channel exits" do

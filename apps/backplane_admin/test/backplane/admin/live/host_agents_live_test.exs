@@ -123,6 +123,44 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert has_element?(view, "#host-memory-health", "Unavailable")
   end
 
+  for {name, failed, error, badge?, shown?} <- [
+        {"failed with nil error", 2, nil, true, false},
+        {"failed with blank error", 2, "", true, false},
+        {"no failures with an error", 0, "sync: stale boom", false, true}
+      ] do
+    test "memory health #{name}", %{conn: conn} do
+      {:ok, host, token, _} = Hosts.create_agent_with_token(%{"name" => "h-#{unquote(name)}"})
+      :ok = AgentManage.register_connection(host, token, self(), %{})
+
+      :ok =
+        AgentManage.update_runtime(host.id, %{
+          "memory" => %{
+            "status" => "available",
+            "outbox_pending" => 0,
+            "outbox_failed" => unquote(failed),
+            "last_error" => unquote(error)
+          }
+        })
+
+      {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/sync")
+      assert has_element?(view, "#host-memory-health", "Failed uploads: #{unquote(failed)}")
+      assert has_element?(view, "#host-memory-health", "Needs attention") == unquote(badge?)
+
+      assert has_element?(view, "#host-memory-health", "Last error") ==
+               unquote(shown?)
+
+      if unquote(shown?), do: assert(has_element?(view, "#host-memory-health", "sync: stale boom"))
+    end
+  end
+
+  test "unavailable memory store shows not running message", %{conn: conn} do
+    {:ok, host, token, _} = Hosts.create_agent_with_token(%{"name" => "unavailable-mem"})
+    :ok = AgentManage.register_connection(host, token, self(), %{})
+    :ok = AgentManage.update_runtime(host.id, %{"memory" => %{"status" => "unavailable"}})
+    {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/sync")
+    assert has_element?(view, "#host-memory-health", "Local memory store is not running")
+  end
+
   test "disabled memory health says disabled", %{conn: conn} do
     {:ok, host, token, _} = Hosts.create_agent_with_token(%{"name" => "disabled-memory-host"})
     :ok = AgentManage.register_connection(host, token, self(), %{})

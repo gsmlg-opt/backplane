@@ -185,6 +185,27 @@ defmodule Backplane.HostAgent.ReporterTest do
     assert payload["memory"]["last_error"] == "sync: boom"
   end
 
+  @tag :tmp_dir
+  test "memory last_error is truncated UTF-8 safely", %{tmp_dir: tmp_dir} do
+    name = :"reporter_memory_store_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Store,
+       database: Path.join(tmp_dir, "m.db"), name: name, pool_size: 1, busy_timeout_ms: 5_000}
+    )
+
+    assert :ok = Migrator.migrate(name)
+    assert :ok = Local.put_state(name, "last_error", String.duplicate("é", 2_500))
+
+    payload =
+      Reporter.heartbeat(%{machine_name: "t", memory: %{enabled: true, store_name: name}})
+
+    error = payload["memory"]["last_error"]
+    assert byte_size(error) <= 1_024
+    assert String.valid?(error)
+    assert String.ends_with?(error, "…")
+  end
+
   test "config reports only allowlisted local settings" do
     report =
       Reporter.config_report(
