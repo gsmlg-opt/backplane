@@ -88,12 +88,11 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
       AgentManage.update_runtime(host.id, %{
         "memory" => %{
           "status" => "available",
-          "pending_commands" => 3,
-          "failed_commands" => 1,
-          "revision" => 17,
-          "retry_count" => 2,
-          "dead_letter_count" => 1,
-          "partitions" => []
+          "outbox_pending" => 3,
+          "outbox_failed" => 1,
+          "local_records" => 17,
+          "last_sync_at" => "2026-11-09T01:00:00Z",
+          "last_error" => "sync: gateway rejected kind"
         }
       })
 
@@ -109,8 +108,12 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     :ok = AgentManage.disconnect(host.id)
     assert has_element?(view, "#host-report-stale", "stale")
     {:ok, sync, _} = live(conn, "/system/host-agents/#{host.id}/sync")
-    assert has_element?(sync, "#host-memory-health", "17")
-    assert has_element?(sync, "#host-memory-health", "3")
+    assert has_element?(sync, "#host-memory-health", "Pending uploads: 3")
+    assert has_element?(sync, "#host-memory-health", "Failed uploads: 1")
+    assert has_element?(sync, "#host-memory-health", "sync: gateway rejected kind")
+    assert has_element?(sync, "#host-memory-health", "Local records: 17")
+    assert has_element?(sync, "#host-memory-health", "2026-11-09T01:00:00Z")
+    refute has_element?(sync, "#host-memory-health", "Mirror")
     assert has_element?(sync, "#host-memory-health", "stale")
   end
 
@@ -118,6 +121,14 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     {:ok, host} = Hosts.create_agent(%{"name" => "unreported-memory-host"})
     {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/sync")
     assert has_element?(view, "#host-memory-health", "Unavailable")
+  end
+
+  test "disabled memory health says disabled", %{conn: conn} do
+    {:ok, host, token, _} = Hosts.create_agent_with_token(%{"name" => "disabled-memory-host"})
+    :ok = AgentManage.register_connection(host, token, self(), %{})
+    :ok = AgentManage.update_runtime(host.id, %{"memory" => %{"status" => "disabled"}})
+    {:ok, view, _} = live(conn, "/system/host-agents/#{host.id}/sync")
+    assert has_element?(view, "#host-memory-health", "Local memory is disabled")
   end
 
   test "legacy detail path redirects to overview tab", %{conn: conn} do
@@ -148,7 +159,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
                  "token" => "REDACTED",
                  "http_port" => 4222
                },
-               "memory" => %{"enabled" => true, "bound_scope" => "proj_local"},
+               "memory" => %{"enabled" => true, "sync_batch_size" => 50},
                "telemetry" => %{"enabled" => true, "dir" => "/tmp/telemetry"},
                "targets" => [%{"name" => "agents", "path" => "/tmp/skills"}]
              })
@@ -197,7 +208,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert html =~ "Reported Config"
     assert html =~ "hub_url: http://10.100.10.28:4220"
     assert html =~ "token: REDACTED"
-    assert html =~ "bound_scope: proj_local"
+    assert html =~ "sync_batch_size: 50"
     assert html =~ "/tmp/skills"
     assert has_element?(view, "#reported-config-yaml code.language-yaml")
     refute has_element?(view, "#host-config-targets-table")

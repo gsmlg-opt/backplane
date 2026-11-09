@@ -961,7 +961,7 @@ defmodule Backplane.HostAgent.WorkerTest do
                         "machine_name" => "t430",
                         "token" => "REDACTED"
                       },
-                      "memory" => %{"bound_scope" => "proj_local"},
+                      "memory" => %{"sync_interval_ms" => 5_000},
                       "telemetry" => %{"dir" => telemetry_dir},
                       "targets" => [%{"name" => "agents", "path" => ^tmp_dir}]
                     }}
@@ -1285,12 +1285,8 @@ defmodule Backplane.HostAgent.WorkerTest do
       memory: %{
         enabled: true,
         db_path: Path.join(tmp_dir, "memory/host_agent_memory.db"),
-        bound_scope: "proj_local",
-        local_ttl_days: 90,
         sync_interval_ms: 5_000,
-        sync_batch_size: 50,
-        max_attempts: 5,
-        tombstone_relearn: "block"
+        sync_batch_size: 50
       },
       telemetry: %{
         enabled: true,

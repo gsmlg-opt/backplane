@@ -122,7 +122,8 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert sample =~ "batch_size: 100"
     assert sample =~ "batch_bytes: 524288"
     assert sample =~ "db_path:"
-    assert sample =~ "local_ttl_days: 90"
+    refute sample =~ "local_ttl_days:"
+    refute sample =~ "max_attempts:"
     refute sample =~ "import_profiles:"
     refute sample =~ "host_sync:"
     refute sample =~ "bound_scope:"
@@ -131,36 +132,6 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert sample =~ "sync_interval_ms: 10000"
     assert sample =~ "retention_days: 14"
     refute sample =~ "# http_port"
-  end
-
-  @tag :tmp_dir
-  test "parses opaque import profiles while retaining paths only in host config", %{tmp_dir: dir} do
-    path = Path.join(dir, "sessions")
-    config_path = Path.join(dir, "agent.yaml")
-
-    File.write!(config_path, """
-    agent:
-      host_id: host-123
-      work_dir: #{dir}
-    memory:
-      import_profiles:
-        project_history:
-          path: #{path}
-          approved_roots:
-            - #{dir}
-          max_depth: 7
-    """)
-
-    assert {:ok, config} = Config.load(config_path)
-
-    assert config.memory.import_profiles == %{
-             "project_history" => %{
-               path: path,
-               approved_roots: [dir],
-               allow_symlinks: false,
-               max_depth: 7
-             }
-           }
   end
 
   @tag :tmp_dir
@@ -183,30 +154,8 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: Path.join(work_dir, "memory/host_agent_memory.db"),
-             host_sync: %{
-               enabled: false,
-               development_plaintext: false,
-               db_path: Path.join(work_dir, "memory/edge_memory.db"),
-               reserved_db_paths: [
-                 Path.join(work_dir, "memory/host_agent_memory.db"),
-                 Path.join(work_dir, "memory/capture_spool.db")
-               ],
-               max_frame_bytes: 524_288,
-               max_changes: 100,
-               max_items: 10_000,
-               max_bytes: 64 * 1024 * 1024,
-               max_items_per_partition: 5_000,
-               max_age_days: 90,
-               type_quotas: %{},
-               sync_interval_ms: 5_000
-             },
-             bound_scope: "proj_local",
-             local_ttl_days: 90,
              sync_interval_ms: 5_000,
-             sync_batch_size: 50,
-             max_attempts: 5,
-             import_profiles: %{},
-             tombstone_relearn: "block"
+             sync_batch_size: 50
            }
 
     assert config.capture == %{
@@ -396,6 +345,11 @@ defmodule Backplane.HostAgent.ConfigTest do
       sync_batch_size: 10
       max_attempts: 2
       tombstone_relearn: allow_with_log
+      import_profiles:
+        x:
+          path: /tmp/x
+      host_sync:
+        enabled: true
     """)
 
     assert {:ok, config} = Config.load(config_path)
@@ -403,57 +357,9 @@ defmodule Backplane.HostAgent.ConfigTest do
     assert config.memory == %{
              enabled: true,
              db_path: db_path,
-             host_sync: %{
-               enabled: false,
-               development_plaintext: false,
-               db_path: Path.join(tmp_dir, "work/memory/edge_memory.db"),
-               reserved_db_paths: [db_path, Path.join(tmp_dir, "work/memory/capture_spool.db")],
-               max_frame_bytes: 524_288,
-               max_changes: 100,
-               max_items: 10_000,
-               max_bytes: 64 * 1024 * 1024,
-               max_items_per_partition: 5_000,
-               max_age_days: 90,
-               type_quotas: %{},
-               sync_interval_ms: 5_000
-             },
-             bound_scope: "proj_custom",
-             local_ttl_days: 30,
              sync_interval_ms: 250,
-             sync_batch_size: 10,
-             max_attempts: 2,
-             import_profiles: %{},
-             tombstone_relearn: "allow_with_log"
+             sync_batch_size: 10
            }
-  end
-
-  @tag :tmp_dir
-  test "parses bounded edge quotas and ignores invalid type quotas", %{tmp_dir: tmp_dir} do
-    config_path = Path.join(tmp_dir, "agent.yaml")
-
-    File.write!(config_path, """
-    agent:
-      host_id: host-123
-      work_dir: #{tmp_dir}
-    memory:
-      host_sync:
-        max_items: 12
-        max_bytes: 4096
-        max_items_per_partition: 7
-        max_age_days: 3
-        type_quotas:
-          procedural: 5
-          semantic: 0
-          episodic: invalid
-    """)
-
-    assert {:ok, config} = Config.load(config_path)
-    edge = config.memory.host_sync
-    assert edge.max_items == 12
-    assert edge.max_bytes == 4096
-    assert edge.max_items_per_partition == 7
-    assert edge.max_age_days == 3
-    assert edge.type_quotas == %{"procedural" => 5}
   end
 
   @tag :tmp_dir

@@ -1,6 +1,7 @@
 defmodule Backplane.HostAgent.ReporterTest do
   use ExUnit.Case, async: true
 
+  alias Backplane.HostAgent.Memory.{Local, Migrator, Store}
   alias Backplane.HostAgent.Reporter
 
   defmodule CaptureSpool do
@@ -130,14 +131,58 @@ defmodule Backplane.HostAgent.ReporterTest do
            } = payload["capture"]
   end
 
-  test "memory measurements are reported as unavailable" do
-    payload = Reporter.heartbeat(%{machine_name: "report-test", memory: %{enabled: true}})
+  test "memory section is unavailable when the store is not running" do
+    payload =
+      Reporter.heartbeat(%{
+        machine_name: "report-test",
+        memory: %{enabled: true, store_name: :no_such_memory_store}
+      })
 
-    for key <- ~w(items bytes revision pending_commands failed_commands last_successful_sync) do
+    assert payload["memory"]["status"] == "unavailable"
+
+    for key <- ~w(outbox_pending outbox_failed local_records last_sync_at last_error) do
       assert payload["memory"][key] == nil
     end
 
-    assert payload["memory"]["status"] == "unavailable"
+    refute Map.has_key?(payload["memory"], "partitions")
+  end
+
+  test "memory section is disabled when memory is disabled" do
+    payload = Reporter.heartbeat(%{machine_name: "report-test", memory: %{enabled: false}})
+    assert payload["memory"]["status"] == "disabled"
+  end
+
+  @tag :tmp_dir
+  test "memory section reports local outbox stats", %{tmp_dir: tmp_dir} do
+    name = :"reporter_memory_store_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Store, database: Path.join(tmp_dir, "m.db"), name: name, pool_size: 1, busy_timeout_ms: 5_000}
+    )
+
+    assert :ok = Migrator.migrate(name)
+    assert {:ok, _} = Local.queue_remember(name, %{"content" => "hello", "kind" => "fact"}, "host-agent:k1")
+    assert :ok = Local.put_state(name, "last_sync_at", "2026-11-09T01:00:00Z")
+    assert :ok = Local.put_state(name, "last_error", "")
+
+    payload =
+      Reporter.heartbeat(%{machine_name: "report-test", memory: %{enabled: true, store_name: name}})
+
+    assert %{
+             "status" => "available",
+             "outbox_pending" => 1,
+             "outbox_failed" => 0,
+             "local_records" => 1,
+             "last_sync_at" => "2026-11-09T01:00:00Z",
+             "last_error" => nil
+           } = payload["memory"]
+
+    assert :ok = Local.put_state(name, "last_error", "sync: boom")
+
+    payload =
+      Reporter.heartbeat(%{machine_name: "report-test", memory: %{enabled: true, store_name: name}})
+
+    assert payload["memory"]["last_error"] == "sync: boom"
   end
 
   test "config reports only allowlisted local settings" do
@@ -156,6 +201,7 @@ defmodule Backplane.HostAgent.ReporterTest do
       )
 
     assert report["local_settings_applied_at"] == "2026-10-20T01:00:00Z"
+    assert report["memory"] == %{"enabled" => true}
     refute Map.has_key?(report, "memory_negotiation")
     assert report["agent"]["token"] == "REDACTED"
     refute inspect(report) =~ "hidden-"
@@ -178,11 +224,9 @@ defmodule Backplane.HostAgent.ReporterTest do
         enabled: true,
         db_path: "/tmp/work/memory/host_agent_memory.db",
         bound_scope: "proj_local",
-        local_ttl_days: 90,
+        host_sync: %{enabled: true},
         sync_interval_ms: 5_000,
-        sync_batch_size: 50,
-        max_attempts: 5,
-        tombstone_relearn: "block"
+        sync_batch_size: 50
       },
       telemetry: %{
         enabled: true,
@@ -208,7 +252,7 @@ defmodule Backplane.HostAgent.ReporterTest do
                "http_bind" => "127.0.0.1",
                "http_port" => 4222
              },
-             "memory" => %{"bound_scope" => "proj_local"},
+             "memory" => %{"sync_interval_ms" => 5_000, "sync_batch_size" => 50} = memory,
              "telemetry" => %{"dir" => "/tmp/work/telemetry"},
              "targets" => [
                %{
@@ -218,7 +262,10 @@ defmodule Backplane.HostAgent.ReporterTest do
                  "runtime" => "agent-skills"
                }
              ]
-           } = Reporter.config_report(config)
+           } = report = Reporter.config_report(config)
+
+    refute Map.has_key?(memory, "bound_scope")
+    refute Map.has_key?(report["memory"], "host_sync")
   end
 
   test "formats sync result payload" do
