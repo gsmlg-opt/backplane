@@ -38,6 +38,8 @@ config :backplane, Styx,
      crontab: [
        # Fallback sweep: every 30 minutes, leaving room for gap grace within the four-hour SLA
        {"*/30 * * * *", Backplane.Memory.Workers.FallbackSweepWorker},
+       # Memory distillation: claim due session distillations every minute
+       {"* * * * *", Backplane.Memory.Workers.DistillSchedulerWorker},
        # OAuth credential refresh: every 10 minutes
        {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker},
        # Observability retention workers

@@ -80,6 +80,8 @@
    "Type mismatch in call with opaque term in supersession_reaches?."},
   {"lib/backplane/memory/memories/verification.ex",
    "Type mismatch in call without opaque term in member?."},
+  {"lib/backplane/memory/distill/agent.ex",
+   "Type mismatch in call without opaque term in yield."},
   {"lib/backplane/memory/recall/reranker.ex",
    "Type mismatch in call without opaque term in await."},
   {"lib/backplane/memory/recall/reranker.ex",

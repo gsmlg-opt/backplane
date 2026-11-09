@@ -132,6 +132,5 @@ defmodule Backplane.Memory.LLM.ChatClient do
     end
   end
 
-  defp reason_text(%{__exception__: true} = exception), do: Exception.message(exception)
-  defp reason_text(reason), do: inspect(reason)
+  defp reason_text(exception), do: Exception.message(exception)
 end
