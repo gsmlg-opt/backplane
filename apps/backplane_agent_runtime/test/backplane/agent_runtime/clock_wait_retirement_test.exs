@@ -247,6 +247,30 @@ defmodule Backplane.AgentRuntime.ClockWaitRetirementTest do
     finish(context, next)
   end
 
+  # #163: Conversation.terminate/2 must release a pending clock wait through
+  # ClockWait, not as an MCP resource request (which has a backend runtime).
+  test "stopping a Conversation with a pending clock wait releases it through ClockWait" do
+    host = Host.new()
+    context = start_root(host, "terminate-clock", startup_gate: :after_ack)
+    provider = prompt(context, "sleep for a minute")
+    send(provider, {:events, [call("clock::sleep", %{"duration_ms" => 60_000}), done()]})
+    assert_receive {:clock_registered, operation, _, _}, 2_000
+
+    monitor = Process.monitor(context.conversation)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        # A Conversation-initiated stop runs terminate/2 (it does not trap exits).
+        assert :ok = GenServer.stop(context.conversation, :normal)
+        assert_receive {:DOWN, ^monitor, :process, _, :normal}, 5_000
+      end)
+
+    refute log =~ "KeyError"
+
+    eventually(fn -> not Process.alive?(operation.clock_wait_admission.waiter) end)
+    assert_clock_waiter_retired(operation)
+  end
+
   for kind <- [:tool_completed, :cleanup_settled], behavior <- [:reject, :malformed, :lost] do
     @tag ack_kind: kind, ack_behavior: behavior
     test "#{kind} #{behavior} ACK retains clock registration and blocks provider continuation",
