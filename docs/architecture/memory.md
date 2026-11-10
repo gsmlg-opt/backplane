@@ -131,9 +131,21 @@ full-text results only.
 Host agents scan local state (git checkouts, Docker containers, systemd
 services, launchd jobs, host facts) and upload only changes as
 `host.snapshot.collected` events (`integration`/`client_id` `host_collector`, no
-session). The payload is `{collector, unit, complete, items}`: `unit` is the scan
-root for `git` and `"local"` otherwise; `complete` is true only when the whole
-unit was scanned. The gateway validates the event like any other, then
+session). The payload is `{collector, unit, complete, items, host_label}` plus,
+for `git`, `unscanned`: `unit` is the scan root for `git` and `"local"`
+otherwise; `complete` is true only when the whole unit was scanned; `host_label`
+is the agent's `machine_name` (or its hostname) and names the host in fact
+content, while fact subjects always use the host id; `unscanned` lists
+directories below the root that could not be read. A repository whose git
+commands fail unexpectedly is dropped and the root marked incomplete. Strings
+are sanitized to valid UTF-8; commit subjects and branches are truncated to 200
+characters, and a snapshot that would exceed the capture `batch_bytes` limit
+keeps only its leading items and is marked incomplete. Host info reports IPv4
+addresses of physical interfaces and non-ephemeral listening ports; it is not
+reported at all when the listening scan fails. The agent remembers each unit's
+fingerprint in `collector_state.json` next to the capture spool (keyed by host
+id); deleting that file forces one full re-report, which the gateway diff turns
+into a no-op for unchanged items. The gateway validates the event like any other, then
 `Backplane.Memory.Workers.HostSnapshotWorker` (queue `:memory`, unique per
 event) applies it asynchronously; the job is enqueued in the same transaction
 as the insert, so an accepted event always has its job.
@@ -149,7 +161,8 @@ unchanged slots are left alone, and vanished slots are forgotten.
   `user` facts are never touched.
 - Disappearance counts only when the unit's scan was `complete`. A disabled
   collector, a removed or unreadable root, or a partial failure never
-  invalidates anything.
+  invalidates anything. Items at or below an `unscanned` directory are kept
+  even in a complete scan.
 - Ordering uses `occurred_at`. A snapshot older than the applied one (offline
   spool, retries) is ignored as stale. Host clocks ahead of the gateway are
   clamped to the gateway time so later snapshots are not mistaken for stale.
