@@ -5,6 +5,20 @@ defmodule Backplane.MemoryToolContractTest do
 
   @five ~w(memory::search memory::get memory::recent memory::remember memory::forget)
 
+  test "instructions/0 is the canonical resident instruction" do
+    instructions = MemoryToolContract.instructions()
+
+    assert String.starts_with?(
+             instructions,
+             "Backplane Memory is shared by all of the user's agents and hosts.\n"
+           )
+
+    assert instructions =~ "call memory::search"
+    assert instructions =~ "call memory::remember once"
+    assert instructions =~ "call memory::forget with a reason."
+    refute String.ends_with?(instructions, "\n")
+  end
+
   test "exposes exactly the five public tools with schemas" do
     assert Enum.sort(MemoryToolContract.tools()) == Enum.sort(@five)
     assert MemoryToolContract.schemas() |> Map.keys() |> Enum.sort() == Enum.sort(@five)

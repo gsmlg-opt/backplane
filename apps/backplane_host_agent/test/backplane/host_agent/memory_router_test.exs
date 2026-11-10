@@ -335,6 +335,13 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
              }
     end
 
+    test "initialize serves the canonical resident instructions" do
+      decoded = jsonrpc("/memory/agt_42/mcp", %{"id" => 1, "method" => "initialize"})
+
+      assert decoded["result"]["instructions"] ==
+               Backplane.MemoryToolContract.instructions()
+    end
+
     test "returns JSON-RPC error for unknown JSON-RPC method" do
       decoded = jsonrpc("/memory/agt_42/mcp", %{"id" => 7, "method" => "unsupported"})
       assert decoded["error"]["code"] == -32_601

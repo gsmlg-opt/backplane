@@ -547,7 +547,8 @@ defmodule Backplane.HostAgent.MemoryRouter do
               "name" => "backplane-host-agent-memory",
               "version" => Backplane.HostAgent.version()
             },
-            "capabilities" => %{"tools" => %{}}
+            "capabilities" => %{"tools" => %{}},
+            "instructions" => Backplane.MemoryToolContract.instructions()
           })
         )
 
