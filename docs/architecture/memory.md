@@ -217,7 +217,7 @@ tests and verifies the packaged release (`shared/bin/backplane-memory-hook`
 executable, `INSTRUCTIONS.md`, `claude_code`, `codex`, `cursor`).
 
 Sigma and Synapsis plugins are tracked as `internal request` issues in their
-own repositories.
+own repositories: gsmlg-opt/sigma#3 and gsmlg-opt/Synapsis#25.
 
 ## Historical documents
 
