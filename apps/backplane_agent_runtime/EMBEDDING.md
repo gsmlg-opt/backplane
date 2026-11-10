@@ -265,8 +265,7 @@ they are armed. Suspension invalidates the previous generation; resumption
 uses only the remaining budget. Store admission acknowledgement alone cannot
 revive an interaction after a valid timeout or cancellation wins. Commit and
 cleanup deadlines continue to run during human waiting. Engine timer fencing
-is separately deferred; these shared-runtime guarantees do not verify Deno or
-Denox engine behavior.
+requires separate verification at the JavaScript worker boundary.
 If a nested worker dies during an acknowledged human wait, the runtime stops
 with uncertain settlement and clears the interaction rather than continuing
 with suspended deadlines.

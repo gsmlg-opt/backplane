@@ -25,11 +25,11 @@ Oban, ExUnit, `devenv shell -- mix ...`.
 - [x] Phase 1 Boruta foundation is implemented in
       `docs/superpowers/plans/2026-06-26-oauth-rbac-phase-1-boruta-foundation.md`.
 - [x] Phase 1 scoped verification passes.
-- [x] Full umbrella verification currently exits `139` in
+- [x] The June 2026 full-suite run exited `139` in
       `apps/backplane_monitor/test/backplane/monitor/providers/claude_code_test.exs`.
-- [x] The full-suite blocker is tracked upstream as
-      `gsmlg-dev/denox#3`, with GitHub issue type `Bug`, label
-      `internal request`, and a required callsite TODO in Backplane.
+      This historical failure was tracked as `gsmlg-dev/denox#3`.
+      The current dependency graph has no Denox entry. Full-suite verification
+      remains pending.
 - [x] Phase 2A identity-domain foundation is implemented in
       `docs/superpowers/plans/2026-06-26-oauth-rbac-phase-2a-identity-domain.md`.
 - [x] Phase 2B federated-login domain engine is implemented in
@@ -60,7 +60,7 @@ Oban, ExUnit, `devenv shell -- mix ...`.
 - [x] Configure Boruta on `Backplane.Repo`.
 - [x] Add squashed `oauth_*` tables.
 - [x] Prove Boruta Ecto scopes and clients can persist.
-- [ ] Full-suite verification passes. Blocked by `gsmlg-dev/denox#3`.
+- [ ] Full-suite verification passes on the current dependency graph.
 
 ### Phase 2: Identity And Federated Login Domain
 
@@ -159,5 +159,5 @@ devenv shell -- mix test <affected existing tests>
 devenv shell -- mix test
 ```
 
-If the full suite still exits in the pre-existing Denox crash, keep the goal
-active, record the scoped evidence, and do not claim full completion.
+If full-suite verification fails, keep the goal active and record the scoped
+evidence and current failure.

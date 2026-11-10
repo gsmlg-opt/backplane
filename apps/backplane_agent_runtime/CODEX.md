@@ -298,10 +298,9 @@ Compatibility remains adapted rather than unqualified full parity:
 - Production MCP, web/image services, and provider-hosted tools were not tested
   against live backends.
 
-The selected Code Mode backend for internal request #54 is the existing Deno
-process adapter, with no Denox migration. Host limits remain independent from
-response budgets: source 128 KiB, lifetime output 1 MiB, 32 nested calls,
-30 seconds of engine execution, and a 64 MiB V8 old-space ceiling by default.
+Code Mode host limits are independent of response budgets. The Deno process
+adapter defaults to 128 KiB of source, 1 MiB of lifetime output, 32 nested
+calls, 30 seconds of engine execution, and a 64 MiB V8 old-space ceiling.
 V8's old-space limit is not a total OS-process RSS limit. ResourceRegistry bounds
 live cells (16 by default), stored keys (256 per owner/incarnation), and total
 stored state (16 MiB). A host can set shorter execution limits.
