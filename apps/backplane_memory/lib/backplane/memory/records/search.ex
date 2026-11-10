@@ -56,15 +56,31 @@ defmodule Backplane.Memory.Records.Search do
     |> filter_time(:until, filters["until"])
   end
 
+  # Ranked by full-text relevance, then by how many query terms the record
+  # contains (so fallback hits matching more of the query come first), then by
+  # recency.
   defp text_query(query, filters) do
+    patterns = patterns(query)
+
     filters
     |> filtered()
-    |> match(query, patterns(query))
+    |> match(query, patterns)
     |> order_by([r],
       desc:
         fragment(
           "ts_rank_cd(m0.search_tsv, websearch_to_tsquery('simple', ?))",
           ^query
+        ),
+      desc:
+        fragment(
+          """
+          (SELECT count(*) FROM unnest(?::text[]) AS p
+           WHERE m0.content ILIKE p OR coalesce(m0.title, '') ILIKE p
+              OR EXISTS (SELECT 1 FROM unnest(m0.subject_keys) AS k
+                         WHERE substr(k, strpos(k, ':') + 1) ILIKE p
+                            OR (strpos(p, ':') > 0 AND k ILIKE p)))
+          """,
+          type(^patterns, {:array, :string})
         ),
       desc: r.observed_at
     )
@@ -113,19 +129,43 @@ defmodule Backplane.Memory.Records.Search do
     Client.embed([query], :query, req_options: req_options)
   end
 
+  # Reciprocal-rank fusion. A record that has no embedding yet (the embed worker
+  # backfills asynchronously) can never appear in the vector leg, which would make
+  # even the best full-text hit lose to weaker records found by both legs; such
+  # records get their full-text rank as their vector rank too.
   defp fuse(vector_ids, text_ids, filters, limit) do
+    unembedded = unembedded(text_ids)
+
+    imputed =
+      text_ids
+      |> Enum.with_index(1)
+      |> Enum.filter(fn {id, _rank} -> Map.has_key?(unembedded, id) end)
+
     scores =
       [vector_ids, text_ids]
       |> Enum.flat_map(fn ids -> Enum.with_index(ids, 1) end)
+      |> Enum.concat(imputed)
       |> Enum.reduce(%{}, fn {id, rank}, acc ->
         Map.update(acc, id, 1 / (@rrf_k + rank), &(&1 + 1 / (@rrf_k + rank)))
       end)
 
     top = scores |> Enum.sort_by(fn {_id, score} -> -score end) |> Enum.take(limit)
     ids = Enum.map(top, &elem(&1, 0))
-    by_id = filters |> filtered() |> where([r], r.id in ^ids) |> repo().all() |> Map.new(&{&1.id, &1})
+
+    by_id =
+      filters |> filtered() |> where([r], r.id in ^ids) |> repo().all() |> Map.new(&{&1.id, &1})
 
     ids |> Enum.map(&Map.get(by_id, &1)) |> Enum.reject(&is_nil/1)
+  end
+
+  defp unembedded([]), do: %{}
+
+  defp unembedded(ids) do
+    Record
+    |> where([r], r.id in ^ids and is_nil(r.embedding))
+    |> select([r], r.id)
+    |> repo().all()
+    |> Map.new(&{&1, true})
   end
 
   @doc false
@@ -178,7 +218,14 @@ defmodule Backplane.Memory.Records.Search do
         fragment("? ILIKE ANY(?)", r.content, type(^patterns, {:array, :string})) or
         fragment("coalesce(?, '') ILIKE ANY(?)", r.title, type(^patterns, {:array, :string})) or
         fragment(
-          "memory_records_immutable_join(?) ILIKE ANY(?)",
+          # Plain terms match the subject key without its `type:` prefix, so
+          # "service" does not match every `service:*` subject; a term that
+          # itself contains `:` (e.g. "repo:x") still matches the full key.
+          """
+          EXISTS (SELECT 1 FROM unnest(?) AS k, unnest(?::text[]) AS p
+                  WHERE substr(k, strpos(k, ':') + 1) ILIKE p
+                     OR (strpos(p, ':') > 0 AND k ILIKE p))
+          """,
           r.subject_keys,
           type(^patterns, {:array, :string})
         )
