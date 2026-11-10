@@ -126,9 +126,39 @@ the two rankings are fused with Reciprocal Rank Fusion. If no embedding model
 is configured, the proxy errors, or vectors are missing, search falls back to
 full-text results only.
 
+## Host collectors
+
+Host agents scan local state (git checkouts, Docker containers, systemd
+services, launchd jobs, host facts) and upload only changes as
+`host.snapshot.collected` events (`integration`/`client_id` `host_collector`, no
+session). The payload is `{collector, unit, complete, items}`: `unit` is the scan
+root for `git` and `"local"` otherwise; `complete` is true only when the whole
+unit was scanned. The gateway validates the event like any other, then
+`Backplane.Memory.Workers.HostSnapshotWorker` (queue `:memory`, unique per
+event) applies it asynchronously; the job is enqueued in the same transaction
+as the insert, so an accepted event always has its job.
+
+`Backplane.Memory.HostSnapshots.apply/1` is deterministic (no LLM). One state
+row per (host, collector, unit) records the fact slots of the last applied
+snapshot (slot = `property|subject keys`). Applying diffs against it in one
+transaction: new or changed slots are written as `host_collector` facts
+(`writer`/`integration` `host_collector`, `host_id` = reporting host),
+unchanged slots are left alone, and vanished slots are forgotten.
+
+- Only facts whose writer is `host_collector` are ever invalidated; `agent` and
+  `user` facts are never touched.
+- Disappearance counts only when the unit's scan was `complete`. A disabled
+  collector, a removed or unreadable root, or a partial failure never
+  invalidates anything.
+- Ordering uses `occurred_at`. A snapshot older than the applied one (offline
+  spool, retries) is ignored as stale. Host clocks ahead of the gateway are
+  clamped to the gateway time so later snapshots are not mistaken for stale.
+- Invalid payloads are cancelled with a warning (no retry, no records); other
+  failures, including a failed forget (which rolls the whole apply back), retry.
+
 ## Not yet built
 
-Host-side collectors and the Codex / Cursor / Claude Code / Sigma / Synapsis
+The Codex / Cursor / Claude Code / Sigma / Synapsis
 plugins are described in the spec and are delivered in later plans.
 
 ## Historical documents

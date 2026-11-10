@@ -26,16 +26,19 @@ defmodule Backplane.Memory.HostSnapshotsTest do
         "items" => items
       })
 
+    # Manual mode keeps the worker from applying the event; these tests call apply/1 directly.
     {:ok, event} =
-      Store.append(%{
-        stream_id: "host_collector:#{host}:#{System.unique_integer([:positive])}",
-        event_type: "host.snapshot.collected",
-        host_id: host,
-        agent_id: "host-collector",
-        integration: "host_collector",
-        payload: payload,
-        occurred_at: occurred_at
-      })
+      Styx.Testing.with_testing_mode(:manual, fn ->
+        Store.append(%{
+          stream_id: "host_collector:#{host}:#{System.unique_integer([:positive])}",
+          event_type: "host.snapshot.collected",
+          host_id: host,
+          agent_id: "host-collector",
+          integration: "host_collector",
+          payload: payload,
+          occurred_at: occurred_at
+        })
+      end)
 
     event
   end
