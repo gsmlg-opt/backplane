@@ -439,9 +439,15 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
                plugin |> Path.join(".mcp.json") |> File.read!() |> Jason.decode!()
 
       assert url == "http://127.0.0.1:4232/memory/codex/mcp"
-      hooks = File.read!(Path.join(plugin, "hooks.json"))
-      assert hooks =~ "'#{client}' codex SessionStart"
-      refute hooks =~ "__HOOK_CLIENT__"
+      refute File.exists?(Path.join(plugin, "hooks.json"))
+      manifest = File.read!(Path.join(plugin, ".codex-plugin/plugin.json"))
+      assert manifest =~ "'#{client}' codex SessionStart"
+      refute manifest =~ "__HOOK_CLIENT__"
+
+      assert %{"hooks" => %{"hooks" => %{"Stop" => [%{"hooks" => [stop]}]}}} =
+               Jason.decode!(manifest)
+
+      assert stop == %{"type" => "command", "command" => "'#{client}' codex Stop"}
       assert File.stat!(client).mode |> Bitwise.band(0o777) == 0o755
     end
 

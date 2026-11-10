@@ -102,12 +102,18 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
                "description" => _,
                "skills" => "./skills",
                "mcpServers" => "./.mcp.json",
-               "hooks" => "./hooks.json"
+               "hooks" => %{"hooks" => %{}}
              } = Jason.decode!(File.read!(Path.join(@codex_plugin, ".codex-plugin/plugin.json")))
     end
 
-    test "hooks.json lists the supported hooks minus PreToolUse and PermissionRequest" do
-      %{"hooks" => hooks} = Jason.decode!(File.read!(Path.join(@codex_plugin, "hooks.json")))
+    test "no separate hooks.json; hooks are declared inline in plugin.json" do
+      refute File.exists?(Path.join(@codex_plugin, "hooks.json"))
+    end
+
+    test "inline hooks list the supported hooks minus PreToolUse and PermissionRequest" do
+      %{"hooks" => %{"hooks" => hooks}} =
+        Jason.decode!(File.read!(Path.join(@codex_plugin, ".codex-plugin/plugin.json")))
+
       expected = Codex.supported_hooks() -- ~w(PreToolUse PermissionRequest)
       assert length(expected) == 9
       assert hooks |> Map.keys() |> Enum.sort() == Enum.sort(expected)

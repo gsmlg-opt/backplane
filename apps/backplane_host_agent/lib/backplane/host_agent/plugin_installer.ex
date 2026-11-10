@@ -36,7 +36,6 @@ defmodule Backplane.HostAgent.PluginInstaller do
           required_files: [
             ".agents/plugins/marketplace.json",
             "plugins/backplane-memory/.codex-plugin/plugin.json",
-            "plugins/backplane-memory/hooks.json",
             "plugins/backplane-memory/.mcp.json",
             "plugins/backplane-memory/skills/backplane-memory/SKILL.md"
           ],
