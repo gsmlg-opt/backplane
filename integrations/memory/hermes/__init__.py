@@ -61,8 +61,8 @@ BOUNDS = {
     "journal_bytes": (1048576, 268435456),
 }
 INSTRUCTION_PATHS = (
-    Path(__file__).resolve().parent.parent / "shared" / "INSTRUCTIONS.md",  # repository/release layout
     Path(__file__).resolve().parent / "INSTRUCTIONS.md",  # installed copy placed by the installer
+    Path(__file__).resolve().parent.parent / "shared" / "INSTRUCTIONS.md",  # repository/release layout
 )
 
 

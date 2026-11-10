@@ -107,6 +107,19 @@ class HermesProviderTest(unittest.TestCase):
         module = load(installed / "__init__.py", "backplane_memory_installed")
         self.assertEqual(module.BackplaneMemoryProvider().system_prompt_block(), "bundled copy\n")
 
+    def test_bundled_instructions_take_precedence_over_a_sibling_shared_copy(self):
+        root = self.home / "layout"
+        installed = root / "backplane-memory"
+        shutil.copytree(PLUGIN_DIR, installed, ignore=shutil.ignore_patterns("__pycache__"))
+        (installed / "INSTRUCTIONS.md").write_text("bundled copy\n", encoding="utf-8")
+        (root / "shared").mkdir()
+        (root / "shared" / "INSTRUCTIONS.md").write_text("shared copy\n", encoding="utf-8")
+        module = load(installed / "__init__.py", "backplane_memory_bundled_first")
+        self.assertEqual(module.BackplaneMemoryProvider().system_prompt_block(), "bundled copy\n")
+        (installed / "INSTRUCTIONS.md").unlink()
+        module = load(installed / "__init__.py", "backplane_memory_shared_fallback")
+        self.assertEqual(module.BackplaneMemoryProvider().system_prompt_block(), "shared copy\n")
+
     def test_tool_schemas_expose_the_five_memory_tools(self):
         schemas = {schema["name"]: schema for schema in self.provider.get_tool_schemas()}
         self.assertEqual(sorted(schemas), ["memory_forget", "memory_get", "memory_recent", "memory_remember", "memory_search"])
