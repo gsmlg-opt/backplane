@@ -141,7 +141,22 @@ defmodule Backplane.HostAgent.Collectors.SchedulerTest do
       assert {:ok, "hi\n"} = Command.run("echo", ["hi"])
       assert {:error, :not_found} = Command.run("definitely-not-a-binary-xyz", [])
       assert {:error, {:exit, 3}} = Command.run("sh", ["-c", "exit 3"])
-      assert {:error, :timeout} = Command.run("sleep", ["5"], timeout: 100)
+      assert {:error, :timeout} = Command.run("sleep", ["5.25"], timeout: 100)
+    end
+
+    test "timeout kills the OS process" do
+      assert {:error, :timeout} = Command.run("sleep", ["30.5"], timeout: 200)
+      Process.sleep(200)
+      {out, status} = System.cmd("pgrep", ["-f", "sleep 30\\.5"], stderr_to_stdout: true)
+      assert {out, status} == {"", 1}
+    end
+
+    test "runs in the caller and reports unrunnable files as exit 127", %{tmp_dir: dir} do
+      path = Path.join(dir, "noexec")
+      File.write!(path, "#!/nonexistent/interpreter\n")
+      File.chmod!(path, 0o755)
+      assert {:error, {:exit, status}} = Command.run(path, [])
+      assert is_integer(status) and status != 0
     end
   end
 end
