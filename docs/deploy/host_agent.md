@@ -149,19 +149,29 @@ fallback. Request bodies over the transport limit return HTTP 413.
 
 ## 5. Install memory plugins
 
-The host-agent release packages the OpenClaw and Hermes memory plugins. Install
-one through the local MCP endpoint:
+The host-agent release packages the memory plugins for Claude Code, Codex,
+Cursor, Hermes and OpenClaw. Install one through the local MCP endpoint, setting
+`runtime` to `claude_code`, `codex`, `cursor`, `hermes` or `openclaw`:
 
 ```sh
 curl http://127.0.0.1:4222/memory/host_agent/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_agent::install_plugin","arguments":{"plugin":"memory","runtime":"hermes"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_agent::install_plugin","arguments":{"plugin":"memory","runtime":"claude_code"}}}'
 ```
 
-Use `"runtime":"openclaw"` for OpenClaw. The installer writes
-`backplane-memory` under the runtime's default plugin directory in the current
-user's home directory and replaces an older copy by default.
+The installer only writes files under the user's home directory and replaces an
+older copy by default. It also installs the shared hook client at
+`~/.local/share/backplane/bin/backplane-memory-hook`. The result lists
+`next_steps`; run them yourself:
 
-For OpenClaw, use the [qualified runtime and configuration](../memory/openclaw-memory-integration.md)
-and explicitly configure the existing access binding and conversation-hook grant.
-Installing files alone does not activate or authorize the provider.
+| Runtime | Next steps |
+| --- | --- |
+| `claude_code` | `claude plugin marketplace add ~/.local/share/backplane/plugins/claude` then `claude plugin install backplane-memory@backplane-local` |
+| `codex` | `codex plugin marketplace add ~/.local/share/backplane/plugins/codex` then `codex plugin add backplane-memory@backplane-local` |
+| `cursor` | Restart Cursor. Hooks and MCP are merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json`; the first change keeps a `*.backplane-backup` copy, and removing the plugin restores your own entries. |
+| `hermes` | None; installs to `~/.hermes/plugins/backplane-memory`. |
+| `openclaw` | None; installs to `~/.openclaw/extensions/backplane-memory`. See the plugin README for runtime requirements. |
+
+Capture hooks never block or fail the agent when the host agent is down. Set
+`BACKPLANE_HOST_AGENT_URL` to override the host-agent URL for the hook client.
+See [Memory architecture](../architecture/memory.md#plugins).
