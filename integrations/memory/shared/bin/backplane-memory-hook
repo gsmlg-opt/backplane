@@ -1,0 +1,39 @@
+#!/bin/sh
+# backplane-memory-hook <integration> <hook>
+#
+# Forwards the hook's stdin JSON to the local Backplane host agent capture
+# endpoint. A failure here must never affect the agent: always exit 0 and
+# print nothing, except the response Cursor reads from beforeSubmitPrompt.
+
+set -u
+
+# Replaced with the host agent base URL by the installer.
+baked_url="__HOST_AGENT_URL__"
+
+integration="${1:-}"
+hook="${2:-}"
+
+if [ -z "$integration" ] || [ -z "$hook" ]; then
+  exit 0
+fi
+
+case "$baked_url" in
+  __*) baked_url="http://127.0.0.1:4222" ;;
+esac
+
+base="${BACKPLANE_HOST_AGENT_URL:-$baked_url}"
+base="${base%/}"
+
+if command -v curl >/dev/null 2>&1; then
+  curl -sS --connect-timeout 1 --max-time 2 \
+    -H 'content-type: application/json' \
+    --data-binary @- \
+    "$base/capture/v1/hooks/$integration/$hook" \
+    >/dev/null 2>&1 || true
+fi
+
+if [ "$integration" = "cursor" ] && [ "$hook" = "beforeSubmitPrompt" ]; then
+  printf '%s\n' '{"continue":true}'
+fi
+
+exit 0
