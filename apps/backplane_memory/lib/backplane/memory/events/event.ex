@@ -4,6 +4,8 @@ defmodule Backplane.Memory.Events.Event do
 
   alias Backplane.Memory.Events.Types
 
+  @type t :: %__MODULE__{}
+
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "bpm_events" do
     field :stream_id, :string

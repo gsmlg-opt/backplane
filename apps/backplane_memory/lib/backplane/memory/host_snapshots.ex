@@ -14,7 +14,7 @@ defmodule Backplane.Memory.HostSnapshots do
   alias Backplane.Memory.HostSnapshots.{Facts, State}
   alias Backplane.Memory.{Record, Records}
 
-  @spec apply(%Event{}) ::
+  @spec apply(Event.t()) ::
           {:ok, %{written: non_neg_integer(), forgotten: non_neg_integer()}}
           | {:ok, :stale}
           | {:error, term()}
