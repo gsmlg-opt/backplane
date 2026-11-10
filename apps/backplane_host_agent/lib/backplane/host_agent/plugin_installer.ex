@@ -10,6 +10,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
       runtimes: %{
         "claude_code" => %{
           mode: :marketplace,
+          uses_hook_client: true,
           required_files: [
             ".claude-plugin/marketplace.json",
             "backplane-memory/.claude-plugin/plugin.json",
@@ -104,8 +105,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
     with {:ok, plugin, plugin_meta} <- plugin_meta(plugin),
          {:ok, runtime, runtime_meta} <- runtime_meta(plugin, plugin_meta, runtime),
          {:ok, target_path} <- target_path(plugin_meta, runtime_meta, opts),
+         :ok <- guard_remove(runtime_meta, target_path),
          :ok <- remove_existing(target_path),
-         :ok <- cleanup_hook_client(runtime_meta, opts),
+         :ok <- cleanup_hook_client(plugin_meta, runtime, runtime_meta, opts),
          {:ok, source_path} <- source_dir(runtime, plugin_meta, opts) do
       {:ok, status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta)}
     end
@@ -194,11 +196,14 @@ defmodule Backplane.HostAgent.PluginInstaller do
     home_dir = home_dir(opts)
 
     path =
-      case opt(opts, :target_path) do
-        path when is_binary(path) and path != "" ->
+      case {runtime_meta, opt(opts, :target_path)} do
+        {%{mode: :marketplace}, _path} ->
+          Path.join([default_base(runtime_meta, home_dir, opts) | runtime_meta.target_parts])
+
+        {_meta, path} when is_binary(path) and path != "" ->
           Path.expand(path, home_dir)
 
-        _path ->
+        _other ->
           Path.join([default_base(runtime_meta, home_dir, opts) | runtime_meta.target_parts])
       end
 
@@ -249,20 +254,41 @@ defmodule Backplane.HostAgent.PluginInstaller do
   defp install_files(plugin_meta, %{mode: :marketplace}, source, target, force?, opts) do
     home = home_dir(opts)
     data = data_dir(opts, home)
-    url = host_agent_url(opts)
     client = Path.join([data, "bin", @hook_client_name])
-    substitutions = %{"__HOOK_CLIENT__" => client, "__HOST_AGENT_URL__" => url}
 
     with :ok <- validate_data_dir(data, home),
-         :ok <-
-           replace_dir(plugin_meta.name, source, target, force?, &render_tree(&1, substitutions)),
-         :ok <- install_hook_client(source, client, substitutions) do
-      :ok
+         {:ok, url} <- host_agent_url(opts),
+         :ok <- ensure_marketplace_target(target),
+         substitutions = %{
+           "__HOOK_CLIENT__" => shell_quote(client),
+           "__HOST_AGENT_URL__" => url
+         },
+         :ok <- install_hook_client(source, client, url) do
+      replace_dir(plugin_meta.name, source, target, force?, &render_tree(&1, substitutions))
     end
   end
 
   defp install_files(plugin_meta, _runtime_meta, source, target, force?, _opts),
     do: replace_dir(plugin_meta.name, source, target, force?)
+
+  # Never replace or remove a directory that is not our marketplace.
+  defp ensure_marketplace_target(target) do
+    if File.exists?(target) do
+      with {:ok, json} <- File.read(Path.join(target, ".claude-plugin/marketplace.json")),
+           {:ok, %{"name" => "backplane-local"}} <- Jason.decode(json) do
+        :ok
+      else
+        _other -> {:error, :unexpected_target_contents}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp guard_remove(%{mode: :marketplace}, target), do: ensure_marketplace_target(target)
+  defp guard_remove(_runtime_meta, _target), do: :ok
+
+  defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
   defp validate_data_dir(data, home) do
     if under_path?(Path.expand(data), Path.expand(home)),
@@ -272,35 +298,35 @@ defmodule Backplane.HostAgent.PluginInstaller do
 
   # Replaces placeholders in every rendered `.json` file under `dir`.
   defp render_tree(dir, substitutions) do
+    # fold_files treats `dir` literally (Path.wildcard would interpret `\`, `{`, `[`).
     dir
-    |> Path.join("**/*.json")
-    |> Path.wildcard(match_dot: true)
+    |> String.to_charlist()
+    |> :filelib.fold_files(~c".*\\.json$", true, &[List.to_string(&1) | &2], [])
     |> Enum.reduce_while(:ok, fn path, :ok ->
-      case File.write(path, substitute(File.read!(path), substitutions)) do
+      case File.write(path, substitute(File.read!(path), substitutions, &json_escape/1)) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, {:file_error, reason, path}}}
       end
     end)
   end
 
-  defp substitute(contents, substitutions) do
+  defp substitute(contents, substitutions, escape) do
     Enum.reduce(substitutions, contents, fn {placeholder, value}, acc ->
-      String.replace(acc, placeholder, value)
+      String.replace(acc, placeholder, escape.(value))
     end)
   end
 
+  defp json_escape(value), do: value |> Jason.encode!() |> String.slice(1..-2//1)
+
   # The shared hook client lives next to the runtime package directories.
-  defp install_hook_client(source_path, client, substitutions) do
+  defp install_hook_client(source_path, client, url) do
     template = Path.join([Path.dirname(source_path), "shared", "bin", @hook_client_name])
     staging = client <> ".install-#{System.unique_integer([:positive])}"
 
     with {:ok, contents} <- File.read(template),
          :ok <- File.mkdir_p(Path.dirname(client)),
          :ok <-
-           File.write(
-             staging,
-             substitute(contents, Map.take(substitutions, ["__HOST_AGENT_URL__"]))
-           ),
+           File.write(staging, String.replace(contents, "__HOST_AGENT_URL__", url)),
          :ok <- File.chmod(staging, 0o755),
          :ok <- File.rename(staging, client) do
       :ok
@@ -311,24 +337,49 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
-  # Removes the shared hook client once no marketplace-style client is left.
-  defp cleanup_hook_client(%{mode: :marketplace}, opts) do
-    data = data_dir(opts, home_dir(opts))
-    plugins = Path.join(data, "plugins")
+  # Removes the shared hook client once no other hook-client runtime is installed.
+  defp cleanup_hook_client(plugin_meta, runtime, %{uses_hook_client: true}, opts) do
+    home = home_dir(opts)
+    others = Map.delete(hook_client_runtimes(plugin_meta, opts), runtime)
 
-    if File.dir?(plugins) and File.ls!(plugins) != [] do
+    if Enum.any?(others, fn {_name, meta} -> runtime_installed?(plugin_meta, meta, opts) end) do
       :ok
     else
-      remove_existing(Path.join([data, "bin", @hook_client_name]))
+      remove_existing(Path.join([data_dir(opts, home), "bin", @hook_client_name]))
     end
   end
 
-  defp cleanup_hook_client(_runtime_meta, _opts), do: :ok
+  defp cleanup_hook_client(_plugin_meta, _runtime, _runtime_meta, _opts), do: :ok
+
+  defp hook_client_runtimes(plugin_meta, opts) do
+    plugin_meta.runtimes
+    |> Map.merge(opt(opts, :extra_runtimes) || %{})
+    |> Map.filter(fn {_name, meta} -> Map.get(meta, :uses_hook_client, false) end)
+  end
+
+  defp runtime_installed?(plugin_meta, runtime_meta, opts) do
+    opts = opts |> Map.delete(:target_path) |> Map.delete("target_path")
+
+    case target_path(plugin_meta, runtime_meta, opts) do
+      {:ok, path} -> File.dir?(path)
+      _error -> false
+    end
+  end
 
   defp host_agent_url(opts) do
-    (opt(opts, :host_agent_url) || Application.get_env(:backplane_host_agent, :host_agent_url) ||
-       configured_host_agent_url() || @default_host_agent_url)
-    |> String.trim_trailing("/")
+    url =
+      (opt(opts, :host_agent_url) || Application.get_env(:backplane_host_agent, :host_agent_url) ||
+         configured_host_agent_url() || @default_host_agent_url)
+      |> to_string()
+      |> String.trim_trailing("/")
+
+    with false <- Regex.match?(~r/["'\\$`\s[:cntrl:]]/u, url),
+         {:ok, %URI{scheme: scheme, host: host}} when scheme in ["http", "https"] <- URI.new(url),
+         true <- is_binary(host) and host != "" do
+      {:ok, url}
+    else
+      _other -> {:error, :invalid_host_agent_url}
+    end
   end
 
   defp configured_host_agent_url do

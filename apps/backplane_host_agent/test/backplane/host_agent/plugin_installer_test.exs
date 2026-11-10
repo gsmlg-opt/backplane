@@ -214,7 +214,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       assert url == "http://127.0.0.1:4232/memory/claude-code/mcp"
 
       hooks = File.read!(Path.join(plugin, "hooks/hooks.json"))
-      assert hooks =~ "#{client} claude_code SessionStart"
+      assert hooks =~ "'#{client}' claude_code SessionStart"
       refute hooks =~ "__HOOK_CLIENT__"
       refute hooks =~ "__HOST_AGENT_URL__"
 
@@ -240,15 +240,25 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
                Path.join(data, "bin/backplane-memory-hook")
     end
 
-    test "remove deletes the marketplace and keeps a still-needed hook client", %{
+    test "remove keeps the hook client while another hook-client runtime is installed", %{
       tmp_dir: tmp_dir
     } do
-      opts = claude_opts(tmp_dir)
+      extra = %{
+        "cursor_like" => %{
+          uses_hook_client: true,
+          required_files: [],
+          target_parts: [".extra", "backplane-memory"]
+        }
+      }
+
+      opts = claude_opts(tmp_dir, %{extra_runtimes: extra})
       data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
       client = Path.join([data, "bin", "backplane-memory-hook"])
+      other = Path.join([tmp_dir, "home", ".extra", "backplane-memory"])
       {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
-
-      File.mkdir_p!(Path.join([data, "plugins", "codex"]))
+      File.mkdir_p!(other)
+      # A stray staging dir must not pin the client.
+      File.mkdir_p!(Path.join([data, "plugins", ".backplane-memory.install-1"]))
 
       assert {:ok, %{"installed" => false}} =
                PluginInstaller.remove("memory", "claude_code", opts)
@@ -257,9 +267,82 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       assert File.exists?(client)
 
       {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
-      File.rm_rf!(Path.join([data, "plugins", "codex"]))
+      File.rm_rf!(other)
       assert {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
       refute File.exists?(client)
+    end
+
+    test "renders safely for data dirs with spaces and quotes", %{tmp_dir: tmp_dir} do
+      data = Path.join([tmp_dir, "home", "my data's \"dir\" \\x"])
+      opts = claude_opts(tmp_dir, %{data_dir: data})
+
+      assert {:ok, %{"target_path" => target}} =
+               PluginInstaller.install("memory", "claude_code", opts)
+
+      %{"hooks" => hooks} =
+        target
+        |> Path.join("backplane-memory/hooks/hooks.json")
+        |> File.read!()
+        |> Jason.decode!()
+
+      command = hooks["SessionStart"] |> hd() |> get_in(["hooks", Access.at(0), "command"])
+      # Run the command with `echo` standing in for argument display via the real client path.
+      client = Path.join(data, "bin/backplane-memory-hook")
+      File.write!(client, "#!/bin/sh\nprintf '%s|%s' \"$1\" \"$2\"\n")
+      assert {"claude_code|SessionStart", 0} = System.cmd("sh", ["-c", command])
+    end
+
+    test "rejects hostile host agent URLs without writing anything", %{tmp_dir: tmp_dir} do
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+
+      for url <- [
+            ~s|http://127.0.0.1:4222"$(touch pwned)"|,
+            "http://host/`id`",
+            "http://host/a b",
+            "ftp://host",
+            "http://",
+            "http://h\\x"
+          ] do
+        assert {:error, :invalid_host_agent_url} =
+                 PluginInstaller.install(
+                   "memory",
+                   "claude_code",
+                   claude_opts(tmp_dir, %{host_agent_url: url})
+                 )
+      end
+
+      refute File.exists?(data)
+    end
+
+    test "ignores target_path and refuses to replace unrelated directories", %{tmp_dir: tmp_dir} do
+      home = Path.join(tmp_dir, "home")
+      data = Path.join([home, ".local", "share", "backplane"])
+      unrelated = Path.join(home, "src/claude")
+      File.mkdir_p!(unrelated)
+      File.write!(Path.join(unrelated, "keep.txt"), "keep")
+
+      assert {:ok, %{"target_path" => target}} =
+               PluginInstaller.install(
+                 "memory",
+                 "claude_code",
+                 claude_opts(tmp_dir, %{target_path: unrelated})
+               )
+
+      assert target == Path.join([data, "plugins", "claude"])
+      assert File.exists?(Path.join(unrelated, "keep.txt"))
+
+      File.rm_rf!(target)
+      File.mkdir_p!(target)
+      File.write!(Path.join(target, "mine.txt"), "mine")
+      opts = claude_opts(tmp_dir)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.install("memory", "claude_code", opts)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.remove("memory", "claude_code", opts)
+
+      assert File.exists?(Path.join(target, "mine.txt"))
     end
 
     test "confines targets to the home directory", %{tmp_dir: tmp_dir} do
@@ -268,15 +351,6 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
                  "memory",
                  "claude_code",
                  claude_opts(tmp_dir, %{data_dir: Path.join(tmp_dir, "outside")})
-               )
-
-      assert {:error, {:invalid_target, _}} =
-               PluginInstaller.install(
-                 "memory",
-                 "claude_code",
-                 claude_opts(tmp_dir, %{
-                   target_path: Path.join(tmp_dir, "home/plugins/other")
-                 })
                )
     end
   end
