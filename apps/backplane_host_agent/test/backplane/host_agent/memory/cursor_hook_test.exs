@@ -93,6 +93,17 @@ defmodule Backplane.HostAgent.Memory.CursorHookTest do
     assert {:ok, %{integration: "cursor"}} = Hooks.normalize("cursor", "stop", fixture(), @config)
   end
 
+  test "drops caller-supplied host_id and user_email from the source payload" do
+    input = Map.merge(fixture(), %{"host_id" => "spoof", "user_email" => "me@example.test"})
+
+    for hook <- Map.keys(@mappings) do
+      assert {:ok, envelope} = Cursor.normalize(hook, input, @config)
+      refute Map.has_key?(envelope.payload["source"], "host_id")
+      refute Map.has_key?(envelope.payload["source"], "user_email")
+      assert envelope.payload["source"]["conversation_id"] == "conv-1"
+    end
+  end
+
   defp fixture do
     %{
       "conversation_id" => "conv-1",

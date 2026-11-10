@@ -133,7 +133,7 @@ defmodule Backplane.HostAgent.Memory.Hooks.Cursor do
 
   defp source_payload(hook, source) do
     source
-    |> Map.drop(["host_id", :host_id])
+    |> Map.drop(["host_id", :host_id, "user_email", :user_email])
     |> put_missing("message", hook == "after-agent-response" && Map.get(source, "text"))
     |> put_missing("tool_response", Map.get(source, "tool_output") || Map.get(source, "output"))
     |> put_missing("tool_name", tool_name(hook, source))
