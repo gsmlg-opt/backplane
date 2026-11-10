@@ -218,6 +218,10 @@ Plug + Gaoxy (HTTP), Jason (JSON), Req (HTTP client), Ecto + Postgrex (DB), Styx
 
 ## UI Library
 
+Read [DESIGN.md](DESIGN.md) before implementing or changing admin UI. It defines
+project conventions for navigation, modal forms, default enablement, table icon
+actions, responsive layout, accessibility, and UI verification.
+
 This project uses the DuskMoon UI system:
 
 - **`phoenix_duskmoon`** — Phoenix LiveView UI component library (primary web UI)
