@@ -99,9 +99,22 @@ defmodule Backplane.HostAgent.Memory.CaptureRuntimeTest do
     refute Enum.any?(Supervisor.which_children(supervisor), &match?({Scheduler, _, _, _}, &1))
     Supervisor.stop(supervisor)
 
-    config = Map.merge(base, %{collectors: collectors, scheduler_name: :"scheduler_#{names.spool}"})
+    config =
+      Map.merge(base, %{
+        collectors: collectors,
+        scheduler_name: :"scheduler_#{names.spool}",
+        host_label: "box-label",
+        batch_bytes: 100_000
+      })
+
     assert {:ok, supervisor} = CaptureSupervisor.start_link(config)
-    assert Enum.any?(Supervisor.which_children(supervisor), &match?({Scheduler, _, _, _}, &1))
+
+    assert {_, scheduler, _, _} =
+             Enum.find(Supervisor.which_children(supervisor), &match?({Scheduler, _, _, _}, &1))
+
+    scheduler_state = :sys.get_state(scheduler)
+    assert scheduler_state.host_label == "box-label"
+    assert scheduler_state.max_bytes < 100_000 and scheduler_state.max_bytes > 90_000
     Supervisor.stop(supervisor)
   end
 

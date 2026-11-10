@@ -8,6 +8,8 @@ defmodule Backplane.HostAgent.Collectors.Docker do
 
   @behaviour Backplane.HostAgent.Collectors.Collector
 
+  alias Backplane.HostAgent.Collectors.Collector
+
   @impl true
   def config_key, do: :docker
 
@@ -15,7 +17,8 @@ defmodule Backplane.HostAgent.Collectors.Docker do
   def collect(_config, %{runner: runner}) do
     case runner.("docker", ["ps", "--format", "{{json .}}"], []) do
       {:ok, out} ->
-        parsed = out |> String.split("\n", trim: true) |> Enum.map(&parse_line/1)
+        parsed =
+          out |> Collector.sanitize() |> String.split("\n", trim: true) |> Enum.map(&parse_line/1)
 
         [
           %{
@@ -35,8 +38,7 @@ defmodule Backplane.HostAgent.Collectors.Docker do
     with {:ok, %{"Names" => name, "Image" => image, "State" => state} = row} <-
            Jason.decode(line),
          true <- is_binary(name) and is_binary(image) and is_binary(state) do
-      {:ok,
-       %{"name" => name, "image" => image, "state" => state, "ports" => ports(row["Ports"])}}
+      {:ok, %{"name" => name, "image" => image, "state" => state, "ports" => ports(row["Ports"])}}
     else
       _ -> :error
     end

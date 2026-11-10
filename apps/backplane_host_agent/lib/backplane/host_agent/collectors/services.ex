@@ -4,10 +4,13 @@ defmodule Backplane.HostAgent.Collectors.Services do
   jobs on macOS. Other platforms yield nothing.
 
   launchd PIDs and exit statuses are volatile and never reported;
-  `com.apple.*` jobs are dropped as OS noise.
+  `com.apple.*` jobs (OS noise) and `application.*` jobs (per-launch GUI app
+  instances whose labels embed volatile ids) are dropped.
   """
 
   @behaviour Backplane.HostAgent.Collectors.Collector
+
+  alias Backplane.HostAgent.Collectors.Collector
 
   @systemctl_args ~w(list-units --type=service --state=running --no-legend --plain --no-pager)
 
@@ -28,7 +31,7 @@ defmodule Backplane.HostAgent.Collectors.Services do
   defp snapshot(runner, cmd, args, collector, parse) do
     case runner.(cmd, args, []) do
       {:ok, out} ->
-        parsed = out |> String.split("\n", trim: true) |> parse.()
+        parsed = out |> Collector.sanitize() |> String.split("\n", trim: true) |> parse.()
 
         [
           %{
@@ -64,6 +67,7 @@ defmodule Backplane.HostAgent.Collectors.Services do
     |> Enum.reject(&String.starts_with?(&1, "PID"))
     |> Enum.map(&parse_launchd_line/1)
     |> Enum.reject(&match?({:ok, %{"label" => "com.apple." <> _}}, &1))
+    |> Enum.reject(&match?({:ok, %{"label" => "application." <> _}}, &1))
   end
 
   defp parse_launchd_line(line) do

@@ -8,6 +8,8 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
   LISTEN 0 4096 [::]:22 [::]:* users:(("sshd",pid=1,fd=4))
   LISTEN 0 244 127.0.0.1:5432 0.0.0.0:* users:(("postgres",pid=9,fd=5))
   LISTEN 0 511 *:80 *:*
+  LISTEN 0 10 127.0.0.1:32768 0.0.0.0:* users:(("ephemeral",pid=7,fd=3))
+  LISTEN 0 10 127.0.0.1:41234 0.0.0.0:* users:(("ephemeral",pid=7,fd=4))
   """
 
   @lsof """
@@ -17,6 +19,8 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
   postgres  202 gao    7u  IPv6 0x3      0t0  TCP [::1]:5432 (LISTEN)
   postgres  202 gao    8u  IPv4 0x4      0t0  TCP 127.0.0.1:5432 (LISTEN)
   Google\\x20Chrome 303 gao 9u IPv4 0x5 0t0 TCP 127.0.0.1:9222 (LISTEN)
+  rapportd  404 gao    4u  IPv4 0x6      0t0  TCP *:49152 (LISTEN)
+  Code      505 gao    5u  IPv4 0x7      0t0  TCP 127.0.0.1:41234 (LISTEN)
   """
 
   @ifaddrs {:ok,
@@ -31,7 +35,16 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
                  addr: {0xFE80, 0, 0, 0, 1, 2, 3, 4},
                  addr: {0x2001, 0xDB8, 0, 0, 0, 0, 0, 5}
                ]},
-              {~c"en1", [flags: [:up], addr: {169, 254, 3, 4}, addr: {10, 0, 0, 2}]}
+              {~c"en1", [flags: [:up], addr: {169, 254, 3, 4}, addr: {10, 0, 0, 2}]},
+              {~c"docker0", [flags: [:up], addr: {172, 17, 0, 1}]},
+              {~c"br-1a2b", [flags: [:up], addr: {172, 18, 0, 1}]},
+              {~c"veth9", [flags: [:up], addr: {172, 19, 0, 1}]},
+              {~c"utun3", [flags: [:up], addr: {10, 8, 0, 1}]},
+              {~c"bridge100", [flags: [:up], addr: {192, 168, 64, 1}]},
+              {~c"vmnet8", [flags: [:up], addr: {192, 168, 65, 1}]},
+              {~c"awdl0", [flags: [:up], addr: {0xFE80, 0, 0, 0, 9, 9, 9, 9}]},
+              {~c"llw0", [flags: [:up], addr: {192, 168, 66, 1}]},
+              {~c"lo1", [flags: [:up], addr: {10, 9, 9, 9}]}
             ]}
 
   defp env(os, result, extra \\ %{}) do
@@ -82,7 +95,7 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
     assert item == %{
              "hostname" => "box",
              "os" => "Linux 6.1.0-18-amd64",
-             "addresses" => ["10.0.0.2", "192.168.1.20", "2001:db8::5"],
+             "addresses" => ["10.0.0.2", "192.168.1.20"],
              "listening" => [
                %{"port" => 22, "process" => "sshd"},
                %{"port" => 80, "process" => nil},
@@ -105,14 +118,15 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
 
     {snap, item} = item(HostInfo.collect(%{}, env(:darwin, nil, %{runner: runner})))
 
-    assert_received {:ran, "lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"]}
+    assert_received {:ran, "lsof", ["-w", "-nP", "-iTCP", "-sTCP:LISTEN"]}
     assert snap.complete
     assert item["os"] == "Darwin 25.0.0"
 
     assert item["listening"] == [
              %{"port" => 4220, "process" => "beam.smp"},
              %{"port" => 5432, "process" => "postgres"},
-             %{"port" => 9222, "process" => "Google\\x20Chrome"}
+             %{"port" => 9222, "process" => "Google\\x20Chrome"},
+             %{"port" => 41234, "process" => "Code"}
            ]
   end
 
@@ -137,13 +151,37 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
            ]
   end
 
-  test "listening command failure reports empty listening, incomplete, keeps os and addresses" do
-    {snap, item} = item(HostInfo.collect(%{}, env(:linux, {:error, {:exit, 1}})))
+  test "a failed listening scan yields no host snapshot" do
+    for os <- [:linux, :darwin],
+        result <- [
+          {:error, {:exit, 1}},
+          {:error, {:exit, 2, ""}},
+          {:error, :timeout},
+          {:error, :not_found}
+        ] do
+      assert HostInfo.collect(%{}, env(os, result)) == [], "#{os} #{inspect(result)}"
+    end
+  end
 
-    refute snap.complete
+  test "lsof exit 1 with empty output means no listeners" do
+    {snap, item} = item(HostInfo.collect(%{}, env(:darwin, {:error, {:exit, 1, ""}})))
+    assert snap.complete
     assert item["listening"] == []
-    assert item["os"] == "Linux 6.1.0"
-    assert item["addresses"] == ["10.0.0.2", "192.168.1.20", "2001:db8::5"]
+
+    assert HostInfo.collect(%{}, env(:darwin, {:error, {:exit, 1, "lsof: oops\n"}})) == []
+  end
+
+  test "lsof is asked for its output on failure" do
+    test_pid = self()
+
+    runner = fn cmd, args, opts ->
+      send(test_pid, {:ran, cmd, args, opts})
+      {:ok, ""}
+    end
+
+    HostInfo.collect(%{}, env(:darwin, nil, %{runner: runner}))
+    assert_received {:ran, "lsof", _, opts}
+    assert opts[:output_on_error]
   end
 
   test "unparseable listening line marks the snapshot incomplete" do
@@ -153,11 +191,12 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
     assert length(item["listening"]) == 3
   end
 
-  test "other os reports no listening ports and is incomplete" do
+  test "other os omits the listening key" do
     {snap, item} = item(HostInfo.collect(%{}, env(:other, nil)))
 
-    refute snap.complete
-    assert item["listening"] == []
+    assert snap.complete
+    refute Map.has_key?(item, "listening")
+    assert item["addresses"] == ["10.0.0.2", "192.168.1.20"]
   end
 
   test "uname failure falls back to :os.type" do
@@ -173,7 +212,10 @@ defmodule Backplane.HostAgent.Collectors.HostInfoTest do
   end
 
   test "defaults to the real hostname and interfaces" do
-    runner = fn _, _, _ -> {:error, :not_found} end
+    runner = fn
+      "uname", _, _ -> {:error, :not_found}
+      _, _, _ -> {:ok, ""}
+    end
 
     {_snap, item} =
       item(HostInfo.collect(%{}, %{runner: runner, os: :linux, home: "/h"}))

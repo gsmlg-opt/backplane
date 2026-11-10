@@ -14,6 +14,7 @@ defmodule Backplane.HostAgent.Collectors.ServicesTest do
     #{pid1}\t0\tcom.apple.Finder
     #{pid2}\t0\tcom.example.agent
     -\t78\torg.other.job
+    #{pid2}\t0\tapplication.com.googlecode.iterm2.12345.67890
     """
   end
 
@@ -58,7 +59,7 @@ defmodule Backplane.HostAgent.Collectors.ServicesTest do
              collect(:linux, {:ok, "bad line\ncron.service loaded active running Cron\n"})
   end
 
-  test "parses launchd labels on darwin, dropping com.apple.*" do
+  test "parses launchd labels on darwin, dropping com.apple.* and application.*" do
     assert [%{collector: "launchd", unit: "local", complete: true, items: items}] =
              collect(:darwin, {:ok, launchd("123", "-")}, self())
 
@@ -73,7 +74,15 @@ defmodule Backplane.HostAgent.Collectors.ServicesTest do
 
   test "short launchd line is skipped and marks partial" do
     out = "PID\tStatus\tLabel\n1\t0\tcom.example.a\njunk\n"
-    assert [%{complete: false, items: [%{"label" => "com.example.a"}]}] = collect(:darwin, {:ok, out})
+
+    assert [%{complete: false, items: [%{"label" => "com.example.a"}]}] =
+             collect(:darwin, {:ok, out})
+  end
+
+  test "non-UTF-8 service output is sanitized" do
+    out = <<"x.service loaded active running Caf", 0xE9, "\n">>
+    assert [%{items: [%{"description" => description}]}] = collect(:linux, {:ok, out})
+    assert description == "Caf\uFFFD"
   end
 
   test "other os yields nothing and runs nothing" do
@@ -81,7 +90,8 @@ defmodule Backplane.HostAgent.Collectors.ServicesTest do
   end
 
   test "unavailable binaries or failures yield no snapshot" do
-    for os <- [:linux, :darwin], r <- [{:error, :not_found}, {:error, {:exit, 1}}, {:error, :timeout}] do
+    for os <- [:linux, :darwin],
+        r <- [{:error, :not_found}, {:error, {:exit, 1}}, {:error, :timeout}] do
       assert collect(os, r) == []
     end
   end

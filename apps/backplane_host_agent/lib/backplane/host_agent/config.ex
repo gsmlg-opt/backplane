@@ -264,7 +264,6 @@ defmodule Backplane.HostAgent.Config do
 
   defp parse_collectors(raw, capture_enabled, db_path) do
     raw = if is_map(raw), do: raw, else: %{}
-    home = System.user_home!()
     git = if is_map(raw["git"]), do: raw["git"], else: %{}
 
     %{
@@ -274,7 +273,7 @@ defmodule Backplane.HostAgent.Config do
       state_path: Path.join(Path.dirname(db_path), "collector_state.json"),
       git: %{
         enabled: parse_bool(git["enabled"], true),
-        roots: parse_roots(git["roots"], home),
+        roots: parse_roots(git["roots"]),
         max_depth: parse_positive_int(git["max_depth"], 4),
         max_repos: parse_positive_int(git["max_repos"], 500)
       },
@@ -287,14 +286,18 @@ defmodule Backplane.HostAgent.Config do
   defp parse_section_enabled(%{} = section), do: parse_bool(section["enabled"], true)
   defp parse_section_enabled(_section), do: true
 
-  defp parse_roots([_ | _] = roots, home) do
-    case roots |> Enum.filter(&is_binary/1) |> Enum.map(&Path.expand/1) do
-      [] -> [home]
+  # A list of roots or a single root string; the home directory is only resolved
+  # when no usable root is configured.
+  defp parse_roots(root) when is_binary(root), do: parse_roots([root])
+
+  defp parse_roots(roots) when is_list(roots) do
+    case for(root <- roots, is_binary(root), String.trim(root) != "", do: Path.expand(root)) do
+      [] -> [System.user_home!()]
       expanded -> expanded
     end
   end
 
-  defp parse_roots(_roots, home), do: [home]
+  defp parse_roots(_roots), do: [System.user_home!()]
 
   defp parse_capture_db_path(path, work_dir) do
     case parse_non_empty_string(path, nil) do

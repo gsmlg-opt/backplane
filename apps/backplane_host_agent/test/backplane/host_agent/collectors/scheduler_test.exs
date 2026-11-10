@@ -24,6 +24,39 @@ defmodule Backplane.HostAgent.Collectors.SchedulerTest do
     def collect(_config, _env), do: raise("boom")
   end
 
+  defmodule MixedCollector do
+    @behaviour Backplane.HostAgent.Collectors.Collector
+    def config_key, do: :services
+
+    def collect(_config, _env) do
+      [
+        %{collector: "systemd", unit: "local", complete: true, items: [%{name: <<"bad", 0xE9>>}]},
+        %{collector: "systemd", unit: nil, complete: true, items: []},
+        %{collector: "launchd", unit: "local", complete: true},
+        %{collector: "launchd", unit: "local", complete: true, items: [%{label: "ok.job"}]}
+      ]
+    end
+  end
+
+  defmodule UnscannedCollector do
+    @behaviour Backplane.HostAgent.Collectors.Collector
+    def config_key, do: :git
+
+    def collect(_config, _env) do
+      [{:unscanned, unscanned}] = :ets.lookup(:fake_collector, :unscanned)
+
+      [
+        %{
+          collector: "git",
+          unit: "/work",
+          complete: true,
+          unscanned: unscanned,
+          items: [%{"path" => "/work/a", "repository_id" => nil, "branch" => nil, "head" => nil}]
+        }
+      ]
+    end
+  end
+
   defmodule FailingSpool do
     def append(_spool, _envelope), do: {:error, :disk_full}
   end
@@ -32,7 +65,10 @@ defmodule Backplane.HostAgent.Collectors.SchedulerTest do
     :ets.new(:fake_collector, [:named_table, :public])
     set_items([%{name: "web", image: "nginx", state: "running", ports: ["80"]}])
     suffix = System.unique_integer([:positive])
-    spool = start_supervised!({Spool, database: Path.join(dir, "spool.db"), name: :"spool_#{suffix}"})
+
+    spool =
+      start_supervised!({Spool, database: Path.join(dir, "spool.db"), name: :"spool_#{suffix}"})
+
     %{spool: spool, state_path: Path.join(dir, "collector_state.json"), suffix: suffix}
   end
 
@@ -42,11 +78,11 @@ defmodule Backplane.HostAgent.Collectors.SchedulerTest do
     opts =
       Keyword.merge(
         [
-        name: :"scheduler_#{System.unique_integer([:positive])}",
-        host_id: "host-1",
-        spool: ctx.spool,
-        state_path: ctx.state_path,
-        collectors: [FakeCollector],
+          name: :"scheduler_#{System.unique_integer([:positive])}",
+          host_id: "host-1",
+          spool: ctx.spool,
+          state_path: ctx.state_path,
+          collectors: [FakeCollector],
           auto_run: false
         ],
         extra
@@ -136,12 +172,115 @@ defmodule Backplane.HostAgent.Collectors.SchedulerTest do
     assert %{emitted: 0, unchanged: 0} = Scheduler.run_once(scheduler)
   end
 
+  test "a snapshot that cannot be encoded or is malformed does not stop the others", ctx do
+    scheduler = start_scheduler(ctx, collectors: [MixedCollector, FakeCollector])
+
+    log =
+      capture_log(fn -> assert %{emitted: 2, unchanged: 0} = Scheduler.run_once(scheduler) end)
+
+    assert log =~ "host snapshot skipped"
+
+    payloads = ctx |> batch() |> Enum.map(& &1["payload"])
+    assert Enum.map(payloads, & &1["collector"]) |> Enum.sort() == ["docker", "launchd"]
+
+    # The skipped snapshots keep no fingerprint, so a later run retries them.
+    log = capture_log(fn -> assert %{unchanged: 2} = Scheduler.run_once(scheduler) end)
+    assert log =~ "host snapshot skipped"
+  end
+
+  test "payload carries the host label; a blank label falls back to the hostname", ctx do
+    labelled = start_scheduler(ctx, host_label: "db02")
+    assert %{emitted: 1} = Scheduler.run_once(labelled)
+    assert [%{"payload" => %{"host_label" => "db02"}}] = batch(ctx)
+    GenServer.stop(labelled)
+    File.rm!(ctx.state_path)
+
+    {:ok, hostname} = :inet.gethostname()
+    blank = start_scheduler(ctx, host_label: "  ")
+    assert %{emitted: 1} = Scheduler.run_once(blank)
+    assert [_, %{"payload" => %{"host_label" => label}}] = batch(ctx)
+    assert label == to_string(hostname)
+  end
+
+  test "a host label change re-emits unchanged items", ctx do
+    first = start_scheduler(ctx, host_label: "old")
+    assert %{emitted: 1} = Scheduler.run_once(first)
+    GenServer.stop(first)
+
+    second = start_scheduler(ctx, host_label: "new")
+    assert %{emitted: 1} = Scheduler.run_once(second)
+  end
+
+  test "persisted state of another host id is discarded", ctx do
+    first = start_scheduler(ctx)
+    assert %{emitted: 1} = Scheduler.run_once(first)
+    GenServer.stop(first)
+    assert %{"host_id" => "host-1"} = ctx.state_path |> File.read!() |> Jason.decode!()
+
+    other = start_scheduler(ctx, host_id: "host-2")
+    assert %{emitted: 1, unchanged: 0} = Scheduler.run_once(other)
+    GenServer.stop(other)
+
+    same = start_scheduler(ctx, host_id: "host-2")
+    assert %{emitted: 0, unchanged: 1} = Scheduler.run_once(same)
+  end
+
+  test "unscanned directories are carried into the payload and the fingerprint", ctx do
+    :ets.insert(:fake_collector, {:unscanned, []})
+    scheduler = start_scheduler(ctx, collectors: [UnscannedCollector])
+
+    assert %{emitted: 1} = Scheduler.run_once(scheduler)
+    assert [%{"payload" => %{"unscanned" => []}}] = batch(ctx)
+
+    :ets.insert(:fake_collector, {:unscanned, ["/work/private"]})
+    assert %{emitted: 1} = Scheduler.run_once(scheduler)
+    assert [_, %{"payload" => %{"unscanned" => ["/work/private"]}}] = batch(ctx)
+  end
+
+  test "an oversized snapshot drops items from the end and is marked incomplete", ctx do
+    items =
+      for n <- 1..20 do
+        %{
+          name: "c#{String.pad_leading("#{n}", 2, "0")}",
+          image: String.duplicate("i", 200),
+          state: "running",
+          ports: []
+        }
+      end
+
+    set_items(items)
+    scheduler = start_scheduler(ctx, max_bytes: 3_000)
+
+    log = capture_log(fn -> assert %{emitted: 1} = Scheduler.run_once(scheduler) end)
+    assert log =~ "exceeds"
+
+    assert [event] = batch(ctx)
+    assert byte_size(Jason.encode!(event)) <= 3_000
+    assert %{"complete" => false, "items" => kept} = event["payload"]
+    assert kept != [] and length(kept) < 20
+    assert Enum.map(kept, & &1["name"]) == items |> Enum.take(length(kept)) |> Enum.map(& &1.name)
+
+    # The truncated snapshot is deterministic: an unchanged host does not re-emit.
+    capture_log(fn -> assert %{emitted: 0, unchanged: 1} = Scheduler.run_once(scheduler) end)
+  end
+
   describe "Command.run/3" do
     test "returns output, not_found, exit status and timeout" do
       assert {:ok, "hi\n"} = Command.run("echo", ["hi"])
       assert {:error, :not_found} = Command.run("definitely-not-a-binary-xyz", [])
       assert {:error, {:exit, 3}} = Command.run("sh", ["-c", "exit 3"])
       assert {:error, :timeout} = Command.run("sleep", ["5.25"], timeout: 100)
+    end
+
+    test "output_on_error returns the output with a non-zero exit status" do
+      assert {:error, {:exit, 3, "out\n"}} =
+               Command.run("sh", ["-c", "echo out; exit 3"], output_on_error: true)
+
+      assert {:error, {:exit, 3}} = Command.run("sh", ["-c", "echo out; exit 3"])
+    end
+
+    test "stderr is discarded, not merged into the output" do
+      assert {:ok, "out\n"} = Command.run("sh", ["-c", "echo err >&2; echo out"])
     end
 
     test "timeout kills the OS process" do

@@ -6,6 +6,8 @@ defmodule Backplane.HostAgent.Memory.CaptureSupervisor do
   alias Backplane.HostAgent.Collectors.Scheduler
   alias Backplane.HostAgent.Memory.{CaptureUploader, Spool}
 
+  @upload_wrapper_headroom 1_024
+
   def start_link(%{enabled: false}) do
     Application.delete_env(:backplane_host_agent, :capture_runtime)
     :ignore
@@ -62,14 +64,19 @@ defmodule Backplane.HostAgent.Memory.CaptureSupervisor do
 
   defp collector_children(%{collectors: %{enabled: true} = collectors} = opts) do
     [
-      {Scheduler,
-       name: Map.get(opts, :scheduler_name, Scheduler),
-       host_id: Map.fetch!(opts, :host_id),
-       spool: Map.fetch!(opts, :spool_name),
-       state_path: Map.fetch!(collectors, :state_path),
-       config: collectors,
-       interval_ms: Map.fetch!(collectors, :interval_ms),
-       initial_delay_ms: Map.fetch!(collectors, :initial_delay_ms)}
+      {
+        Scheduler,
+        # Leave room for the uploader's batch wrapper so one snapshot always fits a batch.
+        name: Map.get(opts, :scheduler_name, Scheduler),
+        host_id: Map.fetch!(opts, :host_id),
+        host_label: Map.get(opts, :host_label),
+        spool: Map.fetch!(opts, :spool_name),
+        max_bytes: Map.fetch!(opts, :batch_bytes) - @upload_wrapper_headroom,
+        state_path: Map.fetch!(collectors, :state_path),
+        config: collectors,
+        interval_ms: Map.fetch!(collectors, :interval_ms),
+        initial_delay_ms: Map.fetch!(collectors, :initial_delay_ms)
+      }
     ]
   end
 

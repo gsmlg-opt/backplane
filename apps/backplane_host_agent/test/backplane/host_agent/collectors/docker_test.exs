@@ -29,7 +29,9 @@ defmodule Backplane.HostAgent.Collectors.DockerTest do
   test "parses containers, sorts ports, runs docker ps" do
     out =
       line("Up 2 hours", "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp") <>
-        "\n" <> Jason.encode!(%{"Names" => "db", "Image" => "pg", "State" => "paused", "Ports" => ""}) <> "\n"
+        "\n" <>
+        Jason.encode!(%{"Names" => "db", "Image" => "pg", "State" => "paused", "Ports" => ""}) <>
+        "\n"
 
     assert [%{collector: "docker", unit: "local", complete: true, items: items}] =
              collect({:ok, out}, self())
@@ -71,5 +73,12 @@ defmodule Backplane.HostAgent.Collectors.DockerTest do
     assert collect({:error, :not_found}) == []
     assert collect({:error, {:exit, 1}}) == []
     assert collect({:error, :timeout}) == []
+  end
+
+  test "non-UTF-8 output is sanitized instead of failing the line" do
+    out = ~s({"Names":"we) <> <<0xE9>> <> ~s(b","Image":"i","State":"running","Ports":""})
+
+    assert [%{complete: true, items: [%{"name" => name}]}] = collect({:ok, out})
+    assert name == "we\uFFFDb"
   end
 end

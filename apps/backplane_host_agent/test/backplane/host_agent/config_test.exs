@@ -263,6 +263,22 @@ defmodule Backplane.HostAgent.ConfigTest do
     """)
 
     assert {:ok, %{capture: %{collectors: %{enabled: false}}}} = Config.load(config_path)
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{work_dir}
+      http_port: 0
+
+    capture:
+      enabled: true
+      collectors:
+        git:
+          roots: "~/src"
+    """)
+
+    assert {:ok, %{capture: %{collectors: %{git: %{roots: roots}}}}} = Config.load(config_path)
+    assert roots == [Path.join(home, "src")]
   end
 
   @tag :tmp_dir

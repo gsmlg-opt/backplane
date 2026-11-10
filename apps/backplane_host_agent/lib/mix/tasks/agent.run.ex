@@ -145,7 +145,10 @@ defmodule Mix.Tasks.Agent.Run do
 
   defp maybe_start_capture(%{capture: capture_config} = config, capture_supervisor_module)
        when is_map(capture_config) do
-    capture_config = Map.put(capture_config, :host_id, config.host_id)
+    capture_config =
+      capture_config
+      |> Map.put(:host_id, config.host_id)
+      |> Map.put(:host_label, Map.get(config, :machine_name))
 
     case capture_supervisor_module.start_link(capture_config) do
       {:ok, pid} ->
