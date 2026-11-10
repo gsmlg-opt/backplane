@@ -170,7 +170,7 @@ older copy by default. It also installs the shared hook client at
 | `codex` | `codex plugin marketplace add ~/.local/share/backplane/plugins/codex` then `codex plugin add backplane-memory@backplane-local` |
 | `cursor` | Restart Cursor. Hooks and MCP are merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json`; the first change keeps a `*.backplane-backup` copy, and removing the plugin restores your own entries. |
 | `hermes` | None; installs to `~/.hermes/plugins/backplane-memory`. |
-| `openclaw` | None; installs to `~/.openclaw/extensions/backplane-memory`. See the plugin README for runtime requirements. |
+| `openclaw` | None; installs to `~/.openclaw/extensions/backplane-memory`. Set `hooks.allowConversationAccess` on the plugin entry to enable automatic hooks (see the plugin README). |
 
 Capture hooks never block or fail the agent when the host agent is down. Set
 `BACKPLANE_HOST_AGENT_URL` to override the host-agent URL for the hook client.

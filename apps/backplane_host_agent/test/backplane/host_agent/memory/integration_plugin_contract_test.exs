@@ -337,6 +337,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
 
     result = Jason.decode!(output)
     assert result["missing"] == []
+
     assert result["results"] == %{
              "invalid" => nil,
              "shared" => nil,
@@ -344,6 +345,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
              "thrown" => nil,
              "unavailable" => nil
            }
+
     assert Enum.any?(result["warnings"], &String.contains?(&1, "conversation_access_required"))
 
     assert Enum.any?(
