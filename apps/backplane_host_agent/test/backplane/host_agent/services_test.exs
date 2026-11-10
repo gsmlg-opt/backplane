@@ -54,6 +54,11 @@ defmodule Backplane.HostAgent.ServicesTest do
     assert "host_agent::install_plugin" in tool_names
     assert "host_agent::remove_plugin" in tool_names
 
+    install = Enum.find(PluginsService.tools(), &(&1["name"] == "host_agent::install_plugin"))
+
+    assert install["inputSchema"]["properties"]["runtime"]["enum"] ==
+             ~w(claude_code codex cursor hermes openclaw)
+
     assert {:ok, %{"installed" => true, "valid" => true, "target_path" => target}} =
              PluginsService.call(
                "install_plugin",

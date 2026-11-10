@@ -93,6 +93,7 @@ defmodule Backplane.HostAgent.Services.Plugins do
         },
         "runtime" => %{
           "type" => "string",
+          "enum" => PluginInstaller.runtimes("memory"),
           "description" => "Target runtime for the selected plugin"
         }
       }

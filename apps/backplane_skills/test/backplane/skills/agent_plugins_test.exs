@@ -21,6 +21,11 @@ defmodule Backplane.Skills.AgentPluginsTest do
     :ok
   end
 
+  test "packaged plugins list all memory runtimes" do
+    assert [%{"plugin" => "memory", "runtimes" => runtimes}] = AgentPlugins.packaged_plugins()
+    assert runtimes == ~w(claude_code codex cursor hermes openclaw)
+  end
+
   test "builds endpoint from reported host-agent config" do
     entry = entry(%{"agent" => %{"http_bind" => "0.0.0.0", "http_port" => 4333}})
 
