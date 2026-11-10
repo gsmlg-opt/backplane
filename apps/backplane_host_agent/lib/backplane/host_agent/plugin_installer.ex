@@ -23,6 +23,10 @@ defmodule Backplane.HostAgent.PluginInstaller do
           next_steps: [
             "claude plugin marketplace add {target}",
             "claude plugin install backplane-memory@backplane-local"
+          ],
+          remove_steps: [
+            "claude plugin uninstall backplane-memory@backplane-local",
+            "claude plugin marketplace remove backplane-local"
           ]
         },
         "codex" => %{
@@ -40,6 +44,10 @@ defmodule Backplane.HostAgent.PluginInstaller do
           next_steps: [
             "codex plugin marketplace add {target}",
             "codex plugin add backplane-memory@backplane-local"
+          ],
+          remove_steps: [
+            "codex plugin remove backplane-memory@backplane-local",
+            "codex plugin marketplace remove backplane-local"
           ]
         },
         "cursor" => %{
@@ -47,13 +55,21 @@ defmodule Backplane.HostAgent.PluginInstaller do
           uses_hook_client: true,
           required_files: ["hooks.json", "mcp.json"],
           target_parts: [".cursor", "hooks.json"],
-          next_steps: ["Restart Cursor"]
+          next_steps: ["Restart Cursor"],
+          remove_steps: ["Restart Cursor"]
         },
         "hermes" => %{
           required_files: ["README.md", "plugin.yaml", "__init__.py"],
           # {path under the integrations root, name in the installed package}
           shared_files: [{"shared/INSTRUCTIONS.md", "INSTRUCTIONS.md"}],
-          target_parts: [".hermes", "plugins", "backplane-memory"]
+          target_parts: [".hermes", "plugins", "backplane-memory"],
+          next_steps: [
+            "Enable the provider in the Hermes profile config " <>
+              "(memory: provider: backplane-memory) or run: " <>
+              "hermes memory setup backplane-memory",
+            "Restart Hermes"
+          ],
+          remove_steps: ["hermes memory off", "Restart Hermes"]
         },
         "openclaw" => %{
           required_files: [
@@ -69,7 +85,18 @@ defmodule Backplane.HostAgent.PluginInstaller do
             "plugin.yaml"
           ],
           shared_files: [{"shared/INSTRUCTIONS.md", "INSTRUCTIONS.md"}],
-          target_parts: [".openclaw", "extensions", "backplane-memory"]
+          target_parts: [".openclaw", "extensions", "backplane-memory"],
+          next_steps: [
+            ~s(In ~/.openclaw/openclaw.json set plugins.slots.memory to "backplane-memory"),
+            "In ~/.openclaw/openclaw.json set plugins.entries.backplane-memory.enabled " <>
+              "and plugins.entries.backplane-memory.hooks.allowConversationAccess to true",
+            "Restart OpenClaw"
+          ],
+          remove_steps: [
+            "In ~/.openclaw/openclaw.json remove plugins.slots.memory and " <>
+              "plugins.entries.backplane-memory",
+            "Restart OpenClaw"
+          ]
         }
       }
     }
@@ -127,7 +154,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
              opts
            ) do
       {:ok,
-       status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta, opts)}
+       plugin
+       |> status_map(runtime, source_path, target_path, plugin_meta, runtime_meta, opts)
+       |> put_steps(runtime_meta, target_path, :next_steps)}
     end
   end
 
@@ -140,7 +169,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
          :ok <- cleanup_hook_client(plugin_meta, runtime, runtime_meta, opts),
          {:ok, source_path} <- source_dir(runtime, plugin_meta, opts) do
       {:ok,
-       status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta, opts)}
+       plugin
+       |> status_map(runtime, source_path, target_path, plugin_meta, runtime_meta, opts)
+       |> put_steps(runtime_meta, target_path, :remove_steps)}
     end
   end
 
@@ -558,7 +589,6 @@ defmodule Backplane.HostAgent.PluginInstaller do
       "source_path" => source_path,
       "target_path" => target_path
     }
-    |> put_next_steps(runtime_meta, target_path)
   end
 
   defp install_state(%{mode: :cursor_config}, _target_path, opts) do
@@ -569,11 +599,22 @@ defmodule Backplane.HostAgent.PluginInstaller do
   defp install_state(runtime_meta, target_path, _opts),
     do: {File.dir?(target_path), installed_valid?(target_path, runtime_meta)}
 
-  defp put_next_steps(status, %{next_steps: steps}, target_path),
-    do:
-      Map.put(status, "next_steps", Enum.map(steps, &String.replace(&1, "{target}", target_path)))
+  # Client-side commands for the action just taken (the installer never runs
+  # other CLIs): install steps after install, uninstall steps after remove, and
+  # none for a plain status read.
+  defp put_steps(status, runtime_meta, target_path, key) do
+    case Map.fetch(runtime_meta, key) do
+      {:ok, steps} ->
+        Map.put(
+          status,
+          "next_steps",
+          Enum.map(steps, &String.replace(&1, "{target}", target_path))
+        )
 
-  defp put_next_steps(status, _runtime_meta, _target_path), do: status
+      :error ->
+        status
+    end
+  end
 
   defp installed_valid?(target_path, %{required_files: required_files} = runtime_meta) do
     installed_files = required_files ++ Enum.map(shared_files(runtime_meta), &elem(&1, 1))

@@ -740,6 +740,76 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
   end
 
+  describe "per-action next steps" do
+    @describetag :tmp_dir
+
+    @remove_steps %{
+      "claude_code" => [
+        "claude plugin uninstall backplane-memory@backplane-local",
+        "claude plugin marketplace remove backplane-local"
+      ],
+      "codex" => [
+        "codex plugin remove backplane-memory@backplane-local",
+        "codex plugin marketplace remove backplane-local"
+      ],
+      "cursor" => ["Restart Cursor"],
+      "hermes" => ["hermes memory off", "Restart Hermes"],
+      "openclaw" => [
+        "In ~/.openclaw/openclaw.json remove plugins.slots.memory and " <>
+          "plugins.entries.backplane-memory",
+        "Restart OpenClaw"
+      ]
+    }
+
+    for runtime <- ~w(claude_code codex cursor hermes openclaw) do
+      test "#{runtime}: remove returns the client-side uninstall steps", %{tmp_dir: tmp_dir} do
+        runtime = unquote(runtime)
+        opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+        {:ok, installed} = PluginInstaller.install("memory", runtime, opts)
+        assert is_list(installed["next_steps"]) and installed["next_steps"] != []
+
+        assert {:ok, removed} = PluginInstaller.remove("memory", runtime, opts)
+        assert removed["installed"] == false
+        assert removed["next_steps"] == @remove_steps[runtime]
+        refute Enum.any?(removed["next_steps"], &(&1 =~ ~r/marketplace add|plugin (install|add)/))
+      end
+
+      test "#{runtime}: status carries no install steps", %{tmp_dir: tmp_dir} do
+        runtime = unquote(runtime)
+        opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+        {:ok, _} = PluginInstaller.install("memory", runtime, opts)
+
+        assert {:ok, status} = PluginInstaller.status("memory", runtime, opts)
+        assert status["installed"] == true
+        refute Map.has_key?(status, "next_steps")
+      end
+    end
+
+    test "Hermes install tells how to enable the provider", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+      assert {:ok, result} = PluginInstaller.install("memory", "hermes", opts)
+
+      assert result["next_steps"] == [
+               "Enable the provider in the Hermes profile config " <>
+                 "(memory: provider: backplane-memory) or run: " <>
+                 "hermes memory setup backplane-memory",
+               "Restart Hermes"
+             ]
+    end
+
+    test "OpenClaw install tells how to enable the memory slot and hooks", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+      assert {:ok, result} = PluginInstaller.install("memory", "openclaw", opts)
+
+      assert result["next_steps"] == [
+               ~s(In ~/.openclaw/openclaw.json set plugins.slots.memory to "backplane-memory"),
+               "In ~/.openclaw/openclaw.json set plugins.entries.backplane-memory.enabled " <>
+                 "and plugins.entries.backplane-memory.hooks.allowConversationAccess to true",
+               "Restart OpenClaw"
+             ]
+    end
+  end
+
   describe "extra_runtimes test hook" do
     @describetag :tmp_dir
 
