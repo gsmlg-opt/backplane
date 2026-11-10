@@ -8,6 +8,21 @@ defmodule Backplane.HostAgent.PluginInstaller do
       name: "backplane-memory",
       source_parts: ["integrations", "memory"],
       runtimes: %{
+        "claude_code" => %{
+          mode: :marketplace,
+          required_files: [
+            ".claude-plugin/marketplace.json",
+            "backplane-memory/.claude-plugin/plugin.json",
+            "backplane-memory/hooks/hooks.json",
+            "backplane-memory/.mcp.json",
+            "backplane-memory/skills/backplane-memory/SKILL.md"
+          ],
+          target_parts: ["plugins", "claude"],
+          next_steps: [
+            "claude plugin marketplace add {target}",
+            "claude plugin install backplane-memory@backplane-local"
+          ]
+        },
         "hermes" => %{
           required_files: ["README.md", "plugin.yaml", "__init__.py"],
           target_parts: [".hermes", "plugins", "backplane-memory"]
@@ -31,6 +46,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
       }
     }
   }
+
+  @hook_client_name "backplane-memory-hook"
+  @default_host_agent_url "http://127.0.0.1:4222"
 
   @doc "Returns supported packaged plugin ids."
   def plugins, do: @plugins |> Map.keys() |> Enum.sort()
@@ -69,11 +87,13 @@ defmodule Backplane.HostAgent.PluginInstaller do
          :ok <- validate_source(source_path, runtime_meta),
          {:ok, target_path} <- target_path(plugin_meta, runtime_meta, opts),
          :ok <-
-           replace_dir(
-             plugin_meta.name,
+           install_files(
+             plugin_meta,
+             runtime_meta,
              source_path,
              target_path,
-             parse_bool(opt(opts, :force), true)
+             parse_bool(opt(opts, :force), true),
+             opts
            ) do
       {:ok, status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta)}
     end
@@ -85,6 +105,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
          {:ok, runtime, runtime_meta} <- runtime_meta(plugin, plugin_meta, runtime),
          {:ok, target_path} <- target_path(plugin_meta, runtime_meta, opts),
          :ok <- remove_existing(target_path),
+         :ok <- cleanup_hook_client(runtime_meta, opts),
          {:ok, source_path} <- source_dir(runtime, plugin_meta, opts) do
       {:ok, status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta)}
     end
@@ -178,11 +199,24 @@ defmodule Backplane.HostAgent.PluginInstaller do
           Path.expand(path, home_dir)
 
         _path ->
-          Path.join([home_dir | runtime_meta.target_parts])
+          Path.join([default_base(runtime_meta, home_dir, opts) | runtime_meta.target_parts])
       end
 
-    with :ok <- validate_target_path(path, home_dir, plugin_meta.name) do
+    with :ok <- validate_target_path(path, home_dir, target_name(plugin_meta, runtime_meta)) do
       {:ok, path}
+    end
+  end
+
+  defp default_base(%{mode: :marketplace}, home_dir, opts), do: data_dir(opts, home_dir)
+  defp default_base(_runtime_meta, home_dir, _opts), do: home_dir
+
+  defp target_name(_plugin_meta, %{mode: :marketplace, target_parts: parts}), do: List.last(parts)
+  defp target_name(plugin_meta, _runtime_meta), do: plugin_meta.name
+
+  defp data_dir(opts, home_dir) do
+    case opt(opts, :data_dir) do
+      dir when is_binary(dir) and dir != "" -> Path.expand(dir, home_dir)
+      _dir -> Path.join([home_dir, ".local", "share", "backplane"])
     end
   end
 
@@ -212,7 +246,102 @@ defmodule Backplane.HostAgent.PluginInstaller do
     path == root || String.starts_with?(path, root <> "/")
   end
 
-  defp replace_dir(plugin_name, source_path, target_path, force?) do
+  defp install_files(plugin_meta, %{mode: :marketplace}, source, target, force?, opts) do
+    home = home_dir(opts)
+    data = data_dir(opts, home)
+    url = host_agent_url(opts)
+    client = Path.join([data, "bin", @hook_client_name])
+    substitutions = %{"__HOOK_CLIENT__" => client, "__HOST_AGENT_URL__" => url}
+
+    with :ok <- validate_data_dir(data, home),
+         :ok <-
+           replace_dir(plugin_meta.name, source, target, force?, &render_tree(&1, substitutions)),
+         :ok <- install_hook_client(source, client, substitutions) do
+      :ok
+    end
+  end
+
+  defp install_files(plugin_meta, _runtime_meta, source, target, force?, _opts),
+    do: replace_dir(plugin_meta.name, source, target, force?)
+
+  defp validate_data_dir(data, home) do
+    if under_path?(Path.expand(data), Path.expand(home)),
+      do: :ok,
+      else: {:error, {:target_outside_home, Path.expand(data)}}
+  end
+
+  # Replaces placeholders in every rendered `.json` file under `dir`.
+  defp render_tree(dir, substitutions) do
+    dir
+    |> Path.join("**/*.json")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case File.write(path, substitute(File.read!(path), substitutions)) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:file_error, reason, path}}}
+      end
+    end)
+  end
+
+  defp substitute(contents, substitutions) do
+    Enum.reduce(substitutions, contents, fn {placeholder, value}, acc ->
+      String.replace(acc, placeholder, value)
+    end)
+  end
+
+  # The shared hook client lives next to the runtime package directories.
+  defp install_hook_client(source_path, client, substitutions) do
+    template = Path.join([Path.dirname(source_path), "shared", "bin", @hook_client_name])
+    staging = client <> ".install-#{System.unique_integer([:positive])}"
+
+    with {:ok, contents} <- File.read(template),
+         :ok <- File.mkdir_p(Path.dirname(client)),
+         :ok <-
+           File.write(
+             staging,
+             substitute(contents, Map.take(substitutions, ["__HOST_AGENT_URL__"]))
+           ),
+         :ok <- File.chmod(staging, 0o755),
+         :ok <- File.rename(staging, client) do
+      :ok
+    else
+      {:error, reason} ->
+        _ = File.rm(staging)
+        {:error, {:file_error, reason, template}}
+    end
+  end
+
+  # Removes the shared hook client once no marketplace-style client is left.
+  defp cleanup_hook_client(%{mode: :marketplace}, opts) do
+    data = data_dir(opts, home_dir(opts))
+    plugins = Path.join(data, "plugins")
+
+    if File.dir?(plugins) and File.ls!(plugins) != [] do
+      :ok
+    else
+      remove_existing(Path.join([data, "bin", @hook_client_name]))
+    end
+  end
+
+  defp cleanup_hook_client(_runtime_meta, _opts), do: :ok
+
+  defp host_agent_url(opts) do
+    (opt(opts, :host_agent_url) || Application.get_env(:backplane_host_agent, :host_agent_url) ||
+       configured_host_agent_url() || @default_host_agent_url)
+    |> String.trim_trailing("/")
+  end
+
+  defp configured_host_agent_url do
+    case Backplane.HostAgent.Config.load_default() do
+      {:ok, %{http_bind: bind, http_port: port}} when is_integer(port) and port > 0 ->
+        "http://#{bind || "127.0.0.1"}:#{port}"
+
+      _other ->
+        nil
+    end
+  end
+
+  defp replace_dir(plugin_name, source_path, target_path, force?, prepare \\ fn _ -> :ok end) do
     parent = Path.dirname(target_path)
     staging = Path.join(parent, ".#{plugin_name}.install-#{System.unique_integer([:positive])}")
 
@@ -220,6 +349,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
       with :ok <- File.mkdir_p(parent),
            :ok <- ensure_replace_allowed(target_path, force?),
            {:ok, _copied} <- File.cp_r(source_path, staging),
+           :ok <- prepare.(staging),
            :ok <- remove_existing(target_path),
            :ok <- File.rename(staging, target_path) do
         :ok
@@ -258,7 +388,14 @@ defmodule Backplane.HostAgent.PluginInstaller do
       "source_path" => source_path,
       "target_path" => target_path
     }
+    |> put_next_steps(runtime_meta, target_path)
   end
+
+  defp put_next_steps(status, %{next_steps: steps}, target_path),
+    do:
+      Map.put(status, "next_steps", Enum.map(steps, &String.replace(&1, "{target}", target_path)))
+
+  defp put_next_steps(status, _runtime_meta, _target_path), do: status
 
   defp installed_valid?(target_path, %{required_files: required_files}) do
     File.dir?(target_path) &&

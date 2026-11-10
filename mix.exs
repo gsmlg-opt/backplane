@@ -111,7 +111,7 @@ defmodule Backplane.Umbrella.MixProject do
     File.cp_r!("integrations/memory", destination)
 
     for manifest <-
-          ~w(hermes/plugin.yaml openclaw/plugin.yaml openclaw/package.json openclaw/openclaw.plugin.json) do
+          ~w(hermes/plugin.yaml openclaw/plugin.yaml openclaw/package.json openclaw/openclaw.plugin.json claude_code/backplane-memory/.claude-plugin/plugin.json) do
       path = Path.join(destination, manifest)
       contents = File.read!(path)
 
