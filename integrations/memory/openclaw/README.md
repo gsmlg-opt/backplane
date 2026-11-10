@@ -98,10 +98,26 @@ kept; queued conversation captures are still delivered.
   `/capture/v1/status`. `agent_end` only captures the verified new suffix of a
   turn whose input was captured; it never re-captures history or recalled text.
 
-Automatic context and capture run only for a real conversation turn of the
-owner: not for maintenance runs (`trigger: memory`), sandboxed callers,
-conversations shared with other people, or when OpenClaw's tool policy disables
-`backplane_memory_search` (context) or `backplane_memory_remember` (capture).
+### When memory is used
+
+Memory only surfaces in a live, **owner-private**, unsandboxed session of the
+acting agent, and every check fails closed when OpenClaw does not supply it:
+
+- the caller context must carry the agent, session id and session key,
+  `sandboxed: false`, and a current `memoryAudience` of kind `owner-private`
+  for that same agent (conversation, group or thread audiences, another agent's
+  audience, a sandboxed or unknown context all get nothing);
+- automatic context and capture also need `hooks.allowConversationAccess` and
+  OpenClaw's finalized tool policy for the hook: `backplane_memory_search` must
+  be allowed for automatic context, `backplane_memory_remember` for capture;
+  maintenance runs (`trigger: memory`) are skipped;
+- tools need a live invocation; otherwise they return
+  `{"success": false, "error": "not_permitted"}` without contacting the host;
+- the provider runtime serves only `session` callers meeting the same rules;
+  any other caller gets no search hits and `get` fails with `not_permitted`.
+
+The policy is checked again after each host answer, so a session that ends or
+changes audience mid-request releases nothing.
 
 OpenClaw's own `USER.md` and `MEMORY.md` files are not mirrored into Backplane.
 

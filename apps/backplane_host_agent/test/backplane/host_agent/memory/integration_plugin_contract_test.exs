@@ -304,7 +304,15 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     });
     const results = {};
     results.invalid = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, {}) ?? null;
-    const ctx = { agentId: "main", sessionId: "session-one", sessionKey: "agent:main:main", runId: "run-one" };
+    const live = () => {};
+    const ctx = { agentId: "main", sessionId: "session-one", sessionKey: "agent:main:main", runId: "run-one",
+      memoryAudience: { kind: "owner-private", agentId: "main" }, sandboxed: false,
+      assertMemoryAudienceCurrent: live, assertInvocationCurrent: live,
+      toolAuthority: { assertActive: live, allows: () => true }, hookInvocation: { assertActive: live } };
+    results.shared = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] },
+      { ...ctx, runId: "shared", memoryAudience: { kind: "conversation", agentId: "main" } }) ?? null;
+    results.missing = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] },
+      { ...ctx, runId: "missing", sandboxed: undefined }) ?? null;
     results.thrown = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, ctx) ?? null;
     mode = "unavailable";
     const next = { ...ctx, runId: "run-two" };
@@ -329,7 +337,13 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
 
     result = Jason.decode!(output)
     assert result["missing"] == []
-    assert result["results"] == %{"invalid" => nil, "thrown" => nil, "unavailable" => nil}
+    assert result["results"] == %{
+             "invalid" => nil,
+             "shared" => nil,
+             "missing" => nil,
+             "thrown" => nil,
+             "unavailable" => nil
+           }
     assert Enum.any?(result["warnings"], &String.contains?(&1, "conversation_access_required"))
 
     assert Enum.any?(

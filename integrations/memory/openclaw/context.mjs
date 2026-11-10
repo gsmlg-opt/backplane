@@ -26,7 +26,7 @@ function renderRow(row) {
   const labels = describe(row);
   if (!labels) return null;
   const title = label(row.title);
-  return `- [${labels.join("; ")}] ${(title ? `${title}: ` : "") + row.content.trim()}`.replace(/\n/g, "\n  ");
+  return `- [${labels.join("; ")}] ${(title ? `${title}: ` : "") + row.content.trim()}`.replace(/\r\n|[\r\n\u2028\u2029]/g, "\n  ");
 }
 
 /**

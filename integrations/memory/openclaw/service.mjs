@@ -51,6 +51,7 @@ function signature(messages) {
 const withoutUndefined = (value) => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 const toolResult = (result) => ({ content: [{ type: "text", text: JSON.stringify(result) }], details: result });
 const failed = (response) => ({ success: false, error: response.error, ...(response.status ? { http_status: response.status } : {}) });
+const NOT_PERMITTED = Object.freeze({ success: false, error: "not_permitted" });
 const completeness = (content) => ({ truncated: false, original_length: [...content].length, original_sha256: sha256(content), coverage: "full" });
 
 const SUBJECT = { type: "object", properties: { type: { type: "string" }, key: { type: "string" } }, required: ["type", "key"] };
@@ -112,15 +113,34 @@ export class MemoryService {
     return this.journal;
   }
   /**
-   * OpenClaw's own policy for automatic (hook-driven) recall and capture: a real
-   * owner conversation turn, not a maintenance run, a sandboxed caller or an
-   * audience shared with other people, and the matching tool not disabled.
+   * OpenClaw's own conversation policy: memory surfaces only in a live,
+   * owner-private, unsandboxed session of the acting agent. Missing fields fail
+   * closed. Hooks additionally need the conversation-access grant and, for
+   * recall/capture, the finalized tool policy for the matching tool; tools and
+   * the provider runtime need a live invocation. Throws a content-free code.
    */
-  automatic(ctx, tool) {
-    if (this.closed || !this.conversationAccess || !ctx?.agentId || !ctx.sessionId || ctx.trigger === "memory" || ctx.sandboxed === true) return false;
-    if (ctx.memoryAudience !== undefined && ctx.memoryAudience?.kind !== "owner-private") return false;
-    if (!tool || typeof ctx.toolAuthority?.allows !== "function") return true;
-    try { return ctx.toolAuthority.allows(tool) === true; } catch { return false; }
+  admit(ctx, { hook = false, tools = [] } = {}) {
+    if (this.closed || this.config.enabled === false) throw new Error("provider_disabled");
+    if (!ctx?.agentId || !ctx.sessionId || !ctx.sessionKey) throw new Error("session_identity_unavailable");
+    if (ctx.sandboxed !== false) throw new Error("sandbox_policy_denied");
+    if (ctx.memoryAudience?.kind !== "owner-private") throw new Error("unsupported_memory_audience");
+    if (ctx.memoryAudience.agentId !== ctx.agentId) throw new Error("audience_agent_mismatch");
+    if (typeof ctx.assertMemoryAudienceCurrent !== "function") throw new Error("audience_assertion_unavailable");
+    ctx.assertMemoryAudienceCurrent();
+    if (hook) {
+      if (!this.conversationAccess) throw new Error("conversation_access_required");
+      if (tools.length) {
+        if (!ctx.toolAuthority || !ctx.hookInvocation) throw new Error("tool_policy_unavailable");
+        ctx.toolAuthority.assertActive(); ctx.hookInvocation.assertActive();
+        if (!tools.every((name) => ctx.toolAuthority.allows(name) === true)) throw new Error("tool_policy_denied");
+      }
+    } else {
+      if (typeof ctx.assertInvocationCurrent !== "function") throw new Error("invocation_assertion_unavailable");
+      ctx.assertInvocationCurrent();
+    }
+  }
+  permitted(ctx, options) {
+    try { this.admit(ctx, options); return true; } catch { return false; }
   }
   namespace(ctx) {
     return `${this.config.profile_id}:${digest({ agent_id: ctx.agentId, workspace: ctx.workspaceDir ? resolve(ctx.workspaceDir) : null })}`;
@@ -141,18 +161,21 @@ export class MemoryService {
   }
   async beforePrompt(event, ctx) {
     try {
-      if (!this.automatic(ctx)) return;
+      // Maintenance runs are not conversation turns; denied turns stay silent.
+      if (ctx?.trigger === "memory" || !this.permitted(ctx, { hook: true })) return;
       const prompt = Object.hasOwn(event ?? {}, "currentUserMessage") ? event.currentUserMessage : event?.prompt;
       if (typeof prompt !== "string") return;
-      if (this.automatic(ctx, TOOL_NAMES.remember)) {
+      if (this.permitted(ctx, { hook: true, tools: [TOOL_NAMES.remember] })) {
         try { this.admitPrompt(event, ctx, prompt); } catch (error) { this.warn(error); }
         void this.drain();
       }
-      if (!this.automatic(ctx, TOOL_NAMES.search)) return;
+      const recall = { hook: true, tools: [TOOL_NAMES.search] };
+      if (!this.permitted(ctx, recall)) return;
       const query = redactForEgress(prompt).trim();
       if (!query) return;
       const response = await this.client.call("search", { query: query.slice(0, MAX_QUERY_CHARS), limit: this.config.search_limit }, { signal: ctx.signal });
-      if (!response.ok || this.closed) return;
+      // Recheck the live policy before releasing anything into the prompt.
+      if (!response.ok || !this.permitted(ctx, recall)) return;
       const block = renderContext(response.result, this.config.token_budget);
       return block ? { prependContext: block } : undefined;
     } catch (error) {
@@ -191,7 +214,7 @@ export class MemoryService {
   }
   async agentEnd(event, ctx) {
     try {
-      if (!this.automatic(ctx)) return;
+      if (ctx?.trigger === "memory" || !this.permitted(ctx, { hook: true })) return;
       if (!ctx.runId || !Array.isArray(event?.messages)) throw new Error("capture_boundary_unavailable");
       const journal = this.journalForUse();
       const identity = canonicalJson([ctx.agentId, ctx.sessionId, ctx.runId]);
@@ -255,12 +278,22 @@ export class MemoryService {
       name, label: name, description,
       parameters: { type: "object", additionalProperties: false, properties, required },
       execute: async (_toolCallId, args) => {
-        if (this.closed) return toolResult({ success: false, error: "provider_disabled" });
-        return toolResult(await this.callTool(ctx, method, properties, required, args));
+        // Shared, sandboxed or unknown conversations get no memory; the policy is rechecked before release.
+        if (!this.permitted(ctx)) return toolResult(NOT_PERMITTED);
+        const result = await this.callTool(ctx, method, properties, required, args);
+        return toolResult(this.permitted(ctx) ? result : NOT_PERMITTED);
       },
     }));
   }
-  async open({ context, purpose } = {}) {
+  async open({ agentId, context, purpose } = {}) {
+    const authority = context?.authority;
+    const assertSessionCaller = () => {
+      context.assertCurrent();
+      if (authority?.kind !== "session") throw new Error("unsupported_caller_authority");
+    };
+    const ctx = { agentId, sessionId: authority?.sessionId, sessionKey: authority?.sessionKey, memoryAudience: authority?.audience,
+      sandboxed: authority?.sandboxed, assertMemoryAudienceCurrent: assertSessionCaller, assertInvocationCurrent: assertSessionCaller };
+    const none = { hits: [], coverage: "complete" };
     let closed = false;
     const generation = this.leaseGeneration;
     const check = () => { if (closed || this.closed || generation !== this.leaseGeneration) throw new Error("provider_lease_closed"); context?.assertCurrent?.(); };
@@ -278,8 +311,11 @@ export class MemoryService {
         if (request.cursor || request.activeProjectKeys?.length || request.sources?.some((source) => source !== "memory") || (request.minScore !== undefined && request.minScore !== 0)) throw new Error("unsupported_search_filter");
         const query = redactForEgress(String(request.query ?? "")).trim();
         if (!query) throw new Error("invalid_arguments");
+        // Outside an owner-private, unsandboxed session nothing is recalled (and nothing is sent).
+        if (!this.permitted(ctx)) return none;
         const response = await call("search", { query: query.slice(0, MAX_QUERY_CHARS), limit: Math.min(50, Math.max(1, request.maxResults || 10)) });
         if (!response.ok) throw new Error(safeError(response.error));
+        if (!this.permitted(ctx)) return none;
         const rows = (Array.isArray(response.result.results) ? response.result.results : []).filter((row) => describe(row) && typeof row.id === "string" && row.id);
         return { hits: rows.map((row) => ({
           reference: { providerId: "backplane-memory", id: row.id },
@@ -290,7 +326,9 @@ export class MemoryService {
       get: async ({ reference, from, lines }) => {
         check();
         if (reference?.providerId !== "backplane-memory" || typeof reference.id !== "string" || !reference.id || from !== undefined || lines !== undefined || reference.fragment) throw new Error("invalid_reference");
+        if (!this.permitted(ctx)) throw new Error("not_permitted");
         const response = await call("get", { id: reference.id });
+        if (!this.permitted(ctx)) throw new Error("not_permitted");
         if (!response.ok) {
           if (response.status === 404) return { status: "not_found" };
           throw new Error(safeError(response.error));

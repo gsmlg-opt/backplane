@@ -149,6 +149,8 @@ defmodule Backplane.HostAgent.ServicesTest do
     File.write!(Path.join(hermes, "README.md"), "Backplane Hermes\n")
     File.write!(Path.join(hermes, "plugin.yaml"), "name: hermes\n")
     File.write!(Path.join(hermes, "__init__.py"), "# hermes\n")
+    File.mkdir_p!(Path.join(source_root, "shared"))
+    File.write!(Path.join(source_root, "shared/INSTRUCTIONS.md"), "Shared instructions\n")
 
     openclaw = Path.join(source_root, "openclaw")
     File.mkdir_p!(openclaw)
