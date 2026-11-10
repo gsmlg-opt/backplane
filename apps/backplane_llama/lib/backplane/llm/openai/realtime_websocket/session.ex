@@ -76,6 +76,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
          %{
            socket: socket,
            owner: owner,
+           remote_ip: Keyword.get(opts, :remote_ip, {0, 0, 0, 0}),
            owner_monitor: Process.monitor(owner),
            socket_monitor: Process.monitor(socket.pid),
            policy: policy,
@@ -309,7 +310,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
     # deliberately leave token totals unavailable rather than infer billing.
     AccessEvent.finalize(
       %{access | request_bytes: state.input_bytes},
-      %Plug.Conn{status: status},
+      %Plug.Conn{status: status, remote_ip: state.remote_ip},
       outcome,
       error_kind: :transport,
       error_code: "realtime_connection_closed"

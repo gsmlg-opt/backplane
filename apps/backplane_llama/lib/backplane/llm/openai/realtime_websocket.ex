@@ -27,6 +27,7 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket do
              __MODULE__.Supervisor,
              {Session,
               owner: self(),
+              remote_ip: conn.remote_ip,
               url: url,
               headers: headers(conn, headers),
               policy: policy,

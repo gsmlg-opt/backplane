@@ -282,7 +282,13 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
     assert HTTP.Headers.get(metadata.headers, "retry-after") == "7"
     cleanup(socket)
 
-    assert_receive {:realtime_access, %{status: 429, input_tokens: nil, output_tokens: nil}},
+    assert_receive {:realtime_access,
+                    %{
+                      status: 429,
+                      client_ip: "127.0.0.1",
+                      input_tokens: nil,
+                      output_tokens: nil
+                    }},
                    5_000
 
     Agent.update(ctx.store, &%{&1 | reject: false})
