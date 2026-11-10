@@ -16,6 +16,14 @@ defmodule Backplane.HostAgent.Memory.Hooks.ClaudeCode do
     "postcommit" => {"post-commit", "git.commit.created"}
   }
 
+  @supported_hooks ~w(
+    SessionStart UserPromptSubmit PostToolUse PostToolUseFailure PreCompact
+    SubagentStart SubagentStop Stop SessionEnd
+  )
+
+  @doc "Lists the Claude Code lifecycle hooks installed by the plugin."
+  def supported_hooks, do: @supported_hooks
+
   @doc "Normalizes one supported Claude Code hook using trusted host configuration."
   @spec normalize(String.t(), map(), map() | struct()) ::
           {:ok, map()} | {:error, :unsupported_hook | {:malformed, [atom()]}}

@@ -63,6 +63,21 @@ defmodule Backplane.HostAgent.CaptureRouterTest do
     assert Enum.map(events, & &1["sequence"]) == Enum.to_list(1..10)
   end
 
+  test "accepts Cursor hooks end to end", %{spool: spool} do
+    body = %{
+      "conversation_id" => "conv-1",
+      "generation_id" => "gen-1",
+      "workspace_roots" => ["/w/a"],
+      "prompt" => "hello"
+    }
+
+    assert %{status: 202} = post_hook("cursor", "beforeSubmitPrompt", body)
+    assert [event] = Spool.next_batch(spool, 10, 100_000)
+    assert event["event_type"] == "agent.prompt.submitted"
+    assert event["integration"] == "cursor"
+    assert event["session_id"] == "conv-1"
+  end
+
   test "uses trusted runtime host identity and filters caller payload before persistence", %{
     spool: spool
   } do
