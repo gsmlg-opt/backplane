@@ -41,6 +41,9 @@ DEFAULT_AGENT_ID = "hermes"
 TIMEOUT = 20
 # Synchronous prefetch; Hermes abandons an external prefetch after 8 seconds.
 SEARCH_TIMEOUT = 5
+# A background search queued after a turn serves the session's next prefetch.
+WARM_TTL = 60
+FORGET_REASONS = {"replace": "replaced in Hermes", "remove": "removed in Hermes"}
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_ERROR_CHARS = 200
 SAFE_CODE = re.compile(r"[a-z_]{1,64}")
@@ -138,6 +141,10 @@ def _post(base, agent_id, method, args=None, timeout=None):
     if response.get("ok") and not isinstance(response.get("result"), dict):
         return _failure("memory " + method, "invalid_response")
     return response
+
+
+def _digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _unwrap(response):
@@ -247,7 +254,7 @@ class BackplaneMemoryProvider(MemoryProvider):
         binding = {"url": self._base, "agent_id": self._agent_id, "hermes_home": str(self._home), "agent_identity": kwargs.get("agent_identity")}
         self._journal = DeliveryJournal(self._home / "backplane-memory" / "delivery.sqlite3", binding, max_pending=self._config["max_pending"], max_bytes=self._config["journal_bytes"])
         self._state_lock = threading.RLock()
-        self._cache, self._prefetch_jobs = OrderedDict(), OrderedDict()
+        self._cache, self._prefetch_jobs, self._warm = OrderedDict(), OrderedDict(), OrderedDict()
         self._generation = 0
         self._stopping, self._wake = threading.Event(), threading.Event()
         self._worker, self._worker_done, self._closed = None, False, False
@@ -276,6 +283,7 @@ class BackplaneMemoryProvider(MemoryProvider):
             self._generation += 1
             self._cache.clear()
             self._prefetch_jobs.clear()
+            self._warm.clear()
 
     # -- setup ---------------------------------------------------------------
 
@@ -358,7 +366,8 @@ class BackplaneMemoryProvider(MemoryProvider):
         self._wake.set()
 
     def prefetch(self, query, *, session_id=""):
-        """Cached context for this exact turn text, else one bounded search."""
+        """Context for this turn: cached for this exact text, else the session's warm
+        result from the queued background search (consumed once), else one bounded search."""
         if getattr(self, "_closed", True) or not isinstance(query, str) or not query.strip() or len(query) > 16384:
             return ""
         try:
@@ -367,12 +376,17 @@ class BackplaneMemoryProvider(MemoryProvider):
                 cached = self._cache.get(key)
                 if cached and cached[0] > time.monotonic():
                     return cached[1]
+                warm = self._warm.pop(key[0], None)
+                if warm and warm[0] > time.monotonic() and warm[1]:
+                    return warm[1]
             return self._fetch_context(key, timeout=SEARCH_TIMEOUT)
         except Exception:
             logger.warning("backplane-memory: prefetch failed")
             return ""
 
     def _fetch_context(self, key, _unused=None, *, timeout=None):
+        """Search for ``key``'s text. A synchronous call (``timeout`` given) fills the
+        exact-text cache; a queued background call fills the session's warm slot."""
         response = _post(self._base, self._agent_id, "search", {"query": key[1], "limit": self._config["search_limit"]}, timeout=timeout)
         result = _unwrap(response)
         if result is None:
@@ -380,34 +394,59 @@ class BackplaneMemoryProvider(MemoryProvider):
         text = render_context(result, self._config["context_token_budget"])
         with self._state_lock:
             if key[2] == self._generation:
-                self._cache[key] = (time.monotonic() + self._config["cache_ttl"], text)
-                while len(self._cache) > self._config["cache_entries"]:
-                    self._cache.popitem(last=False)
+                if timeout is None:
+                    self._warm[key[0]] = (time.monotonic() + WARM_TTL, text)
+                    self._warm.move_to_end(key[0])
+                    store = self._warm
+                else:
+                    self._cache[key] = (time.monotonic() + self._config["cache_ttl"], text)
+                    store = self._cache
+                while len(store) > self._config["cache_entries"]:
+                    store.popitem(last=False)
         return text
 
     # -- automatic writes ----------------------------------------------------
 
     def on_memory_write(self, action, target, content, metadata=None, **kwargs):
-        """Mirror a built-in memory write as a durable, idempotent memory::remember note.
+        """Mirror a built-in memory write into Backplane Memory, durably and in order.
 
-        Removals are not mirrored: the native entry carries no Backplane record id.
+        ``replace``/``remove`` queue a forget of the record mirrored from
+        ``metadata["previous_content"]`` — only when this journal mirrored that exact text
+        (its remember is committed or still queued ahead); anything else was never
+        mirrored and is left alone. ``add``/``replace`` then queue a ``note`` remember of
+        the new entry. The forget is queued first so it resolves to the old record.
         """
-        if not self._automatic or self._closed or action not in {"add", "replace"}:
-            return
-        if not isinstance(content, str) or not content.strip():
+        if not self._automatic or self._closed or action not in {"add", "replace", "remove"}:
             return
         metadata = metadata if isinstance(metadata, dict) else {}
+        target = str(target)
         session_id = metadata.get("session_id") if isinstance(metadata.get("session_id"), str) and metadata.get("session_id") else self._session_id
-        event_id = str(uuid.uuid4())
-        payload = {"content": content, "kind": "note", "writer": "agent", "session_id": session_id,
-                   "tags": ["hermes:" + str(target)], "request_key": "hermes:" + event_id}
+        previous = metadata.get("previous_content")
+        if action == "replace" and previous == content:
+            return
         try:
-            self._journal.enqueue(event_id, _call_path(self._agent_id, "remember"), payload)
+            with self._journal.transaction():
+                if action != "add" and isinstance(previous, str) and previous.strip() and self._mirrored(target, _digest(previous)):
+                    event_id = str(uuid.uuid4())
+                    self._journal.enqueue(event_id, _call_path(self._agent_id, "forget"), {"reason": FORGET_REASONS[action]})
+                    self._journal.db.execute("INSERT INTO mirror_events VALUES (?,?,?)", (event_id, target, _digest(previous)))
+                if action != "remove" and isinstance(content, str) and content.strip():
+                    event_id = str(uuid.uuid4())
+                    self._journal.enqueue(event_id, _call_path(self._agent_id, "remember"), {
+                        "content": content, "kind": "note", "writer": "agent", "session_id": session_id,
+                        "tags": ["hermes:" + target], "request_key": "hermes:" + event_id})
+                    self._journal.db.execute("INSERT INTO mirror_events VALUES (?,?,?)", (event_id, target, _digest(content)))
         except Exception:
             logger.warning("backplane-memory: memory write could not be queued")
             return
         self._invalidate_context()
         self._wake.set()
+
+    def _mirrored(self, target, digest):
+        db = self._journal.db
+        if db.execute("SELECT 1 FROM mirror_records WHERE target=? AND digest=?", (target, digest)).fetchone():
+            return True
+        return db.execute("SELECT 1 FROM mirror_events e JOIN delivery d ON d.event_id=e.event_id WHERE e.target=? AND e.digest=? AND d.path LIKE '%/call/remember' AND d.state='local_pending'", (target, digest)).fetchone() is not None
 
     # -- capture -------------------------------------------------------------
 
@@ -489,10 +528,34 @@ class BackplaneMemoryProvider(MemoryProvider):
         self._journal.retry(row["event_id"], response.get("error", "status_unknown"))
         return False
 
+    def _resolve_forget(self, row, payload):
+        """Bind a queued forget to the canonical id its mirrored remember received."""
+        mirror = self._journal.db.execute("SELECT target,digest FROM mirror_events WHERE event_id=?", (row["event_id"],)).fetchone()
+        record = mirror and self._journal.db.execute("SELECT canonical_id FROM mirror_records WHERE target=? AND digest=?", tuple(mirror)).fetchone()
+        return {"id": record[0], "reason": payload["reason"]} if record else None
+
+    def _record_mirror(self, event_id, canonical_id, forget):
+        with self._journal.transaction():
+            mirror = self._journal.db.execute("SELECT target,digest FROM mirror_events WHERE event_id=?", (event_id,)).fetchone()
+            if mirror and forget:
+                self._journal.db.execute("DELETE FROM mirror_records WHERE target=? AND digest=?", tuple(mirror))
+            elif mirror and canonical_id:
+                self._journal.db.execute("INSERT INTO mirror_records VALUES (?,?,?) ON CONFLICT(target,digest) DO UPDATE SET canonical_id=excluded.canonical_id", (*mirror, canonical_id))
+            self._journal.db.execute("DELETE FROM mirror_events WHERE event_id=?", (event_id,))
+
     def _send(self, row):
         payload = json.loads(row["payload"])
         is_capture = row["path"].startswith("/capture/")
-        label = "capture " + row["path"].rsplit("/", 1)[-1] if is_capture else "memory remember"
+        forget = row["path"].endswith("/call/forget")
+        label = "capture " + row["path"].rsplit("/", 1)[-1] if is_capture else "memory " + row["path"].rsplit("/", 1)[-1]
+        if forget:
+            payload = self._resolve_forget(row, payload)
+            if payload is None:
+                # Its remember was rejected: nothing was mirrored, so nothing to forget.
+                with self._journal.transaction():
+                    self._journal.db.execute("DELETE FROM delivery WHERE event_id=?", (row["event_id"],))
+                    self._journal.db.execute("DELETE FROM mirror_events WHERE event_id=?", (row["event_id"],))
+                return True
         response = _http(self._base, row["path"], payload, label=label)
         if response.get("ok"):
             if is_capture and response.get("status") in {"accepted", "duplicate"} and response.get("event_id") == row["event_id"]:
@@ -504,11 +567,14 @@ class BackplaneMemoryProvider(MemoryProvider):
                 if isinstance(result.get("id"), str):
                     receipt["canonical_id"] = result["id"]
                 self._journal.accept(row["event_id"], receipt)
+                self._record_mirror(row["event_id"], receipt.get("canonical_id"), forget)
                 return True
             self._journal.retry(row["event_id"], "invalid_response")
             return False
         if response.get("http_status") in TERMINAL_STATUSES:
             self._journal.reject(row["event_id"], "request_rejected")
+            if not is_capture:
+                self._record_mirror(row["event_id"], None, forget)
             return True
         self._journal.retry(row["event_id"], response.get("error", "request_failed")[:64])
         return False

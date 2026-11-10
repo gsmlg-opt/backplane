@@ -8,17 +8,24 @@ def _text(value):
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _label(value):
+    """A provenance value as a single-line label that cannot close or open the bracket."""
+    text = _text(value)
+    text = text and " ".join(text.replace("[", " ").replace("]", " ").split())[:128]
+    return text or None
+
+
 def _render_row(row):
     content = _text(row.get("content"))
     if not content or row.get("status") not in (None, "active"):
         return None
     provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
-    labels = [_text(row.get("kind")) or "memory"]
+    labels = [_label(row.get("kind")) or "memory"]
     for label, value in (("host", provenance.get("host")), ("agent", provenance.get("agent")),
                          ("observed", row.get("observed_at")), ("id", row.get("id"))):
-        if _text(value):
-            labels.append(label + " " + _text(value))
-    title = _text(row.get("title"))
+        if _label(value):
+            labels.append(label + " " + _label(value))
+    title = _label(row.get("title"))
     body = (title + ": " if title else "") + content
     return "- [" + "; ".join(labels) + "] " + body.replace("\n", "\n  ")
 

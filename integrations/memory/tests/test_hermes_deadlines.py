@@ -92,17 +92,16 @@ class DeadlineTest(unittest.TestCase):
             started = time.monotonic()
             provider.queue_prefetch('alpha')
             self.assertLess(time.monotonic() - started, 0.2)
-            key = ('deadline-session', 'alpha', provider._generation)
             deadline = time.monotonic() + 5
             cached = None
             while time.monotonic() < deadline:
                 with provider._state_lock:
-                    cached = provider._cache.get(key)
+                    cached = provider._warm.get('deadline-session')
                 if cached:
                     break
                 time.sleep(0.02)
             self.assertIsNotNone(cached, 'a slow background search was discarded by the HTTP deadline')
-            self.assertIn('alpha slow search', provider.prefetch('alpha'))
+            self.assertIn('alpha slow search', provider.prefetch('next turn text'))
             provider.shutdown()
 
     def test_synchronous_prefetch_is_bounded_by_its_own_deadline(self):

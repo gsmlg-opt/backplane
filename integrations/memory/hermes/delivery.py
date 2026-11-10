@@ -43,6 +43,11 @@ class DeliveryJournal:
                 event_id TEXT NOT NULL, author TEXT);
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS mirror_events (
+                event_id TEXT PRIMARY KEY, target TEXT NOT NULL, digest TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS mirror_records (
+                target TEXT NOT NULL, digest TEXT NOT NULL, canonical_id TEXT NOT NULL,
+                PRIMARY KEY(target,digest));
         """)
         try:
             with self.transaction():
@@ -74,7 +79,7 @@ class DeliveryJournal:
         """Drop state of the retired native-file mirror; undelivered capture survives."""
         for table in ("source_entries", "source_aliases", "source_chains", "callbacks"):
             self.db.execute("DROP TABLE IF EXISTS " + table)
-        self.db.execute("DELETE FROM delivery WHERE path NOT LIKE '/capture/%' AND path NOT LIKE '%/call/remember'")
+        self.db.execute("DELETE FROM delivery WHERE path NOT LIKE '/capture/%' AND path NOT LIKE '%/call/remember' AND path NOT LIKE '%/call/forget'")
         self.db.execute("UPDATE delivery SET state='local_pending',next_at=0,error_code=NULL WHERE state='capture_deferred'")
         self.db.execute("DELETE FROM meta WHERE key LIKE 'source-%' OR key IN ('binding_fingerprint','binding_blocked','capture_binding_state','capture_binding_fingerprint')")
 
