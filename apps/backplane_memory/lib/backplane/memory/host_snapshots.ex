@@ -40,6 +40,10 @@ defmodule Backplane.Memory.HostSnapshots do
   end
 
   defp transaction(event, snapshot, new) do
+    # A host clock ahead of the gateway must not make later snapshots look stale:
+    # order and record by the gateway-clamped time (Records clamps observed_at the same way).
+    event = %{event | occurred_at: earliest(event.occurred_at, DateTime.utc_now())}
+
     result =
       repo().transaction(fn ->
         state = lock_state(event.host_id, snapshot)
@@ -57,6 +61,8 @@ defmodule Backplane.Memory.HostSnapshots do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp earliest(a, b), do: if(DateTime.compare(a, b) == :gt, do: b, else: a)
 
   defp lock_state(host_id, %{collector: collector, unit: unit}) do
     now = DateTime.utc_now()
@@ -160,7 +166,10 @@ defmodule Backplane.Memory.HostSnapshots do
     |> repo().all()
     |> Enum.filter(&(Enum.join(&1.subject_keys, ",") == keys))
     |> Enum.count(fn record ->
-      match?({:ok, _}, Records.forget(record.id, reason))
+      case Records.forget(record.id, reason) do
+        {:ok, _} -> true
+        {:error, why} -> repo().rollback({:forget_failed, record.id, why})
+      end
     end)
   end
 

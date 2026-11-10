@@ -187,6 +187,18 @@ defmodule Backplane.Memory.HostSnapshotsTest do
     assert only.status == "active"
   end
 
+  test "a snapshot from a clock-ahead host does not make later snapshots stale" do
+    h = host()
+    ahead = DateTime.add(DateTime.utc_now(), 3600, :second)
+
+    assert {:ok, %{written: 1}} =
+             HostSnapshots.apply(snapshot!(h, [repo_item("/work/a")], at: ahead))
+
+    Process.sleep(5)
+    correct = snapshot!(h, [], at: DateTime.utc_now())
+    assert {:ok, %{written: 0, forgotten: 1}} = HostSnapshots.apply(correct)
+  end
+
   test "invalid payloads return an error and write nothing" do
     h = host()
 
