@@ -125,6 +125,60 @@ defmodule Backplane.Memory.HostSnapshotsTest do
     assert {:ok, %{written: 0, forgotten: 1}} = HostSnapshots.apply(complete)
   end
 
+  defp git_payload(items, extra) do
+    Map.merge(
+      %{"collector" => "git", "unit" => "/work", "complete" => true, "items" => items},
+      extra
+    )
+  end
+
+  test "a complete snapshot keeps slots below unscanned directories" do
+    h = host()
+    items = [repo_item("/work/a"), repo_item("/work/priv/b"), repo_item("/work/private/c")]
+    assert {:ok, %{written: 3}} = HostSnapshots.apply(snapshot!(h, items))
+
+    unscanned =
+      snapshot!(h, [],
+        at: ~U[2026-11-09 11:00:00.000000Z],
+        payload: git_payload([repo_item("/work/a")], %{"unscanned" => ["/work/priv"]})
+      )
+
+    # /work/priv/b is below an unscanned dir; /work/private/c only shares a string prefix.
+    assert {:ok, %{written: 0, forgotten: 1}} = HostSnapshots.apply(unscanned)
+    assert [%{subject_keys: forgotten_keys}] = collector_facts(h, "forgotten")
+    assert "path:/work/private/c" in forgotten_keys
+
+    # The kept slot is still tracked, so a later fully scanned snapshot forgets it.
+    rescanned = snapshot!(h, [repo_item("/work/a")], at: ~U[2026-11-09 12:00:00.000000Z])
+    assert {:ok, %{written: 0, forgotten: 1}} = HostSnapshots.apply(rescanned)
+    assert length(collector_facts(h, "forgotten")) == 2
+  end
+
+  test "an unscanned directory equal to an item path keeps that item" do
+    h = host()
+    assert {:ok, %{written: 1}} = HostSnapshots.apply(snapshot!(h, [repo_item("/work/x")]))
+
+    event =
+      snapshot!(h, [],
+        at: ~U[2026-11-09 11:00:00.000000Z],
+        payload: git_payload([], %{"unscanned" => ["/work/x"]})
+      )
+
+    assert {:ok, %{written: 0, forgotten: 0}} = HostSnapshots.apply(event)
+  end
+
+  test "fact content names the host by its label; subjects keep the host id" do
+    h = host()
+
+    event =
+      snapshot!(h, [], payload: git_payload([repo_item("/work/a")], %{"host_label" => "db02"}))
+
+    assert {:ok, %{written: 1}} = HostSnapshots.apply(event)
+    assert [fact] = collector_facts(h)
+    assert fact.content == "Git checkout of github.com/o/a at db02:/work/a (branch main)."
+    assert "host:#{h}" in fact.subject_keys
+  end
+
   test "incomplete snapshot still forgets a stale slot of an item that is present" do
     h = host()
     head = %{"commit" => "abcdef123456", "subject" => "init", "committed_at" => "2026-11-01"}

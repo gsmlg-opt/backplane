@@ -6,6 +6,8 @@ defmodule Backplane.Memory.HostSnapshots do
   the last applied snapshot. Applying a snapshot diffs against it inside one
   transaction holding that row's lock: changed slots are rewritten, vanished slots
   are forgotten only when the scan was complete (or the item itself is still present).
+  Vanished slots whose item lies at or below a directory the host reported as
+  `unscanned` are kept, even in a complete scan.
   """
 
   import Ecto.Query
@@ -25,11 +27,11 @@ defmodule Backplane.Memory.HostSnapshots do
     end
   end
 
-  defp build_slots(host_id, %{collector: collector, items: items}) do
+  defp build_slots(host_id, %{collector: collector, items: items, host_label: label}) do
     slots =
       for item <- items,
           key = Facts.item_key(collector, item),
-          fact <- Facts.facts(host_id, collector, item),
+          fact <- Facts.facts(host_id, collector, item, label),
           into: %{} do
         {fact.slot, {key, fact}}
       end
@@ -104,7 +106,8 @@ defmodule Backplane.Memory.HostSnapshots do
 
     {forget, keep} =
       Enum.split_with(removed, fn {_slot, %{"item" => item}} ->
-        snapshot.complete or MapSet.member?(present_items, item)
+        MapSet.member?(present_items, item) or
+          (snapshot.complete and not unscanned?(item, snapshot.unscanned))
       end)
 
     forgotten =
@@ -122,6 +125,10 @@ defmodule Backplane.Memory.HostSnapshots do
     |> repo().update!()
 
     %{written: written, forgotten: forgotten}
+  end
+
+  defp unscanned?(item, dirs) do
+    Enum.any?(dirs, &(item == &1 or String.starts_with?(item, &1 <> "/")))
   end
 
   defp write(event, slot, _key, fact, old) do

@@ -111,6 +111,53 @@ defmodule Backplane.Memory.HostSnapshots.FactsTest do
     end
   end
 
+  describe "facts/4 with a host label" do
+    test "content uses the label, subjects and slots keep the host id" do
+      assert [checkout, head] = Facts.facts("uuid-1", "git", @git, "db02")
+      assert checkout.content == "Git checkout of github.com/o/r at db02:/srv/app (branch main)."
+      assert head.content =~ "Latest commit in db02:/srv/app:"
+      assert checkout.subject_keys == ["host:uuid-1", "path:/srv/app", "repo:github.com/o/r"]
+
+      assert [f] = Facts.facts("uuid-1", "launchd", %{"label" => "com.x.y"}, "db02")
+      assert f.content == "launchd job com.x.y is loaded on db02."
+      assert f.slot == "launchd_job|host:uuid-1,service:com.x.y"
+
+      assert [f] =
+               Facts.facts(
+                 "uuid-1",
+                 "docker",
+                 %{"name" => "web", "image" => "i", "state" => "running", "ports" => []},
+                 "db02"
+               )
+
+      assert f.content == "Docker container web on db02: image i, state running, ports none."
+
+      host = %{"hostname" => "db02.local", "os" => "Linux", "addresses" => [], "listening" => []}
+      by = "uuid-1" |> Facts.facts("host", host, "db02") |> Map.new(&{&1.property, &1.content})
+      assert by["os"] == "db02 runs Linux."
+      assert by["hostname"] == "db02 has hostname db02.local."
+    end
+
+    test "a nil label falls back to the host id" do
+      assert Facts.facts("h", "git", @git, nil) == Facts.facts("h", "git", @git)
+    end
+
+    test "systemd service with a blank description has no trailing colon" do
+      for description <- ["", "  ", nil] do
+        item = %{"name" => "x.service", "description" => description}
+        assert [f] = Facts.facts("uuid-1", "systemd", item, "db02")
+        assert f.content == "systemd service x.service runs on db02."
+      end
+    end
+
+    test "host item without a listening key yields no listening_ports fact" do
+      item = %{"hostname" => "h.local", "os" => "Plan 9", "addresses" => ["10.0.0.2"]}
+
+      assert "h" |> Facts.facts("host", item) |> Enum.map(& &1.property) ==
+               ["os", "hostname", "ip_addresses"]
+    end
+  end
+
   describe "item_key/2" do
     test "per collector" do
       assert Facts.item_key("git", @git) == "/srv/app"
@@ -140,6 +187,22 @@ defmodule Backplane.Memory.HostSnapshots.FactsTest do
       assert {:error, :invalid_items} = Facts.validate(%{ok | "items" => %{}})
       assert {:error, :invalid_item} = Facts.validate(%{ok | "items" => [%{"image" => "x"}]})
       assert {:error, :invalid_item} = Facts.validate(%{ok | "items" => ["str"]})
+    end
+
+    test "optional host_label and unscanned" do
+      ok = %{"collector" => "git", "unit" => "/srv", "complete" => true, "items" => []}
+
+      assert {:ok, %{host_label: nil, unscanned: []}} = Facts.validate(ok)
+
+      assert {:ok, %{host_label: "db02", unscanned: ["/srv/a", "/srv/b"]}} =
+               Facts.validate(
+                 Map.merge(ok, %{"host_label" => "db02", "unscanned" => ["/srv/b", "/srv/a"]})
+               )
+
+      assert {:error, :invalid_host_label} = Facts.validate(Map.put(ok, "host_label", " "))
+      assert {:error, :invalid_host_label} = Facts.validate(Map.put(ok, "host_label", 1))
+      assert {:error, :invalid_unscanned} = Facts.validate(Map.put(ok, "unscanned", "/srv"))
+      assert {:error, :invalid_unscanned} = Facts.validate(Map.put(ok, "unscanned", [1]))
     end
   end
 end

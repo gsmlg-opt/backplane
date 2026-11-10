@@ -94,6 +94,25 @@ defmodule Backplane.Memory.Workers.HostSnapshotWorkerTest do
     end)
   end
 
+  test "an invalid host_label or unscanned value cancels the job" do
+    for {field, value, reason} <- [
+          {"host_label", " ", "invalid_host_label"},
+          {"unscanned", "/srv", "invalid_unscanned"}
+        ] do
+      Styx.Testing.with_testing_mode(:manual, fn ->
+        host = unique("bad-host")
+        event = snapshot_event(host, Map.put(launchd_payload(["a.job"]), field, value))
+
+        assert [%{"status" => "accepted"}] = ingest(host, [event])
+
+        log = capture_log(fn -> Styx.drain_queue(queue: :memory) end)
+
+        assert log =~ "rejected: #{reason}"
+        assert host_facts(host) == []
+      end)
+    end
+  end
+
   test "a single-event append also enqueues the worker" do
     Styx.Testing.with_testing_mode(:manual, fn ->
       host = unique("single-host")
@@ -119,6 +138,5 @@ defmodule Backplane.Memory.Workers.HostSnapshotWorkerTest do
              Backplane.Memory.Workers.HostSnapshotWorker.perform(%Styx.Job{
                args: %{"event_id" => Ecto.UUID.generate()}
              })
-
   end
 end

@@ -10,7 +10,15 @@ defmodule Backplane.Memory.Workers.HostSnapshotWorker do
   alias Backplane.Memory.Events.Event
   alias Backplane.Memory.HostSnapshots
 
-  @invalid_payload [:unknown_collector, :invalid_unit, :invalid_complete, :invalid_items, :invalid_item]
+  @invalid_payload [
+    :unknown_collector,
+    :invalid_unit,
+    :invalid_complete,
+    :invalid_items,
+    :invalid_item,
+    :invalid_host_label,
+    :invalid_unscanned
+  ]
 
   @impl Styx.Worker
   def perform(%Styx.Job{args: %{"event_id" => event_id}}) when is_binary(event_id) do
