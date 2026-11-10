@@ -619,6 +619,62 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       refute File.exists?(ctx.hooks)
     end
 
+    test "preserves 0600 permissions and creates new files 0600", ctx do
+      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+      File.chmod!(ctx.mcp, 0o600)
+
+      mode = fn path -> Bitwise.band(File.stat!(path).mode, 0o7777) end
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      assert mode.(ctx.mcp) == 0o600
+      assert mode.(ctx.mcp <> ".backplane-backup") == 0o600
+      assert mode.(ctx.hooks) == 0o600
+
+      assert {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      assert mode.(ctx.mcp) == 0o600
+    end
+
+    test "symlinked configs stay symlinks and their targets are updated", ctx do
+      store = Path.join(ctx.home, "dotfiles")
+      File.mkdir_p!(store)
+      File.write!(Path.join(store, "mcp.json"), Jason.encode!(@user_mcp))
+      File.write!(Path.join(store, "hooks.json"), Jason.encode!(@user_hooks))
+      # absolute link and relative link
+      File.ln_s!(Path.join(store, "mcp.json"), ctx.mcp)
+      File.ln_s!("../dotfiles/hooks.json", ctx.hooks)
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      assert {:ok, _} = File.read_link(ctx.mcp)
+      assert {:ok, _} = File.read_link(ctx.hooks)
+
+      assert Map.has_key?(
+               read_json!(Path.join(store, "mcp.json"))["mcpServers"],
+               "backplane-memory"
+             )
+
+      assert length(our_commands(read_json!(Path.join(store, "hooks.json")))) == 8
+      assert read_json!(ctx.mcp <> ".backplane-backup") == @user_mcp
+
+      assert {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      assert {:ok, _} = File.read_link(ctx.mcp)
+      assert {:ok, _} = File.read_link(ctx.hooks)
+      assert read_json!(Path.join(store, "mcp.json")) == @user_mcp
+      assert read_json!(Path.join(store, "hooks.json")) == @user_hooks
+    end
+
+    test "a dangling symlink errors and writes nothing", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.ln_s!(Path.join(ctx.home, "missing.json"), ctx.mcp)
+
+      assert {:error, {:dangling_symlink, path}} =
+               PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert path == ctx.mcp
+      assert read_json!(ctx.hooks) == @user_hooks
+      refute File.exists?(Path.join(ctx.home, "missing.json"))
+      refute File.exists?(ctx.client)
+    end
+
     test "status reports an unrelated hooks.json as not installed", ctx do
       File.write!(ctx.hooks, Jason.encode!(@user_hooks))
 

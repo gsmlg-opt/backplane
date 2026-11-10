@@ -13,8 +13,12 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
   @hook_marker "backplane-memory-hook"
   @mcp_key "backplane-memory"
   @backup_suffix ".backplane-backup"
+  @max_link_depth 8
 
-  @type error :: {:invalid_json, Path.t()} | {:file_error, term(), Path.t()}
+  @type error ::
+          {:invalid_json, Path.t()}
+          | {:dangling_symlink, Path.t()}
+          | {:file_error, term(), Path.t()}
 
   @doc "Path of Cursor's hooks file under `home`."
   def hooks_path(home), do: Path.join([home, ".cursor", "hooks.json"])
@@ -61,8 +65,8 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
 
     with {:ok, loaded} <- load_all(files),
          {:ok, writes} <- plan(loaded, create?) do
-      Enum.reduce_while(writes, :ok, fn {path, existing?, doc}, :ok ->
-        case write(path, existing?, doc) do
+      Enum.reduce_while(writes, :ok, fn {path, real, existing?, doc}, :ok ->
+        case write(path, real, existing?, doc) do
           :ok -> {:cont, :ok}
           error -> {:halt, error}
         end
@@ -72,8 +76,10 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
 
   defp load_all(files) do
     Enum.reduce_while(files, {:ok, []}, fn {path, fun}, {:ok, acc} ->
-      case load(path) do
-        {:ok, doc} -> {:cont, {:ok, [{path, fun, doc} | acc]}}
+      with {:ok, real} <- resolve(path),
+           {:ok, doc} <- load(real) do
+        {:cont, {:ok, [{path, real, fun, doc} | acc]}}
+      else
         {:error, _reason} = error -> {:halt, error}
       end
     end)
@@ -85,7 +91,7 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
 
   defp plan(loaded, create?) do
     loaded
-    |> Enum.reduce_while({:ok, []}, fn {path, fun, current}, {:ok, acc} ->
+    |> Enum.reduce_while({:ok, []}, fn {path, real, fun, current}, {:ok, acc} ->
       case {current, create?} do
         {:missing, false} ->
           {:cont, {:ok, acc}}
@@ -95,7 +101,7 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
 
           case fun.(base) do
             {:ok, updated} when updated == current -> {:cont, {:ok, acc}}
-            {:ok, updated} -> {:cont, {:ok, [{path, current != :missing, updated} | acc]}}
+            {:ok, updated} -> {:cont, {:ok, [{path, real, current != :missing, updated} | acc]}}
             :error -> {:halt, {:error, {:invalid_json, path}}}
           end
       end
@@ -258,14 +264,47 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
       else: OrderedObject.new([{key, value} | values])
   end
 
-  defp write(path, existing?, doc) do
-    backup = path <> @backup_suffix
-    tmp = path <> ".backplane-tmp-#{System.unique_integer([:positive])}"
+  defp resolve(path) do
+    case resolve(path, @max_link_depth, false) do
+      {:error, {:dangling_symlink, _hop}} -> {:error, {:dangling_symlink, path}}
+      other -> other
+    end
+  end
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- backup_once(path, backup, existing?),
+  # Follows a symlink chain (bounded) to the file that really holds the content.
+  defp resolve(path, depth, linked?) do
+    case File.read_link(path) do
+      {:ok, _target} when depth == 0 ->
+        {:error, {:dangling_symlink, path}}
+
+      {:ok, target} ->
+        resolve(Path.expand(target, Path.dirname(path)), depth - 1, true)
+
+      {:error, _not_a_link} ->
+        if linked? and not File.exists?(path),
+          do: {:error, {:dangling_symlink, path}},
+          else: {:ok, path}
+    end
+  end
+
+  defp write(path, real, existing?, doc) do
+    backup = path <> @backup_suffix
+
+    tmp =
+      Path.join(
+        Path.dirname(real),
+        ".#{Path.basename(real)}.backplane-tmp-#{System.unique_integer([:positive])}"
+      )
+
+    mode = file_mode(real, existing?)
+
+    with :ok <- File.mkdir_p(Path.dirname(real)),
+         :ok <- backup_once(real, backup, existing?, mode),
+         :ok <- File.write(tmp, ""),
+         :ok <- File.chmod(tmp, 0o600),
          :ok <- File.write(tmp, Jason.encode!(doc, pretty: true) <> "\n"),
-         :ok <- File.rename(tmp, path) do
+         :ok <- File.chmod(tmp, mode),
+         :ok <- File.rename(tmp, real) do
       :ok
     else
       {:error, reason} ->
@@ -274,9 +313,23 @@ defmodule Backplane.HostAgent.PluginInstaller.CursorConfig do
     end
   end
 
-  defp backup_once(path, backup, true) do
-    if File.exists?(backup), do: :ok, else: File.cp(path, backup)
+  # Existing files keep their permission bits; new files are private (0600).
+  defp file_mode(real, true) do
+    case File.stat(real) do
+      {:ok, %File.Stat{mode: mode}} -> Bitwise.band(mode, 0o7777)
+      _error -> 0o600
+    end
   end
 
-  defp backup_once(_path, _backup, false), do: :ok
+  defp file_mode(_real, false), do: 0o600
+
+  defp backup_once(real, backup, true, mode) do
+    if File.exists?(backup) do
+      :ok
+    else
+      with :ok <- File.cp(real, backup), do: File.chmod(backup, mode)
+    end
+  end
+
+  defp backup_once(_real, _backup, false, _mode), do: :ok
 end
