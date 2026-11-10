@@ -685,7 +685,15 @@ defmodule Backplane.HostAgent.MemoryRouter do
       end)
       |> Enum.uniq_by(&tool_name/1)
 
-    memory_tools ++ local_tools ++ other_hub_tools
+    Enum.map(memory_tools ++ local_tools ++ other_hub_tools, &ensure_input_schema/1)
+  end
+
+  # MCP requires an object `inputSchema` on every tool; clients such as Claude
+  # Code reject the whole tools/list when one tool omits it.
+  defp ensure_input_schema(%{"inputSchema" => %{"type" => "object"}} = tool), do: tool
+
+  defp ensure_input_schema(tool) when is_map(tool) do
+    Map.put(tool, "inputSchema", %{"type" => "object", "properties" => %{}})
   end
 
   defp static_memory_tool(name) do

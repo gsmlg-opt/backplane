@@ -160,6 +160,16 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       end
     end
 
+    test "every listed tool has an object inputSchema" do
+      for proxy <- [StubHubProxy, ErrorHubProxy] do
+        Application.put_env(:backplane_host_agent, :hub_proxy_module, proxy)
+
+        for {name, tool} <- mcp_tools("/memory/a1/mcp") do
+          assert %{"inputSchema" => %{"type" => "object"}} = tool, "#{name} lacks inputSchema"
+        end
+      end
+    end
+
     test "uses hub schemas while connected and contract schemas while disconnected" do
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
       connected = mcp_tools("/memory/a1/mcp")

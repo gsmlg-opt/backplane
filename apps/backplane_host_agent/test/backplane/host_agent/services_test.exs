@@ -24,6 +24,12 @@ defmodule Backplane.HostAgent.ServicesTest do
     assert :error = Services.resolve("memory::search")
   end
 
+  test "every plugins tool declares an object inputSchema" do
+    for tool <- PluginsService.tools() do
+      assert %{"type" => "object"} = tool["inputSchema"], "#{tool["name"]} lacks inputSchema"
+    end
+  end
+
   test "resolve returns day and math local services" do
     assert {:ok, DayService, "now"} = Services.resolve("day::now")
     assert {:ok, MathService, "evaluate"} = Services.resolve("math::evaluate")
