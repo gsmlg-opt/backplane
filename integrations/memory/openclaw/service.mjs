@@ -1,48 +1,78 @@
-import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { CAPTURE_PROTOCOL, MAX_CONTENT_BYTES, SOURCE_CAPABILITY, SOURCE_PROTOCOL, TOOL_NAMES, canonicalJson, digest, extractText, isUuid, redactForEgress, sha256, sourceSnapshot, text, uuid } from "./contract.mjs";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { CAPTURE_PROTOCOL, TOOL_NAMES, canonicalJson, digest, extractText, redactForEgress, sha256, text, uuid } from "./contract.mjs";
 import { DeliveryJournal } from "./journal.mjs";
-import { MemoryClient, MemoryRequestError, safeError } from "./client.mjs";
-import { eligibleRows, renderContext } from "./context.mjs";
+import { MemoryClient, safeError } from "./client.mjs";
+import { describe, renderContext } from "./context.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+// The installer places INSTRUCTIONS.md beside this file; a repository/release checkout has it in ../shared.
+export const INSTRUCTION_PATHS = [join(HERE, "INSTRUCTIONS.md"), join(HERE, "..", "shared", "INSTRUCTIONS.md")];
+const MAX_QUERY_CHARS = 4000;
+const TERMINAL_STATUS = new Set([400, 401, 403, 404, 409, 413, 422]);
+const STATUS_POLL_MS = 30000;
+const KINDS = ["fact", "procedure", "worklog", "note"];
 
 export const configSchema = {
   type: "object", additionalProperties: false,
   properties: {
-    enabled: { type: "boolean" }, base_url: { type: "string" }, agent_id: { type: "string" },
+    enabled: { type: "boolean" }, base_url: { type: "string" }, agent_id: { type: "string", minLength: 1 },
     profile_id: { type: "string", minLength: 1, maxLength: 128 }, journal_path: { type: "string" },
     token_budget: { type: "integer", minimum: 128, maximum: 32768 },
-    min_confidence: { type: "number", description: "Deprecated reserved option; ignored with a diagnostic." },
-    fallback_on_error: { type: "boolean" }, timeout_ms: { type: "integer", minimum: 100, maximum: 20000 },
-    native_sync: { type: "boolean" },
-    bindings: { type: "array", maxItems: 64, items: {
-      type: "object", additionalProperties: false, required: ["agent_id", "memory_access_id"],
-      properties: { agent_id: { type: "string", minLength: 1 }, memory_access_id: { type: "string", format: "uuid" } },
-    } },
+    search_limit: { type: "integer", minimum: 1, maximum: 50 },
+    timeout_ms: { type: "integer", minimum: 100, maximum: 20000 },
   },
 };
+const DEFAULTS = { enabled: true, base_url: "http://127.0.0.1:4222", agent_id: "openclaw", profile_id: "default", token_budget: 2000, search_limit: 8, timeout_ms: 5000 };
+const intIn = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
 
 function configOf(api) {
   const supplied = api.pluginConfig || {};
-  const config = { enabled: true, base_url: "http://127.0.0.1:4222", agent_id: "openclaw", profile_id: "default", token_budget: 2000, fallback_on_error: true, timeout_ms: 5000, native_sync: true, bindings: [], ...supplied };
-  if (!Number.isInteger(config.token_budget) || config.token_budget < 128 || config.token_budget > 32768 || !Number.isInteger(config.timeout_ms) || config.timeout_ms < 100 || config.timeout_ms > 20000) throw new Error("invalid_config");
-  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(config.profile_id) || !Array.isArray(config.bindings) || config.bindings.length > 64 || config.bindings.some((row) => !row || !isUuid(row.memory_access_id) || typeof row.agent_id !== "string" || !row.agent_id)) throw new Error("invalid_bindings");
-  if (new Set(config.bindings.map((row) => row.agent_id)).size !== config.bindings.length) throw new Error("ambiguous_bindings");
-  if (Object.hasOwn(supplied, "min_confidence")) api.logger?.warn?.("backplane-memory: min_confidence_deprecated; reserved option ignored; canonical relevance policy applies");
+  const unknown = Object.keys(supplied).filter((key) => !Object.hasOwn(configSchema.properties, key)).sort();
+  // Settings written for older plugin versions are ignored, never applied.
+  if (unknown.length) api.logger?.warn?.(`backplane-memory: ignoring unsupported config keys: ${unknown.join(", ")}`);
+  const config = { ...DEFAULTS, ...Object.fromEntries(Object.entries(supplied).filter(([key]) => !unknown.includes(key))) };
+  if (!intIn(config.token_budget, 128, 32768) || !intIn(config.timeout_ms, 100, 20000) || !intIn(config.search_limit, 1, 50)) throw new Error("invalid_config");
+  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(config.profile_id) || typeof config.agent_id !== "string" || !config.agent_id.trim()) throw new Error("invalid_config");
   return config;
+}
+export function loadInstructions(paths = INSTRUCTION_PATHS) {
+  for (const path of paths) {
+    try { return readFileSync(path, "utf8"); } catch { /* try the next location */ }
+  }
+  return null;
 }
 function signature(messages) {
   // A local equality fence, never an occurrence identity or a wire hash. Message
   // tool arguments may contain floats even though the wire contract may not.
   return sha256(JSON.stringify(messages.map((message) => ({ role: message?.role ?? null, content: message?.content ?? null, provenance: message?.provenance ?? null, toolCallId: message?.toolCallId ?? null }))));
 }
-function provenance(ctx, role, occurrenceId, messageIndex) {
-  const value = { session_id: ctx.sessionId, session_key: ctx.sessionKey, role, write_origin: "openclaw.provider", occurrence_id: occurrenceId };
-  if (ctx.runId) value.run_id = ctx.runId;
-  if (ctx.inputProvenance) value.input_provenance = JSON.parse(canonicalJson(ctx.inputProvenance));
-  if (messageIndex !== undefined) value.message_index = messageIndex;
-  return value;
-}
+const withoutUndefined = (value) => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 const toolResult = (result) => ({ content: [{ type: "text", text: JSON.stringify(result) }], details: result });
+const failed = (response) => ({ success: false, error: response.error, ...(response.status ? { http_status: response.status } : {}) });
+const completeness = (content) => ({ truncated: false, original_length: [...content].length, original_sha256: sha256(content), coverage: "full" });
+
+const SUBJECT = { type: "object", properties: { type: { type: "string" }, key: { type: "string" } }, required: ["type", "key"] };
+const TIME = { type: "string", description: "ISO 8601 timestamp" };
+// Mirrors Backplane.MemoryToolContract.schemas/0. remember omits the provenance
+// fields the host stamps (host, agent, integration, writer, request_key, observed_at);
+// the plugin adds the current session_id itself.
+const TOOLS = [
+  ["search", TOOL_NAMES.search, "Backplane memory::search. Search memories shared by all of the user's agents and hosts; results show where each came from.",
+    { query: { type: "string", minLength: 1 }, host: { type: "string" }, agent: { type: "string" }, kind: { type: "string", enum: KINDS },
+      subject: { type: "string", description: "Subject as type:key, e.g. repo:backplane" }, since: TIME, until: TIME,
+      include_inactive: { type: "boolean", default: false }, limit: { type: "integer", minimum: 1, maximum: 50, default: 10 } }, ["query"]],
+  ["get", TOOL_NAMES.get, "Backplane memory::get. Fetch one memory and its supersession history by id.", { id: { type: "string" } }, ["id"]],
+  ["recent", TOOL_NAMES.recent, "Backplane memory::recent. List recent worklog memories, newest first.",
+    { host: { type: "string" }, agent: { type: "string" }, since: TIME, limit: { type: "integer", minimum: 1, maximum: 100, default: 20 } }, []],
+  ["remember", TOOL_NAMES.remember, "Backplane memory::remember. Store something worth keeping: where something lives, how an operation is done, or what you did. The current session is attached automatically.",
+    { content: { type: "string", minLength: 1 }, kind: { type: "string", enum: KINDS, default: "note" }, title: { type: "string" },
+      subjects: { type: "array", items: SUBJECT, description: "e.g. host:<name>, repo:<name>, service:<name>, path:<path>" },
+      property: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, ["content"]],
+  ["forget", TOOL_NAMES.forget, "Backplane memory::forget. Mark a memory as outdated or forgotten, with a reason.",
+    { id: { type: "string" }, reason: { type: "string", minLength: 1 } }, ["id", "reason"]],
+];
 
 export class MemoryService {
   constructor(api) {
@@ -57,163 +87,112 @@ export class MemoryService {
     this.conversationAccess = api.config?.plugins?.entries?.["backplane-memory"]?.hooks?.allowConversationAccess === true;
   }
   warn(error) { this.api.logger?.warn?.(`backplane-memory: ${safeError(error)}`); }
+  instructions() {
+    if (this.instructionText === undefined) {
+      this.instructionText = loadInstructions();
+      if (this.instructionText === null) this.api.logger?.warn?.("backplane-memory: INSTRUCTIONS.md is missing");
+    }
+    return this.instructionText;
+  }
+  promptLines() {
+    const names = Object.values(TOOL_NAMES).join(", ");
+    return [
+      ...(this.instructions() ? [this.instructions()] : []),
+      `In OpenClaw the memory::search, memory::get, memory::recent, memory::remember and memory::forget tools are named ${names}.`,
+    ];
+  }
   journalForUse() {
     if (this.closed) throw new Error("provider_disabled");
     if (!this.journal) {
       const root = this.config.journal_path ? null : this.api.runtime?.state?.resolveStateDir?.();
       if (!this.config.journal_path && !root) throw new Error("plugin_state_unavailable");
       const path = this.config.journal_path || join(root, "plugins", "backplane-memory", this.config.profile_id, "delivery.sqlite");
-      this.journal = new DeliveryJournal(path, { base_url: this.client.baseUrl, profile_id: this.config.profile_id, bindings: this.config.bindings });
+      this.journal = new DeliveryJournal(path, { base_url: this.client.baseUrl, profile_id: this.config.profile_id });
     }
     return this.journal;
   }
-  authorize(ctx, { hook = false, tool, provider = false } = {}) {
-    const binding = this.config.bindings.find((row) => row.agent_id === ctx?.agentId);
-    const guard = () => {
-      if (this.closed || this.config.enabled === false) throw new Error("provider_disabled");
-      if (!ctx?.agentId || !ctx.sessionId || !ctx.sessionKey || !binding) throw new Error("audience_binding_unavailable");
-      if (ctx.sandboxed !== false) throw new Error("sandbox_policy_denied");
-      if (ctx.memoryAudience?.kind !== "owner-private") throw new Error("unsupported_memory_audience");
-      if (ctx.memoryAudience.agentId !== ctx.agentId) throw new Error("audience_agent_mismatch");
-      if (typeof ctx.assertMemoryAudienceCurrent !== "function") throw new Error("audience_authority_unavailable");
-      ctx.assertMemoryAudienceCurrent();
-      if (provider) ctx.assertInvocationCurrent();
-      else if (hook) {
-        if (!this.conversationAccess) throw new Error("conversation_access_required");
-        if (tool) {
-          if (!ctx.toolAuthority || !ctx.hookInvocation) throw new Error("tool_authority_unavailable");
-          ctx.toolAuthority.assertActive(); ctx.hookInvocation.assertActive();
-          if (!(Array.isArray(tool) ? tool : [tool]).every((name) => ctx.toolAuthority.allows(name))) throw new Error("tool_policy_denied");
-        }
-      } else {
-        if (typeof ctx.assertInvocationCurrent !== "function") throw new Error("invocation_authority_unavailable");
-        ctx.assertInvocationCurrent();
-      }
-    };
-    guard();
-    return { accessId: binding.memory_access_id, guard, agentId: ctx.agentId, ctx };
-  }
-  async peer(invocation, { admitOffline = false, capture = false, requireWrite = false } = {}) {
-    const journal = this.journalForUse();
-    const key = `binding:${invocation.accessId}`;
-    let peer;
-    try {
-      peer = await this.client.capabilities(invocation.agentId, invocation.accessId, invocation.guard, { requireWrite });
-      invocation.guard();
-      const old = journal.get(key);
-      if (old && old.binding_fingerprint !== peer.binding_fingerprint) throw new MemoryRequestError("binding_changed");
-      if (capture && (!peer.contracts.includes(CAPTURE_PROTOCOL) || !peer.negotiated.includes(CAPTURE_PROTOCOL) || peer.capture_ready !== true || peer.capture_binding_fingerprint !== peer.binding_fingerprint)) throw new MemoryRequestError("capture_binding_mismatch");
-      journal.set(key, peer);
-    } catch (error) {
-      const transport = !(error instanceof MemoryRequestError) || error.status >= 500;
-      if (!admitOffline || !transport) throw error;
-      peer = journal.get(key);
-      if (!peer) throw new MemoryRequestError("binding_unverified");
-      if (requireWrite && peer.ready !== true) throw new MemoryRequestError("source_unavailable");
-      if (capture && (peer.capture_ready !== true || peer.capture_binding_fingerprint !== peer.binding_fingerprint)) throw new MemoryRequestError("capture_binding_mismatch");
-      invocation.guard();
-    }
-    return peer;
+  /**
+   * OpenClaw's own policy for automatic (hook-driven) recall and capture: a real
+   * owner conversation turn, not a maintenance run, a sandboxed caller or an
+   * audience shared with other people, and the matching tool not disabled.
+   */
+  automatic(ctx, tool) {
+    if (this.closed || !this.conversationAccess || !ctx?.agentId || !ctx.sessionId || ctx.trigger === "memory" || ctx.sandboxed === true) return false;
+    if (ctx.memoryAudience !== undefined && ctx.memoryAudience?.kind !== "owner-private") return false;
+    if (!tool || typeof ctx.toolAuthority?.allows !== "function") return true;
+    try { return ctx.toolAuthority.allows(tool) === true; } catch { return false; }
   }
   namespace(ctx) {
     return `${this.config.profile_id}:${digest({ agent_id: ctx.agentId, workspace: ctx.workspaceDir ? resolve(ctx.workspaceDir) : null })}`;
   }
-  source(ctx, target) {
-    return { integration: "openclaw", installation_id: this.journalForUse().installationId, profile_id: this.namespace(ctx), target };
-  }
-  enqueue(method, payload, peer, agentId) {
-    const args = { ...payload, memory_access_id: peer.binding.access_id };
-    return this.journal.enqueue(payload.event_id, this.client.path(agentId, method), args, { agent_id: agentId, binding: peer.binding, fingerprint: peer.binding_fingerprint });
-  }
-  capturePayload(ctx, hook, peer, extra = {}) {
-    const now = new Date().toISOString();
-    return {
-      protocol: CAPTURE_PROTOCOL, event_id: uuid(), installation_id: this.journal.installationId,
-      profile_id: this.namespace(ctx), source_sequence: this.journal.next(`capture:${ctx.agentId}:${ctx.sessionId}`),
-      session_id: ctx.sessionId, session_key: ctx.sessionKey, run_id: ctx.runId,
-      agent_id: ctx.agentId, occurred_at: now, captured_at: now, binding_fingerprint: peer.binding_fingerprint,
+  captureEnqueue(ctx, hook, extra) {
+    const journal = this.journal, now = new Date().toISOString(), profile_id = this.namespace(ctx);
+    const payload = withoutUndefined({
+      protocol: CAPTURE_PROTOCOL, event_id: uuid(), installation_id: journal.installationId, profile_id,
+      source_sequence: journal.next(`capture:${ctx.agentId}:${ctx.sessionId}`),
+      session_id: ctx.sessionId, session_key: ctx.sessionKey, run_id: ctx.runId, agent_id: ctx.agentId,
+      occurred_at: now, captured_at: now,
+      // Required by openclaw_capture.v1: a stable fingerprint of this capture source (installation and profile).
+      binding_fingerprint: digest({ integration: "openclaw", installation_id: journal.installationId, profile_id }),
       ...extra,
-    };
-  }
-  captureEnqueue(ctx, hook, peer, extra) {
-    const payload = this.capturePayload(ctx, hook, peer, extra);
-    this.journal.enqueue(payload.event_id, `/capture/v1/hooks/openclaw/${hook}`, payload,
-      { agent_id: ctx.agentId, binding: peer.binding, fingerprint: peer.binding_fingerprint });
+    });
+    journal.enqueue(payload.event_id, `/capture/v1/hooks/openclaw/${hook}`, payload);
     return payload.event_id;
   }
   async beforePrompt(event, ctx) {
-    // The host's detached maintenance input is not an original conversation turn.
-    // Its provider-owned tools perform their own audience/policy admission.
-    if (ctx.trigger === "memory") return;
     try {
-      const prompt = Object.hasOwn(event, "currentUserMessage") ? event.currentUserMessage : event.prompt;
-      if (typeof prompt !== "string") throw new Error("capture_boundary_unavailable");
-      // Recall and persistence have separate policy admission. Denying a save
-      // tool cannot grant capture, nor does it revoke an admitted read tool.
-      this.authorize(ctx, { hook: true });
-      let captureInvocation;
-      try { captureInvocation = this.authorize(ctx, { hook: true, tool: TOOL_NAMES.save }); }
-      catch (error) { this.warn(error); }
-      if (captureInvocation) {
-        try { await this.admitPrompt(event, ctx, prompt, captureInvocation); }
-        catch (error) { this.warn(error); }
+      if (!this.automatic(ctx)) return;
+      const prompt = Object.hasOwn(event ?? {}, "currentUserMessage") ? event.currentUserMessage : event?.prompt;
+      if (typeof prompt !== "string") return;
+      if (this.automatic(ctx, TOOL_NAMES.remember)) {
+        try { this.admitPrompt(event, ctx, prompt); } catch (error) { this.warn(error); }
+        void this.drain();
       }
-      const invocation = this.authorize(ctx, { hook: true, tool: TOOL_NAMES.search });
-      const journal = this.journalForUse();
-      await this.peer(invocation);
-      if (!prompt.trim()) return;
-      const result = await this.client.call(ctx.agentId, "recall", { query: text(redactForEgress(prompt), 4096), token_budget: this.config.token_budget, limit: 20, memory_access_id: invocation.accessId }, invocation.guard);
-      invocation.guard();
-      const block = renderContext(eligibleRows(result, { journal, namespace: this.namespace(ctx) }), this.config.token_budget);
+      if (!this.automatic(ctx, TOOL_NAMES.search)) return;
+      const query = redactForEgress(prompt).trim();
+      if (!query) return;
+      const response = await this.client.call("search", { query: query.slice(0, MAX_QUERY_CHARS), limit: this.config.search_limit }, { signal: ctx.signal });
+      if (!response.ok || this.closed) return;
+      const block = renderContext(response.result, this.config.token_budget);
       return block ? { prependContext: block } : undefined;
     } catch (error) {
+      // Recall is best effort: no context, one warning, never an error into OpenClaw.
       this.warn(error);
-      if (this.config.fallback_on_error === false) throw new Error(safeError(error));
     }
   }
-  async admitPrompt(event, ctx, prompt, invocation) {
-    if (!ctx.runId || !Array.isArray(event.messages)) throw new Error("capture_boundary_unavailable");
+  /** Durably admit this turn's original input, separately from any recall projection. */
+  admitPrompt(event, ctx, prompt) {
+    if (!ctx.runId || !ctx.sessionKey || !Array.isArray(event.messages)) throw new Error("capture_boundary_unavailable");
     const wire = redactForEgress(prompt);
-    const peer = await this.peer(invocation, { admitOffline: true, capture: true, requireWrite: true });
-    invocation.guard();
     const journal = this.journalForUse();
     const identity = canonicalJson([ctx.agentId, ctx.sessionId, ctx.runId]);
     const fence = { history_count: event.messages.length, history_hash: signature(event.messages), prompt_hash: sha256(prompt), inputProvenance: ctx.inputProvenance || null };
     journal.transaction(() => {
-      invocation.guard();
       const existing = journal.db.prepare("SELECT payload FROM turns WHERE identity=?").get(identity);
       if (existing) {
         if (canonicalJson(JSON.parse(existing.payload)) !== canonicalJson(fence)) throw new Error("immutable_turn_conflict");
-      } else {
-        if (!journal.get(`session:${ctx.agentId}:${ctx.sessionId}`)) {
-          this.captureEnqueue(ctx, "session-start", peer, {});
-          journal.set(`session:${ctx.agentId}:${ctx.sessionId}`, {
-            sessionKey: ctx.sessionKey, runId: ctx.runId,
-            ...(ctx.workspaceDir ? { workspaceDir: ctx.workspaceDir } : {}), peer,
-          });
-        }
-        if (wire.trim()) {
-          text(wire);
-          this.captureEnqueue(ctx, "message", peer, {
-            role: "user", content: wire, occurrence_id: event.currentUserMessageId || `${ctx.runId}:input`, message_index: event.messages.length,
-            ...(ctx.inputProvenance ? { input_provenance: ctx.inputProvenance } : {}),
-            completeness: { truncated: false, original_length: [...wire].length, original_sha256: sha256(wire), coverage: "full" },
-          });
-        }
-        journal.db.prepare("INSERT INTO turns(identity,payload) VALUES (?,?)").run(identity, canonicalJson(fence));
+        return;
       }
+      const sessionKey = `session:${ctx.agentId}:${ctx.sessionId}`;
+      if (!journal.get(sessionKey)) {
+        this.captureEnqueue(ctx, "session-start", {});
+        journal.set(sessionKey, { sessionKey: ctx.sessionKey, runId: ctx.runId, ...(ctx.workspaceDir ? { workspaceDir: ctx.workspaceDir } : {}) });
+      }
+      if (wire.trim()) {
+        text(wire);
+        this.captureEnqueue(ctx, "message", {
+          role: "user", content: wire, occurrence_id: event.currentUserMessageId || `${ctx.runId}:input`, message_index: event.messages.length,
+          ...(ctx.inputProvenance ? { input_provenance: JSON.parse(canonicalJson(ctx.inputProvenance)) } : {}),
+          completeness: completeness(wire),
+        });
+      }
+      journal.db.prepare("INSERT INTO turns(identity,payload) VALUES (?,?)").run(identity, canonicalJson(fence));
     });
-    if (this.config.native_sync) {
-      try { this.syncNative(ctx, this.authorize(ctx, { hook: true, tool: [TOOL_NAMES.save, TOOL_NAMES.correct, TOOL_NAMES.withdraw] }), peer); }
-      catch (error) { this.warn(error); }
-    }
-    await this.drain();
   }
   async agentEnd(event, ctx) {
-    if (ctx.trigger === "memory") return;
     try {
-      const invocation = this.authorize(ctx, { hook: true });
-      if (!ctx.runId || !Array.isArray(event.messages)) throw new Error("capture_boundary_unavailable");
+      if (!this.automatic(ctx)) return;
+      if (!ctx.runId || !Array.isArray(event?.messages)) throw new Error("capture_boundary_unavailable");
       const journal = this.journalForUse();
       const identity = canonicalJson([ctx.agentId, ctx.sessionId, ctx.runId]);
       const turn = journal.db.prepare("SELECT * FROM turns WHERE identity=?").get(identity);
@@ -233,245 +212,91 @@ export class MemoryService {
         text(content);
         return [{ role, content, message_index: fence.history_count + index + 1, ...(row.toolCallId ? { tool_call_id: row.toolCallId } : {}) }];
       });
-      // The host starts agent_end hooks without awaiting them, then releases the
-      // audience. Admit the suffix synchronously under that live authority using
-      // the binding verified at prompt admission; delivery renegotiates it.
-      const peer = journal.get(`binding:${invocation.accessId}`);
-      if (!peer) throw new MemoryRequestError("binding_unverified");
-      if (peer.protocol !== SOURCE_PROTOCOL || peer.supported !== true || !peer.contracts?.includes("openclaw_source.v1") || !peer.negotiated?.includes("openclaw_source.v1")) throw new MemoryRequestError("unsupported_capability");
-      if (peer.binding?.access_id !== invocation.accessId || digest(peer.binding) !== peer.binding_fingerprint) throw new MemoryRequestError("invalid_binding");
-      if (peer.ready !== true) throw new MemoryRequestError("source_unavailable");
-      if (!peer.contracts.includes(CAPTURE_PROTOCOL) || !peer.negotiated.includes(CAPTURE_PROTOCOL) || peer.capture_ready !== true || peer.capture_binding_fingerprint !== peer.binding_fingerprint) throw new MemoryRequestError("capture_binding_mismatch");
-      invocation.guard();
+      // The host starts agent_end hooks without awaiting them: admit synchronously.
       journal.transaction(() => {
-        invocation.guard();
         const contentHash = digest(projected);
         const old = journal.get(`terminal:${identity}`);
         if (old && old !== contentHash) throw new Error("immutable_turn_conflict");
         if (turn.completed) return;
-        for (const row of projected) this.captureEnqueue(ctx, "message", peer, {
-          ...row, occurrence_id: `${ctx.runId}:message:${row.message_index}`,
-          completeness: { truncated: false, original_length: [...row.content].length, original_sha256: sha256(row.content), coverage: "full" },
-        });
+        for (const row of projected) this.captureEnqueue(ctx, "message", { ...row, occurrence_id: `${ctx.runId}:message:${row.message_index}`, completeness: completeness(row.content) });
         journal.set(`terminal:${identity}`, contentHash);
         journal.db.prepare("UPDATE turns SET completed=1 WHERE identity=?").run(identity);
       });
-      // Native reads run at before_prompt_build, where the finalized tool
-      // surface supplies live policy authority. agent_end has no such token.
-      await this.drain();
-    } catch (error) {
-      this.warn(error);
-      if (this.config.fallback_on_error === false) throw new Error(safeError(error));
-    }
+      void this.drain();
+    } catch (error) { this.warn(error); }
   }
   async sessionEnd(event, ctx) {
     try {
-      if (this.closed || !this.config.enabled || !this.conversationAccess) return;
+      if (this.closed || !this.conversationAccess) return;
       if (!ctx?.agentId || !ctx.sessionId || !ctx.sessionKey || event?.sessionId !== ctx.sessionId || (event.sessionKey && event.sessionKey !== ctx.sessionKey)) throw new Error("session_identity_unavailable");
       const journal = this.journalForUse();
       const admitted = journal.get(`session:${ctx.agentId}:${ctx.sessionId}`);
       if (!admitted || admitted.sessionKey !== ctx.sessionKey) throw new Error("session_not_admitted");
-      // A content-free historical closure of previously admitted work. This does
-      // not create authority to read endedTranscript or capture additional text.
-      const original = { agentId: ctx.agentId, sessionId: ctx.sessionId, sessionKey: ctx.sessionKey, runId: admitted.runId,
-        ...(admitted.workspaceDir ? { workspaceDir: admitted.workspaceDir } : {}) };
+      // A content-free closure of previously admitted work; it reads no transcript.
+      const original = { agentId: ctx.agentId, sessionId: ctx.sessionId, sessionKey: ctx.sessionKey, runId: admitted.runId, ...(admitted.workspaceDir ? { workspaceDir: admitted.workspaceDir } : {}) };
       journal.operation(canonicalJson([ctx.agentId, ctx.sessionId, "session-end"]), { session_key: ctx.sessionKey }, () =>
-        this.captureEnqueue(original, "session-end", admitted.peer, {
+        this.captureEnqueue(original, "session-end", {
           lifecycle: { reason: ["new", "reset", "idle", "daily", "compaction", "deleted", "shutdown", "restart", "unknown"].includes(event.reason) ? event.reason : "unknown" },
         }));
-      await this.drain();
+      void this.drain();
     } catch (error) { this.warn(error); }
   }
-  syncNative(ctx, invocation, peer) {
-    const namespace = this.namespace(ctx);
-    const journal = this.journal;
-    const targets = [["user", "USER.md"], ["memory", "MEMORY.md"]];
-    try {
-      invocation.guard();
-      if (!ctx.workspaceDir) throw new Error("native_workspace_unavailable");
-      const root = realpathSync(ctx.workspaceDir);
-      const rootBefore = statSync(root, { bigint: true });
-      const names = readdirSync(root);
-      const documents = targets.map(([target, relative]) => {
-        invocation.guard();
-        const path = join(root, relative);
-        let before;
-        try { before = lstatSync(path, { bigint: true }); }
-        catch (error) {
-          if (error.code !== "ENOENT" || names.includes(relative) || readdirSync(root).includes(relative)) throw new Error("native_inventory_unavailable");
-          return { target, relative, content: "", exists: false };
-        }
-        if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(MAX_CONTENT_BYTES)) throw new Error("native_inventory_unsupported");
-        const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-        let bytes, after;
-        try { bytes = readFileSync(fd); after = fstatSync(fd, { bigint: true }); }
-        finally { closeSync(fd); }
-        const final = lstatSync(path, { bigint: true });
-        for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) if (before[field] !== after[field] || before[field] !== final[field]) throw new Error("native_snapshot_changed");
-        const raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        return { target, relative, content: redactForEgress(raw), exists: true };
-      });
-      const rootAfter = statSync(root, { bigint: true });
-      for (const field of ["dev", "ino", "mtimeNs", "ctimeNs"]) if (rootBefore[field] !== rootAfter[field]) throw new Error("native_snapshot_changed");
-      journal.transaction(() => {
-        invocation.guard();
-        for (const document of documents) {
-          const source = this.source(ctx, document.target);
-          const previous = journal.sources(namespace).find((row) => row.target === document.target && row.kind === "native");
-          const hash = sha256(document.content);
-          const active = document.exists && Boolean(document.content.trim());
-          if (previous && previous.content_hash === hash && Boolean(previous.active) === active) continue;
-          const entry_id = previous?.entry_id || uuid();
-          const revision = journal.next(`source:${namespace}:${document.target}`);
-          const commonProvenance = { ...provenance(ctx, "operator", `${ctx.runId}:native:${document.relative}`), write_origin: "openclaw.native", document_path: document.relative, document_revision: hash, document_sha256: hash, document_complete: true };
-          if (active) text(document.content);
-          const payload = { protocol: SOURCE_PROTOCOL, source, entry_id, event_id: uuid(), revision,
-            operation: active ? "upsert" : "withdraw", type: "semantic", occurred_at: new Date().toISOString(), provenance: commonProvenance,
-            ...(active ? { content: document.content } : {}) };
-          this.enqueue("source_mutate", payload, peer, ctx.agentId);
-          const entries = active ? [{ entry_id, content: document.content, type: "semantic", provenance: commonProvenance }] : [];
-          for (const command of sourceSnapshot(source, entries, journal.next(`source:${namespace}:${document.target}`))) this.enqueue("source_reconcile", command, peer, ctx.agentId);
-          journal.db.prepare(`INSERT INTO sources(namespace,target,entry_id,revision,active,content_hash,kind) VALUES (?,?,?,?,?,?,?)
-            ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,active=excluded.active,content_hash=excluded.content_hash`)
-            .run(namespace, document.target, entry_id, revision, active ? 1 : 0, hash, "native");
-        }
-        journal.set(`native_blocked:${namespace}`, []);
-      });
-    } catch (error) {
-      journal.set(`native_blocked:${namespace}`, targets.map(([target]) => target));
-      this.warn(error);
-      return { complete: false, error: safeError(error) };
-    }
-    return { complete: true };
-  }
-  async read(ctx, method, args, options = {}) {
-    const invocation = this.authorize(ctx, options);
-    await this.peer(invocation);
-    const result = await this.client.call(ctx.agentId, method, { ...args, memory_access_id: invocation.accessId }, invocation.guard, ctx.signal);
-    invocation.guard();
-    return result;
-  }
-  status(ctx, options = {}) {
-    this.authorize(ctx, options).guard();
-    const journal = this.journalForUse();
-    const namespace = this.namespace(ctx);
-    return { ...journal.status(), source_identities: journal.sources(namespace).map(({ entry_id, target, revision, active, canonical_id, kind }) => ({ entry_id, target, revision, active: active === 1, canonical_id, kind })) };
-  }
-  async mutate(ctx, action, args, toolCallId) {
-    const invocation = this.authorize(ctx);
-    const peer = await this.peer(invocation, { admitOffline: true, requireWrite: true });
-    const journal = this.journalForUse();
-    const namespace = this.namespace(ctx);
-    if (!toolCallId || typeof toolCallId !== "string") throw new Error("occurrence_identity_unavailable");
-    let entry = args.entry_id ? journal.sources(namespace).find((row) => row.entry_id === args.entry_id) : null;
-    if (action !== "save" && (!isUuid(args.entry_id) || !entry)) throw new Error("provider_source_not_found");
-    if (entry?.kind !== undefined && entry.kind !== "provider") throw new Error("native_file_owned");
-    const content = action === "withdraw" ? undefined : text(redactForEgress(args.content));
-    const occurrence = ctx.memoryFlush?.flushId
-      ? canonicalJson([ctx.agentId, "flush", ctx.memoryFlush.flushId, action, args.fact_key || args.entry_id || "default"])
-      : canonicalJson([ctx.agentId, ctx.sessionId, toolCallId]);
-    let entry_id;
-    const eventId = journal.operation(occurrence, { action, entry_id: args.entry_id || null, content: content ?? null }, () => {
-      invocation.guard();
-      ctx.assertInputCommitAllowed?.();
-      entry_id = entry?.entry_id || uuid();
-      const revision = journal.next(`source:${namespace}:provider`);
-      const payload = { protocol: SOURCE_PROTOCOL, source: this.source(ctx, "provider"), entry_id, event_id: uuid(), revision,
-        operation: action === "withdraw" ? "withdraw" : "upsert", type: "semantic", occurred_at: new Date().toISOString(),
-        provenance: { ...provenance(ctx, "assistant", ctx.memoryFlush?.flushId || toolCallId), tool_call_id: toolCallId },
-        ...(content !== undefined ? { content } : {}) };
-      this.enqueue("source_mutate", payload, peer, ctx.agentId);
-      journal.db.prepare(`INSERT INTO sources(namespace,target,entry_id,revision,active,content_hash,kind) VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(entry_id) DO UPDATE SET revision=excluded.revision,active=excluded.active,content_hash=excluded.content_hash`)
-        .run(namespace, "provider", entry_id, revision, action === "withdraw" ? 0 : 1, content ? sha256(content) : null, "provider");
-      return payload.event_id;
-    });
-    await this.drain();
-    invocation.guard();
-    const row = journal.row(eventId);
-    const payload = JSON.parse(row.payload);
-    return { event_id: eventId, entry_id: payload.entry_id, status: row.state, ...(row.receipt ? { receipt: JSON.parse(row.receipt) } : {}) };
+  /** One tool call: the host result, or `{ success: false, error, http_status? }`; never throws. */
+  async callTool(ctx, method, properties, required, args) {
+    args = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+    if (required.some((key) => args[key] === undefined || args[key] === null || args[key] === "")) return { success: false, error: "invalid_arguments" };
+    const payload = Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(properties, key)));
+    if (method === "remember" && typeof ctx?.sessionId === "string" && ctx.sessionId) payload.session_id = ctx.sessionId;
+    const response = await this.client.call(method, payload, { signal: ctx?.signal });
+    return response.ok ? response.result : failed(response);
   }
   tools(ctx) {
-    const make = (name, description, properties, required, execute) => ({
+    return TOOLS.map(([method, name, description, properties, required]) => ({
       name, label: name, description,
       parameters: { type: "object", additionalProperties: false, properties, required },
-      execute: async (toolCallId, args) => {
-        try { this.authorize(ctx); return toolResult(await execute(args, toolCallId)); }
-        catch (error) { throw new Error(safeError(error)); }
+      execute: async (_toolCallId, args) => {
+        if (this.closed) return toolResult({ success: false, error: "provider_disabled" });
+        return toolResult(await this.callTool(ctx, method, properties, required, args));
       },
-    });
-    const string = { type: "string" };
-    const id = { type: "string", format: "uuid" };
-    return [
-      make(TOOL_NAMES.search, "Search authorized current Backplane memory. Failures are errors; pending local results remain provisional.", { query: string }, ["query"], async (args) => {
-        const result = await this.read(ctx, "recall", { query: text(redactForEgress(args.query), 4096), token_budget: this.config.token_budget, limit: 20 });
-        const rows = eligibleRows(result, { journal: this.journal, namespace: this.namespace(ctx) });
-        return {
-          results: rows.filter((row) => row.provisional !== true && row.authority !== "provisional"),
-          provisional_results: rows.filter((row) => row.provisional === true || row.authority === "provisional"),
-          ...Object.fromEntries(["mode", "authority", "consistency", "stale"].filter((key) => result[key] !== undefined).map((key) => [key, result[key]])),
-        };
-      }),
-      make(TOOL_NAMES.get, "Read one exact canonical Backplane memory UUID. Summary, trace and pending IDs are not canonical IDs.", { id }, ["id"], async (args) => {
-        if (!isUuid(args.id)) throw new Error("invalid_canonical_id");
-        return this.read(ctx, "get", { id: args.id });
-      }),
-      make(TOOL_NAMES.save, "Durably save a provider-owned candidate fact. Native files remain authoritative and unchanged. fact_key distinguishes facts within a flush and must be stable across retries.", { content: string, fact_key: string }, ["content"], (args, callId) => this.mutate(ctx, "save", args, callId)),
-      make(TOOL_NAMES.correct, "Replace an exact provider-owned entry_id returned by save/status. Native-backed entries require editing their native file.", { entry_id: id, content: string }, ["entry_id", "content"], (args, callId) => this.mutate(ctx, "correct", args, callId)),
-      make(TOOL_NAMES.withdraw, "Withdraw only one exact provider source contribution. Independently supported canonical facts survive. Native text is unchanged.", { entry_id: id }, ["entry_id"], (args, callId) => this.mutate(ctx, "withdraw", args, callId)),
-      make(TOOL_NAMES.forget, "Explicit global forget of one exact canonical UUID, across all source support. Does not edit native files; later reconciliation cannot undo this suppression.", { id, confirm_global: { type: "boolean", const: true } }, ["id", "confirm_global"], async (args) => {
-        if (!isUuid(args.id) || args.confirm_global !== true) throw new Error("explicit_global_forget_required");
-        return this.read(ctx, "forget", { id: args.id });
-      }),
-      make(TOOL_NAMES.status, "Report delivery states and exact source identities without memory bodies. Local acceptance is not canonical commit.", {}, [], async () => { await this.drain(); return this.status(ctx); }),
-    ];
+    }));
   }
-  async open({ agentId, context, purpose }) {
-    const assertSessionCaller = () => {
-      context.assertCurrent();
-      if (context.authority?.kind !== "session") throw new Error("unsupported_caller_authority");
-    };
-    const ctx = { agentId, sessionId: context?.authority?.sessionId, sessionKey: context?.authority?.sessionKey,
-      memoryAudience: context?.authority?.audience, sandboxed: context?.authority?.sandboxed,
-      assertMemoryAudienceCurrent: assertSessionCaller, assertInvocationCurrent: assertSessionCaller, signal: context?.signal };
-    const health = async () => {
-      context.assertCurrent();
-      if (this.closed || this.config.enabled === false) return { status: "unavailable", message: "provider_disabled" };
-      // Host status authority has no content grant. Health intentionally does no I/O.
-      const configured = this.config.bindings.some((row) => row.agent_id === agentId);
-      return { status: configured ? "degraded" : "unavailable", message: configured ? "configured; durable/canonical readiness requires an authorized session probe" : "audience_binding_unavailable", details: { purpose: purpose || "default" } };
-    };
+  async open({ context, purpose } = {}) {
     let closed = false;
     const generation = this.leaseGeneration;
-    const check = () => { if (closed || this.closed || generation !== this.leaseGeneration) throw new Error("provider_lease_closed"); context.assertCurrent(); };
+    const check = () => { if (closed || this.closed || generation !== this.leaseGeneration) throw new Error("provider_lease_closed"); context?.assertCurrent?.(); };
+    const call = async (method, args) => {
+      const response = await this.client.call(method, args, { signal: context?.signal });
+      check();
+      return response;
+    };
     return { provider: {
       capabilities: { sources: ["memory"], pagination: false, candidates: [], projectFilter: false },
-      health: async () => { check(); return health(); },
+      // Health does no I/O; each request reports its own failure.
+      health: async () => { check(); return { status: "ok", details: { purpose: purpose || "default" } }; },
       search: async (request) => {
         check();
         if (request.cursor || request.activeProjectKeys?.length || request.sources?.some((source) => source !== "memory") || (request.minScore !== undefined && request.minScore !== 0)) throw new Error("unsupported_search_filter");
-        const result = await this.read(ctx, "recall", { query: text(redactForEgress(request.query), 4096), limit: Math.min(100, Math.max(1, request.maxResults || 20)), token_budget: this.config.token_budget }, { provider: true });
-        check();
-        const eligible = eligibleRows(result, { journal: this.journal, namespace: this.namespace(ctx) });
-        const records = eligible.filter((row) => row.kind === "memory" || row.canonical_id || row.provisional === true || row.authority === "provisional");
-        return { hits: records.map((row) => ({
-          reference: { providerId: "backplane-memory", id: (row.provisional === true || row.authority === "provisional" ? "pending:" : "") + (row.canonical_id || row.id), ...(row.revision !== undefined ? { revision: String(row.revision) } : {}) },
-          excerpt: row.content, source: row.provisional || row.authority === "provisional" ? "pending local memory" : row.trust,
-          citations: row.source_refs.map((ref) => ({ label: `${ref.source?.integration}:${ref.entry_id}@${ref.source_revision}` })),
+        const query = redactForEgress(String(request.query ?? "")).trim();
+        if (!query) throw new Error("invalid_arguments");
+        const response = await call("search", { query: query.slice(0, MAX_QUERY_CHARS), limit: Math.min(50, Math.max(1, request.maxResults || 10)) });
+        if (!response.ok) throw new Error(safeError(response.error));
+        const rows = (Array.isArray(response.result.results) ? response.result.results : []).filter((row) => describe(row) && typeof row.id === "string" && row.id);
+        return { hits: rows.map((row) => ({
+          reference: { providerId: "backplane-memory", id: row.id },
+          excerpt: row.content.trim(), source: describe(row).join("; "), citations: [],
           automaticRecall: { eligible: true },
-        })), coverage: eligible.length === records.length ? "complete" : "partial" };
+        })), coverage: "complete" };
       },
       get: async ({ reference, from, lines }) => {
         check();
-        if (reference?.providerId !== "backplane-memory" || !isUuid(reference.id) || from !== undefined || lines !== undefined || reference.fragment) throw new Error("invalid_reference");
-        try {
-          const result = await this.read(ctx, "get", { id: reference.id }, { provider: true });
-          check();
-          if (!result.record || typeof result.record.content !== "string") throw new Error("invalid_response");
-          if (reference.revision !== undefined && String(result.record.revision) !== reference.revision) throw new Error("reference_revision_changed");
-          return { status: "ok", reference, text: result.record.content, truncated: false };
-        } catch (error) { if (error instanceof MemoryRequestError && error.code === "not_found") return { status: "not_found" }; throw error; }
+        if (reference?.providerId !== "backplane-memory" || typeof reference.id !== "string" || !reference.id || from !== undefined || lines !== undefined || reference.fragment) throw new Error("invalid_reference");
+        const response = await call("get", { id: reference.id });
+        if (!response.ok) {
+          if (response.status === 404) return { status: "not_found" };
+          throw new Error(safeError(response.error));
+        }
+        if (typeof response.result.record?.content !== "string") throw new Error("invalid_response");
+        return { status: "ok", reference, text: response.result.record.content, truncated: false };
       },
       close: async () => { closed = true; },
     } };
@@ -481,62 +306,65 @@ export class MemoryService {
     this.leaseGeneration += 1;
   }
   flushPlan() {
-    if (this.closed || !this.config.enabled || !this.config.bindings.length) return null;
+    if (this.closed || this.config.enabled === false) return null;
     return {
-      persistenceToolNames: [TOOL_NAMES.save, TOOL_NAMES.correct], lookupToolNames: [TOOL_NAMES.search, TOOL_NAMES.get, TOOL_NAMES.status],
-      prompt: `Before optional compaction, preserve only durable, source-supported new conclusions through ${TOOL_NAMES.save} or correct an exact provider entry with ${TOOL_NAMES.correct}. Use stable fact_key values for separate facts. Search/get may inspect existing facts but are not persistence. Do not copy raw conversations or assistant speculation as established fact. Do not edit native USER.md/MEMORY.md through this provider. If there is nothing new to persist, finish with NO_REPLY.`,
-      systemPrompt: "This is the Backplane provider-owned memory flush. Tool policy and caller audience still apply. A local_pending or host_accepted receipt is durable acceptance, not canonical completion. Finish with NO_REPLY after successful persistence or a legitimate no-op. Failure does not promise to block compaction.",
+      persistenceToolNames: [TOOL_NAMES.remember],
+      lookupToolNames: [TOOL_NAMES.search, TOOL_NAMES.get, TOOL_NAMES.recent],
+      prompt: `Before compaction, if this conversation produced something worth keeping across sessions — where something lives, how an operation is done, or what you did — save it once with ${TOOL_NAMES.remember} (kind fact, procedure, worklog or note). Check ${TOOL_NAMES.search} first to avoid duplicates; search/get/recent are not persistence. Do not save raw conversation or speculation. If there is nothing new to keep, finish with NO_REPLY.`,
+      systemPrompt: "This is the Backplane memory flush before compaction. Most conversations need nothing remembered. Finish with NO_REPLY after saving or when there is nothing to save. Failure does not block compaction.",
     };
   }
   async drain() {
-    if (this.closed || !this.config.enabled) return;
+    if (this.closed || this.config.enabled === false) return;
+    // Work queued while a pass is running gets one more pass instead of waiting for the timer.
+    this.drainRequested = true;
     if (this.running) return this.running;
-    this.running = this.deliverOnce().finally(() => { this.running = null; });
+    this.running = (async () => {
+      while (this.drainRequested && !this.closed) {
+        this.drainRequested = false;
+        await this.deliverOnce();
+      }
+    })().catch((error) => this.warn(error)).finally(() => { this.running = null; });
     return this.running;
   }
   async deliverOnce() {
     const journal = this.journalForUse();
     for (const row of journal.due()) {
       if (this.closed) return;
-      try {
-        const admitted = JSON.parse(row.binding);
-        const peer = await this.client.capabilities(admitted.agent_id, admitted.binding.access_id, undefined, { requireWrite: true });
-        if (peer.binding_fingerprint !== admitted.fingerprint) throw new MemoryRequestError("binding_changed");
-        const payload = JSON.parse(row.payload);
-        const capture = row.path.startsWith("/capture/");
-        if (capture && (peer.capture_ready !== true || peer.capture_binding_fingerprint !== admitted.fingerprint || !peer.negotiated.includes(CAPTURE_PROTOCOL))) throw new MemoryRequestError("capture_binding_mismatch");
-        let receipt;
-        if (row.state === "host_accepted") {
-          if (capture) {
-            const response = await this.client.request("/capture/v1/status", { event_ids: [row.event_id], protocol: CAPTURE_PROTOCOL });
-            if (response.result?.protocol !== CAPTURE_PROTOCOL) throw new MemoryRequestError("invalid_response");
-            const item = response.result.items?.find((item) => item.event_id === row.event_id);
-            receipt = { ...item, status: { canonical_committed: "committed", host_accepted: "pending", rejected: "rejected" }[item?.status] };
-          } else receipt = await this.client.call(admitted.agent_id, "source_status", { source: payload.source, event_id: row.event_id, memory_access_id: admitted.binding.access_id });
-        } else if (capture) {
-          const response = await this.client.request(row.path, payload);
-          if (!["accepted", "duplicate"].includes(response.status) || response.event_id !== row.event_id) throw new MemoryRequestError("invalid_response");
-          receipt = { event_id: row.event_id, status: "pending", authority: "provisional" };
-        } else receipt = await this.client.call(admitted.agent_id, row.path.split("/").at(-1), payload);
-        if (!capture && receipt.protocol !== SOURCE_PROTOCOL) throw new MemoryRequestError("invalid_response");
-        journal.accept(row.event_id, receipt);
-      } catch (error) {
-        if (this.closed) return;
-        const terminal = error instanceof MemoryRequestError && ([400, 401, 403, 404, 409, 422].includes(error.status) || ["binding_changed", "capture_binding_mismatch", "authority_changed", "partition_mismatch"].includes(error.code));
-        const deferred = error instanceof MemoryRequestError && ["unsupported_capability", "source_unavailable"].includes(error.code);
-        journal.fail(row.event_id, safeError(error).split(" ")[0], { terminal, deferred });
-        this.warn(error);
-        // A lost acceptance ACK fences later unsent stages; never reorder a snapshot.
-        break;
+      const hook = row.path.split("/").at(-1);
+      let response;
+      if (row.state === "host_accepted") response = await this.client.request("/capture/v1/status", { event_ids: [row.event_id], protocol: CAPTURE_PROTOCOL }, { label: "capture status" });
+      else response = await this.client.request(row.path, JSON.parse(row.payload), { label: `capture ${hook}` });
+      if (this.closed) return;
+      if (!response.ok) {
+        const terminal = TERMINAL_STATUS.has(response.status);
+        journal.fail(row.event_id, safeError(response.error), { terminal });
+        // A rejected row fails alone; anything retryable holds later rows in order.
+        if (terminal) continue;
+        return;
+      }
+      if (row.state === "host_accepted") {
+        const item = Array.isArray(response.result?.items) ? response.result.items.find((entry) => entry?.event_id === row.event_id) : undefined;
+        if (item?.status === "canonical_committed") journal.settle(row.event_id, "canonical_committed", { status: item.status });
+        else if (item?.status === "rejected") journal.settle(row.event_id, "rejected", { status: item.status, error_code: safeError(item.error_code) });
+        // Still spooled on the host (e.g. the gateway is offline): ask again later without spending retries.
+        else if (item?.status === "host_accepted") journal.settle(row.event_id, "host_accepted", { status: item.status }, { delay: STATUS_POLL_MS });
+        else journal.fail(row.event_id, "capture_status_unknown");
+      } else if (["accepted", "duplicate"].includes(response.status) && response.event_id === row.event_id) {
+        journal.settle(row.event_id, "host_accepted", { status: response.status });
+      } else {
+        journal.fail(row.event_id, "invalid_response");
+        this.warn("invalid_capture_receipt");
+        return;
       }
     }
   }
   start() {
-    if (this.closed || !this.config.enabled) return;
+    if (this.closed || this.config.enabled === false) return;
     this.journalForUse();
-    this.timer ||= setInterval(() => { void this.drain().catch((error) => this.warn(error)); }, 1000);
+    this.timer ||= setInterval(() => { void this.drain(); }, 1000);
     this.timer.unref();
-    void this.drain().catch((error) => this.warn(error));
+    void this.drain();
   }
   async stop() {
     if (this.closed) return;

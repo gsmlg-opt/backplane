@@ -1,18 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export const SOURCE_PROTOCOL = "memory_sources.v1";
-export const SOURCE_CAPABILITY = "openclaw_source.v1";
 export const CAPTURE_PROTOCOL = "openclaw_capture.v1";
 export const MAX_CONTENT_BYTES = 262144;
+// OpenClaw tool names for the five Backplane memory::* tools (`::` is not a valid tool name character).
 export const TOOL_NAMES = Object.freeze({
-  search: "backplane_memory_search", get: "backplane_memory_get",
-  save: "backplane_memory_save", correct: "backplane_memory_correct",
-  withdraw: "backplane_memory_withdraw", forget: "backplane_memory_forget",
-  status: "backplane_memory_status",
+  search: "backplane_memory_search", get: "backplane_memory_get", recent: "backplane_memory_recent",
+  remember: "backplane_memory_remember", forget: "backplane_memory_forget",
 });
 export const uuid = () => randomUUID();
 export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-export const isUuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 // Elixir sorts UTF-8 binary keys. JS's default UTF-16 sort differs for astral keys.
 export function canonicalJson(value) {
@@ -60,16 +56,4 @@ export function extractText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n");
-}
-
-export function sourceSnapshot(source, entries, revision) {
-  const reconciliation_id = uuid();
-  const common = { protocol: SOURCE_PROTOCOL, source, reconciliation_id };
-  const pages = [];
-  for (let i = 0; i < entries.length; i += 100) pages.push(entries.slice(i, i + 100));
-  return [
-    { ...common, event_id: uuid(), phase: "begin", revision, page_count: pages.length, entry_count: entries.length, snapshot_hash: digest(entries) },
-    ...pages.map((page, page_index) => ({ ...common, event_id: uuid(), phase: "page", page_index, entries: page, page_hash: digest(page) })),
-    { ...common, event_id: uuid(), phase: "commit", complete: true },
-  ];
 }

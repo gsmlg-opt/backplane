@@ -66,9 +66,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
             "client.mjs",
             "context.mjs",
             "service.mjs",
-            "rollout.mjs",
             "plugin.yaml"
           ],
+          shared_files: [{"shared/INSTRUCTIONS.md", "INSTRUCTIONS.md"}],
           target_parts: [".openclaw", "extensions", "backplane-memory"]
         }
       }

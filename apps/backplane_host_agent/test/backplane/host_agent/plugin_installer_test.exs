@@ -72,10 +72,34 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     assert File.exists?(Path.join(target, "openclaw.plugin.json"))
     assert File.exists?(Path.join(target, "plugin.mjs"))
 
-    for helper <- ~w(contract journal client context service rollout) do
+    for helper <- ~w(contract journal client context service) do
       assert File.read!(Path.join(target, helper <> ".mjs")) ==
                "// packaged #{helper} helper\n"
     end
+
+    assert File.read!(Path.join(target, "INSTRUCTIONS.md")) ==
+             File.read!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+  end
+
+  @tag :tmp_dir
+  test "OpenClaw install bundles the shared instructions and needs them in the source", %{
+    tmp_dir: tmp_dir
+  } do
+    source_root = source_root!(tmp_dir)
+    home_dir = Path.join(tmp_dir, "home")
+    target = Path.join([home_dir, ".openclaw", "extensions", "backplane-memory"])
+    opts = %{source_root: source_root, home_dir: home_dir}
+
+    assert {:ok, %{"valid" => true}} = PluginInstaller.install("memory", "openclaw", opts)
+    File.rm!(Path.join(target, "INSTRUCTIONS.md"))
+
+    assert {:ok, %{"installed" => true, "valid" => false}} =
+             PluginInstaller.status("memory", "openclaw", opts)
+
+    File.rm!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+
+    assert {:error, {:source_missing_file, "shared/INSTRUCTIONS.md"}} =
+             PluginInstaller.install("memory", "openclaw", opts)
   end
 
   @tag :tmp_dir
@@ -203,8 +227,14 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       assert File.read!(Path.join(target, "README.md")) =~ "Backplane"
     end
 
-    assert File.read!(Path.join([home_dir, ".hermes/plugins/backplane-memory/INSTRUCTIONS.md"])) ==
-             File.read!(Path.join(@real_source, "shared/INSTRUCTIONS.md"))
+    for installed <- ~w(.hermes/plugins .openclaw/extensions) do
+      assert File.read!(Path.join([home_dir, installed, "backplane-memory/INSTRUCTIONS.md"])) ==
+               File.read!(Path.join(@real_source, "shared/INSTRUCTIONS.md"))
+    end
+
+    refute File.exists?(
+             Path.join([home_dir, ".openclaw/extensions/backplane-memory/rollout.mjs"])
+           )
   end
 
   describe "claude_code marketplace mode" do
@@ -757,7 +787,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     File.write!(Path.join(openclaw, "openclaw.plugin.json"), ~s({"id":"backplane-memory"}))
     File.write!(Path.join(openclaw, "plugin.mjs"), "export default {};\n")
 
-    for helper <- ~w(contract journal client context service rollout) do
+    for helper <- ~w(contract journal client context service) do
       File.write!(Path.join(openclaw, helper <> ".mjs"), "// packaged #{helper} helper\n")
     end
 

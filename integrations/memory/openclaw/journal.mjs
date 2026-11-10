@@ -3,7 +3,9 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { canonicalJson, digest, uuid } from "./contract.mjs";
 
-/** Immutable delivery and source/cursor state only. Never used as a recall store. */
+const RETRYABLE_ATTEMPTS = 12;
+
+/** Ordered, immutable capture delivery state. Never used as a memory store. */
 export class DeliveryJournal {
   constructor(path, identity, { maxEvents = 4096, maxBytes = 32 * 1024 * 1024 } = {}) {
     this.maxEvents = maxEvents;
@@ -11,6 +13,7 @@ export class DeliveryJournal {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
+    // `binding` is kept for journals written by the previous version; new rows store "{}".
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       PRAGMA journal_size_limit=16777216;
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -20,22 +23,29 @@ export class DeliveryJournal {
         state TEXT NOT NULL DEFAULT 'local_pending',attempts INTEGER NOT NULL DEFAULT 0,
         next_at INTEGER NOT NULL DEFAULT 0,error_code TEXT,receipt TEXT);
       CREATE TABLE IF NOT EXISTS operations(identity TEXT PRIMARY KEY,digest TEXT NOT NULL,event_id TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS sources(namespace TEXT NOT NULL,target TEXT NOT NULL,entry_id TEXT PRIMARY KEY,
-        revision INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 0,content_hash TEXT,
-        canonical_id TEXT,kind TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS turns(identity TEXT PRIMARY KEY,payload TEXT NOT NULL,completed INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS delivery_due ON delivery(state,next_at,sequence);`);
     const pageSize = this.db.prepare("PRAGMA page_size").get().page_size;
     this.db.exec(`PRAGMA max_page_count=${Math.max(256, Math.floor((maxBytes + 16 * 1024 * 1024) / pageSize))}`);
     try {
       this.transaction(() => {
+        // Compare only what this version keys a journal by, so a journal written by
+        // the previous version (which stored more identity fields) still opens.
         const saved = this.get("identity");
-        if (saved && canonicalJson(saved) !== canonicalJson(identity)) throw new Error("journal_identity_changed");
+        if (saved && Object.keys(identity).some((key) => canonicalJson(saved[key] ?? null) !== canonicalJson(identity[key] ?? null))) throw new Error("journal_identity_changed");
         this.set("identity", identity);
         if (!this.get("installation_id")) this.set("installation_id", uuid());
+        this.retireOldWork();
       });
       this.installationId = this.get("installation_id");
     } catch (error) { this.db.close(); throw error; }
+  }
+  retireOldWork() {
+    // retired: the previous version mirrored native files through host source_* calls that no longer exist.
+    this.db.exec(`DROP TABLE IF EXISTS sources;
+      DELETE FROM delivery WHERE path NOT LIKE '/capture/%' AND state NOT IN ('canonical_committed','rejected','dead_letter');
+      UPDATE delivery SET state='local_pending' WHERE state='deferred';
+      DELETE FROM meta WHERE key LIKE 'binding:%' OR key LIKE 'native_blocked:%' OR key LIKE 'sequence:source:%';`);
   }
   transaction(fn) {
     if (this.inTransaction) return fn();
@@ -56,19 +66,19 @@ export class DeliveryJournal {
     this.set(`sequence:${key}`, value);
     return value;
   }
-  enqueue(eventId, path, payload, binding) {
+  enqueue(eventId, path, payload) {
     return this.transaction(() => {
       const encoded = canonicalJson(payload);
       if (Buffer.byteLength(encoded) > 480000) throw new Error("payload_too_large");
-      const hash = digest({ path, payload, binding });
+      const hash = digest({ path, payload });
       const existing = this.db.prepare("SELECT digest FROM delivery WHERE event_id=?").get(eventId);
       if (existing) {
         if (existing.digest !== hash) throw new Error("immutable_event_conflict");
         return eventId;
       }
-      const used = this.db.prepare("SELECT count(*) AS count,coalesce(sum(length(CAST(payload AS BLOB))),0) AS bytes FROM delivery WHERE state!='canonical_committed'").get();
+      const used = this.db.prepare("SELECT count(*) AS count,coalesce(sum(length(CAST(payload AS BLOB))),0) AS bytes FROM delivery WHERE state IN ('local_pending','host_accepted')").get();
       if (used.count >= this.maxEvents || used.bytes + Buffer.byteLength(encoded) > this.maxBytes) throw new Error("delivery_journal_full");
-      this.db.prepare("INSERT INTO delivery(event_id,path,payload,digest,binding) VALUES (?,?,?,?,?)").run(eventId, path, encoded, hash, canonicalJson(binding));
+      this.db.prepare("INSERT INTO delivery(event_id,path,payload,digest,binding) VALUES (?,?,?,?,'{}')").run(eventId, path, encoded, hash);
       return eventId;
     });
   }
@@ -85,38 +95,26 @@ export class DeliveryJournal {
       return eventId;
     });
   }
+  /** Due rows in order; a pending row waiting for its retry holds every later row. */
   due(now = Date.now(), limit = 32) {
-    return this.db.prepare(`SELECT * FROM delivery WHERE state IN ('local_pending','host_accepted','deferred') AND next_at<=?
-      AND sequence<coalesce((SELECT min(sequence) FROM delivery WHERE state IN ('local_pending','deferred') AND next_at>?),9223372036854775807)
+    return this.db.prepare(`SELECT * FROM delivery WHERE state IN ('local_pending','host_accepted') AND next_at<=?
+      AND sequence<coalesce((SELECT min(sequence) FROM delivery WHERE state='local_pending' AND next_at>?),9223372036854775807)
       ORDER BY sequence LIMIT ?`).all(now, now, limit);
   }
   row(eventId) { return this.db.prepare("SELECT * FROM delivery WHERE event_id=?").get(eventId); }
-  accept(eventId, receipt) {
-    const state = { pending: "host_accepted", committed: "canonical_committed", rejected: "rejected" }[receipt.status];
-    if (!state || receipt.event_id !== eventId) throw new Error("invalid_delivery_receipt");
-    const safe = Object.fromEntries(["protocol", "event_id", "status", "canonical_id", "command_id", "outcome", "revision", "source_revision", "authority", "consistency"].filter((key) => receipt[key] !== undefined).map((key) => [key, receipt[key]]));
-    this.transaction(() => {
-      this.db.prepare("UPDATE delivery SET state=?,receipt=?,next_at=?,error_code=? WHERE event_id=?")
-        .run(state, canonicalJson(safe), Date.now() + 500, state === "rejected" ? "request_rejected" : null, eventId);
-      if (receipt.canonical_id) {
-        const payload = JSON.parse(this.row(eventId).payload);
-        if (payload.entry_id) this.db.prepare("UPDATE sources SET canonical_id=? WHERE entry_id=?").run(receipt.canonical_id, payload.entry_id);
-        for (const entry of payload.entries || []) this.db.prepare("UPDATE sources SET canonical_id=coalesce(canonical_id,?) WHERE entry_id=?").run(receipt.canonical_id, entry.entry_id);
-      }
-    });
+  /** Record a host receipt; `delay` is when a host_accepted row next asks whether it committed. */
+  settle(eventId, state, receipt = {}, { delay = 500 } = {}) {
+    if (!["host_accepted", "canonical_committed", "rejected"].includes(state)) throw new Error("invalid_delivery_receipt");
+    this.db.prepare("UPDATE delivery SET state=?,receipt=?,next_at=?,error_code=? WHERE event_id=?")
+      .run(state, canonicalJson(receipt), Date.now() + delay, state === "rejected" ? (receipt.error_code || "request_rejected") : null, eventId);
   }
-  fail(eventId, code, { terminal = false, deferred = false } = {}) {
+  fail(eventId, code, { terminal = false } = {}) {
     const row = this.row(eventId);
-    const attempts = row.attempts + (deferred ? 0 : 1);
-    const state = terminal ? "rejected" : attempts >= 12 ? "dead_letter" : deferred ? "deferred" : row.state;
+    const attempts = row.attempts + 1;
+    const exhausted = !terminal && attempts >= RETRYABLE_ATTEMPTS;
+    const state = terminal ? "rejected" : exhausted ? "dead_letter" : row.state;
     this.db.prepare("UPDATE delivery SET state=?,attempts=?,error_code=?,next_at=? WHERE event_id=?")
-      .run(state, attempts, attempts >= 12 ? "retry_exhausted" : code, Date.now() + Math.min(300000, 1000 * 2 ** Math.min(attempts, 8)), eventId);
-  }
-  sources(namespace) { return this.db.prepare("SELECT * FROM sources WHERE namespace=?").all(namespace); }
-  status() {
-    const counts = Object.fromEntries(this.db.prepare("SELECT state,count(*) AS count FROM delivery GROUP BY state").all().map((row) => [row.state, row.count]));
-    const errors = this.db.prepare("SELECT DISTINCT error_code FROM delivery WHERE error_code IS NOT NULL").all().map((row) => row.error_code);
-    return { ...Object.fromEntries(["local_pending", "host_accepted", "canonical_committed", "deferred", "rejected", "dead_letter"].map((state) => [state, counts[state] || 0])), error_codes: errors };
+      .run(state, attempts, exhausted ? "retry_exhausted" : code, Date.now() + Math.min(300000, 1000 * 2 ** Math.min(attempts, 8)), eventId);
   }
   close() { if (this.db) { this.db.close(); this.db = null; } }
 }

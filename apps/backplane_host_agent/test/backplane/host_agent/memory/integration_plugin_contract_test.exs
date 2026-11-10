@@ -201,7 +201,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     end
   end
 
-  test "OpenClaw packaged plugin declares policy-bound hooks, tools, and provider flush" do
+  test "OpenClaw packaged plugin registers the global memory tools, hooks and instructions" do
     node = System.find_executable("node") || flunk("node is required")
     source = Path.join([@integrations_root, "openclaw", "plugin.mjs"])
 
@@ -210,12 +210,16 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     const { default: plugin } = await import(pathToFileURL(process.argv[1]).href);
     const hooks = {}, registrations = {}, warnings = [];
     plugin.register({
-      pluginConfig: { enabled: true, bindings: [{ agent_id: "main", memory_access_id: "11111111-1111-4111-8111-111111111111" }] },
+      pluginConfig: { enabled: true },
       config: { plugins: { entries: { "backplane-memory": { hooks: { allowConversationAccess: true } } } } },
       logger: { warn: (message) => warnings.push(message) },
       on: (name, _handler, options) => { hooks[name] = options || {}; },
       registerTool: (factory, options) => { registrations.tools = { contextVersion: factory.contextVersion, names: options.names }; },
-      registerMemoryCapability: (capability) => { registrations.flush = capability.providerFlushPlanResolver(); registrations.runtime = typeof capability.providerRuntime.open; },
+      registerMemoryCapability: (capability) => {
+        registrations.flush = capability.providerFlushPlanResolver();
+        registrations.runtime = typeof capability.providerRuntime.open;
+        registrations.prompt = capability.promptBuilder();
+      },
       registerService: (service) => { registrations.service = service.id; },
     });
     console.log(JSON.stringify({ hooks, registrations, warnings }));
@@ -230,7 +234,6 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
              "session_end"
            ]
 
-    assert result["hooks"]["before_prompt_build"] == %{"requiresToolAuthority" => true}
     assert result["registrations"]["tools"]["contextVersion"] == 2
 
     manifest =
@@ -239,48 +242,79 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
       |> File.read!()
       |> Jason.decode!()
 
-    assert Enum.sort(result["registrations"]["tools"]["names"]) ==
-             Enum.sort(manifest["contracts"]["tools"])
+    tool_names =
+      Enum.map(Backplane.MemoryToolContract.tools(), fn "memory::" <> short ->
+        "backplane_memory_" <> short
+      end)
+
+    assert Enum.sort(result["registrations"]["tools"]["names"]) == Enum.sort(tool_names)
+    assert Enum.sort(manifest["contracts"]["tools"]) == Enum.sort(tool_names)
+    refute Map.has_key?(manifest["configSchema"]["properties"], "bindings")
+
+    assert hd(result["registrations"]["prompt"]) ==
+             File.read!(Path.join(@integrations_root, "shared/INSTRUCTIONS.md"))
+
+    assert String.trim_trailing(hd(result["registrations"]["prompt"])) ==
+             Backplane.MemoryToolContract.instructions()
 
     assert result["registrations"]["runtime"] == "function"
     assert result["registrations"]["service"] == "backplane-memory-delivery"
 
-    assert result["registrations"]["flush"]["persistenceToolNames"] ==
-             ["backplane_memory_save", "backplane_memory_correct"]
+    assert result["registrations"]["flush"]["persistenceToolNames"] == [
+             "backplane_memory_remember"
+           ]
 
     assert result["registrations"]["flush"]["lookupToolNames"] ==
-             ["backplane_memory_search", "backplane_memory_get", "backplane_memory_status"]
+             ["backplane_memory_search", "backplane_memory_get", "backplane_memory_recent"]
 
     assert result["warnings"] == []
   end
 
-  test "OpenClaw missing permission and invalid context fail closed without secret diagnostics" do
+  @tag :tmp_dir
+  test "OpenClaw hooks degrade without throwing or leaking content and capture stays contract-valid",
+       %{tmp_dir: tmp_dir} do
     node = System.find_executable("node") || flunk("node is required")
     source = Path.join([@integrations_root, "openclaw", "plugin.mjs"])
 
     script = ~S'''
     import { pathToFileURL } from "node:url";
     const { default: plugin } = await import(pathToFileURL(process.argv[1]).href);
-    const warnings = [], missing = [], hooks = {};
-    let calls = 0, caught;
-    globalThis.fetch = async () => { calls++; throw new Error("private-secret"); };
+    const warnings = [], missing = [], hooks = {}, captures = [], paths = [];
+    let mode = "throw";
+    globalThis.fetch = async (url, init) => {
+      const path = new URL(url).pathname, body = JSON.parse(init.body);
+      paths.push(path);
+      if (mode === "throw" && path.startsWith("/memory/")) throw new Error("private-secret");
+      if (path.startsWith("/memory/")) return { ok: false, status: 503, json: async () => ({ ok: false, error: "gateway_unavailable" }) };
+      if (path.startsWith("/capture/v1/hooks/")) {
+        captures.push({ hook: path.split("/").at(-1), body });
+        return { ok: true, status: 202, json: async () => ({ ok: true, status: "accepted", event_id: body.event_id }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, result: { protocol: "openclaw_capture.v1", items: [] } }) };
+    };
     const base = {
       logger: { warn: (message) => warnings.push(message) },
       registerTool() {}, registerMemoryCapability() {}, registerService() {},
     };
     plugin.register({ ...base, on: (name) => missing.push(name) });
-    plugin.register({ ...base, pluginConfig: { fallback_on_error: false },
+    let dispose;
+    plugin.register({ ...base, pluginConfig: { journal_path: process.argv[2] + "/delivery.sqlite" },
       config: { plugins: { entries: { "backplane-memory": { hooks: { allowConversationAccess: true } } } } },
-      on: (name, handler) => { hooks[name] = handler; },
+      on: (name, handler) => { hooks[name] = handler; }, lifecycle: { onDispose: (fn) => { dispose = fn; } },
     });
-    try { await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, {}); }
-    catch (error) { caught = error.message; }
-    let endCaught;
-    try { await hooks.agent_end({ success: true, messages: [{ role: "user", content: "private-secret" }] }, {}); }
-    catch (error) { endCaught = error.message; }
-    const disabled = [];
-    plugin.register({ pluginConfig: { enabled: false }, on: () => disabled.push("hook"), registerTool: () => disabled.push("tool"), registerMemoryCapability: () => disabled.push("provider"), registerService: () => disabled.push("service") });
-    console.log(JSON.stringify({ missing, disabled, warnings, calls, caught, endCaught }));
+    const results = {};
+    results.invalid = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, {}) ?? null;
+    const ctx = { agentId: "main", sessionId: "session-one", sessionKey: "agent:main:main", runId: "run-one" };
+    results.thrown = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, ctx) ?? null;
+    mode = "unavailable";
+    const next = { ...ctx, runId: "run-two" };
+    const history = [{ role: "user", content: "private-secret" }];
+    results.unavailable = await hooks.before_prompt_build({ prompt: "what changed?", messages: history }, next) ?? null;
+    await hooks.agent_end({ messages: [...history, { role: "user", content: "what changed?" }, { role: "assistant", content: "an answer" }] }, next);
+    await hooks.session_end({ sessionId: "session-one", reason: "reset" }, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await dispose();
+    console.log(JSON.stringify({ missing, warnings, results, captures, paths }));
     '''
 
     {output, 0} =
@@ -289,16 +323,28 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
         "--input-type=module",
         "-e",
         script,
-        source
+        source,
+        tmp_dir
       ])
 
     result = Jason.decode!(output)
     assert result["missing"] == []
-    assert result["disabled"] == []
-    assert result["calls"] == 0
-    assert is_binary(result["caught"])
-    assert is_binary(result["endCaught"])
+    assert result["results"] == %{"invalid" => nil, "thrown" => nil, "unavailable" => nil}
     assert Enum.any?(result["warnings"], &String.contains?(&1, "conversation_access_required"))
-    refute output =~ "private-secret"
+
+    assert Enum.any?(
+             result["warnings"],
+             &String.contains?(&1, "memory search failed: gateway_unavailable (HTTP 503)")
+           )
+
+    refute Enum.any?(result["warnings"], &String.contains?(&1, "private-secret"))
+    refute Enum.any?(result["paths"], &(&1 =~ ~r/source_|recall|\/list$/))
+
+    assert Enum.map(result["captures"], & &1["hook"]) ==
+             ["session-start", "message", "message", "message", "session-end"]
+
+    for %{"hook" => hook, "body" => body} <- result["captures"] do
+      assert {:ok, _event_type} = Backplane.OpenClawCaptureContract.validate(hook, body)
+    end
   end
 end
