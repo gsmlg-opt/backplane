@@ -46,10 +46,15 @@ defmodule Backplane.Admin.Layouts do
       :llama ->
         [
           %{label: "Providers", path: "/llama/providers", icon: "cloud"},
-          %{label: "Embedding", path: "/llama/embedding", icon: "vector-point"},
-          %{label: "Audio", path: "/llama/audio", icon: "waveform"},
           %{label: "Model Alias", path: "/llama/model-aliases", icon: "tune-vertical"},
-          %{label: "Codex Catalog", path: "/llama/codex-catalog", icon: "robot-outline"}
+          %{label: "Codex Catalog", path: "/llama/codex-catalog", icon: "robot-outline"},
+          %{label: "Decisions", path: "/llama/openai/decisions", icon: "source-branch"},
+          %{label: "Images", path: "/llama/openai/images", icon: "image-outline"},
+          %{label: "Embeddings", path: "/llama/embedding", icon: "vector-point"},
+          %{label: "Text to Speech", path: "/llama/openai/speech", icon: "account-voice"},
+          %{label: "Transcription", path: "/llama/openai/transcription", icon: "microphone"},
+          %{label: "Realtime", path: "/llama/openai/realtime", icon: "broadcast"},
+          %{label: "MiniMax Audio", path: "/llama/audio", icon: "waveform"}
         ]
 
       :mcp ->
