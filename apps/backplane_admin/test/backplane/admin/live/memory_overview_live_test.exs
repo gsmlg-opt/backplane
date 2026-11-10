@@ -27,7 +27,17 @@ defmodule Backplane.Admin.MemoryOverviewLiveTest do
     seed("failed")
     seed("blocked")
     {:ok, view, _} = live_with_sandbox(conn, "/memory")
-    assert has_element?(view, "#memory-distill-failed", "1 个会话提炼失败，见 Sessions 页")
-    assert has_element?(view, "#memory-distill-blocked")
+
+    assert has_element?(
+             view,
+             "#memory-distill-failed",
+             "1 session failed to distill. See the Sessions page."
+           )
+
+    assert has_element?(
+             view,
+             "#memory-distill-blocked",
+             "1 session is blocked from distilling. See the Sessions page."
+           )
   end
 end
