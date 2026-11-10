@@ -169,8 +169,30 @@ older copy by default. It also installs the shared hook client at
 | `claude_code` | `claude plugin marketplace add ~/.local/share/backplane/plugins/claude` then `claude plugin install backplane-memory@backplane-local` |
 | `codex` | `codex plugin marketplace add ~/.local/share/backplane/plugins/codex` then `codex plugin add backplane-memory@backplane-local` |
 | `cursor` | Restart Cursor. Hooks and MCP are merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json`; the first change keeps a `*.backplane-backup` copy, and removing the plugin restores your own entries. |
-| `hermes` | None; installs to `~/.hermes/plugins/backplane-memory`. |
-| `openclaw` | None; installs to `~/.openclaw/extensions/backplane-memory`. Set `hooks.allowConversationAccess` on the plugin entry to enable automatic hooks (see the plugin README). |
+| `hermes` | Installs to `~/.hermes/plugins/backplane-memory`. Enable the provider in the Hermes profile config (`memory: provider: backplane-memory`) or run `hermes memory setup backplane-memory`, then restart Hermes. |
+| `openclaw` | Installs to `~/.openclaw/extensions/backplane-memory`. In `~/.openclaw/openclaw.json` set `plugins.slots.memory` to `"backplane-memory"`, and on `plugins.entries.backplane-memory` set `enabled` and `hooks.allowConversationAccess` to `true` (see the plugin README); then restart OpenClaw. |
+
+After reinstalling Claude Code's plugin with a different host-agent URL, run
+`claude plugin update backplane-memory@backplane-local` and restart Claude Code:
+Claude caches installed plugins by version, so the new URL is not picked up
+otherwise.
+
+### Remove
+
+Remove the plugin from the client first (or immediately after removing it
+through the host agent). Removing deletes the installed package and, when no
+other client still uses it, the shared hook client; a client that still has the
+plugin enabled would then call a deleted hook client on every hook. Remove with
+`host_agent::remove_plugin` (same arguments as install); its `next_steps` list
+the client-side commands:
+
+| Runtime | Client-side removal |
+| --- | --- |
+| `claude_code` | `claude plugin uninstall backplane-memory@backplane-local` then `claude plugin marketplace remove backplane-local` |
+| `codex` | `codex plugin remove backplane-memory@backplane-local` then `codex plugin marketplace remove backplane-local` |
+| `cursor` | Restart Cursor (Backplane's hook and MCP entries are removed from `~/.cursor/*.json`). |
+| `hermes` | `hermes memory off`, then restart Hermes. |
+| `openclaw` | Remove `plugins.slots.memory` and `plugins.entries.backplane-memory` from `~/.openclaw/openclaw.json`, then restart OpenClaw. |
 
 Capture hooks never block or fail the agent when the host agent is down. Set
 `BACKPLANE_HOST_AGENT_URL` to override the host-agent URL for the hook client.

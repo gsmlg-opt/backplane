@@ -202,8 +202,12 @@ the hook client to `<data>/bin/backplane-memory-hook`.
 | `claude_code` | marketplace `<data>/plugins/claude` | `claude plugin marketplace add <data>/plugins/claude`, then `claude plugin install backplane-memory@backplane-local` |
 | `codex` | marketplace `<data>/plugins/codex` | `codex plugin marketplace add <data>/plugins/codex`, then `codex plugin add backplane-memory@backplane-local` |
 | `cursor` | merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json` (one-time `*.backplane-backup`; `remove` restores the user's own entries) | restart Cursor |
-| `hermes` | `~/.hermes/plugins/backplane-memory` | none |
-| `openclaw` | `~/.openclaw/extensions/backplane-memory` | none |
+| `hermes` | `~/.hermes/plugins/backplane-memory` | enable `memory: provider: backplane-memory` (or `hermes memory setup backplane-memory`), restart Hermes |
+| `openclaw` | `~/.openclaw/extensions/backplane-memory` | set `plugins.slots.memory`, the entry's `enabled` and `hooks.allowConversationAccess` in `~/.openclaw/openclaw.json`, restart OpenClaw |
+
+`remove` results carry the client-side uninstall commands instead (for example
+`claude plugin uninstall backplane-memory@backplane-local`); run them before or
+right after removing so no client keeps calling a deleted hook client.
 
 **Hermes and OpenClaw** keep native plugins that recall and write through the
 global tools. They surface memory only in a live, owner-private session and fail
