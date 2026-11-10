@@ -35,6 +35,7 @@ defmodule Backplane.Memory.Events.TypesTest do
     agent.session.ended
     agent.session.abandoned
     git.commit.created
+    host.snapshot.collected
   )
 
   test "accepts every exact taxonomy value and rejects close variants" do

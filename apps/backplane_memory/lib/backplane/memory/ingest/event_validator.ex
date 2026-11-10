@@ -7,7 +7,7 @@ defmodule Backplane.Memory.Ingest.EventValidator do
   @required ~w(event_id schema_version host_id agent_id integration event_type occurred_at idempotency_key payload_hash privacy payload)
   @identifiers ~w(host_id agent_id integration event_type idempotency_key)
   @optional_identifiers ~w(client_id project scope session_id parent_session_id)
-  @canonical_types ~w(conversation.user_message conversation.agent_message tool.call.started agent.session.started agent.prompt.submitted agent.tool.completed agent.tool.failed agent.run.failed agent.context.pre_compact agent.subagent.started agent.subagent.stopped agent.session.stopped agent.session.ended git.commit.created)
+  @canonical_types ~w(conversation.user_message conversation.agent_message tool.call.started agent.session.started agent.prompt.submitted agent.tool.completed agent.tool.failed agent.run.failed agent.context.pre_compact agent.subagent.started agent.subagent.stopped agent.session.stopped agent.session.ended git.commit.created host.snapshot.collected)
 
   def validate(event) when is_map(event) do
     event = stringify_keys(event)

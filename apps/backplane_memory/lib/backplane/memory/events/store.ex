@@ -6,7 +6,7 @@ defmodule Backplane.Memory.Events.Store do
   alias Backplane.Memory.EventNotifier
   alias Backplane.Memory.Events.{Event, Preparation, Stream}
   alias Backplane.Memory.Projections.{RepairFrontier, Source}
-  alias Backplane.Memory.Workers.ProjectionRepairWorker
+  alias Backplane.Memory.Workers.{HostSnapshotWorker, ProjectionRepairWorker}
 
   @metadata_fields [
     :project,
@@ -319,7 +319,8 @@ defmodule Backplane.Memory.Events.Store do
             )
 
             with :ok <- EventNotifier.enqueue(repo, inserted.id),
-                 :ok <- enqueue_projection_repair(inserted) do
+                 :ok <- enqueue_projection_repair(inserted),
+                 :ok <- enqueue_host_snapshots([inserted]) do
               {:inserted, inserted, updated_stream}
             else
               {:error, reason} -> {:error, reason}
@@ -356,9 +357,27 @@ defmodule Backplane.Memory.Events.Store do
     inserted = for {:inserted, event} <- results, do: event
 
     with :ok <- EventNotifier.enqueue_many(repo, Enum.map(inserted, & &1.id)),
-         :ok <- enqueue_projection_repairs(inserted) do
+         :ok <- enqueue_projection_repairs(inserted),
+         :ok <- enqueue_host_snapshots(inserted) do
       :ok
     end
+  end
+
+  defp enqueue_host_snapshots(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "host.snapshot.collected"))
+    |> Enum.reduce_while(:ok, fn event, :ok ->
+      case HostSnapshotWorker.enqueue(event.id) do
+        {:ok, %Styx.Job{state: state}}
+        when state in ["available", "scheduled", "executing", "completed"] ->
+          {:cont, :ok}
+
+        _other ->
+          {:halt, {:error, :transaction_rolled_back}}
+      end
+    end)
+  rescue
+    _error -> {:error, :transaction_rolled_back}
   end
 
   defp enqueue_projection_repairs(events) do

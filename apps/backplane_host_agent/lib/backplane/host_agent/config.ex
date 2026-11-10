@@ -81,6 +81,22 @@ defmodule Backplane.HostAgent.Config do
       retry_base_ms: 1000
       retry_max_ms: 300000
       compaction_batch_size: 100
+      # Host collectors snapshot git repositories, docker containers, services
+      # and host info, and report only changes. Enabled with capture.
+      collectors:
+        interval_ms: 900000
+        initial_delay_ms: 60000
+        git:
+          enabled: true
+          # roots: [~]   # defaults to the home directory
+          max_depth: 4
+          max_repos: 500
+        docker:
+          enabled: true
+        services:
+          enabled: true
+        host:
+          enabled: true
 
     telemetry:
       enabled: true
@@ -227,9 +243,12 @@ defmodule Backplane.HostAgent.Config do
     retry_base_ms = parse_positive_int(raw["retry_base_ms"], 1_000)
     retry_max_ms = max(parse_positive_int(raw["retry_max_ms"], 300_000), retry_base_ms)
 
+    enabled = parse_bool(raw["enabled"], memory_enabled_by_default?(http_port))
+    db_path = parse_capture_db_path(raw["db_path"], work_dir)
+
     %{
-      enabled: parse_bool(raw["enabled"], memory_enabled_by_default?(http_port)),
-      db_path: parse_capture_db_path(raw["db_path"], work_dir),
+      enabled: enabled,
+      db_path: db_path,
       encryption_key_env: parse_non_empty_string(raw["encryption_key_env"], nil),
       upload_interval_ms: parse_positive_int(raw["upload_interval_ms"], 5_000),
       batch_size: parse_bounded_positive_int(raw["batch_size"], 100, 100),
@@ -238,9 +257,47 @@ defmodule Backplane.HostAgent.Config do
       spool_max_age_days: parse_positive_int(raw["spool_max_age_days"], 30),
       retry_base_ms: retry_base_ms,
       retry_max_ms: retry_max_ms,
-      compaction_batch_size: parse_positive_int(raw["compaction_batch_size"], 100)
+      compaction_batch_size: parse_positive_int(raw["compaction_batch_size"], 100),
+      collectors: parse_collectors(raw["collectors"], enabled, db_path)
     }
   end
+
+  defp parse_collectors(raw, capture_enabled, db_path) do
+    raw = if is_map(raw), do: raw, else: %{}
+    git = if is_map(raw["git"]), do: raw["git"], else: %{}
+
+    %{
+      enabled: parse_bool(raw["enabled"], capture_enabled),
+      interval_ms: parse_positive_int(raw["interval_ms"], 900_000),
+      initial_delay_ms: parse_positive_int(raw["initial_delay_ms"], 60_000),
+      state_path: Path.join(Path.dirname(db_path), "collector_state.json"),
+      git: %{
+        enabled: parse_bool(git["enabled"], true),
+        roots: parse_roots(git["roots"]),
+        max_depth: parse_positive_int(git["max_depth"], 4),
+        max_repos: parse_positive_int(git["max_repos"], 500)
+      },
+      docker: %{enabled: parse_section_enabled(raw["docker"])},
+      services: %{enabled: parse_section_enabled(raw["services"])},
+      host: %{enabled: parse_section_enabled(raw["host"])}
+    }
+  end
+
+  defp parse_section_enabled(%{} = section), do: parse_bool(section["enabled"], true)
+  defp parse_section_enabled(_section), do: true
+
+  # A list of roots or a single root string; the home directory is only resolved
+  # when no usable root is configured.
+  defp parse_roots(root) when is_binary(root), do: parse_roots([root])
+
+  defp parse_roots(roots) when is_list(roots) do
+    case for(root <- roots, is_binary(root), String.trim(root) != "", do: Path.expand(root)) do
+      [] -> [System.user_home!()]
+      expanded -> expanded
+    end
+  end
+
+  defp parse_roots(_roots), do: [System.user_home!()]
 
   defp parse_capture_db_path(path, work_dir) do
     case parse_non_empty_string(path, nil) do
