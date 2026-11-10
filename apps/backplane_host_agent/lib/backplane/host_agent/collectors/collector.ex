@@ -3,7 +3,13 @@ defmodule Backplane.HostAgent.Collectors.Collector do
 
   @type runner :: (String.t(), [String.t()], keyword() ->
                      {:ok, String.t()} | {:error, :not_found | {:exit, integer()} | :timeout})
-  @type env :: %{runner: runner(), os: :linux | :darwin | :other, home: String.t()}
+  @type env :: %{
+          required(:runner) => runner(),
+          required(:os) => :linux | :darwin | :other,
+          required(:home) => String.t(),
+          optional(:hostname) => {:ok, charlist()},
+          optional(:ifaddrs) => {:ok, [{charlist(), keyword()}]}
+        }
   @type snapshot :: %{
           collector: String.t(),
           unit: String.t(),
