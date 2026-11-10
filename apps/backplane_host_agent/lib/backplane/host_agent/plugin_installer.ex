@@ -42,7 +42,8 @@ defmodule Backplane.HostAgent.PluginInstaller do
           target_parts: ["plugins", "codex"],
           next_steps: [
             "codex plugin marketplace add {target}",
-            "codex plugin add backplane-memory@backplane-local"
+            "codex plugin add backplane-memory@backplane-local",
+            "Start Codex interactively once and trust the backplane-memory plugin hooks when prompted (Codex does not run plugin hooks until they are trusted)"
           ],
           remove_steps: [
             "codex plugin remove backplane-memory@backplane-local",

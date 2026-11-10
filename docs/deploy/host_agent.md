@@ -167,7 +167,7 @@ older copy by default. It also installs the shared hook client at
 | Runtime | Next steps |
 | --- | --- |
 | `claude_code` | `claude plugin marketplace add ~/.local/share/backplane/plugins/claude` then `claude plugin install backplane-memory@backplane-local` |
-| `codex` | `codex plugin marketplace add ~/.local/share/backplane/plugins/codex` then `codex plugin add backplane-memory@backplane-local` |
+| `codex` | `codex plugin marketplace add ~/.local/share/backplane/plugins/codex` then `codex plugin add backplane-memory@backplane-local`. Then start Codex interactively once and trust the backplane-memory plugin hooks when prompted; Codex does not run plugin hooks until they are trusted. |
 | `cursor` | Restart Cursor. Hooks and MCP are merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json`; the first change keeps a `*.backplane-backup` copy, and removing the plugin restores your own entries. |
 | `hermes` | Installs to `~/.hermes/plugins/backplane-memory`. Enable the provider in the Hermes profile config (`memory: provider: backplane-memory`) or run `hermes memory setup backplane-memory`, then restart Hermes. |
 | `openclaw` | Installs to `~/.openclaw/extensions/backplane-memory`. In `~/.openclaw/openclaw.json` set `plugins.slots.memory` to `"backplane-memory"`, and on `plugins.entries.backplane-memory` set `enabled` and `hooks.allowConversationAccess` to `true` (see the plugin README); then restart OpenClaw. |

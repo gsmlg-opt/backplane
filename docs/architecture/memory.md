@@ -200,7 +200,7 @@ the hook client to `<data>/bin/backplane-memory-hook`.
 | Runtime | Installed to | Next steps |
 | --- | --- | --- |
 | `claude_code` | marketplace `<data>/plugins/claude` | `claude plugin marketplace add <data>/plugins/claude`, then `claude plugin install backplane-memory@backplane-local` |
-| `codex` | marketplace `<data>/plugins/codex` | `codex plugin marketplace add <data>/plugins/codex`, then `codex plugin add backplane-memory@backplane-local` |
+| `codex` | marketplace `<data>/plugins/codex` | `codex plugin marketplace add <data>/plugins/codex`, then `codex plugin add backplane-memory@backplane-local`; then start Codex interactively once and trust the plugin hooks when prompted (Codex does not run plugin hooks until trusted) |
 | `cursor` | merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json` (one-time `*.backplane-backup`; `remove` restores the user's own entries) | restart Cursor |
 | `hermes` | `~/.hermes/plugins/backplane-memory` | enable `memory: provider: backplane-memory` (or `hermes memory setup backplane-memory`), restart Hermes |
 | `openclaw` | `~/.openclaw/extensions/backplane-memory` | set `plugins.slots.memory`, the entry's `enabled` and `hooks.allowConversationAccess` in `~/.openclaw/openclaw.json`, restart OpenClaw |
