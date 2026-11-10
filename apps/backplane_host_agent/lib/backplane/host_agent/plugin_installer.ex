@@ -11,6 +11,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
         "claude_code" => %{
           mode: :marketplace,
           uses_hook_client: true,
+          marketplace_file: ".claude-plugin/marketplace.json",
           required_files: [
             ".claude-plugin/marketplace.json",
             "backplane-memory/.claude-plugin/plugin.json",
@@ -22,6 +23,23 @@ defmodule Backplane.HostAgent.PluginInstaller do
           next_steps: [
             "claude plugin marketplace add {target}",
             "claude plugin install backplane-memory@backplane-local"
+          ]
+        },
+        "codex" => %{
+          mode: :marketplace,
+          uses_hook_client: true,
+          marketplace_file: ".agents/plugins/marketplace.json",
+          required_files: [
+            ".agents/plugins/marketplace.json",
+            "plugins/backplane-memory/.codex-plugin/plugin.json",
+            "plugins/backplane-memory/hooks.json",
+            "plugins/backplane-memory/.mcp.json",
+            "plugins/backplane-memory/skills/backplane-memory/SKILL.md"
+          ],
+          target_parts: ["plugins", "codex"],
+          next_steps: [
+            "codex plugin marketplace add {target}",
+            "codex plugin add backplane-memory@backplane-local"
           ]
         },
         "hermes" => %{
@@ -251,14 +269,21 @@ defmodule Backplane.HostAgent.PluginInstaller do
     path == root || String.starts_with?(path, root <> "/")
   end
 
-  defp install_files(plugin_meta, %{mode: :marketplace}, source, target, force?, opts) do
+  defp install_files(
+         plugin_meta,
+         %{mode: :marketplace} = runtime_meta,
+         source,
+         target,
+         force?,
+         opts
+       ) do
     home = home_dir(opts)
     data = data_dir(opts, home)
     client = Path.join([data, "bin", @hook_client_name])
 
     with :ok <- validate_data_dir(data, home),
          {:ok, url} <- host_agent_url(opts),
-         :ok <- ensure_marketplace_target(target),
+         :ok <- ensure_marketplace_target(runtime_meta, target),
          substitutions = %{
            "__HOOK_CLIENT__" => shell_quote(client),
            "__HOST_AGENT_URL__" => url
@@ -272,9 +297,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
     do: replace_dir(plugin_meta.name, source, target, force?)
 
   # Never replace or remove a directory that is not our marketplace.
-  defp ensure_marketplace_target(target) do
+  defp ensure_marketplace_target(%{marketplace_file: file}, target) do
     if File.exists?(target) do
-      with {:ok, json} <- File.read(Path.join(target, ".claude-plugin/marketplace.json")),
+      with {:ok, json} <- File.read(Path.join(target, file)),
            {:ok, %{"name" => "backplane-local"}} <- Jason.decode(json) do
         :ok
       else
@@ -285,7 +310,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
-  defp guard_remove(%{mode: :marketplace}, target), do: ensure_marketplace_target(target)
+  defp guard_remove(%{mode: :marketplace} = meta, target),
+    do: ensure_marketplace_target(meta, target)
+
   defp guard_remove(_runtime_meta, _target), do: :ok
 
   defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
@@ -353,8 +380,16 @@ defmodule Backplane.HostAgent.PluginInstaller do
 
   defp hook_client_runtimes(plugin_meta, opts) do
     plugin_meta.runtimes
-    |> Map.merge(opt(opts, :extra_runtimes) || %{})
+    |> Map.merge(extra_runtimes(opts))
     |> Map.filter(fn {_name, meta} -> Map.get(meta, :uses_hook_client, false) end)
+  end
+
+  # Test hook: atom key only, so MCP callers' string-keyed args cannot inject runtimes.
+  defp extra_runtimes(opts) do
+    case Map.get(opts, :extra_runtimes) do
+      extra when is_map(extra) -> extra
+      _other -> %{}
+    end
   end
 
   defp runtime_installed?(plugin_meta, runtime_meta, opts) do

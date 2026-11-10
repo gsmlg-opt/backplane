@@ -120,8 +120,8 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
                home_dir: home_dir
              })
 
-    assert {:error, {:unsupported_runtime, "memory", "codex"}} =
-             PluginInstaller.install("memory", "codex", %{
+    assert {:error, {:unsupported_runtime, "memory", "cursor"}} =
+             PluginInstaller.install("memory", "cursor", %{
                source_root: source_root,
                home_dir: home_dir
              })
@@ -148,6 +148,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
 
     assert [
              %{"plugin" => "memory", "runtime" => "claude_code"},
+             %{"plugin" => "memory", "runtime" => "codex"},
              %{"plugin" => "memory", "runtime" => "hermes"},
              %{"plugin" => "memory", "runtime" => "openclaw"}
            ] =
@@ -355,6 +356,115 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
   end
 
+  describe "codex marketplace mode" do
+    @describetag :tmp_dir
+
+    test "installs a rendered marketplace sharing the hook client", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir)
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      market = Path.join([data, "plugins", "codex"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+
+      assert {:ok, result} = PluginInstaller.install("memory", "codex", opts)
+      assert %{"installed" => true, "valid" => true, "target_path" => ^market} = result
+
+      assert result["next_steps"] == [
+               "codex plugin marketplace add #{market}",
+               "codex plugin add backplane-memory@backplane-local"
+             ]
+
+      plugin = Path.join(market, "plugins/backplane-memory")
+      assert File.regular?(Path.join(market, ".agents/plugins/marketplace.json"))
+
+      assert %{"mcpServers" => %{"backplane-memory" => %{"url" => url}}} =
+               plugin |> Path.join(".mcp.json") |> File.read!() |> Jason.decode!()
+
+      assert url == "http://127.0.0.1:4232/memory/codex/mcp"
+      hooks = File.read!(Path.join(plugin, "hooks.json"))
+      assert hooks =~ "'#{client}' codex SessionStart"
+      refute hooks =~ "__HOOK_CLIENT__"
+      assert File.stat!(client).mode |> Bitwise.band(0o777) == 0o755
+    end
+
+    test "remove keeps the hook client while claude_code is installed", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir)
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+      {:ok, _} = PluginInstaller.install("memory", "codex", opts)
+
+      assert {:ok, %{"installed" => false}} = PluginInstaller.remove("memory", "codex", opts)
+      refute File.exists?(Path.join([data, "plugins", "codex"]))
+      assert File.exists?(client)
+
+      {:ok, _} = PluginInstaller.install("memory", "codex", opts)
+      {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
+      assert File.exists?(client)
+      {:ok, _} = PluginInstaller.remove("memory", "codex", opts)
+      refute File.exists?(client)
+    end
+
+    test "ignores target_path and refuses unrelated or foreign-marketplace dirs", %{
+      tmp_dir: tmp_dir
+    } do
+      home = Path.join(tmp_dir, "home")
+      target = Path.join([home, ".local/share/backplane/plugins/codex"])
+      unrelated = Path.join(home, "src/codex")
+      File.mkdir_p!(unrelated)
+
+      assert {:ok, %{"target_path" => ^target}} =
+               PluginInstaller.install(
+                 "memory",
+                 "codex",
+                 claude_opts(tmp_dir, %{target_path: unrelated})
+               )
+
+      File.rm_rf!(target)
+      File.mkdir_p!(target)
+      File.write!(Path.join(target, "mine.txt"), "mine")
+      opts = claude_opts(tmp_dir)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.install("memory", "codex", opts)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.remove("memory", "codex", opts)
+
+      assert File.exists?(Path.join(target, "mine.txt"))
+    end
+  end
+
+  describe "extra_runtimes test hook" do
+    @describetag :tmp_dir
+
+    test "is read from the atom key only and must be a map", %{tmp_dir: tmp_dir} do
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+      other = Path.join([tmp_dir, "home", ".extra", "backplane-memory"])
+
+      fake = %{
+        "cursor_like" => %{
+          uses_hook_client: true,
+          required_files: [],
+          target_parts: [".extra", "backplane-memory"]
+        }
+      }
+
+      for value <- ["nope", fake, %{"claude_code" => %{uses_hook_client: false}}] do
+        opts = claude_opts(tmp_dir, %{"extra_runtimes" => value})
+        {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+        File.mkdir_p!(other)
+        assert {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
+        refute File.exists?(client)
+        File.rm_rf!(other)
+      end
+
+      opts = claude_opts(tmp_dir, %{extra_runtimes: "nope"})
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+      assert {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
+    end
+  end
+
   defp source_root!(tmp_dir) do
     source_root = Path.join(tmp_dir, "source")
 
@@ -380,6 +490,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     claude = Path.join(source_root, "claude_code")
     File.mkdir_p!(Path.join(claude, ".claude-plugin"))
     File.cp_r!(Path.join(@real_source, "claude_code"), claude)
+    File.cp_r!(Path.join(@real_source, "codex"), Path.join(source_root, "codex"))
     File.mkdir_p!(Path.join(source_root, "shared/bin"))
     File.write!(Path.join(source_root, "shared/bin/backplane-memory-hook"), "#!/bin/sh\n")
 

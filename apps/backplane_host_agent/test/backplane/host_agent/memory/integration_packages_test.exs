@@ -2,6 +2,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
   use ExUnit.Case, async: true
 
   alias Backplane.HostAgent.Memory.Hooks.ClaudeCode
+  alias Backplane.HostAgent.Memory.Hooks.Codex
   alias Backplane.MemoryToolContract
 
   @integrations Path.expand("../../../../../../integrations/memory", __DIR__)
@@ -72,6 +73,65 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
       assert [_, frontmatter, body] = String.split(skill, ~r/^---\n/m, parts: 3)
       assert frontmatter =~ "name: backplane-memory\n"
       assert frontmatter =~ "description: Use Backplane shared memory:"
+
+      assert String.trim_leading(body, "\n") ==
+               File.read!(Path.join(@integrations, "shared/INSTRUCTIONS.md"))
+    end
+  end
+
+  describe "codex" do
+    @codex Path.join(@integrations, "codex")
+    @codex_plugin Path.join(@codex, "plugins/backplane-memory")
+
+    test "marketplace and manifest" do
+      assert %{
+               "name" => "backplane-local",
+               "plugins" => [
+                 %{
+                   "name" => "backplane-memory",
+                   "source" => %{"source" => "local", "path" => "./plugins/backplane-memory"}
+                 }
+               ]
+             } =
+               Jason.decode!(File.read!(Path.join(@codex, ".agents/plugins/marketplace.json")))
+
+      assert %{
+               "name" => "backplane-memory",
+               "version" => _,
+               "description" => _,
+               "skills" => "./skills",
+               "mcpServers" => "./.mcp.json",
+               "hooks" => "./hooks.json"
+             } = Jason.decode!(File.read!(Path.join(@codex_plugin, ".codex-plugin/plugin.json")))
+    end
+
+    test "hooks.json lists the supported hooks minus PreToolUse and PermissionRequest" do
+      %{"hooks" => hooks} = Jason.decode!(File.read!(Path.join(@codex_plugin, "hooks.json")))
+      expected = Codex.supported_hooks() -- ~w(PreToolUse PermissionRequest)
+      assert length(expected) == 9
+      assert hooks |> Map.keys() |> Enum.sort() == Enum.sort(expected)
+
+      for {hook, [%{"hooks" => [entry]}]} <- hooks do
+        assert entry == %{"type" => "command", "command" => "__HOOK_CLIENT__ codex #{hook}"}
+      end
+    end
+
+    test ".mcp.json points at the host agent codex MCP endpoint" do
+      assert Jason.decode!(File.read!(Path.join(@codex_plugin, ".mcp.json"))) == %{
+               "mcpServers" => %{
+                 "backplane-memory" => %{"url" => "__HOST_AGENT_URL__/memory/codex/mcp"}
+               }
+             }
+    end
+
+    test "SKILL.md is identical to the Claude Code one and its body is the instructions" do
+      skill = "skills/backplane-memory/SKILL.md"
+
+      assert File.read!(Path.join(@codex_plugin, skill)) ==
+               File.read!(Path.join(@integrations, "claude_code/backplane-memory/#{skill}"))
+
+      [_, _, body] =
+        String.split(File.read!(Path.join(@codex_plugin, skill)), ~r/^---\n/m, parts: 3)
 
       assert String.trim_leading(body, "\n") ==
                File.read!(Path.join(@integrations, "shared/INSTRUCTIONS.md"))
