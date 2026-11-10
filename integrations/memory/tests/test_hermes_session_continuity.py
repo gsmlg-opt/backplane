@@ -18,15 +18,11 @@ class SessionContinuityTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.home = Path(self.temporary.name)
-        (self.home / "memories").mkdir()
-        for target in ("MEMORY.md", "USER.md"):
-            (self.home / "memories" / target).write_text("")
         self.provider = self.build("original")
 
     def build(self, session):
         provider = plugin.BackplaneMemoryProvider()
-        with patch.object(plugin, "_load_egress_scrubber", return_value=lambda text: text), \
-             patch.object(plugin.BackplaneMemoryProvider, "_start_worker", lambda self: None), \
+        with patch.object(plugin.BackplaneMemoryProvider, "_start_worker", lambda self: None), \
              patch.dict(plugin.os.environ, {}, clear=True):
             provider.initialize(session, hermes_home=str(self.home))
         self.addCleanup(provider.shutdown)
@@ -46,7 +42,7 @@ class SessionContinuityTest(unittest.TestCase):
         second = {"role": "user", "content": "same text", "message_uid": "user-2"}
         self.sync([first])
         original = self.messages()[0]
-        source = self.provider._source("memory")
+        installation = self.provider._journal.installation_id
         self.provider.shutdown()
         self.provider = self.build("original")
         self.sync([first])
@@ -57,7 +53,7 @@ class SessionContinuityTest(unittest.TestCase):
         self.assertEqual(rows[0], original)
         self.assertEqual([row["message_uid"] for row in rows], ["user-1", "user-2"])
         self.assertEqual({row["session_id"] for row in rows}, {"original"})
-        self.assertEqual(self.provider._source("memory"), source)
+        self.assertEqual(self.provider._journal.installation_id, installation)
 
     def test_branch_shorter_rewound_snapshot_revision_and_delayed_old_callback(self):
         first = {"role": "user", "content": "first", "message_uid": "u1"}
@@ -86,7 +82,7 @@ class SessionContinuityTest(unittest.TestCase):
         self.assertEqual(rows[-1]["session_id"], "branch")
         self.assertEqual(rows[-1]["parent_session_id"], "original")
         with patch.object(plugin, "_post", return_value={"ok": True, "result": {"id": "saved"}}) as post:
-            self.provider.handle_tool_call("memory_save", {"content": "later native write"})
+            self.provider.handle_tool_call("memory_remember", {"content": "later native write"})
         self.assertEqual(post.call_args.args[3]["session_id"], "branch")
 
         old_later = {"role": "user", "content": "late original work", "message_uid": "old-u3"}

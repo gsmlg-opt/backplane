@@ -18,6 +18,24 @@ defmodule Backplane.Admin.HostAgentsLive do
     %{
       "plugin" => "memory",
       "name" => "Backplane Memory",
+      "runtime" => "claude_code",
+      "target_path" => "~/.local/share/backplane/plugins/claude"
+    },
+    %{
+      "plugin" => "memory",
+      "name" => "Backplane Memory",
+      "runtime" => "codex",
+      "target_path" => "~/.local/share/backplane/plugins/codex"
+    },
+    %{
+      "plugin" => "memory",
+      "name" => "Backplane Memory",
+      "runtime" => "cursor",
+      "target_path" => "~/.cursor/hooks.json + ~/.cursor/mcp.json"
+    },
+    %{
+      "plugin" => "memory",
+      "name" => "Backplane Memory",
       "runtime" => "hermes",
       "target_path" => "~/.hermes/plugins/backplane-memory"
     },
@@ -627,7 +645,7 @@ defmodule Backplane.Admin.HostAgentsLive do
         <:title>Packaged Plugins</:title>
         <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div class="text-sm text-on-surface-variant">
-            Memory is the only packaged plugin currently available.
+            Memory is the only packaged plugin currently available; install it for any supported client.
           </div>
           <.dm_btn id="refresh-plugin-status" type="button" size="sm" variant="outline" phx-click="refresh_plugins">
             Refresh
@@ -659,6 +677,10 @@ defmodule Backplane.Admin.HostAgentsLive do
                 </td>
                 <td class="px-3 py-2 align-top">
                   <code class="text-xs break-all">{row["target_path"]}</code>
+                  <div :if={next_steps(row) != []} class="mt-2 space-y-1">
+                    <div class="text-xs font-medium">Next steps</div>
+                    <code :for={step <- next_steps(row)} class="block text-xs break-all">{step}</code>
+                  </div>
                 </td>
                 <td class="px-3 py-2 align-top">
                   <div class="flex flex-wrap gap-2">
@@ -1065,8 +1087,18 @@ defmodule Backplane.Admin.HostAgentsLive do
   end
 
   defp plugin_action_message(status, action) do
-    "#{status["name"] || status["plugin"]} #{runtime_label(status["runtime"])} #{action}"
+    base = "#{status["name"] || status["plugin"]} #{runtime_label(status["runtime"])} #{action}"
+
+    case next_steps(status) do
+      [] -> base
+      steps -> base <> ". Next steps: " <> Enum.join(steps, " ; ")
+    end
   end
+
+  defp next_steps(%{"next_steps" => steps}) when is_list(steps),
+    do: Enum.filter(steps, &is_binary/1)
+
+  defp next_steps(_status), do: []
 
   defp plugin_error(:http_disabled), do: "host-agent HTTP endpoint is disabled"
   defp plugin_error(:http_unavailable), do: "host-agent HTTP endpoint is unavailable"
@@ -1084,6 +1116,9 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp plugin_error(reason) when is_binary(reason), do: reason
   defp plugin_error(reason), do: inspect(reason)
 
+  defp runtime_label("claude_code"), do: "Claude Code"
+  defp runtime_label("codex"), do: "Codex"
+  defp runtime_label("cursor"), do: "Cursor"
   defp runtime_label("hermes"), do: "Hermes"
   defp runtime_label("openclaw"), do: "OpenClaw"
   defp runtime_label(runtime) when is_binary(runtime), do: String.capitalize(runtime)

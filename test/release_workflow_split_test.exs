@@ -34,10 +34,19 @@ defmodule Backplane.ReleaseWorkflowSplitTest do
     plugin = YamlElixir.read_from_file!(".github/workflows/memory-plugins.yml")
     assert Map.has_key?(plugin["on"], "workflow_dispatch")
     steps = plugin["jobs"]["memory-plugins"]["steps"]
-    assert Enum.any?(steps, &(&1["name"] == "Verify real OpenClaw canonical path"))
-    assert Enum.any?(steps, &(&1["name"] == "Verify packaged Hermes provider"))
-    assert Enum.any?(steps, &(&1["name"] == "Verify packaged OpenClaw provider"))
-    assert Enum.any?(steps, &(&1["with"]["name"] == "openclaw-memory-qualification"))
+    names = Enum.map(steps, & &1["name"])
+
+    for name <- [
+          "Verify OpenClaw acceptance helpers",
+          "Verify OpenClaw provider contract",
+          "Verify packaged Hermes provider",
+          "Verify packaged OpenClaw provider",
+          "Verify packaged client plugins and hook client"
+        ] do
+      assert name in names
+    end
+
+    refute "Verify real OpenClaw canonical path" in names
   end
 
   test "publication workflows never execute tests or Memory evaluations" do

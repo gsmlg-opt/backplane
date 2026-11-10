@@ -149,7 +149,8 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
       assert has_element?(view, "#host-memory-health", "Last error") ==
                unquote(shown?)
 
-      if unquote(shown?), do: assert(has_element?(view, "#host-memory-health", "sync: stale boom"))
+      if unquote(shown?),
+        do: assert(has_element?(view, "#host-memory-health", "sync: stale boom"))
     end
   end
 
@@ -283,8 +284,15 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert html =~ "host_agent::install_plugin"
     assert html =~ "http://127.0.0.1:4222/memory/t430/mcp"
     refute html =~ "/memory/#{host.id}/mcp"
-    assert has_element?(view, "#install-plugin-hermes")
-    assert has_element?(view, "#remove-plugin-hermes")
+
+    for runtime <- ~w(claude_code codex cursor hermes openclaw) do
+      assert has_element?(view, "#install-plugin-#{runtime}")
+      assert has_element?(view, "#remove-plugin-#{runtime}")
+    end
+
+    assert html =~ "Claude Code"
+    assert html =~ "Cursor"
+    assert html =~ "~/.cursor/hooks.json + ~/.cursor/mcp.json"
 
     html =
       view
@@ -312,6 +320,58 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
     assert has_element?(view, "#open-delete-agent-modal")
     refute has_element?(view, "#delete-agent-modal")
     refute html =~ "Disconnect"
+  end
+
+  test "installing a plugin shows next steps from the host agent", %{conn: conn} do
+    assert {:ok, host, _auth_token, _token} = Hosts.create_agent_with_token(%{"name" => "steps"})
+
+    assert :ok =
+             AgentManage.report_config(host.id, %{
+               "agent" => %{"host_id" => host.id, "machine_name" => "steps", "http_port" => 4222}
+             })
+
+    previous = Application.get_env(:backplane_skills, :host_agent_plugin_req_options)
+
+    Application.put_env(:backplane_skills, :host_agent_plugin_req_options,
+      plug: {Req.Test, __MODULE__}
+    )
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:backplane_skills, :host_agent_plugin_req_options, previous),
+        else: Application.delete_env(:backplane_skills, :host_agent_plugin_req_options)
+    end)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      status = %{
+        "plugin" => "memory",
+        "name" => "Backplane Memory",
+        "runtime" => "claude_code",
+        "installed" => true,
+        "valid" => true,
+        "next_steps" => ["claude plugin marketplace add /d/plugins/claude"]
+      }
+
+      Req.Test.json(conn, %{
+        "jsonrpc" => "2.0",
+        "id" => 1,
+        "result" => %{
+          "isError" => false,
+          "content" => [%{"type" => "text", "text" => Jason.encode!(status)}]
+        }
+      })
+    end)
+
+    Req.Test.set_req_test_to_shared()
+
+    {:ok, view, _html} = live(conn, "/system/host-agents/#{host.id}/plugin")
+
+    html =
+      view
+      |> form("#install-plugin-claude_code")
+      |> render_submit()
+
+    assert html =~ "claude plugin marketplace add /d/plugins/claude"
   end
 
   test "delete agent requires typing the agent name and revokes tokens", %{conn: conn} do

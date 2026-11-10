@@ -4,14 +4,18 @@ defmodule Backplane.HostAgent.Memory.HooksInventoryTest do
   alias Backplane.HostAgent.Memory.Hooks
   alias Backplane.HostAgent.Memory.Hooks.ClaudeCode
   alias Backplane.HostAgent.Memory.Hooks.Codex
+  alias Backplane.HostAgent.Memory.Hooks.Cursor
 
-  test "inventory supports adapters without an optional hook inventory callback" do
-    assert %{
-             status: :supported,
-             adapter: ClaudeCode,
-             hooks: [],
-             hook_count: 0
-           } = Hooks.inventory("claude_code")
+  test "inventory lists Claude Code and Cursor hooks" do
+    assert %{status: :supported, adapter: ClaudeCode, hooks: hooks, hook_count: 9} =
+             Hooks.inventory("claude_code")
+
+    assert "PostToolUseFailure" in hooks
+
+    assert %{status: :supported, adapter: Cursor, hooks: cursor_hooks, hook_count: 8} =
+             Hooks.inventory("cursor")
+
+    assert "beforeSubmitPrompt" in cursor_hooks
   end
 
   test "inventory loads a supported adapter before inspecting its exported hooks" do

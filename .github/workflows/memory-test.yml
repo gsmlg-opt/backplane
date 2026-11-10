@@ -118,4 +118,4 @@ jobs:
           mix ecto.migrate
 
       - name: Run Memory app tests
-        run: mix do --app backplane_memory cmd mix test
+        run: mix test apps/backplane_memory/test

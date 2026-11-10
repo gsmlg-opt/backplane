@@ -1,19 +1,10 @@
-import { digest } from "./contract.mjs";
-
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1"]);
-const SAFE_CODES = new Set([
-  "invalid_scope", "unknown_scope", "memory_scope_mismatch", "invalid_arguments", "invalid_request",
-  "unauthorized", "forbidden", "access_denied", "not_found", "unsupported_operation", "unsupported_capability",
-  "memory_access_revoked", "memory_access_denied", "authority_changed", "partition_mismatch", "binding_changed",
-  "capture_binding_mismatch", "source_binding_mismatch", "canonical_unavailable", "payload_too_large",
-]);
-export class MemoryRequestError extends Error {
-  constructor(code, status) { super(`${code}${status ? ` (HTTP ${status})` : ""}`); this.code = code; this.status = status; }
-}
+const SAFE_CODE = /^[a-z][a-z0-9_]{0,80}$/;
+const MAX_ERROR_CHARS = 200;
+
 export function safeError(error) {
-  if (error instanceof MemoryRequestError) return error.message;
-  if (error instanceof Error && /^[a-z][a-z0-9_]{0,80}$/.test(error.message)) return error.message;
-  return "operation_failed";
+  const code = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  return SAFE_CODE.test(code) ? code : "operation_failed";
 }
 export function createPlaintextWarner(warn) {
   let warned = false;
@@ -25,42 +16,53 @@ export function createPlaintextWarner(warn) {
     }
   };
 }
+
+/**
+ * The host agent HTTP client. Requests never throw: every non-2xx, transport,
+ * timeout or malformed answer becomes `{ ok: false, error, status? }` and logs
+ * exactly one content-free warning, so callers can simply degrade.
+ */
 export class MemoryClient {
   constructor(config, logger) {
     this.baseUrl = config.base_url.replace(/\/+$/, "");
     const url = new URL(this.baseUrl);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("invalid_base_url");
+    this.agentId = config.agent_id;
     this.timeout = config.timeout_ms;
-    this.warn = createPlaintextWarner((message) => logger?.warn?.(message));
+    this.logger = logger;
+    this.warnPlaintext = createPlaintextWarner((message) => logger?.warn?.(message));
     this.abort = new AbortController();
   }
-  path(agentId, method) { return `/memory/${encodeURIComponent(agentId)}/call/${method}`; }
-  async request(path, args, guard = () => {}, signal) {
-    guard();
-    this.warn(this.baseUrl);
-    const res = await fetch(this.baseUrl + path, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args),
-      signal: AbortSignal.any([AbortSignal.timeout(this.timeout), this.abort.signal, ...(signal ? [signal] : [])]),
-    });
-    guard();
-    let body;
-    try { body = await res.json(); } catch { throw new MemoryRequestError("invalid_response", res.status); }
-    guard();
-    if (!res.ok || body?.ok === false) throw new MemoryRequestError(SAFE_CODES.has(body?.error) ? body.error : "request_failed", res.status);
-    if (body?.ok !== true) throw new MemoryRequestError("invalid_response", res.status);
-    return body;
+  failure(label, code, status) {
+    const safe = SAFE_CODE.test(code) ? code : "request_rejected";
+    this.logger?.warn?.(`backplane-memory: ${label} failed: ${safe}${status ? ` (HTTP ${status})` : ""}`);
+    return { ok: false, error: code, ...(status ? { status } : {}) };
   }
-  async call(agentId, method, args, guard, signal) {
-    const body = await this.request(this.path(agentId, method), args, guard, signal);
-    if (!body.result || typeof body.result !== "object" || Array.isArray(body.result)) throw new MemoryRequestError("invalid_response");
-    return body.result;
+  async request(path, body, { label = path, signal } = {}) {
+    let res;
+    try {
+      this.warnPlaintext(this.baseUrl);
+      res = await fetch(this.baseUrl + path, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        signal: AbortSignal.any([AbortSignal.timeout(this.timeout), this.abort.signal, ...(signal ? [signal] : [])]),
+      });
+    } catch { return this.failure(label, "request_failed"); }
+    let parsed;
+    try { parsed = await res.json(); } catch { return this.failure(label, res.ok ? "invalid_response" : "http_error", res.status); }
+    if (!res.ok || parsed?.ok !== true) {
+      const code = typeof parsed?.error === "string" && parsed.error.trim() ? parsed.error.slice(0, MAX_ERROR_CHARS) : res.ok ? "invalid_response" : "http_error";
+      return this.failure(label, code, res.status);
+    }
+    return parsed;
   }
-  async capabilities(agentId, accessId, guard, { requireWrite = false } = {}) {
-    const peer = await this.call(agentId, "source_capabilities", { integration: "openclaw", memory_access_id: accessId }, guard);
-    if (peer.protocol !== "memory_sources.v1" || peer.supported !== true || !peer.contracts?.includes("openclaw_source.v1") || !peer.negotiated?.includes("openclaw_source.v1")) throw new MemoryRequestError("unsupported_capability");
-    if (!peer.binding || peer.binding.access_id !== accessId || digest(peer.binding) !== peer.binding_fingerprint) throw new MemoryRequestError("invalid_binding");
-    if (requireWrite && peer.ready !== true) throw new MemoryRequestError("source_unavailable");
-    return peer;
+  callPath(method) { return `/memory/${encodeURIComponent(this.agentId)}/call/${method}`; }
+  /** One `memory::<method>` call: `{ ok: true, result }` or a logged failure. */
+  async call(method, args, { signal } = {}) {
+    const label = `memory ${method}`;
+    const response = await this.request(this.callPath(method), args, { label, signal });
+    if (!response.ok) return response;
+    if (!response.result || typeof response.result !== "object" || Array.isArray(response.result)) return this.failure(label, "invalid_response");
+    return { ok: true, result: response.result };
   }
   close() { this.abort.abort(); }
 }

@@ -149,19 +149,51 @@ fallback. Request bodies over the transport limit return HTTP 413.
 
 ## 5. Install memory plugins
 
-The host-agent release packages the OpenClaw and Hermes memory plugins. Install
-one through the local MCP endpoint:
+The host-agent release packages the memory plugins for Claude Code, Codex,
+Cursor, Hermes and OpenClaw. Install one through the local MCP endpoint, setting
+`runtime` to `claude_code`, `codex`, `cursor`, `hermes` or `openclaw`:
 
 ```sh
 curl http://127.0.0.1:4222/memory/host_agent/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_agent::install_plugin","arguments":{"plugin":"memory","runtime":"hermes"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_agent::install_plugin","arguments":{"plugin":"memory","runtime":"claude_code"}}}'
 ```
 
-Use `"runtime":"openclaw"` for OpenClaw. The installer writes
-`backplane-memory` under the runtime's default plugin directory in the current
-user's home directory and replaces an older copy by default.
+The installer only writes files under the user's home directory and replaces an
+older copy by default. It also installs the shared hook client at
+`~/.local/share/backplane/bin/backplane-memory-hook`. The result lists
+`next_steps`; run them yourself:
 
-For OpenClaw, use the [qualified runtime and configuration](../memory/openclaw-memory-integration.md)
-and explicitly configure the existing access binding and conversation-hook grant.
-Installing files alone does not activate or authorize the provider.
+| Runtime | Next steps |
+| --- | --- |
+| `claude_code` | `claude plugin marketplace add ~/.local/share/backplane/plugins/claude` then `claude plugin install backplane-memory@backplane-local` |
+| `codex` | `codex plugin marketplace add ~/.local/share/backplane/plugins/codex` then `codex plugin add backplane-memory@backplane-local`. Then start Codex interactively once and trust the backplane-memory plugin hooks when prompted; Codex does not run plugin hooks until they are trusted. |
+| `cursor` | Restart Cursor. Hooks and MCP are merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json`; the first change keeps a `*.backplane-backup` copy, and removing the plugin restores your own entries. |
+| `hermes` | Installs to `~/.hermes/plugins/backplane-memory`. Enable the provider in the Hermes profile config (`memory: provider: backplane-memory`) or run `hermes memory setup backplane-memory`, then restart Hermes. |
+| `openclaw` | Installs to `~/.openclaw/extensions/backplane-memory`. In `~/.openclaw/openclaw.json` set `plugins.slots.memory` to `"backplane-memory"`, and on `plugins.entries.backplane-memory` set `enabled` and `hooks.allowConversationAccess` to `true` (see the plugin README); then restart OpenClaw. |
+
+After reinstalling Claude Code's plugin with a different host-agent URL, run
+`claude plugin update backplane-memory@backplane-local` and restart Claude Code:
+Claude caches installed plugins by version, so the new URL is not picked up
+otherwise.
+
+### Remove
+
+Remove the plugin from the client first (or immediately after removing it
+through the host agent). Removing deletes the installed package and, when no
+other client still uses it, the shared hook client; a client that still has the
+plugin enabled would then call a deleted hook client on every hook. Remove with
+`host_agent::remove_plugin` (same arguments as install); its `next_steps` list
+the client-side commands:
+
+| Runtime | Client-side removal |
+| --- | --- |
+| `claude_code` | `claude plugin uninstall backplane-memory@backplane-local` then `claude plugin marketplace remove backplane-local` |
+| `codex` | `codex plugin remove backplane-memory@backplane-local` then `codex plugin marketplace remove backplane-local` |
+| `cursor` | Restart Cursor (Backplane's hook and MCP entries are removed from `~/.cursor/*.json`). |
+| `hermes` | `hermes memory off`, then restart Hermes. |
+| `openclaw` | Remove `plugins.slots.memory` and `plugins.entries.backplane-memory` from `~/.openclaw/openclaw.json`, then restart OpenClaw. |
+
+Capture hooks never block or fail the agent when the host agent is down. Set
+`BACKPLANE_HOST_AGENT_URL` to override the host-agent URL for the hook client.
+See [Memory architecture](../architecture/memory.md#plugins).

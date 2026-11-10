@@ -1,0 +1,14 @@
+{
+  "name": "backplane-local",
+  "owner": {
+    "name": "Backplane"
+  },
+  "description": "Local Backplane plugins.",
+  "plugins": [
+    {
+      "name": "backplane-memory",
+      "source": "./backplane-memory",
+      "description": "Backplane shared memory: capture hooks, memory tools, and a resident usage instruction."
+    }
+  ]
+}

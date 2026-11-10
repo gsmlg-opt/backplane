@@ -169,10 +169,59 @@ unchanged slots are left alone, and vanished slots are forgotten.
 - Invalid payloads are cancelled with a warning (no retry, no records); other
   failures, including a failed forget (which rolls the whole apply back), retry.
 
-## Not yet built
+## Plugins
 
-The Codex / Cursor / Claude Code / Sigma / Synapsis
-plugins are described in the spec and are delivered in later plans.
+Packages live under `integrations/memory/` and ship inside the host-agent
+release (`priv/integrations/memory`). All five clients reach memory through the
+local host agent (`127.0.0.1:4222`): MCP at `/memory/:agent_id/mcp`, direct tool
+calls at `/memory/:agent_id/call/:method`, capture at
+`/capture/v1/hooks/:integration/:hook`. Agent ids: `claude-code`, `codex`,
+`cursor`, `hermes`, `openclaw`.
+
+**Hook client.** `shared/bin/backplane-memory-hook <integration> <hook>` is a
+POSIX shell script that streams hook stdin to the capture endpoint with
+`curl --max-time 2`, discards all output and always exits 0, so a down or slow
+host agent never affects the agent. The base URL comes from
+`$BACKPLANE_HOST_AGENT_URL`, else the URL baked in at install, else the
+default. For Cursor `beforeSubmitPrompt` it prints `{"continue":true}`. Cursor
+events are normalized host-side (`conversation_id`, `workspace_roots`,
+camelCase event names).
+
+**Instruction source.** `shared/INSTRUCTIONS.md` is the single resident
+instruction (after finishing work, call `memory::remember` if something is worth
+keeping; no blocking Stop hook). It is shipped in each package's skill, served
+as `instructions` in MCP `initialize`, and a test fails on drift.
+
+**Install** (via `host_agent::install_plugin` with `plugin: "memory"`; the
+installer copies files only and never runs other CLIs, results carry
+`next_steps`). `<data>` is `~/.local/share/backplane`; every install also copies
+the hook client to `<data>/bin/backplane-memory-hook`.
+
+| Runtime | Installed to | Next steps |
+| --- | --- | --- |
+| `claude_code` | marketplace `<data>/plugins/claude` | `claude plugin marketplace add <data>/plugins/claude`, then `claude plugin install backplane-memory@backplane-local` |
+| `codex` | marketplace `<data>/plugins/codex` | `codex plugin marketplace add <data>/plugins/codex`, then `codex plugin add backplane-memory@backplane-local`; then start Codex interactively once and trust the plugin hooks when prompted (Codex does not run plugin hooks until trusted) |
+| `cursor` | merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json` (one-time `*.backplane-backup`; `remove` restores the user's own entries) | restart Cursor |
+| `hermes` | `~/.hermes/plugins/backplane-memory` | enable `memory: provider: backplane-memory` (or `hermes memory setup backplane-memory`), restart Hermes |
+| `openclaw` | `~/.openclaw/extensions/backplane-memory` | set `plugins.slots.memory`, the entry's `enabled` and `hooks.allowConversationAccess` in `~/.openclaw/openclaw.json`, restart OpenClaw |
+
+`remove` results carry the client-side uninstall commands instead (for example
+`claude plugin uninstall backplane-memory@backplane-local`); run them before or
+right after removing so no client keeps calling a deleted hook client.
+
+**Hermes and OpenClaw** keep native plugins that recall and write through the
+global tools. They surface memory only in a live, owner-private session and fail
+closed otherwise (OpenClaw requires an unsandboxed `owner-private` audience;
+see each README). A down or older host agent, or `gateway_unavailable`, degrades
+to no recall context without raising into the agent; writes are queued by the
+host.
+
+CI: `.github/workflows/memory-plugins.yml` runs the package, installer and hook
+tests and verifies the packaged release (`shared/bin/backplane-memory-hook`
+executable, `INSTRUCTIONS.md`, `claude_code`, `codex`, `cursor`).
+
+Sigma and Synapsis plugins are tracked as `internal request` issues in their
+own repositories: gsmlg-opt/sigma#3 and gsmlg-opt/Synapsis#25.
 
 ## Historical documents
 

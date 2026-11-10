@@ -16,6 +16,14 @@ defmodule Backplane.HostAgent.Memory.Hooks.ClaudeCode do
     "postcommit" => {"post-commit", "git.commit.created"}
   }
 
+  @supported_hooks ~w(
+    SessionStart UserPromptSubmit PostToolUse PostToolUseFailure PreCompact
+    SubagentStart SubagentStop Stop SessionEnd
+  )
+
+  @doc "Lists the Claude Code lifecycle hooks installed by the plugin."
+  def supported_hooks, do: @supported_hooks
+
   @doc "Normalizes one supported Claude Code hook using trusted host configuration."
   @spec normalize(String.t(), map(), map() | struct()) ::
           {:ok, map()} | {:error, :unsupported_hook | {:malformed, [atom()]}}
@@ -122,8 +130,9 @@ defmodule Backplane.HostAgent.Memory.Hooks.ClaudeCode do
   end
 
   defp agent_id(source, config) do
+    # Matches the MCP path agent id (`/memory/claude-code/mcp`).
     optional_config_string(config, :agent_id) || optional_string(source, "agent_id") ||
-      "claude_code"
+      "claude-code"
   end
 
   defp project(source), do: optional_string(source, "cwd") || optional_string(source, "project")

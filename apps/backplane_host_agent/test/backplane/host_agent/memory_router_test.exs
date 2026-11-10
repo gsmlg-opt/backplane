@@ -160,6 +160,16 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
       end
     end
 
+    test "every listed tool has an object inputSchema" do
+      for proxy <- [StubHubProxy, ErrorHubProxy] do
+        Application.put_env(:backplane_host_agent, :hub_proxy_module, proxy)
+
+        for {name, tool} <- mcp_tools("/memory/a1/mcp") do
+          assert %{"inputSchema" => %{"type" => "object"}} = tool, "#{name} lacks inputSchema"
+        end
+      end
+    end
+
     test "uses hub schemas while connected and contract schemas while disconnected" do
       Application.put_env(:backplane_host_agent, :hub_proxy_module, StubHubProxy)
       connected = mcp_tools("/memory/a1/mcp")
@@ -335,9 +345,57 @@ defmodule Backplane.HostAgent.MemoryRouterTest do
              }
     end
 
+    test "initialize serves the canonical resident instructions" do
+      decoded = jsonrpc("/memory/agt_42/mcp", %{"id" => 1, "method" => "initialize"})
+
+      assert decoded["result"]["instructions"] ==
+               Backplane.MemoryToolContract.instructions()
+    end
+
     test "returns JSON-RPC error for unknown JSON-RPC method" do
       decoded = jsonrpc("/memory/agt_42/mcp", %{"id" => 7, "method" => "unsupported"})
       assert decoded["error"]["code"] == -32_601
+    end
+
+    for path <- ["/memory/agt_42/mcp", "/agt_42/mcp", "/mcp"] do
+      test "#{path} accepts a JSON-RPC notification with 202 and an empty body" do
+        conn =
+          post_json(unquote(path), %{
+            "jsonrpc" => "2.0",
+            "method" => "notifications/initialized"
+          })
+
+        assert conn.status == 202
+        assert conn.resp_body == ""
+      end
+
+      test "#{path} accepts a client JSON-RPC response with 202 and an empty body" do
+        conn = post_json(unquote(path), %{"jsonrpc" => "2.0", "id" => 3, "result" => %{}})
+
+        assert conn.status == 202
+        assert conn.resp_body == ""
+      end
+
+      test "#{path} answers GET with 405 and allow: POST" do
+        conn = :get |> conn(unquote(path)) |> call_router()
+
+        assert conn.status == 405
+        assert get_resp_header(conn, "allow") == ["POST"]
+      end
+    end
+
+    test "still rejects a body that is not JSON-RPC with 400" do
+      conn = post_json("/memory/agt_42/mcp", %{"method" => "initialize", "id" => 1})
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"] == "invalid JSON-RPC request"
+
+      conn = post_json("/memory/agt_42/mcp", %{"jsonrpc" => "2.0"})
+      assert conn.status == 400
+    end
+
+    test "GET on unrelated paths stays 404" do
+      conn = :get |> conn("/memory/agt_42/other") |> call_router()
+      assert conn.status == 404
     end
   end
 

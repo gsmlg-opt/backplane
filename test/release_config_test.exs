@@ -792,7 +792,7 @@ defmodule Backplane.ReleaseConfigTest do
     assert releases[:backplane][:applications][:backplane_api] == :permanent
     assert releases[:backplane][:applications][:backplane_admin] == :permanent
     assert releases[:backplane][:applications][:backplane_memory] == :permanent
-    assert releases[:backplane][:applications][:backplane_agent_runtime] == :load
+    assert releases[:backplane][:applications][:backplane_agent_runtime] == :permanent
     refute Keyword.has_key?(releases[:backplane][:applications], :backplane_host_agent)
 
     assert releases[:host_agent][:applications][:backplane_host_agent] == :permanent
@@ -1135,7 +1135,8 @@ defmodule Backplane.ReleaseConfigTest do
   test "server memory CI runs the Memory app suite outside release" do
     workflow = File.read!(".github/workflows/memory-test.yml")
 
-    assert workflow =~ "mix do --app backplane_memory cmd mix test"
+    assert workflow =~ "mix test apps/backplane_memory/test"
+    refute workflow =~ "mix do --app"
     refute workflow =~ "memory_slots"
     refute workflow =~ "edge_cutover_check"
     refute workflow =~ "mix memory.qualify"

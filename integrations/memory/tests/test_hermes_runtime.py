@@ -21,34 +21,8 @@ from test_hermes_delivery import load_plugin
 plugin = load_plugin()
 
 
-def load_pinned_scrubber():
-    """Exact upstream redactor with only scoped vault-home/file-name dependencies stubbed."""
-    import sys
-    import types
-    fixture=json.loads((Path(__file__).parent/'fixtures'/'hermes_contract.json').read_text())
-    source=next(item for item in fixture['sources'] if item['path']=='agent/redact.py')
-    raw=source['snippets'][0]['source']
-    assert hashlib.sha256(raw.encode()).hexdigest()==source['sha256']
-    fs=types.ModuleType('agent.file_safety')
-    fs._BLOCKED_PROJECT_ENV_BASENAMES=frozenset({'.env'})
-    hc=types.ModuleType('hermes_constants')
-    hc.get_hermes_home=lambda:Path('/nonexistent-pinned-hermes-test-profile')
-    ns={'__name__':'pinned_hermes_redactor_fixture'}
-    with patch.dict(sys.modules,{'agent.file_safety':fs,'hermes_constants':hc}):
-        exec(raw,ns)
-    # Keep the helper's profile lookup pure after dependency stubs leave scope.
-    ns['_vault_scope']=lambda:'/nonexistent-pinned-hermes-test-profile'
-    return ns['redact_for_egress']
-
-
-def capability():
-    binding={"access_id":"fixture-access","authority_version":1,"partition":{"memory_space_id":"space","scope":"fixture","namespace":"default"}}
-    fingerprint=hashlib.sha256(plugin.canonical_json(binding).encode()).hexdigest()
-    return {"protocol":"memory_sources.v1","supported":True,"ready":True,"capture_ready":True,"contracts":["memory_sources.v1","hermes_capture.v1"],"negotiated":["memory_sources.v1","hermes_capture.v1"],"binding":binding,"binding_fingerprint":fingerprint,"capture_binding":binding,"capture_binding_fingerprint":fingerprint}
-
-
-def current(content="alpha fact", **kwargs):
-    return {"id":"memory-1","canonical_id":"memory-1","revision":1,"content":content,"policy_version":"current_context.v1","lifecycle_state":"active","effective_support":True,"support_complete":True,"source_refs":[],"trust":"established_fact","expires_at":None,"valid_until":None,**kwargs}
+def search_result(*contents):
+    return {"results":[{"id":"memory-"+str(index),"kind":"fact","content":content,"status":"active","observed_at":"2026-11-09T00:00:00Z","provenance":{"host":"host-a","agent":"codex"}} for index,content in enumerate(contents)]}
 
 
 @contextmanager
@@ -61,8 +35,9 @@ def http_fixture(dispatch):
                 self.connection.shutdown(socket.SHUT_RDWR)
                 self.connection.close()
                 return
+            status,body=body if isinstance(body,tuple) else (200,body)
             encoded=json.dumps(body).encode()
-            self.send_response(200)
+            self.send_response(status)
             self.send_header('Content-Type','application/json')
             self.send_header('Content-Length',str(len(encoded)))
             self.end_headers()
@@ -86,14 +61,11 @@ class RuntimeTest(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home=Path(self.tmp.name)
-        (self.home/'memories').mkdir()
-        for target in ('MEMORY.md','USER.md'):
-            (self.home/'memories'/target).write_text('')
         self.provider=self.build()
 
     def build(self, **kwargs):
         provider=plugin.BackplaneMemoryProvider()
-        with patch.object(plugin,'_load_egress_scrubber',return_value=lambda text:text),patch.object(plugin.BackplaneMemoryProvider,'_start_worker',lambda s:None),patch.dict(plugin.os.environ,{},clear=True):
+        with patch.object(plugin.BackplaneMemoryProvider,'_start_worker',lambda s:None),patch.dict(plugin.os.environ,{},clear=True):
             provider.initialize('session-1',hermes_home=str(self.home),**kwargs)
         self.addCleanup(provider.shutdown)
         return provider
@@ -102,210 +74,79 @@ class RuntimeTest(unittest.TestCase):
         other=self.home/'other'
         self.provider.save_config({'agent_id':'other-agent','context_token_budget':256},str(other))
         second=plugin.BackplaneMemoryProvider()
-        with patch.object(plugin,'_load_egress_scrubber',return_value=lambda text:text),patch.object(plugin.BackplaneMemoryProvider,'_start_worker',lambda s:None),patch.dict(plugin.os.environ,{},clear=True):
+        with patch.object(plugin.BackplaneMemoryProvider,'_start_worker',lambda s:None),patch.dict(plugin.os.environ,{},clear=True):
             second.initialize('same-session',hermes_home=str(other),agent_identity='second')
         self.addCleanup(second.shutdown)
         self.assertEqual(second._agent_id,'other-agent')
         self.assertEqual(second._config['context_token_budget'],256)
-        self.assertNotEqual(second._source('memory'),self.provider._source('memory'))
+        self.assertNotEqual(second._journal.installation_id,self.provider._journal.installation_id)
         self.assertNotEqual(second._journal.path,self.provider._journal.path)
         self.assertEqual(self.provider._config['context_token_budget'],1200)
+        self.assertEqual(self.provider._config['search_limit'],8)
 
-    def test_prefetch_consumes_cache_without_network_and_invalidates_on_change(self):
-        self.provider.queue_prefetch('alpha')
-        key,value=self.provider._prefetch_jobs.popitem(last=False)
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':{'results':[current()]}}) as post:
-            self.provider._fetch_context(key,value)
-            self.assertIn('alpha fact',self.provider.prefetch('alpha'))
-            self.assertEqual(post.call_count,1)
-        (self.home/'memories'/'MEMORY.md').write_text('corrected alpha fact')
-        self.provider.on_memory_write('add','memory','corrected alpha fact')
-        with patch.object(plugin,'_post',side_effect=AssertionError('prefetch must not block')):
-            self.assertEqual(self.provider.prefetch('alpha'),'')
+    def test_config_from_the_retired_setup_is_ignored_with_a_warning(self):
+        home=self.home/'legacy'
+        home.mkdir()
+        (home/'backplane-memory.json').write_text(json.dumps({'agent_id':'legacy-agent','retired_selector':'74be1bcf-a924-4fb4-9a3a-8cddf8d857b7','relevance_mode':'lexical'}))
+        provider=plugin.BackplaneMemoryProvider()
+        with patch.object(plugin.BackplaneMemoryProvider,'_start_worker',lambda s:None),patch.dict(plugin.os.environ,{},clear=True),self.assertLogs(plugin.logger,level='WARNING') as logs:
+            provider.initialize('s',hermes_home=str(home))
+        self.addCleanup(provider.shutdown)
+        self.assertEqual(provider._agent_id,'legacy-agent')
+        self.assertNotIn('74be1bcf','\n'.join(logs.output))
+        provider.save_config({'context_token_budget':300},str(home))
+        self.assertEqual(json.loads((home/'backplane-memory.json').read_text()),{'agent_id':'legacy-agent','context_token_budget':300})
+        with self.assertRaisesRegex(ValueError,'invalid_provider_config'):
+            provider.save_config({'unknown':1},str(home))
 
-    def test_context_trust_lifecycle_relevance_and_final_budget(self):
-        from importlib import import_module
-        render=import_module(plugin.__name__+'.context').render_context
-        self.provider._config['context_token_budget']=180
-        rows=[current('alpha '+('x'*1000),canonical_id='oversized'),current('alpha assistant guess',canonical_id='guess',trust='candidate_inference'),current('alpha raw statement',canonical_id='raw',trust='raw_evidence'),current('alpha obsolete',canonical_id='old',lifecycle_state='superseded'),current('alpha expired',canonical_id='expired',expires_at='2000-01-01T00:00:00Z'),current('unrelated banana',canonical_id='unrelated')]
-        text,ttl=render(self.provider,'alpha',{'results':rows})
-        self.assertIn('candidate inference',text)
-        self.assertIn('alpha assistant guess',text)
-        self.assertNotIn('established fact',text)
-        self.assertNotIn('raw statement',text)
-        self.assertNotIn('obsolete',text)
-        self.assertNotIn('expired',text)
-        self.assertNotIn('banana',text)
-        self.assertNotIn('xxx',text)
-        self.assertLessEqual(len(text.encode()),180)
-        self.assertEqual(render(self.provider,'zebra',{'results':rows})[0],'')
+    def test_invalid_config_values_make_the_provider_unavailable(self):
+        for config in ({'url':'ftp://host'},{'url':'http://user:pw@127.0.0.1:4222'},{'search_limit':0},{'agent_id':' '}):
+            with self.subTest(config=config):
+                home=self.home/('bad-'+str(abs(hash(json.dumps(config)))))
+                home.mkdir()
+                (home/'backplane-memory.json').write_text(json.dumps(config))
+                provider=plugin.BackplaneMemoryProvider()
+                provider._home=home
+                with patch.dict(plugin.os.environ,{},clear=True):
+                    self.assertFalse(provider.is_available())
 
-    def test_complete_independent_support_survives_local_withdrawal(self):
-        from importlib import import_module
-        render=import_module(plugin.__name__+'.context').render_context
-        path=self.home/'memories'/'MEMORY.md'
-        path.write_text('alpha fact')
-        self.provider.on_memory_write('add','memory','alpha fact')
-        entry=dict(self.provider._journal.db.execute("SELECT * FROM source_entries WHERE target='memory'").fetchone())
-        ref={'source':self.provider._source('memory'),'entry_id':entry['entry_id'],'source_revision':entry['revision'],'event_id':'e','active':True}
-        path.write_text('')
-        self.provider.on_memory_write('remove','memory','',metadata={'previous_content':'alpha fact'})
-        self.assertEqual(render(self.provider,'alpha',{'results':[current(source_refs=[ref])]})[0],'')
-        independent={**ref,'source':{**ref['source'],'profile_id':'independent'},'entry_id':'independent-entry'}
-        self.assertIn('alpha fact',render(self.provider,'alpha',{'results':[current(source_refs=[ref,independent])]})[0])
+    def test_plaintext_remote_transport_is_warned(self):
+        home=self.home/'remote'
+        home.mkdir()
+        (home/'backplane-memory.json').write_text(json.dumps({'url':'http://memory.example.com:4222'}))
+        provider=plugin.BackplaneMemoryProvider()
+        with patch.object(plugin.BackplaneMemoryProvider,'_start_worker',lambda s:None),patch.dict(plugin.os.environ,{},clear=True),self.assertLogs(plugin.logger,level='WARNING') as logs:
+            provider.initialize('s',hermes_home=str(home))
+        self.addCleanup(provider.shutdown)
+        self.assertIn('plaintext_remote_transport','\n'.join(logs.output))
 
-    def test_unknown_policy_stale_and_incomplete_support_cannot_enter_cache(self):
-        from importlib import import_module
-        render=import_module(plugin.__name__+'.context').render_context
-        for result in [{'results':[current(policy_version='legacy')]},{'results':[current(support_complete=False)]},{'results':[current()],'stale':True}]:
-            self.assertEqual(render(self.provider,'alpha',result)[0],'')
-
-    def test_peer_without_new_contract_never_emulates_native_write(self):
-        with patch.object(plugin,'_post',return_value={'ok':False,'error':'not_found','http_status':404}) as post,patch.object(plugin,'_http') as http:
-            self.assertFalse(self.provider._deliver_once())
-            self.assertEqual(post.call_args.args[2],'source_capabilities')
-            http.assert_not_called()
-        self.assertGreater(self.provider.delivery_status()['local_pending'],0)
-
-    def test_unnegotiated_peer_without_binding_preserves_pending_delivery(self):
-        caps=capability()
-        caps.update(ready=False,negotiated=[],binding=None,binding_fingerprint=None,capture_ready=False,capture_binding=None,capture_binding_fingerprint=None,capture_error='not_negotiated')
-        pending=self.provider.delivery_status()['local_pending']
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}),patch.object(plugin,'_http') as http:
-            self.assertFalse(self.provider._deliver_once())
-            http.assert_not_called()
-        self.assertEqual(self.provider.delivery_status()['peer'],'not_negotiated')
-        self.assertEqual(self.provider.delivery_status()['local_pending'],pending)
-        self.assertEqual(self.provider.delivery_status()['rejected'],0)
-        self.assertFalse(self.provider._journal.get('binding_fingerprint'))
-        self.provider._peer_checked=0
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':capability()}):
-            self.assertTrue(self.provider._check_peer())
-        self.assertEqual(self.provider.delivery_status()['binding'],'verified')
-        self.assertEqual(self.provider.delivery_status()['capture_binding'],'verified')
-
-    def test_negotiated_but_unready_peer_does_not_pin_an_unusable_binding(self):
-        caps=capability();caps['ready']=False
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-            self.assertFalse(self.provider._check_peer())
-        self.assertEqual(self.provider.delivery_status()['peer'],'not_ready')
-        self.assertFalse(self.provider._journal.get('binding_fingerprint'))
-        self.assertFalse(self.provider._journal.get('capture_binding_fingerprint'))
-
-    def test_explicit_unsupported_contract_is_distinct_from_transport_unavailability(self):
-        for caps in [{**capability(),'supported':False},{**capability(),'protocol':'unknown.v1'}]:
-            with self.subTest(caps=caps):
-                self.provider._peer_checked=0
-                with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-                    self.assertFalse(self.provider._check_peer())
-                self.assertEqual(self.provider.delivery_status()['peer'],'unsupported')
-        self.provider._peer_checked=0
-        with patch.object(plugin,'_post',return_value={'ok':False,'error':'request_failed'}):
-            self.assertFalse(self.provider._check_peer())
-        self.assertEqual(self.provider.delivery_status()['peer'],'unavailable')
-
-    def test_ready_source_binding_must_be_present_and_match_its_fingerprint(self):
-        for binding,fingerprint in [(None,None),([], 'invalid'),(capability()['binding'],'0'*64)]:
-            with self.subTest(binding=binding,fingerprint=fingerprint):
-                caps=capability();caps.update(binding=binding,binding_fingerprint=fingerprint)
-                self.provider._peer_checked=0
-                with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}),patch.object(plugin,'_http') as http:
-                    self.assertFalse(self.provider._deliver_once())
-                    http.assert_not_called()
-                self.assertEqual(self.provider.delivery_status()['peer'],'invalid_binding')
-                self.assertFalse(self.provider._journal.get('binding_fingerprint'))
-
-    def test_missing_capture_binding_temporarily_defers_without_changing_pinned_identity(self):
-        caps=capability()
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-            self.assertTrue(self.provider._check_peer())
-        saved=self.provider._journal.get('capture_binding_fingerprint')
-        absent={**caps,'capture_ready':False,'capture_binding':None,'capture_binding_fingerprint':None,'capture_error':'capture_unavailable'}
-        self.provider._peer_checked=0
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':absent}):
-            self.assertTrue(self.provider._check_peer())
-        self.assertEqual(self.provider.delivery_status()['capture_binding'],'capture_unavailable')
-        self.assertEqual(self.provider._journal.get('capture_binding_fingerprint'),saved)
-        with self.assertRaisesRegex(RuntimeError,'capture_unavailable'):
-            self.provider.on_pre_compress([{'role':'user','content':'evidence','message_uid':'u1'}],require_checkpoint=True)
-        self.provider._peer_checked=0
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-            self.assertTrue(self.provider._check_peer())
-        self.assertEqual(self.provider.delivery_status()['capture_binding'],'verified')
-        self.assertEqual(self.provider.delivery_status()['capture_deferred'],0)
-
-    def test_ready_capture_binding_with_invalid_digest_cannot_send_capture(self):
-        caps=capability();caps['capture_binding_fingerprint']='0'*64
-        paths=[]
-        def source_only(base,path,payload):
-            paths.append(path)
-            return {'ok':True,'result':{'protocol':'memory_sources.v1','event_id':payload['event_id'],'status':'committed'}}
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}),patch.object(plugin,'_http',side_effect=source_only):
-            self.provider._deliver_once()
-        self.assertFalse(any(path.startswith('/capture/') for path in paths))
-        self.assertEqual(self.provider.delivery_status()['capture_binding'],'capture_unavailable')
-        self.assertGreater(self.provider.delivery_status()['capture_deferred'],0)
-
-    def test_changed_capture_binding_remains_refused_after_restart(self):
-        caps=capability()
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-            self.assertTrue(self.provider._check_peer())
-        other={**caps,'capture_binding':{**caps['capture_binding'],'authority_version':2}}
-        other['capture_binding_fingerprint']=hashlib.sha256(plugin.canonical_json(other['capture_binding']).encode()).hexdigest()
-        self.provider._peer_checked=0
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':other}):
-            self.assertTrue(self.provider._check_peer())
-        self.assertEqual(self.provider.delivery_status()['capture_binding'],'capture_binding_mismatch')
-        self.assertEqual(self.provider._journal.get('capture_binding_fingerprint'),caps['capture_binding_fingerprint'])
+    def test_real_http_gateway_unavailable_yields_no_context(self):
+        def dispatch(path,payload,raw):
+            return (503,{'ok':False,'error':'gateway_unavailable'})
         self.provider.shutdown()
-        second=self.build()
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-            self.assertTrue(second._check_peer())
-        self.assertEqual(second.delivery_status()['capture_binding'],'capture_binding_mismatch')
-        with self.assertRaisesRegex(RuntimeError,'capture_binding_mismatch'):
-            second.on_pre_compress([{'role':'user','content':'evidence','message_uid':'u1'}],require_checkpoint=True)
+        with http_fixture(dispatch) as base:
+            self.home=self.home/'http-503';self.home.mkdir()
+            (self.home/'backplane-memory.json').write_text(json.dumps({'url':base}))
+            provider=self.build()
+            with self.assertLogs(plugin.logger,level='WARNING') as logs:
+                self.assertEqual(provider.prefetch('anything'),'')
+            self.assertEqual(len(logs.records),1)
+            self.assertIn('503','\n'.join(logs.output))
 
-    def test_capture_contract_must_be_negotiated_before_automatic_delivery(self):
-        caps=capability();caps['negotiated']=['memory_sources.v1']
-        paths=[]
-        def source_only(base,path,payload):
-            paths.append(path)
-            return {'ok':True,'result':{'protocol':'memory_sources.v1','event_id':payload['event_id'],'status':'committed'}}
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}),patch.object(plugin,'_http',side_effect=source_only):
-            self.provider._deliver_once()
-        self.assertFalse(any(path.startswith('/capture/') for path in paths))
-        self.assertGreater(self.provider.delivery_status()['capture_deferred'],0)
-        with self.assertRaisesRegex(RuntimeError,'capture_unavailable'):
-            self.provider.on_pre_compress([{'role':'user','content':'evidence','message_uid':'u1'}],require_checkpoint=True)
-
-    def test_capture_binding_mismatch_refuses_checkpoint_while_sources_can_settle(self):
-        caps=capability();caps['capture_ready']=False;caps['capture_error']='capture_binding_mismatch'
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-            self.assertTrue(self.provider._check_peer())
-        with self.assertRaisesRegex(RuntimeError,'capture_binding_mismatch'):
-            self.provider.on_pre_compress([{'role':'user','content':'evidence','message_uid':'u1'}],require_checkpoint=True)
-        self.assertEqual(self.provider.delivery_status()['capture_binding'],'capture_binding_mismatch')
-
-    def test_changed_binding_is_terminal_and_cannot_auto_rebind_after_restart(self):
-        caps=capability()
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':caps}):
-            self.assertTrue(self.provider._check_peer())
-        other=copy.deepcopy(caps);other['binding']['authority_version']=2
-        other['binding_fingerprint']=hashlib.sha256(plugin.canonical_json(other['binding']).encode()).hexdigest()
-        self.provider._peer_checked=0
-        with patch.object(plugin,'_post',return_value={'ok':True,'result':other}):
-            self.assertFalse(self.provider._check_peer())
-        self.assertGreater(self.provider.delivery_status()['rejected'],0)
+    def test_real_http_search_renders_context(self):
+        def dispatch(path,payload,raw):
+            self.assertEqual(path,'/memory/hermes/call/search')
+            return search_result('alpha fact')
         self.provider.shutdown()
-        second=self.build()
-        with patch.object(plugin,'_post',side_effect=AssertionError('blocked binding cannot auto rebind')):
-            self.assertFalse(second._check_peer())
+        with http_fixture(lambda path,payload,raw:{'ok':True,'result':dispatch(path,payload,raw)}) as base:
+            self.home=self.home/'http-ok';self.home.mkdir()
+            (self.home/'backplane-memory.json').write_text(json.dumps({'url':base}))
+            provider=self.build()
+            self.assertIn('alpha fact',provider.prefetch('alpha'))
 
     def test_lost_http_ack_replays_identical_payload_after_restart(self):
         accepted={}; attempts={}; bodies=[]
         def dispatch(path,payload,raw):
-            if path.endswith('source_capabilities'):
-                return {'ok':True,'result':capability()}
             if path=='/capture/v1/status':
                 return {'ok':True,'result':{'protocol':'hermes_capture.v1','items':[{'event_id':event,'status':'canonical_committed'} for event in payload['event_ids']]}}
             event=payload['event_id'];bodies.append((event,raw))
@@ -314,9 +155,7 @@ class RuntimeTest(unittest.TestCase):
             accepted[event]=raw;attempts[event]=attempts.get(event,0)+1
             if path.startswith('/capture/') and attempts[event]==1:
                 return None
-            if path.startswith('/capture/'):
-                return {'ok':True,'status':'duplicate','event_id':event}
-            return {'ok':True,'result':{'protocol':'memory_sources.v1','event_id':event,'status':'committed','outcome':'applied','authority':'canonical','consistency':'canonical'}}
+            return {'ok':True,'status':'duplicate','event_id':event}
         self.provider.shutdown()
         with http_fixture(dispatch) as base:
             # Fresh bound profile to avoid rewriting the existing immutable URL binding.
@@ -356,18 +195,6 @@ class PinnedHermesContractTest(unittest.TestCase):
             method=next(node for node in cls.body if isinstance(node,ast.FunctionDef) and node.name==name)
             implemented=inspect.signature(getattr(plugin.BackplaneMemoryProvider,name))
             self.assertTrue(all(arg.arg in implemented.parameters for arg in method.args.args+method.args.kwonlyargs),name)
-
-    def test_native_redactor_uses_admitted_public_reexport_and_exact_egress_behavior(self):
-        raw=self.snippets['hermes_cli/plugin_validate_private_imports.py']
-        tree=ast.parse(raw)
-        assignment=next(node for node in tree.body if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='_PUBLIC' for t in node.targets))
-        scope={}
-        exec(compile(ast.Module(body=[assignment],type_ignores=[]),'pinned-public-imports','exec'),scope)
-        self.assertIn('agent.memory_manager',scope['_PUBLIC'])
-        scrub=load_pinned_scrubber()
-        self.assertNotIn('synthetic-private-secret-value',scrub('API_KEY=synthetic-private-secret-value'))
-        self.assertNotIn('1234567890123456789012345',scrub('Bearer 1234567890123456789012345'))
-        self.assertEqual(scrub('ordinary harmless fact'),'ordinary harmless fact')
 
     def test_exact_upstream_checkpoint_normalizer_preserves_real_occurrences(self):
         fake=type(__import__('sys'))('agent.context_compressor');fake.COMPRESSED_SUMMARY_METADATA_KEY='_compressed_summary'

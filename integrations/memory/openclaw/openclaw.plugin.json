@@ -2,7 +2,7 @@
   "id": "backplane-memory",
   "kind": "memory",
   "name": "backplane-memory",
-  "description": "Persistent cross-session memory for OpenClaw via the Backplane host agent.",
+  "description": "Backplane memory shared across the user's agents and hosts, via the local Backplane host agent.",
   "version": "1.10.67",
   "configSchema": {
     "type": "object",
@@ -15,7 +15,8 @@
         "type": "string"
       },
       "agent_id": {
-        "type": "string"
+        "type": "string",
+        "minLength": 1
       },
       "profile_id": {
         "type": "string",
@@ -30,42 +31,15 @@
         "minimum": 128,
         "maximum": 32768
       },
-      "min_confidence": {
-        "type": "number",
-        "description": "Deprecated reserved option; ignored with a diagnostic."
-      },
-      "fallback_on_error": {
-        "type": "boolean"
+      "search_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
       },
       "timeout_ms": {
         "type": "integer",
         "minimum": 100,
         "maximum": 20000
-      },
-      "native_sync": {
-        "type": "boolean"
-      },
-      "bindings": {
-        "type": "array",
-        "maxItems": 64,
-        "items": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "agent_id",
-            "memory_access_id"
-          ],
-          "properties": {
-            "agent_id": {
-              "type": "string",
-              "minLength": 1
-            },
-            "memory_access_id": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        }
       }
     }
   },
@@ -74,33 +48,28 @@
       "label": "Enabled"
     },
     "base_url": {
-      "label": "Base URL"
+      "label": "Host agent URL"
     },
-    "bindings": {
-      "label": "Authorized owner audience bindings",
-      "help": "Map actual OpenClaw agent IDs to existing granted Backplane access UUIDs; conversation audiences are refused."
+    "agent_id": {
+      "label": "Agent id",
+      "help": "Recorded as the agent on memories saved from OpenClaw (default openclaw)."
     },
     "token_budget": {
-      "label": "Rendered context budget",
-      "help": "128-32768 UTF-8 bytes; includes all labels, citations and separators."
+      "label": "Automatic context budget",
+      "help": "128-32768 UTF-8 bytes; includes the header and all labels."
     },
-    "min_confidence": {
-      "label": "Deprecated reserved option",
-      "help": "Ignored with migration diagnostics; canonical relevance policy applies."
-    },
-    "native_sync": {
-      "label": "Sync USER.md and MEMORY.md"
+    "search_limit": {
+      "label": "Memories searched per turn",
+      "help": "1-50; default 8."
     }
   },
   "contracts": {
     "tools": [
       "backplane_memory_search",
       "backplane_memory_get",
-      "backplane_memory_save",
-      "backplane_memory_correct",
-      "backplane_memory_withdraw",
-      "backplane_memory_forget",
-      "backplane_memory_status"
+      "backplane_memory_recent",
+      "backplane_memory_remember",
+      "backplane_memory_forget"
     ]
   },
   "toolMetadata": {
@@ -110,7 +79,7 @@
     "backplane_memory_get": {
       "replaySafe": true
     },
-    "backplane_memory_status": {
+    "backplane_memory_recent": {
       "replaySafe": true
     }
   }

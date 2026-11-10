@@ -111,6 +111,12 @@ jobs:
           sudo -u postgres createuser --superuser "$USER" || true
           pg_isready -h "$PGHOST"
 
+      - name: Prepare test database
+        run: |
+          mix ecto.create
+          psql --dbname backplane_test --command "CREATE EXTENSION IF NOT EXISTS vector"
+          mix ecto.migrate
+
       - name: Set up Python for Hermes contract tests
         uses: actions/setup-python@v6
         with:
@@ -141,7 +147,11 @@ jobs:
             apps/backplane_host_agent/test/backplane/host_agent/memory/event_envelope_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/claude_code_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/codex_hook_test.exs \
-            apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs
+            apps/backplane_host_agent/test/backplane/host_agent/memory/integration_plugin_contract_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/hook_client_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/cursor_hook_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/memory/integration_packages_test.exs \
+            apps/backplane_host_agent/test/backplane/host_agent/plugin_installer_test.exs
 
       - name: Verify memory plugin source lifecycle
         run: |
@@ -150,8 +160,6 @@ jobs:
             apps/backplane_host_agent/test/backplane/host_agent/memory/hermes_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/openclaw_hook_test.exs \
             apps/backplane_host_agent/test/backplane/host_agent/memory/spool_turso_test.exs
-
-      # OpenClaw live acceptance removed until Plan 5 (new live tests).
 
       - name: Assemble host-agent package for provider contract tests
         env:
@@ -182,3 +190,13 @@ jobs:
           roots=(_build/prod/rel/host_agent/lib/backplane_host_agent-*/priv/integrations/memory)
           test "${#roots[@]}" -eq 1
           node --test "${roots[0]}"/tests/test_openclaw*.mjs
+
+      - name: Verify packaged client plugins and hook client
+        run: |
+          roots=(_build/prod/rel/host_agent/lib/backplane_host_agent-*/priv/integrations/memory)
+          test "${#roots[@]}" -eq 1
+          root="${roots[0]}"
+          for path in shared/bin/backplane-memory-hook shared/INSTRUCTIONS.md claude_code codex cursor; do
+            test -e "$root/$path" || { echo "missing packaged $path"; exit 1; }
+          done
+          test -x "$root/shared/bin/backplane-memory-hook" || { echo "hook client is not executable"; exit 1; }

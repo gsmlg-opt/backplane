@@ -15,7 +15,17 @@ defmodule Backplane.HostAgent.Services.Plugins do
     [
       %{
         "name" => "host_agent::list_plugins",
-        "description" => "List host-agent packaged plugins and install status"
+        "description" => "List host-agent packaged plugins and install status",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "plugin" => %{
+              "type" => "string",
+              "enum" => PluginInstaller.plugins(),
+              "description" => "Optional packaged plugin id to restrict the listing to"
+            }
+          }
+        }
       },
       %{
         "name" => "host_agent::plugin_status",
@@ -93,6 +103,7 @@ defmodule Backplane.HostAgent.Services.Plugins do
         },
         "runtime" => %{
           "type" => "string",
+          "enum" => PluginInstaller.runtimes("memory"),
           "description" => "Target runtime for the selected plugin"
         }
       }

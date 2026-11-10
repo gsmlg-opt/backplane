@@ -1,0 +1,8 @@
+{
+  "name": "backplane-memory",
+  "version": "0.1.0",
+  "author": {
+    "name": "Backplane"
+  },
+  "description": "Backplane shared memory for Claude Code: capture hooks, memory tools over MCP, and a resident usage instruction."
+}
