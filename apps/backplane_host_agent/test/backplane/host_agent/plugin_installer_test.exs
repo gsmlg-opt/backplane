@@ -28,6 +28,30 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     assert result["valid"] == true
     assert File.read!(Path.join(target, "plugin.yaml")) =~ "hermes"
     assert File.read!(Path.join(target, "__init__.py")) =~ "hermes"
+
+    assert File.read!(Path.join(target, "INSTRUCTIONS.md")) ==
+             File.read!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+  end
+
+  @tag :tmp_dir
+  test "Hermes install bundles the shared instructions and needs them in the source", %{
+    tmp_dir: tmp_dir
+  } do
+    source_root = source_root!(tmp_dir)
+    home_dir = Path.join(tmp_dir, "home")
+    target = Path.join([home_dir, ".hermes", "plugins", "backplane-memory"])
+    opts = %{source_root: source_root, home_dir: home_dir}
+
+    assert {:ok, %{"valid" => true}} = PluginInstaller.install("memory", "hermes", opts)
+    File.rm!(Path.join(target, "INSTRUCTIONS.md"))
+
+    assert {:ok, %{"installed" => true, "valid" => false}} =
+             PluginInstaller.status("memory", "hermes", opts)
+
+    File.rm!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+
+    assert {:error, {:source_missing_file, "shared/INSTRUCTIONS.md"}} =
+             PluginInstaller.install("memory", "hermes", opts)
   end
 
   @tag :tmp_dir
@@ -178,6 +202,9 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       assert source =~ Path.join(["integrations", "memory", runtime])
       assert File.read!(Path.join(target, "README.md")) =~ "Backplane"
     end
+
+    assert File.read!(Path.join([home_dir, ".hermes/plugins/backplane-memory/INSTRUCTIONS.md"])) ==
+             File.read!(Path.join(@real_source, "shared/INSTRUCTIONS.md"))
   end
 
   describe "claude_code marketplace mode" do
@@ -743,6 +770,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     File.cp_r!(Path.join(@real_source, "cursor"), Path.join(source_root, "cursor"))
     File.mkdir_p!(Path.join(source_root, "shared/bin"))
     File.write!(Path.join(source_root, "shared/bin/backplane-memory-hook"), "#!/bin/sh\n")
+    File.write!(Path.join(source_root, "shared/INSTRUCTIONS.md"), "Shared instructions\n")
 
     source_root
   end

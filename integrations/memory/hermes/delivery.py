@@ -1,4 +1,4 @@
-"""Profile-local delivery journal. This is transport state, never a recall store."""
+"""Profile-local delivery journal. This is transport state, never a memory store."""
 
 from contextlib import contextmanager
 import hashlib
@@ -38,17 +38,6 @@ class DeliveryJournal:
                 attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0,
                 receipt TEXT, error_code TEXT, created_at REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS delivery_due ON delivery(state,next_at);
-            CREATE TABLE IF NOT EXISTS source_entries (
-                target TEXT NOT NULL, entry_id TEXT PRIMARY KEY, content TEXT NOT NULL,
-                active INTEGER NOT NULL, revision INTEGER NOT NULL, retired INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS source_aliases (
-                target TEXT NOT NULL, content TEXT NOT NULL, entry_id TEXT NOT NULL,
-                PRIMARY KEY(target,content,entry_id));
-            CREATE TABLE IF NOT EXISTS source_chains (
-                entry_id TEXT PRIMARY KEY, target TEXT NOT NULL, expected_content TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS callbacks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL,
-                payload TEXT NOT NULL, processed INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS messages (
                 identity TEXT PRIMARY KEY, digest TEXT NOT NULL, text_digest TEXT NOT NULL, revision INTEGER NOT NULL,
                 event_id TEXT NOT NULL, author TEXT);
@@ -66,10 +55,13 @@ class DeliveryJournal:
                 self.db.execute('CREATE UNIQUE INDEX IF NOT EXISTS delivery_order ON delivery(queue_sequence)')
                 last = self.db.execute('SELECT coalesce(max(queue_sequence),0) FROM delivery').fetchone()[0]
                 self.set('sequence:delivery', max(last, int(self.get('sequence:delivery', '0'))))
-                saved = self.get("binding")
-                if saved and saved != canonical_json(binding):
+                saved = json.loads(self.get("binding") or "{}")
+                # Journals written before the global memory tools carried extra
+                # binding keys; only the keys this version binds must still match.
+                if saved and any(saved.get(key) != value for key, value in binding.items()):
                     raise ValueError("journal_binding_changed")
                 self.set("binding", canonical_json(binding))
+                self._retire_native_mirror()
                 for key in ("installation_id", "profile_id"):
                     if not self.get(key):
                         self.set(key, str(uuid.uuid4()))
@@ -77,6 +69,14 @@ class DeliveryJournal:
         except BaseException:
             self.db.close()
             raise
+
+    def _retire_native_mirror(self):
+        """Drop state of the retired native-file mirror; undelivered capture survives."""
+        for table in ("source_entries", "source_aliases", "source_chains", "callbacks"):
+            self.db.execute("DROP TABLE IF EXISTS " + table)
+        self.db.execute("DELETE FROM delivery WHERE path NOT LIKE '/capture/%' AND path NOT LIKE '%/call/remember'")
+        self.db.execute("UPDATE delivery SET state='local_pending',next_at=0,error_code=NULL WHERE state='capture_deferred'")
+        self.db.execute("DELETE FROM meta WHERE key LIKE 'source-%' OR key IN ('binding_fingerprint','binding_blocked','capture_binding_state','capture_binding_fingerprint')")
 
     @contextmanager
     def transaction(self):
@@ -142,7 +142,7 @@ class DeliveryJournal:
         state = {"pending": "host_accepted", "committed": "canonical_committed", "rejected": "rejected"}.get(status)
         if not state:
             raise ValueError("invalid_delivery_receipt")
-        safe = {key: receipt[key] for key in ("status", "command_id", "canonical_id", "event_id", "outcome", "revision", "source_revision", "authority", "consistency") if key in receipt}
+        safe = {key: receipt[key] for key in ("status", "canonical_id", "event_id") if key in receipt}
         code = "request_rejected" if receipt.get("error_code") else None
         if code:
             safe["error_code"] = code
@@ -157,14 +157,11 @@ class DeliveryJournal:
         with self.lock:
             counts = dict(self.db.execute("SELECT state,count(*) FROM delivery GROUP BY state"))
             errors = [row[0] for row in self.db.execute("SELECT DISTINCT error_code FROM delivery WHERE error_code IS NOT NULL")]
-            unprocessed = self.db.execute("SELECT count(*) FROM callbacks WHERE processed=0").fetchone()[0]
-            unprocessed += self.db.execute("SELECT count(*) FROM source_chains").fetchone()[0]
-        return {**{key: counts.get(key, 0) for key in ("local_pending", "host_accepted", "canonical_committed", "rejected", "capture_deferred")}, "pending_reconciliation": unprocessed, "error_codes": errors, "source_snapshots": {target: self.get("source-state:" + target, "unverified") for target in ("memory", "user")}, "source_ambiguities": {target: int(self.get("source-ambiguities:" + target, "0")) for target in ("memory", "user")}, "capture_binding": self.get("capture_binding_state", "unverified")}
+        return {**{key: counts.get(key, 0) for key in ("local_pending", "host_accepted", "canonical_committed", "rejected")}, "error_codes": errors}
 
     def prune(self, retain=1024):
         with self.transaction():
             self.db.execute("DELETE FROM delivery WHERE event_id IN (SELECT event_id FROM (SELECT event_id,row_number() OVER (ORDER BY queue_sequence DESC) AS n,sum(length(CAST(payload AS BLOB))) OVER (ORDER BY queue_sequence DESC) AS bytes FROM delivery WHERE state='canonical_committed') WHERE n>? OR bytes>4194304)", (retain,))
-            self.db.execute("DELETE FROM callbacks WHERE id IN (SELECT id FROM (SELECT id,row_number() OVER (ORDER BY id DESC) AS n,sum(length(CAST(payload AS BLOB))) OVER (ORDER BY id DESC) AS bytes FROM callbacks WHERE processed=1) WHERE n>? OR bytes>4194304)", (retain,))
 
     def close(self):
         with self.lock:

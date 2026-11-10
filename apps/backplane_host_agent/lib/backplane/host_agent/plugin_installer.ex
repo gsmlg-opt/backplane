@@ -51,6 +51,8 @@ defmodule Backplane.HostAgent.PluginInstaller do
         },
         "hermes" => %{
           required_files: ["README.md", "plugin.yaml", "__init__.py"],
+          # {path under the integrations root, name in the installed package}
+          shared_files: [{"shared/INSTRUCTIONS.md", "INSTRUCTIONS.md"}],
           target_parts: [".hermes", "plugins", "backplane-memory"]
         },
         "openclaw" => %{
@@ -214,11 +216,32 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
-  defp validate_source(source_path, %{required_files: required_files}) do
-    case Enum.find(required_files, &(not File.regular?(Path.join(source_path, &1)))) do
+  defp validate_source(source_path, %{required_files: required_files} = runtime_meta) do
+    shared_root = Path.dirname(source_path)
+
+    missing =
+      Enum.find(required_files, &(not File.regular?(Path.join(source_path, &1)))) ||
+        runtime_meta
+        |> shared_files()
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.find(&(not File.regular?(Path.join(shared_root, &1))))
+
+    case missing do
       nil -> :ok
       file -> {:error, {:source_missing_file, file}}
     end
+  end
+
+  defp shared_files(runtime_meta), do: Map.get(runtime_meta, :shared_files, [])
+
+  # Copies files shared by every runtime (next to the runtime package dirs) into the staged package.
+  defp copy_shared_files(staging, source_path, runtime_meta) do
+    Enum.reduce_while(shared_files(runtime_meta), :ok, fn {from, to}, :ok ->
+      case File.cp(Path.join(Path.dirname(source_path), from), Path.join(staging, to)) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:file_error, reason, from}}}
+      end
+    end)
   end
 
   defp target_path(plugin_meta, runtime_meta, opts) do
@@ -325,8 +348,15 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
-  defp install_files(plugin_meta, _runtime_meta, source, target, force?, _opts),
-    do: replace_dir(plugin_meta.name, source, target, force?)
+  defp install_files(plugin_meta, runtime_meta, source, target, force?, _opts),
+    do:
+      replace_dir(
+        plugin_meta.name,
+        source,
+        target,
+        force?,
+        &copy_shared_files(&1, source, runtime_meta)
+      )
 
   # Never replace or remove a directory that is not our marketplace.
   defp ensure_marketplace_target(%{marketplace_file: file}, target) do
@@ -479,7 +509,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
-  defp replace_dir(plugin_name, source_path, target_path, force?, prepare \\ fn _ -> :ok end) do
+  defp replace_dir(plugin_name, source_path, target_path, force?, prepare) do
     parent = Path.dirname(target_path)
     staging = Path.join(parent, ".#{plugin_name}.install-#{System.unique_integer([:positive])}")
 
@@ -545,9 +575,11 @@ defmodule Backplane.HostAgent.PluginInstaller do
 
   defp put_next_steps(status, _runtime_meta, _target_path), do: status
 
-  defp installed_valid?(target_path, %{required_files: required_files}) do
+  defp installed_valid?(target_path, %{required_files: required_files} = runtime_meta) do
+    installed_files = required_files ++ Enum.map(shared_files(runtime_meta), &elem(&1, 1))
+
     File.dir?(target_path) &&
-      Enum.all?(required_files, &File.regular?(Path.join(target_path, &1)))
+      Enum.all?(installed_files, &File.regular?(Path.join(target_path, &1)))
   end
 
   defp opt(map, key) do
