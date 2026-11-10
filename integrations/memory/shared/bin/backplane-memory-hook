@@ -24,6 +24,9 @@ esac
 base="${BACKPLANE_HOST_AGENT_URL:-$baked_url}"
 base="${base%/}"
 
+# A closed fd 0 would be reused by curl's socket and `@-` would read from it.
+(exec 3<&0) 2>/dev/null || exec </dev/null
+
 if command -v curl >/dev/null 2>&1; then
   curl -sS --connect-timeout 1 --max-time 2 \
     -H 'content-type: application/json' \

@@ -155,4 +155,22 @@ defmodule Backplane.HostAgent.Memory.HookClientTest do
 
     assert {out, status} == {"", 0}
   end
+
+  test "closed stdin exits 0 quickly with empty stdout", %{tmp_dir: dir} do
+    dead = "http://127.0.0.1:#{free_port()}"
+
+    for base <- [start_server(), dead] do
+      {micros, result} =
+        :timer.tc(fn ->
+          System.cmd("sh", ["-c", ~s(exec <&-; sh "$0" claude_code Stop), @script],
+            env: [{"BACKPLANE_HOST_AGENT_URL", base}],
+            cd: dir,
+            stderr_to_stdout: true
+          )
+        end)
+
+      assert result == {"", 0}
+      assert div(micros, 1000) < 3_000
+    end
+  end
 end
