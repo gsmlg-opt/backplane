@@ -3,6 +3,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
 
   alias Backplane.HostAgent.Memory.Hooks.ClaudeCode
   alias Backplane.HostAgent.Memory.Hooks.Codex
+  alias Backplane.HostAgent.Memory.Hooks.Cursor
   alias Backplane.MemoryToolContract
 
   @integrations Path.expand("../../../../../../integrations/memory", __DIR__)
@@ -135,6 +136,29 @@ defmodule Backplane.HostAgent.Memory.IntegrationPackagesTest do
 
       assert String.trim_leading(body, "\n") ==
                File.read!(Path.join(@integrations, "shared/INSTRUCTIONS.md"))
+    end
+  end
+
+  describe "cursor" do
+    @cursor Path.join(@integrations, "cursor")
+
+    test "hooks.json lists exactly the supported hooks via the hook client" do
+      assert %{"version" => 1, "hooks" => hooks} =
+               Jason.decode!(File.read!(Path.join(@cursor, "hooks.json")))
+
+      assert hooks |> Map.keys() |> Enum.sort() == Enum.sort(Cursor.supported_hooks())
+
+      for {hook, entries} <- hooks do
+        assert entries == [%{"command" => "__HOOK_CLIENT__ cursor #{hook}"}]
+      end
+    end
+
+    test "mcp.json points at the host agent cursor MCP endpoint" do
+      assert Jason.decode!(File.read!(Path.join(@cursor, "mcp.json"))) == %{
+               "mcpServers" => %{
+                 "backplane-memory" => %{"url" => "__HOST_AGENT_URL__/memory/cursor/mcp"}
+               }
+             }
     end
   end
 end

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "__HOOK_CLIENT__ cursor sessionStart" }
+    ],
+    "beforeSubmitPrompt": [
+      { "command": "__HOOK_CLIENT__ cursor beforeSubmitPrompt" }
+    ],
+    "postToolUse": [
+      { "command": "__HOOK_CLIENT__ cursor postToolUse" }
+    ],
+    "afterShellExecution": [
+      { "command": "__HOOK_CLIENT__ cursor afterShellExecution" }
+    ],
+    "afterFileEdit": [
+      { "command": "__HOOK_CLIENT__ cursor afterFileEdit" }
+    ],
+    "afterAgentResponse": [
+      { "command": "__HOOK_CLIENT__ cursor afterAgentResponse" }
+    ],
+    "stop": [
+      { "command": "__HOOK_CLIENT__ cursor stop" }
+    ],
+    "sessionEnd": [
+      { "command": "__HOOK_CLIENT__ cursor sessionEnd" }
+    ]
+  }
+}

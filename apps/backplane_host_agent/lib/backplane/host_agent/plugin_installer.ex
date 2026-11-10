@@ -42,6 +42,13 @@ defmodule Backplane.HostAgent.PluginInstaller do
             "codex plugin add backplane-memory@backplane-local"
           ]
         },
+        "cursor" => %{
+          mode: :cursor_config,
+          uses_hook_client: true,
+          required_files: ["hooks.json", "mcp.json"],
+          target_parts: [".cursor", "hooks.json"],
+          next_steps: ["Restart Cursor"]
+        },
         "hermes" => %{
           required_files: ["README.md", "plugin.yaml", "__init__.py"],
           target_parts: [".hermes", "plugins", "backplane-memory"]
@@ -65,6 +72,8 @@ defmodule Backplane.HostAgent.PluginInstaller do
       }
     }
   }
+
+  alias Backplane.HostAgent.PluginInstaller.CursorConfig
 
   @hook_client_name "backplane-memory-hook"
   @default_host_agent_url "http://127.0.0.1:4222"
@@ -94,7 +103,8 @@ defmodule Backplane.HostAgent.PluginInstaller do
          {:ok, runtime, runtime_meta} <- runtime_meta(plugin, plugin_meta, runtime),
          {:ok, target_path} <- target_path(plugin_meta, runtime_meta, opts),
          {:ok, source_path} <- source_dir(runtime, plugin_meta, opts) do
-      {:ok, status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta)}
+      {:ok,
+       status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta, opts)}
     end
   end
 
@@ -114,7 +124,8 @@ defmodule Backplane.HostAgent.PluginInstaller do
              parse_bool(opt(opts, :force), true),
              opts
            ) do
-      {:ok, status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta)}
+      {:ok,
+       status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta, opts)}
     end
   end
 
@@ -123,11 +134,11 @@ defmodule Backplane.HostAgent.PluginInstaller do
     with {:ok, plugin, plugin_meta} <- plugin_meta(plugin),
          {:ok, runtime, runtime_meta} <- runtime_meta(plugin, plugin_meta, runtime),
          {:ok, target_path} <- target_path(plugin_meta, runtime_meta, opts),
-         :ok <- guard_remove(runtime_meta, target_path),
-         :ok <- remove_existing(target_path),
+         :ok <- remove_runtime(runtime_meta, target_path, opts),
          :ok <- cleanup_hook_client(plugin_meta, runtime, runtime_meta, opts),
          {:ok, source_path} <- source_dir(runtime, plugin_meta, opts) do
-      {:ok, status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta)}
+      {:ok,
+       status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta, opts)}
     end
   end
 
@@ -215,7 +226,7 @@ defmodule Backplane.HostAgent.PluginInstaller do
 
     path =
       case {runtime_meta, opt(opts, :target_path)} do
-        {%{mode: :marketplace}, _path} ->
+        {%{mode: mode}, _path} when mode in [:marketplace, :cursor_config] ->
           Path.join([default_base(runtime_meta, home_dir, opts) | runtime_meta.target_parts])
 
         {_meta, path} when is_binary(path) and path != "" ->
@@ -232,6 +243,9 @@ defmodule Backplane.HostAgent.PluginInstaller do
 
   defp default_base(%{mode: :marketplace}, home_dir, opts), do: data_dir(opts, home_dir)
   defp default_base(_runtime_meta, home_dir, _opts), do: home_dir
+
+  defp target_name(_plugin_meta, %{mode: :cursor_config, target_parts: parts}),
+    do: List.last(parts)
 
   defp target_name(_plugin_meta, %{mode: :marketplace, target_parts: parts}), do: List.last(parts)
   defp target_name(plugin_meta, _runtime_meta), do: plugin_meta.name
@@ -293,6 +307,24 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
+  defp install_files(_plugin_meta, %{mode: :cursor_config}, source, _target, _force?, opts) do
+    home = home_dir(opts)
+    data = data_dir(opts, home)
+    client = Path.join([data, "bin", @hook_client_name])
+
+    with :ok <- validate_data_dir(data, home),
+         {:ok, url} <- host_agent_url(opts),
+         substitutions = %{
+           "__HOOK_CLIENT__" => shell_quote(client),
+           "__HOST_AGENT_URL__" => url
+         },
+         {:ok, hooks} <- render_template(source, "hooks.json", substitutions),
+         {:ok, mcp} <- render_template(source, "mcp.json", substitutions),
+         :ok <- CursorConfig.install(home, hooks, mcp) do
+      install_hook_client(source, client, url)
+    end
+  end
+
   defp install_files(plugin_meta, _runtime_meta, source, target, force?, _opts),
     do: replace_dir(plugin_meta.name, source, target, force?)
 
@@ -310,10 +342,28 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
-  defp guard_remove(%{mode: :marketplace} = meta, target),
-    do: ensure_marketplace_target(meta, target)
+  defp remove_runtime(%{mode: :cursor_config}, _target, opts),
+    do: CursorConfig.remove(home_dir(opts))
 
-  defp guard_remove(_runtime_meta, _target), do: :ok
+  defp remove_runtime(%{mode: :marketplace} = meta, target, _opts) do
+    with :ok <- ensure_marketplace_target(meta, target), do: remove_existing(target)
+  end
+
+  defp remove_runtime(_runtime_meta, target, _opts), do: remove_existing(target)
+
+  defp render_template(source, file, substitutions) do
+    path = Path.join(source, file)
+
+    with {:ok, contents} <- File.read(path),
+         {:ok, doc} <-
+           contents
+           |> substitute(substitutions, &json_escape/1)
+           |> Jason.decode(objects: :ordered_objects) do
+      {:ok, doc}
+    else
+      _error -> {:error, {:invalid_json, path}}
+    end
+  end
 
   defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
@@ -393,9 +443,11 @@ defmodule Backplane.HostAgent.PluginInstaller do
   end
 
   defp runtime_installed?(plugin_meta, runtime_meta, opts) do
+    mode = Map.get(runtime_meta, :mode)
     opts = opts |> Map.delete(:target_path) |> Map.delete("target_path")
 
     case target_path(plugin_meta, runtime_meta, opts) do
+      {:ok, _path} when mode == :cursor_config -> CursorConfig.installed?(home_dir(opts))
       {:ok, path} -> File.dir?(path)
       _error -> false
     end
@@ -464,18 +516,28 @@ defmodule Backplane.HostAgent.PluginInstaller do
     end
   end
 
-  defp status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta) do
+  defp status_map(plugin, runtime, source_path, target_path, plugin_meta, runtime_meta, opts) do
+    {installed, valid} = install_state(runtime_meta, target_path, opts)
+
     %{
       "plugin" => plugin,
       "runtime" => runtime,
       "name" => plugin_meta.name,
-      "installed" => File.dir?(target_path),
-      "valid" => installed_valid?(target_path, runtime_meta),
+      "installed" => installed,
+      "valid" => valid,
       "source_path" => source_path,
       "target_path" => target_path
     }
     |> put_next_steps(runtime_meta, target_path)
   end
+
+  defp install_state(%{mode: :cursor_config}, _target_path, opts) do
+    home = home_dir(opts)
+    {CursorConfig.installed?(home), CursorConfig.valid?(home)}
+  end
+
+  defp install_state(runtime_meta, target_path, _opts),
+    do: {File.dir?(target_path), installed_valid?(target_path, runtime_meta)}
 
   defp put_next_steps(status, %{next_steps: steps}, target_path),
     do:

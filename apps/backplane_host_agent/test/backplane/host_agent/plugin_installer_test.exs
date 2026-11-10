@@ -1,6 +1,7 @@
 defmodule Backplane.HostAgent.PluginInstallerTest do
   use ExUnit.Case, async: true
 
+  alias Backplane.HostAgent.Memory.Hooks.Cursor
   alias Backplane.HostAgent.PluginInstaller
 
   @url "http://127.0.0.1:4232"
@@ -120,8 +121,8 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
                home_dir: home_dir
              })
 
-    assert {:error, {:unsupported_runtime, "memory", "cursor"}} =
-             PluginInstaller.install("memory", "cursor", %{
+    assert {:error, {:unsupported_runtime, "memory", "vscode"}} =
+             PluginInstaller.install("memory", "vscode", %{
                source_root: source_root,
                home_dir: home_dir
              })
@@ -149,6 +150,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     assert [
              %{"plugin" => "memory", "runtime" => "claude_code"},
              %{"plugin" => "memory", "runtime" => "codex"},
+             %{"plugin" => "memory", "runtime" => "cursor"},
              %{"plugin" => "memory", "runtime" => "hermes"},
              %{"plugin" => "memory", "runtime" => "openclaw"}
            ] =
@@ -434,6 +436,197 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     end
   end
 
+  describe "cursor config mode" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      home = Path.join(tmp_dir, "home")
+      cursor = Path.join(home, ".cursor")
+      File.mkdir_p!(cursor)
+
+      %{
+        opts: claude_opts(tmp_dir),
+        home: home,
+        hooks: Path.join(cursor, "hooks.json"),
+        mcp: Path.join(cursor, "mcp.json"),
+        client: Path.join([home, ".local/share/backplane/bin/backplane-memory-hook"])
+      }
+    end
+
+    defp read_json!(path), do: path |> File.read!() |> Jason.decode!()
+
+    defp our_commands(hooks_json) do
+      for {_event, entries} <- hooks_json["hooks"],
+          %{"command" => command} <- entries,
+          String.contains?(command, "backplane-memory-hook"),
+          do: command
+    end
+
+    @user_hooks %{
+      "version" => 1,
+      "hooks" => %{
+        "stop" => [%{"command" => "./mine.sh"}],
+        "preToolUse" => [%{"command" => "./other.sh"}]
+      }
+    }
+    @user_mcp %{
+      "mcpServers" => %{
+        "zeta" => %{"type" => "stdio", "command" => "x", "args" => ["a"]},
+        "alpha" => %{"url" => "http://example.test/mcp"}
+      },
+      "other" => true
+    }
+
+    test "fresh install creates both files and the hook client", ctx do
+      assert {:ok, result} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert %{"installed" => true, "valid" => true, "target_path" => target} = result
+      assert target == ctx.hooks
+      assert result["next_steps"] == ["Restart Cursor"]
+
+      hooks = read_json!(ctx.hooks)
+      assert hooks["version"] == 1
+      assert Enum.sort(Map.keys(hooks["hooks"])) == Enum.sort(Cursor.supported_hooks())
+      assert length(our_commands(hooks)) == 8
+      assert hooks["hooks"]["stop"] == [%{"command" => "'#{ctx.client}' cursor stop"}]
+
+      assert read_json!(ctx.mcp) == %{
+               "mcpServers" => %{"backplane-memory" => %{"url" => "#{@url}/memory/cursor/mcp"}}
+             }
+
+      assert File.read!(ctx.hooks) |> String.ends_with?("}\n")
+      assert File.regular?(ctx.client)
+      refute File.exists?(ctx.hooks <> ".backplane-backup")
+    end
+
+    test "install over user entries keeps them and adds ours, order preserved", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      raw_mcp = ~s({"mcpServers":{"zeta":{"command":"x"},"alpha":{"url":"u"}},"other":true})
+      File.write!(ctx.mcp, raw_mcp)
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      hooks = read_json!(ctx.hooks)
+      assert hooks["hooks"]["preToolUse"] == [%{"command" => "./other.sh"}]
+      assert [%{"command" => "./mine.sh"}, %{"command" => ours}] = hooks["hooks"]["stop"]
+      assert ours =~ "backplane-memory-hook"
+
+      mcp_raw = File.read!(ctx.mcp)
+      {zeta, _} = :binary.match(mcp_raw, "zeta")
+      {alpha, _} = :binary.match(mcp_raw, "alpha")
+      {ours_pos, _} = :binary.match(mcp_raw, "backplane-memory")
+      assert zeta < alpha and alpha < ours_pos
+      mcp = Jason.decode!(mcp_raw)
+      assert mcp["other"] == true
+      assert Map.keys(mcp["mcpServers"]) |> Enum.sort() == ["alpha", "backplane-memory", "zeta"]
+
+      assert File.read!(ctx.mcp <> ".backplane-backup") == raw_mcp
+      assert read_json!(ctx.hooks <> ".backplane-backup") == @user_hooks
+    end
+
+    test "double install does not duplicate and keeps the first backup", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      first = {File.read!(ctx.hooks), File.read!(ctx.mcp)}
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert {File.read!(ctx.hooks), File.read!(ctx.mcp)} == first
+      assert length(our_commands(read_json!(ctx.hooks))) == 8
+      assert read_json!(ctx.hooks <> ".backplane-backup") == @user_hooks
+      assert read_json!(ctx.mcp <> ".backplane-backup") == @user_mcp
+    end
+
+    test "remove restores the user's original content", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert {:ok, %{"installed" => false, "valid" => false}} =
+               PluginInstaller.remove("memory", "cursor", ctx.opts)
+
+      assert read_json!(ctx.hooks) == @user_hooks
+      assert read_json!(ctx.mcp) == @user_mcp
+      assert File.regular?(ctx.hooks <> ".backplane-backup")
+      refute File.exists?(ctx.client)
+    end
+
+    test "remove drops emptied events but keeps version", ctx do
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+
+      assert read_json!(ctx.hooks) == %{"version" => 1, "hooks" => %{}}
+      assert read_json!(ctx.mcp) == %{"mcpServers" => %{}}
+    end
+
+    test "remove with no config files writes nothing", ctx do
+      assert {:ok, %{"installed" => false}} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      refute File.exists?(ctx.hooks)
+      refute File.exists?(ctx.mcp)
+    end
+
+    test "invalid JSON errors and leaves every file unchanged", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.mcp, "{ not json")
+
+      assert {:error, {:invalid_json, path}} =
+               PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert path == ctx.mcp
+      assert read_json!(ctx.hooks) == @user_hooks
+      assert File.read!(ctx.mcp) == "{ not json"
+      refute File.exists?(ctx.hooks <> ".backplane-backup")
+      refute File.exists?(ctx.client)
+
+      assert {:error, {:invalid_json, ^path}} =
+               PluginInstaller.remove("memory", "cursor", ctx.opts)
+
+      assert File.read!(ctx.mcp) == "{ not json"
+    end
+
+    test "hook client survives cursor removal while claude_code is installed", ctx do
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", ctx.opts)
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      assert File.regular?(ctx.client)
+
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "claude_code", ctx.opts)
+      assert File.regular?(ctx.client)
+      {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      refute File.exists?(ctx.client)
+    end
+
+    test "hook client survives codex removal while cursor is installed", ctx do
+      {:ok, _} = PluginInstaller.install("memory", "codex", ctx.opts)
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "codex", ctx.opts)
+      assert File.regular?(ctx.client)
+    end
+
+    test "target_path option is ignored and bad URLs write nothing", ctx do
+      opts = Map.put(ctx.opts, :target_path, Path.join(ctx.home, "elsewhere/hooks.json"))
+      assert {:ok, %{"target_path" => target}} = PluginInstaller.install("memory", "cursor", opts)
+      assert target == ctx.hooks
+
+      File.rm!(ctx.hooks)
+      File.rm!(ctx.mcp)
+
+      assert {:error, :invalid_host_agent_url} =
+               PluginInstaller.install("memory", "cursor", %{ctx.opts | host_agent_url: "x'y"})
+
+      refute File.exists?(ctx.hooks)
+    end
+
+    test "status reports an unrelated hooks.json as not installed", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+
+      assert {:ok, %{"installed" => false, "valid" => false}} =
+               PluginInstaller.status("memory", "cursor", ctx.opts)
+    end
+  end
+
   describe "extra_runtimes test hook" do
     @describetag :tmp_dir
 
@@ -491,6 +684,7 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     File.mkdir_p!(Path.join(claude, ".claude-plugin"))
     File.cp_r!(Path.join(@real_source, "claude_code"), claude)
     File.cp_r!(Path.join(@real_source, "codex"), Path.join(source_root, "codex"))
+    File.cp_r!(Path.join(@real_source, "cursor"), Path.join(source_root, "cursor"))
     File.mkdir_p!(Path.join(source_root, "shared/bin"))
     File.write!(Path.join(source_root, "shared/bin/backplane-memory-hook"), "#!/bin/sh\n")
 

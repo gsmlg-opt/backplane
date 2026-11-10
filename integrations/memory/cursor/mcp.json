@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "backplane-memory": {
+      "url": "__HOST_AGENT_URL__/memory/cursor/mcp"
+    }
+  }
+}
