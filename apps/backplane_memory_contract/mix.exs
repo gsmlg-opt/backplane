@@ -1,7 +1,7 @@
 defmodule Backplane.MemoryContract.MixProject do
   use Mix.Project
 
-  @version "1.10.69"
+  @version "1.10.70"
 
   def project do
     [
