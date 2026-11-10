@@ -344,6 +344,38 @@ class HermesProviderTest(unittest.TestCase):
                                  ("remember", calls[4][1])])
         self.assertEqual([body["content"] for m, body in calls if m == "remember"], ["a", "b", "a"])
 
+    def test_duplicate_add_is_not_mirrored_twice(self):
+        # Hermes answers an exact duplicate add with success ("Entry already exists").
+        self.provider.on_memory_write("add", "memory", "same entry")
+        self.provider.on_memory_write("add", "memory", "same entry")
+        self.assertEqual(len(self.rows("/call/remember")), 1)
+        self.assertEqual([m for m, _b in self.deliver()], ["remember"])
+        self.provider.on_memory_write("add", "memory", "same entry")
+        self.provider.on_memory_write("remove", "memory", "", metadata={"previous_content": "same entry"})
+        self.assertEqual(self.deliver(["mem-x"]), [("forget", {"id": "mem-a", "reason": "removed in Hermes"})])
+
+    def test_re_adding_text_whose_forget_is_queued_mirrors_it_again(self):
+        self.provider.on_memory_write("add", "memory", "back again")
+        self.provider.on_memory_write("remove", "memory", "", metadata={"previous_content": "back again"})
+        self.provider.on_memory_write("add", "memory", "back again")
+        self.provider.on_memory_write("remove", "memory", "", metadata={"previous_content": "back again"})
+        self.provider.on_memory_write("remove", "memory", "", metadata={"previous_content": "back again"})
+        calls = self.deliver(["mem-a", "mem-b"])
+        self.assertEqual([(m, b.get("id")) for m, b in calls],
+                         [("remember", None), ("forget", "mem-a"), ("remember", None), ("forget", "mem-b")])
+
+    def test_mirror_hashes_and_sends_the_stripped_entry_hermes_stores(self):
+        self.provider.on_memory_write("add", "user", "  padded entry \n")
+        [row] = self.rows("/call/remember")
+        self.assertEqual(row["content"], "padded entry")
+        self.deliver()
+        self.provider.on_memory_write("replace", "user", " replaced entry ", metadata={"previous_content": "padded entry"})
+        calls = self.deliver(["mem-b"])
+        self.assertEqual(calls[0], ("forget", {"id": "mem-a", "reason": "replaced in Hermes"}))
+        self.assertEqual(calls[1][1]["content"], "replaced entry")
+        self.provider.on_memory_write("remove", "user", "", metadata={"previous_content": "replaced entry\n"})
+        self.assertEqual(self.deliver(), [("forget", {"id": "mem-b", "reason": "removed in Hermes"})])
+
     def test_memory_write_forget_waits_for_a_remember_still_in_the_journal(self):
         self.provider.on_memory_write("add", "user", "pending text")
         self.provider.on_memory_write("remove", "user", "", metadata={"previous_content": "pending text"})

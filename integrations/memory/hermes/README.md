@@ -145,7 +145,11 @@ this journal: either its id is known or its remember is still queued ahead (the
 forget then resolves the id when it is sent, after the remember). Text that was
 never mirrored — written before the plugin was installed, or whose remember was
 rejected — is left alone without error. A `replace` with unchanged text does
-nothing. Everything goes through the durable journal described below.
+nothing. Entry text is stripped before hashing and sending, matching what Hermes
+stores and later reports as `previous_content`. An `add` of text that already has
+a live mirror (Hermes answers an exact duplicate with success) is not mirrored
+again; text whose latest queued mirror row is a forget counts as not mirrored.
+Everything goes through the durable journal described below.
 Non-primary agent contexts (subagent, cron, flush) do not mirror or capture.
 
 ## Capture, sessions and checkpoint coverage

@@ -421,16 +421,20 @@ class BackplaneMemoryProvider(MemoryProvider):
         metadata = metadata if isinstance(metadata, dict) else {}
         target = str(target)
         session_id = metadata.get("session_id") if isinstance(metadata.get("session_id"), str) and metadata.get("session_id") else self._session_id
+        # Hermes stores (and later reports as previous_content) the stripped entry.
+        content = content.strip() if isinstance(content, str) else ""
         previous = metadata.get("previous_content")
+        previous = previous.strip() if isinstance(previous, str) else ""
         if action == "replace" and previous == content:
             return
         try:
             with self._journal.transaction():
-                if action != "add" and isinstance(previous, str) and previous.strip() and self._mirrored(target, _digest(previous)):
+                if action != "add" and previous and self._mirrored(target, _digest(previous)):
                     event_id = str(uuid.uuid4())
                     self._journal.enqueue(event_id, _call_path(self._agent_id, "forget"), {"reason": FORGET_REASONS[action]})
                     self._journal.db.execute("INSERT INTO mirror_events VALUES (?,?,?)", (event_id, target, _digest(previous)))
-                if action != "remove" and isinstance(content, str) and content.strip():
+                # Hermes answers a duplicate add with success; it is still one entry.
+                if content and action != "remove" and not (action == "add" and self._mirrored(target, _digest(content))):
                     event_id = str(uuid.uuid4())
                     self._journal.enqueue(event_id, _call_path(self._agent_id, "remember"), {
                         "content": content, "kind": "note", "writer": "agent", "session_id": session_id,
@@ -443,10 +447,13 @@ class BackplaneMemoryProvider(MemoryProvider):
         self._wake.set()
 
     def _mirrored(self, target, digest):
+        """Whether this text currently has a live mirror: the latest queued mirror row
+        for it is a remember, or nothing is queued and a committed record id exists."""
         db = self._journal.db
-        if db.execute("SELECT 1 FROM mirror_records WHERE target=? AND digest=?", (target, digest)).fetchone():
-            return True
-        return db.execute("SELECT 1 FROM mirror_events e JOIN delivery d ON d.event_id=e.event_id WHERE e.target=? AND e.digest=? AND d.path LIKE '%/call/remember' AND d.state='local_pending'", (target, digest)).fetchone() is not None
+        latest = db.execute("SELECT d.path FROM mirror_events e JOIN delivery d ON d.event_id=e.event_id WHERE e.target=? AND e.digest=? AND d.state='local_pending' ORDER BY d.queue_sequence DESC LIMIT 1", (target, digest)).fetchone()
+        if latest:
+            return latest[0].endswith("/call/remember")
+        return db.execute("SELECT 1 FROM mirror_records WHERE target=? AND digest=?", (target, digest)).fetchone() is not None
 
     # -- capture -------------------------------------------------------------
 
