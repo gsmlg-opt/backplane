@@ -29,7 +29,7 @@ defmodule Backplane.HostAgent.Collectors.DockerTest do
   test "parses containers, sorts ports, runs docker ps" do
     out =
       line("Up 2 hours", "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp") <>
-        "\n" <> Jason.encode!(%{"Names" => "db", "Image" => "pg", "State" => "exited", "Ports" => ""}) <> "\n"
+        "\n" <> Jason.encode!(%{"Names" => "db", "Image" => "pg", "State" => "paused", "Ports" => ""}) <> "\n"
 
     assert [%{collector: "docker", unit: "local", complete: true, items: items}] =
              collect({:ok, out}, self())
@@ -43,7 +43,7 @@ defmodule Backplane.HostAgent.Collectors.DockerTest do
                "state" => "running",
                "ports" => ["0.0.0.0:443->443/tcp", "0.0.0.0:80->80/tcp"]
              },
-             %{"name" => "db", "image" => "pg", "state" => "exited", "ports" => []}
+             %{"name" => "db", "image" => "pg", "state" => "paused", "ports" => []}
            ]
   end
 

@@ -1,6 +1,6 @@
 defmodule Backplane.HostAgent.Collectors.Docker do
   @moduledoc """
-  Snapshots running and stopped Docker containers via `docker ps`.
+  Snapshots running Docker containers via `docker ps`.
 
   Volatile fields (`Status`, e.g. "Up 3 hours") are never reported. A missing
   binary or failing command yields no snapshot rather than an empty one.
