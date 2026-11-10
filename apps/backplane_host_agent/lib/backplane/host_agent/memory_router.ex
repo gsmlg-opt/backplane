@@ -77,6 +77,19 @@ defmodule Backplane.HostAgent.MemoryRouter do
     handle_mcp(conn, agent_id)
   end
 
+  # Streamable HTTP: this server offers no server-to-client SSE stream.
+  get "/memory/:agent_id/mcp" do
+    mcp_method_not_allowed(conn)
+  end
+
+  get "/mcp" do
+    mcp_method_not_allowed(conn)
+  end
+
+  get "/:agent_id/mcp" do
+    mcp_method_not_allowed(conn)
+  end
+
   match _ do
     send_json(conn, 404, %{"ok" => false, "error" => "not found"})
   end
@@ -564,12 +577,28 @@ defmodule Backplane.HostAgent.MemoryRouter do
     end
   end
 
+  # Client notifications and responses carry no reply: 202 Accepted, empty body.
+  defp handle_jsonrpc(conn, _agent_id, %{"jsonrpc" => "2.0", "method" => method} = req)
+       when is_binary(method) and not is_map_key(req, "id"),
+       do: send_resp(conn, 202, "")
+
+  defp handle_jsonrpc(conn, _agent_id, %{"jsonrpc" => "2.0", "id" => _id} = req)
+       when not is_map_key(req, "method") and
+              (is_map_key(req, "result") or is_map_key(req, "error")),
+       do: send_resp(conn, 202, "")
+
   defp handle_jsonrpc(conn, _agent_id, _other) do
     send_json(
       conn,
       400,
       %{"ok" => false, "error" => "invalid JSON-RPC request"}
     )
+  end
+
+  defp mcp_method_not_allowed(conn) do
+    conn
+    |> put_resp_header("allow", "POST")
+    |> send_json(405, %{"ok" => false, "error" => "method not allowed"})
   end
 
   defp tool_call(conn, id, agent_id, %{"name" => "memory::" <> _ = name, "arguments" => args})
