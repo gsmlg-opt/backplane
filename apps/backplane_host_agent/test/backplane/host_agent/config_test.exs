@@ -158,7 +158,7 @@ defmodule Backplane.HostAgent.ConfigTest do
              sync_batch_size: 50
            }
 
-    assert config.capture == %{
+    assert Map.delete(config.capture, :collectors) == %{
              enabled: true,
              db_path: Path.join(work_dir, "memory/capture_spool.db"),
              encryption_key_env: nil,
@@ -179,6 +179,90 @@ defmodule Backplane.HostAgent.ConfigTest do
              sync_batch_size: 100,
              retention_days: 14
            }
+  end
+
+  @tag :tmp_dir
+  test "parses collectors defaults and overrides", %{tmp_dir: tmp_dir} do
+    config_path = Path.join(tmp_dir, "agent.yaml")
+    work_dir = Path.join(tmp_dir, "work")
+    home = System.user_home!()
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{work_dir}
+      http_port: 0
+
+    capture:
+      enabled: true
+    """)
+
+    assert {:ok, %{capture: %{collectors: defaults}}} = Config.load(config_path)
+
+    assert defaults == %{
+             enabled: true,
+             interval_ms: 900_000,
+             initial_delay_ms: 60_000,
+             state_path: Path.join(work_dir, "memory/collector_state.json"),
+             git: %{enabled: true, roots: [home], max_depth: 4, max_repos: 500},
+             docker: %{enabled: true},
+             services: %{enabled: true},
+             host: %{enabled: true}
+           }
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{work_dir}
+      http_port: 0
+
+    capture:
+      enabled: true
+      db_path: #{tmp_dir}/spool/capture.db
+      collectors:
+        interval_ms: 1000
+        initial_delay_ms: 5
+        git:
+          roots: ["~/code", "#{tmp_dir}/other"]
+          max_depth: 2
+          max_repos: 10
+        docker:
+          enabled: false
+        host:
+          enabled: false
+    """)
+
+    assert {:ok, %{capture: %{collectors: custom}}} = Config.load(config_path)
+
+    assert custom == %{
+             enabled: true,
+             interval_ms: 1000,
+             initial_delay_ms: 5,
+             state_path: Path.join(tmp_dir, "spool/collector_state.json"),
+             git: %{
+               enabled: true,
+               roots: [Path.join(home, "code"), Path.join(tmp_dir, "other")],
+               max_depth: 2,
+               max_repos: 10
+             },
+             docker: %{enabled: false},
+             services: %{enabled: true},
+             host: %{enabled: false}
+           }
+
+    File.write!(config_path, """
+    agent:
+      host_id: host-123
+      work_dir: #{work_dir}
+      http_port: 0
+
+    capture:
+      enabled: true
+      collectors:
+        enabled: false
+    """)
+
+    assert {:ok, %{capture: %{collectors: %{enabled: false}}}} = Config.load(config_path)
   end
 
   @tag :tmp_dir
@@ -209,7 +293,7 @@ defmodule Backplane.HostAgent.ConfigTest do
 
     assert {:ok, config} = Config.load(config_path)
 
-    assert config.capture == %{
+    assert Map.delete(config.capture, :collectors) == %{
              enabled: true,
              db_path: capture_path,
              encryption_key_env: "BACKPLANE_CAPTURE_SPOOL_KEY",
@@ -244,7 +328,7 @@ defmodule Backplane.HostAgent.ConfigTest do
 
     assert {:ok, invalid} = Config.load(config_path)
 
-    assert invalid.capture == %{
+    assert Map.delete(invalid.capture, :collectors) == %{
              enabled: false,
              db_path: Path.join(work_dir, "memory/capture_spool.db"),
              encryption_key_env: nil,

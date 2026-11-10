@@ -1,6 +1,7 @@
 defmodule Backplane.HostAgent.Memory.CaptureRuntimeTest do
   use ExUnit.Case, async: false
 
+  alias Backplane.HostAgent.Collectors.Scheduler
   alias Backplane.HostAgent.Memory.{CaptureSupervisor, EventEnvelope}
   alias Backplane.HostAgent.Memory.Spool.Turso, as: Spool
 
@@ -80,6 +81,28 @@ defmodule Backplane.HostAgent.Memory.CaptureRuntimeTest do
     assert {:ok, restarted} = CaptureSupervisor.start_link(config)
     assert [%{"event_id" => "survives"}] = Spool.next_batch(names.spool, 100, 524_288)
     Supervisor.stop(restarted)
+  end
+
+  test "capture supervisor starts the collector scheduler only when collectors are enabled",
+       %{tmp_dir: dir} do
+    names = names()
+    base = capture_config(Path.join(dir, "capture.db"), names)
+
+    collectors = %{
+      enabled: true,
+      state_path: Path.join(dir, "collector_state.json"),
+      interval_ms: 900_000,
+      initial_delay_ms: 3_600_000
+    }
+
+    assert {:ok, supervisor} = CaptureSupervisor.start_link(base)
+    refute Enum.any?(Supervisor.which_children(supervisor), &match?({Scheduler, _, _, _}, &1))
+    Supervisor.stop(supervisor)
+
+    config = Map.merge(base, %{collectors: collectors, scheduler_name: :"scheduler_#{names.spool}"})
+    assert {:ok, supervisor} = CaptureSupervisor.start_link(config)
+    assert Enum.any?(Supervisor.which_children(supervisor), &match?({Scheduler, _, _, _}, &1))
+    Supervisor.stop(supervisor)
   end
 
   test "capture supervisor resolves the named spool encryption facility without reporting its key",

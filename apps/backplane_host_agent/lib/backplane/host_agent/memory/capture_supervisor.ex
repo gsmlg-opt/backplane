@@ -3,6 +3,7 @@ defmodule Backplane.HostAgent.Memory.CaptureSupervisor do
 
   use Supervisor
 
+  alias Backplane.HostAgent.Collectors.Scheduler
   alias Backplane.HostAgent.Memory.{CaptureUploader, Spool}
 
   def start_link(%{enabled: false}) do
@@ -56,8 +57,23 @@ defmodule Backplane.HostAgent.Memory.CaptureSupervisor do
        max_bytes: Map.fetch!(opts, :batch_bytes)}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    Supervisor.init(children ++ collector_children(opts), strategy: :one_for_one)
   end
+
+  defp collector_children(%{collectors: %{enabled: true} = collectors} = opts) do
+    [
+      {Scheduler,
+       name: Map.get(opts, :scheduler_name, Scheduler),
+       host_id: Map.fetch!(opts, :host_id),
+       spool: Map.fetch!(opts, :spool_name),
+       state_path: Map.fetch!(collectors, :state_path),
+       config: collectors,
+       interval_ms: Map.fetch!(collectors, :interval_ms),
+       initial_delay_ms: Map.fetch!(collectors, :initial_delay_ms)}
+    ]
+  end
+
+  defp collector_children(_opts), do: []
 
   defp normalize(config) do
     config
