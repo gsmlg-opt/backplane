@@ -3,7 +3,7 @@
   "kind": "memory",
   "name": "backplane-memory",
   "description": "Backplane memory shared across the user's agents and hosts, via the local Backplane host agent.",
-  "version": "1.10.70",
+  "version": "1.10.71",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
