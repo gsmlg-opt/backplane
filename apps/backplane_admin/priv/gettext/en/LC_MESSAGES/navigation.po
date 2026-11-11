@@ -1,0 +1,444 @@
+## "msgid"s in this file come from POT (.pot) files.
+###
+### Do not add, change, or remove "msgid"s manually here as
+### they're tied to the ones in the corresponding POT file
+### (with the same domain).
+###
+### Use "mix gettext.extract --merge" or "mix gettext.merge"
+### to merge POT files into PO files.
+msgid ""
+msgstr ""
+"Language: en\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: lib/backplane/admin/components/layouts/app.html.heex:85
+#: lib/backplane/admin/components/layouts/app.html.heex:104
+#, elixir-autogen, elixir-format
+msgid "%{section} navigation"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:44
+#: lib/backplane/admin/components/layouts.ex:160
+#, elixir-autogen, elixir-format
+msgid "API Usage"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:65
+#, elixir-autogen, elixir-format
+msgid "Agent MCP"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:141
+#: lib/backplane/admin/live/appearance_live.ex:8
+#: lib/backplane/admin/live/appearance_live.ex:18
+#, elixir-autogen, elixir-format
+msgid "Appearance"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:129
+#, elixir-autogen, elixir-format
+msgid "Assignments"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:135
+#, elixir-autogen, elixir-format
+msgid "Audit"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:173
+#, elixir-autogen, elixir-format
+msgid "Audit Log"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:18
+#: lib/backplane/admin/components/layouts.ex:228
+#, elixir-autogen, elixir-format
+msgid "Auth"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:820
+#, elixir-autogen, elixir-format
+msgid "Auth Overview"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:911
+#: lib/backplane/admin/live/provider_show_live.ex:911
+#, elixir-autogen, elixir-format
+msgid "Back to providers"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:80
+#, elixir-autogen, elixir-format
+msgid "Catalog"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:112
+#: lib/backplane/admin/live/auth_oauth_live.ex:489
+#: lib/backplane/admin/live/auth_oauth_live.ex:850
+#, elixir-autogen, elixir-format
+msgid "Client Policies"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:40
+#, elixir-autogen, elixir-format
+msgid "Client Usage"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:110
+#: lib/backplane/admin/components/layouts.ex:142
+#: lib/backplane/admin/live/clients_live.ex:220
+#, elixir-autogen, elixir-format
+msgid "Clients"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:51
+#, elixir-autogen, elixir-format
+msgid "Codex Catalog"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:75
+#: lib/backplane/admin/components/layouts.ex:140
+#, elixir-autogen, elixir-format
+msgid "Config"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:143
+#: lib/backplane/admin/live/settings_live.ex:1486
+#: lib/backplane/admin/live/settings_live.ex:1494
+#: lib/backplane/admin/live/settings_live.ex:1502
+#, elixir-autogen, elixir-format
+msgid "Credentials"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:12
+#: lib/backplane/admin/components/layouts.ex:222
+#: lib/backplane/admin/live/dashboard_live.ex:119
+#, elixir-autogen, elixir-format
+msgid "Dashboard"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:52
+#, elixir-autogen, elixir-format
+msgid "Decisions"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:83
+#, elixir-autogen, elixir-format
+msgid "Distribution"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:97
+#, elixir-autogen, elixir-format
+msgid "Draft"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_draft_live.ex:220
+#, elixir-autogen, elixir-format
+msgid "Draft Skills"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:54
+#, elixir-autogen, elixir-format
+msgid "Embeddings"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:73
+#: lib/backplane/admin/components/layouts/app.html.heex:10
+#: lib/backplane/admin/live/memory_events_live.ex:25
+#, elixir-autogen, elixir-format
+msgid "Events"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:344
+#, elixir-autogen, elixir-format
+msgid "Host Agent Management"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:145
+#: lib/backplane/admin/live/host_agents_live.ex:280
+#, elixir-autogen, elixir-format
+msgid "Host Agents"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:53
+#, elixir-autogen, elixir-format
+msgid "Images"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:174
+#, elixir-autogen, elixir-format
+msgid "Job"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:171
+#, elixir-autogen, elixir-format
+msgid "LLM Log"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_llm_live.ex:112
+#, elixir-autogen, elixir-format
+msgid "LLM Logs"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:223
+#, elixir-autogen, elixir-format
+msgid "LLM Proxy"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:38
+#, elixir-autogen, elixir-format
+msgid "LLM Usage"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:13
+#, elixir-autogen, elixir-format
+msgid "Llama"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:168
+#, elixir-autogen, elixir-format
+msgid "Log"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_overview_live.ex:55
+#, elixir-autogen, elixir-format
+msgid "Logs"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:14
+#, elixir-autogen, elixir-format
+msgid "MCP"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:224
+#, elixir-autogen, elixir-format
+msgid "MCP Hub"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:66
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1233
+#, elixir-autogen, elixir-format
+msgid "MCP Inspector"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:172
+#, elixir-autogen, elixir-format
+msgid "MCP Log"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:39
+#, elixir-autogen, elixir-format
+msgid "MCP Usage"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts/app.html.heex:54
+#, elixir-autogen, elixir-format
+msgid "Main navigation"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:63
+#, elixir-autogen, elixir-format
+msgid "Managed MCP"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_tool_detail_live.ex:218
+#, elixir-autogen, elixir-format
+msgid "Managed Services"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:15
+#: lib/backplane/admin/components/layouts.ex:225
+#, elixir-autogen, elixir-format
+msgid "Memory"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts/app.html.heex:91
+#, elixir-autogen, elixir-format
+msgid "Memory /"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts/app.html.heex:92
+#, elixir-autogen, elixir-format
+msgid "Memory navigation"
+msgstr ""
+
+#: lib/backplane/admin/components/memory_components.ex:14
+#, elixir-autogen, elixir-format
+msgid "Memory workspace"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:95
+#: lib/backplane/admin/live/skill_metadata_live.ex:148
+#, elixir-autogen, elixir-format
+msgid "Metadata"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:58
+#, elixir-autogen, elixir-format
+msgid "MiniMax Audio"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:50
+#, elixir-autogen, elixir-format
+msgid "Model Alias"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:1142
+#, elixir-autogen, elixir-format
+msgid "Model Aliases"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:151
+#, elixir-autogen, elixir-format
+msgid "Monitor"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:106
+#, elixir-autogen, elixir-format
+msgid "OAuth"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:29
+#: lib/backplane/admin/components/layouts.ex:33
+#: lib/backplane/admin/components/layouts.ex:71
+#: lib/backplane/admin/components/layouts.ex:89
+#: lib/backplane/admin/components/layouts.ex:103
+#: lib/backplane/admin/components/layouts/app.html.heex:11
+#: lib/backplane/admin/live/memory_overview_live.ex:49
+#, elixir-autogen, elixir-format
+msgid "Overview"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:43
+#: lib/backplane/admin/components/layouts.ex:155
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:74
+#, elixir-autogen, elixir-format
+msgid "Plan Usage"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:17
+#: lib/backplane/admin/components/layouts.ex:227
+#: lib/backplane/admin/live/plugins_live.ex:390
+#, elixir-autogen, elixir-format
+msgid "Plugins"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:118
+#: lib/backplane/admin/live/auth_oauth_live.ex:630
+#: lib/backplane/admin/live/auth_oauth_live.ex:857
+#, elixir-autogen, elixir-format
+msgid "Protocol Support"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:49
+#: lib/backplane/admin/components/layouts.ex:109
+#, elixir-autogen, elixir-format
+msgid "Providers"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:123
+#, elixir-autogen, elixir-format
+msgid "RBAC"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:57
+#, elixir-autogen, elixir-format
+msgid "Realtime"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:72
+#: lib/backplane/admin/live/memory_records_live.ex:104
+#, elixir-autogen, elixir-format
+msgid "Records"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:82
+#, elixir-autogen, elixir-format
+msgid "Releases"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:127
+#, elixir-autogen, elixir-format
+msgid "Roles"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:117
+#, elixir-autogen, elixir-format
+msgid "Scopes"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:74
+#: lib/backplane/admin/live/memory_sessions_live.ex:45
+#, elixir-autogen, elixir-format
+msgid "Sessions"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:175
+#, elixir-autogen, elixir-format
+msgid "Sink"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:16
+#: lib/backplane/admin/components/layouts.ex:94
+#: lib/backplane/admin/components/layouts.ex:226
+#: lib/backplane/admin/live/skill_browse_live.ex:314
+#, elixir-autogen, elixir-format
+msgid "Skills"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:81
+#, elixir-autogen, elixir-format
+msgid "Sources"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:19
+#: lib/backplane/admin/components/layouts.ex:229
+#, elixir-autogen, elixir-format
+msgid "System"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:646
+#: lib/backplane/admin/live/managed_service_settings_live.ex:709
+#, elixir-autogen, elixir-format
+msgid "System > Credentials"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:55
+#, elixir-autogen, elixir-format
+msgid "Text to Speech"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:116
+#, elixir-autogen, elixir-format
+msgid "Tokens"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:56
+#, elixir-autogen, elixir-format
+msgid "Transcription"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:98
+#, elixir-autogen, elixir-format
+msgid "Upload"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:96
+#, elixir-autogen, elixir-format
+msgid "Upstream"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:64
+#, elixir-autogen, elixir-format
+msgid "Upstream MCP"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts.ex:126
+#, elixir-autogen, elixir-format
+msgid "Users"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:573
+#, elixir-autogen, elixir-format
+msgid "← Managed Services"
+msgstr ""

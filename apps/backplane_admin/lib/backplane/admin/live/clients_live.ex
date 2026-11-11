@@ -40,7 +40,7 @@ defmodule Backplane.Admin.ClientsLive do
   def handle_event("edit", %{"id" => id}, socket) do
     case Clients.get_client(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Client not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Client not found"))}
 
       client ->
         changeset = Client.changeset(client, %{})
@@ -62,7 +62,7 @@ defmodule Backplane.Admin.ClientsLive do
   def handle_event("toggle_active", %{"id" => id}, socket) do
     case Clients.get_client(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Client not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Client not found"))}
 
       client ->
         case Clients.update_client(client, %{active: !client.active}) do
@@ -71,7 +71,7 @@ defmodule Backplane.Admin.ClientsLive do
             {:noreply, load_clients(socket)}
 
           {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to toggle client status")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to toggle client status"))}
         end
     end
   end
@@ -99,7 +99,7 @@ defmodule Backplane.Admin.ClientsLive do
   def handle_event("delete", %{"id" => id}, socket) do
     case Clients.get_client(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Client not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Client not found"))}
 
       client ->
         case Clients.delete_client(client) do
@@ -108,12 +108,12 @@ defmodule Backplane.Admin.ClientsLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Client #{client.name} deleted")
+             |> put_flash(:info, dgettext("user", "Client %{name} deleted", name: client.name))
              |> assign(editing: nil, form: nil, generated_token: nil)
              |> load_clients()}
 
           {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to delete client")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete client"))}
         end
     end
   end
@@ -130,16 +130,16 @@ defmodule Backplane.Admin.ClientsLive do
         {:noreply,
          socket
          |> assign(editing: nil, form: nil, generated_token: token)
-         |> put_flash(:info, "Token replaced for #{updated.name}")
+         |> put_flash(:info, dgettext("user", "Token replaced for %{name}", name: updated.name))
          |> load_clients()}
 
       {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "Failed to rotate client token")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to rotate client token"))}
     end
   end
 
   def handle_event("rotate_token", _, socket) do
-    {:noreply, put_flash(socket, :error, "Select a client before rotating its token")}
+    {:noreply, put_flash(socket, :error, dgettext("errors", "Select a client before rotating its token"))}
   end
 
   defp create_client(socket, params) do
@@ -149,7 +149,7 @@ defmodule Backplane.Admin.ClientsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Client #{client.name} created")
+         |> put_flash(:info, dgettext("user", "Client %{name} created", name: client.name))
          |> assign(editing: nil, form: nil, generated_token: token)
          |> load_clients()}
 
@@ -167,7 +167,7 @@ defmodule Backplane.Admin.ClientsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Client #{client.name} updated")
+         |> put_flash(:info, dgettext("user", "Client %{name} updated", name: client.name))
          |> assign(editing: nil, form: nil, generated_token: nil)
          |> load_clients()}
 
@@ -199,16 +199,16 @@ defmodule Backplane.Admin.ClientsLive do
     assign(socket, loading: false, clients: clients)
   end
 
-  defp relative_time(nil), do: "Never"
+  defp relative_time(nil), do: dgettext("common", "Never")
 
   defp relative_time(datetime) do
     diff = DateTime.diff(DateTime.utc_now(), datetime, :second)
 
     cond do
-      diff < 60 -> "#{diff}s ago"
-      diff < 3600 -> "#{div(diff, 60)}m ago"
-      diff < 86400 -> "#{div(diff, 3600)}h ago"
-      true -> "#{div(diff, 86400)}d ago"
+      diff < 60 -> dgettext("common", "%{count}s ago", count: diff)
+      diff < 3600 -> dgettext("common", "%{count}m ago", count: div(diff, 60))
+      diff < 86400 -> dgettext("common", "%{count}h ago", count: div(diff, 3600))
+      true -> dgettext("common", "%{count}d ago", count: div(diff, 86400))
     end
   end
 
@@ -217,19 +217,21 @@ defmodule Backplane.Admin.ClientsLive do
     ~H"""
     <div>
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold">Clients</h1>
-        <.dm_btn variant="primary" size="sm" phx-click="new">New Client</.dm_btn>
+        <h1 class="text-2xl font-bold">{dgettext("navigation", "Clients")}</h1>
+        <.dm_btn variant="primary" size="sm" phx-click="new">{dgettext("user", "New Client")}</.dm_btn>
       </div>
 
       <.dm_card :if={@editing} variant="bordered" class="mb-6">
         <:title>
-          {if @editing == :new, do: "New Client", else: "Edit Client"}
+          {if @editing == :new,
+            do: dgettext("user", "New Client"),
+            else: dgettext("user", "Edit Client")}
         </:title>
         <.form id="client-form" for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
           <.dm_input
             id="client-name"
             name="client[name]"
-            label="Name"
+            label={dgettext("common", "Name")}
             value={@form[:name].value}
             disabled={@editing != :new}
             placeholder="synapsis-prod"
@@ -239,7 +241,7 @@ defmodule Backplane.Admin.ClientsLive do
           <.dm_input
             id="client-scopes"
             name="client[scopes]"
-            label="Scopes (comma-separated)"
+            label={dgettext("user", "Scopes (comma-separated)")}
             value={
               case @form[:scopes].value do
                 list when is_list(list) -> Enum.join(list, ", ")
@@ -249,7 +251,7 @@ defmodule Backplane.Admin.ClientsLive do
             placeholder="*, skill::*, math::evaluate"
           />
           <p class="text-xs text-on-surface-variant -mt-2">
-            Examples: * (all), skill::* (all skill tools), math::evaluate (single tool)
+            {dgettext("user", "Examples: * (all), skill::* (all skill tools), math::evaluate (single tool)")}
           </p>
           <.form_error field={@form[:scopes]} />
 
@@ -259,29 +261,31 @@ defmodule Backplane.Admin.ClientsLive do
               variant="warning"
               size="xs"
               phx-click="rotate_token"
-              confirm="Replace this client's token now? Its current token will stop working."
+              confirm={dgettext("user", "Replace this client's token now? Its current token will stop working.")}
             >
-              {if is_nil(@editing.token_digest), do: "Issue Token", else: "Rotate Token"}
+              {if is_nil(@editing.token_digest),
+                do: dgettext("user", "Issue Token"),
+                else: dgettext("user", "Rotate Token")}
             </.dm_btn>
           </div>
 
           <div class="flex gap-2">
-            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
-            <.dm_btn type="button" phx-click="cancel">Cancel</.dm_btn>
+            <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
+            <.dm_btn type="button" phx-click="cancel">{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </.form>
       </.dm_card>
 
       <.dm_card :if={@generated_token} variant="bordered" class="mb-6 border-warning">
-        <:title>Bearer Token — copy now, shown only once</:title>
+        <:title>{dgettext("user", "Bearer Token — copy now, shown only once")}</:title>
         <code id="issued-token" class="block text-sm text-warning font-mono break-all">
           {@generated_token}
         </code>
-        <.dm_btn type="button" size="xs" phx-click="dismiss_token">Dismiss</.dm_btn>
+        <.dm_btn type="button" size="xs" phx-click="dismiss_token">{dgettext("common", "Dismiss")}</.dm_btn>
       </.dm_card>
 
       <div :if={@clients == []} class="text-on-surface-variant">
-        No clients configured. Create a client to issue a scoped access token.
+        {dgettext("user", "No clients configured. Create a client to issue a scoped access token.")}
       </div>
 
       <div class="space-y-4">
@@ -294,11 +298,13 @@ defmodule Backplane.Admin.ClientsLive do
                   variant={if client.active, do: "success", else: "error"}
                   size="sm"
                 >
-                  {if client.active, do: "Active", else: "Inactive"}
+                  {if client.active,
+                    do: dgettext("common", "Active"),
+                    else: dgettext("common", "Inactive")}
                 </.dm_badge>
               </div>
               <.dm_badge :if={is_nil(client.token_digest)} variant="warning" size="sm">
-                Not issued
+                {dgettext("user", "Not issued")}
               </.dm_badge>
               <div class="flex flex-wrap gap-1 mt-2">
                 <.dm_badge
@@ -310,7 +316,7 @@ defmodule Backplane.Admin.ClientsLive do
                 </.dm_badge>
               </div>
               <p class="text-xs text-on-surface-variant mt-1">
-                Last seen: {relative_time(client.last_seen_at)}
+                {dgettext("user", "Last seen: %{time}", time: relative_time(client.last_seen_at))}
               </p>
             </div>
             <div class="flex items-center gap-2">
@@ -320,17 +326,21 @@ defmodule Backplane.Admin.ClientsLive do
                 phx-click="toggle_active"
                 phx-value-id={client.id}
               >
-                {if client.active, do: "Deactivate", else: "Activate"}
+                {if client.active,
+                  do: dgettext("common", "Deactivate"),
+                  else: dgettext("common", "Activate")}
               </.dm_btn>
-              <.dm_btn size="xs" phx-click="edit" phx-value-id={client.id}>Edit</.dm_btn>
+              <.dm_btn size="xs" phx-click="edit" phx-value-id={client.id}>{dgettext("common", "Edit")}</.dm_btn>
               <.dm_btn
                 variant="error"
                 size="xs"
-                confirm={"Delete client #{client.name}? This cannot be undone."}
+                confirm={
+                  dgettext("user", "Delete client %{name}? This cannot be undone.", name: client.name)
+                }
                 phx-click="delete"
                 phx-value-id={client.id}
               >
-                Delete
+                {dgettext("common", "Delete")}
               </.dm_btn>
             </div>
           </div>

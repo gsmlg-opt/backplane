@@ -34,7 +34,7 @@ defmodule Backplane.Admin.ProvidersLive do
   def handle_event("delete", %{"id" => id}, socket) do
     case Provider.get(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Provider not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Provider not found"))}
 
       provider ->
         case Provider.soft_delete(provider) do
@@ -43,11 +43,11 @@ defmodule Backplane.Admin.ProvidersLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Provider #{provider.name} deleted")
+             |> put_flash(:info, dgettext("admin", "Provider %{name} deleted", name: provider.name))
              |> load_providers()}
 
           {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to delete provider")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete provider"))}
         end
     end
   end
@@ -55,7 +55,7 @@ defmodule Backplane.Admin.ProvidersLive do
   def handle_event("toggle_enabled", %{"id" => id}, socket) do
     case Provider.get(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Provider not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Provider not found"))}
 
       provider ->
         case Provider.update(provider, %{enabled: !provider.enabled}) do
@@ -64,7 +64,7 @@ defmodule Backplane.Admin.ProvidersLive do
             {:noreply, load_providers(socket)}
 
           {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to toggle provider")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to toggle provider"))}
         end
     end
   end
@@ -93,8 +93,8 @@ defmodule Backplane.Admin.ProvidersLive do
   defp provider_enabled_badge(true), do: "success"
   defp provider_enabled_badge(false), do: "neutral"
 
-  defp provider_enabled_text(true), do: "Enabled"
-  defp provider_enabled_text(false), do: "Disabled"
+  defp provider_enabled_text(true), do: dgettext("common", "Enabled")
+  defp provider_enabled_text(false), do: dgettext("common", "Disabled")
 
   defp headers_count(headers) when is_map(headers), do: map_size(headers)
   defp headers_count(_), do: 0
@@ -104,18 +104,18 @@ defmodule Backplane.Admin.ProvidersLive do
     ~H"""
     <div>
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold">LLM Providers</h1>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "LLM Providers")}</h1>
         <.link navigate={~p"/llama/providers/new"} class="no-underline">
-          <.dm_btn variant="primary" size="sm">Add Provider</.dm_btn>
+          <.dm_btn variant="primary" size="sm">{dgettext("admin", "Add Provider")}</.dm_btn>
         </.link>
       </div>
 
       <div :if={@providers == []} class="text-on-surface-variant">
-        No LLM providers configured.
+        {dgettext("admin", "No LLM providers configured.")}
       </div>
 
       <.dm_table :if={@providers != []} id="llm-providers-table" data={@providers} hover zebra>
-        <:col :let={provider} label="Provider">
+        <:col :let={provider} label={dgettext("admin", "Provider")}>
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <.link
@@ -129,12 +129,16 @@ defmodule Backplane.Admin.ProvidersLive do
               </.dm_badge>
             </div>
             <div class="mt-1 text-xs text-on-surface-variant">
-              <span :if={provider.preset_key}>Preset: {provider.preset_key}</span>
-              <span :if={provider.credential}> · credential: <code>{provider.credential}</code></span>
+              <span :if={provider.preset_key}>
+                {dgettext("admin", "Preset: %{key}", key: provider.preset_key)}
+              </span>
+              <span :if={provider.credential}>
+                · {dgettext("admin", "credential:")} <code>{provider.credential}</code>
+              </span>
             </div>
           </div>
         </:col>
-        <:col :let={provider} label="API surfaces">
+        <:col :let={provider} label={dgettext("admin", "API surfaces")}>
           <div class="flex flex-col gap-2">
             <div
               :for={api <- provider.apis}
@@ -152,9 +156,9 @@ defmodule Backplane.Admin.ProvidersLive do
                 {api.base_url}
               </div>
               <div class="mt-1 text-xs text-on-surface-variant">
-                Discovery:
+                {dgettext("admin", "Discovery:")}
                 <code>{api.model_discovery_path || "-"}</code>
-                · headers: {headers_count(api.default_headers)}
+                · {dgettext("admin", "headers: %{count}", count: headers_count(api.default_headers))}
               </div>
               <div class="mt-1 flex flex-wrap gap-1">
                 <.dm_badge :for={protocol <- api.native_protocols} variant="neutral" size="sm">
@@ -162,58 +166,60 @@ defmodule Backplane.Admin.ProvidersLive do
                 </.dm_badge>
               </div>
               <div :if={api.last_discovered_at} class="mt-1 text-xs text-on-surface-variant">
-                Last discovered: {api.last_discovered_at}
+                {dgettext("admin", "Last discovered: %{time}", time: api.last_discovered_at)}
               </div>
             </div>
             <span :if={provider.apis == []} class="text-sm text-on-surface-variant">
-              No API surfaces configured.
+              {dgettext("admin", "No API surfaces configured.")}
             </span>
           </div>
         </:col>
-        <:col :let={provider} label="Actions">
+        <:col :let={provider} label={dgettext("common", "Actions")}>
           <div class="flex items-center gap-1">
-            <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "View")} position="bottom">
               <.dm_btn
                 {tooltip_attrs}
                 navigate={~p"/llama/providers/#{provider.id}"}
                 size="xs"
                 shape="circle"
                 variant="outline"
-                aria-label={"View #{provider.name}"}
+                aria-label={dgettext("admin", "View %{name}", name: provider.name)}
               >
                 <.dm_mdi name="eye" class="h-4 w-4" />
-                <span class="sr-only">View</span>
+                <span class="sr-only">{dgettext("common", "View")}</span>
               </.dm_btn>
             </.dm_tooltip>
-            <.dm_tooltip :let={tooltip_attrs} content={if provider.enabled, do: "Disable", else: "Enable"} position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={if provider.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")} position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
                 variant={if provider.enabled, do: "warning", else: "success"}
                 size="xs"
                 shape="circle"
                 aria-label={
-                  if provider.enabled, do: "Disable #{provider.name}", else: "Enable #{provider.name}"
+                  if provider.enabled,
+                    do: dgettext("admin", "Disable %{name}", name: provider.name),
+                    else: dgettext("admin", "Enable %{name}", name: provider.name)
                 }
                 phx-click="toggle_enabled"
                 phx-value-id={provider.id}
               >
                 <.dm_mdi name={if provider.enabled, do: "pause", else: "play"} class="h-4 w-4" />
-                <span class="sr-only">{if provider.enabled, do: "Disable", else: "Enable"}</span>
+                <span class="sr-only">{if provider.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")}</span>
               </.dm_btn>
             </.dm_tooltip>
-            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
                 variant="error"
                 size="xs"
                 shape="circle"
-                aria-label={"Delete #{provider.name}"}
-                data-confirm={"Delete provider #{provider.name}?"}
+                aria-label={dgettext("admin", "Delete %{name}", name: provider.name)}
+                data-confirm={dgettext("admin", "Delete provider %{name}?", name: provider.name)}
                 phx-click="delete"
                 phx-value-id={provider.id}
               >
                 <.dm_mdi name="delete" class="h-4 w-4" />
-                <span class="sr-only">Delete</span>
+                <span class="sr-only">{dgettext("common", "Delete")}</span>
               </.dm_btn>
             </.dm_tooltip>
           </div>

@@ -8,26 +8,22 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     %{
       module: Backplane.Services.Day,
       name: "Day",
-      prefix: "day",
-      description: "Date/time utilities"
+      prefix: "day"
     },
     %{
       module: Backplane.Services.Web,
       name: "Web",
-      prefix: "web",
-      description: "Fetch HTTP(S) pages, search the web, and search X"
+      prefix: "web"
     },
     %{
       module: Backplane.Services.Math,
       name: "Math",
-      prefix: "math",
-      description: "Evaluate math expressions with the native math engine"
+      prefix: "math"
     },
     %{
       module: Backplane.Services.Skills,
       name: "Skills",
-      prefix: "skill",
-      description: "Search, load, download, and publish archive-backed agent skills"
+      prefix: "skill"
     }
   ]
 
@@ -42,7 +38,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       base_url: "https://api.minimaxi.com"
     }
   ]
-  @fetch_backends [%{id: "direct", label: "Direct"}, %{id: "firecrawl", label: "Firecrawl"}]
+  @fetch_backends [%{id: "direct"}, %{id: "firecrawl"}]
   @firecrawl_base_url "https://api.firecrawl.dev"
 
   @impl true
@@ -71,7 +67,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       nil ->
         {:noreply,
          socket
-         |> put_flash(:error, "Unknown managed service: #{prefix}")
+         |> put_flash(:error, dgettext("errors", "Unknown managed service: %{prefix}", prefix: prefix))
          |> push_navigate(to: ~p"/mcp/managed")}
 
       service ->
@@ -95,7 +91,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Web settings saved")
+         |> put_flash(:info, dgettext("admin", "Web settings saved"))
          |> load_settings()}
 
       {:error, message} ->
@@ -187,7 +183,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     assign(socket,
       fetch_default_backend:
         configured_choice("services.web_fetch.default_backend", fetch_backend_ids(), "direct"),
-      fetch_backend_options: Enum.map(@fetch_backends, &{&1.id, &1.label}),
+      fetch_backend_options: Enum.map(@fetch_backends, &{&1.id, fetch_backend_label(&1.id)}),
       firecrawl_base_url:
         configured_setting("services.web_fetch.firecrawl.base_url") || @firecrawl_base_url,
       firecrawl_credential: firecrawl_credential,
@@ -247,7 +243,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     firecrawl = params["firecrawl"] || %{}
 
     with {:ok, default_backend} <-
-           parse_choice(params["default_backend"], fetch_backend_ids(), "fetch"),
+           parse_choice(params["default_backend"], fetch_backend_ids()),
          {:ok, base_url} <- parse_base_url(firecrawl["base_url"], "Firecrawl"),
          {:ok, credential} <- parse_credential(firecrawl["credential"], "Firecrawl") do
       {:ok,
@@ -260,7 +256,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   end
 
   defp validate_fetch_settings(_params),
-    do: {:error, "Fetch settings were not submitted correctly"}
+    do: {:error, dgettext("errors", "Fetch settings were not submitted correctly")}
 
   defp parse_search_backend(value) do
     backend = normalize_search_backend(value)
@@ -268,7 +264,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     if backend in search_backend_ids() do
       {:ok, backend}
     else
-      {:error, "Choose a supported web search backend"}
+      {:error, dgettext("errors", "Choose a supported web search backend")}
     end
   end
 
@@ -292,7 +288,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   end
 
   defp validate_search_backends(_params),
-    do: {:error, "Search backend settings were not submitted correctly"}
+    do: {:error, dgettext("errors", "Search backend settings were not submitted correctly")}
 
   defp validate_default_backend_enabled(default_backend, settings) do
     key = "services.web_search.#{default_backend}.enabled"
@@ -305,7 +301,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
     if enabled?,
       do: :ok,
-      else: {:error, "The default web search backend must be enabled"}
+      else: {:error, dgettext("errors", "The default web search backend must be enabled")}
   end
 
   defp validate_x_search_settings(params) when is_map(params) do
@@ -321,23 +317,23 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   end
 
   defp validate_x_search_settings(_params),
-    do: {:error, "X Search settings were not submitted correctly"}
+    do: {:error, dgettext("errors", "X Search settings were not submitted correctly")}
 
   defp save_settings(settings) do
     Enum.reduce_while(settings, :ok, fn {key, value}, :ok ->
       case Settings.set(key, value) do
         :ok -> {:cont, :ok}
-        {:error, _reason} -> {:halt, {:error, "Could not save web settings"}}
+        {:error, _reason} -> {:halt, {:error, dgettext("errors", "Could not save web settings")}}
       end
     end)
   end
 
-  defp parse_choice(value, choices, label) do
+  defp parse_choice(value, choices) do
     normalized = normalize_search_backend(value)
 
     if normalized in choices,
       do: {:ok, normalized},
-      else: {:error, "Choose a supported web #{label} backend"}
+      else: {:error, dgettext("errors", "Choose a supported web fetch backend")}
   end
 
   defp parse_base_url(value, label) do
@@ -349,7 +345,8 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
         {:ok, String.trim_trailing(base_url, "/")}
 
       _ ->
-        {:error, "#{label} base URL must be an absolute HTTP(S) URL"}
+        {:error,
+         dgettext("errors", "%{label} base URL must be an absolute HTTP(S) URL", label: label)}
     end
   end
 
@@ -359,7 +356,8 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     cond do
       credential == "" -> {:ok, nil}
       Credentials.exists?(credential) -> {:ok, credential}
-      true -> {:error, "#{label} credential is not in the credential store"}
+      true -> {:error,
+         dgettext("errors", "%{label} credential is not in the credential store", label: label)}
     end
   end
 
@@ -397,11 +395,11 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
   defp credential_options(credentials, selected, selected_exists?) do
     options =
-      [{"", "Select a credential..."}] ++
+      [{"", dgettext("admin", "Select a credential...")}] ++
         Enum.map(credentials, fn credential -> {credential.name, credential.name} end)
 
     if selected != "" and not selected_exists? do
-      options ++ [{selected, "#{selected} (missing)"}]
+      options ++ [{selected, dgettext("admin", "%{name} (missing)", name: selected)}]
     else
       options
     end
@@ -442,7 +440,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
   defp find_tool(tools, tool_name) do
     case Enum.find(tools, &(&1.name == tool_name)) do
-      nil -> {:error, "Choose a managed tool"}
+      nil -> {:error, dgettext("errors", "Choose a managed tool")}
       tool -> {:ok, tool}
     end
   end
@@ -450,8 +448,9 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   defp decode_arguments(arguments) do
     case Jason.decode(arguments) do
       {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _decoded} -> {:error, "Arguments must be a JSON object"}
-      {:error, error} -> {:error, "Invalid JSON arguments: #{Exception.message(error)}"}
+      {:ok, _decoded} -> {:error, dgettext("errors", "Arguments must be a JSON object")}
+      {:error, error} -> {:error,
+       dgettext("errors", "Invalid JSON arguments: %{reason}", reason: Exception.message(error))}
     end
   end
 
@@ -546,6 +545,20 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
   defp active_tab(_tab, %{prefix: "web"}), do: "settings"
   defp active_tab(_tab, _service), do: "debug"
 
+  defp service_description("day"), do: dgettext("admin", "Date/time utilities")
+
+  defp service_description("web"),
+    do: dgettext("admin", "Fetch HTTP(S) pages, search the web, and search X")
+
+  defp service_description("math"),
+    do: dgettext("admin", "Evaluate math expressions with the native math engine")
+
+  defp service_description("skill"),
+    do: dgettext("admin", "Search, load, download, and publish archive-backed agent skills")
+
+  defp fetch_backend_label("direct"), do: dgettext("admin", "Direct")
+  defp fetch_backend_label("firecrawl"), do: "Firecrawl"
+
   defp find_service(prefix), do: Enum.find(@services, &(&1.prefix == prefix))
   defp fetch_backend_ids, do: Enum.map(@fetch_backends, & &1.id)
   defp search_backend_ids, do: Enum.map(@search_backends, & &1.id)
@@ -557,11 +570,11 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     <div>
       <div class="mb-6 flex items-center gap-3">
         <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/mcp/managed")}>
-          &larr; Managed Services
+          {dgettext("navigation", "← Managed Services")}
         </.dm_btn>
         <div>
-          <h1 class="text-2xl font-bold">{@service.name} Settings</h1>
-          <p class="text-sm text-on-surface-variant">{@service.description}</p>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "%{name} Settings", name: @service.name)}</h1>
+          <p class="text-sm text-on-surface-variant">{service_description(@service.prefix)}</p>
         </div>
       </div>
 
@@ -573,7 +586,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
           role="tab"
           aria-selected={@active_tab == "settings"}
         >
-          Settings
+          {dgettext("common", "Settings")}
         </.link>
         <.link
           patch={~p"/mcp/managed/#{@service.prefix}?tab=debug"}
@@ -581,7 +594,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
           role="tab"
           aria-selected={@active_tab == "debug"}
         >
-          Debug
+          {dgettext("common", "Debug")}
         </.link>
       </div>
 
@@ -595,25 +608,25 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     ~H"""
     <form id="web-search-settings-form" phx-submit="save" class="space-y-4">
       <.dm_card variant="bordered">
-        <:title>Fetch Backend</:title>
+        <:title>{dgettext("admin", "Fetch Backend")}</:title>
         <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <.dm_select
             id="web-fetch-default-backend"
             name="settings[fetch][default_backend]"
-            label="Default Backend"
+            label={dgettext("admin", "Default Backend")}
             options={@fetch_backend_options}
             value={@fetch_default_backend}
           />
           <.dm_input
             id="web-fetch-firecrawl-base-url"
             name="settings[fetch][firecrawl][base_url]"
-            label="Firecrawl Base URL"
+            label={dgettext("admin", "Firecrawl Base URL")}
             value={@firecrawl_base_url}
           />
           <.dm_select
             id="web-fetch-firecrawl-credential"
             name="settings[fetch][firecrawl][credential]"
-            label="Firecrawl Credential"
+            label={dgettext("admin", "Firecrawl Credential")}
             options={@firecrawl_credential_options}
             value={@firecrawl_credential}
           />
@@ -621,20 +634,23 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Search Backends</:title>
+        <:title>{dgettext("admin", "Search Backends")}</:title>
         <p class="mb-4 text-sm text-on-surface-variant">
-          Exa and Tavily provide advanced search. Ollama and MiniMax are disabled-by-default backup backends.
-          Add or rotate API keys in <.link
+          {dgettext(
+            "admin",
+            "Exa and Tavily provide advanced search. Ollama and MiniMax are disabled-by-default backup backends."
+          )}
+          {dgettext("admin", "Add or rotate API keys in")} <.link
             navigate={~p"/system/credentials"}
             class="text-primary underline"
-          >System &gt; Credentials</.link>.
+          >{dgettext("navigation", "System > Credentials")}</.link>.
         </p>
 
         <div class="mb-4 max-w-md">
           <.dm_select
             id="web-search-default-backend"
             name="settings[default_backend]"
-            label="Default Backend"
+            label={dgettext("admin", "Default Backend")}
             options={@backend_options}
             value={@default_backend}
           />
@@ -658,7 +674,9 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
                   {backend.label}
                 </label>
                 <.dm_badge variant={if backend.configured?, do: "success", else: "ghost"}>
-                  {if backend.configured?, do: "Configured", else: "No credential"}
+                  {if backend.configured?,
+                    do: dgettext("admin", "Configured"),
+                    else: dgettext("admin", "No credential")}
                 </.dm_badge>
               </div>
             </div>
@@ -666,13 +684,13 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
             <.dm_input
               id={"web-search-base-url-#{backend.id}"}
               name={"settings[backends][#{backend.id}][base_url]"}
-              label="Base URL"
+              label={dgettext("admin", "Base URL")}
               value={backend.configured_base_url}
             />
             <.dm_select
               id={"web-search-credential-#{backend.id}"}
               name={"settings[backends][#{backend.id}][credential]"}
-              label="Credential"
+              label={dgettext("admin", "Credential")}
               options={backend.credential_options}
               value={backend.configured_credential}
             />
@@ -681,26 +699,31 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>X Search</:title>
+        <:title>{dgettext("admin", "X Search")}</:title>
         <p class="mb-4 text-sm text-on-surface-variant">
-          Uses xAI Grok's built-in X Search tool. Select a plain xAI API key credential or a Grok OAuth credential from
+          {dgettext(
+            "admin",
+            "Uses xAI Grok's built-in X Search tool. Select a plain xAI API key credential or a Grok OAuth credential from"
+          )}
           <.link navigate={~p"/system/credentials"} class="text-primary underline">
-            System &gt; Credentials
+            {dgettext("navigation", "System > Credentials")}
           </.link>.
         </p>
 
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <div class="mb-2 flex items-center gap-2">
-              <h3 class="font-medium">xAI Credential</h3>
+              <h3 class="font-medium">{dgettext("admin", "xAI Credential")}</h3>
               <.dm_badge variant={if @x_search_configured?, do: "success", else: "ghost"}>
-                {if @x_search_configured?, do: "Configured", else: "No credential"}
+                {if @x_search_configured?,
+                  do: dgettext("admin", "Configured"),
+                  else: dgettext("admin", "No credential")}
               </.dm_badge>
             </div>
             <.dm_select
               id="web-x-search-credential"
               name="settings[x_search][credential]"
-              label="xAI Credential"
+              label={dgettext("admin", "xAI Credential")}
               options={@x_search_credential_options}
               value={@x_search_credential}
             />
@@ -709,7 +732,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
           <.dm_input
             id="web-x-search-model"
             name="settings[x_search][model]"
-            label="Model"
+            label={dgettext("admin", "Model")}
             value={@x_search_model}
             placeholder="grok-4.3"
           />
@@ -717,9 +740,9 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
       </.dm_card>
 
       <div class="flex gap-2 pt-2">
-        <.dm_btn type="submit" variant="primary">Save Settings</.dm_btn>
+        <.dm_btn type="submit" variant="primary">{dgettext("admin", "Save Settings")}</.dm_btn>
         <.link navigate={~p"/mcp/managed"}>
-          <.dm_btn type="button">Cancel</.dm_btn>
+          <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
         </.link>
       </div>
     </form>
@@ -730,7 +753,7 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
     ~H"""
     <div class="space-y-4">
       <.dm_card variant="bordered">
-        <:title>{@service.name} Debug</:title>
+        <:title>{dgettext("admin", "%{name} Debug", name: @service.name)}</:title>
         <form
           id="managed-tool-debug-form"
           phx-change="select_debug_tool"
@@ -741,33 +764,33 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
             <.dm_select
               id="managed-tool-debug-name"
               name="debug[tool_name]"
-              label="Tool"
+              label={dgettext("admin", "Tool")}
               options={@tool_options}
               value={@debug_tool_name}
             />
             <.dm_textarea
               id="managed-tool-debug-arguments"
               name="debug[arguments]"
-              label="Arguments JSON"
+              label={dgettext("admin", "Arguments JSON")}
               rows={8}
               value={@debug_arguments}
               class="font-mono"
             />
           </div>
 
-          <.dm_btn type="submit" variant="primary">Call Tool</.dm_btn>
+          <.dm_btn type="submit" variant="primary">{dgettext("admin", "Call Tool")}</.dm_btn>
         </form>
       </.dm_card>
 
       <.render_tool_schema_docs {assigns} />
 
       <.dm_card :if={@debug_error} variant="bordered">
-        <:title>Tool Error</:title>
+        <:title>{dgettext("admin", "Tool Error")}</:title>
         <p class="text-sm text-error">{@debug_error}</p>
       </.dm_card>
 
       <.dm_card :if={@debug_result_text} variant="bordered">
-        <:title>Tool Result</:title>
+        <:title>{dgettext("admin", "Tool Result")}</:title>
         <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-sm"><code>{@debug_result_text}</code></pre>
       </.dm_card>
     </div>
@@ -784,13 +807,13 @@ defmodule Backplane.Admin.ManagedServiceSettingsLive do
 
     ~H"""
     <.dm_card :if={@schema_tool} variant="bordered">
-      <:title>JSON Argument Schema</:title>
+      <:title>{dgettext("admin", "JSON Argument Schema")}</:title>
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]">
         <div>
           <h3 class="font-medium">{@schema_tool.name}</h3>
           <p class="mt-1 text-sm text-on-surface-variant">{@schema_tool.description}</p>
           <p class="mt-3 text-xs text-on-surface-variant">
-            Arguments must be a JSON object matching this schema.
+            {dgettext("admin", "Arguments must be a JSON object matching this schema.")}
           </p>
         </div>
         <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-sm"><code>{@schema_text}</code></pre>

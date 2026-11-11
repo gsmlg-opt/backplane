@@ -53,36 +53,36 @@ defmodule Backplane.Admin.DashboardUsageLive do
     ~H"""
     <div class="space-y-6">
       <div class="flex items-center justify-between gap-4">
-        <h1 class="text-2xl font-bold">MCP Usage</h1>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "MCP Usage")}</h1>
         <.link navigate={~p"/dashboard/usage/llm"} class="text-sm text-primary underline">
-          LLM Usage
+          {dgettext("admin", "LLM Usage")}
         </.link>
       </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <.dm_stat title="Total MCP Requests" value={format_number(@mcp_usage.total_requests)} />
-        <.dm_stat title="Avg Duration" value={"#{format_number(@mcp_usage.avg_duration_ms)} ms"} />
-        <.dm_stat title="Runtime tool calls" value={format_number(counter(@metrics, "tool_calls_total"))} />
-        <.dm_stat title="Runtime MCP requests" value={format_number(counter(@metrics, "mcp_requests_total"))} />
+        <.dm_stat title={dgettext("admin", "Total MCP Requests")} value={format_number(@mcp_usage.total_requests)} />
+        <.dm_stat title={dgettext("admin", "Avg Duration")} value={dgettext("admin", "%{value} ms", value: format_number(@mcp_usage.avg_duration_ms))} />
+        <.dm_stat title={dgettext("admin", "Runtime tool calls")} value={format_number(counter(@metrics, "tool_calls_total"))} />
+        <.dm_stat title={dgettext("admin", "Runtime MCP requests")} value={format_number(counter(@metrics, "mcp_requests_total"))} />
       </div>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">MCP Requests By RPC Method (historical)</h2>
+        <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "MCP Requests By RPC Method (historical)")}</h2>
         <div :if={@method_counters == []} class="text-sm text-on-surface-variant">
-          No MCP request logs recorded yet.
+          {dgettext("admin", "No MCP request logs recorded yet.")}
         </div>
         <.dm_table :if={@method_counters != []} id="mcp-methods-table" data={@method_counters} hover zebra>
-          <:col :let={row} label="Method">
+          <:col :let={row} label={dgettext("admin", "Method")}>
             <code>{row.method}</code>
           </:col>
-          <:col :let={row} label="Requests">{format_number(row.count)}</:col>
+          <:col :let={row} label={dgettext("admin", "Requests")}>{format_number(row.count)}</:col>
         </.dm_table>
       </section>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Outcomes</h2>
+        <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Outcomes")}</h2>
         <div :if={@mcp_usage.by_outcome == %{}} class="text-sm text-on-surface-variant">
-          No outcome data recorded yet.
+          {dgettext("admin", "No outcome data recorded yet.")}
         </div>
         <div :if={@mcp_usage.by_outcome != %{}} class="flex flex-wrap gap-2">
           <.dm_badge :for={{outcome, count} <- Enum.sort(@mcp_usage.by_outcome)} variant="neutral">
@@ -98,9 +98,9 @@ defmodule Backplane.Admin.DashboardUsageLive do
     ~H"""
     <div class="space-y-6">
       <div class="flex items-center justify-between gap-4">
-        <h1 class="text-2xl font-bold">LLM Usage</h1>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "LLM Usage")}</h1>
         <.link navigate={~p"/dashboard/usage/mcp"} class="text-sm text-primary underline">
-          MCP Usage
+          {dgettext("admin", "MCP Usage")}
         </.link>
       </div>
 
@@ -109,33 +109,33 @@ defmodule Backplane.Admin.DashboardUsageLive do
       <.usage_time_range id="llm-usage-range" action={~p"/dashboard/usage/llm"} selected={@range} />
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <.dm_stat title="Total Requests" value={format_number(@usage.total_requests)} />
-        <.dm_stat title="Input Tokens" value={format_number(@usage.total_input_tokens)} />
-        <.dm_stat title="Output Tokens" value={format_number(@usage.total_output_tokens)} />
-        <.dm_stat title="Average Latency" value={"#{format_number(@usage.avg_latency_ms)} ms"} />
+        <.dm_stat title={dgettext("admin", "Total Requests")} value={format_number(@usage.total_requests)} />
+        <.dm_stat title={dgettext("admin", "Input Tokens")} value={format_number(@usage.total_input_tokens)} />
+        <.dm_stat title={dgettext("admin", "Output Tokens")} value={format_number(@usage.total_output_tokens)} />
+        <.dm_stat title={dgettext("admin", "Average Latency")} value={dgettext("admin", "%{value} ms", value: format_number(@usage.avg_latency_ms))} />
       </div>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Usage By Provider</h2>
+        <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Usage By Provider")}</h2>
         <div :if={@usage.by_provider == []} class="text-sm text-on-surface-variant">
-          No LLM usage logs recorded yet.
+          {dgettext("admin", "No LLM usage logs recorded yet.")}
         </div>
         <.dm_table :if={@usage.by_provider != []} id="llm-provider-usage-table" data={@usage.by_provider} hover zebra>
-          <:col :let={row} label="Provider">
+          <:col :let={row} label={dgettext("admin", "Provider")}>
             <code>{row.provider}</code>
           </:col>
-          <:col :let={row} label="Requests">{format_number(row.requests)}</:col>
-          <:col :let={row} label="Input Tokens">{format_number(row.input_tokens)}</:col>
-          <:col :let={row} label="Cached Tokens">{format_number(row.cached_tokens)}</:col>
-          <:col :let={row} label="Output Tokens">{format_number(row.output_tokens)}</:col>
-          <:col :let={row} label="Alias Calls">{format_number(row.alias_calls)}</:col>
+          <:col :let={row} label={dgettext("admin", "Requests")}>{format_number(row.requests)}</:col>
+          <:col :let={row} label={dgettext("admin", "Input Tokens")}>{format_number(row.input_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Cached Tokens")}>{format_number(row.cached_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Output Tokens")}>{format_number(row.output_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Alias Calls")}>{format_number(row.alias_calls)}</:col>
         </.dm_table>
       </section>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Usage By Provider / Model</h2>
+        <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Usage By Provider / Model")}</h2>
         <div :if={provider_model_rows(@usage.by_provider) == []} class="text-sm text-on-surface-variant">
-          No provider model usage recorded yet.
+          {dgettext("admin", "No provider model usage recorded yet.")}
         </div>
         <.dm_table
           :if={provider_model_rows(@usage.by_provider) != []}
@@ -144,19 +144,19 @@ defmodule Backplane.Admin.DashboardUsageLive do
           hover
           zebra
         >
-          <:col :let={row} label="Provider"><code>{row.provider}</code></:col>
-          <:col :let={row} label="Model"><code>{row.model}</code></:col>
-          <:col :let={row} label="Requests">{format_number(row.requests)}</:col>
-          <:col :let={row} label="Input Tokens">{format_number(row.input_tokens)}</:col>
-          <:col :let={row} label="Cached Tokens">{format_number(row.cached_tokens)}</:col>
-          <:col :let={row} label="Output Tokens">{format_number(row.output_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Provider")}><code>{row.provider}</code></:col>
+          <:col :let={row} label={dgettext("admin", "Model")}><code>{row.model}</code></:col>
+          <:col :let={row} label={dgettext("admin", "Requests")}>{format_number(row.requests)}</:col>
+          <:col :let={row} label={dgettext("admin", "Input Tokens")}>{format_number(row.input_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Cached Tokens")}>{format_number(row.cached_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Output Tokens")}>{format_number(row.output_tokens)}</:col>
         </.dm_table>
       </section>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Status Codes</h2>
+        <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Status Codes")}</h2>
         <div :if={@usage.by_status == %{}} class="text-sm text-on-surface-variant">
-          No status data recorded yet.
+          {dgettext("admin", "No status data recorded yet.")}
         </div>
         <div :if={@usage.by_status != %{}} class="flex flex-wrap gap-2">
           <.dm_badge :for={{status, count} <- Enum.sort(@usage.by_status)} variant="neutral">
@@ -180,24 +180,24 @@ defmodule Backplane.Admin.DashboardUsageLive do
     <.dm_card id="llm-daily-tokens" class="min-w-0">
       <:title>
         <h2 class="flex items-center gap-2 text-lg font-semibold">
-          <.dm_mdi name="chart-bar" class="h-5 w-5" /> Daily Token Usage
+          <.dm_mdi name="chart-bar" class="h-5 w-5" /> {dgettext("admin", "Daily Token Usage")}
         </h2>
       </:title>
       <p class="mb-4 text-sm text-on-surface-variant">
-        Last 30 days · UTC · Includes today · Independent of the filters below
+        {dgettext("admin", "Last 30 days · UTC · Includes today · Independent of the filters below")}
       </p>
       <p :if={is_nil(@rows)} class="text-sm text-on-surface-variant">
-        Daily token usage is temporarily unavailable.
+        {dgettext("admin", "Daily token usage is temporarily unavailable.")}
       </p>
       <div :if={@rows}>
         <p class="mb-4 text-2xl font-semibold tabular-nums">
-          {format_number(@total)} <span class="text-sm font-normal text-on-surface-variant">tokens</span>
+          {format_number(@total)} <span class="text-sm font-normal text-on-surface-variant">{dgettext("admin", "tokens")}</span>
         </p>
         <p :if={@total == 0} class="mb-3 text-sm text-on-surface-variant">
-          No token usage recorded in the last 30 days.
+          {dgettext("admin", "No token usage recorded in the last 30 days.")}
         </p>
         <div class="overflow-x-auto">
-          <div id="llm-daily-tokens-chart" class="relative min-w-[600px]" role="group" aria-label="Daily token usage over the last 30 days">
+          <div id="llm-daily-tokens-chart" class="relative min-w-[600px]" role="group" aria-label={dgettext("admin", "Daily token usage over the last 30 days")}>
             <svg
               viewBox="0 0 960 260"
               class="w-full"
@@ -237,7 +237,7 @@ defmodule Backplane.Admin.DashboardUsageLive do
                     data-input-tokens={row.input_tokens}
                     data-cached-tokens={row.cached_tokens}
                     data-output-tokens={row.output_tokens}
-                    aria-label={"#{row.date}: #{format_number(row.input_tokens + row.output_tokens)} tokens"}
+                    aria-label={dgettext("admin", "%{date}: %{count} tokens", date: row.date, count: format_number(row.input_tokens + row.output_tokens))}
                     class="group flex h-full w-full items-end justify-center focus-visible:outline-2 focus-visible:outline-primary"
                     {trigger_attrs}
                   >
@@ -250,10 +250,10 @@ defmodule Backplane.Admin.DashboardUsageLive do
                 </:trigger>
                 <p class="mb-2 font-semibold">{Date.to_iso8601(row.date)}</p>
                 <dl class="grid grid-cols-2 gap-x-6 gap-y-1 text-sm tabular-nums">
-                  <dt>Total</dt><dd class="text-right font-semibold">{format_number(row.input_tokens + row.output_tokens)}</dd>
-                  <dt>Input</dt><dd class="text-right">{format_number(row.input_tokens)}</dd>
-                  <dt>Cached</dt><dd class="text-right">{format_number(row.cached_tokens)}</dd>
-                  <dt>Output</dt><dd class="text-right">{format_number(row.output_tokens)}</dd>
+                  <dt>{dgettext("admin", "Total")}</dt><dd class="text-right font-semibold">{format_number(row.input_tokens + row.output_tokens)}</dd>
+                  <dt>{dgettext("admin", "Input")}</dt><dd class="text-right">{format_number(row.input_tokens)}</dd>
+                  <dt>{dgettext("admin", "Cached")}</dt><dd class="text-right">{format_number(row.cached_tokens)}</dd>
+                  <dt>{dgettext("admin", "Output")}</dt><dd class="text-right">{format_number(row.output_tokens)}</dd>
                 </dl>
               </.dm_popover>
             </div>

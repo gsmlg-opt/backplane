@@ -44,7 +44,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
     case Monitor.get_plan(id) do
       nil ->
         socket
-        |> put_flash(:error, "Plan not found")
+        |> put_flash(:error, dgettext("errors", "Plan not found"))
         |> push_patch(to: ~p"/system/monitor/plans")
 
       plan ->
@@ -67,7 +67,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
   def handle_event("toggle_active", %{"id" => id}, socket) do
     case Monitor.get_plan(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Plan not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Plan not found"))}
 
       plan ->
         case Monitor.update_plan(plan, %{active: !plan.active}) do
@@ -76,7 +76,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
             {:noreply, load_plans(socket)}
 
           {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to toggle plan status")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to toggle plan status"))}
         end
     end
   end
@@ -101,7 +101,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
   def handle_event("delete", %{"id" => id}, socket) do
     case Monitor.get_plan(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Plan not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Plan not found"))}
 
       plan ->
         case Monitor.delete_plan(plan) do
@@ -110,11 +110,11 @@ defmodule Backplane.Admin.MonitorPlansLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Plan #{plan.name} deleted")
+             |> put_flash(:info, dgettext("admin", "Plan %{name} deleted", name: plan.name))
              |> push_patch(to: ~p"/system/monitor/plans")}
 
           {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to delete plan")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete plan"))}
         end
     end
   end
@@ -126,7 +126,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Plan #{plan.name} created")
+         |> put_flash(:info, dgettext("admin", "Plan %{name} created", name: plan.name))
          |> push_patch(to: ~p"/system/monitor/plans")}
 
       {:error, changeset} ->
@@ -141,7 +141,7 @@ defmodule Backplane.Admin.MonitorPlansLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Plan #{plan.name} updated")
+         |> put_flash(:info, dgettext("admin", "Plan %{name} updated", name: plan.name))
          |> push_patch(to: ~p"/system/monitor/plans")}
 
       {:error, changeset} ->
@@ -217,21 +217,23 @@ defmodule Backplane.Admin.MonitorPlansLive do
     ~H"""
     <div>
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold">Plan Usage</h1>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "Plan Usage")}</h1>
         <.link patch={~p"/system/monitor/plans/new"}>
-          <.dm_btn variant="primary" size="sm">New Plan</.dm_btn>
+          <.dm_btn variant="primary" size="sm">{dgettext("admin", "New Plan")}</.dm_btn>
         </.link>
       </div>
 
       <.dm_card :if={@editing} variant="bordered" class="mb-6">
         <:title>
-          {if @editing == :new, do: "New Plan", else: "Edit Plan"}
+          {if @editing == :new,
+            do: dgettext("admin", "New Plan"),
+            else: dgettext("admin", "Edit Plan")}
         </:title>
         <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-4">
           <.dm_input
             id="plan-name"
             name="plan[name]"
-            label="Name"
+            label={dgettext("common", "Name")}
             value={@form[:name].value}
             disabled={@editing != :new}
             placeholder="my-zai-plan"
@@ -239,32 +241,34 @@ defmodule Backplane.Admin.MonitorPlansLive do
           <.form_error field={@form[:name]} />
 
           <div>
-            <label class="block text-sm font-medium mb-1">Provider</label>
+            <label class="block text-sm font-medium mb-1">{dgettext("admin", "Provider")}</label>
             <select
               id="plan-provider"
               name="plan[provider]"
               class="w-full rounded-lg border border-outline bg-surface-container px-3 py-2 text-sm text-on-surface"
             >
-              <option value="">Select a provider...</option>
+              <option value="">{dgettext("admin", "Select a provider...")}</option>
               <option
                 :for={p <- Plan.providers()}
                 value={p}
                 selected={to_string(@form[:provider].value) == p}
               >
-                {Plan.provider_label(p)}{unless Plan.provider_supported?(p), do: " (Coming Soon)", else: ""}
+                {Plan.provider_label(p)}{unless Plan.provider_supported?(p),
+                  do: " " <> dgettext("admin", "(Coming Soon)"),
+                  else: ""}
               </option>
             </select>
           </div>
           <.form_error field={@form[:provider]} />
 
           <div>
-            <label class="block text-sm font-medium mb-1">Credential</label>
+            <label class="block text-sm font-medium mb-1">{dgettext("admin", "Credential")}</label>
             <select
               id="plan-credential"
               name="plan[credential_name]"
               class="w-full rounded-lg border border-outline bg-surface-container px-3 py-2 text-sm text-on-surface"
             >
-              <option value="">Select a credential...</option>
+              <option value="">{dgettext("admin", "Select a credential...")}</option>
               <option
                 :for={cred <- @credentials}
                 value={cred}
@@ -274,8 +278,10 @@ defmodule Backplane.Admin.MonitorPlansLive do
               </option>
             </select>
             <p class="text-xs text-on-surface-variant mt-1">
-              The credential used to query usage. Claude Code plans can use a Claude OAuth
-              credential or a Script credential.
+              {dgettext(
+                "admin",
+                "The credential used to query usage. Claude Code plans can use a Claude OAuth credential or a Script credential."
+              )}
             </p>
           </div>
           <.form_error field={@form[:credential_name]} />
@@ -283,29 +289,29 @@ defmodule Backplane.Admin.MonitorPlansLive do
           <.dm_input
             id="plan-project"
             name="plan[config][project]"
-            label="Project"
+            label={dgettext("admin", "Project")}
             value={config_value(@form, "project")}
             placeholder="projects/my-cloud-code-project"
           />
 
           <div class="flex gap-2">
-            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
+            <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
             <.link patch={~p"/system/monitor/plans"} class="no-underline">
-              <.dm_btn type="button">Cancel</.dm_btn>
+              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
             </.link>
           </div>
         </.form>
       </.dm_card>
 
       <div :if={!@editing && @plans == []} class="text-on-surface-variant">
-        No plans configured. Add a subscription plan to monitor its usage.
+        {dgettext("admin", "No plans configured. Add a subscription plan to monitor its usage.")}
       </div>
 
       <.dm_table :if={!@editing && @plans != []} id="monitor-plans-table" data={@plans} hover zebra>
-        <:col :let={plan} label="Name">
+        <:col :let={plan} label={dgettext("common", "Name")}>
           <div class="font-medium text-on-surface">{plan.name}</div>
         </:col>
-        <:col :let={plan} label="Provider">
+        <:col :let={plan} label={dgettext("admin", "Provider")}>
           <div class="flex items-center gap-2">
             <.dm_badge variant="info" size="sm">
               {Plan.provider_label(plan.provider)}
@@ -315,70 +321,84 @@ defmodule Backplane.Admin.MonitorPlansLive do
               variant="warning"
               size="sm"
             >
-              Coming Soon
+              {dgettext("admin", "Coming Soon")}
             </.dm_badge>
           </div>
         </:col>
-        <:col :let={plan} label="Credential">
+        <:col :let={plan} label={dgettext("admin", "Credential")}>
           <code class="text-xs font-mono">{plan.credential_name}</code>
         </:col>
-        <:col :let={plan} label="Status">
+        <:col :let={plan} label={dgettext("common", "Status")}>
           <.dm_badge
             variant={if plan.active, do: "success", else: "error"}
             size="sm"
           >
-            {if plan.active, do: "Active", else: "Inactive"}
+            {if plan.active,
+              do: dgettext("common", "Active"),
+              else: dgettext("common", "Inactive")}
           </.dm_badge>
         </:col>
-        <:col :let={plan} label="Last Updated">
+        <:col :let={plan} label={dgettext("admin", "Last Updated")}>
           <span class="text-xs text-on-surface-variant">
             <.local_time datetime={plan.updated_at} />
           </span>
         </:col>
-        <:col :let={plan} label="Actions">
+        <:col :let={plan} label={dgettext("common", "Actions")}>
           <div class="flex items-center gap-1">
-            <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
               <.dm_btn
                 {tooltip_attrs}
                 patch={~p"/system/monitor/plans/#{plan.id}/edit"}
                 variant="outline"
                 size="xs"
                 shape="circle"
-                aria-label={"Edit #{plan.name}"}
+                aria-label={dgettext("admin", "Edit %{name}", name: plan.name)}
               >
                 <.dm_mdi name="pencil" class="h-4 w-4" />
-                <span class="sr-only">Edit</span>
+                <span class="sr-only">{dgettext("common", "Edit")}</span>
               </.dm_btn>
             </.dm_tooltip>
 
-            <.dm_tooltip :let={tooltip_attrs} content={if plan.active, do: "Deactivate", else: "Activate"} position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={
+                if plan.active,
+                  do: dgettext("admin", "Deactivate"),
+                  else: dgettext("admin", "Activate")
+              } position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
                 variant={if plan.active, do: "warning", else: "success"}
                 size="xs"
                 shape="circle"
-                aria-label={if plan.active, do: "Deactivate #{plan.name}", else: "Activate #{plan.name}"}
+                aria-label={
+                  if plan.active,
+                    do: dgettext("admin", "Deactivate %{name}", name: plan.name),
+                    else: dgettext("admin", "Activate %{name}", name: plan.name)
+                }
                 phx-click="toggle_active"
                 phx-value-id={plan.id}
               >
                 <.dm_mdi name={if plan.active, do: "pause", else: "play"} class="h-4 w-4" />
-                <span class="sr-only">{if plan.active, do: "Deactivate", else: "Activate"}</span>
+                <span class="sr-only">
+                  {if plan.active,
+                    do: dgettext("admin", "Deactivate"),
+                    else: dgettext("admin", "Activate")}
+                </span>
               </.dm_btn>
             </.dm_tooltip>
 
-            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
                 variant="error"
                 size="xs"
                 shape="circle"
-                aria-label={"Delete #{plan.name}"}
-                confirm={"Delete plan #{plan.name}? This cannot be undone."}
+                aria-label={dgettext("admin", "Delete %{name}", name: plan.name)}
+                confirm={dgettext("admin", "Delete plan %{name}? This cannot be undone.", name: plan.name)}
                 phx-click="delete"
                 phx-value-id={plan.id}
               >
                 <.dm_mdi name="trash-can" class="h-4 w-4" />
-                <span class="sr-only">Delete</span>
+                <span class="sr-only">{dgettext("common", "Delete")}</span>
               </.dm_btn>
             </.dm_tooltip>
           </div>

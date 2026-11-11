@@ -64,64 +64,64 @@ defmodule Backplane.Admin.LogsMcpLive do
     <div>
       <div class="mb-4">
         <.link navigate={~p"/system/logs/mcp"} class="text-sm text-primary underline">
-          ← Back to MCP logs
+          {dgettext("admin", "← Back to MCP logs")}
         </.link>
       </div>
 
       <div :if={@error}>
-        <.error_state title="Record unavailable" message={@error} />
+        <.error_state title={dgettext("errors", "Record unavailable")} message={@error} />
       </div>
 
       <div :if={@record}>
-        <h1 class="mb-4 text-2xl font-bold">MCP Request Detail</h1>
+        <h1 class="mb-4 text-2xl font-bold">{dgettext("admin", "MCP Request Detail")}</h1>
 
         <.dm_card variant="bordered" class="mb-6">
-          <h2 class="font-semibold">Root request</h2>
+          <h2 class="font-semibold">{dgettext("admin", "Root request")}</h2>
           <dl class="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-            <div><dt class="text-on-surface-variant">Operation</dt><dd>{@record.operation}</dd></div>
-            <div><dt class="text-on-surface-variant">RPC method</dt><dd class="font-mono text-xs">{@record.rpc_method || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">Outcome</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
-            <div><dt class="text-on-surface-variant">Duration</dt><dd>{@record.duration_ms || "-"} ms</dd></div>
-            <div><dt class="text-on-surface-variant">Protocol</dt><dd>{@record.protocol_version || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">Transport</dt><dd>{@record.transport || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">Session</dt><dd class="font-mono text-xs">{@record.session_id || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">Auth</dt><dd>{@record.auth_kind || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">Client</dt><dd>{client_label(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">HTTP status</dt><dd>{@record.http_status || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">Recorded</dt><dd><.local_time datetime={@record.inserted_at} /></dd></div>
-            <div><dt class="text-on-surface-variant">Request ID</dt><dd><.copy_field label="Request ID" value={@record.request_id} /></dd></div>
-            <div><dt class="text-on-surface-variant">Trace ID</dt><dd><.copy_field label="Trace ID" value={@record.trace_id} /></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Operation")}</dt><dd>{@record.operation}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "RPC method")}</dt><dd class="font-mono text-xs">{@record.rpc_method || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Outcome")}</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Duration")}</dt><dd>{dgettext("admin", "%{value} ms", value: @record.duration_ms || "-")}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Protocol")}</dt><dd>{@record.protocol_version || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Transport")}</dt><dd>{@record.transport || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Session")}</dt><dd class="font-mono text-xs">{@record.session_id || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Auth")}</dt><dd>{@record.auth_kind || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt><dd>{client_label(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "HTTP status")}</dt><dd>{@record.http_status || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Recorded")}</dt><dd><.local_time datetime={@record.inserted_at} /></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Request ID")}</dt><dd><.copy_field label={dgettext("admin", "Request ID")} value={@record.request_id} /></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Trace ID")}</dt><dd><.copy_field label={dgettext("admin", "Trace ID")} value={@record.trace_id} /></dd></div>
           </dl>
 
           <div :if={@record.error_message} class="mt-4">
-            <h3 class="text-sm font-semibold">Error</h3>
+            <h3 class="text-sm font-semibold">{dgettext("errors", "Error")}</h3>
             <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-container-high p-3 text-xs">{bounded_error(@record.error_message)}</pre>
           </div>
 
           <div class="mt-4">
-            <h3 class="text-sm font-semibold">Metadata</h3>
+            <h3 class="text-sm font-semibold">{dgettext("admin", "Metadata")}</h3>
             <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-container-high p-3 text-xs">{metadata_summary(@record.metadata)}</pre>
           </div>
         </.dm_card>
 
         <section>
-          <h2 class="mb-3 text-lg font-semibold">Tool call timeline</h2>
+          <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Tool call timeline")}</h2>
           <div :if={@tool_calls == []} class="text-sm text-on-surface-variant">
-            No child tool calls linked to this request.
+            {dgettext("admin", "No child tool calls linked to this request.")}
           </div>
           <.dm_table :if={@tool_calls != []} id="mcp-tool-calls-table" data={@tool_calls} hover zebra>
-            <:col :let={row} label="Tool">
+            <:col :let={row} label={dgettext("admin", "Tool")}>
               <span class="font-mono text-xs">{row.tool_name}</span>
             </:col>
-            <:col :let={row} label="Upstream">{row.upstream_name || "-"}</:col>
-            <:col :let={row} label="Outcome">
+            <:col :let={row} label={dgettext("admin", "Upstream")}>{row.upstream_name || "-"}</:col>
+            <:col :let={row} label={dgettext("admin", "Outcome")}>
               <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
             </:col>
-            <:col :let={row} label="Duration">{row.duration_ms || "-"} ms</:col>
-            <:col :let={row} label="Args hash">
+            <:col :let={row} label={dgettext("admin", "Duration")}>{dgettext("admin", "%{value} ms", value: row.duration_ms || "-")}</:col>
+            <:col :let={row} label={dgettext("admin", "Args hash")}>
               <span class="font-mono text-xs">{row.arguments_hash || "-"}</span>
             </:col>
-            <:col :let={row} label="Recorded">
+            <:col :let={row} label={dgettext("admin", "Recorded")}>
               <.local_time datetime={row.inserted_at} format="short" />
             </:col>
           </.dm_table>
@@ -134,20 +134,20 @@ defmodule Backplane.Admin.LogsMcpLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="mb-2 text-2xl font-bold">MCP Logs</h1>
-      <p class="mb-4 text-sm text-on-surface-variant">Persisted MCP root proxy access records.</p>
+      <h1 class="mb-2 text-2xl font-bold">{dgettext("admin", "MCP Logs")}</h1>
+      <p class="mb-4 text-sm text-on-surface-variant">{dgettext("admin", "Persisted MCP root proxy access records.")}</p>
 
       <.time_range_form
         action={~p"/system/logs/mcp"}
         since={@time_range.since}
         until={@time_range.until}
         fields={[
-          %{name: "rpc_method", placeholder: "RPC method", value: @filters[:rpc_method]},
-          %{name: "operation", placeholder: "Operation", value: @filters[:operation]},
-          %{name: "outcome", placeholder: "Outcome", value: @filters[:outcome]},
-          %{name: "auth_kind", placeholder: "Auth kind", value: @filters[:auth_kind]},
-          %{name: "tool_name", placeholder: "Tool name (child filter)", value: @filters[:tool_name]},
-          %{name: "upstream_name", placeholder: "Upstream", value: @filters[:upstream_name]}
+          %{name: "rpc_method", placeholder: dgettext("admin", "RPC method"), value: @filters[:rpc_method]},
+          %{name: "operation", placeholder: dgettext("admin", "Operation"), value: @filters[:operation]},
+          %{name: "outcome", placeholder: dgettext("admin", "Outcome"), value: @filters[:outcome]},
+          %{name: "auth_kind", placeholder: dgettext("admin", "Auth kind"), value: @filters[:auth_kind]},
+          %{name: "tool_name", placeholder: dgettext("admin", "Tool name (child filter)"), value: @filters[:tool_name]},
+          %{name: "upstream_name", placeholder: dgettext("admin", "Upstream"), value: @filters[:upstream_name]}
         ]}
       />
 
@@ -156,31 +156,31 @@ defmodule Backplane.Admin.LogsMcpLive do
       </div>
 
       <div :if={!@loading and @records == []}>
-        <.empty_state title="No MCP logs found" message="Try widening the time range or clearing filters." />
+        <.empty_state title={dgettext("admin", "No MCP logs found")} message={dgettext("admin", "Try widening the time range or clearing filters.")} />
       </div>
 
       <.dm_table :if={!@loading and @records != []} id="mcp-logs-table" data={@records} hover zebra>
-        <:col :let={row} label="Client">{client_label(row)}</:col>
-        <:col :let={row} label="Provider">{provider_label(row, @tool_call_labels)}</:col>
-        <:col :let={row} label="Method">
+        <:col :let={row} label={dgettext("admin", "Client")}>{client_label(row)}</:col>
+        <:col :let={row} label={dgettext("admin", "Provider")}>{provider_label(row, @tool_call_labels)}</:col>
+        <:col :let={row} label={dgettext("admin", "Method")}>
           <.link navigate={~p"/system/logs/mcp/#{row.id}"} class="font-mono text-xs text-primary underline">
             {row.rpc_method || row.operation}
           </.link>
         </:col>
-        <:col :let={row} label="Tool">{tool_label(row, @tool_call_labels)}</:col>
-        <:col :let={row} label="Operation">{row.operation}</:col>
-        <:col :let={row} label="Outcome">
+        <:col :let={row} label={dgettext("admin", "Tool")}>{tool_label(row, @tool_call_labels)}</:col>
+        <:col :let={row} label={dgettext("admin", "Operation")}>{row.operation}</:col>
+        <:col :let={row} label={dgettext("admin", "Outcome")}>
           <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
         </:col>
-        <:col :let={row} label="Auth">{row.auth_kind || "-"}</:col>
-        <:col :let={row} label="Duration">{row.duration_ms || "-"} ms</:col>
-        <:col :let={row} label="Recorded">
+        <:col :let={row} label={dgettext("admin", "Auth")}>{row.auth_kind || "-"}</:col>
+        <:col :let={row} label={dgettext("admin", "Duration")}>{dgettext("admin", "%{value} ms", value: row.duration_ms || "-")}</:col>
+        <:col :let={row} label={dgettext("admin", "Recorded")}>
           <.local_time datetime={row.inserted_at} format="short" />
         </:col>
       </.dm_table>
 
       <div :if={@next_cursor} class="mt-4">
-        <.dm_btn phx-click="load_more" size="sm">Load more</.dm_btn>
+        <.dm_btn phx-click="load_more" size="sm">{dgettext("common", "Load more")}</.dm_btn>
       </div>
     </div>
     """
@@ -226,7 +226,7 @@ defmodule Backplane.Admin.LogsMcpLive do
   defp load_detail(socket, %{"id" => id}) do
     case LogQuery.get(id) do
       nil ->
-        {:noreply, assign(socket, loading: false, record: nil, error: "Record not found")}
+        {:noreply, assign(socket, loading: false, record: nil, error: dgettext("errors", "Record not found"))}
 
       record ->
         tool_calls =

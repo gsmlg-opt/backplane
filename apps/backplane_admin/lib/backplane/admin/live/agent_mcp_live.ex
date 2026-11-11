@@ -52,7 +52,7 @@ defmodule Backplane.Admin.AgentMcpLive do
     case safe_call(fn -> AgentMcpServers.get!(id) end, nil) do
       nil ->
         socket
-        |> put_flash(:error, "MCP server not found")
+        |> put_flash(:error, dgettext("errors", "MCP server not found"))
         |> push_patch(to: ~p"/mcp/agent")
 
       server ->
@@ -105,7 +105,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "MCP server created")
+             |> put_flash(:info, dgettext("admin", "MCP server created"))
              |> push_patch(to: ~p"/mcp/agent")}
 
           {:error, changeset} ->
@@ -119,7 +119,7 @@ defmodule Backplane.Admin.AgentMcpLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "MCP server updated")
+             |> put_flash(:info, dgettext("admin", "MCP server updated"))
              |> push_patch(to: ~p"/mcp/agent")}
 
           {:error, changeset} ->
@@ -134,10 +134,10 @@ defmodule Backplane.Admin.AgentMcpLive do
     case AgentMcpServers.delete(server) do
       {:ok, _} ->
         Backplane.Admin.Audit.record("agent_mcp_server.delete", "agent_mcp_server", server.id)
-        {:noreply, socket |> put_flash(:info, "MCP server deleted") |> load_all()}
+        {:noreply, socket |> put_flash(:info, dgettext("admin", "MCP server deleted")) |> load_all()}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to delete MCP server")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete MCP server"))}
     end
   end
 
@@ -147,11 +147,15 @@ defmodule Backplane.Admin.AgentMcpLive do
     case AgentMcpServers.update(server, %{enabled: !server.enabled}) do
       {:ok, updated} ->
         Backplane.Admin.Audit.record("agent_mcp_server.toggle", "agent_mcp_server", updated.id)
-        msg = if updated.enabled, do: "MCP server enabled", else: "MCP server disabled"
+        msg =
+          if updated.enabled,
+            do: dgettext("admin", "MCP server enabled"),
+            else: dgettext("admin", "MCP server disabled")
+
         {:noreply, socket |> put_flash(:info, msg) |> load_all()}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to update MCP server")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to update MCP server"))}
     end
   end
 
@@ -199,8 +203,8 @@ defmodule Backplane.Admin.AgentMcpLive do
     |> Enum.sort_by(fn m -> m.prefix end)
   end
 
-  defp kind_label(:managed), do: "Managed"
-  defp kind_label(_), do: "Other"
+  defp kind_label(:managed), do: dgettext("admin", "Managed")
+  defp kind_label(_), do: dgettext("admin", "Other")
 
   defp kind_icon(:managed), do: "cog"
   defp kind_icon(_), do: "puzzle-outline"
@@ -297,17 +301,17 @@ defmodule Backplane.Admin.AgentMcpLive do
 
   defp env_display(_), do: ""
 
-  defp host_name_for(nil, _hosts), do: "All Agents"
+  defp host_name_for(nil, _hosts), do: dgettext("admin", "All Agents")
 
   defp host_name_for(host_id, hosts) do
     case Enum.find(hosts, &(&1.id == host_id)) do
       %{name: name} -> name
-      _ -> "Unknown"
+      _ -> dgettext("common", "Unknown")
     end
   end
 
   defp host_options(hosts) do
-    [{"", "All Agents (global)"}] ++
+    [{"", dgettext("admin", "All Agents (global)")}] ++
       Enum.map(hosts, fn h -> {h.id, h.name} end)
   end
 
@@ -331,7 +335,7 @@ defmodule Backplane.Admin.AgentMcpLive do
   defp target_name(%{"name" => name}), do: name
   defp target_name(%{name: name}), do: name
   defp target_name(name) when is_binary(name), do: name
-  defp target_name(_), do: "unnamed"
+  defp target_name(_), do: dgettext("admin", "unnamed")
 
   defp target_runtime(%{"runtime" => runtime}), do: runtime
   defp target_runtime(%{runtime: runtime}) when is_binary(runtime), do: runtime
@@ -347,10 +351,10 @@ defmodule Backplane.Admin.AgentMcpLive do
     diff = DateTime.diff(DateTime.utc_now(), datetime, :second)
 
     cond do
-      diff < 60 -> "#{diff}s ago"
-      diff < 3600 -> "#{div(diff, 60)}m ago"
-      diff < 86_400 -> "#{div(diff, 3600)}h ago"
-      true -> "#{div(diff, 86_400)}d ago"
+      diff < 60 -> dgettext("common", "%{count}s ago", count: diff)
+      diff < 3600 -> dgettext("common", "%{count}m ago", count: div(diff, 60))
+      diff < 86_400 -> dgettext("common", "%{count}h ago", count: div(diff, 3600))
+      true -> dgettext("common", "%{count}d ago", count: div(diff, 86_400))
     end
   end
 
@@ -392,35 +396,35 @@ defmodule Backplane.Admin.AgentMcpLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h1 class="text-2xl font-bold">Agent MCP</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "Agent MCP")}</h1>
           <p class="mt-1 text-sm text-on-surface-variant">
-            MCP server configs pushed to host agents. These servers run locally on the agent, not on Backplane.
+            {dgettext("admin", "MCP server configs pushed to host agents. These servers run locally on the agent, not on Backplane.")}
           </p>
         </div>
         <.link patch={~p"/mcp/agent/new"}>
-          <.dm_btn variant="primary" size="sm">Add MCP Server</.dm_btn>
+          <.dm_btn variant="primary" size="sm">{dgettext("admin", "Add MCP Server")}</.dm_btn>
         </.link>
       </div>
 
       <%!-- Section 1: Agent MCP Servers --%>
       <section class="mb-8">
-        <h2 class="text-lg font-semibold mb-3">Agent MCP Servers</h2>
+        <h2 class="text-lg font-semibold mb-3">{dgettext("admin", "Agent MCP Servers")}</h2>
 
         <div :if={@mcp_servers == []} class="text-sm text-on-surface-variant mb-4">
-          No MCP servers configured for host agents. Click "Add MCP Server" to create one.
+          {dgettext("admin", "No MCP servers configured for host agents. Click \"Add MCP Server\" to create one.")}
         </div>
 
         <div :if={@mcp_servers != []} class="overflow-x-auto">
           <table class="min-w-full text-sm">
             <thead class="bg-surface-container-high text-on-surface">
               <tr>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Transport</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Target</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Connection</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-                <th scope="col" class="px-3 py-2 text-right font-semibold">Actions</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Name")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Prefix")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Transport")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Target")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Connection")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
+                <th scope="col" class="px-3 py-2 text-right font-semibold">{dgettext("common", "Actions")}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-outline-variant">
@@ -455,28 +459,34 @@ defmodule Backplane.Admin.AgentMcpLive do
                     variant={if server.enabled, do: "success", else: "ghost"}
                     size="sm"
                   >
-                    {if server.enabled, do: "Enabled", else: "Disabled"}
+                    {if server.enabled,
+                      do: dgettext("common", "Enabled"),
+                      else: dgettext("common", "Disabled")}
                   </.dm_badge>
                 </td>
                 <td class="px-3 py-1.5 align-middle text-right">
                   <div class="flex items-center justify-end gap-1">
-                    <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                    <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                       <.dm_btn {tooltip_attrs}
                         patch={~p"/mcp/agent/#{server.id}/edit"}
                         size="xs"
                         shape="circle"
                         variant="outline"
-                        aria-label={"Edit #{server.name} MCP server"}
+                        aria-label={dgettext("admin", "Edit %{name} MCP server", name: server.name)}
                       >
                         <.dm_mdi name="pencil" class="w-4 h-4" />
                       </.dm_btn>
                     </.dm_tooltip>
-                    <.dm_tooltip :let={tooltip_attrs} content={if server.enabled, do: "Disable", else: "Enable"} position="bottom">
+                    <.dm_tooltip :let={tooltip_attrs} content={if server.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")} position="bottom">
                       <.dm_btn {tooltip_attrs}
                         size="xs"
                         shape="circle"
                         variant={if server.enabled, do: "warning", else: "primary"}
-                        aria-label={"#{if server.enabled, do: "Disable", else: "Enable"} #{server.name} MCP server"}
+                        aria-label={
+                          if server.enabled,
+                            do: dgettext("admin", "Disable %{name} MCP server", name: server.name),
+                            else: dgettext("admin", "Enable %{name} MCP server", name: server.name)
+                        }
                         phx-click="toggle_server"
                         phx-value-id={server.id}
                       >
@@ -486,15 +496,15 @@ defmodule Backplane.Admin.AgentMcpLive do
                         />
                       </.dm_btn>
                     </.dm_tooltip>
-                    <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                    <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
                       <.dm_btn {tooltip_attrs}
                         size="xs"
                         shape="circle"
                         variant="error"
-                        aria-label={"Delete #{server.name} MCP server"}
+                        aria-label={dgettext("admin", "Delete %{name} MCP server", name: server.name)}
                         phx-click="delete"
                         phx-value-id={server.id}
-                        data-confirm={"Delete MCP server #{server.name}?"}
+                        data-confirm={dgettext("admin", "Delete MCP server %{name}?", name: server.name)}
                       >
                         <.dm_mdi name="delete" class="w-4 h-4" />
                       </.dm_btn>
@@ -509,12 +519,12 @@ defmodule Backplane.Admin.AgentMcpLive do
 
       <%!-- Section 2: Connected Agents --%>
       <section class="mb-8">
-        <h2 class="text-lg font-semibold mb-3">Connected Agents</h2>
+        <h2 class="text-lg font-semibold mb-3">{dgettext("admin", "Connected Agents")}</h2>
 
         <div :if={@connections == []} class="text-sm text-on-surface-variant">
-          No host agents currently connected.
+          {dgettext("admin", "No host agents currently connected.")}
           <.link navigate={~p"/system/host-agents"} class="text-primary underline">
-            Manage host agents →
+            {dgettext("admin", "Manage host agents →")}
           </.link>
         </div>
 
@@ -522,12 +532,12 @@ defmodule Backplane.Admin.AgentMcpLive do
           <table class="min-w-full text-sm">
             <thead class="bg-surface-container-high text-on-surface">
               <tr>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Version</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Connected</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Targets</th>
-                <th scope="col" class="px-3 py-2 text-right font-semibold">Actions</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Name")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Version")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Connected")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Targets")}</th>
+                <th scope="col" class="px-3 py-2 text-right font-semibold">{dgettext("common", "Actions")}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-outline-variant">
@@ -554,25 +564,30 @@ defmodule Backplane.Admin.AgentMcpLive do
                   </td>
                   <td class="px-3 py-1.5 align-middle">
                     <span class="text-xs text-on-surface-variant">
-                      {length(targets_list(conn))} targets
+                      {dngettext(
+                        "admin",
+                        "%{count} target",
+                        "%{count} targets",
+                        length(targets_list(conn))
+                      )}
                     </span>
                   </td>
                   <td class="px-3 py-1.5 align-middle text-right">
                     <.link navigate={~p"/system/host-agents/#{conn.host.id}"}>
-                      <.dm_btn size="xs" variant="outline">Config</.dm_btn>
+                      <.dm_btn size="xs" variant="outline">{dgettext("admin", "Config")}</.dm_btn>
                     </.link>
                   </td>
                 </tr>
                 <tr :if={targets_list(conn) != []} class="bg-surface-container">
                   <td colspan="6" class="px-3 py-2">
-                    <h4 class="text-xs font-medium text-on-surface-variant mb-2">MCP Targets</h4>
+                    <h4 class="text-xs font-medium text-on-surface-variant mb-2">{dgettext("admin", "MCP Targets")}</h4>
                     <div class="overflow-x-auto">
                       <table class="min-w-full text-sm">
                         <thead class="bg-surface-container-high text-on-surface">
                           <tr>
-                            <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-                            <th scope="col" class="px-3 py-2 text-left font-semibold">Runtime</th>
-                            <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
+                            <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Name")}</th>
+                            <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Runtime")}</th>
+                            <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
                           </tr>
                         </thead>
                         <tbody class="divide-y divide-outline-variant">
@@ -588,7 +603,9 @@ defmodule Backplane.Admin.AgentMcpLive do
                                 variant={if target_enabled?(target), do: "success", else: "error"}
                                 size="sm"
                               >
-                                {if target_enabled?(target), do: "Enabled", else: "Disabled"}
+                                {if target_enabled?(target),
+                                  do: dgettext("common", "Enabled"),
+                                  else: dgettext("common", "Disabled")}
                               </.dm_badge>
                             </td>
                           </tr>
@@ -605,25 +622,25 @@ defmodule Backplane.Admin.AgentMcpLive do
 
       <%!-- Section 3: Managed Services on Backplane MCP --%>
       <section>
-        <h2 class="text-lg font-semibold mb-3">Backplane MCP Services</h2>
+        <h2 class="text-lg font-semibold mb-3">{dgettext("admin", "Backplane MCP Services")}</h2>
         <p class="text-sm text-on-surface-variant mb-4">
-          Managed services running on the Backplane MCP server. Host agents access these via the MCP endpoint.
+          {dgettext("admin", "Managed services running on the Backplane MCP server. Host agents access these via the MCP endpoint.")}
         </p>
 
         <div :if={@available_mcps == []} class="text-sm text-on-surface-variant">
-          No managed services registered.
+          {dgettext("admin", "No managed services registered.")}
         </div>
 
         <div :if={@available_mcps != []} class="overflow-x-auto">
           <table class="min-w-full text-sm">
             <thead class="bg-surface-container-high text-on-surface">
               <tr>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Namespace</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Type</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Tools</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Tool List</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Prefix")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Namespace")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Type")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Tools")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Tool List")}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-outline-variant">
@@ -641,7 +658,7 @@ defmodule Backplane.Admin.AgentMcpLive do
                   <.dm_badge variant="info" size="sm">{kind_label(mcp.kind)}</.dm_badge>
                 </td>
                 <td class="px-3 py-1.5 align-middle">
-                  <.dm_badge variant="success" size="sm">Enabled</.dm_badge>
+                  <.dm_badge variant="success" size="sm">{dgettext("common", "Enabled")}</.dm_badge>
                 </td>
                 <td class="px-3 py-1.5 align-middle">
                   <span class="text-on-surface-variant">{mcp.tool_count}</span>
@@ -677,10 +694,12 @@ defmodule Backplane.Admin.AgentMcpLive do
     <div>
       <div class="flex items-center gap-3 mb-6">
         <.link patch={~p"/mcp/agent"} class="text-sm text-primary hover:underline">
-          &larr; Agent MCP
+          {dgettext("admin", "← Agent MCP")}
         </.link>
         <h1 class="text-2xl font-bold">
-          {if @editing == :new, do: "New Agent MCP Server", else: "Edit #{@editing.name}"}
+          {if @editing == :new,
+            do: dgettext("admin", "New Agent MCP Server"),
+            else: dgettext("admin", "Edit %{name}", name: @editing.name)}
         </h1>
       </div>
 
@@ -691,9 +710,9 @@ defmodule Backplane.Admin.AgentMcpLive do
               <.dm_input
                 id="server-name"
                 name="agent_mcp_server[name]"
-                label="Name"
+                label={dgettext("common", "Name")}
                 value={@form[:name].value}
-                placeholder="File System"
+                placeholder={dgettext("admin", "File System")}
               />
               <.form_error field={@form[:name]} />
             </div>
@@ -701,7 +720,7 @@ defmodule Backplane.Admin.AgentMcpLive do
               <.dm_input
                 id="server-prefix"
                 name="agent_mcp_server[prefix]"
-                label="Prefix"
+                label={dgettext("admin", "Prefix")}
                 value={@form[:prefix].value}
                 placeholder="fs"
               />
@@ -714,7 +733,7 @@ defmodule Backplane.Admin.AgentMcpLive do
               <.dm_select
                 id="server-transport"
                 name="agent_mcp_server[transport]"
-                label="Transport"
+                label={dgettext("admin", "Transport")}
                 options={[{"http", "HTTP"}, {"stdio", "Stdio"}]}
                 value={transport_value(@form)}
               />
@@ -724,7 +743,7 @@ defmodule Backplane.Admin.AgentMcpLive do
               <.dm_select
                 id="server-host"
                 name="agent_mcp_server[host_id]"
-                label="Target Agent"
+                label={dgettext("admin", "Target Agent")}
                 options={host_options(@hosts)}
                 value={@form[:host_id].value || ""}
               />
@@ -735,7 +754,7 @@ defmodule Backplane.Admin.AgentMcpLive do
             <.dm_input
               id="server-url"
               name="agent_mcp_server[url]"
-              label="URL"
+              label={dgettext("admin", "URL")}
               value={@form[:url].value || ""}
               placeholder="https://example.com/mcp"
             />
@@ -747,7 +766,7 @@ defmodule Backplane.Admin.AgentMcpLive do
               <.dm_input
                 id="server-command"
                 name="agent_mcp_server[command]"
-                label="Command"
+                label={dgettext("admin", "Command")}
                 value={@form[:command].value || ""}
                 placeholder="/usr/bin/node"
               />
@@ -757,7 +776,7 @@ defmodule Backplane.Admin.AgentMcpLive do
               <.dm_input
                 id="server-args"
                 name="agent_mcp_server[args]"
-                label="Args (comma-separated)"
+                label={dgettext("admin", "Args (comma-separated)")}
                 value={args_display(@form[:args].value)}
                 placeholder="server.js,--port,3000"
               />
@@ -769,7 +788,7 @@ defmodule Backplane.Admin.AgentMcpLive do
             <.dm_textarea
               id="server-env"
               name="agent_mcp_server[env]"
-              label="Environment Variables (JSON object, optional)"
+              label={dgettext("admin", "Environment Variables (JSON object, optional)")}
               rows={3}
               value={env_display(@form[:env].value)}
               placeholder={~s({"NODE_ENV": "production"})}
@@ -778,9 +797,9 @@ defmodule Backplane.Admin.AgentMcpLive do
           </div>
 
           <div class="flex gap-2 pt-2">
-            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
+            <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
             <.link patch={~p"/mcp/agent"}>
-              <.dm_btn type="button">Cancel</.dm_btn>
+              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
             </.link>
           </div>
         </.form>

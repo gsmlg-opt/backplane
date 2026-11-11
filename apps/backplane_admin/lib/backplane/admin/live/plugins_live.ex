@@ -61,10 +61,10 @@ defmodule Backplane.Admin.PluginsLive do
 
     case results do
       [{:ok, _}] ->
-        {:noreply, socket |> put_flash(:info, "Plugin candidate imported") |> reload()}
+        {:noreply, socket |> put_flash(:info, dgettext("admin", "Plugin candidate imported")) |> reload()}
 
       _ ->
-        {:noreply, put_flash(socket, :error, "Select a complete valid plugin archive")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Select a complete valid plugin archive"))}
     end
   end
 
@@ -78,12 +78,12 @@ defmodule Backplane.Admin.PluginsLive do
            }) do
       {:noreply,
        socket
-       |> put_flash(:info, "Plugin candidate composed from fixed skill revisions")
+       |> put_flash(:info, dgettext("admin", "Plugin candidate composed from fixed skill revisions"))
        |> reload()}
     else
       _ ->
         {:noreply,
-         put_flash(socket, :error, "Check manifest, MCP declarations and exact skill selections")}
+         put_flash(socket, :error, dgettext("errors", "Check manifest, MCP declarations and exact skill selections"))}
     end
   end
 
@@ -91,14 +91,14 @@ defmodule Backplane.Admin.PluginsLive do
     finish(
       socket,
       Plugins.publish_release(params["id"], params["channel"] || "stable"),
-      "Channel selected; existing releases remain available"
+      dgettext("admin", "Channel selected; existing releases remain available")
     )
   end
 
   def handle_event("edit-source", %{"id" => id}, socket) do
     case Plugins.get_source(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Source not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Source not found"))}
 
       source ->
         fields = ~w(name url ref path kind credential_name enabled auto_publish interval_seconds)a
@@ -132,7 +132,7 @@ defmodule Backplane.Admin.PluginsLive do
     case result do
       {:ok, _} ->
         {:noreply,
-         socket |> reset_source() |> put_flash(:info, "Plugin source saved") |> reload()}
+         socket |> reset_source() |> put_flash(:info, dgettext("admin", "Plugin source saved")) |> reload()}
 
       {:error, changeset} ->
         {:noreply, assign(socket, source_form: to_form(changeset, as: :source))}
@@ -146,7 +146,7 @@ defmodule Backplane.Admin.PluginsLive do
         source -> Plugins.delete_source(source)
       end
 
-    finish(socket, result, "Source removed; published releases remain available")
+    finish(socket, result, dgettext("admin", "Source removed; published releases remain available"))
   end
 
   def handle_event("sync-source", %{"id" => id}, socket) do
@@ -166,7 +166,7 @@ defmodule Backplane.Admin.PluginsLive do
       Plugins.set_desired(params["target"], params["plugin_id"], params["release_id"], %{
         enabled: params["enabled"] == "true"
       }),
-      "Desired plugin state saved; consumers report actual installation separately"
+      dgettext("admin", "Desired plugin state saved; consumers report actual installation separately")
     )
   end
 
@@ -195,7 +195,7 @@ defmodule Backplane.Admin.PluginsLive do
     {:noreply,
      socket
      |> assign(busy: List.delete(socket.assigns.busy, id))
-     |> put_flash(:info, "Source sync completed; inspect diagnostics for partial results")
+     |> put_flash(:info, dgettext("admin", "Source sync completed; inspect diagnostics for partial results"))
      |> reload()}
   end
 
@@ -203,7 +203,7 @@ defmodule Backplane.Admin.PluginsLive do
     {:noreply,
      socket
      |> assign(busy: List.delete(socket.assigns.busy, id))
-     |> put_flash(:error, "Source sync failed; prior published releases remain available")
+     |> put_flash(:error, dgettext("errors", "Source sync failed; prior published releases remain available"))
      |> reload()}
   end
 
@@ -212,7 +212,7 @@ defmodule Backplane.Admin.PluginsLive do
      put_flash(
        socket,
        :error,
-       "Codex requires unique plugin names. Select one publisher for each name in the export scope, or choose a channel with unique names."
+       dgettext("errors", "Codex requires unique plugin names. Select one publisher for each name in the export scope, or choose a channel with unique names.")
      )}
   end
 
@@ -225,7 +225,7 @@ defmodule Backplane.Admin.PluginsLive do
        put_flash(
          socket,
          :error,
-         "Distribution failed; check destination, repository and credential configuration"
+         dgettext("errors", "Distribution failed; check destination, repository and credential configuration")
        )}
 
   defp export_options(params) do
@@ -243,7 +243,7 @@ defmodule Backplane.Admin.PluginsLive do
   defp finish(socket, {:error, _}, _message),
     do:
       {:noreply,
-       put_flash(socket, :error, "Operation failed; check the selected records and configuration")}
+       put_flash(socket, :error, dgettext("errors", "Operation failed; check the selected records and configuration"))}
 
   defp reset_source(socket),
     do: assign(socket, editing_source: nil, source_form: to_form(%{}, as: :source))
@@ -309,12 +309,12 @@ defmodule Backplane.Admin.PluginsLive do
           )
       }
     else
-      _ -> %{status: "Artifact validation failed"}
+      _ -> %{status: dgettext("errors", "Artifact validation failed")}
     end
   end
 
   defp release_label(release),
-    do: (release.upstream_version || "No upstream version") <> " / " <> release.id
+    do: (release.upstream_version || dgettext("admin", "No upstream version")) <> " / " <> release.id
 
   defp plugin_name(plugins, id) do
     case Enum.find(plugins, &(&1.id == id)) do
@@ -343,27 +343,37 @@ defmodule Backplane.Admin.PluginsLive do
   defp compatibility_rows do
     [
       %{
-        client: "Shared Runtime",
-        portable: "Portable skills and MCP supported",
-        extensions: "Proprietary extensions are not implemented",
+        client: dgettext("admin", "Shared Runtime"),
+        portable: dgettext("admin", "Portable skills and MCP supported"),
+        extensions: dgettext("admin", "Proprietary extensions are not implemented"),
         evidence:
-          "Shared host implementation; component availability depends on the consumer environment"
+          dgettext(
+            "admin",
+            "Shared host implementation; component availability depends on the consumer environment"
+          )
       },
       %{
         client: "Codex",
-        portable: "Native client interprets the package",
+        portable: dgettext("admin", "Native client interprets the package"),
         extensions:
-          "Interpreted by the native client; support for all extensions is not established",
-        evidence: "Codex 0.163.0 sample skill and stdio MCP verified"
+          dgettext(
+            "admin",
+            "Interpreted by the native client; support for all extensions is not established"
+          ),
+        evidence: dgettext("admin", "Codex 0.163.0 sample skill and stdio MCP verified")
       },
       %{
         client: "Sigma / Synapsis",
-        portable: "Shared SDK and Runtime available",
-        extensions: "Product integration pending",
-        evidence: "Product integration and acceptance remain to be completed"
+        portable: dgettext("admin", "Shared SDK and Runtime available"),
+        extensions: dgettext("admin", "Product integration pending"),
+        evidence: dgettext("admin", "Product integration and acceptance remain to be completed")
       }
     ]
   end
+
+  defp actual_enablement_text(nil), do: dgettext("admin", "Enablement not reported")
+  defp actual_enablement_text(true), do: dgettext("common", "Enabled")
+  defp actual_enablement_text(false), do: dgettext("common", "Disabled")
 
   defp release_installations(installations, release_id),
     do:
@@ -377,153 +387,157 @@ defmodule Backplane.Admin.PluginsLive do
     ~H"""
     <div class="space-y-6 max-w-7xl mx-auto w-full min-w-0">
       <header>
-        <h1 class="text-3xl font-bold">Plugins</h1>
-        <p class="text-on-surface-variant">Publish complete packages, synchronize fixed sources, and distribute selected releases.</p>
+        <h1 class="text-3xl font-bold">{dgettext("navigation", "Plugins")}</h1>
+        <p class="text-on-surface-variant">{dgettext("admin", "Publish complete packages, synchronize fixed sources, and distribute selected releases.")}</p>
       </header>
       <div :if={@live_action in [:index, :show]} class="space-y-6">
         <.dm_card>
-          <:title>Plugin catalog</:title>
-          <p :if={@plugins == []} class="text-on-surface-variant">No plugins yet. Import a package or compose one from existing skills.</p>
+          <:title>{dgettext("admin", "Plugin catalog")}</:title>
+          <p :if={@plugins == []} class="text-on-surface-variant">{dgettext("admin", "No plugins yet. Import a package or compose one from existing skills.")}</p>
           <.dm_table :if={@plugins != []} id="plugin-catalog" data={@plugins} hover zebra>
-            <:col :let={plugin} label="Identity"><.dm_link navigate={~p"/plugins/#{plugin.id}"}>{plugin.identity}</.dm_link></:col>
-            <:col :let={plugin} label="Publisher">{plugin.publisher}</:col>
-            <:col :let={plugin} label="Origin">{if plugin.source_id, do: "Synchronized", else: "Created locally"}</:col>
+            <:col :let={plugin} label={dgettext("admin", "Identity")}><.dm_link navigate={~p"/plugins/#{plugin.id}"}>{plugin.identity}</.dm_link></:col>
+            <:col :let={plugin} label={dgettext("admin", "Publisher")}>{plugin.publisher}</:col>
+            <:col :let={plugin} label={dgettext("admin", "Origin")}>{if plugin.source_id, do: dgettext("admin", "Synchronized"), else: dgettext("admin", "Created locally")}</:col>
           </.dm_table>
         </.dm_card>
         <.dm_card>
-          <:title>Import plugin archive</:title>
+          <:title>{dgettext("admin", "Import plugin archive")}</:title>
           <.form for={to_form(%{}, as: :upload)} id="plugin-upload-form" phx-submit="upload" phx-change="validate">
-            <.dm_input name="upload[publisher]" label="Publisher" value="local" required />
-            <label class="block my-4">Complete .tar.gz package (up to 50 MB)<.live_file_input upload={@uploads.archive} /></label>
+            <.dm_input name="upload[publisher]" label={dgettext("admin", "Publisher")} value="local" required />
+            <label class="block my-4">{dgettext("admin", "Complete .tar.gz package (up to 50 MB)")}<.live_file_input upload={@uploads.archive} /></label>
             <p :for={entry <- @uploads.archive.entries}>{entry.client_name} · {entry.progress}%</p>
-            <.dm_btn type="submit" variant="primary">Import candidate</.dm_btn>
+            <.dm_btn type="submit" variant="primary">{dgettext("admin", "Import candidate")}</.dm_btn>
           </.form>
         </.dm_card>
         <.dm_card>
-          <:title>Compose a plugin</:title>
+          <:title>{dgettext("admin", "Compose a plugin")}</:title>
           <.form for={to_form(%{}, as: :compose)} id="plugin-compose-form" phx-submit="compose" class="space-y-4">
-            <.dm_input name="compose[publisher]" label="Publisher" value="local" required />
-            <.dm_select id="plugin-skill-revisions" name="compose[skills][]" label="Exact skill revisions" options={@skill_options} multiple helper="All files from selected immutable revisions are copied into the release." />
-            <.dm_textarea id="plugin-compose-manifest" name="compose[manifest]" label="Standard plugin manifest (JSON)" value={manifest_example()} rows={8} required />
-            <.dm_textarea id="plugin-compose-mcp" name="compose[mcp]" label="MCP declarations (JSON)" value={mcp_example()} rows={5} />
-            <.dm_btn type="submit" variant="secondary">Create candidate</.dm_btn>
+            <.dm_input name="compose[publisher]" label={dgettext("admin", "Publisher")} value="local" required />
+            <.dm_select id="plugin-skill-revisions" name="compose[skills][]" label={dgettext("admin", "Exact skill revisions")} options={@skill_options} multiple helper={dgettext("admin", "All files from selected immutable revisions are copied into the release.")} />
+            <.dm_textarea id="plugin-compose-manifest" name="compose[manifest]" label={dgettext("admin", "Standard plugin manifest (JSON)")} value={manifest_example()} rows={8} required />
+            <.dm_textarea id="plugin-compose-mcp" name="compose[mcp]" label={dgettext("admin", "MCP declarations (JSON)")} value={mcp_example()} rows={5} />
+            <.dm_btn type="submit" variant="secondary">{dgettext("admin", "Create candidate")}</.dm_btn>
           </.form>
         </.dm_card>
       </div>
 
       <.dm_card :if={@live_action in [:releases, :show]}>
-        <:title>Client support</:title>
-        <p class="text-sm text-on-surface-variant">Package validation, client capabilities and actual component state are separate results.</p>
-        <div class="overflow-x-auto" role="region" aria-label="Client support table" tabindex="0">
+        <:title>{dgettext("admin", "Client support")}</:title>
+        <p class="text-sm text-on-surface-variant">{dgettext("admin", "Package validation, client capabilities and actual component state are separate results.")}</p>
+        <div class="overflow-x-auto" role="region" aria-label={dgettext("admin", "Client support table")} tabindex="0">
           <.dm_table id="plugin-client-support" data={compatibility_rows()} style="min-width: 48rem" zebra>
-            <:col :let={row} label="Client">{row.client}</:col>
-            <:col :let={row} label="Skills and MCP">{row.portable}</:col>
-            <:col :let={row} label="Extensions">{row.extensions}</:col>
-            <:col :let={row} label="Evidence and limits">{row.evidence}</:col>
+            <:col :let={row} label={dgettext("admin", "Client")}>{row.client}</:col>
+            <:col :let={row} label={dgettext("admin", "Skills and MCP")}>{row.portable}</:col>
+            <:col :let={row} label={dgettext("admin", "Extensions")}>{row.extensions}</:col>
+            <:col :let={row} label={dgettext("admin", "Evidence and limits")}>{row.evidence}</:col>
           </.dm_table>
         </div>
       </.dm_card>
 
       <.dm_card :if={@live_action in [:releases, :show]}>
-        <:title>{if @selected, do: @selected.identity <> " releases", else: "Release history"}</:title>
-        <p :if={@releases == []}>No candidates or published releases.</p>
+        <:title>{if @selected,
+            do: dgettext("admin", "%{identity} releases", identity: @selected.identity),
+            else: dgettext("admin", "Release history")}</:title>
+        <p :if={@releases == []}>{dgettext("admin", "No candidates or published releases.")}</p>
         <div :for={release <- @releases} id={"plugin-release-" <> release.id} class="border-b border-outline-variant py-4 space-y-3">
           <p class="font-semibold"><.dm_link navigate={~p"/plugins/#{release.plugin_id}"}>{plugin_name(@plugins, release.plugin_id)}</.dm_link></p>
           <p class="font-semibold">{release_label(release)}</p>
-          <.dm_badge variant={if release.published_at, do: "success", else: "secondary"}>{if release.published_at, do: "Published", else: "Candidate"}</.dm_badge>
-          <p :for={channel <- Enum.filter(@channels, &(&1.release_id == release.id))} class="text-sm font-medium text-primary">Selected for channel: {channel.name}</p>
-          <dl class="text-sm break-all"><dt>Artifact SHA-256</dt><dd>{release.artifact_digest}</dd><dt>Source commit</dt><dd>{release.source_commit || "Uploaded / composed"}</dd></dl>
+          <.dm_badge variant={if release.published_at, do: "success", else: "secondary"}>{if release.published_at, do: dgettext("admin", "Published"), else: dgettext("admin", "Candidate")}</.dm_badge>
+          <p :for={channel <- Enum.filter(@channels, &(&1.release_id == release.id))} class="text-sm font-medium text-primary">{dgettext("admin", "Selected for channel: %{name}", name: channel.name)}</p>
+          <dl class="text-sm break-all"><dt>{dgettext("admin", "Artifact SHA-256")}</dt><dd>{release.artifact_digest}</dd><dt>{dgettext("admin", "Source commit")}</dt><dd>{release.source_commit || dgettext("admin", "Uploaded / composed")}</dd></dl>
           <section id={"plugin-validation-" <> release.id} class="space-y-2">
-            <h3 class="font-semibold">Package validation</h3>
-            <p :if={release.diagnostics == []} class="text-sm">No package validation diagnostics.</p>
+            <h3 class="font-semibold">{dgettext("admin", "Package validation")}</h3>
+            <p :if={release.diagnostics == []} class="text-sm">{dgettext("admin", "No package validation diagnostics.")}</p>
             <p :for={diagnostic <- release.diagnostics} class="text-sm">{diagnostic["severity"]} · {diagnostic["code"]} · {diagnostic["path"]}: {diagnostic["message"]}</p>
           </section>
           <section id={"plugin-actual-state-" <> release.id} class="space-y-2">
-            <h3 class="font-semibold">Actual consumer state</h3>
-            <p :if={release_installations(@installations, release.id) == []} class="text-sm">No consumer reports for this release.</p>
-            <div :if={release_installations(@installations, release.id) != []} class="overflow-x-auto" role="region" aria-label="Consumer component reports" tabindex="0">
+            <h3 class="font-semibold">{dgettext("admin", "Actual consumer state")}</h3>
+            <p :if={release_installations(@installations, release.id) == []} class="text-sm">{dgettext("admin", "No consumer reports for this release.")}</p>
+            <div :if={release_installations(@installations, release.id) != []} class="overflow-x-auto" role="region" aria-label={dgettext("admin", "Consumer component reports")} tabindex="0">
               <.dm_table id={"plugin-component-reports-" <> release.id} data={release_installations(@installations, release.id)} style="min-width: 48rem" zebra>
-                <:col :let={installation} label="Target">{installation.target}</:col>
-                <:col :let={installation} label="Actual release">{installation.actual_release_id || "Not reported"}</:col>
-                <:col :let={installation} label="State">{installation.status}</:col>
-                <:col :let={installation} label="Components"><pre class="text-xs whitespace-pre-wrap">{Jason.encode!(installation.components, pretty: true)}</pre></:col>
+                <:col :let={installation} label={dgettext("admin", "Target")}>{installation.target}</:col>
+                <:col :let={installation} label={dgettext("admin", "Actual release")}>{installation.actual_release_id || dgettext("admin", "Not reported")}</:col>
+                <:col :let={installation} label={dgettext("admin", "State")}>{installation.status}</:col>
+                <:col :let={installation} label={dgettext("admin", "Components")}><pre class="text-xs whitespace-pre-wrap">{Jason.encode!(installation.components, pretty: true)}</pre></:col>
               </.dm_table>
             </div>
           </section>
-          <details><summary>Manifest, components and diagnostics (JSON)</summary><pre class="text-xs whitespace-pre-wrap">{Jason.encode!(%{manifest: release.manifest, diagnostics: release.diagnostics, provenance: release.provenance, components: @release_details[release.id]}, pretty: true)}</pre></details>
+          <details><summary>{dgettext("admin", "Manifest, components and diagnostics (JSON)")}</summary><pre class="text-xs whitespace-pre-wrap">{Jason.encode!(%{manifest: release.manifest, diagnostics: release.diagnostics, provenance: release.provenance, components: @release_details[release.id]}, pretty: true)}</pre></details>
           <.form for={to_form(%{"id" => release.id, "channel" => "stable"}, as: :release)} id={"publish-" <> release.id} phx-submit="publish" class="flex flex-wrap items-end gap-3">
             <input type="hidden" name="release[id]" value={release.id} />
-            <.dm_input name="release[channel]" label="Channel" value="stable" required />
-            <.dm_btn type="submit" variant="secondary">Publish / select for channel</.dm_btn>
+            <.dm_input name="release[channel]" label={dgettext("admin", "Channel")} value="stable" required />
+            <.dm_btn type="submit" variant="secondary">{dgettext("admin", "Publish / select for channel")}</.dm_btn>
           </.form>
-          <p class="text-sm text-on-surface-variant">Select an earlier published release to roll a channel back. Running sessions retain their locked release.</p>
+          <p class="text-sm text-on-surface-variant">{dgettext("admin", "Select an earlier published release to roll a channel back. Running sessions retain their locked release.")}</p>
         </div>
       </.dm_card>
 
       <div :if={@live_action == :sources} class="space-y-6">
         <.dm_card>
-          <:title>Plugin sources</:title>
-          <p :if={@sources == []}>No sources configured.</p>
+          <:title>{dgettext("admin", "Plugin sources")}</:title>
+          <p :if={@sources == []}>{dgettext("admin", "No sources configured.")}</p>
           <div :for={source <- @sources} id={"plugin-source-" <> source.id} class="border-b border-outline-variant py-4 space-y-2">
             <h2 class="text-lg font-semibold">{source.name}</h2><p class="break-all">{source.url} · {source.ref} · {source.path}</p>
-            <p>{source.status} · {if source.enabled, do: "Scheduled every #{source.interval_seconds} seconds", else: "Schedule paused"}</p>
-            <p class="text-sm">Last attempt: {source.last_attempt_at || "Never"} · Last success: {source.last_success_at || "Never"}</p>
+            <p>{source.status} · {if source.enabled,
+                do: dgettext("admin", "Scheduled every %{seconds} seconds", seconds: source.interval_seconds),
+                else: dgettext("admin", "Schedule paused")}</p>
+            <p class="text-sm">{dgettext("admin", "Last attempt: %{attempt} · Last success: %{success}", attempt: source.last_attempt_at || dgettext("common", "Never"), success: source.last_success_at || dgettext("common", "Never"))}</p>
             <pre :if={source.diagnostics != []} class="text-xs whitespace-pre-wrap">{Jason.encode!(source.diagnostics, pretty: true)}</pre>
-            <div class="flex gap-3"><.dm_btn phx-click="sync-source" phx-value-id={source.id} disabled={source.id in @busy} variant="secondary">Sync now</.dm_btn><.dm_btn phx-click="edit-source" phx-value-id={source.id} variant="ghost">Edit</.dm_btn><.dm_btn phx-click="delete-source" phx-value-id={source.id} variant="error" confirm="Remove this source? Published releases remain available.">Delete</.dm_btn></div>
+            <div class="flex gap-3"><.dm_btn phx-click="sync-source" phx-value-id={source.id} disabled={source.id in @busy} variant="secondary">{dgettext("admin", "Sync now")}</.dm_btn><.dm_btn phx-click="edit-source" phx-value-id={source.id} variant="ghost">{dgettext("common", "Edit")}</.dm_btn><.dm_btn phx-click="delete-source" phx-value-id={source.id} variant="error" confirm={dgettext("admin", "Remove this source? Published releases remain available.")}>{dgettext("common", "Delete")}</.dm_btn></div>
           </div>
         </.dm_card>
         <.dm_card>
-          <:title>{if @editing_source, do: "Edit source", else: "Add source"}</:title>
+          <:title>{if @editing_source, do: dgettext("admin", "Edit source"), else: dgettext("admin", "Add source")}</:title>
           <.form for={@source_form} id="plugin-source-form" phx-submit="save-source" class="space-y-4">
-            <.dm_input field={@source_form[:name]} label="Source name" required />
-            <.dm_input field={@source_form[:url]} label="GitHub repository URL" required />
-            <.dm_input field={@source_form[:ref]} label="Branch, tag or commit" value={@source_form[:ref].value || "HEAD"} required />
-            <.dm_input field={@source_form[:path]} label="Plugin directory or marketplace manifest path" />
-            <.dm_select field={@source_form[:kind]} label="Source type" value={@source_form[:kind].value || "plugin"} options={[{"plugin", "Plugin repository / subdirectory"}, {"marketplace", "Codex marketplace"}]} />
-            <.dm_select field={@source_form[:credential_name]} label="Vault credential (optional)" prompt="Public repository" options={@credentials} />
-            <.dm_input field={@source_form[:interval_seconds]} type="number" label="Sync interval (seconds, minimum 60)" value={@source_form[:interval_seconds].value || 300} min="60" />
-            <.dm_checkbox field={@source_form[:enabled]} label="Enable scheduled sync" checked={@source_form[:enabled].value not in [false, "false"]} />
-            <.dm_checkbox field={@source_form[:auto_publish]} label="Automatically publish valid synchronized candidates" checked={@source_form[:auto_publish].value in [true, "true"]} />
-            <div class="flex gap-3"><.dm_btn type="submit" variant="primary">Save source</.dm_btn><.dm_btn type="button" phx-click="cancel-source" variant="ghost">Cancel edit</.dm_btn></div>
+            <.dm_input field={@source_form[:name]} label={dgettext("admin", "Source name")} required />
+            <.dm_input field={@source_form[:url]} label={dgettext("admin", "GitHub repository URL")} required />
+            <.dm_input field={@source_form[:ref]} label={dgettext("admin", "Branch, tag or commit")} value={@source_form[:ref].value || "HEAD"} required />
+            <.dm_input field={@source_form[:path]} label={dgettext("admin", "Plugin directory or marketplace manifest path")} />
+            <.dm_select field={@source_form[:kind]} label={dgettext("admin", "Source type")} value={@source_form[:kind].value || "plugin"} options={[{"plugin", dgettext("admin", "Plugin repository / subdirectory")}, {"marketplace", dgettext("admin", "Codex marketplace")}]} />
+            <.dm_select field={@source_form[:credential_name]} label={dgettext("admin", "Vault credential (optional)")} prompt={dgettext("admin", "Public repository")} options={@credentials} />
+            <.dm_input field={@source_form[:interval_seconds]} type="number" label={dgettext("admin", "Sync interval (seconds, minimum 60)")} value={@source_form[:interval_seconds].value || 300} min="60" />
+            <.dm_checkbox field={@source_form[:enabled]} label={dgettext("admin", "Enable scheduled sync")} checked={@source_form[:enabled].value not in [false, "false"]} />
+            <.dm_checkbox field={@source_form[:auto_publish]} label={dgettext("admin", "Automatically publish valid synchronized candidates")} checked={@source_form[:auto_publish].value in [true, "true"]} />
+            <div class="flex gap-3"><.dm_btn type="submit" variant="primary">{dgettext("admin", "Save source")}</.dm_btn><.dm_btn type="button" phx-click="cancel-source" variant="ghost">{dgettext("admin", "Cancel edit")}</.dm_btn></div>
           </.form>
         </.dm_card>
       </div>
 
       <div :if={@live_action == :distribution} class="space-y-6">
         <.dm_card>
-          <:title>Desired and actual installations</:title>
-          <p :if={@installations == []}>No consumer installations assigned.</p>
+          <:title>{dgettext("admin", "Desired and actual installations")}</:title>
+          <p :if={@installations == []}>{dgettext("admin", "No consumer installations assigned.")}</p>
           <div :for={installation <- @installations} id={"plugin-installation-" <> installation.id} class="border-b border-outline-variant py-4 text-sm break-all">
             <p class="font-semibold">{installation.target} · {plugin_name(@plugins, installation.plugin_id)}</p>
-            <p>Desired: {installation.desired_release_id} · {if installation.enabled, do: "Enabled", else: "Disabled"}</p>
-            <p>Actual: {installation.actual_release_id || "Not reported"} · {installation.status} · {if is_nil(installation.actual_enabled), do: "Enablement not reported", else: if(installation.actual_enabled, do: "Enabled", else: "Disabled")}</p>
+            <p>{dgettext("admin", "Desired: %{release} · %{state}", release: installation.desired_release_id, state: if(installation.enabled, do: dgettext("common", "Enabled"), else: dgettext("common", "Disabled")))}</p>
+            <p>{dgettext("admin", "Actual: %{release} · %{status} · %{enablement}", release: installation.actual_release_id || dgettext("admin", "Not reported"), status: installation.status, enablement: actual_enablement_text(installation.actual_enabled))}</p>
             <pre class="whitespace-pre-wrap">{Jason.encode!(installation.components, pretty: true)}</pre>
           </div>
           <.form for={to_form(%{}, as: :installation)} id="plugin-desired-form" phx-submit="desired" class="space-y-4 mt-4">
-            <.dm_input name="installation[target]" label="Consumer target" placeholder="sigma:instance-id" required />
-            <.dm_select name="installation[plugin_id]" label="Plugin" options={Enum.map(@plugins, &{&1.id, &1.identity})} />
-            <.dm_select name="installation[release_id]" label="Published release" options={Enum.filter(@releases, & &1.published_at) |> Enum.map(&{&1.id, release_label(&1)})} />
-            <.dm_checkbox name="installation[enabled]" label="Desired enabled" checked />
-            <.dm_btn type="submit" variant="primary">Set desired installation</.dm_btn>
+            <.dm_input name="installation[target]" label={dgettext("admin", "Consumer target")} placeholder="sigma:instance-id" required />
+            <.dm_select name="installation[plugin_id]" label={dgettext("admin", "Plugin")} options={Enum.map(@plugins, &{&1.id, &1.identity})} />
+            <.dm_select name="installation[release_id]" label={dgettext("admin", "Published release")} options={Enum.filter(@releases, & &1.published_at) |> Enum.map(&{&1.id, release_label(&1)})} />
+            <.dm_checkbox name="installation[enabled]" label={dgettext("admin", "Desired enabled")} checked />
+            <.dm_btn type="submit" variant="primary">{dgettext("admin", "Set desired installation")}</.dm_btn>
           </.form>
         </.dm_card>
         <.dm_card>
-          <:title>Codex local marketplace</:title>
-          <p class="text-sm text-on-surface-variant">Exports the selected releases. Codex installation and new-session activation are separate steps.</p>
+          <:title>{dgettext("admin", "Codex local marketplace")}</:title>
+          <p class="text-sm text-on-surface-variant">{dgettext("admin", "Exports the selected releases. Codex installation and new-session activation are separate steps.")}</p>
           <.form for={to_form(%{}, as: :export)} id="plugin-export-form" phx-submit="export" class="space-y-4">
-            <.dm_input name="export[directory]" label="New destination directory" required /><.dm_input name="export[channel]" label="Channel" value="stable" required /><.dm_input name="export[name]" label="Marketplace name" value="backplane" required />
-            <.dm_select name="export[plugin_ids][]" label="Plugin scope (leave empty for all)" options={Enum.map(@plugins, &{&1.id, &1.identity})} multiple />
-            <.dm_btn type="submit" variant="secondary">Export local snapshot</.dm_btn>
+            <.dm_input name="export[directory]" label={dgettext("admin", "New destination directory")} required /><.dm_input name="export[channel]" label={dgettext("admin", "Channel")} value="stable" required /><.dm_input name="export[name]" label={dgettext("admin", "Marketplace name")} value="backplane" required />
+            <.dm_select name="export[plugin_ids][]" label={dgettext("admin", "Plugin scope (leave empty for all)")} options={Enum.map(@plugins, &{&1.id, &1.identity})} multiple />
+            <.dm_btn type="submit" variant="secondary">{dgettext("admin", "Export local snapshot")}</.dm_btn>
           </.form>
         </.dm_card>
         <.dm_card>
-          <:title>Publish Codex Git marketplace</:title>
+          <:title>{dgettext("admin", "Publish Codex Git marketplace")}</:title>
           <.form for={to_form(%{}, as: :git)} id="plugin-git-form" phx-submit="publish-git" class="space-y-4">
-            <.dm_input name="git[url]" label="Target HTTPS Git repository URL" required /><.dm_input name="git[branch]" label="Target branch" value="main" required /><.dm_input name="git[channel]" label="Channel" value="stable" required /><.dm_input name="git[name]" label="Marketplace name" value="backplane" required />
-            <.dm_select name="git[plugin_ids][]" label="Plugin scope (leave empty for all)" options={Enum.map(@plugins, &{&1.id, &1.identity})} multiple />
-            <.dm_select name="git[credential_name]" label="Publishing vault credential" prompt="Select credential" options={@credentials} />
-            <p class="text-sm text-on-surface-variant">HTTP Basic token authentication uses vault metadata git_username (default x-access-token) and the token as password. The target must accept this method. Redirects are disabled; live Gitea authentication has not been verified.</p>
-            <.dm_btn type="submit" variant="secondary" confirm="Commit and push selected plugin releases to this repository?">Commit and push marketplace</.dm_btn>
+            <.dm_input name="git[url]" label={dgettext("admin", "Target HTTPS Git repository URL")} required /><.dm_input name="git[branch]" label={dgettext("admin", "Target branch")} value="main" required /><.dm_input name="git[channel]" label={dgettext("admin", "Channel")} value="stable" required /><.dm_input name="git[name]" label={dgettext("admin", "Marketplace name")} value="backplane" required />
+            <.dm_select name="git[plugin_ids][]" label={dgettext("admin", "Plugin scope (leave empty for all)")} options={Enum.map(@plugins, &{&1.id, &1.identity})} multiple />
+            <.dm_select name="git[credential_name]" label={dgettext("admin", "Publishing vault credential")} prompt={dgettext("admin", "Select credential")} options={@credentials} />
+            <p class="text-sm text-on-surface-variant">{dgettext("admin", "HTTP Basic token authentication uses vault metadata git_username (default x-access-token) and the token as password. The target must accept this method. Redirects are disabled; live Gitea authentication has not been verified.")}</p>
+            <.dm_btn type="submit" variant="secondary" confirm={dgettext("admin", "Commit and push selected plugin releases to this repository?")}>{dgettext("admin", "Commit and push marketplace")}</.dm_btn>
           </.form>
         </.dm_card>
         <pre :if={@export_result} id="plugin-export-result" class="whitespace-pre-wrap break-all text-xs">{Jason.encode!(@export_result, pretty: true)}</pre>

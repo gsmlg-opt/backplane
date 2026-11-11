@@ -39,7 +39,7 @@ defmodule Backplane.Admin.CodexCatalogLive do
        |> assign(import_provider_id: id, busy: {:import, id})
        |> start_async({:import, id}, fn -> CodexCatalog.import_provider(id) end)}
     else
-      {:noreply, put_flash(socket, :error, "Select a configured Codex provider")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "Select a configured Codex provider"))}
     end
   end
 
@@ -52,7 +52,7 @@ defmodule Backplane.Admin.CodexCatalogLive do
        |> assign(busy: {:refresh, id})
        |> start_async({:refresh, id}, fn -> CodexCatalog.import_provider(id) end)}
     else
-      {:noreply, put_flash(socket, :error, "Select a configured Codex provider")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "Select a configured Codex provider"))}
     end
   end
 
@@ -66,13 +66,13 @@ defmodule Backplane.Admin.CodexCatalogLive do
       {:noreply, load(socket)}
     else
       nil ->
-        {:noreply, put_flash(socket, :error, "Catalog entry not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Catalog entry not found"))}
 
       false ->
-        {:noreply, put_flash(socket, :error, "Only imported Codex models can be enabled")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Only imported Codex models can be enabled"))}
 
       {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Could not change model exposure")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Could not change model exposure"))}
     end
   end
 
@@ -84,8 +84,8 @@ defmodule Backplane.Admin.CodexCatalogLive do
       Backplane.Admin.Audit.record("codex_catalog.delete", "codex_catalog_entry", entry.id)
       {:noreply, load(socket)}
     else
-      nil -> {:noreply, put_flash(socket, :error, "Catalog entry not found")}
-      {:error, _reason} -> {:noreply, put_flash(socket, :error, "Could not remove catalog entry")}
+      nil -> {:noreply, put_flash(socket, :error, dgettext("errors", "Catalog entry not found"))}
+      {:error, _reason} -> {:noreply, put_flash(socket, :error, dgettext("errors", "Could not remove catalog entry"))}
     end
   end
 
@@ -110,7 +110,13 @@ defmodule Backplane.Admin.CodexCatalogLive do
      |> assign(busy: nil)
      |> put_flash(
        :info,
-       "Codex models imported: #{counts.created} new, #{counts.refreshed} refreshed, #{counts.retained} retained"
+       dgettext(
+         "admin",
+         "Codex models imported: %{created} new, %{refreshed} refreshed, %{retained} retained",
+         created: counts.created,
+         refreshed: counts.refreshed,
+         retained: counts.retained
+       )
      )
      |> load()}
   end
@@ -123,13 +129,22 @@ defmodule Backplane.Admin.CodexCatalogLive do
      |> assign(busy: nil)
      |> put_flash(
        :info,
-       "Codex models refreshed: #{counts.created} new, #{counts.refreshed} updated, #{counts.retained} retained"
+       dgettext(
+         "admin",
+         "Codex models refreshed: %{created} new, %{updated} updated, %{retained} retained",
+         created: counts.created,
+         updated: counts.refreshed,
+         retained: counts.retained
+       )
      )
      |> load()}
   end
 
   def handle_async({:import, _id}, {:ok, {:error, {:model_conflict, slug}}}, socket) do
-    async_failure(socket, "Model #{slug} is already assigned to another provider")
+    async_failure(
+      socket,
+      dgettext("errors", "Model %{slug} is already assigned to another provider", slug: slug)
+    )
   end
 
   def handle_async({action, _id}, {:ok, {:error, _reason}}, socket)
@@ -144,10 +159,10 @@ defmodule Backplane.Admin.CodexCatalogLive do
     do: {:noreply, socket |> assign(busy: nil) |> put_flash(:error, message) |> load()}
 
   defp failure_message(:import),
-    do: "Could not import Codex models. Check the provider and try again."
+    do: dgettext("errors", "Could not import Codex models. Check the provider and try again.")
 
   defp failure_message(:refresh),
-    do: "Could not refresh Codex models. The saved models were kept."
+    do: dgettext("errors", "Could not refresh Codex models. The saved models were kept.")
 
   defp load(socket) do
     {published, invalid_entries} = CodexCatalog.effective()
@@ -182,22 +197,23 @@ defmodule Backplane.Admin.CodexCatalogLive do
 
   defp status(entry, invalid_entries) do
     cond do
-      not imported?(entry) -> "Legacy entry"
-      Enum.any?(invalid_entries, fn {invalid, _} -> invalid.id == entry.id end) -> "Unavailable"
-      entry.enabled -> "Exposed"
-      true -> "Hidden"
+      not imported?(entry) -> dgettext("admin", "Legacy entry")
+      Enum.any?(invalid_entries, fn {invalid, _} -> invalid.id == entry.id end) ->
+        dgettext("admin", "Unavailable")
+      entry.enabled -> dgettext("admin", "Exposed")
+      true -> dgettext("admin", "Hidden")
     end
   end
 
   defp context_window(%{metadata: %{"codex_raw" => %{"context_window" => value}}}),
     do: to_string(value)
 
-  defp context_window(_entry), do: "Unknown"
+  defp context_window(_entry), do: dgettext("admin", "Unknown")
 
   defp source_provider(source_model) do
     case String.split(source_model, "/", parts: 2) do
       [provider, _model] -> provider
-      _ -> "Alias"
+      _ -> dgettext("admin", "Alias")
     end
   end
 
@@ -205,7 +221,7 @@ defmodule Backplane.Admin.CodexCatalogLive do
        when is_list(levels),
        do: Enum.map_join(levels, ", ", &reasoning_effort/1)
 
-  defp reasoning_summary(_entry), do: "Unknown"
+  defp reasoning_summary(_entry), do: dgettext("admin", "Unknown")
 
   defp reasoning_effort(%{"effort" => effort}) when is_binary(effort), do: effort
   defp reasoning_effort(effort) when is_binary(effort), do: effort
@@ -217,81 +233,81 @@ defmodule Backplane.Admin.CodexCatalogLive do
     <div class="space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 class="text-xl font-semibold">Codex Model Catalog</h1>
+          <h1 class="text-xl font-semibold">{dgettext("admin", "Codex Model Catalog")}</h1>
           <p class="text-xs text-on-surface-variant">
-            {@saved_count} saved · {@published_count} published
+            {dgettext("admin", "%{saved} saved · %{published} published", saved: @saved_count, published: @published_count)}
           </p>
         </div>
         <.dm_modal id="codex-catalog-preview-dialog" size="xl">
           <:trigger :let={id}>
             <.dm_btn type="button" size="sm" variant="outline" command="show-modal" commandfor={id} phx-click="preview">
-              <.dm_mdi name="code-json" class="h-4 w-4" /> Preview JSON
+              <.dm_mdi name="code-json" class="h-4 w-4" /> {dgettext("admin", "Preview JSON")}
             </.dm_btn>
           </:trigger>
-          <:title>Effective Codex catalog preview</:title>
+          <:title>{dgettext("admin", "Effective Codex catalog preview")}</:title>
           <:body>
-            <p class="mb-3 text-sm text-on-surface-variant">{@published_count} models will be published.</p>
-            <pre id="codex-catalog-preview" class="max-h-[65vh] overflow-auto rounded-lg bg-surface-container p-4 text-on-surface text-xs whitespace-pre-wrap break-all">{@preview || "Loading preview…"}</pre>
+            <p class="mb-3 text-sm text-on-surface-variant">{dgettext("admin", "%{count} models will be published.", count: @published_count)}</p>
+            <pre id="codex-catalog-preview" class="max-h-[65vh] overflow-auto rounded-lg bg-surface-container p-4 text-on-surface text-xs whitespace-pre-wrap break-all">{@preview || dgettext("admin", "Loading preview…")}</pre>
           </:body>
           <:footer>
-            <.dm_btn type="button" variant="outline" command="close" commandfor="codex-catalog-preview-dialog">Close</.dm_btn>
+            <.dm_btn type="button" variant="outline" command="close" commandfor="codex-catalog-preview-dialog">{dgettext("common", "Close")}</.dm_btn>
           </:footer>
         </.dm_modal>
       </div>
 
       <.dm_card variant="bordered">
-        <:title>Import models</:title>
+        <:title>{dgettext("admin", "Import models")}</:title>
         <div class="space-y-3">
           <.form for={%{}} as={:import} id="codex-provider-import-form" phx-change="select_provider" phx-submit="import" class="flex flex-wrap items-end gap-3">
-            <.dm_select id="codex-import-provider" name="import[provider_id]" label="Codex provider" value={@import_provider_id} prompt="Select a Codex provider" options={Enum.map(@providers, &{&1.id, &1.name})} disabled={@busy != nil} />
+            <.dm_select id="codex-import-provider" name="import[provider_id]" label={dgettext("admin", "Codex provider")} value={@import_provider_id} prompt={dgettext("admin", "Select a Codex provider")} options={Enum.map(@providers, &{&1.id, &1.name})} disabled={@busy != nil} />
             <.dm_btn type="submit" size="sm" variant="primary" disabled={@busy != nil or @providers == []}>
-              {if @busy && elem(@busy, 0) == :import, do: "Importing…", else: "Import Models"}
+              {if @busy && elem(@busy, 0) == :import, do: dgettext("admin", "Importing…"), else: dgettext("admin", "Import Models")}
             </.dm_btn>
           </.form>
           <div :if={@provider_rows != []} class="divide-y divide-outline-variant rounded-lg border border-outline-variant">
             <div :for={row <- @provider_rows} class="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
               <div class="min-w-0 text-sm">
                 <span class="font-medium">{row.provider.name}</span>
-                <span class="ml-2 text-xs text-on-surface-variant">{row.count} saved</span>
+                <span class="ml-2 text-xs text-on-surface-variant">{dgettext("admin", "%{count} saved", count: row.count)}</span>
               </div>
               <.dm_btn id={"refresh-codex-provider-#{row.provider.id}"} type="button" size="xs" variant="outline" phx-click="refresh_provider" phx-value-id={row.provider.id} disabled={@busy != nil}>
-                {if @busy == {:refresh, row.provider.id}, do: "Refreshing…", else: "Refresh Models"}
+                {if @busy == {:refresh, row.provider.id}, do: dgettext("admin", "Refreshing…"), else: dgettext("admin", "Refresh Models")}
               </.dm_btn>
             </div>
           </div>
         </div>
         <p :if={@providers == []} class="mt-3 text-sm text-on-surface-variant">
-          Add and configure an OpenAI Codex provider in Llama Providers before importing models.
+          {dgettext("admin", "Add and configure an OpenAI Codex provider in Llama Providers before importing models.")}
         </p>
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Saved Codex models</:title>
+        <:title>{dgettext("admin", "Saved Codex models")}</:title>
         <div class="overflow-x-auto">
           <.dm_table id="codex-catalog-table" data={@entries} hover zebra>
-            <:col :let={entry} label="Model">
+            <:col :let={entry} label={dgettext("admin", "Model")}>
               <div class="min-w-40 font-medium">{entry.public_model_id}</div>
-              <div class="text-xs text-on-surface-variant">{entry.display_name || "No display name"}</div>
+              <div class="text-xs text-on-surface-variant">{entry.display_name || dgettext("admin", "No display name")}</div>
             </:col>
-            <:col :let={entry} label="Provider">
+            <:col :let={entry} label={dgettext("admin", "Provider")}>
               <div class="min-w-40">{source_provider(entry.source_model)}</div>
               <code class="text-xs text-on-surface-variant">{entry.source_model}</code>
             </:col>
-            <:col :let={entry} label="Context">{context_window(entry)}</:col>
-            <:col :let={entry} label="Reasoning"><span class="text-xs">{reasoning_summary(entry)}</span></:col>
-            <:col :let={entry} label="Exposure">
+            <:col :let={entry} label={dgettext("admin", "Context")}>{context_window(entry)}</:col>
+            <:col :let={entry} label={dgettext("admin", "Reasoning")}><span class="text-xs">{reasoning_summary(entry)}</span></:col>
+            <:col :let={entry} label={dgettext("admin", "Exposure")}>
               <div class="flex items-center gap-2">
-                <.dm_tooltip :let={tooltip_attrs} content={if entry.enabled, do: "Disable", else: "Enable"} position="bottom">
-                  <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" variant={if entry.enabled, do: "success", else: "outline"} phx-click="toggle" phx-value-id={entry.id} disabled={@busy != nil or (not imported?(entry) and not entry.enabled)} aria-label={if entry.enabled, do: "Disable #{entry.public_model_id}", else: "Enable #{entry.public_model_id}"}>
+                <.dm_tooltip :let={tooltip_attrs} content={if entry.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")} position="bottom">
+                  <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" variant={if entry.enabled, do: "success", else: "outline"} phx-click="toggle" phx-value-id={entry.id} disabled={@busy != nil or (not imported?(entry) and not entry.enabled)} aria-label={if entry.enabled, do: dgettext("admin", "Disable %{name}", name: entry.public_model_id), else: dgettext("admin", "Enable %{name}", name: entry.public_model_id)}>
                     <.dm_mdi name={if entry.enabled, do: "check", else: "minus"} class="h-4 w-4" />
                   </.dm_btn>
                 </.dm_tooltip>
                 <span class="text-xs whitespace-nowrap">{status(entry, @invalid_entries)}</span>
               </div>
             </:col>
-            <:col :let={entry} label="Actions">
-              <.dm_tooltip :let={tooltip_attrs} content="Remove" position="bottom">
-                <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" variant="error" phx-click="delete" phx-value-id={entry.id} disabled={@busy != nil} data-confirm="Remove this Codex catalog entry?" aria-label={"Remove #{entry.public_model_id}"}>
+            <:col :let={entry} label={dgettext("common", "Actions")}>
+              <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Remove")} position="bottom">
+                <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" variant="error" phx-click="delete" phx-value-id={entry.id} disabled={@busy != nil} data-confirm={dgettext("admin", "Remove this Codex catalog entry?")} aria-label={dgettext("admin", "Remove %{name}", name: entry.public_model_id)}>
                   <.dm_mdi name="delete" class="h-4 w-4" />
                 </.dm_btn>
               </.dm_tooltip>
@@ -299,11 +315,11 @@ defmodule Backplane.Admin.CodexCatalogLive do
           </.dm_table>
         </div>
         <p :if={@entries == []} class="py-6 text-sm text-on-surface-variant">
-          No saved Codex models. Select a Codex provider above and import its models.
+          {dgettext("admin", "No saved Codex models. Select a Codex provider above and import its models.")}
         </p>
         <div :if={@invalid_entries != []} class="mt-4 space-y-2">
           <.dm_alert :for={{entry, _reason} <- @invalid_entries} id={"codex-invalid-#{entry.id}"} variant="warning" title={entry.public_model_id}>
-            This saved model is unavailable and is not published.
+            {dgettext("admin", "This saved model is unavailable and is not published.")}
           </.dm_alert>
         </div>
       </.dm_card>

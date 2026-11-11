@@ -53,7 +53,7 @@ defmodule Backplane.Admin.SkillUploadLive do
           {:error, :not_found} ->
             {:noreply,
              socket
-             |> put_flash(:error, "Skill not found")
+             |> put_flash(:error, dgettext("errors", "Skill not found"))
              |> push_patch(to: ~p"/skills/upload")}
         end
     end
@@ -68,7 +68,7 @@ defmodule Backplane.Admin.SkillUploadLive do
     entries = socket.assigns.uploads.archive.entries
 
     if entries == [] do
-      {:noreply, put_flash(socket, :error, "Please select a file to upload")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "Please select a file to upload"))}
     else
       entry = hd(entries)
       filename = entry.client_name
@@ -98,7 +98,16 @@ defmodule Backplane.Admin.SkillUploadLive do
                 {:noreply,
                  socket
                  |> assign(uploading: false)
-                 |> put_flash(:info, "Uploaded #{count} skill(s): #{names}")
+                 |> put_flash(
+                   :info,
+                   dngettext(
+                     "admin",
+                     "Uploaded %{count} skill: %{names}",
+                     "Uploaded %{count} skills: %{names}",
+                     count,
+                     names: names
+                   )
+                 )
                  |> load_skills()}
 
               {:ok, %{name: name} = skill} ->
@@ -107,25 +116,35 @@ defmodule Backplane.Admin.SkillUploadLive do
                 {:noreply,
                  socket
                  |> assign(uploading: false)
-                 |> put_flash(:info, "Uploaded skill '#{name}' successfully")
+                 |> put_flash(
+                   :info,
+                   dgettext("admin", "Uploaded skill '%{name}' successfully", name: name)
+                 )
                  |> load_skills()}
 
               {:error, reason} ->
                 {:noreply,
                  socket
                  |> assign(uploading: false)
-                 |> put_flash(:error, "Upload failed: #{format_error(reason)}")}
+                 |> put_flash(
+                   :error,
+                   dgettext("errors", "Upload failed: %{reason}", reason: format_error(reason))
+                 )}
             end
 
           _ ->
             {:noreply,
              socket
              |> assign(uploading: false)
-             |> put_flash(:error, "No file was uploaded")}
+             |> put_flash(:error, dgettext("errors", "No file was uploaded"))}
         end
       else
         {:noreply,
-         put_flash(socket, :error, "Unsupported file type. Please upload .tar.gz, .tgz, or .zip")}
+         put_flash(
+           socket,
+           :error,
+           dgettext("errors", "Unsupported file type. Please upload .tar.gz, .tgz, or .zip")
+         )}
       end
     end
   end
@@ -141,11 +160,11 @@ defmodule Backplane.Admin.SkillUploadLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Deleted '#{deleted.name}'")
+         |> put_flash(:info, dgettext("admin", "Deleted '%{name}'", name: deleted.name))
          |> load_skills()}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to delete skill")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete skill"))}
     end
   end
 
@@ -371,11 +390,11 @@ defmodule Backplane.Admin.SkillUploadLive do
   end
 
   defp format_error({:slug_conflict, slug}),
-    do: "Slug '#{slug}' conflicts with a non-archive skill"
+    do: dgettext("errors", "Slug '%{slug}' conflicts with a non-archive skill", slug: slug)
 
-  defp format_error(:missing_skill_md), do: "Archive must contain a SKILL.md file"
-  defp format_error({:empty_skill_root, root}), do: "No files found for skill root '#{root}'"
-  defp format_error(:invalid_archive_path), do: "Invalid archive file"
+  defp format_error(:missing_skill_md), do: dgettext("errors", "Archive must contain a SKILL.md file")
+  defp format_error({:empty_skill_root, root}), do: dgettext("errors", "No files found for skill root '%{root}'", root: root)
+  defp format_error(:invalid_archive_path), do: dgettext("errors", "Invalid archive file")
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
 
@@ -410,16 +429,16 @@ defmodule Backplane.Admin.SkillUploadLive do
     <div>
       <div class="mb-6 flex items-center justify-between">
         <div>
-          <h1 class="text-2xl font-bold">Upload Skills</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "Upload Skills")}</h1>
           <p class="text-sm text-on-surface-variant mt-1">
-            Upload skill packages (.tar.gz, .tgz, .zip) or browse skills uploaded via API / agent.
+            {dgettext("admin", "Upload skill packages (.tar.gz, .tgz, .zip) or browse skills uploaded via API / agent.")}
           </p>
         </div>
       </div>
 
       <%!-- Upload form --%>
       <.dm_card variant="bordered" class="mb-6">
-        <:title>Upload Skill Package</:title>
+        <:title>{dgettext("admin", "Upload Skill Package")}</:title>
         <form
           id="upload-form"
           phx-submit="upload"
@@ -431,14 +450,14 @@ defmodule Backplane.Admin.SkillUploadLive do
           >
             <.dm_mdi name="cloud-upload" class="w-12 h-12 mx-auto text-on-surface-variant mb-3" />
             <p class="text-on-surface font-medium mb-1">
-              Drag & drop a skill package here
+              {dgettext("admin", "Drag & drop a skill package here")}
             </p>
             <p class="text-sm text-on-surface-variant mb-4">
-              or click to browse — accepts .tar.gz, .tgz, .zip (max 50 MB)
+              {dgettext("admin", "or click to browse — accepts .tar.gz, .tgz, .zip (max 50 MB)")}
             </p>
             <label class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-on-primary cursor-pointer hover:bg-primary/90 transition-colors text-sm font-medium">
               <.dm_mdi name="folder-open" class="w-4 h-4" />
-              Choose File
+              {dgettext("admin", "Choose File")}
               <.live_file_input upload={@uploads.archive} class="sr-only" />
             </label>
           </div>
@@ -455,7 +474,7 @@ defmodule Backplane.Admin.SkillUploadLive do
               phx-click="cancel-upload"
               phx-value-ref={entry.ref}
               class="p-1 rounded hover:bg-error/10 text-on-surface-variant hover:text-error transition-colors"
-              aria-label="Remove file"
+              aria-label={dgettext("admin", "Remove file")}
             >
               <.dm_mdi name="close" class="w-5 h-5" />
             </button>
@@ -474,7 +493,9 @@ defmodule Backplane.Admin.SkillUploadLive do
               disabled={@uploads.archive.entries == [] or @uploading}
             >
               <.dm_mdi :if={@uploading} name="loading" class="w-4 h-4 animate-spin mr-1" />
-              {if @uploading, do: "Uploading…", else: "Upload"}
+              {if @uploading,
+                do: dgettext("admin", "Uploading…"),
+                else: dgettext("admin", "Upload")}
             </.dm_btn>
           </div>
         </form>
@@ -484,61 +505,61 @@ defmodule Backplane.Admin.SkillUploadLive do
       <.dm_card :if={@detail_skill} variant="bordered" class="mb-6">
         <:title>
           <div class="flex items-center justify-between">
-            <span>Skill Detail: {@detail_skill.name}</span>
-            <.dm_tooltip :let={tooltip_attrs} content="Close" position="bottom">
+            <span>{dgettext("admin", "Skill Detail: %{name}", name: @detail_skill.name)}</span>
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Close")} position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
                 size="xs"
                 shape="circle"
-                aria-label={"Close #{@detail_skill.name} skill details"}
+                aria-label={dgettext("admin", "Close %{name} skill details", name: @detail_skill.name)}
                 phx-click="close-detail"
               >
                 <.dm_mdi name="close" class="w-4 h-4" />
-                <span class="sr-only">Close</span>
+                <span class="sr-only">{dgettext("common", "Close")}</span>
               </.dm_btn>
             </.dm_tooltip>
           </div>
         </:title>
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
           <div>
-            <span class="text-on-surface-variant">Slug:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Slug:")}</span>
             <code class="ml-1">{@detail_skill.slug}</code>
           </div>
           <div>
-            <span class="text-on-surface-variant">Category:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Category:")}</span>
             <span class="ml-1">{@detail_skill.category || "-"}</span>
           </div>
           <div>
-            <span class="text-on-surface-variant">Version:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Version:")}</span>
             <span class="ml-1">{@detail_skill.version || "-"}</span>
           </div>
           <div>
-            <span class="text-on-surface-variant">Author:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Author:")}</span>
             <span class="ml-1">{@detail_skill.author || "-"}</span>
           </div>
           <div>
-            <span class="text-on-surface-variant">License:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "License:")}</span>
             <span class="ml-1">{@detail_skill.license || "-"}</span>
           </div>
           <div>
-            <span class="text-on-surface-variant">Homepage:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Homepage:")}</span>
             <span class="ml-1">{@detail_skill.homepage || "-"}</span>
           </div>
           <div>
-            <span class="text-on-surface-variant">Size:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Size:")}</span>
             <span class="ml-1">{format_size(@detail_skill.size_bytes)}</span>
           </div>
           <div>
-            <span class="text-on-surface-variant">Files:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Files:")}</span>
             <span class="ml-1">{@detail_skill.file_count || "-"}</span>
           </div>
           <div>
-            <span class="text-on-surface-variant">Source:</span>
+            <span class="text-on-surface-variant">{dgettext("admin", "Source:")}</span>
             <span class="ml-1">{@detail_skill.source_kind || "-"}</span>
           </div>
         </div>
         <div :if={@detail_skill.description && @detail_skill.description != ""} class="mt-3">
-          <span class="text-on-surface-variant text-sm">Description:</span>
+          <span class="text-on-surface-variant text-sm">{dgettext("admin", "Description:")}</span>
           <p class="mt-1 text-sm">{@detail_skill.description}</p>
         </div>
         <div :if={@detail_skill.tags != []} class="mt-3 flex flex-wrap gap-1">
@@ -548,16 +569,16 @@ defmodule Backplane.Admin.SkillUploadLive do
 
       <%!-- Skills list --%>
       <div :if={@skills == [] and not @loading} class="text-on-surface-variant py-12 text-center">
-        No uploaded skills yet. Upload a package above or push via the API.
+        {dgettext("admin", "No uploaded skills yet. Upload a package above or push via the API.")}
       </div>
 
       <.dm_table :if={@skills != []} id="upload-skills-table" data={@skills} hover zebra>
-        <:col :let={skill} label="Name">
+        <:col :let={skill} label={dgettext("common", "Name")}>
           <.link patch={~p"/skills/upload/#{skill.id}"} class="font-medium text-primary hover:underline">
             {skill.name}
           </.link>
         </:col>
-        <:col :let={skill} label="Description">
+        <:col :let={skill} label={dgettext("common", "Description")}>
           <div :if={skill.description && skill.description != ""} class="group relative max-w-[240px]">
             <span class="block truncate text-sm text-on-surface-variant cursor-default">
               {skill.description}
@@ -568,52 +589,52 @@ defmodule Backplane.Admin.SkillUploadLive do
           </div>
           <span :if={!skill.description || skill.description == ""} class="text-xs text-on-surface-variant">-</span>
         </:col>
-        <:col :let={skill} label="Slug">
+        <:col :let={skill} label={dgettext("admin", "Slug")}>
           <code class="text-xs">{skill.slug}</code>
         </:col>
-        <:col :let={skill} label="Size">
+        <:col :let={skill} label={dgettext("admin", "Size")}>
           <span class="text-sm">{format_size(skill.size_bytes)}</span>
         </:col>
-        <:col :let={skill} label="Files">
+        <:col :let={skill} label={dgettext("admin", "Files")}>
           <span class="text-sm">{skill.file_count || "-"}</span>
         </:col>
-        <:col :let={skill} label="Tags">
+        <:col :let={skill} label={dgettext("admin", "Tags")}>
           <div class="flex flex-wrap gap-1">
             <.dm_badge :for={tag <- skill.tags} variant="ghost" size="sm">{tag}</.dm_badge>
             <span :if={skill.tags == []} class="text-xs text-on-surface-variant">-</span>
           </div>
         </:col>
-        <:col :let={skill} label="Updated">
+        <:col :let={skill} label={dgettext("admin", "Updated")}>
           <span class="text-xs text-on-surface-variant">{format_dt(skill.updated_at)}</span>
         </:col>
-        <:col :let={skill} label="Actions">
+        <:col :let={skill} label={dgettext("common", "Actions")}>
           <div class="flex gap-1">
-            <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "View")} position="bottom">
               <.dm_btn {tooltip_attrs}
                 patch={~p"/skills/upload/#{skill.id}"}
                 size="xs"
                 shape="circle"
                 variant="outline"
-                aria-label={"View #{skill.name} skill"}
+                aria-label={dgettext("admin", "View %{name} skill", name: skill.name)}
               >
                 <.dm_mdi name="eye" class="w-4 h-4" />
-                <span class="sr-only">View</span>
+                <span class="sr-only">{dgettext("common", "View")}</span>
               </.dm_btn>
             </.dm_tooltip>
-            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
                 size="xs"
                 shape="circle"
                 variant="error"
-                aria-label={"Delete #{skill.name} skill"}
-                confirm={"Delete skill '#{skill.name}'?"}
-                confirm_title="Confirm Delete"
+                aria-label={dgettext("admin", "Delete %{name} skill", name: skill.name)}
+                confirm={dgettext("admin", "Delete skill '%{name}'?", name: skill.name)}
+                confirm_title={dgettext("admin", "Confirm Delete")}
                 phx-click="delete"
                 phx-value-id={skill.id}
               >
                 <.dm_mdi name="delete" class="w-4 h-4" />
-                <span class="sr-only">Delete</span>
+                <span class="sr-only">{dgettext("common", "Delete")}</span>
               </.dm_btn>
             </.dm_tooltip>
           </div>
@@ -623,8 +644,8 @@ defmodule Backplane.Admin.SkillUploadLive do
     """
   end
 
-  defp upload_error_to_string(:too_large), do: "File is too large (max 50 MB)"
-  defp upload_error_to_string(:too_many_files), do: "Only one file at a time"
-  defp upload_error_to_string(:not_accepted), do: "File type not accepted"
+  defp upload_error_to_string(:too_large), do: dgettext("errors", "File is too large (max 50 MB)")
+  defp upload_error_to_string(:too_many_files), do: dgettext("errors", "Only one file at a time")
+  defp upload_error_to_string(:not_accepted), do: dgettext("errors", "File type not accepted")
   defp upload_error_to_string(err), do: inspect(err)
 end

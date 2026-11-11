@@ -29,6 +29,8 @@ defmodule Backplane.Api do
 
       import Plug.Conn
 
+      use Gettext, backend: Backplane.Api.Gettext
+
       unquote(verified_routes())
     end
   end
@@ -41,6 +43,8 @@ defmodule Backplane.Api do
         only: [get_csrf_token: 0, view_module: 1, view_template: 1]
 
       import Phoenix.HTML
+
+      use Gettext, backend: Backplane.Api.Gettext
 
       use PhoenixDuskmoon.Component
       use PhoenixDuskmoon.ArtComponent

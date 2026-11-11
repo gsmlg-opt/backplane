@@ -188,6 +188,9 @@ config :logger, :console,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+config :gettext, :default_locale, "en"
+config :backplane_admin, Backplane.Admin.Gettext, default_locale: "en"
+
 # Relayixir is used as a library; Phoenix endpoints handle HTTP serving
 config :relayixir, start_server: false
 

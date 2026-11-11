@@ -60,21 +60,21 @@ defmodule Backplane.Admin.OAuthCallbackController do
         case result do
           {:ok, _credential} ->
             conn
-            |> put_flash(:info, "Connected #{vendor_label(vendor)} as '#{cred_name}'")
+            |> put_flash(:info, dgettext("user", "Connected %{vendor} as '%{name}'", vendor: vendor_label(vendor), name: cred_name))
             |> redirect(to: ~p"/system/credentials")
 
           {:credential_store_error, reason} ->
             Logger.warning("OAuth credential store failed: #{inspect(reason)}")
 
             conn
-            |> put_flash(:error, "Auth succeeded but failed to save credential")
+            |> put_flash(:error, dgettext("errors", "Auth succeeded but failed to save credential"))
             |> redirect(to: ~p"/system/credentials")
 
           {:error, reason} ->
             Logger.warning("OAuth code exchange failed: #{inspect(reason)}")
 
             conn
-            |> put_flash(:error, "Authorization failed: #{format_error(vendor, reason)}")
+            |> put_flash(:error, dgettext("errors", "Authorization failed: %{reason}", reason: format_error(vendor, reason)))
             |> redirect(to: ~p"/system/credentials")
         end
 
@@ -87,19 +87,19 @@ defmodule Backplane.Admin.OAuthCallbackController do
 
   def callback(conn, %{"error" => error, "error_description" => desc}) do
     conn
-    |> put_flash(:error, "Authorization denied: #{desc} (#{error})")
+    |> put_flash(:error, dgettext("errors", "Authorization denied: %{description} (%{error})", description: desc, error: error))
     |> redirect(to: ~p"/system/credentials")
   end
 
   def callback(conn, %{"error" => error}) do
     conn
-    |> put_flash(:error, "Authorization denied: #{error}")
+    |> put_flash(:error, dgettext("errors", "Authorization denied: %{error}", error: error))
     |> redirect(to: ~p"/system/credentials")
   end
 
   def callback(conn, _params) do
     conn
-    |> put_flash(:error, "Invalid OAuth callback — missing code or state")
+    |> put_flash(:error, dgettext("errors", "Invalid OAuth callback — missing code or state"))
     |> redirect(to: ~p"/system/credentials")
   end
 
@@ -298,18 +298,20 @@ defmodule Backplane.Admin.OAuthCallbackController do
   defp format_error("figma_oauth", reason), do: FigmaOAuth.format_error(reason)
 
   defp format_error(_vendor, {:http, status, %{"error_description" => desc}}),
-    do: "#{desc} (#{status})"
+    do: dgettext("errors", "%{description} (%{status})", description: desc, status: status)
 
   defp format_error(
          _vendor,
          {:http, status, %{"error" => %{"message" => message, "type" => type}}}
        ),
-       do: "#{message} (#{type}, #{status})"
+       do: dgettext("errors", "%{message} (%{type}, %{status})", message: message, type: type, status: status)
 
   defp format_error(_vendor, {:http, status, %{"error" => %{"message" => message}}}),
-    do: "#{message} (#{status})"
+    do: dgettext("errors", "%{message} (%{status})", message: message, status: status)
 
-  defp format_error(_vendor, {:http, status, %{"error" => err}}), do: "#{err} (#{status})"
-  defp format_error(_vendor, {:http, status, _}), do: "HTTP #{status}"
+  defp format_error(_vendor, {:http, status, %{"error" => err}}),
+    do: dgettext("errors", "%{error} (%{status})", error: err, status: status)
+  defp format_error(_vendor, {:http, status, _}),
+    do: dgettext("errors", "HTTP %{status}", status: status)
   defp format_error(_vendor, other), do: inspect(other)
 end

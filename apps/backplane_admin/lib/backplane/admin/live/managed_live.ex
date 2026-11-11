@@ -11,30 +11,25 @@ defmodule Backplane.Admin.ManagedLive do
     %{
       module: Backplane.Services.Day,
       name: "Day",
-      description: "Date/time utilities",
       setting_key: "services.day.enabled"
     },
     %{
       module: Backplane.Services.Web,
-      name: "Web",
-      description: "Fetch HTTP(S) pages, search the web, and search X"
+      name: "Web"
     },
     %{
       module: Backplane.Services.Skills,
       name: "Skills",
-      description: "Search, load, download, and publish archive-backed agent skills",
       setting_key: "services.skill.enabled"
     },
     %{
       module: Backplane.Memory.Tools,
       name: "Memory",
-      description: "Search, read, remember, and forget global memory records",
       setting_key: "services.memory.enabled"
     },
     %{
       module: Backplane.Services.Math,
-      name: "Math",
-      description: "Evaluate math expressions with the native math engine"
+      name: "Math"
     }
   ]
 
@@ -63,17 +58,17 @@ defmodule Backplane.Admin.ManagedLive do
       case result do
         :ok ->
           Backplane.Admin.Audit.record("managed_service.toggle", "managed_service", prefix)
-          put_flash(socket, :info, "Service updated")
+          put_flash(socket, :info, dgettext("admin", "Service updated"))
 
         {:ok, _result} ->
           Backplane.Admin.Audit.record("managed_service.toggle", "managed_service", prefix)
-          put_flash(socket, :info, "Service updated")
+          put_flash(socket, :info, dgettext("admin", "Service updated"))
 
         {:error, _reason} ->
-          put_flash(socket, :error, "Failed to update service")
+          put_flash(socket, :error, dgettext("errors", "Failed to update service"))
 
         _unexpected ->
-          put_flash(socket, :error, "Failed to update service")
+          put_flash(socket, :error, dgettext("errors", "Failed to update service"))
       end
 
     {:noreply, load_services(socket)}
@@ -91,6 +86,7 @@ defmodule Backplane.Admin.ManagedLive do
 
         Map.merge(svc, %{
           prefix: prefix,
+          description: service_description(mod),
           enabled: enabled,
           tool_count: tool_count,
           tools: Enum.filter(tools, fn t -> t.origin == {:managed, prefix} end),
@@ -100,6 +96,20 @@ defmodule Backplane.Admin.ManagedLive do
 
     assign(socket, loading: false, services: services)
   end
+
+  defp service_description(Backplane.Services.Day), do: dgettext("admin", "Date/time utilities")
+
+  defp service_description(Backplane.Services.Web),
+    do: dgettext("admin", "Fetch HTTP(S) pages, search the web, and search X")
+
+  defp service_description(Backplane.Services.Skills),
+    do: dgettext("admin", "Search, load, download, and publish archive-backed agent skills")
+
+  defp service_description(Backplane.Memory.Tools),
+    do: dgettext("admin", "Search, read, remember, and forget global memory records")
+
+  defp service_description(Backplane.Services.Math),
+    do: dgettext("admin", "Evaluate math expressions with the native math engine")
 
   defp safe_call(fun, default) do
     fun.()
@@ -159,19 +169,19 @@ defmodule Backplane.Admin.ManagedLive do
     ~H"""
     <div>
       <div class="flex items-center gap-3 mb-6">
-        <h1 class="text-2xl font-bold">Managed Services</h1>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "Managed Services")}</h1>
       </div>
 
       <div class="overflow-x-auto">
         <table class="min-w-full text-sm">
           <thead class="bg-surface-container-high text-on-surface">
             <tr>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Service</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Description</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Tools</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Service")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Prefix")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Description")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Tools")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Actions")}</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-outline-variant">
@@ -183,12 +193,12 @@ defmodule Backplane.Admin.ManagedLive do
               <td class="px-3 py-1.5 align-middle text-on-surface-variant">{service.description}</td>
               <td class="px-3 py-1.5 align-middle">
                 <.dm_badge variant={if service.enabled, do: "success", else: "ghost"}>
-                  {if service.enabled, do: "Enabled", else: "Disabled"}
+                  {if service.enabled, do: dgettext("common", "Enabled"), else: dgettext("common", "Disabled")}
                 </.dm_badge>
               </td>
               <td class="px-3 py-1.5 align-middle">
                 <span :if={!service.enabled or service.tools == []} class="text-on-surface-variant">
-                  {service.tool_count} tools
+                  {dngettext("admin", "1 tool", "%{count} tools", service.tool_count)}
                 </span>
                 <div :if={service.enabled and service.tools != []} class="flex flex-wrap gap-1">
                   <.link
@@ -203,23 +213,23 @@ defmodule Backplane.Admin.ManagedLive do
               </td>
               <td class="px-3 py-1.5 align-middle">
                 <div class="flex items-center gap-1">
-                  <.dm_tooltip :let={tooltip_attrs} content="Settings" position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Settings")} position="bottom">
                     <.dm_btn {tooltip_attrs}
                       navigate={service.settings_path}
                       size="xs"
                       shape="circle"
                       variant="outline"
-                      aria-label={"Open #{service.name} settings"}
+                      aria-label={dgettext("admin", "Open %{name} settings", name: service.name)}
                     >
                       <.dm_mdi name="cog" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content={if service.enabled, do: "Disable", else: "Enable"} position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={if service.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")} position="bottom">
                     <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant={if service.enabled, do: "warning", else: "primary"}
-                      aria-label={"#{if service.enabled, do: "Disable", else: "Enable"} #{service.name} service"}
+                      aria-label={if service.enabled, do: dgettext("admin", "Disable %{name} service", name: service.name), else: dgettext("admin", "Enable %{name} service", name: service.name)}
                       phx-click="toggle"
                       phx-value-prefix={service.prefix}
                     >

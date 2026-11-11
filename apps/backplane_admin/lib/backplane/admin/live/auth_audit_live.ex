@@ -28,14 +28,14 @@ defmodule Backplane.Admin.AuthAuditLive do
     ~H"""
     <div class="space-y-4">
       <div>
-        <h1 class="text-2xl font-bold">Auth Audit</h1>
+        <h1 class="text-2xl font-bold">{dgettext("user", "Auth Audit")}</h1>
         <p class="mt-1 text-sm text-on-surface-variant">
-          Persisted security events from the Backplane Auth provider.
+          {dgettext("user", "Persisted security events from the Backplane Auth provider.")}
         </p>
       </div>
 
       <.dm_card variant="bordered">
-        <:title>Audit Events</:title>
+        <:title>{dgettext("user", "Audit Events")}</:title>
 
         <form
           id="auth-audit-filter-form"
@@ -46,14 +46,14 @@ defmodule Backplane.Admin.AuthAuditLive do
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
             name="event_type"
-            placeholder="Event type"
+            placeholder={dgettext("user", "Event type")}
             value={@filters["event_type"]}
           />
           <select
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
             name="severity"
           >
-            <option value="" selected={@filters["severity"] == ""}>All severities</option>
+            <option value="" selected={@filters["severity"] == ""}>{dgettext("user", "All severities")}</option>
             <option value="info" selected={@filters["severity"] == "info"}>info</option>
             <option value="warning" selected={@filters["severity"] == "warning"}>warning</option>
             <option value="error" selected={@filters["severity"] == "error"}>error</option>
@@ -61,42 +61,42 @@ defmodule Backplane.Admin.AuthAuditLive do
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
             name="target_type"
-            placeholder="Target type"
+            placeholder={dgettext("user", "Target type")}
             value={@filters["target_type"]}
           />
           <div class="flex gap-2">
             <input
               class="min-w-0 flex-1 rounded-md border border-outline bg-surface px-3 py-2 text-sm"
               name="search"
-              placeholder="Search ids"
+              placeholder={dgettext("user", "Search ids")}
               value={@filters["search"]}
             />
-            <.dm_btn type="submit" variant="primary" size="sm">Filter</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Filter")}</.dm_btn>
           </div>
         </form>
 
         <div :if={@events == []} class="py-8 text-center text-on-surface-variant">
-          No Auth audit events recorded.
+          {dgettext("user", "No Auth audit events recorded.")}
         </div>
 
         <.dm_table :if={@events != []} id="auth-audit-table" data={@events} hover zebra>
-          <:col :let={event} label="Event">
+          <:col :let={event} label={dgettext("user", "Event")}>
             <div class="font-medium">{event.event_type}</div>
             <code class="text-xs text-on-surface-variant">{event.id}</code>
           </:col>
-          <:col :let={event} label="Severity">
+          <:col :let={event} label={dgettext("user", "Severity")}>
             <.dm_badge variant={severity_variant(event.severity)}>{event.severity}</.dm_badge>
           </:col>
-          <:col :let={event} label="Actor">
+          <:col :let={event} label={dgettext("user", "Actor")}>
             <span class="text-sm">{actor_label(event)}</span>
           </:col>
-          <:col :let={event} label="Target">
+          <:col :let={event} label={dgettext("user", "Target")}>
             <span class="text-sm">{target_label(event)}</span>
           </:col>
-          <:col :let={event} label="Metadata">
+          <:col :let={event} label={dgettext("user", "Metadata")}>
             <span class="text-sm text-on-surface-variant">{metadata_summary(event.metadata)}</span>
           </:col>
-          <:col :let={event} label="Recorded">
+          <:col :let={event} label={dgettext("user", "Recorded")}>
             <span class="text-sm text-on-surface-variant">{format_datetime(event.inserted_at)}</span>
           </:col>
         </.dm_table>
@@ -105,15 +105,15 @@ defmodule Backplane.Admin.AuthAuditLive do
     """
   end
 
-  defp actor_label(%{actor_type: nil}), do: "system"
+  defp actor_label(%{actor_type: nil}), do: dgettext("user", "system")
   defp actor_label(%{actor_type: type, actor_id: nil}), do: type
   defp actor_label(%{actor_type: type, actor_id: id}), do: "#{type}:#{id}"
 
-  defp target_label(%{target_type: nil}), do: "none"
+  defp target_label(%{target_type: nil}), do: dgettext("common", "none")
   defp target_label(%{target_type: type, target_id: nil}), do: type
   defp target_label(%{target_type: type, target_id: id}), do: "#{type}:#{id}"
 
-  defp metadata_summary(metadata) when metadata == %{}, do: "none"
+  defp metadata_summary(metadata) when metadata == %{}, do: dgettext("common", "none")
 
   defp metadata_summary(metadata) when is_map(metadata) do
     metadata
@@ -122,7 +122,7 @@ defmodule Backplane.Admin.AuthAuditLive do
     |> Enum.join(", ")
   end
 
-  defp metadata_summary(_metadata), do: "none"
+  defp metadata_summary(_metadata), do: dgettext("common", "none")
 
   defp severity_variant("error"), do: "error"
   defp severity_variant("warning"), do: "warning"

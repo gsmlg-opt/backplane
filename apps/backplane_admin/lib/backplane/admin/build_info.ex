@@ -6,6 +6,8 @@ defmodule Backplane.Admin.BuildInfo do
   metadata can override them at runtime; release time requires an explicit value.
   """
 
+  use Gettext, backend: Backplane.Admin.Gettext
+
   @compiled_info (
                    git = fn args ->
                      try do
@@ -40,29 +42,29 @@ defmodule Backplane.Admin.BuildInfo do
   end
 
   def tooltip(info) do
-    """
-    Version: #{info.version}
-    Environment: #{info.environment}
-    Git ref: #{info.git_ref}
-    Commit: #{info.git_sha}
-    Build time: #{info.built_at}
-    Release time: #{info.released_at}
-    """
-    |> String.trim_trailing()
+    [
+      dgettext("admin", "Version: %{value}", value: info.version),
+      dgettext("admin", "Environment: %{value}", value: info.environment),
+      dgettext("admin", "Git ref: %{value}", value: info.git_ref),
+      dgettext("admin", "Commit: %{value}", value: info.git_sha),
+      dgettext("admin", "Build time: %{value}", value: info.built_at),
+      dgettext("admin", "Release time: %{value}", value: info.released_at)
+    ]
+    |> Enum.join("\n")
   end
 
   @doc false
   def normalize_metadata(version, compiled, env) do
     %{
-      version: present(version) || "Not provided",
-      environment: present(compiled[:environment]) || "Not provided",
-      git_ref: present(env["BACKPLANE_GIT_REF"]) || present(compiled[:git_ref]) || "Not provided",
+      version: present(version) || dgettext("common", "Not provided"),
+      environment: present(compiled[:environment]) || dgettext("common", "Not provided"),
+      git_ref: present(env["BACKPLANE_GIT_REF"]) || present(compiled[:git_ref]) || dgettext("common", "Not provided"),
       git_sha:
         present(env["BACKPLANE_GIT_SHA"]) || present(env["VCS_REF"]) ||
-          present(compiled[:git_sha]) || "Not provided",
+          present(compiled[:git_sha]) || dgettext("common", "Not provided"),
       built_at:
-        present(env["BACKPLANE_BUILD_DATE"]) || present(compiled[:built_at]) || "Not provided",
-      released_at: present(env["BACKPLANE_RELEASE_DATE"]) || "Not provided"
+        present(env["BACKPLANE_BUILD_DATE"]) || present(compiled[:built_at]) || dgettext("common", "Not provided"),
+      released_at: present(env["BACKPLANE_RELEASE_DATE"]) || dgettext("common", "Not provided")
     }
   end
 

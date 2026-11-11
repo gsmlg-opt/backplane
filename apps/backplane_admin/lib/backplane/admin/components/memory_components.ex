@@ -11,7 +11,7 @@ defmodule Backplane.Admin.MemoryComponents do
     ~H"""
     <header class="memory-page-header">
       <div class="min-w-0">
-        <p class="memory-eyebrow"><.dm_mdi name="brain" class="h-4 w-4" />Memory workspace</p>
+        <p class="memory-eyebrow"><.dm_mdi name="brain" class="h-4 w-4" />{dgettext("navigation", "Memory workspace")}</p>
         <h1>{@title}</h1>
         <p class="memory-page-description">{@subtitle}</p>
       </div>
@@ -38,7 +38,7 @@ defmodule Backplane.Admin.MemoryComponents do
       <h2 class="memory-section-title">{@title}</h2>
       <div :if={@ok?}>{render_slot(@inner_block, @value)}</div>
       <.dm_alert :if={!@ok?} variant="error" title={@title} compact>
-        Memory data is unavailable. Retry after checking the database connection.
+        {dgettext("errors", "Memory data is unavailable. Retry after checking the database connection.")}
       </.dm_alert>
     </section>
     """
@@ -120,7 +120,7 @@ defmodule Backplane.Admin.MemoryComponents do
 
     ~H"""
     <.dm_badge variant={@variant} size="sm" soft>
-      {@status || "unknown"}
+      {@status || dgettext("common", "unknown")}
     </.dm_badge>
     """
   end
@@ -131,7 +131,9 @@ defmodule Backplane.Admin.MemoryComponents do
     ~H"""
     <div class="flex flex-wrap gap-2">
       <.dm_badge variant={if @gate.configured, do: "info", else: "neutral"} size="sm">
-        {if @gate.configured, do: "Configured on", else: "Configured off"}
+        {if @gate.configured,
+          do: dgettext("admin", "Configured on"),
+          else: dgettext("admin", "Configured off")}
       </.dm_badge>
       <.dm_badge
         variant={
@@ -144,9 +146,9 @@ defmodule Backplane.Admin.MemoryComponents do
         size="sm"
       >
         {cond do
-          @gate.effective -> "Effective"
-          @gate.blocked -> "Configured, blocked"
-          true -> "Inactive"
+          @gate.effective -> dgettext("admin", "Effective")
+          @gate.blocked -> dgettext("admin", "Configured, blocked")
+          true -> dgettext("admin", "Inactive")
         end}
       </.dm_badge>
     </div>

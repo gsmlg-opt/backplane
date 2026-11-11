@@ -59,7 +59,7 @@ defmodule Backplane.Admin.ProviderNewLive do
 
           {:noreply,
            socket
-           |> put_flash(:info, "Provider #{provider.name} created")
+           |> put_flash(:info, dgettext("admin", "Provider %{name} created", name: provider.name))
            |> push_navigate(to: ~p"/llama/providers")}
 
         {:error, errors} ->
@@ -165,7 +165,7 @@ defmodule Backplane.Admin.ProviderNewLive do
 
   defp validate_params(preset, params) do
     %{}
-    |> require_field(params, "name", "Name is required")
+    |> require_field(params, "name", dgettext("errors", "Name is required"))
     |> require_credential(params)
     |> require_allowed_credential(preset, params)
     |> require_surfaces(params, preset)
@@ -185,7 +185,7 @@ defmodule Backplane.Admin.ProviderNewLive do
       selected_preset: preset,
       form: form_for_preset(preset, params),
       credential_options: credential_options,
-      host_service_options: [{"", "Direct HTTP"} | HostServices.options()],
+      host_service_options: [{"", dgettext("admin", "Direct HTTP")} | HostServices.options()],
       errors: %{}
     )
   end
@@ -194,7 +194,7 @@ defmodule Backplane.Admin.ProviderNewLive do
     creds = safe_call(fn -> Credentials.list() end, [])
 
     [
-      {"", "Select a credential..."}
+      {"", dgettext("admin", "Select a credential...")}
       | creds
         |> Enum.filter(&credential_allowed?(preset, &1))
         |> Enum.map(fn cred -> {cred.name, credential_label(cred)} end)
@@ -238,7 +238,7 @@ defmodule Backplane.Admin.ProviderNewLive do
 
   defp require_credential(errors, params) do
     if blank?(params["host_service_id"]),
-      do: require_field(errors, params, "credential", "Credential is required"),
+      do: require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
       else: errors
   end
 
@@ -266,10 +266,12 @@ defmodule Backplane.Admin.ProviderNewLive do
   end
 
   defp credential_error(%{credential_auth_type: auth_type}) when is_binary(auth_type) do
-    "Credential must use #{auth_type} auth type"
+    dgettext("errors", "Credential must use %{auth_type} auth type", auth_type: auth_type)
   end
 
-  defp credential_error(preset), do: "Credential must be a #{preset.credential_kind} credential"
+  defp credential_error(preset),
+    do:
+      dgettext("errors", "Credential must be a %{kind} credential", kind: preset.credential_kind)
 
   defp require_surface(errors, params, surface) do
     if truthy?(params["#{surface}_enabled"]) and blank?(params["host_service_id"]) do
@@ -277,7 +279,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         errors,
         params,
         "#{surface}_base_url",
-        "#{surface_label(surface)} base URL is required"
+        dgettext("errors", "%{surface} base URL is required", surface: surface_label(surface))
       )
     else
       errors
@@ -401,14 +403,14 @@ defmodule Backplane.Admin.ProviderNewLive do
     <div>
       <div class="mb-6 flex items-center justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-bold">Add LLM Provider</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "Add LLM Provider")}</h1>
           <p class="mt-1 text-sm text-on-surface-variant">
-            Choose a provider preset, select a credential, then adjust its configured API surfaces.
+            {dgettext("admin", "Choose a provider preset, select a credential, then adjust its configured API surfaces.")}
           </p>
         </div>
 
         <.link navigate={~p"/llama/providers"} class="no-underline">
-          <.dm_btn size="sm">Cancel</.dm_btn>
+          <.dm_btn size="sm">{dgettext("common", "Cancel")}</.dm_btn>
         </.link>
       </div>
 
@@ -438,13 +440,13 @@ defmodule Backplane.Admin.ProviderNewLive do
 
       <.form for={@form} phx-submit="save" phx-change="validate" class="space-y-6">
         <.dm_card variant="bordered">
-          <:title>Provider</:title>
+          <:title>{dgettext("admin", "Provider")}</:title>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div>
               <.dm_input
                 id="provider-name"
                 name="provider[name]"
-                label="Name"
+                label={dgettext("common", "Name")}
                 value={@form[:name].value}
                 placeholder="deepseek"
               />
@@ -455,23 +457,23 @@ defmodule Backplane.Admin.ProviderNewLive do
               <.dm_select
                 id="provider-credential"
                 name="provider[credential]"
-                label="Credential"
+                label={dgettext("admin", "Credential")}
                 options={@credential_options}
                 value={@form[:credential].value || ""}
               />
               <p class="mt-1 text-xs text-on-surface-variant">
-                Select an LLM credential from the <.link
+                {dgettext("admin", "Select an LLM credential from the")} <.link
                   navigate={~p"/system/credentials"}
                   class="text-primary underline"
-                >credential store</.link>.
+                >{dgettext("admin", "credential store")}</.link>.
               </p>
               <.error errors={@errors} field="credential" />
             </div>
 
             <div>
-              <.dm_select id="provider-host-service" name="provider[host_service_id]" label="Host API Service"
+              <.dm_select id="provider-host-service" name="provider[host_service_id]" label={dgettext("admin", "Host API Service")}
                 options={@host_service_options} value={@form[:host_service_id].value || ""} />
-              <p class="mt-1 text-xs text-on-surface-variant">Select Custom for host APIs. Endpoint URLs come from the service; credentials are optional for unauthenticated local services.</p>
+              <p class="mt-1 text-xs text-on-surface-variant">{dgettext("admin", "Select Custom for host APIs. Endpoint URLs come from the service; credentials are optional for unauthenticated local services.")}</p>
               <.error errors={@errors} field="host_service_id" />
             </div>
 
@@ -479,7 +481,7 @@ defmodule Backplane.Admin.ProviderNewLive do
               <.dm_input
                 id="provider-base-url"
                 name="provider[base_url]"
-                label="Base URL"
+                label={dgettext("admin", "Base URL")}
                 value={@form[:base_url].value}
                 placeholder={@selected_preset.default_base_url}
               />
@@ -489,7 +491,7 @@ defmodule Backplane.Admin.ProviderNewLive do
               <.dm_input
                 id="provider-rpm-limit"
                 name="provider[rpm_limit]"
-                label="RPM Limit"
+                label={dgettext("admin", "RPM Limit")}
                 value={@form[:rpm_limit].value}
                 placeholder="60"
               />
@@ -511,11 +513,11 @@ defmodule Backplane.Admin.ProviderNewLive do
         </div>
 
         <.dm_card variant="bordered">
-          <:title>Advanced Headers</:title>
+          <:title>{dgettext("admin", "Advanced Headers")}</:title>
           <.dm_textarea
             id="provider-default-headers"
             name="provider[default_headers]"
-            label="Provider Default Headers"
+            label={dgettext("admin", "Provider Default Headers")}
             rows={3}
             value={@form[:default_headers].value}
             class="font-mono"
@@ -523,9 +525,9 @@ defmodule Backplane.Admin.ProviderNewLive do
         </.dm_card>
 
         <div class="flex gap-2">
-          <.dm_btn type="submit" variant="primary">Create Provider</.dm_btn>
+          <.dm_btn type="submit" variant="primary">{dgettext("admin", "Create Provider")}</.dm_btn>
           <.link navigate={~p"/llama/providers"} class="no-underline">
-            <.dm_btn type="button">Cancel</.dm_btn>
+            <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
           </.link>
         </div>
       </.form>
@@ -551,7 +553,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         <.dm_checkbox
           id={"provider-#{@key}-enabled"}
           name={"provider[#{@key}_enabled]"}
-          label={"Enable #{@title}"}
+          label={dgettext("admin", "Enable %{title}", title: @title)}
           value="true"
           checked={field_value(@form, @key, "enabled") in [true, "true", "on"]}
         />
@@ -560,7 +562,7 @@ defmodule Backplane.Admin.ProviderNewLive do
           <.dm_input
             id={"provider-#{@key}-base-url"}
             name={"provider[#{@key}_base_url]"}
-            label="Base URL"
+            label={dgettext("admin", "Base URL")}
             value={field_value(@form, @key, "base_url")}
           />
           <.error errors={@errors} field={"#{@key}_base_url"} />
@@ -570,25 +572,25 @@ defmodule Backplane.Admin.ProviderNewLive do
           <.dm_input
             id="provider-antigravity-project-id"
             name="provider[antigravity_project_id]"
-            label="Project ID"
+            label={dgettext("admin", "Project ID")}
             value={field_value(@form, "antigravity", "project_id")}
           />
           <.dm_input
             id="provider-antigravity-user-agent"
             name="provider[antigravity_user_agent]"
-            label="User Agent"
+            label={dgettext("admin", "User Agent")}
             value={field_value(@form, "antigravity", "user_agent")}
           />
           <.dm_input
             id="provider-antigravity-client-version"
             name="provider[antigravity_client_version]"
-            label="Client Version"
+            label={dgettext("admin", "Client Version")}
             value={field_value(@form, "antigravity", "client_version")}
           />
         </div>
 
         <div :if={@protocols != []} class="space-y-2">
-          <p class="text-sm font-medium">Native wire protocols</p>
+          <p class="text-sm font-medium">{dgettext("admin", "Native wire protocols")}</p>
           <div :for={protocol <- @protocols}>
             <input type="hidden" name={protocol_input_name(@key, protocol)} value="false" />
             <.dm_checkbox
@@ -607,14 +609,15 @@ defmodule Backplane.Admin.ProviderNewLive do
           <.dm_checkbox
             id="provider-openai-responses-websocket"
             name="provider[openai_responses_websocket]"
-            label="Upstream supports Responses WebSocket"
+            label={dgettext("admin", "Upstream supports Responses WebSocket")}
             value="true"
             checked={field_value(@form, @key, "responses_websocket") in [true, "true", "on"]}
           />
           <p class="text-sm text-base-content/60">
-            Requires native Responses. Enables WebSocket forwarding with an explicit model query.
-            Does not enable background cancellation or steering. WebSocket token usage is not yet
-            included in gateway usage totals.
+            {dgettext(
+              "admin",
+              "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering. WebSocket token usage is not yet included in gateway usage totals."
+            )}
           </p>
           <.error errors={@errors} field="openai_responses_websocket" />
         </div>
@@ -623,7 +626,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         <.dm_checkbox
           id={"provider-#{@key}-discovery-enabled"}
           name={"provider[#{@key}_model_discovery_enabled]"}
-          label="Enable model discovery"
+          label={dgettext("admin", "Enable model discovery")}
           value="true"
           checked={field_value(@form, @key, "model_discovery_enabled") in [true, "true", "on"]}
         />
@@ -631,7 +634,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         <.dm_input
           id={"provider-#{@key}-discovery-path"}
           name={"provider[#{@key}_model_discovery_path]"}
-          label="Model Discovery Path"
+          label={dgettext("admin", "Model Discovery Path")}
           value={field_value(@form, @key, "model_discovery_path")}
           placeholder="/models"
         />
@@ -639,7 +642,7 @@ defmodule Backplane.Admin.ProviderNewLive do
         <.dm_textarea
           id={"provider-#{@key}-default-headers"}
           name={"provider[#{@key}_default_headers]"}
-          label="Default Headers"
+          label={dgettext("admin", "Default Headers")}
           rows={3}
           value={field_value(@form, @key, "default_headers")}
           class="font-mono"
@@ -666,14 +669,22 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp surface_title(:google), do: "Google GenerateContent API"
   defp surface_title(:antigravity), do: "Google Antigravity Native API"
 
-  defp surface_description(:openai), do: "Used by clients calling /v1."
-  defp surface_description(:anthropic), do: "Used by clients calling /v1/messages."
+  defp surface_description(:openai), do: dgettext("admin", "Used by clients calling /v1.")
+  defp surface_description(:anthropic), do: dgettext("admin", "Used by clients calling /v1/messages.")
 
   defp surface_description(:google),
-    do: "Native Google protocol. The configured Base URL includes its API version."
+    do:
+      dgettext(
+        "admin",
+        "Native Google protocol. The configured Base URL includes its API version."
+      )
 
   defp surface_description(:antigravity),
-    do: "Native account API. Configure a project after explicit bootstrap or enrollment."
+    do:
+      dgettext(
+        "admin",
+        "Native account API. Configure a project after explicit bootstrap or enrollment."
+      )
 
   defp api_label(:openai), do: "OpenAI"
   defp api_label(:anthropic), do: "Anthropic"

@@ -4,12 +4,18 @@ defmodule Backplane.Admin.Components.UsageTimeRange do
   use Backplane.Admin, :html
 
   @ranges [
-    {"today", "今天", 0},
-    {"yesterday", "昨天", 1},
-    {"week", "最近一周", 7},
-    {"fortnight", "最近二周", 14},
-    {"month", "最近一月", 30}
+    {"today", 0},
+    {"yesterday", 1},
+    {"week", 7},
+    {"fortnight", 14},
+    {"month", 30}
   ]
+
+  defp range_label("today"), do: dgettext("common", "Today")
+  defp range_label("yesterday"), do: dgettext("common", "Yesterday")
+  defp range_label("week"), do: dgettext("common", "Last 7 days")
+  defp range_label("fortnight"), do: dgettext("common", "Last 14 days")
+  defp range_label("month"), do: dgettext("common", "Last 30 days")
 
   attr(:id, :string, required: true)
   attr(:action, :string, required: true)
@@ -19,9 +25,9 @@ defmodule Backplane.Admin.Components.UsageTimeRange do
     assigns = assign(assigns, :ranges, @ranges)
 
     ~H"""
-    <nav id={@id} aria-label="用量统计时间范围" class="flex flex-wrap items-center gap-2">
+    <nav id={@id} aria-label={dgettext("common", "Usage time range")} class="flex flex-wrap items-center gap-2">
       <.dm_link
-        :for={{value, label, _days} <- @ranges}
+        :for={{value, _days} <- @ranges}
         patch={@action <> "?" <> URI.encode_query(%{"range" => value})}
         aria-current={if @selected == value, do: "true"}
         class={[
@@ -32,16 +38,16 @@ defmodule Backplane.Admin.Components.UsageTimeRange do
           )
         ]}
       >
-        {label}
+        {range_label(value)}
       </.dm_link>
-      <span class="text-xs text-on-surface-variant">UTC · 历史区间不含今天</span>
+      <span class="text-xs text-on-surface-variant">{dgettext("common", "UTC · historical ranges exclude today")}</span>
     </nav>
     """
   end
 
   @doc "Returns the selected preset and inclusive query bounds; historical presets exclude today."
   def parse(selected_range) do
-    {range, _label, days} =
+    {range, days} =
       Enum.find(@ranges, &(elem(&1, 0) == selected_range)) || hd(@ranges)
 
     now = DateTime.utc_now()

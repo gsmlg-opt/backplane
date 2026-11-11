@@ -34,7 +34,7 @@ defmodule Backplane.Admin.ApiUsageLive do
           nil ->
             {:noreply,
              socket
-             |> put_flash(:error, "API account not found")
+             |> put_flash(:error, dgettext("errors", "API account not found"))
              |> push_patch(to: ~p"/system/monitor/api-usage")}
 
           account ->
@@ -64,7 +64,7 @@ defmodule Backplane.Admin.ApiUsageLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "API account saved")
+         |> put_flash(:info, dgettext("admin", "API account saved"))
          |> push_patch(to: ~p"/system/monitor/api-usage")}
 
       {:error, changeset} ->
@@ -94,7 +94,7 @@ defmodule Backplane.Admin.ApiUsageLive do
             {:noreply, load_accounts(socket)}
 
           {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "Could not change API account")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Could not change API account"))}
         end
     end
   end
@@ -150,120 +150,125 @@ defmodule Backplane.Admin.ApiUsageLive do
     <div class="space-y-6">
       <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-bold">API Usage</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "API Usage")}</h1>
           <p class="text-sm text-on-surface-variant">
-            Configure API accounts and their vault credential references.
-            Balances and spending are available on the API Usage dashboard.
+            {dgettext(
+              "admin",
+              "Configure API accounts and their vault credential references. Balances and spending are available on the API Usage dashboard."
+            )}
           </p>
         </div>
         <div class="flex items-center gap-3">
           <.link patch={~p"/system/monitor/api-usage/new"}>
-            <.dm_btn variant="primary" size="sm">New API Account</.dm_btn>
+            <.dm_btn variant="primary" size="sm">{dgettext("admin", "New API Account")}</.dm_btn>
           </.link>
         </div>
       </div>
 
       <.dm_card :if={@editing} variant="bordered">
-        <:title>{if @editing == :new, do: "New API Account", else: "Edit API Account"}</:title>
+        <:title>{if @editing == :new, do: dgettext("admin", "New API Account"), else: dgettext("admin", "Edit API Account")}</:title>
         <.form for={@form} id="api-account-form" phx-change="validate" phx-submit="save" class="space-y-4">
-          <.dm_input id="api-account-name" name="account[name]" label="Name" value={@form[:name].value} />
+          <.dm_input id="api-account-name" name="account[name]" label={dgettext("common", "Name")} value={@form[:name].value} />
           <.form_error field={@form[:name]} />
-          <.dm_select id="api-account-provider" name="account[provider]" label="Provider"
-            value={@form[:provider].value} prompt="Select a provider..."
+          <.dm_select id="api-account-provider" name="account[provider]" label={dgettext("admin", "Provider")}
+            value={@form[:provider].value} prompt={dgettext("admin", "Select a provider...")}
             options={Enum.map(ApiAccount.providers(), &{&1, provider_label(&1)})} />
           <.form_error field={@form[:provider]} />
           <.dm_select id="api-account-credential" name="account[credential_name]"
-            label={if @form[:provider].value == "openai", do: "Admin API-key credential", else: "API-key credential"}
-            value={@form[:credential_name].value} prompt="Select a credential..." options={@credentials}
-            helper="Only LLM/service API-key vault entries are eligible. Secret values are never displayed." />
+            label={if @form[:provider].value == "openai", do: dgettext("admin", "Admin API-key credential"), else: dgettext("admin", "API-key credential")}
+            value={@form[:credential_name].value} prompt={dgettext("admin", "Select a credential...")} options={@credentials}
+            helper={dgettext("admin", "Only LLM/service API-key vault entries are eligible. Secret values are never displayed.")} />
           <.form_error field={@form[:credential_name]} />
           <div :if={@form[:provider].value == "openai"} class="space-y-2">
             <.dm_input id="api-account-organization" name="account[organization_id]"
-              label="Organization ID" value={@form[:organization_id].value}
-              helper="Use the Organization ID associated with this Admin API key." />
+              label={dgettext("admin", "Organization ID")} value={@form[:organization_id].value}
+              helper={dgettext("admin", "Use the Organization ID associated with this Admin API key.")} />
             <.form_error field={@form[:organization_id]} />
             <p class="text-sm text-on-surface-variant">
-              OpenAI usage monitoring requires an organization Admin API key with Usage read permission.
-              A regular project API key cannot read organization usage.
-              Store the Admin API key in an LLM/service API-key vault entry, then select it above.
+              {dgettext(
+                "admin",
+                "OpenAI usage monitoring requires an organization Admin API key with Usage read permission. A regular project API key cannot read organization usage. Store the Admin API key in an LLM/service API-key vault entry, then select it above."
+              )}
               <a href="https://platform.openai.com/settings/organization/admin-keys" target="_blank"
-                rel="noopener noreferrer" class="text-primary underline">Manage OpenAI Admin API keys</a>.
+                rel="noopener noreferrer" class="text-primary underline">{dgettext("admin", "Manage OpenAI Admin API keys")}</a>.
             </p>
           </div>
           <div :if={@form[:provider].value == "openrouter"}>
             <.dm_select id="api-account-management-credential" name="account[management_credential_name]"
-              label="Management credential (optional)" value={@form[:management_credential_name].value}
-              prompt="No management credential" options={@credentials}
-              helper="OpenRouter account credits require a management key. Missing or failed credits do not hide key usage." />
+              label={dgettext("admin", "Management credential (optional)")} value={@form[:management_credential_name].value}
+              prompt={dgettext("admin", "No management credential")} options={@credentials}
+              helper={dgettext("admin", "OpenRouter account credits require a management key. Missing or failed credits do not hide key usage.")} />
             <.form_error field={@form[:management_credential_name]} />
           </div>
           <p :if={@form[:provider].value == "exa"} class="text-sm text-on-surface-variant">
-            Exa search works with a regular API key. Exa usage analytics require Team Management API access,
-            which is not enabled for ordinary accounts. Contact Exa support to request access.
+            {dgettext(
+              "admin",
+              "Exa search works with a regular API key. Exa usage analytics require Team Management API access, which is not enabled for ordinary accounts. Contact Exa support to request access."
+            )}
           </p>
-          <.dm_checkbox id="api-account-active" name="account[active]" label="Active"
+          <.dm_checkbox id="api-account-active" name="account[active]" label={dgettext("common", "Active")}
             checked={@form[:active].value in [true, "true"]} />
           <.form_error field={@form[:active]} />
           <div class="flex gap-3">
-            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
+            <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
             <.link patch={~p"/system/monitor/api-usage"}>
-              <.dm_btn type="button">Cancel</.dm_btn>
+              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
             </.link>
           </div>
         </.form>
       </.dm_card>
 
       <p :if={!@editing && @accounts == []} class="text-on-surface-variant">
-        No API accounts configured. Add an account using an API-key credential from the vault.
+        {dgettext("admin", "No API accounts configured. Add an account using an API-key credential from the vault.")}
       </p>
 
       <.dm_table :if={!@editing && @accounts != []} id="monitor-api-accounts-table" data={@accounts} hover zebra>
-        <:col :let={account} label="Name">
+        <:col :let={account} label={dgettext("common", "Name")}>
           <div id={"api-account-#{account.id}"} class="font-medium text-on-surface">{account.name}</div>
         </:col>
-        <:col :let={account} label="Provider">
+        <:col :let={account} label={dgettext("admin", "Provider")}>
           <.dm_badge variant="info" size="sm">{provider_label(account.provider)}</.dm_badge>
         </:col>
-        <:col :let={account} label="API-key credential">
+        <:col :let={account} label={dgettext("admin", "API-key credential")}>
           <code class="text-xs font-mono">{account.credential_name}</code>
         </:col>
-        <:col :let={account} label="Organization">
+        <:col :let={account} label={dgettext("admin", "Organization")}>
           <code :if={account.provider == "openai"} class="text-xs font-mono">{account.organization_id}</code>
-          <span :if={account.provider != "openai"} class="text-on-surface-variant">Not applicable</span>
+          <span :if={account.provider != "openai"} class="text-on-surface-variant">{dgettext("admin", "Not applicable")}</span>
         </:col>
-        <:col :let={account} label="Management credential">
-          <code class="text-xs font-mono">{account.management_credential_name || "Not configured"}</code>
+        <:col :let={account} label={dgettext("admin", "Management credential")}>
+          <code class="text-xs font-mono">{account.management_credential_name || dgettext("admin", "Not configured")}</code>
         </:col>
-        <:col :let={account} label="Status">
+        <:col :let={account} label={dgettext("common", "Status")}>
           <.dm_badge variant={if account.active, do: "success", else: "warning"} size="sm">
-            {if account.active, do: "Active", else: "Paused"}
+            {if account.active, do: dgettext("common", "Active"), else: dgettext("admin", "Paused")}
           </.dm_badge>
         </:col>
-        <:col :let={account} label="Last Updated">
+        <:col :let={account} label={dgettext("admin", "Last Updated")}>
           <span class="text-xs text-on-surface-variant"><.local_time datetime={account.updated_at} /></span>
         </:col>
-        <:col :let={account} label="Actions">
+        <:col :let={account} label={dgettext("common", "Actions")}>
           <div class="flex items-center gap-1">
-            <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
               <.dm_btn {tooltip_attrs} id={"edit-api-account-#{account.id}"} patch={~p"/system/monitor/api-usage/#{account.id}/edit"}
-                size="xs" shape="circle" variant="outline" aria-label={"Edit #{account.name}"}>
-                <.dm_mdi name="pencil" class="h-4 w-4" /><span class="sr-only">Edit</span>
+                size="xs" shape="circle" variant="outline" aria-label={dgettext("admin", "Edit %{name}", name: account.name)}>
+                <.dm_mdi name="pencil" class="h-4 w-4" /><span class="sr-only">{dgettext("common", "Edit")}</span>
               </.dm_btn>
             </.dm_tooltip>
-            <.dm_tooltip :let={tooltip_attrs} content={if account.active, do: "Pause", else: "Resume"} position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={if account.active, do: dgettext("admin", "Pause"), else: dgettext("admin", "Resume")} position="bottom">
               <.dm_btn {tooltip_attrs} id={"toggle-api-account-#{account.id}"} type="button" size="xs" shape="circle"
                 variant={if account.active, do: "warning", else: "success"}
-                aria-label={"#{if account.active, do: "Pause", else: "Resume"} #{account.name}"}
+                aria-label={if account.active, do: dgettext("admin", "Pause %{name}", name: account.name), else: dgettext("admin", "Resume %{name}", name: account.name)}
                 phx-click="toggle_active" phx-value-id={account.id}>
                 <.dm_mdi name={if account.active, do: "pause", else: "play"} class="h-4 w-4" />
-                <span class="sr-only">{if account.active, do: "Pause", else: "Resume"}</span>
+                <span class="sr-only">{if account.active, do: dgettext("admin", "Pause"), else: dgettext("admin", "Resume")}</span>
               </.dm_btn>
             </.dm_tooltip>
-            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
               <.dm_btn {tooltip_attrs} id={"delete-api-account-#{account.id}"} type="button" size="xs" shape="circle" variant="error"
-                aria-label={"Delete #{account.name}"} phx-click="delete" phx-value-id={account.id}
-                confirm="Delete this API account?">
-                <.dm_mdi name="trash-can" class="h-4 w-4" /><span class="sr-only">Delete</span>
+                aria-label={dgettext("admin", "Delete %{name}", name: account.name)} phx-click="delete" phx-value-id={account.id}
+                confirm={dgettext("admin", "Delete this API account?")}>
+                <.dm_mdi name="trash-can" class="h-4 w-4" /><span class="sr-only">{dgettext("common", "Delete")}</span>
               </.dm_btn>
             </.dm_tooltip>
           </div>

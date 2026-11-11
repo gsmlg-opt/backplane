@@ -3,22 +3,22 @@
     title="Backplane"
     title_to={~p"/"}
     class="appbar-primary appbar-elevated border-b border-outline-variant"
-    nav_label="Backplane public gateway"
+    nav_label={dgettext("navigation", "Backplane public gateway")}
   >
     <:logo><img class="w-10 h-10 aspect-square" src={~p"/images/backplane-logo.png"} /></:logo>
     <:user_profile>
       <div class="hidden items-center gap-2 sm:flex">
-        <.dm_badge variant="info" size="sm" soft>Public API</.dm_badge>
-        <.dm_badge variant="success" size="sm" soft>Docs</.dm_badge>
-        <nav class="appbar-actions" aria-label="Backplane public gateway">
-          <.dm_tooltip :let={tooltip_attrs} content="Docs" position="bottom" class="inline-flex">
-            <a {tooltip_attrs} href={~p"/docs"} class="appbar-action" aria-label="Docs">
+        <.dm_badge variant="info" size="sm" soft>{dgettext("common", "Public API")}</.dm_badge>
+        <.dm_badge variant="success" size="sm" soft>{dgettext("common", "Docs")}</.dm_badge>
+        <nav class="appbar-actions" aria-label={dgettext("navigation", "Backplane public gateway")}>
+          <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Docs")} position="bottom" class="inline-flex">
+            <a {tooltip_attrs} href={~p"/docs"} class="appbar-action" aria-label={dgettext("common", "Docs")}>
               <.dm_mdi name="book-open-page-variant" class="h-5 w-5" />
-              <span class="sr-only">Docs</span>
+              <span class="sr-only">{dgettext("common", "Docs")}</span>
             </a>
           </.dm_tooltip>
         </nav>
-        <.dm_tooltip :let={tooltip_attrs} content="Theme" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Theme")} position="bottom">
           <details
             id="docs-theme-switcher"
             class="theme-controller-dropdown theme-controller-dropdown-end theme-controller-dropdown-icon"
@@ -27,13 +27,13 @@
           >
             <summary {tooltip_attrs}
               class="theme-controller-trigger"
-              aria-label="Select theme"
+              aria-label={dgettext("common", "Select theme")}
               aria-haspopup="menu"
             >
               <.dm_mdi name="theme-light-dark" class="h-5 w-5" />
-              <span class="sr-only">Theme</span>
+              <span class="sr-only">{dgettext("common", "Theme")}</span>
             </summary>
-            <div class="theme-controller-menu" role="radiogroup" aria-label="Select theme">
+            <div class="theme-controller-menu" role="radiogroup" aria-label={dgettext("common", "Select theme")}>
               <input
                 type="radio"
                 id="docs-theme-switcher-default"
@@ -42,7 +42,7 @@
                 value="default"
               />
               <label for="docs-theme-switcher-default" class="theme-controller-label">
-                Auto
+                {dgettext("common", "Auto")}
               </label>
               <input
                 type="radio"
@@ -52,7 +52,7 @@
                 value="sunshine"
               />
               <label for="docs-theme-switcher-sunshine" class="theme-controller-label">
-                Sunshine
+                {dgettext("common", "Sunshine")}
               </label>
               <input
                 type="radio"
@@ -63,7 +63,7 @@
                 checked
               />
               <label for="docs-theme-switcher-moonlight" class="theme-controller-label">
-                Moonlight
+                {dgettext("common", "Moonlight")}
               </label>
             </div>
           </details>
@@ -75,33 +75,33 @@
   <main id="docs-body" class="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
     <header class="border-b border-outline-variant pb-8">
       <div class="flex flex-wrap gap-2">
-        <.dm_badge variant="primary" soft>Backplane Docs</.dm_badge>
+        <.dm_badge variant="primary" soft>{dgettext("common", "Backplane Docs")}</.dm_badge>
         <.dm_badge variant="secondary" soft>{@base_url}</.dm_badge>
       </div>
       <h1 class="mt-4 text-3xl font-bold tracking-normal text-on-surface sm:text-4xl">
-        Backplane Docs
+        {dgettext("common", "Backplane Docs")}
       </h1>
       <p class="mt-4 max-w-3xl text-base leading-7 text-on-surface-variant">
-        Public gateway references for MCP tools, model traffic, skills, agent setup, and authentication.
+        {dgettext("common", "Public gateway references for MCP tools, model traffic, skills, agent setup, and authentication.")}
       </p>
       <div class="mt-6 grid gap-3 sm:grid-cols-2">
         <a href={~p"/docs/mcp"} class="rounded-md border border-secondary bg-secondary-container/30 p-4 text-on-surface no-underline hover:bg-secondary-container">
-          <div class="flex items-center justify-between gap-3"><span class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Tools</span><code class="text-xs text-secondary">/mcp</code></div>
-          <p class="mt-2 text-sm font-semibold">MCP Hub</p>
-          <p class="mt-1 text-xs leading-5 text-on-surface-variant">Streamable HTTP, OAuth discovery, and namespaced tools.</p>
+          <div class="flex items-center justify-between gap-3"><span class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "Tools")}</span><code class="text-xs text-secondary">/mcp</code></div>
+          <p class="mt-2 text-sm font-semibold">{dgettext("common", "MCP Hub")}</p>
+          <p class="mt-1 text-xs leading-5 text-on-surface-variant">{dgettext("common", "Streamable HTTP, OAuth discovery, and namespaced tools.")}</p>
         </a>
         <a href={~p"/docs/llm"} class="rounded-md border border-primary bg-primary-container/30 p-4 text-on-surface no-underline hover:bg-primary-container">
-          <div class="flex items-center justify-between gap-3"><span class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Models</span><code class="text-xs text-primary">/v1</code></div>
-          <p class="mt-2 text-sm font-semibold">LLM proxy</p>
-          <p class="mt-1 text-xs leading-5 text-on-surface-variant">Compatible model APIs with resource-bound access tokens.</p>
+          <div class="flex items-center justify-between gap-3"><span class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "Models")}</span><code class="text-xs text-primary">/v1</code></div>
+          <p class="mt-2 text-sm font-semibold">{dgettext("common", "LLM proxy")}</p>
+          <p class="mt-1 text-xs leading-5 text-on-surface-variant">{dgettext("common", "Compatible model APIs with resource-bound access tokens.")}</p>
         </a>
       </div>
     </header>
 
     <div class="grid min-w-0 gap-8 py-8 lg:grid-cols-[16rem_minmax(0,1fr)]">
       <aside class="lg:sticky lg:top-24 lg:self-start">
-        <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Choose a guide</div>
-        <nav class="grid gap-2" aria-label="Docs">
+        <div class="mb-3 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "Choose a guide")}</div>
+        <nav class="grid gap-2" aria-label={dgettext("common", "Docs")}>
           <a
             href={~p"/docs"}
             class={[
@@ -112,9 +112,9 @@
               )
             ]}
           >
-            Overview
+            {dgettext("common", "Overview")}
           </a>
-          <div class="mt-4 mb-1 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Use Backplane</div>
+          <div class="mt-4 mb-1 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "Use Backplane")}</div>
           <a
             :for={section <- Enum.take(@doc_sections, 4)}
             href={~p"/docs/#{section.slug}"}
@@ -128,7 +128,7 @@
           >
             {section.label}
           </a>
-          <div class="mt-4 mb-1 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">Connect & secure</div>
+          <div class="mt-4 mb-1 text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "Connect & secure")}</div>
           <a href={~p"/docs/agents"} class={[
             "rounded-md border px-3 py-2 text-sm no-underline",
             if(@selected_section && @selected_section.slug == "agents", do: "border-primary bg-primary-container text-on-primary-container", else: "border-outline-variant text-on-surface hover:bg-surface-container")
@@ -167,7 +167,7 @@
             </div>
 
             <section :if={Map.get(@selected_section, :steps, []) != []}>
-              <h3 class="text-lg font-semibold text-on-surface">Configure your client</h3>
+              <h3 class="text-lg font-semibold text-on-surface">{dgettext("common", "Configure your client")}</h3>
               <ol class="mt-3 list-decimal space-y-3 break-words pl-6 text-sm leading-6 text-on-surface-variant">
                 <li :for={step <- Map.get(@selected_section, :steps, [])}>
                   {step}
@@ -176,7 +176,7 @@
             </section>
 
             <section :if={Map.get(@selected_section, :examples, []) != []}>
-              <h3 class="text-lg font-semibold text-on-surface">Request examples</h3>
+              <h3 class="text-lg font-semibold text-on-surface">{dgettext("common", "Request examples")}</h3>
               <div class="mt-3 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
                 <div
                   :for={example <- Map.get(@selected_section, :examples, [])}
@@ -189,7 +189,7 @@
             </section>
 
             <section :if={Map.get(@selected_section, :routes, []) != []}>
-              <h3 class="text-lg font-semibold text-on-surface">API reference</h3>
+              <h3 class="text-lg font-semibold text-on-surface">{dgettext("common", "API reference")}</h3>
               <div class="mt-3 flex flex-wrap gap-2">
                 <code
                   :for={route <- Map.get(@selected_section, :routes, [])}
@@ -229,7 +229,7 @@
                   href={~p"/docs/#{section.slug}"}
                   class="inline-flex items-center gap-2 text-sm font-medium text-primary no-underline hover:underline"
                 >
-                  Open section <.dm_mdi name="arrow-right" class="h-4 w-4" />
+                  {dgettext("common", "Open section")} <.dm_mdi name="arrow-right" class="h-4 w-4" />
                 </a>
               </div>
               <h2 class="mt-3 text-2xl font-semibold tracking-normal text-on-surface">
@@ -253,7 +253,7 @@
 
               <section class="mt-5">
                 <h3 class="text-sm font-semibold uppercase tracking-normal text-on-surface-variant">
-                  Reference
+                  {dgettext("common", "Reference")}
                 </h3>
                 <div class="mt-3 flex flex-wrap gap-2">
                   <code

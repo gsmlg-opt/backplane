@@ -59,7 +59,7 @@ defmodule Backplane.Admin.SkillDraftLive do
           {:error, :not_found} ->
             {:noreply,
              socket
-             |> put_flash(:error, "Skill not found")
+             |> put_flash(:error, dgettext("errors", "Skill not found"))
              |> push_patch(to: ~p"/skills/draft")}
         end
     end
@@ -77,7 +77,7 @@ defmodule Backplane.Admin.SkillDraftLive do
         {:noreply, assign(socket, form: form, editing_skill: skill, show_form: true)}
 
       {:error, :not_found} ->
-        {:noreply, put_flash(socket, :error, "Skill not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Skill not found"))}
     end
   end
 
@@ -111,11 +111,11 @@ defmodule Backplane.Admin.SkillDraftLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Deleted #{deleted.name}")
+         |> put_flash(:info, dgettext("admin", "Deleted %{name}", name: deleted.name))
          |> load_skills()}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to delete skill")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete skill"))}
     end
   end
 
@@ -137,7 +137,7 @@ defmodule Backplane.Admin.SkillDraftLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Created skill '#{skill.name}'")
+         |> put_flash(:info, dgettext("admin", "Created skill '%{name}'", name: skill.name))
          |> push_patch(to: ~p"/skills/draft")}
 
       {:error, changeset} ->
@@ -157,14 +157,14 @@ defmodule Backplane.Admin.SkillDraftLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Updated skill '#{updated.name}'")
+         |> put_flash(:info, dgettext("admin", "Updated skill '%{name}'", name: updated.name))
          |> push_patch(to: ~p"/skills/draft")}
 
       {:error, changeset} when is_struct(changeset, Ecto.Changeset) ->
         {:noreply, assign(socket, form: to_form(changeset, as: :skill))}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Update failed: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Update failed: %{reason}", reason: inspect(reason)))}
     end
   end
 
@@ -217,16 +217,16 @@ defmodule Backplane.Admin.SkillDraftLive do
     <div>
       <div class="mb-6 flex items-center justify-between">
         <div>
-          <h1 class="text-2xl font-bold">Draft Skills</h1>
+          <h1 class="text-2xl font-bold">{dgettext("navigation", "Draft Skills")}</h1>
           <p class="text-sm text-on-surface-variant mt-1">
-            Create and edit self-managed skills. Upstream and archive skills are managed elsewhere.
+            {dgettext("admin", "Create and edit self-managed skills. Upstream and archive skills are managed elsewhere.")}
           </p>
         </div>
         <.link :if={!@show_form} patch={~p"/skills/draft/new"} class="no-underline">
           <.dm_btn variant="primary" size="sm" shape="circle" class="group relative">
             <.dm_mdi name="plus" class="w-5 h-5" />
             <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
-              New Skill
+              {dgettext("admin", "New Skill")}
             </span>
           </.dm_btn>
         </.link>
@@ -234,7 +234,7 @@ defmodule Backplane.Admin.SkillDraftLive do
 
       <%!-- Skill form --%>
       <.dm_card :if={@show_form} variant="bordered" class="mb-6">
-        <:title>{if @editing_skill, do: "Edit Skill", else: "New Skill"}</:title>
+        <:title>{if @editing_skill, do: dgettext("admin", "Edit Skill"), else: dgettext("admin", "New Skill")}</:title>
         <.form
           for={@form}
           phx-change="validate"
@@ -243,24 +243,24 @@ defmodule Backplane.Admin.SkillDraftLive do
         >
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <.dm_input field={@form[:name]} label="Name" required placeholder="Skill name" />
+              <.dm_input field={@form[:name]} label={dgettext("common", "Name")} required placeholder={dgettext("admin", "Skill name")} />
             </div>
             <div>
               <.dm_input
                 field={@form[:category]}
-                label="Category"
-                placeholder="e.g. coding, agent"
+                label={dgettext("admin", "Category")}
+                placeholder={dgettext("admin", "e.g. coding, agent")}
               />
             </div>
             <div class="sm:col-span-2">
               <.dm_input
                 field={@form[:description]}
-                label="Description"
-                placeholder="Brief description of what this skill does"
+                label={dgettext("admin", "Description")}
+                placeholder={dgettext("admin", "Brief description of what this skill does")}
               />
             </div>
             <div>
-              <label class="block text-sm font-medium mb-1">Tags</label>
+              <label class="block text-sm font-medium mb-1">{dgettext("admin", "Tags")}</label>
               <input
                 type="text"
                 name="skill[tags]"
@@ -268,38 +268,38 @@ defmodule Backplane.Admin.SkillDraftLive do
                 placeholder="tag1, tag2, tag3"
                 class="input input-bordered w-full"
               />
-              <p class="mt-1 text-xs text-on-surface-variant">Comma-separated list</p>
+              <p class="mt-1 text-xs text-on-surface-variant">{dgettext("admin", "Comma-separated list")}</p>
             </div>
             <div>
-              <.dm_input field={@form[:version]} label="Version" placeholder="1.0.0" />
+              <.dm_input field={@form[:version]} label={dgettext("admin", "Version")} placeholder="1.0.0" />
             </div>
           </div>
 
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <.dm_input field={@form[:author]} label="Author" placeholder="Author name" />
-            <.dm_input field={@form[:license]} label="License" placeholder="MIT" />
-            <.dm_input field={@form[:homepage]} label="Homepage" placeholder="https://..." />
+            <.dm_input field={@form[:author]} label={dgettext("admin", "Author")} placeholder={dgettext("admin", "Author name")} />
+            <.dm_input field={@form[:license]} label={dgettext("admin", "License")} placeholder="MIT" />
+            <.dm_input field={@form[:homepage]} label={dgettext("admin", "Homepage")} placeholder="https://..." />
           </div>
 
           <div>
-            <label class="block text-sm font-medium mb-1">Content</label>
+            <label class="block text-sm font-medium mb-1">{dgettext("admin", "Content")}</label>
             <textarea
               name="skill[content]"
               rows="16"
-              placeholder="# Skill content&#10;&#10;Write your skill instructions here..."
+              placeholder={dgettext("admin", "# Skill content\n\nWrite your skill instructions here...")}
               class="w-full rounded-md border border-outline-variant bg-surface-container p-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
             >{Phoenix.HTML.Form.input_value(@form, :content) || ""}</textarea>
             <p class="mt-1 text-xs text-on-surface-variant">
-              Markdown format. This is the skill content that agents will read.
+              {dgettext("admin", "Markdown format. This is the skill content that agents will read.")}
             </p>
           </div>
 
           <div class="flex gap-2 pt-2">
             <.dm_btn type="submit" variant="primary" size="sm">
-              {if @editing_skill, do: "Update", else: "Create"}
+              {if @editing_skill, do: dgettext("common", "Update"), else: dgettext("common", "Create")}
             </.dm_btn>
             <.link patch={~p"/skills/draft"} class="no-underline">
-              <.dm_btn type="button" size="sm">Cancel</.dm_btn>
+              <.dm_btn type="button" size="sm">{dgettext("common", "Cancel")}</.dm_btn>
             </.link>
           </div>
         </.form>
@@ -307,14 +307,14 @@ defmodule Backplane.Admin.SkillDraftLive do
 
       <%!-- Skills list --%>
       <div :if={@skills == [] and not @show_form and not @loading} class="text-on-surface-variant py-12 text-center">
-        No draft skills yet. Create one to get started.
+        {dgettext("admin", "No draft skills yet. Create one to get started.")}
       </div>
 
       <.dm_table :if={@skills != [] and not @show_form} id="draft-skills-table" data={@skills} hover zebra>
-        <:col :let={skill} label="Name">
+        <:col :let={skill} label={dgettext("common", "Name")}>
           <div class="font-medium text-on-surface">{skill.name}</div>
         </:col>
-        <:col :let={skill} label="Description">
+        <:col :let={skill} label={dgettext("admin", "Description")}>
           <div :if={skill.description && skill.description != ""} class="group relative max-w-[240px]">
             <span class="block truncate text-sm text-on-surface-variant cursor-default">
               {skill.description}
@@ -325,29 +325,29 @@ defmodule Backplane.Admin.SkillDraftLive do
           </div>
           <span :if={!skill.description || skill.description == ""} class="text-xs text-on-surface-variant">-</span>
         </:col>
-        <:col :let={skill} label="Slug">
+        <:col :let={skill} label={dgettext("admin", "Slug")}>
           <code class="text-xs">{skill.slug}</code>
         </:col>
-        <:col :let={skill} label="Category">
+        <:col :let={skill} label={dgettext("admin", "Category")}>
           <span :if={skill.category} class="text-sm">{skill.category}</span>
           <span :if={!skill.category} class="text-xs text-on-surface-variant">-</span>
         </:col>
-        <:col :let={skill} label="Tags">
+        <:col :let={skill} label={dgettext("admin", "Tags")}>
           <div class="flex flex-wrap gap-1">
             <.dm_badge :for={tag <- skill.tags} variant="ghost" size="sm">{tag}</.dm_badge>
             <span :if={skill.tags == []} class="text-xs text-on-surface-variant">-</span>
           </div>
         </:col>
 
-        <:col :let={skill} label="Updated">
+        <:col :let={skill} label={dgettext("common", "Updated")}>
           <span class="text-xs text-on-surface-variant">{format_dt(skill.updated_at)}</span>
         </:col>
-        <:col :let={skill} label="Actions">
+        <:col :let={skill} label={dgettext("common", "Actions")}>
           <div class="flex gap-1">
             <.dm_btn type="button" size="xs" shape="circle" class="group relative" phx-click="edit" phx-value-id={skill.id}>
               <.dm_mdi name="pencil" class="w-4 h-4" />
               <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
-                Edit
+                {dgettext("common", "Edit")}
               </span>
             </.dm_btn>
             <.dm_btn
@@ -356,14 +356,14 @@ defmodule Backplane.Admin.SkillDraftLive do
               shape="circle"
               variant="error"
               class="group relative"
-              confirm={"Delete skill '#{skill.name}'?"}
-              confirm_title="Confirm Delete"
+              confirm={dgettext("admin", "Delete skill '%{name}'?", name: skill.name)}
+              confirm_title={dgettext("common", "Confirm Delete")}
               phx-click="delete"
               phx-value-id={skill.id}
             >
               <.dm_mdi name="delete" class="w-4 h-4" />
               <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
-                Delete
+                {dgettext("common", "Delete")}
               </span>
             </.dm_btn>
           </div>

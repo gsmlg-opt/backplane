@@ -49,6 +49,7 @@ defmodule BackplaneApi.MixProject do
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_duskmoon, "~> 10.0"},
       {:gaoxy_http, "~> 0.15"},
+      {:gettext, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 10.1"},
       {:duskmoon_bundler, "~> 10.1", runtime: Mix.env() != :prod},

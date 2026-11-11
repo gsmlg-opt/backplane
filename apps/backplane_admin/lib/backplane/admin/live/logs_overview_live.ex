@@ -52,9 +52,9 @@ defmodule Backplane.Admin.LogsOverviewLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="mb-2 text-2xl font-bold">Logs</h1>
+      <h1 class="mb-2 text-2xl font-bold">{dgettext("navigation", "Logs")}</h1>
       <p class="mb-6 text-sm text-on-surface-variant">
-        Durable observability records for LLM proxy, MCP hub, audit trails, and background jobs.
+        {dgettext("admin", "Durable observability records for LLM proxy, MCP hub, audit trails, and background jobs.")}
       </p>
 
       <div :if={@loading} class="mb-6">
@@ -63,29 +63,29 @@ defmodule Backplane.Admin.LogsOverviewLive do
 
       <div :if={!@loading} class="mb-8 grid gap-4 sm:grid-cols-2">
         <.dm_card variant="bordered">
-          <:title>LLM (24h)</:title>
-          <.dm_stat title="Requests" value={format_number(@llm_stats.total_requests)} />
+          <:title>{dgettext("admin", "LLM (24h)")}</:title>
+          <.dm_stat title={dgettext("admin", "Requests")} value={format_number(@llm_stats.total_requests)} />
           <.link navigate={~p"/system/logs/llm"} class="mt-3 inline-block text-sm text-primary underline">
-            Browse LLM logs
+            {dgettext("admin", "Browse LLM logs")}
           </.link>
         </.dm_card>
 
         <.dm_card variant="bordered">
-          <:title>MCP (24h)</:title>
-          <.dm_stat title="Requests" value={format_number(@mcp_stats.total_requests)} />
+          <:title>{dgettext("admin", "MCP (24h)")}</:title>
+          <.dm_stat title={dgettext("admin", "Requests")} value={format_number(@mcp_stats.total_requests)} />
           <.link navigate={~p"/system/logs/mcp"} class="mt-3 inline-block text-sm text-primary underline">
-            Browse MCP logs
+            {dgettext("admin", "Browse MCP logs")}
           </.link>
         </.dm_card>
       </div>
 
       <.dm_card variant="bordered">
-        <:title>Live tool activity (non-durable)</:title>
+        <:title>{dgettext("admin", "Live tool activity (non-durable)")}</:title>
         <p class="mb-3 text-xs text-on-surface-variant">
-          Real-time PubSub events since this page loaded. For persisted tool calls, open MCP log detail.
+          {dgettext("admin", "Real-time PubSub events since this page loaded. For persisted tool calls, open MCP log detail.")}
         </p>
         <div :if={@tool_events == []} class="text-sm text-on-surface-variant">
-          No live tool events yet.
+          {dgettext("admin", "No live tool events yet.")}
         </div>
         <div class="space-y-1">
           <div

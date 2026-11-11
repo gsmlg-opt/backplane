@@ -51,9 +51,9 @@ defmodule Backplane.Admin.SkillOverviewLive do
     _ -> default
   end
 
-  defp source_kind_label(nil), do: "Unknown"
-  defp source_kind_label("archive"), do: "Archive"
-  defp source_kind_label("database"), do: "Database"
+  defp source_kind_label(nil), do: dgettext("admin", "Unknown")
+  defp source_kind_label("archive"), do: dgettext("admin", "Archive")
+  defp source_kind_label("database"), do: dgettext("admin", "Database")
   defp source_kind_label("github"), do: "GitHub"
   defp source_kind_label(other), do: other
 
@@ -75,36 +75,36 @@ defmodule Backplane.Admin.SkillOverviewLive do
     ~H"""
     <div>
       <div class="mb-6">
-        <h1 class="text-2xl font-bold">Skills Overview</h1>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "Skills Overview")}</h1>
         <p class="text-sm text-on-surface-variant mt-1">
-          Dashboard for the skills hub — browse, manage, and sync skills from all sources.
+          {dgettext("admin", "Dashboard for the skills hub — browse, manage, and sync skills from all sources.")}
         </p>
       </div>
 
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         <.dm_card variant="bordered" class="p-4">
-          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">Total Skills</div>
+          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">{dgettext("admin", "Total Skills")}</div>
           <div class="text-3xl font-bold">{@total_skills}</div>
         </.dm_card>
         <.dm_card variant="bordered" class="p-4">
-          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">Archive Skills</div>
+          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">{dgettext("admin", "Archive Skills")}</div>
           <div class="text-3xl font-bold">{Map.get(@source_counts, "archive", 0)}</div>
         </.dm_card>
         <.dm_card variant="bordered" class="p-4">
-          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">Database Skills</div>
+          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">{dgettext("admin", "Database Skills")}</div>
           <div class="text-3xl font-bold">{Map.get(@source_counts, "database", 0)}</div>
         </.dm_card>
         <.dm_card variant="bordered" class="p-4">
-          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">Upstream Sources</div>
+          <div class="text-xs text-on-surface-variant uppercase font-medium mb-1">{dgettext("admin", "Upstream Sources")}</div>
           <div class="text-3xl font-bold">{@source_count}</div>
         </.dm_card>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         <.dm_card variant="bordered">
-          <:title>Source Breakdown</:title>
+          <:title>{dgettext("admin", "Source Breakdown")}</:title>
           <div :if={@source_counts == %{}} class="text-on-surface-variant text-sm py-4">
-            No skills yet.
+            {dgettext("admin", "No skills yet.")}
           </div>
           <div :if={@source_counts != %{}} class="space-y-2">
             <div :for={{kind, count} <- @source_counts} class="flex items-center justify-between py-1">
@@ -119,9 +119,9 @@ defmodule Backplane.Admin.SkillOverviewLive do
         </.dm_card>
 
         <.dm_card variant="bordered">
-          <:title>Categories</:title>
+          <:title>{dgettext("admin", "Categories")}</:title>
           <div :if={@category_counts == %{}} class="text-on-surface-variant text-sm py-4">
-            No categories defined.
+            {dgettext("admin", "No categories defined.")}
           </div>
           <div :if={@category_counts != %{}} class="space-y-2">
             <div
@@ -136,7 +136,7 @@ defmodule Backplane.Admin.SkillOverviewLive do
       </div>
 
       <.dm_card :if={@tags != []} variant="bordered" class="mb-6">
-        <:title>Tags</:title>
+        <:title>{dgettext("admin", "Tags")}</:title>
         <div class="flex flex-wrap gap-2">
           <.dm_badge :for={tag_info <- Enum.take(@tags, 30)} variant="ghost" size="sm">
             {tag_info.tag}
@@ -146,9 +146,9 @@ defmodule Backplane.Admin.SkillOverviewLive do
       </.dm_card>
 
       <.dm_card variant="bordered" class="mb-6">
-        <:title>Recent Activity</:title>
+        <:title>{dgettext("admin", "Recent Activity")}</:title>
         <div :if={@recent_skills == []} class="text-on-surface-variant text-sm py-4">
-          No skills yet.
+          {dgettext("admin", "No skills yet.")}
         </div>
         <div :if={@recent_skills != []} class="divide-y divide-outline-variant/40">
           <div :for={skill <- @recent_skills} class="flex items-center justify-between py-2">
@@ -168,26 +168,26 @@ defmodule Backplane.Admin.SkillOverviewLive do
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <.link navigate={~p"/skills/browse"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
-            <div class="font-medium">Browse</div>
-            <div class="text-xs text-on-surface-variant mt-1">Search and filter all skills</div>
+            <div class="font-medium">{dgettext("admin", "Browse")}</div>
+            <div class="text-xs text-on-surface-variant mt-1">{dgettext("admin", "Search and filter all skills")}</div>
           </.dm_card>
         </.link>
         <.link navigate={~p"/skills/metadata"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
-            <div class="font-medium">Metadata</div>
-            <div class="text-xs text-on-surface-variant mt-1">Manage tags & categories</div>
+            <div class="font-medium">{dgettext("admin", "Metadata")}</div>
+            <div class="text-xs text-on-surface-variant mt-1">{dgettext("admin", "Manage tags & categories")}</div>
           </.dm_card>
         </.link>
         <.link navigate={~p"/skills/upstream"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
-            <div class="font-medium">Upstream</div>
-            <div class="text-xs text-on-surface-variant mt-1">Sync skills from GitHub</div>
+            <div class="font-medium">{dgettext("admin", "Upstream")}</div>
+            <div class="text-xs text-on-surface-variant mt-1">{dgettext("admin", "Sync skills from GitHub")}</div>
           </.dm_card>
         </.link>
         <.link navigate={~p"/skills/draft"}>
           <.dm_card variant="bordered" class="p-4 hover:bg-surface-container cursor-pointer">
-            <div class="font-medium">Draft</div>
-            <div class="text-xs text-on-surface-variant mt-1">Create & edit skills</div>
+            <div class="font-medium">{dgettext("admin", "Draft")}</div>
+            <div class="text-xs text-on-surface-variant mt-1">{dgettext("admin", "Create & edit skills")}</div>
           </.dm_card>
         </.link>
       </div>

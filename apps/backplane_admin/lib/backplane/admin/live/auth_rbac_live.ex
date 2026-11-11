@@ -40,11 +40,12 @@ defmodule Backplane.Admin.AuthRbacLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "Auth user created.")
+       |> put_flash(:info, dgettext("user", "Auth user created."))
        |> assign_action_data(socket.assigns.live_action)}
     else
       _error ->
-        {:noreply, put_flash(socket, :error, "Auth user could not be created.")}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "Auth user could not be created."))}
     end
   end
 
@@ -55,11 +56,11 @@ defmodule Backplane.Admin.AuthRbacLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "Auth user disabled.")
+       |> put_flash(:info, dgettext("user", "Auth user disabled."))
        |> assign_action_data(socket.assigns.live_action)}
     else
       _error ->
-        {:noreply, put_flash(socket, :error, "Auth user was not found.")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Auth user was not found."))}
     end
   end
 
@@ -76,11 +77,12 @@ defmodule Backplane.Admin.AuthRbacLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "RBAC role created.")
+       |> put_flash(:info, dgettext("user", "RBAC role created."))
        |> assign_action_data(socket.assigns.live_action)}
     else
       _error ->
-        {:noreply, put_flash(socket, :error, "RBAC role could not be created.")}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "RBAC role could not be created."))}
     end
   end
 
@@ -102,11 +104,12 @@ defmodule Backplane.Admin.AuthRbacLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "RBAC role assigned.")
+       |> put_flash(:info, dgettext("user", "RBAC role assigned."))
        |> assign_action_data(socket.assigns.live_action)}
     else
       _error ->
-        {:noreply, put_flash(socket, :error, "RBAC role could not be assigned.")}
+        {:noreply,
+         put_flash(socket, :error, dgettext("errors", "RBAC role could not be assigned."))}
     end
   end
 
@@ -122,7 +125,7 @@ defmodule Backplane.Admin.AuthRbacLive do
       </div>
 
       <.dm_card :if={@live_action == :users} variant="bordered">
-        <:title>Users</:title>
+        <:title>{dgettext("user", "Users")}</:title>
         <form id="auth-user-form" phx-submit="create-user" class="mb-4 grid gap-3 lg:grid-cols-4">
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
@@ -133,37 +136,37 @@ defmodule Backplane.Admin.AuthRbacLive do
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
             name="user[name]"
-            placeholder="Display name"
+            placeholder={dgettext("user", "Display name")}
           />
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
             name="user[password]"
-            placeholder="Initial password"
+            placeholder={dgettext("user", "Initial password")}
             type="password"
           />
           <div>
-            <.dm_btn type="submit" variant="primary" size="sm">Create User</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">{dgettext("user", "Create User")}</.dm_btn>
           </div>
         </form>
 
         <div :if={@users == []} class="py-8 text-center text-on-surface-variant">
-          No local Auth users.
+          {dgettext("user", "No local Auth users.")}
         </div>
 
         <.dm_table :if={@users != []} id="auth-user-table" data={@users} hover zebra>
-          <:col :let={user} label="User">
+          <:col :let={user} label={dgettext("user", "User")}>
             <div class="font-medium">{user.name || user.email}</div>
             <code class="text-xs text-on-surface-variant">{user.email}</code>
           </:col>
-          <:col :let={user} label="Status">
+          <:col :let={user} label={dgettext("common", "Status")}>
             <.dm_badge variant={if user.active, do: "success", else: "error"}>
-              {if user.active, do: "Active", else: "Inactive"}
+              {if user.active, do: dgettext("common", "Active"), else: dgettext("common", "Inactive")}
             </.dm_badge>
           </:col>
-          <:col :let={user} label="Last Login">
+          <:col :let={user} label={dgettext("user", "Last Login")}>
             <span class="text-sm text-on-surface-variant">{format_datetime(user.last_login_at)}</span>
           </:col>
-          <:col :let={user} label="Actions">
+          <:col :let={user} label={dgettext("common", "Actions")}>
             <.dm_btn
               :if={user.active}
               type="button"
@@ -171,17 +174,17 @@ defmodule Backplane.Admin.AuthRbacLive do
               size="xs"
               phx-click="disable-user"
               phx-value-id={user.id}
-              data-confirm={"Disable Auth user #{user.email}?"}
+              data-confirm={dgettext("user", "Disable Auth user %{email}?", email: user.email)}
             >
-              Disable
+              {dgettext("common", "Disable")}
             </.dm_btn>
-            <span :if={!user.active} class="text-sm text-on-surface-variant">Inactive</span>
+            <span :if={!user.active} class="text-sm text-on-surface-variant">{dgettext("common", "Inactive")}</span>
           </:col>
         </.dm_table>
       </.dm_card>
 
       <.dm_card :if={@live_action == :roles} variant="bordered">
-        <:title>Roles</:title>
+        <:title>{dgettext("user", "Roles")}</:title>
         <form id="auth-role-form" phx-submit="create-role" class="mb-4 grid gap-3 lg:grid-cols-4">
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
@@ -192,7 +195,7 @@ defmodule Backplane.Admin.AuthRbacLive do
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
             name="role[label]"
-            placeholder="Label"
+            placeholder={dgettext("user", "Label")}
           />
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
@@ -200,31 +203,31 @@ defmodule Backplane.Admin.AuthRbacLive do
             placeholder="optional: scope:name"
           />
           <div>
-            <.dm_btn type="submit" variant="primary" size="sm">Create Role</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">{dgettext("user", "Create Role")}</.dm_btn>
           </div>
         </form>
 
         <div :if={@roles == []} class="py-8 text-center text-on-surface-variant">
-          No RBAC roles configured.
+          {dgettext("user", "No RBAC roles configured.")}
         </div>
 
         <.dm_table :if={@roles != []} id="auth-role-table" data={@roles} hover zebra>
-          <:col :let={role} label="Role">
+          <:col :let={role} label={dgettext("user", "Role")}>
             <div class="font-medium">{role.label || role.name}</div>
             <code class="text-xs text-on-surface-variant">{role.name}</code>
           </:col>
-          <:col :let={role} label="Type">
+          <:col :let={role} label={dgettext("common", "Type")}>
             <.dm_badge variant={if role.system, do: "info", else: "neutral"}>
-              {if role.system, do: "System", else: "Custom"}
+              {if role.system, do: dgettext("user", "System"), else: dgettext("user", "Custom")}
             </.dm_badge>
           </:col>
-          <:col :let={role} label="Scopes">
+          <:col :let={role} label={dgettext("user", "Scopes")}>
             <div class="flex flex-wrap gap-1">
               <.dm_badge :for={scope <- role_scope_names(role)} variant="neutral" size="sm">
                 {scope}
               </.dm_badge>
               <span :if={role_scope_names(role) == []} class="text-sm text-on-surface-variant">
-                None
+                {dgettext("common", "None")}
               </span>
             </div>
           </:col>
@@ -232,7 +235,7 @@ defmodule Backplane.Admin.AuthRbacLive do
       </.dm_card>
 
       <.dm_card :if={@live_action == :assignments} variant="bordered">
-        <:title>Assignments</:title>
+        <:title>{dgettext("user", "Assignments")}</:title>
         <form
           id="auth-assignment-form"
           phx-submit="assign-role"
@@ -243,7 +246,7 @@ defmodule Backplane.Admin.AuthRbacLive do
             name="assignment[user_id]"
             required
           >
-            <option value="">Select user</option>
+            <option value="">{dgettext("user", "Select user")}</option>
             <option :for={user <- @users} value={user.id}>{user.email}</option>
           </select>
           <select
@@ -251,35 +254,35 @@ defmodule Backplane.Admin.AuthRbacLive do
             name="assignment[role_id]"
             required
           >
-            <option value="">Select role</option>
+            <option value="">{dgettext("user", "Select role")}</option>
             <option :for={role <- @roles} value={role.id}>{role.label || role.name}</option>
           </select>
           <div>
-            <.dm_btn type="submit" variant="primary" size="sm">Assign Role</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">{dgettext("user", "Assign Role")}</.dm_btn>
           </div>
         </form>
 
         <div :if={@assignments == []} class="py-8 text-center text-on-surface-variant">
-          No role assignments configured.
+          {dgettext("user", "No role assignments configured.")}
         </div>
 
         <.dm_table :if={@assignments != []} id="auth-assignment-table" data={@assignments} hover zebra>
-          <:col :let={assignment} label="User">
+          <:col :let={assignment} label={dgettext("user", "User")}>
             <div class="font-medium">{assignment.user.name || assignment.user.email}</div>
             <code class="text-xs text-on-surface-variant">{assignment.user.email}</code>
           </:col>
-          <:col :let={assignment} label="Role">
+          <:col :let={assignment} label={dgettext("user", "Role")}>
             <div class="font-medium">{assignment.role.label || assignment.role.name}</div>
             <code class="text-xs text-on-surface-variant">{assignment.role.name}</code>
           </:col>
-          <:col :let={assignment} label="Role Scopes">
+          <:col :let={assignment} label={dgettext("user", "Role Scopes")}>
             <div class="flex flex-wrap gap-1">
               <.dm_badge :for={scope <- role_scope_names(assignment.role)} variant="neutral" size="sm">
                 {scope}
               </.dm_badge>
             </div>
           </:col>
-          <:col :let={assignment} label="Effective Scopes">
+          <:col :let={assignment} label={dgettext("user", "Effective Scopes")}>
             <div class="flex flex-wrap gap-1">
               <.dm_badge
                 :for={scope <- Map.get(@effective_scopes_by_user_id, assignment.user.id, [])}
@@ -327,22 +330,26 @@ defmodule Backplane.Admin.AuthRbacLive do
 
   defp page(:users) do
     %{
-      title: "RBAC Users",
-      description: "Local Backplane Auth users who can authorize first-party OAuth clients."
+      title: dgettext("user", "RBAC Users"),
+      description:
+        dgettext(
+          "user",
+          "Local Backplane Auth users who can authorize first-party OAuth clients."
+        )
     }
   end
 
   defp page(:roles) do
     %{
-      title: "RBAC Roles",
-      description: "Role definitions and the OAuth scopes they grant."
+      title: dgettext("user", "RBAC Roles"),
+      description: dgettext("user", "Role definitions and the OAuth scopes they grant.")
     }
   end
 
   defp page(:assignments) do
     %{
-      title: "Role Assignments",
-      description: "User-to-role bindings with effective OAuth scope previews."
+      title: dgettext("user", "Role Assignments"),
+      description: dgettext("user", "User-to-role bindings with effective OAuth scope previews.")
     }
   end
 
@@ -390,7 +397,7 @@ defmodule Backplane.Admin.AuthRbacLive do
     |> Enum.find(&(&1.id == id))
   end
 
-  defp format_datetime(nil), do: "Never"
+  defp format_datetime(nil), do: dgettext("common", "Never")
 
   defp format_datetime(%DateTime{} = datetime),
     do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")

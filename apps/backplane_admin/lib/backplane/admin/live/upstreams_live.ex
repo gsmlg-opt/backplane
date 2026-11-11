@@ -49,7 +49,7 @@ defmodule Backplane.Admin.UpstreamsLive do
     case safe_call(fn -> Upstreams.get!(id) end, nil) do
       nil ->
         socket
-        |> put_flash(:error, "Upstream not found")
+        |> put_flash(:error, dgettext("errors", "Upstream not found"))
         |> push_patch(to: ~p"/mcp/upstreams")
 
       upstream ->
@@ -100,7 +100,7 @@ defmodule Backplane.Admin.UpstreamsLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Upstream created")
+             |> put_flash(:info, dgettext("admin", "Upstream created"))
              |> push_patch(to: ~p"/mcp/upstreams")}
 
           {:error, changeset} ->
@@ -114,7 +114,7 @@ defmodule Backplane.Admin.UpstreamsLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Upstream updated")
+             |> put_flash(:info, dgettext("admin", "Upstream updated"))
              |> push_patch(to: ~p"/mcp/upstreams")}
 
           {:error, changeset} ->
@@ -129,10 +129,10 @@ defmodule Backplane.Admin.UpstreamsLive do
     case Upstreams.delete(upstream) do
       {:ok, _} ->
         Backplane.Admin.Audit.record("upstream.delete", "upstream", upstream.id)
-        {:noreply, socket |> put_flash(:info, "Upstream deleted") |> load_upstreams()}
+        {:noreply, socket |> put_flash(:info, dgettext("admin", "Upstream deleted")) |> load_upstreams()}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to delete upstream")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete upstream"))}
     end
   end
 
@@ -151,11 +151,15 @@ defmodule Backplane.Admin.UpstreamsLive do
           stop_runtime(updated)
         end
 
-        message = if enabled, do: "Upstream enabled", else: "Upstream disabled"
+        message =
+          if enabled,
+            do: dgettext("admin", "Upstream enabled"),
+            else: dgettext("admin", "Upstream disabled")
+
         {:noreply, socket |> put_flash(:info, message) |> load_upstreams()}
 
       {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "Failed to update upstream")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to update upstream"))}
     end
   end
 
@@ -168,16 +172,19 @@ defmodule Backplane.Admin.UpstreamsLive do
       case start_runtime(upstream) do
         {:ok, _pid} ->
           Backplane.Admin.Audit.record("upstream.connect_start", "upstream", upstream.id)
-          {:noreply, socket |> put_flash(:info, "Connection attempt started") |> load_upstreams()}
+          {:noreply, socket |> put_flash(:info, dgettext("admin", "Connection attempt started")) |> load_upstreams()}
 
         {:error, reason} ->
           {:noreply,
            socket
-           |> put_flash(:error, "Failed to start connection: #{inspect(reason)}")
+           |> put_flash(
+             :error,
+             dgettext("errors", "Failed to start connection: %{reason}", reason: inspect(reason))
+           )
            |> load_upstreams()}
       end
     else
-      {:noreply, put_flash(socket, :error, "Enable upstream before connecting")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "Enable upstream before connecting"))}
     end
   end
 
@@ -201,7 +208,7 @@ defmodule Backplane.Admin.UpstreamsLive do
 
     base_options =
       [
-        {"", "Select a credential..."}
+        {"", dgettext("admin", "Select a credential...")}
         | Enum.map(creds, fn c -> {c.name, "#{c.name} (#{c.kind})"} end)
       ]
 
@@ -212,7 +219,7 @@ defmodule Backplane.Admin.UpstreamsLive do
           if MapSet.member?(known_names, current) do
             base_options
           else
-            base_options ++ [{current, "#{current} (missing)"}]
+            base_options ++ [{current, dgettext("admin", "%{name} (missing)", name: current)}]
           end
 
         _ ->
@@ -367,6 +374,11 @@ defmodule Backplane.Admin.UpstreamsLive do
   defp runtime_badge_color(%{status: :degraded}), do: "warning"
   defp runtime_badge_color(_), do: "error"
 
+  defp status_label(:connected), do: dgettext("admin", "Connected")
+  defp status_label(:degraded), do: dgettext("admin", "Degraded")
+  defp status_label(:disconnected), do: dgettext("admin", "Disconnected")
+  defp status_label(:modern), do: dgettext("admin", "Modern")
+  defp status_label(:legacy), do: dgettext("admin", "Legacy")
   defp status_label(value), do: value |> to_string() |> String.capitalize()
 
   defp form_error(assigns) do
@@ -407,35 +419,35 @@ defmodule Backplane.Admin.UpstreamsLive do
     <div>
       <div class="flex items-center justify-between mb-6">
         <div class="flex items-center gap-3">
-          <h1 class="text-2xl font-bold">Upstream MCP Servers</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "Upstream MCP Servers")}</h1>
         </div>
         <.link patch={~p"/mcp/upstreams/new"}>
-          <.dm_btn variant="primary" size="sm">New Upstream</.dm_btn>
+          <.dm_btn variant="primary" size="sm">{dgettext("admin", "New Upstream")}</.dm_btn>
         </.link>
       </div>
 
       <div :if={@upstreams == []} class="text-on-surface-variant">
-        No upstream MCP servers configured. Click "New Upstream" to add one.
+        {dgettext("admin", "No upstream MCP servers configured. Click \"New Upstream\" to add one.")}
       </div>
 
       <div :if={@upstreams != []} class="overflow-x-auto">
         <table class="min-w-full text-sm">
           <thead class="bg-surface-container-high text-on-surface">
             <tr>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Prefix</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Transport</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Connection</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Tools</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Name")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Prefix")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Transport")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Connection")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Tools")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Actions")}</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-outline-variant">
             <tr :for={upstream <- @upstreams} class="hover:bg-surface-container-high">
               <td class="px-3 py-1.5 align-middle">
                 <span class="font-medium">{upstream.name}</span>
-                <.dm_badge :if={!upstream.enabled} variant="ghost" class="ml-1">disabled</.dm_badge>
+                <.dm_badge :if={!upstream.enabled} variant="ghost" class="ml-1">{dgettext("common", "disabled")}</.dm_badge>
               </td>
               <td class="px-3 py-1.5 align-middle">
                 <span class="text-xs text-on-surface-variant font-mono">{upstream.prefix}::</span>
@@ -460,7 +472,12 @@ defmodule Backplane.Admin.UpstreamsLive do
                       type="button"
                       id={"upstream-status-trigger-#{upstream.id}"}
                       class="cursor-pointer rounded-full focus-visible:outline-2 focus-visible:outline-primary"
-                      aria-label={"#{upstream.name} status: #{status_label(rs.status)}. Show protocol details"}
+                      aria-label={
+                        dgettext("admin", "%{name} status: %{status}. Show protocol details",
+                          name: upstream.name,
+                          status: status_label(rs.status)
+                        )
+                      }
                       {Map.merge(trigger_attrs, %{
                         "command" => "show-popover",
                         "interestfor" => "upstream-status-#{upstream.id}"
@@ -470,22 +487,22 @@ defmodule Backplane.Admin.UpstreamsLive do
                     </button>
                   </:trigger>
                   <dl class="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs">
-                    <dt class="text-on-surface-variant">Status</dt>
+                    <dt class="text-on-surface-variant">{dgettext("common", "Status")}</dt>
                     <dd>{status_label(rs.status)}</dd>
                     <%= if preference = Map.get(rs, :protocol_preference) do %>
-                      <dt class="text-on-surface-variant">Preference</dt>
+                      <dt class="text-on-surface-variant">{dgettext("admin", "Preference")}</dt>
                       <dd class="font-mono">{preference}</dd>
                     <% end %>
                     <%= if version = safe_negotiated_version(rs) do %>
-                      <dt class="text-on-surface-variant">Negotiated</dt>
+                      <dt class="text-on-surface-variant">{dgettext("admin", "Negotiated")}</dt>
                       <dd class="font-mono">{version}</dd>
                     <% end %>
                     <%= if era = Map.get(rs, :era) do %>
-                      <dt class="text-on-surface-variant">Era</dt>
+                      <dt class="text-on-surface-variant">{dgettext("admin", "Era")}</dt>
                       <dd>{status_label(era)}</dd>
                     <% end %>
                     <%= if status = Map.get(rs, :negotiation_status) do %>
-                      <dt class="text-on-surface-variant">Negotiation</dt>
+                      <dt class="text-on-surface-variant">{dgettext("admin", "Negotiation")}</dt>
                       <dd>{status_label(status)}</dd>
                     <% end %>
                   </dl>
@@ -500,23 +517,31 @@ defmodule Backplane.Admin.UpstreamsLive do
               </td>
               <td class="px-3 py-1.5 align-middle">
                 <div class="flex items-center gap-1">
-                  <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                     <.dm_btn {tooltip_attrs}
                       patch={~p"/mcp/upstreams/#{upstream.id}/edit"}
                       size="xs"
                       shape="circle"
                       variant="outline"
-                      aria-label={"Edit #{upstream.name} upstream"}
+                      aria-label={dgettext("admin", "Edit %{name} upstream", name: upstream.name)}
                     >
                       <.dm_mdi name="pencil" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content={if upstream.enabled, do: "Disable", else: "Enable"} position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={
+                      if upstream.enabled,
+                        do: dgettext("common", "Disable"),
+                        else: dgettext("common", "Enable")
+                    } position="bottom">
                     <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant={if upstream.enabled, do: "warning", else: "primary"}
-                      aria-label={"#{if upstream.enabled, do: "Disable", else: "Enable"} #{upstream.name} upstream"}
+                      aria-label={
+                        if upstream.enabled,
+                          do: dgettext("admin", "Disable %{name} upstream", name: upstream.name),
+                          else: dgettext("admin", "Enable %{name} upstream", name: upstream.name)
+                      }
                       phx-click="toggle"
                       phx-value-id={upstream.id}
                     >
@@ -526,27 +551,27 @@ defmodule Backplane.Admin.UpstreamsLive do
                       />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content="Connect" position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Connect")} position="bottom">
                     <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant="primary"
-                      aria-label={"Connect #{upstream.name} upstream"}
+                      aria-label={dgettext("admin", "Connect %{name} upstream", name: upstream.name)}
                       phx-click="connect"
                       phx-value-id={upstream.id}
                     >
                       <.dm_mdi name="connection" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
                     <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant="error"
-                      aria-label={"Delete #{upstream.name} upstream"}
+                      aria-label={dgettext("admin", "Delete %{name} upstream", name: upstream.name)}
                       phx-click="delete"
                       phx-value-id={upstream.id}
-                      data-confirm={"Delete upstream #{upstream.name}?"}
+                      data-confirm={dgettext("admin", "Delete upstream %{name}?", name: upstream.name)}
                     >
                       <.dm_mdi name="delete" class="w-4 h-4" />
                     </.dm_btn>
@@ -566,10 +591,12 @@ defmodule Backplane.Admin.UpstreamsLive do
     <div>
       <div class="flex items-center gap-3 mb-6">
         <.link patch={~p"/mcp/upstreams"} class="text-sm text-primary hover:underline">
-          &larr; Upstreams
+          &larr; {dgettext("admin", "Upstreams")}
         </.link>
         <h1 class="text-2xl font-bold">
-          {if @editing == :new, do: "New Upstream", else: "Edit #{@editing.name}"}
+          {if @editing == :new,
+            do: dgettext("admin", "New Upstream"),
+            else: dgettext("admin", "Edit %{name}", name: @editing.name)}
         </h1>
       </div>
 
@@ -586,7 +613,7 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_input
                 id="upstream-name"
                 name="mcp_upstream[name]"
-                label="Name"
+                label={dgettext("common", "Name")}
                 value={@form[:name].value}
                 placeholder="my-upstream"
               />
@@ -596,7 +623,7 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_input
                 id="upstream-prefix"
                 name="mcp_upstream[prefix]"
-                label="Prefix"
+                label={dgettext("admin", "Prefix")}
                 value={@form[:prefix].value}
                 placeholder="myup"
               />
@@ -609,8 +636,8 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_select
                 id="upstream-transport"
                 name="mcp_upstream[transport]"
-                label="Transport"
-                options={[{"http", "HTTP"}, {"stdio", "Stdio"}]}
+                label={dgettext("admin", "Transport")}
+                options={[{"http", dgettext("admin", "HTTP")}, {"stdio", dgettext("admin", "Stdio")}]}
                 value={transport_value(@form)}
               />
               <.form_error field={@form[:transport]} />
@@ -619,12 +646,12 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_select
                 id="upstream-auth-scheme"
                 name="mcp_upstream[auth_scheme]"
-                label="Auth Scheme"
+                label={dgettext("admin", "Auth Scheme")}
                 options={[
-                  {"none", "None"},
-                  {"bearer", "Bearer Token"},
-                  {"x_api_key", "X-API-Key"},
-                  {"custom_header", "Custom Header"}
+                  {"none", dgettext("common", "None")},
+                  {"bearer", dgettext("admin", "Bearer Token")},
+                  {"x_api_key", dgettext("admin", "X-API-Key")},
+                  {"custom_header", dgettext("admin", "Custom Header")}
                 ]}
                 value={auth_scheme_value(@form)}
               />
@@ -634,15 +661,15 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_select
                 id="upstream-credential"
                 name="mcp_upstream[credential]"
-                label="Credential"
+                label={dgettext("admin", "Credential")}
                 options={@credential_options}
                 value={@form[:credential].value || ""}
               />
               <p class="text-xs text-on-surface-variant mt-1">
-                Select from the <.link
+                {dgettext("admin", "Select from the")} <.link
                   navigate={~p"/system/credentials"}
                   class="text-primary underline"
-                >credential store</.link>.
+                >{dgettext("admin", "credential store")}</.link>.
               </p>
               <.form_error field={@form[:credential]} />
             </div>
@@ -652,7 +679,7 @@ defmodule Backplane.Admin.UpstreamsLive do
             <.dm_input
               id="upstream-url"
               name="mcp_upstream[url]"
-              label="URL"
+              label={dgettext("admin", "URL")}
               value={@form[:url].value || ""}
               placeholder="https://example.com/mcp"
             />
@@ -663,11 +690,11 @@ defmodule Backplane.Admin.UpstreamsLive do
             <.dm_select
               id="upstream-protocol-version"
               name="mcp_upstream[protocol_version]"
-              label="Protocol preference"
+              label={dgettext("admin", "Protocol preference")}
               options={[
-                {"2025-11-25", "2025-11-25 (legacy default)"},
-                {"2026-07-28", "2026-07-28 (strict modern)"},
-                {"auto", "Auto (modern discovery, classified legacy fallback)"}
+                {"2025-11-25", dgettext("admin", "2025-11-25 (legacy default)")},
+                {"2026-07-28", dgettext("admin", "2026-07-28 (strict modern)")},
+                {"auto", dgettext("admin", "Auto (modern discovery, classified legacy fallback)")}
               ]}
               value={protocol_version_value(@form)}
             />
@@ -679,7 +706,7 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_input
                 id="upstream-command"
                 name="mcp_upstream[command]"
-                label="Command"
+                label={dgettext("admin", "Command")}
                 value={@form[:command].value || ""}
                 placeholder="/usr/bin/node"
               />
@@ -689,7 +716,7 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_input
                 id="upstream-args"
                 name="mcp_upstream[args]"
-                label="Args (comma-separated)"
+                label={dgettext("admin", "Args (comma-separated)")}
                 value={args_display(@form[:args].value)}
                 placeholder="server.js,--port,3000"
               />
@@ -701,7 +728,7 @@ defmodule Backplane.Admin.UpstreamsLive do
             <.dm_input
               id="upstream-auth-header-name"
               name="mcp_upstream[auth_header_name]"
-              label="Auth Header Name"
+              label={dgettext("admin", "Auth Header Name")}
               value={@form[:auth_header_name].value || ""}
               placeholder="X-Custom-Key"
             />
@@ -713,7 +740,7 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_input
                 id="upstream-timeout-ms"
                 name="mcp_upstream[timeout_ms]"
-                label="Timeout (ms)"
+                label={dgettext("admin", "Timeout (ms)")}
                 type="number"
                 value={@form[:timeout_ms].value}
               />
@@ -723,7 +750,7 @@ defmodule Backplane.Admin.UpstreamsLive do
               <.dm_input
                 id="upstream-refresh-interval-ms"
                 name="mcp_upstream[refresh_interval_ms]"
-                label="Refresh Interval (ms)"
+                label={dgettext("admin", "Refresh Interval (ms)")}
                 type="number"
                 value={@form[:refresh_interval_ms].value}
               />
@@ -735,7 +762,7 @@ defmodule Backplane.Admin.UpstreamsLive do
             <.dm_textarea
               id="upstream-headers"
               name="mcp_upstream[headers]"
-              label="Headers (JSON object, optional)"
+              label={dgettext("admin", "Headers (JSON object, optional)")}
               rows={3}
               value={headers_display(@form[:headers].value)}
               placeholder={~s({"X-Custom": "value"})}
@@ -745,9 +772,9 @@ defmodule Backplane.Admin.UpstreamsLive do
           </div>
 
           <div class="flex gap-2 pt-2">
-            <.dm_btn type="submit" variant="primary">Save</.dm_btn>
+            <.dm_btn type="submit" variant="primary">{dgettext("common", "Save")}</.dm_btn>
             <.link patch={~p"/mcp/upstreams"}>
-              <.dm_btn type="button">Cancel</.dm_btn>
+              <.dm_btn type="button">{dgettext("common", "Cancel")}</.dm_btn>
             </.link>
           </div>
         </.form>

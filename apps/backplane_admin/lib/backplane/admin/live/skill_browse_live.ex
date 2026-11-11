@@ -62,7 +62,7 @@ defmodule Backplane.Admin.SkillBrowseLive do
           {:error, :not_found} ->
             {:noreply,
              socket
-             |> put_flash(:error, "Skill not found")
+             |> put_flash(:error, dgettext("errors", "Skill not found"))
              |> push_patch(to: browse_path(socket.assigns))}
         end
 
@@ -140,12 +140,20 @@ defmodule Backplane.Admin.SkillBrowseLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "Updated tags for #{length(ids)} skill(s)")
+       |> put_flash(
+         :info,
+         dngettext(
+           "admin",
+           "Updated tags for %{count} skill",
+           "Updated tags for %{count} skills",
+           length(ids)
+         )
+       )
        |> assign(selected: MapSet.new(), bulk_action: nil)
        |> load_skills()
        |> load_filter_options()}
     else
-      {:noreply, put_flash(socket, :error, "No skills selected")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "No skills selected"))}
     end
   end
 
@@ -159,12 +167,20 @@ defmodule Backplane.Admin.SkillBrowseLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "Updated category for #{length(ids)} skill(s)")
+       |> put_flash(
+         :info,
+         dngettext(
+           "admin",
+           "Updated category for %{count} skill",
+           "Updated category for %{count} skills",
+           length(ids)
+         )
+       )
        |> assign(selected: MapSet.new(), bulk_action: nil)
        |> load_skills()
        |> load_filter_options()}
     else
-      {:noreply, put_flash(socket, :error, "No skills selected")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "No skills selected"))}
     end
   end
 
@@ -183,12 +199,12 @@ defmodule Backplane.Admin.SkillBrowseLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Deleted #{deleted.name}")
+         |> put_flash(:info, dgettext("admin", "Deleted %{name}", name: deleted.name))
          |> load_skills()
          |> load_filter_options()}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to delete skill")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete skill"))}
     end
   end
 
@@ -264,8 +280,8 @@ defmodule Backplane.Admin.SkillBrowseLive do
   end
 
   defp source_kind_label(nil), do: "-"
-  defp source_kind_label("archive"), do: "Archive"
-  defp source_kind_label("database"), do: "Database"
+  defp source_kind_label("archive"), do: dgettext("admin", "Archive")
+  defp source_kind_label("database"), do: dgettext("admin", "Database")
   defp source_kind_label("github"), do: "GitHub"
   defp source_kind_label(other), do: other
 
@@ -295,11 +311,11 @@ defmodule Backplane.Admin.SkillBrowseLive do
       <div class="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <div class="flex items-center gap-3">
-            <h1 class="text-2xl font-bold">Skills</h1>
-            <.dm_badge variant="neutral" size="sm">{@total} total</.dm_badge>
+            <h1 class="text-2xl font-bold">{dgettext("navigation", "Skills")}</h1>
+            <.dm_badge variant="neutral" size="sm">{dgettext("admin", "%{count} total", count: @total)}</.dm_badge>
           </div>
           <p class="mt-1 text-sm text-on-surface-variant">
-            Browse, search, and manage all skills across sources.
+            {dgettext("admin", "Browse, search, and manage all skills across sources.")}
           </p>
         </div>
       </div>
@@ -309,29 +325,29 @@ defmodule Backplane.Admin.SkillBrowseLive do
         <.form for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="space-y-3">
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div>
-              <label class="block text-xs font-medium mb-1">Search</label>
+              <label class="block text-xs font-medium mb-1">{dgettext("common", "Search")}</label>
               <input
                 type="text"
                 name="q"
                 value={@q}
-                placeholder="Name, slug, or content"
+                placeholder={dgettext("admin", "Name, slug, or content")}
                 class="input input-bordered w-full"
                 phx-debounce="400"
               />
             </div>
             <div>
-              <label class="block text-xs font-medium mb-1">Source</label>
+              <label class="block text-xs font-medium mb-1">{dgettext("admin", "Source")}</label>
               <select name="source_kind" class="select select-bordered w-full">
-                <option value="" selected={@source_kind == ""}>All sources</option>
-                <option value="archive" selected={@source_kind == "archive"}>Archive</option>
-                <option value="database" selected={@source_kind == "database"}>Database</option>
+                <option value="" selected={@source_kind == ""}>{dgettext("admin", "All sources")}</option>
+                <option value="archive" selected={@source_kind == "archive"}>{dgettext("admin", "Archive")}</option>
+                <option value="database" selected={@source_kind == "database"}>{dgettext("admin", "Database")}</option>
                 <option value="github" selected={@source_kind == "github"}>GitHub</option>
               </select>
             </div>
             <div>
-              <label class="block text-xs font-medium mb-1">Category</label>
+              <label class="block text-xs font-medium mb-1">{dgettext("admin", "Category")}</label>
               <select name="category" class="select select-bordered w-full">
-                <option value="" selected={@category == ""}>All categories</option>
+                <option value="" selected={@category == ""}>{dgettext("admin", "All categories")}</option>
                 <option
                   :for={cat <- @categories}
                   value={cat.category}
@@ -342,9 +358,9 @@ defmodule Backplane.Admin.SkillBrowseLive do
               </select>
             </div>
             <div>
-              <label class="block text-xs font-medium mb-1">Tag</label>
+              <label class="block text-xs font-medium mb-1">{dgettext("admin", "Tag")}</label>
               <select name="tag" class="select select-bordered w-full">
-                <option value="" selected={@tag == ""}>All tags</option>
+                <option value="" selected={@tag == ""}>{dgettext("admin", "All tags")}</option>
                 <option
                   :for={t <- Enum.take(@tags, 50)}
                   value={t.tag}
@@ -363,38 +379,38 @@ defmodule Backplane.Admin.SkillBrowseLive do
         :if={MapSet.size(@selected) > 0}
         class="mb-4 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-2"
       >
-        <span class="text-sm font-medium">{MapSet.size(@selected)} selected</span>
-        <.dm_tooltip :let={tooltip_attrs} content="Set tags" position="bottom">
+        <span class="text-sm font-medium">{dgettext("admin", "%{count} selected", count: MapSet.size(@selected))}</span>
+        <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Set tags")} position="bottom">
           <.dm_btn {tooltip_attrs}
             type="button"
             size="xs"
             shape="circle"
-            aria-label="Set tags on selected skills"
+            aria-label={dgettext("admin", "Set tags on selected skills")}
             phx-click="show-bulk"
             phx-value-action="tags"
           >
             <.dm_mdi name="tag-multiple" class="w-4 h-4" />
           </.dm_btn>
         </.dm_tooltip>
-        <.dm_tooltip :let={tooltip_attrs} content="Set category" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Set category")} position="bottom">
           <.dm_btn {tooltip_attrs}
             type="button"
             size="xs"
             shape="circle"
-            aria-label="Set category on selected skills"
+            aria-label={dgettext("admin", "Set category on selected skills")}
             phx-click="show-bulk"
             phx-value-action="category"
           >
             <.dm_mdi name="shape" class="w-4 h-4" />
           </.dm_btn>
         </.dm_tooltip>
-        <.dm_tooltip :let={tooltip_attrs} content="Clear selection" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Clear selection")} position="bottom">
           <.dm_btn {tooltip_attrs}
             type="button"
             size="xs"
             shape="circle"
             variant="ghost"
-            aria-label="Clear skill selection"
+            aria-label={dgettext("admin", "Clear skill selection")}
             phx-click="clear-selection"
           >
             <.dm_mdi name="close" class="w-4 h-4" />
@@ -404,10 +420,10 @@ defmodule Backplane.Admin.SkillBrowseLive do
 
       <%!-- Bulk tag modal --%>
       <.dm_card :if={@bulk_action == "tags"} variant="bordered" class="mb-4">
-        <:title>Bulk Set Tags</:title>
+        <:title>{dgettext("admin", "Bulk Set Tags")}</:title>
         <.form for={%{}} as={:bulk} phx-submit="bulk-set-tags" class="flex items-end gap-3">
           <div class="flex-1">
-            <label class="block text-xs font-medium mb-1">Tags (comma-separated)</label>
+            <label class="block text-xs font-medium mb-1">{dgettext("admin", "Tags (comma-separated)")}</label>
             <input
               type="text"
               name="tags"
@@ -416,37 +432,37 @@ defmodule Backplane.Admin.SkillBrowseLive do
               class="input input-bordered w-full"
             />
           </div>
-          <.dm_btn type="submit" variant="primary" size="sm">Apply</.dm_btn>
-          <.dm_btn type="button" size="sm" phx-click="cancel-bulk">Cancel</.dm_btn>
+          <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Apply")}</.dm_btn>
+          <.dm_btn type="button" size="sm" phx-click="cancel-bulk">{dgettext("common", "Cancel")}</.dm_btn>
         </.form>
       </.dm_card>
 
       <%!-- Bulk category modal --%>
       <.dm_card :if={@bulk_action == "category"} variant="bordered" class="mb-4">
-        <:title>Bulk Set Category</:title>
+        <:title>{dgettext("admin", "Bulk Set Category")}</:title>
         <.form for={%{}} as={:bulk} phx-submit="bulk-set-category" class="flex items-end gap-3">
           <div class="flex-1">
-            <label class="block text-xs font-medium mb-1">Category</label>
+            <label class="block text-xs font-medium mb-1">{dgettext("admin", "Category")}</label>
             <input
               type="text"
               name="category"
               value={@bulk_category}
-              placeholder="Enter category"
+              placeholder={dgettext("admin", "Enter category")}
               class="input input-bordered w-full"
             />
           </div>
-          <.dm_btn type="submit" variant="primary" size="sm">Apply</.dm_btn>
-          <.dm_btn type="button" size="sm" phx-click="cancel-bulk">Cancel</.dm_btn>
+          <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Apply")}</.dm_btn>
+          <.dm_btn type="button" size="sm" phx-click="cancel-bulk">{dgettext("common", "Cancel")}</.dm_btn>
         </.form>
       </.dm_card>
 
       <%!-- Skills table --%>
       <div :if={@skills == [] and not @loading} class="text-on-surface-variant py-12 text-center">
-        No skills match the current filters.
+        {dgettext("admin", "No skills match the current filters.")}
       </div>
 
       <table :if={@skills != []} role="table" id="skills-browse-table" class={["table", "table-hover", "table-zebra"]}>
-        <caption class="text-left text-base font-semibold py-2">Skills Library</caption>
+        <caption class="text-left text-base font-semibold py-2">{dgettext("admin", "Skills Library")}</caption>
         <thead role="row-group" class="hidden md:table-header-group sticky top-0">
           <tr role="row">
             <th role="columnheader" scope="col">
@@ -455,17 +471,17 @@ defmodule Backplane.Admin.SkillBrowseLive do
                 checked={all_selected?(@skills, @selected)}
                 phx-click="toggle-select-all"
                 class="checkbox checkbox-sm"
-                title="Select all"
+                title={dgettext("admin", "Select all")}
               />
             </th>
-            <th role="columnheader" scope="col">Name</th>
-            <th role="columnheader" scope="col">Description</th>
-            <th role="columnheader" scope="col">Slug</th>
-            <th role="columnheader" scope="col">Source</th>
-            <th role="columnheader" scope="col">Category</th>
-            <th role="columnheader" scope="col">Tags</th>
-            <th role="columnheader" scope="col">Size</th>
-            <th role="columnheader" scope="col">Actions</th>
+            <th role="columnheader" scope="col">{dgettext("common", "Name")}</th>
+            <th role="columnheader" scope="col">{dgettext("common", "Description")}</th>
+            <th role="columnheader" scope="col">{dgettext("admin", "Slug")}</th>
+            <th role="columnheader" scope="col">{dgettext("admin", "Source")}</th>
+            <th role="columnheader" scope="col">{dgettext("admin", "Category")}</th>
+            <th role="columnheader" scope="col">{dgettext("admin", "Tags")}</th>
+            <th role="columnheader" scope="col">{dgettext("admin", "Size")}</th>
+            <th role="columnheader" scope="col">{dgettext("common", "Actions")}</th>
           </tr>
         </thead>
         <tbody role="row-group">
@@ -521,14 +537,14 @@ defmodule Backplane.Admin.SkillBrowseLive do
             </td>
             <td role="cell">
               <div class="flex gap-2">
-                <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
                   <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
                     variant="error"
-                    aria-label={"Delete #{skill.name} skill"}
-                    data-confirm={"Delete skill #{skill.name}?"}
+                    aria-label={dgettext("admin", "Delete %{name} skill", name: skill.name)}
+                    data-confirm={dgettext("admin", "Delete skill %{name}?", name: skill.name)}
                     phx-click="delete"
                     phx-value-id={skill.id}
                   >
@@ -544,13 +560,13 @@ defmodule Backplane.Admin.SkillBrowseLive do
       <%!-- Pagination --%>
       <div :if={@total > 0} class="flex items-center justify-between mt-4 text-sm">
         <div class="flex items-center gap-2 text-on-surface-variant">
-          <span>Page {@page} of {total_pages(@total)}</span>
-          <.dm_tooltip :if={MapSet.size(@selected) == 0} :let={tooltip_attrs} content="Select page" position="bottom">
+          <span>{dgettext("admin", "Page %{page} of %{total}", page: @page, total: total_pages(@total))}</span>
+          <.dm_tooltip :if={MapSet.size(@selected) == 0} :let={tooltip_attrs} content={dgettext("admin", "Select page")} position="bottom">
             <.dm_btn {tooltip_attrs}
               type="button"
               size="xs"
               shape="circle"
-              aria-label="Select all skills on this page"
+              aria-label={dgettext("admin", "Select all skills on this page")}
               phx-click="select-all"
             >
               <.dm_mdi name="checkbox-multiple-marked-outline" class="w-4 h-4" />
@@ -558,24 +574,24 @@ defmodule Backplane.Admin.SkillBrowseLive do
           </.dm_tooltip>
         </div>
         <div class="flex items-center gap-2">
-          <.dm_tooltip :if={@page > 1} :let={tooltip_attrs} content="Previous" position="bottom">
+          <.dm_tooltip :if={@page > 1} :let={tooltip_attrs} content={dgettext("common", "Previous")} position="bottom">
             <.dm_btn {tooltip_attrs}
               type="button"
               size="xs"
               shape="circle"
-              aria-label="Previous skills page"
+              aria-label={dgettext("admin", "Previous skills page")}
               phx-click="page"
               phx-value-page={@page - 1}
             >
               <.dm_mdi name="chevron-left" class="w-4 h-4" />
             </.dm_btn>
           </.dm_tooltip>
-          <.dm_tooltip :if={@page < total_pages(@total)} :let={tooltip_attrs} content="Next" position="bottom">
+          <.dm_tooltip :if={@page < total_pages(@total)} :let={tooltip_attrs} content={dgettext("common", "Next")} position="bottom">
             <.dm_btn {tooltip_attrs}
               type="button"
               size="xs"
               shape="circle"
-              aria-label="Next skills page"
+              aria-label={dgettext("admin", "Next skills page")}
               phx-click="page"
               phx-value-page={@page + 1}
             >
@@ -599,12 +615,12 @@ defmodule Backplane.Admin.SkillBrowseLive do
         >
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-outline-variant bg-surface px-6 py-4">
             <h2 class="text-lg font-bold">{@selected_skill.name}</h2>
-            <.dm_tooltip :let={tooltip_attrs} content="Close" position="bottom">
+            <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Close")} position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
                 size="xs"
                 shape="circle"
-                aria-label={"Close #{@selected_skill.name} skill details"}
+                aria-label={dgettext("admin", "Close %{name} skill details", name: @selected_skill.name)}
                 phx-click="close-detail"
               >
                 <.dm_mdi name="close" class="w-4 h-4" />
@@ -615,35 +631,35 @@ defmodule Backplane.Admin.SkillBrowseLive do
           <div class="p-6 space-y-4">
             <div class="grid grid-cols-2 gap-3 text-sm">
               <div>
-                <span class="text-on-surface-variant">Slug:</span>
+                <span class="text-on-surface-variant">{dgettext("admin", "Slug:")}</span>
                 <code class="ml-1">{@selected_skill.slug}</code>
               </div>
               <div>
-                <span class="text-on-surface-variant">Source:</span>
+                <span class="text-on-surface-variant">{dgettext("admin", "Source:")}</span>
                 <.dm_badge variant={source_kind_variant(@selected_skill.source_kind)} size="sm" class="ml-1">
                   {source_kind_label(@selected_skill.source_kind)}
                 </.dm_badge>
               </div>
               <div :if={@selected_skill.category}>
-                <span class="text-on-surface-variant">Category:</span>
+                <span class="text-on-surface-variant">{dgettext("admin", "Category:")}</span>
                 <span class="ml-1">{@selected_skill.category}</span>
               </div>
               <div :if={@selected_skill.version}>
-                <span class="text-on-surface-variant">Version:</span>
+                <span class="text-on-surface-variant">{dgettext("admin", "Version:")}</span>
                 <span class="ml-1">{@selected_skill.version}</span>
               </div>
               <div :if={@selected_skill.author}>
-                <span class="text-on-surface-variant">Author:</span>
+                <span class="text-on-surface-variant">{dgettext("admin", "Author:")}</span>
                 <span class="ml-1">{@selected_skill.author}</span>
               </div>
               <div :if={@selected_skill.license}>
-                <span class="text-on-surface-variant">License:</span>
+                <span class="text-on-surface-variant">{dgettext("admin", "License:")}</span>
                 <span class="ml-1">{@selected_skill.license}</span>
               </div>
             </div>
 
             <div :if={@selected_skill.tags != []}>
-              <span class="text-sm text-on-surface-variant">Tags:</span>
+              <span class="text-sm text-on-surface-variant">{dgettext("admin", "Tags:")}</span>
               <div class="flex flex-wrap gap-1 mt-1">
                 <.dm_badge :for={tag <- @selected_skill.tags} variant="ghost" size="sm">
                   {tag}
@@ -652,12 +668,12 @@ defmodule Backplane.Admin.SkillBrowseLive do
             </div>
 
             <div :if={@selected_skill.description && @selected_skill.description != ""}>
-              <h3 class="text-sm font-medium text-on-surface-variant mb-1">Description</h3>
+              <h3 class="text-sm font-medium text-on-surface-variant mb-1">{dgettext("common", "Description")}</h3>
               <p class="text-sm">{@selected_skill.description}</p>
             </div>
 
             <div>
-              <h3 class="text-sm font-medium text-on-surface-variant mb-1">Content</h3>
+              <h3 class="text-sm font-medium text-on-surface-variant mb-1">{dgettext("admin", "Content")}</h3>
               <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-container p-4 text-xs">{@selected_skill.content}</pre>
             </div>
           </div>

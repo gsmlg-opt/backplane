@@ -192,10 +192,10 @@ defmodule Backplane.Admin.McpInspectorLive do
         end
 
       {:ok, _} ->
-        {:noreply, assign(socket, error: "Arguments must be a JSON object")}
+        {:noreply, assign(socket, error: dgettext("errors", "Arguments must be a JSON object"))}
 
       {:error, _} ->
-        {:noreply, assign(socket, error: "Invalid JSON in arguments")}
+        {:noreply, assign(socket, error: dgettext("errors", "Invalid JSON in arguments"))}
     end
   end
 
@@ -223,7 +223,7 @@ defmodule Backplane.Admin.McpInspectorLive do
              )}
 
           {:error, reason} ->
-            {:noreply, assign(socket, error: "Send failed: #{inspect(reason)}")}
+            {:noreply, assign(socket, error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)))}
         end
     end
   end
@@ -259,7 +259,7 @@ defmodule Backplane.Admin.McpInspectorLive do
     source_key = socket.assigns.internal_source
 
     if source_key == "" do
-      {:noreply, assign(socket, internal_error: "Please select a source")}
+      {:noreply, assign(socket, internal_error: dgettext("errors", "Please select a source"))}
     else
       source = Enum.find(socket.assigns.sources, &(&1.key == source_key))
 
@@ -274,7 +274,7 @@ defmodule Backplane.Admin.McpInspectorLive do
            internal_error: nil
          )}
       else
-        {:noreply, assign(socket, internal_error: "Source not found")}
+        {:noreply, assign(socket, internal_error: dgettext("errors", "Source not found"))}
       end
     end
   end
@@ -380,10 +380,10 @@ defmodule Backplane.Admin.McpInspectorLive do
         end
 
       {:ok, _} ->
-        {:noreply, assign(socket, internal_error: "Arguments must be a JSON object")}
+        {:noreply, assign(socket, internal_error: dgettext("errors", "Arguments must be a JSON object"))}
 
       {:error, _} ->
-        {:noreply, assign(socket, internal_error: "Invalid JSON in arguments")}
+        {:noreply, assign(socket, internal_error: dgettext("errors", "Invalid JSON in arguments"))}
     end
   end
 
@@ -404,7 +404,7 @@ defmodule Backplane.Admin.McpInspectorLive do
        connected: false,
        pending_requests: %{},
        pending_timers: %{},
-       error: "MCP process exited (status #{status})"
+       error: dgettext("errors", "MCP process exited (status %{status})", status: status)
      )}
   end
 
@@ -486,7 +486,7 @@ defmodule Backplane.Admin.McpInspectorLive do
     url = String.trim(socket.assigns.url)
 
     if url == "" do
-      assign(socket, error: "Please enter an MCP server URL", loading: false)
+      assign(socket, error: dgettext("errors", "Please enter an MCP server URL"), loading: false)
     else
       headers = build_http_headers(socket.assigns)
       request_json = Jason.encode!(request, pretty: true)
@@ -517,7 +517,7 @@ defmodule Backplane.Admin.McpInspectorLive do
           socket
           |> assign(
             loading: false,
-            error: "Request failed: #{inspect(reason)}",
+            error: dgettext("errors", "Request failed: %{reason}", reason: inspect(reason)),
             request_log: [log_entry | socket.assigns.request_log]
           )
       end
@@ -595,7 +595,7 @@ defmodule Backplane.Admin.McpInspectorLive do
         # Try parsing as SSE: extract data from "data: {...}" lines
         case extract_sse_data(bin) do
           {:ok, json_str} -> Jason.decode(json_str)
-          :error -> {:error, "Could not parse response: #{String.slice(bin, 0, 200)}"}
+          :error -> {:error, dgettext("errors", "Could not parse response: %{body}", body: String.slice(bin, 0, 200))}
         end
     end
   end
@@ -626,7 +626,7 @@ defmodule Backplane.Admin.McpInspectorLive do
     command = String.trim(socket.assigns.command)
 
     if command == "" do
-      {:noreply, assign(socket, error: "Please enter a command", loading: false)}
+      {:noreply, assign(socket, error: dgettext("errors", "Please enter a command"), loading: false)}
     else
       args = parse_args(socket.assigns.args)
       env = parse_env(socket.assigns.env)
@@ -670,19 +670,19 @@ defmodule Backplane.Admin.McpInspectorLive do
 
           {:error, reason} ->
             {:noreply,
-             assign(socket, error: "Failed to send: #{inspect(reason)}", loading: false)}
+             assign(socket, error: dgettext("errors", "Failed to send: %{reason}", reason: inspect(reason)), loading: false)}
         end
       rescue
         e ->
           {:noreply,
-           assign(socket, error: "Failed to start: #{Exception.message(e)}", loading: false)}
+           assign(socket, error: dgettext("errors", "Failed to start: %{reason}", reason: Exception.message(e)), loading: false)}
       end
     end
   end
 
   defp handle_stdio_list_tools(socket) do
     if socket.assigns.port == nil do
-      {:noreply, assign(socket, error: "Not connected", loading: false)}
+      {:noreply, assign(socket, error: dgettext("errors", "Not connected"), loading: false)}
     else
       request = jsonrpc_request("tools/list", %{})
       {id, socket} = next_request_id(socket)
@@ -693,14 +693,14 @@ defmodule Backplane.Admin.McpInspectorLive do
           {:noreply, put_pending_stdio(socket, id, {:list_tools, nil}, "tools/list", request)}
 
         {:error, reason} ->
-          {:noreply, assign(socket, error: "Send failed: #{inspect(reason)}", loading: false)}
+          {:noreply, assign(socket, error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)), loading: false)}
       end
     end
   end
 
   defp handle_stdio_call_tool(socket, name, args) do
     if socket.assigns.port == nil do
-      {:noreply, assign(socket, error: "Not connected")}
+      {:noreply, assign(socket, error: dgettext("errors", "Not connected"))}
     else
       request = jsonrpc_request("tools/call", %{"name" => name, "arguments" => args})
       {id, socket} = next_request_id(socket)
@@ -715,7 +715,7 @@ defmodule Backplane.Admin.McpInspectorLive do
             Map.update!(socket.assigns.tool_calls, name, fn tc -> %{tc | loading: false} end)
 
           {:noreply,
-           assign(socket, error: "Send failed: #{inspect(reason)}", tool_calls: tool_calls)}
+           assign(socket, error: dgettext("errors", "Send failed: %{reason}", reason: inspect(reason)), tool_calls: tool_calls)}
       end
     end
   end
@@ -724,7 +724,7 @@ defmodule Backplane.Admin.McpInspectorLive do
     buffer = socket.assigns.buffer <> data
 
     if byte_size(buffer) > @max_buffer_size do
-      assign(socket, buffer: "", error: "Buffer overflow — dropped")
+      assign(socket, buffer: "", error: dgettext("errors", "Buffer overflow — dropped"))
     else
       split_and_process_stdio(socket, buffer)
     end
@@ -753,7 +753,7 @@ defmodule Backplane.Admin.McpInspectorLive do
         socket
 
       {:error, _} ->
-        assign(socket, error: "Failed to decode response")
+        assign(socket, error: dgettext("errors", "Failed to decode response"))
     end
   end
 
@@ -897,7 +897,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
         method = pending_stdio_method(pending_request)
         timeout_ms = stdio_timeout_ms()
-        message = "Timed out waiting for stdio #{method} response after #{timeout_ms}ms"
+        message = dgettext("errors", "Timed out waiting for stdio %{method} response after %{timeout}ms", method: method, timeout: timeout_ms)
         log_entry = make_log_entry(method, nil, message, :error)
 
         socket =
@@ -976,7 +976,7 @@ defmodule Backplane.Admin.McpInspectorLive do
   defp load_credential_options do
     creds = safe_call(fn -> Credentials.list() end, [])
 
-    [{"", "— None —"}] ++
+    [{"", dgettext("common", "— None —")}] ++
       Enum.map(creds, fn c -> {c.name, "#{c.name} (#{c.kind})"} end)
   end
 
@@ -1145,7 +1145,7 @@ defmodule Backplane.Admin.McpInspectorLive do
   end
 
   defp schema_type_label(%{"type" => type}), do: type
-  defp schema_type_label(_), do: "any"
+  defp schema_type_label(_), do: dgettext("admin", "any")
 
   defp required_properties(%{"inputSchema" => %{"required" => required}}) when is_list(required),
     do: required
@@ -1185,9 +1185,9 @@ defmodule Backplane.Admin.McpInspectorLive do
     "#{type}:#{prefix}"
   end
 
-  defp source_label(%{type: :managed, prefix: prefix}), do: "#{prefix}:: (managed)"
-  defp source_label(%{type: :upstream, prefix: prefix}), do: "#{prefix}:: (upstream)"
-  defp source_label(%{type: :native, prefix: prefix}), do: "#{prefix} (native)"
+  defp source_label(%{type: :managed, prefix: prefix}), do: dgettext("admin", "%{prefix}:: (managed)", prefix: prefix)
+  defp source_label(%{type: :upstream, prefix: prefix}), do: dgettext("admin", "%{prefix}:: (upstream)", prefix: prefix)
+  defp source_label(%{type: :native, prefix: prefix}), do: dgettext("admin", "%{prefix} (native)", prefix: prefix)
 
   defp source_type_badge(:managed), do: "info"
   defp source_type_badge(:upstream), do: "success"
@@ -1230,9 +1230,9 @@ defmodule Backplane.Admin.McpInspectorLive do
     ~H"""
     <div>
       <div class="mb-6">
-        <h1 class="text-2xl font-bold">MCP Inspector</h1>
+        <h1 class="text-2xl font-bold">{dgettext("navigation", "MCP Inspector")}</h1>
         <p class="mt-1 text-sm text-on-surface-variant">
-          Test and probe MCP tools — connect to external servers or test internal registered tools.
+          {dgettext("admin", "Test and probe MCP tools — connect to external servers or test internal registered tools.")}
         </p>
       </div>
 
@@ -1247,7 +1247,7 @@ defmodule Backplane.Admin.McpInspectorLive do
           ]}
         >
           <.dm_mdi name="access-point-network" class="w-4 h-4 mr-1.5 inline-block align-text-bottom" />
-          External
+          {dgettext("admin", "External")}
         </.link>
         <.link
           navigate={~p"/mcp/inspector/internal"}
@@ -1258,7 +1258,7 @@ defmodule Backplane.Admin.McpInspectorLive do
           ]}
         >
           <.dm_mdi name="toolbox-outline" class="w-4 h-4 mr-1.5 inline-block align-text-bottom" />
-          Internal
+          {dgettext("admin", "Internal")}
         </.link>
       </div>
 
@@ -1279,20 +1279,20 @@ defmodule Backplane.Admin.McpInspectorLive do
       <.dm_card variant="bordered" class="mb-6">
         <:title>
           <div class="flex items-center gap-3">
-            <span>Connection</span>
+            <span>{dgettext("admin", "Connection")}</span>
             <.dm_badge
               :if={@connected}
               variant="success"
               size="sm"
             >
-              Connected
+              {dgettext("common", "Connected")}
             </.dm_badge>
             <.dm_badge
               :if={!@connected}
               variant="ghost"
               size="sm"
             >
-              Disconnected
+              {dgettext("common", "Disconnected")}
             </.dm_badge>
           </div>
         </:title>
@@ -1302,7 +1302,7 @@ defmodule Backplane.Admin.McpInspectorLive do
             <.dm_select
               id="inspector-transport"
               name="transport"
-              label="Transport"
+              label={dgettext("admin", "Transport")}
               options={[{"http", "HTTP (Streamable HTTP)"}, {"stdio", "Stdio (stdin/stdout)"}]}
               value={@transport}
             />
@@ -1315,7 +1315,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                 <.dm_input
                   id="inspector-url"
                   name="url"
-                  label="MCP Server URL"
+                  label={dgettext("admin", "MCP Server URL")}
                   value={@url}
                   placeholder="https://example.com/mcp"
                   phx-debounce="300"
@@ -1325,10 +1325,10 @@ defmodule Backplane.Admin.McpInspectorLive do
                 <.dm_select
                   id="inspector-auth-scheme"
                   name="auth_scheme"
-                  label="Auth Scheme"
+                  label={dgettext("admin", "Auth Scheme")}
                   options={[
-                    {"none", "None"},
-                    {"bearer", "Bearer Token"},
+                    {"none", dgettext("common", "None")},
+                    {"bearer", dgettext("admin", "Bearer Token")},
                     {"x_api_key", "X-API-Key"}
                   ]}
                   value={@auth_scheme}
@@ -1339,7 +1339,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               <.dm_select
                 id="inspector-credential"
                 name="credential"
-                label="Credential"
+                label={dgettext("admin", "Credential")}
                 options={@credential_options}
                 value={@credential}
               />
@@ -1353,7 +1353,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                 <.dm_input
                   id="inspector-command"
                   name="command"
-                  label="Command"
+                  label={dgettext("admin", "Command")}
                   value={@command}
                   placeholder="npx"
                   phx-debounce="300"
@@ -1363,7 +1363,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                 <.dm_input
                   id="inspector-args"
                   name="args"
-                  label="Arguments (space-separated)"
+                  label={dgettext("admin", "Arguments (space-separated)")}
                   value={@args}
                   placeholder="-y @modelcontextprotocol/server-filesystem /tmp"
                   phx-debounce="300"
@@ -1374,7 +1374,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               <.dm_textarea
                 id="inspector-env"
                 name="env"
-                label="Environment (KEY=VALUE per line)"
+                label={dgettext("admin", "Environment (KEY=VALUE per line)")}
                 value={@env}
                 rows={3}
                 class="font-mono text-xs"
@@ -1395,7 +1395,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               disabled={@loading}
             >
               <.dm_mdi name="power-plug" class="w-4 h-4 mr-1" />
-              Initialize
+              {dgettext("admin", "Initialize")}
             </.dm_btn>
             <.dm_btn
               :if={@connected}
@@ -1405,7 +1405,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               phx-click="disconnect"
             >
               <.dm_mdi name="power-plug-off" class="w-4 h-4 mr-1" />
-              Disconnect
+              {dgettext("common", "Disconnect")}
             </.dm_btn>
             <.dm_btn
               :if={@connected}
@@ -1416,7 +1416,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               disabled={@loading}
             >
               <.dm_mdi name="toolbox" class="w-4 h-4 mr-1" />
-              List Tools
+              {dgettext("admin", "List Tools")}
             </.dm_btn>
             <.dm_btn
               :if={@connected}
@@ -1426,7 +1426,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               disabled={@loading}
             >
               <.dm_mdi name="access-point-network" class="w-4 h-4 mr-1" />
-              Ping
+              {dgettext("admin", "Ping")}
             </.dm_btn>
             <.dm_btn
               id="inspector-clear"
@@ -1435,13 +1435,13 @@ defmodule Backplane.Admin.McpInspectorLive do
               phx-click="clear_log"
             >
               <.dm_mdi name="delete-outline" class="w-4 h-4 mr-1" />
-              Clear Log
+              {dgettext("admin", "Clear Log")}
             </.dm_btn>
           </div>
 
           <p :if={@loading} class="text-sm text-on-surface-variant flex items-center gap-2">
             <.dm_mdi name="loading" class="w-4 h-4 animate-spin" />
-            Waiting for response…
+            {dgettext("admin", "Waiting for response…")}
           </p>
           <p :if={@error} class="text-sm text-error">{@error}</p>
         </form>
@@ -1449,18 +1449,18 @@ defmodule Backplane.Admin.McpInspectorLive do
 
       <%!-- Server info --%>
       <.dm_card :if={@server_info} variant="bordered" class="mb-6">
-        <:title>Server Info</:title>
+        <:title>{dgettext("admin", "Server Info")}</:title>
         <dl class="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-3 text-sm">
           <div :if={@server_info.info}>
-            <dt class="font-medium text-on-surface-variant">Name</dt>
+            <dt class="font-medium text-on-surface-variant">{dgettext("common", "Name")}</dt>
             <dd>{@server_info.info["name"] || "—"}</dd>
           </div>
           <div :if={@server_info.info}>
-            <dt class="font-medium text-on-surface-variant">Version</dt>
+            <dt class="font-medium text-on-surface-variant">{dgettext("admin", "Version")}</dt>
             <dd>{@server_info.info["version"] || "—"}</dd>
           </div>
           <div :if={@server_info.capabilities}>
-            <dt class="font-medium text-on-surface-variant">Capabilities</dt>
+            <dt class="font-medium text-on-surface-variant">{dgettext("admin", "Capabilities")}</dt>
             <dd class="font-mono text-xs break-all">
               {Map.keys(@server_info.capabilities) |> Enum.join(", ")}
             </dd>
@@ -1472,15 +1472,15 @@ defmodule Backplane.Admin.McpInspectorLive do
       <div :if={@tools != []} class="mb-6">
         <div class="flex items-center justify-between mb-4">
           <div class="flex items-center gap-2">
-            <h2 class="text-lg font-semibold">Tools</h2>
+            <h2 class="text-lg font-semibold">{dgettext("admin", "Tools")}</h2>
             <.dm_badge variant="ghost">{length(@tools)}</.dm_badge>
           </div>
           <div class="flex gap-2">
             <.dm_btn id="expand-all" size="sm" variant="outline" phx-click="expand_all">
-              Expand All
+              {dgettext("admin", "Expand All")}
             </.dm_btn>
             <.dm_btn id="collapse-all" size="sm" variant="outline" phx-click="collapse_all">
-              Collapse All
+              {dgettext("admin", "Collapse All")}
             </.dm_btn>
           </div>
         </div>
@@ -1504,7 +1504,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                 </p>
               </div>
               <.dm_badge :if={tool["inputSchema"]["properties"]} variant="ghost" size="sm">
-                {map_size(tool["inputSchema"]["properties"])} params
+                {dngettext("admin", "%{count} param", "%{count} params", map_size(tool["inputSchema"]["properties"]))}
               </.dm_badge>
             </div>
 
@@ -1517,7 +1517,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
               <%!-- Input schema parameters --%>
               <div :if={tool["inputSchema"]["properties"] && map_size(tool["inputSchema"]["properties"]) > 0} class="px-4 py-3 border-t border-outline-variant">
-                <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">Parameters</h4>
+                <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">{dgettext("admin", "Parameters")}</h4>
                 <div class="space-y-2">
                   <div
                     :for={{param_name, param_schema} <- tool["inputSchema"]["properties"] || %{}}
@@ -1530,7 +1530,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                         variant="error"
                         size="sm"
                       >
-                        req
+                        {dgettext("admin", "req")}
                       </.dm_badge>
                     </div>
                     <.dm_badge variant="ghost" size="sm" class="shrink-0">
@@ -1545,7 +1545,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
               <%!-- Tool call form --%>
               <div class="px-4 py-3 border-t border-outline-variant bg-surface-container">
-                <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">Call Tool</h4>
+                <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">{dgettext("admin", "Call Tool")}</h4>
                 <form phx-change="update_tool_args" phx-submit="call_tool" class="space-y-3">
                   <input type="hidden" name="tool_name" value={tool["name"]} />
                   <.dm_textarea
@@ -1568,13 +1568,13 @@ defmodule Backplane.Admin.McpInspectorLive do
                       name="loading"
                       class="w-4 h-4 animate-spin mr-1"
                     />
-                    Call
+                    {dgettext("admin", "Call")}
                   </.dm_btn>
                 </form>
 
                 <%!-- Result --%>
                 <div :if={get_tool_call(@tool_calls, tool["name"]).result} class="mt-3 border-t border-outline-variant pt-3">
-                  <h5 class="text-xs font-medium text-on-surface-variant mb-1">Result</h5>
+                  <h5 class="text-xs font-medium text-on-surface-variant mb-1">{dgettext("admin", "Result")}</h5>
                   <pre class="overflow-x-auto rounded-md bg-surface-container-high p-3 text-xs font-mono max-h-64 overflow-y-auto"><code>{Jason.encode!(get_tool_call(@tool_calls, tool["name"]).result, pretty: true)}</code></pre>
                 </div>
               </div>
@@ -1587,7 +1587,7 @@ defmodule Backplane.Admin.McpInspectorLive do
       <.dm_card variant="bordered">
         <:title>
           <div class="flex items-center gap-2">
-            <span>Request Log</span>
+            <span>{dgettext("admin", "Request Log")}</span>
             <.dm_badge :if={@request_log != []} variant="ghost">
               {length(@request_log)}
             </.dm_badge>
@@ -1595,7 +1595,7 @@ defmodule Backplane.Admin.McpInspectorLive do
         </:title>
 
         <div :if={@request_log == []} class="text-sm text-on-surface-variant">
-          No requests sent yet. Connect to a server and start probing.
+          {dgettext("admin", "No requests sent yet. Connect to a server and start probing.")}
         </div>
 
         <div :if={@request_log != []} class="space-y-3 max-h-[calc(100vh-20rem)] overflow-y-auto">
@@ -1620,13 +1620,13 @@ defmodule Backplane.Admin.McpInspectorLive do
             </div>
             <details :if={entry.request} class="text-xs">
               <summary class="px-3 py-1 cursor-pointer text-on-surface-variant hover:bg-surface-container-high">
-                Request
+                {dgettext("admin", "Request")}
               </summary>
               <pre class="overflow-x-auto bg-surface-container-high p-3 font-mono"><code>{entry.request}</code></pre>
             </details>
             <details :if={entry.response} open class="text-xs">
               <summary class="px-3 py-1 cursor-pointer text-on-surface-variant hover:bg-surface-container-high">
-                Response
+                {dgettext("admin", "Response")}
               </summary>
               <pre class="overflow-x-auto bg-surface-container-high p-3 font-mono max-h-64 overflow-y-auto"><code>{entry.response}</code></pre>
             </details>
@@ -1644,20 +1644,20 @@ defmodule Backplane.Admin.McpInspectorLive do
     <.dm_card variant="bordered" class="mb-6">
       <:title>
         <div class="flex items-center gap-3">
-          <span>Connection</span>
+          <span>{dgettext("admin", "Connection")}</span>
           <.dm_badge
             :if={@internal_connected}
             variant="success"
             size="sm"
           >
-            Connected
+            {dgettext("common", "Connected")}
           </.dm_badge>
           <.dm_badge
             :if={!@internal_connected}
             variant="ghost"
             size="sm"
           >
-            Disconnected
+            {dgettext("common", "Disconnected")}
           </.dm_badge>
         </div>
       </:title>
@@ -1666,9 +1666,9 @@ defmodule Backplane.Admin.McpInspectorLive do
           <.dm_select
             id="internal-source-select"
             name="source"
-            label="MCP Server"
+            label={dgettext("admin", "MCP Server")}
             options={
-              [{"", "— Select a source —"}] ++
+              [{"", dgettext("admin", "— Select a source —")}] ++
               Enum.map(@sources, fn s -> {s.key, source_label(s)} end)
             }
             value={@internal_source}
@@ -1683,7 +1683,7 @@ defmodule Backplane.Admin.McpInspectorLive do
         </div>
 
         <p :if={@sources == []} class="text-sm text-on-surface-variant">
-          No tools registered. Enable managed services or configure upstream servers.
+          {dgettext("admin", "No tools registered. Enable managed services or configure upstream servers.")}
         </p>
 
         <%!-- Action buttons --%>
@@ -1697,7 +1697,7 @@ defmodule Backplane.Admin.McpInspectorLive do
             disabled={@internal_source == ""}
           >
             <.dm_mdi name="power-plug" class="w-4 h-4 mr-1" />
-            Connect
+            {dgettext("common", "Connect")}
           </.dm_btn>
           <.dm_btn
             :if={@internal_connected}
@@ -1707,7 +1707,7 @@ defmodule Backplane.Admin.McpInspectorLive do
             phx-click="internal_disconnect"
           >
             <.dm_mdi name="power-plug-off" class="w-4 h-4 mr-1" />
-            Disconnect
+            {dgettext("common", "Disconnect")}
           </.dm_btn>
           <.dm_btn
             :if={@internal_connected}
@@ -1717,7 +1717,7 @@ defmodule Backplane.Admin.McpInspectorLive do
             phx-click="internal_list_tools"
           >
             <.dm_mdi name="toolbox" class="w-4 h-4 mr-1" />
-            List Tools
+            {dgettext("admin", "List Tools")}
           </.dm_btn>
         </div>
 
@@ -1727,18 +1727,18 @@ defmodule Backplane.Admin.McpInspectorLive do
 
     <%!-- Source info --%>
     <.dm_card :if={@internal_source_info} variant="bordered" class="mb-6">
-      <:title>Source Info</:title>
+      <:title>{dgettext("admin", "Source Info")}</:title>
       <dl class="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-3 text-sm">
         <div>
-          <dt class="font-medium text-on-surface-variant">Prefix</dt>
+          <dt class="font-medium text-on-surface-variant">{dgettext("admin", "Prefix")}</dt>
           <dd class="font-mono">{@internal_source_info.prefix}::</dd>
         </div>
         <div>
-          <dt class="font-medium text-on-surface-variant">Type</dt>
+          <dt class="font-medium text-on-surface-variant">{dgettext("admin", "Type")}</dt>
           <dd>{@internal_source_info.type}</dd>
         </div>
         <div>
-          <dt class="font-medium text-on-surface-variant">Registered Tools</dt>
+          <dt class="font-medium text-on-surface-variant">{dgettext("admin", "Registered Tools")}</dt>
           <dd>{@internal_source_info.tool_count}</dd>
         </div>
       </dl>
@@ -1748,15 +1748,15 @@ defmodule Backplane.Admin.McpInspectorLive do
     <div :if={@internal_tools != []} class="mb-6">
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2">
-          <h2 class="text-lg font-semibold">Tools</h2>
+          <h2 class="text-lg font-semibold">{dgettext("admin", "Tools")}</h2>
           <.dm_badge variant="ghost">{length(@internal_tools)}</.dm_badge>
         </div>
         <div class="flex gap-2">
           <.dm_btn id="internal-expand-all" size="sm" variant="outline" phx-click="expand_all_internal">
-            Expand All
+            {dgettext("admin", "Expand All")}
           </.dm_btn>
           <.dm_btn id="internal-collapse-all" size="sm" variant="outline" phx-click="collapse_all_internal">
-            Collapse All
+            {dgettext("admin", "Collapse All")}
           </.dm_btn>
         </div>
       </div>
@@ -1780,7 +1780,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               </p>
             </div>
             <.dm_badge :if={tool.input_schema["properties"]} variant="ghost" size="sm">
-              {map_size(tool.input_schema["properties"])} params
+              {dngettext("admin", "%{count} param", "%{count} params", map_size(tool.input_schema["properties"]))}
             </.dm_badge>
           </div>
 
@@ -1793,7 +1793,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
             <%!-- Input schema parameters --%>
             <div :if={tool.input_schema["properties"] && map_size(tool.input_schema["properties"]) > 0} class="px-4 py-3 border-t border-outline-variant">
-              <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">Parameters</h4>
+              <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">{dgettext("admin", "Parameters")}</h4>
               <div class="space-y-2">
                 <div
                   :for={{param_name, param_schema} <- tool.input_schema["properties"] || %{}}
@@ -1806,7 +1806,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                       variant="error"
                       size="sm"
                     >
-                      req
+                      {dgettext("admin", "req")}
                     </.dm_badge>
                   </div>
                   <.dm_badge variant="ghost" size="sm" class="shrink-0">
@@ -1821,7 +1821,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
             <%!-- Tool call form --%>
             <div class="px-4 py-3 border-t border-outline-variant bg-surface-container">
-              <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">Call Tool</h4>
+              <h4 class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">{dgettext("admin", "Call Tool")}</h4>
               <form phx-change="update_internal_tool_args" phx-submit="call_internal_tool" class="space-y-3">
                 <input type="hidden" name="tool_name" value={tool.name} />
                 <.dm_textarea
@@ -1844,7 +1844,7 @@ defmodule Backplane.Admin.McpInspectorLive do
                     name="loading"
                     class="w-4 h-4 animate-spin mr-1"
                   />
-                  Call
+                  {dgettext("admin", "Call")}
                 </.dm_btn>
               </form>
 
@@ -1852,7 +1852,7 @@ defmodule Backplane.Admin.McpInspectorLive do
               <% tc = get_tool_call(@internal_tool_calls, tool.name) %>
               <div :if={tc.result} class="mt-3 border-t border-outline-variant pt-3">
                 <div class="flex items-center gap-2 mb-1">
-                  <h5 class="text-xs font-medium text-on-surface-variant">Result</h5>
+                  <h5 class="text-xs font-medium text-on-surface-variant">{dgettext("admin", "Result")}</h5>
                   <.dm_badge variant={if tc.result.status == :ok, do: "success", else: "error"} size="sm">
                     {tc.result.status}
                   </.dm_badge>

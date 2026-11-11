@@ -1,0 +1,1410 @@
+## This file is a PO Template file.
+##
+## "msgid"s here are often extracted from source code.
+## Add new messages manually only if they're dynamic
+## messages that can't be statically extracted.
+##
+## Run "mix gettext.extract" to bring this file up to
+## date. Leave "msgstr"s empty as changing them here has no
+## effect: edit them in PO (.po) files instead.
+#
+msgid ""
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:301
+#, elixir-autogen, elixir-format
+msgid "%{description} (%{status})"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:313
+#, elixir-autogen, elixir-format
+msgid "%{error} (%{status})"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:1313
+#, elixir-autogen, elixir-format
+msgid "%{field} %{message}"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:349
+#, elixir-autogen, elixir-format
+msgid "%{label} base URL must be an absolute HTTP(S) URL"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:360
+#, elixir-autogen, elixir-format
+msgid "%{label} credential is not in the credential store"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:310
+#, elixir-autogen, elixir-format
+msgid "%{message} (%{status})"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:307
+#, elixir-autogen, elixir-format
+msgid "%{message} (%{type}, %{status})"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_new_live.ex:282
+#: lib/backplane/admin/live/provider_show_live.ex:637
+#: lib/backplane/admin/live/provider_show_live.ex:637
+#, elixir-autogen, elixir-format
+msgid "%{surface} base URL is required"
+msgstr ""
+
+#: lib/backplane/admin/live/memory_records_live.ex:52
+#, elixir-autogen, elixir-format
+msgid "A reason is required to forget a record"
+msgstr ""
+
+#: lib/backplane/admin/live/api_usage_live.ex:37
+#, elixir-autogen, elixir-format
+msgid "API account not found"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1086
+#, elixir-autogen, elixir-format
+msgid "API returned %{status}"
+msgstr ""
+
+#: lib/backplane/admin/live/host_services_live.ex:71
+#: lib/backplane/admin/live/host_services_live.ex:92
+#, elixir-autogen, elixir-format
+msgid "API service not found"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:211
+#, elixir-autogen, elixir-format
+msgid "Acknowledge provider charges for transcription"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:395
+#, elixir-autogen, elixir-format
+msgid "Archive must contain a SKILL.md file"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:451
+#: lib/backplane/admin/live/managed_tool_detail_live.ex:127
+#: lib/backplane/admin/live/mcp_inspector_live.ex:195
+#: lib/backplane/admin/live/mcp_inspector_live.ex:383
+#, elixir-autogen, elixir-format
+msgid "Arguments must be a JSON object"
+msgstr ""
+
+#: lib/backplane/admin/live/plugins_live.ex:312
+#, elixir-autogen, elixir-format
+msgid "Artifact validation failed"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:155
+#, elixir-autogen, elixir-format
+msgid "Audio capacity unavailable"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:411
+#, elixir-autogen, elixir-format
+msgid "Audio is disabled (audio_disabled). Select Enable audio in Audio service before previewing."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:485
+#, elixir-autogen, elixir-format
+msgid "Audio routes could not be saved."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:194
+#, elixir-autogen, elixir-format
+msgid "Audio upload capacity unavailable; select a file again"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:70
+#, elixir-autogen, elixir-format
+msgid "Auth succeeded but failed to save credential"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:415
+#: lib/backplane/admin/live/settings_live.ex:581
+#, elixir-autogen, elixir-format
+msgid "Auth succeeded but failed to save credential: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:70
+#, elixir-autogen, elixir-format
+msgid "Auth succeeded but failed to save the credential"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:48
+#, elixir-autogen, elixir-format
+msgid "Auth user could not be created."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:63
+#, elixir-autogen, elixir-format
+msgid "Auth user was not found."
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:389
+#, elixir-autogen, elixir-format
+msgid "Authorization code is required"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:90
+#, elixir-autogen, elixir-format
+msgid "Authorization denied: %{description} (%{error})"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:96
+#, elixir-autogen, elixir-format
+msgid "Authorization denied: %{error}"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:77
+#: lib/backplane/admin/live/settings_live.ex:553
+#: lib/backplane/admin/live/settings_live.ex:603
+#, elixir-autogen, elixir-format
+msgid "Authorization failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:682
+#: lib/backplane/admin/live/settings_live.ex:711
+#: lib/backplane/admin/live/settings_live.ex:792
+#, elixir-autogen, elixir-format
+msgid "Authorization is not configured: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:727
+#, elixir-autogen, elixir-format
+msgid "Buffer overflow — dropped"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:439
+#, elixir-autogen, elixir-format
+msgid "CLI auth import is not available for this provider"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:69
+#: lib/backplane/admin/live/codex_catalog_live.ex:87
+#, elixir-autogen, elixir-format
+msgid "Catalog entry not found"
+msgstr ""
+
+#: lib/backplane/admin/live/plugins_live.ex:86
+#, elixir-autogen, elixir-format
+msgid "Check manifest, MCP declarations and exact skill selections"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:350
+#, elixir-autogen, elixir-format
+msgid "Check provider availability and API-key credentials."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:339
+#, elixir-autogen, elixir-format
+msgid "Check the organization's Admin API key and Usage read permission."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:342
+#, elixir-autogen, elixir-format
+msgid "Check the referenced vault credential."
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:443
+#, elixir-autogen, elixir-format
+msgid "Choose a managed tool"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:336
+#, elixir-autogen, elixir-format
+msgid "Choose a supported web fetch backend"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:267
+#, elixir-autogen, elixir-format
+msgid "Choose a supported web search backend"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:135
+#, elixir-autogen, elixir-format
+msgid "Choose a system voice before running speech preview"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:475
+#, elixir-autogen, elixir-format
+msgid "Choose an eligible API-key credential."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:476
+#, elixir-autogen, elixir-format
+msgid "Choose the region authorized for this key."
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:475
+#, elixir-autogen, elixir-format
+msgid "Claude Code auth JSON is only available for Claude Plan"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:445
+#: lib/backplane/admin/live/settings_live.ex:478
+#, elixir-autogen, elixir-format
+msgid "Claude Code auth JSON is required"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:43
+#: lib/backplane/admin/live/clients_live.ex:65
+#: lib/backplane/admin/live/clients_live.ex:102
+#, elixir-autogen, elixir-format
+msgid "Client not found"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:424
+#, elixir-autogen, elixir-format
+msgid "Code exchange failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/plugins_live.ex:215
+#, elixir-autogen, elixir-format
+msgid "Codex requires unique plugin names. Select one publisher for each name in the export scope, or choose a channel with unique names."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:230
+#, elixir-autogen, elixir-format
+msgid "Complete one upload before running transcription"
+msgstr ""
+
+#: lib/backplane/admin/live/openai_proxy_live.ex:186
+#: lib/backplane/admin/live/openai_proxy_live.ex:186
+#, elixir-autogen, elixir-format
+msgid "Configuration could not be changed"
+msgstr ""
+
+#: lib/backplane/admin/live/openai_proxy_live.ex:176
+#: lib/backplane/admin/live/openai_proxy_live.ex:176
+#, elixir-autogen, elixir-format
+msgid "Configuration could not be deleted"
+msgstr ""
+
+#: lib/backplane/admin/live/openai_proxy_live.ex:139
+#: lib/backplane/admin/live/openai_proxy_live.ex:139
+#, elixir-autogen, elixir-format
+msgid "Configuration is no longer available"
+msgstr ""
+
+#: lib/backplane/admin/live/openai_proxy_live.ex:146
+#: lib/backplane/admin/live/openai_proxy_live.ex:146
+#, elixir-autogen, elixir-format
+msgid "Configuration not found"
+msgstr ""
+
+#: lib/backplane/admin/live/api_usage_live.ex:97
+#, elixir-autogen, elixir-format
+msgid "Could not change API account"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:75
+#, elixir-autogen, elixir-format
+msgid "Could not change model exposure"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:162
+#, elixir-autogen, elixir-format
+msgid "Could not import Codex models. Check the provider and try again."
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:598
+#, elixir-autogen, elixir-format
+msgid "Could not parse response: %{body}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2071
+#, elixir-autogen, elixir-format
+msgid "Could not reach Figma client registration; try again or configure an approved Figma client"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:165
+#, elixir-autogen, elixir-format
+msgid "Could not refresh Codex models. The saved models were kept."
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:88
+#, elixir-autogen, elixir-format
+msgid "Could not remove catalog entry"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:326
+#, elixir-autogen, elixir-format
+msgid "Could not save web settings"
+msgstr ""
+
+#: lib/backplane/admin/live/system_config_live.ex:54
+#, elixir-autogen, elixir-format
+msgid "Could not update API information fetching. Please try again."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1080
+#, elixir-autogen, elixir-format
+msgid "Credential auth type %{auth_type} is not %{expected}"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_new_live.ex:241
+#: lib/backplane/admin/live/provider_show_live.ex:594
+#: lib/backplane/admin/live/provider_show_live.ex:594
+#, elixir-autogen, elixir-format
+msgid "Credential is required"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1076
+#, elixir-autogen, elixir-format
+msgid "Credential kind %{kind} is not %{expected}"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_new_live.ex:274
+#: lib/backplane/admin/live/provider_show_live.ex:629
+#: lib/backplane/admin/live/provider_show_live.ex:629
+#, elixir-autogen, elixir-format
+msgid "Credential must be a %{kind} credential"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_new_live.ex:269
+#: lib/backplane/admin/live/provider_show_live.ex:624
+#: lib/backplane/admin/live/provider_show_live.ex:624
+#, elixir-autogen, elixir-format
+msgid "Credential must use %{auth_type} auth type"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:442
+#: lib/backplane/admin/live/settings_live.ex:625
+#, elixir-autogen, elixir-format
+msgid "Credential name is required"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1061
+#, elixir-autogen, elixir-format
+msgid "Credential not found"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2695
+#, elixir-autogen, elixir-format
+msgid "DNS lookup failed for auth.openai.com. Check this server's DNS or proxy settings."
+msgstr ""
+
+#: lib/backplane/admin/live/host_services_live.ex:111
+#, elixir-autogen, elixir-format
+msgid "Detach providers before deleting this service"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:595
+#, elixir-autogen, elixir-format
+msgid "Device authorization code expired. Please try again."
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2689
+#, elixir-autogen, elixir-format
+msgid "Device-code login is not enabled for this account or server."
+msgstr ""
+
+#: lib/backplane/admin/live/plugins_live.ex:228
+#, elixir-autogen, elixir-format
+msgid "Distribution failed; check destination, repository and credential configuration"
+msgstr ""
+
+#: lib/backplane/admin/live/embedding_live.ex:55
+#: lib/backplane/admin/live/embedding_live.ex:72
+#, elixir-autogen, elixir-format
+msgid "Embedding provider not found"
+msgstr ""
+
+#: lib/backplane/admin/live/upstreams_live.ex:187
+#, elixir-autogen, elixir-format
+msgid "Enable upstream before connecting"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:603
+#: lib/backplane/admin/live/logs_mcp_live.ex:97
+#: lib/backplane/admin/live/memory_sessions_live.ex:66
+#, elixir-autogen, elixir-format
+msgid "Error"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:644
+#, elixir-autogen, elixir-format
+msgid "Error: %{error}"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:332
+#, elixir-autogen, elixir-format
+msgid "Exa usage analytics are unavailable for ordinary accounts. Exa requires Team Management API access; contact Exa support to enable it."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:483
+#, elixir-autogen, elixir-format
+msgid "Existing audio models or bindings differ from the preset. Audio route configuration needs operator attention."
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2060
+#, elixir-autogen, elixir-format
+msgid "FIGMA_MCP_CLIENT_SECRET requires FIGMA_MCP_CLIENT_ID; remove the secret to register automatically"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:756
+#, elixir-autogen, elixir-format
+msgid "Failed to decode response"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1062
+#, elixir-autogen, elixir-format
+msgid "Failed to decrypt credential"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:140
+#, elixir-autogen, elixir-format
+msgid "Failed to delete MCP server"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:262
+#, elixir-autogen, elixir-format
+msgid "Failed to delete agent"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:116
+#, elixir-autogen, elixir-format
+msgid "Failed to delete client"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:537
+#, elixir-autogen, elixir-format
+msgid "Failed to delete credential"
+msgstr ""
+
+#: lib/backplane/admin/live/embedding_live.ex:89
+#, elixir-autogen, elixir-format
+msgid "Failed to delete embedding provider"
+msgstr ""
+
+#: lib/backplane/admin/live/monitor_plans_live.ex:117
+#, elixir-autogen, elixir-format
+msgid "Failed to delete plan"
+msgstr ""
+
+#: lib/backplane/admin/live/providers_live.ex:50
+#, elixir-autogen, elixir-format
+msgid "Failed to delete provider"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_browse_live.ex:207
+#: lib/backplane/admin/live/skill_draft_live.ex:118
+#: lib/backplane/admin/live/skill_upload_live.ex:167
+#, elixir-autogen, elixir-format
+msgid "Failed to delete skill"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:185
+#, elixir-autogen, elixir-format
+msgid "Failed to delete source"
+msgstr ""
+
+#: lib/backplane/admin/live/upstreams_live.ex:135
+#, elixir-autogen, elixir-format
+msgid "Failed to delete upstream"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:265
+#, elixir-autogen, elixir-format
+msgid "Failed to disable provider aliases: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:247
+#, elixir-autogen, elixir-format
+msgid "Failed to enable provider aliases: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:849
+#, elixir-autogen, elixir-format
+msgid "Failed to fetch remote skills: %{error}"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:607
+#, elixir-autogen, elixir-format
+msgid "Failed to fetch usage: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:462
+#, elixir-autogen, elixir-format
+msgid "Failed to import Claude Code auth JSON: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:308
+#, elixir-autogen, elixir-format
+msgid "Failed to remove custom alias"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:281
+#: lib/backplane/admin/live/provider_show_live.ex:281
+#, elixir-autogen, elixir-format
+msgid "Failed to remove model"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:366
+#, elixir-autogen, elixir-format
+msgid "Failed to renew OAuth token: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:648
+#, elixir-autogen, elixir-format
+msgid "Failed to request device code: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:137
+#, elixir-autogen, elixir-format
+msgid "Failed to rotate client token"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:917
+#, elixir-autogen, elixir-format
+msgid "Failed to rotate credential"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:290
+#, elixir-autogen, elixir-format
+msgid "Failed to save custom alias: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:673
+#, elixir-autogen, elixir-format
+msgid "Failed to send: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/upstreams_live.ex:182
+#, elixir-autogen, elixir-format
+msgid "Failed to start connection: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:678
+#, elixir-autogen, elixir-format
+msgid "Failed to start: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:860
+#, elixir-autogen, elixir-format
+msgid "Failed to store credential"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:74
+#, elixir-autogen, elixir-format
+msgid "Failed to toggle client status"
+msgstr ""
+
+#: lib/backplane/admin/live/monitor_plans_live.ex:79
+#, elixir-autogen, elixir-format
+msgid "Failed to toggle plan status"
+msgstr ""
+
+#: lib/backplane/admin/live/providers_live.ex:67
+#, elixir-autogen, elixir-format
+msgid "Failed to toggle provider"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:497
+#, elixir-autogen, elixir-format
+msgid "Failed to update Claude Code auth JSON: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:158
+#, elixir-autogen, elixir-format
+msgid "Failed to update MCP server"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:890
+#, elixir-autogen, elixir-format
+msgid "Failed to update credential"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:257
+#: lib/backplane/admin/live/provider_show_live.ex:257
+#, elixir-autogen, elixir-format
+msgid "Failed to update model"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:829
+#, elixir-autogen, elixir-format
+msgid "Failed to update model alias"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_live.ex:68
+#: lib/backplane/admin/live/managed_live.ex:71
+#, elixir-autogen, elixir-format
+msgid "Failed to update service"
+msgstr ""
+
+#: lib/backplane/admin/live/upstreams_live.ex:162
+#, elixir-autogen, elixir-format
+msgid "Failed to update upstream"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:259
+#, elixir-autogen, elixir-format
+msgid "Fetch settings were not submitted correctly"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2067
+#, elixir-autogen, elixir-format
+msgid "Figma client registration failed (HTTP %{status}); this deployment may require an approved Figma client"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:77
+#, elixir-autogen, elixir-format
+msgid "Figma denied authorization"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:67
+#, elixir-autogen, elixir-format
+msgid "Figma returned an incomplete token response"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2063
+#, elixir-autogen, elixir-format
+msgid "Figma returned an invalid client registration response"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:647
+#, elixir-autogen, elixir-format
+msgid "File is too large (max 50 MB)"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:649
+#, elixir-autogen, elixir-format
+msgid "File type not accepted"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:315
+#: lib/backplane/admin/figma_oauth.ex:87
+#: lib/backplane/admin/live/host_agents_live.ex:1160
+#: lib/backplane/admin/live/settings_live.ex:2668
+#, elixir-autogen, elixir-format
+msgid "HTTP %{status}"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:443
+#: lib/backplane/admin/live/host_services_live.ex:28
+#, elixir-autogen, elixir-format
+msgid "Host agent not found"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:298
+#, elixir-autogen, elixir-format
+msgid "Import failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/system_config_live.ex:63
+#, elixir-autogen, elixir-format
+msgid "Invalid API fetching setting."
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:453
+#, elixir-autogen, elixir-format
+msgid "Invalid JSON arguments: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:198
+#: lib/backplane/admin/live/mcp_inspector_live.ex:386
+#, elixir-autogen, elixir-format
+msgid "Invalid JSON in arguments"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_tool_detail_live.ex:128
+#, elixir-autogen, elixir-format
+msgid "Invalid JSON: %{message}"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:102
+#, elixir-autogen, elixir-format
+msgid "Invalid OAuth callback — missing code or state"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:397
+#, elixir-autogen, elixir-format
+msgid "Invalid archive file"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:291
+#, elixir-autogen, elixir-format
+msgid "Invalid file. Expected a JSON array of sources."
+msgstr ""
+
+#: lib/backplane/admin/live/memory_records_live.ex:90
+#, elixir-autogen, elixir-format
+msgid "Invalid filter: %{message}"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:895
+#: lib/backplane/admin/live/provider_show_live.ex:895
+#, elixir-autogen, elixir-format
+msgid "Last reload incomplete: %{errors}"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:407
+#, elixir-autogen, elixir-format
+msgid "MCP process exited (status %{status})"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:55
+#, elixir-autogen, elixir-format
+msgid "MCP server not found"
+msgstr ""
+
+#: lib/backplane/admin/components/memory_components.ex:41
+#, elixir-autogen, elixir-format
+msgid "Memory data is unavailable. Retry after checking the database connection."
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2700
+#, elixir-autogen, elixir-format
+msgid "Missing %{field}"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:146
+#, elixir-autogen, elixir-format
+msgid "Model %{slug} is already assigned to another provider"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:652
+#: lib/backplane/admin/live/provider_show_live.ex:652
+#, elixir-autogen, elixir-format
+msgid "Model is required"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:174
+#: lib/backplane/admin/live/provider_show_live.ex:174
+#: lib/backplane/admin/live/provider_show_live.ex:193
+#: lib/backplane/admin/live/provider_show_live.ex:193
+#: lib/backplane/admin/live/provider_show_live.ex:248
+#: lib/backplane/admin/live/provider_show_live.ex:248
+#: lib/backplane/admin/live/provider_show_live.ex:267
+#: lib/backplane/admin/live/provider_show_live.ex:267
+#, elixir-autogen, elixir-format
+msgid "Model not found"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:118
+#: lib/backplane/admin/live/provider_show_live.ex:118
+#, elixir-autogen, elixir-format
+msgid "Model reload finished with errors: %{errors}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:848
+#, elixir-autogen, elixir-format
+msgid "Name and secret are required"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_new_live.ex:168
+#: lib/backplane/admin/live/provider_show_live.ex:586
+#: lib/backplane/admin/live/provider_show_live.ex:586
+#, elixir-autogen, elixir-format
+msgid "Name is required"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2698
+#, elixir-autogen, elixir-format
+msgid "Network request failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:905
+#, elixir-autogen, elixir-format
+msgid "New secret is required"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:822
+#, elixir-autogen, elixir-format
+msgid "No enabled provider model found for: %{models}"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:139
+#, elixir-autogen, elixir-format
+msgid "No file was uploaded"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:396
+#, elixir-autogen, elixir-format
+msgid "No files found for skill root '%{root}'"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_browse_live.ex:156
+#: lib/backplane/admin/live/skill_browse_live.ex:183
+#, elixir-autogen, elixir-format
+msgid "No skills selected"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:685
+#: lib/backplane/admin/live/mcp_inspector_live.ex:703
+#, elixir-autogen, elixir-format
+msgid "Not connected"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1064
+#, elixir-autogen, elixir-format
+msgid "OAuth access token is missing"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1093
+#, elixir-autogen, elixir-format
+msgid "OAuth refresh host could not be resolved; check DNS or proxy settings"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1099
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1102
+#, elixir-autogen, elixir-format
+msgid "OAuth refresh request failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1089
+#, elixir-autogen, elixir-format
+msgid "OAuth refresh returned %{status}"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2648
+#, elixir-autogen, elixir-format
+msgid "OAuth state did not match. Please restart authorization."
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:61
+#, elixir-autogen, elixir-format
+msgid "OAuth state expired or invalid. Please try again."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1073
+#, elixir-autogen, elixir-format
+msgid "OAuth token was rejected; reconnect is required"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:72
+#, elixir-autogen, elixir-format
+msgid "Only imported Codex models can be enabled"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:648
+#, elixir-autogen, elixir-format
+msgid "Only one file at a time"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1067
+#, elixir-autogen, elixir-format
+msgid "OpenAI Codex account ID is missing"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:324
+#, elixir-autogen, elixir-format
+msgid "OpenAI Completions usage unavailable. Successfully fetched spending is still shown."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:321
+#, elixir-autogen, elixir-format
+msgid "OpenAI organization spending unavailable. Successfully fetched usage is still shown."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:318
+#, elixir-autogen, elixir-format
+msgid "OpenAI rejected access to some organization data. Check the organization's Admin API key and Usage read permission. Successfully fetched fields are still shown."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:328
+#, elixir-autogen, elixir-format
+msgid "OpenRouter account credits unavailable. Successfully fetched key spending is still shown."
+msgstr ""
+
+#: lib/backplane/admin/live/plugins_live.ex:246
+#, elixir-autogen, elixir-format
+msgid "Operation failed; check the selected records and configuration"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2642
+#, elixir-autogen, elixir-format
+msgid "Paste the authorization code shown by Google Antigravity"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:53
+#, elixir-autogen, elixir-format
+msgid "Paste the full Figma callback URL"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2639
+#, elixir-autogen, elixir-format
+msgid "Paste the full code in the form code#state"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2645
+#, elixir-autogen, elixir-format
+msgid "Paste the xAI callback URL or authorization code"
+msgstr ""
+
+#: lib/backplane/admin/live/monitor_plans_live.ex:47
+#: lib/backplane/admin/live/monitor_plans_live.ex:70
+#: lib/backplane/admin/live/monitor_plans_live.ex:104
+#, elixir-autogen, elixir-format
+msgid "Plan not found"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:629
+#, elixir-autogen, elixir-format
+msgid "Please enter a command"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:489
+#, elixir-autogen, elixir-format
+msgid "Please enter an MCP server URL"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:71
+#, elixir-autogen, elixir-format
+msgid "Please select a file to upload"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:262
+#, elixir-autogen, elixir-format
+msgid "Please select a source"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:415
+#, elixir-autogen, elixir-format
+msgid "Preview cancelled; provider usage may have occurred. Cancellation does not guarantee a refund."
+msgstr ""
+
+#: lib/backplane/admin/audio_preview.ex:205
+#, elixir-autogen, elixir-format
+msgid "Preview exceeds 1 MB"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:466
+#, elixir-autogen, elixir-format
+msgid "Preview failed; check bindings, voices, media readiness and limits. Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:294
+#: lib/backplane/admin/live/audio_live.ex:302
+#, elixir-autogen, elixir-format
+msgid "Preview stopped; provider usage may have occurred"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:418
+#, elixir-autogen, elixir-format
+msgid "Preview timed out; provider execution is uncertain. No automatic retry was made."
+msgstr ""
+
+#: lib/backplane/admin/audio_preview.ex:197
+#, elixir-autogen, elixir-format
+msgid "Preview unavailable"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:430
+#, elixir-autogen, elixir-format
+msgid "Provider audio failed MP3 validation (audio_invalid_response). Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:44
+#: lib/backplane/admin/live/provider_show_live.ex:44
+#: lib/backplane/admin/live/providers_live.ex:37
+#: lib/backplane/admin/live/providers_live.ex:58
+#, elixir-autogen, elixir-format
+msgid "Provider not found"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1063
+#, elixir-autogen, elixir-format
+msgid "Provider not yet supported"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:422
+#, elixir-autogen, elixir-format
+msgid "Provider rejected synthesis (audio_provider_error). Check the selected account, region and model access. Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:426
+#, elixir-autogen, elixir-format
+msgid "Provider response ended before audio completion (audio_incomplete_stream). Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:462
+#, elixir-autogen, elixir-format
+msgid "Provider returned an invalid non-SSE response (audio_invalid_response). Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:448
+#, elixir-autogen, elixir-format
+msgid "Provider stream contained an empty audio chunk (audio_invalid_response). Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:455
+#, elixir-autogen, elixir-format
+msgid "Provider stream contained an invalid audio status (audio_invalid_response). Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:441
+#, elixir-autogen, elixir-format
+msgid "Provider stream omitted its audio data (audio_invalid_response). Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:437
+#, elixir-autogen, elixir-format
+msgid "Provider stream omitted its business status (audio_invalid_response). Provider usage may have occurred."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:112
+#, elixir-autogen, elixir-format
+msgid "RBAC role could not be assigned."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:85
+#, elixir-autogen, elixir-format
+msgid "RBAC role could not be created."
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:247
+#, elixir-autogen, elixir-format
+msgid "Readiness check failed. Try again."
+msgstr ""
+
+#: lib/backplane/admin/live/logs_llm_live.ex:205
+#: lib/backplane/admin/live/logs_mcp_live.ex:229
+#: lib/backplane/admin/live/memory_records_live.ex:41
+#: lib/backplane/admin/live/memory_records_live.ex:63
+#, elixir-autogen, elixir-format
+msgid "Record not found"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_mcp_live.ex:72
+#, elixir-autogen, elixir-format
+msgid "Record unavailable"
+msgstr ""
+
+#: lib/backplane/admin/components/layouts/app.html.heex:145
+#, elixir-autogen, elixir-format
+msgid "Refresh unavailable"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1110
+#: lib/backplane/admin/live/mcp_inspector_live.ex:520
+#, elixir-autogen, elixir-format
+msgid "Request failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:97
+#, elixir-autogen, elixir-format
+msgid "Routes were saved, but native voice IDs could not be enabled. Audio voice configuration needs attention."
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:291
+#, elixir-autogen, elixir-format
+msgid "Search backend settings were not submitted correctly"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:142
+#, elixir-autogen, elixir-format
+msgid "Select a client before rotating its token"
+msgstr ""
+
+#: lib/backplane/admin/live/plugins_live.ex:67
+#, elixir-autogen, elixir-format
+msgid "Select a complete valid plugin archive"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:42
+#: lib/backplane/admin/live/codex_catalog_live.ex:55
+#, elixir-autogen, elixir-format
+msgid "Select a configured Codex provider"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:214
+#, elixir-autogen, elixir-format
+msgid "Select a file again"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:206
+#, elixir-autogen, elixir-format
+msgid "Select a target model to add"
+msgstr ""
+
+#: lib/backplane/admin/live/provider_show_live.ex:660
+#: lib/backplane/admin/live/provider_show_live.ex:660
+#, elixir-autogen, elixir-format
+msgid "Select at least one API surface"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:279
+#, elixir-autogen, elixir-format
+msgid "Selected file expired; select a file again"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:226
+#: lib/backplane/admin/live/mcp_inspector_live.ex:696
+#: lib/backplane/admin/live/mcp_inspector_live.ex:718
+#, elixir-autogen, elixir-format
+msgid "Send failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/memory_sessions_live.ex:29
+#, elixir-autogen, elixir-format
+msgid "Session cannot be retried"
+msgstr ""
+
+#: lib/backplane/admin/live/memory_config_live.ex:104
+#, elixir-autogen, elixir-format
+msgid "Setting not saved"
+msgstr ""
+
+#: lib/backplane/admin/live/system_config_live.ex:43
+#, elixir-autogen, elixir-format
+msgid "Setting updated, but the audit record could not be saved."
+msgstr ""
+
+#: lib/backplane/admin/live/skill_browse_live.ex:65
+#: lib/backplane/admin/live/skill_draft_live.ex:62
+#: lib/backplane/admin/live/skill_draft_live.ex:80
+#: lib/backplane/admin/live/skill_upload_live.ex:56
+#, elixir-autogen, elixir-format
+msgid "Skill not found"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:393
+#, elixir-autogen, elixir-format
+msgid "Slug '%{slug}' conflicts with a non-archive skill"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:336
+#, elixir-autogen, elixir-format
+msgid "Some provider data is unavailable. Displayed values represent only successfully fetched fields."
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:277
+#: lib/backplane/admin/live/plugins_live.ex:101
+#: lib/backplane/admin/live/skill_upstream_live.ex:81
+#: lib/backplane/admin/live/skill_upstream_live.ex:108
+#: lib/backplane/admin/live/skill_upstream_live.ex:189
+#: lib/backplane/admin/live/skill_upstream_live.ex:201
+#, elixir-autogen, elixir-format
+msgid "Source not found"
+msgstr ""
+
+#: lib/backplane/admin/live/plugins_live.ex:206
+#, elixir-autogen, elixir-format
+msgid "Source sync failed; prior published releases remain available"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:128
+#, elixir-autogen, elixir-format
+msgid "Speech preview is limited to 200 characters"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:359
+#, elixir-autogen, elixir-format
+msgid "Sync failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:64
+#, elixir-autogen, elixir-format
+msgid "The Figma OAuth client is invalid; reconnect"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:58
+#, elixir-autogen, elixir-format
+msgid "The callback URL does not match this login"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:55
+#, elixir-autogen, elixir-format
+msgid "The callback URL is missing code"
+msgstr ""
+
+#: lib/backplane/admin/figma_oauth.ex:54
+#, elixir-autogen, elixir-format
+msgid "The callback URL is missing state"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:304
+#, elixir-autogen, elixir-format
+msgid "The default web search backend must be enabled"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:479
+#, elixir-autogen, elixir-format
+msgid "The minimax-audio provider already exists and is not owned by audio setup."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:347
+#, elixir-autogen, elixir-format
+msgid "The provider rejected authorization."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_api_usage_live.ex:344
+#, elixir-autogen, elixir-format
+msgid "The provider timed out."
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2692
+#, elixir-autogen, elixir-format
+msgid "The refresh token was already consumed. Reconnect OpenAI Codex."
+msgstr ""
+
+#: lib/backplane/admin/live/memory_config_live.ex:267
+#, elixir-autogen, elixir-format
+msgid "The setting could not be saved."
+msgstr ""
+
+#: lib/backplane/admin/live/memory_config_live.ex:266
+#, elixir-autogen, elixir-format
+msgid "The submitted setting is not editable here."
+msgstr ""
+
+#: lib/backplane/admin/live/memory_config_live.ex:265
+#, elixir-autogen, elixir-format
+msgid "The value is outside the typed setting bounds."
+msgstr ""
+
+#: lib/backplane/admin/live/memory_config_live.ex:82
+#, elixir-autogen, elixir-format
+msgid "This route is not authorized to change Memory settings."
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:900
+#, elixir-autogen, elixir-format
+msgid "Timed out waiting for stdio %{method} response after %{timeout}ms"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:269
+#, elixir-autogen, elixir-format
+msgid "Type the agent name to confirm"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:222
+#, elixir-autogen, elixir-format
+msgid "Unable to reveal token"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:237
+#, elixir-autogen, elixir-format
+msgid "Unable to revoke token"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:1090
+#, elixir-autogen, elixir-format
+msgid "Unavailable: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:70
+#: lib/backplane/admin/live/managed_tool_detail_live.ex:62
+#, elixir-autogen, elixir-format
+msgid "Unknown managed service: %{prefix}"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_tool_detail_live.ex:70
+#, elixir-autogen, elixir-format
+msgid "Unknown tool: %{name}"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:146
+#, elixir-autogen, elixir-format
+msgid "Unsupported file type. Please upload .tar.gz, .tgz, or .zip"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:223
+#, elixir-autogen, elixir-format
+msgid "Unsupported upload format"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_draft_live.ex:167
+#, elixir-autogen, elixir-format
+msgid "Update failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:353
+#, elixir-autogen, elixir-format
+msgid "Upload could not be prepared"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upload_live.ex:131
+#, elixir-autogen, elixir-format
+msgid "Upload failed: %{reason}"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:172
+#: lib/backplane/admin/live/audio_live.ex:405
+#, elixir-autogen, elixir-format
+msgid "Upload rejected; select a file again"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:301
+#, elixir-autogen, elixir-format
+msgid "Upload stopped; select a file again"
+msgstr ""
+
+#: lib/backplane/admin/live/upstreams_live.ex:52
+#, elixir-autogen, elixir-format
+msgid "Upstream not found"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1104
+#, elixir-autogen, elixir-format
+msgid "Usage endpoint is rate limited"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1107
+#, elixir-autogen, elixir-format
+msgid "Usage endpoint is rate limited for %{seconds}s"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:1070
+#, elixir-autogen, elixir-format
+msgid "Usage response was not recognized"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:320
+#, elixir-autogen, elixir-format
+msgid "X Search settings were not submitted correctly"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2178
+#, elixir-autogen, elixir-format
+msgid "expected Claude Code auth JSON"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:1148
+#, elixir-autogen, elixir-format
+msgid "host-agent HTTP endpoint is disabled"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:1151
+#, elixir-autogen, elixir-format
+msgid "host-agent HTTP endpoint is unavailable"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:1154
+#, elixir-autogen, elixir-format
+msgid "host-agent connect IP is unavailable"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:2177
+#, elixir-autogen, elixir-format
+msgid "invalid JSON"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:1045
+#, elixir-autogen, elixir-format
+msgid "invalid alias"
+msgstr ""
+
+#: lib/backplane/admin/controllers/page_controller.ex:9
+#, elixir-autogen, elixir-format
+msgid "not found"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:1108
+#, elixir-autogen, elixir-format
+msgid "refresh returned HTTP %{status}"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:1166
+#, elixir-autogen, elixir-format
+msgid "unexpected response: %{response}"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:1163
+#, elixir-autogen, elixir-format
+msgid "unexpected result: %{result}"
+msgstr ""

@@ -3,22 +3,22 @@
     title="Backplane"
     title_to={~p"/"}
     class="appbar-primary appbar-elevated border-b border-outline-variant"
-    nav_label="Backplane public gateway"
+    nav_label={dgettext("navigation", "Backplane public gateway")}
   >
     <:logo><img class="w-10 h-10 aspect-square" src={~p"/images/backplane-logo.png"} /></:logo>
     <:user_profile>
       <div class="hidden items-center gap-2 sm:flex">
-        <.dm_badge variant="info" size="sm" soft>Public API</.dm_badge>
-        <.dm_badge variant="success" size="sm" soft>Docs</.dm_badge>
-        <nav class="appbar-actions" aria-label="Backplane public gateway">
-          <.dm_tooltip :let={tooltip_attrs} content="Docs" position="bottom" class="inline-flex">
-            <a {tooltip_attrs} href={~p"/docs"} class="appbar-action" aria-label="Docs">
+        <.dm_badge variant="info" size="sm" soft>{dgettext("common", "Public API")}</.dm_badge>
+        <.dm_badge variant="success" size="sm" soft>{dgettext("common", "Docs")}</.dm_badge>
+        <nav class="appbar-actions" aria-label={dgettext("navigation", "Backplane public gateway")}>
+          <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Docs")} position="bottom" class="inline-flex">
+            <a {tooltip_attrs} href={~p"/docs"} class="appbar-action" aria-label={dgettext("common", "Docs")}>
               <.dm_mdi name="book-open-page-variant" class="h-5 w-5" />
-              <span class="sr-only">Docs</span>
+              <span class="sr-only">{dgettext("common", "Docs")}</span>
             </a>
           </.dm_tooltip>
         </nav>
-        <.dm_tooltip :let={tooltip_attrs} content="Theme" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Theme")} position="bottom">
           <details
             id="home-theme-switcher"
             class="theme-controller-dropdown theme-controller-dropdown-end theme-controller-dropdown-icon"
@@ -27,13 +27,13 @@
           >
             <summary {tooltip_attrs}
               class="theme-controller-trigger"
-              aria-label="Select theme"
+              aria-label={dgettext("common", "Select theme")}
               aria-haspopup="menu"
             >
               <.dm_mdi name="theme-light-dark" class="h-5 w-5" />
-              <span class="sr-only">Theme</span>
+              <span class="sr-only">{dgettext("common", "Theme")}</span>
             </summary>
-            <div class="theme-controller-menu" role="radiogroup" aria-label="Select theme">
+            <div class="theme-controller-menu" role="radiogroup" aria-label={dgettext("common", "Select theme")}>
               <input
                 type="radio"
                 id="home-theme-switcher-default"
@@ -42,7 +42,7 @@
                 value="default"
               />
               <label for="home-theme-switcher-default" class="theme-controller-label">
-                Auto
+                {dgettext("common", "Auto")}
               </label>
               <input
                 type="radio"
@@ -52,7 +52,7 @@
                 value="sunshine"
               />
               <label for="home-theme-switcher-sunshine" class="theme-controller-label">
-                Sunshine
+                {dgettext("common", "Sunshine")}
               </label>
               <input
                 type="radio"
@@ -63,7 +63,7 @@
                 checked
               />
               <label for="home-theme-switcher-moonlight" class="theme-controller-label">
-                Moonlight
+                {dgettext("common", "Moonlight")}
               </label>
             </div>
           </details>
@@ -77,25 +77,24 @@
       <div class="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:px-8">
         <div class="max-w-3xl self-center">
           <div class="flex flex-wrap gap-2">
-            <.dm_badge variant="primary" soft>Gateway overview</.dm_badge>
-            <.dm_badge variant="secondary" soft>Docs-first contract</.dm_badge>
+            <.dm_badge variant="primary" soft>{dgettext("common", "Gateway overview")}</.dm_badge>
+            <.dm_badge variant="secondary" soft>{dgettext("common", "Docs-first contract")}</.dm_badge>
           </div>
           <h1 class="mt-4 text-3xl font-bold tracking-normal text-on-surface sm:text-4xl">
-            One public surface for agents, tools, and model traffic
+            {dgettext("common", "One public surface for agents, tools, and model traffic")}
           </h1>
           <p class="mt-4 max-w-2xl text-base leading-7 text-on-surface-variant">
-            Backplane is the stable entry point for model traffic and MCP sessions.
-            <span>Docs now own the endpoint catalog</span>, client setup, and authentication details.
+            {dgettext("common", "Backplane is the stable entry point for model traffic and MCP sessions. Docs now own the endpoint catalog, client setup, and authentication details.")}
           </p>
           <div class="mt-6 flex flex-wrap gap-3">
             <a href={~p"/docs"} class="no-underline">
               <.dm_btn variant="primary" size="sm">
-                <.dm_mdi name="book-open-page-variant" class="h-4 w-4" /> Open docs
+                <.dm_mdi name="book-open-page-variant" class="h-4 w-4" /> {dgettext("common", "Open docs")}
               </.dm_btn>
             </a>
             <a href={~p"/docs/agents"} class="no-underline">
               <.dm_btn variant="outline" size="sm">
-                <.dm_mdi name="console" class="h-4 w-4" /> Agent setup
+                <.dm_mdi name="console" class="h-4 w-4" /> {dgettext("common", "Agent setup")}
               </.dm_btn>
             </a>
           </div>
@@ -103,21 +102,21 @@
           <div class="mt-8 grid gap-3 sm:grid-cols-3">
             <div class="rounded-md border border-outline-variant bg-surface-container p-4">
               <div class="text-xs font-semibold uppercase tracking-normal text-on-surface-variant">
-                Model path
+                {dgettext("common", "Model path")}
               </div>
-              <div class="mt-2 text-sm font-semibold text-on-surface">Routed centrally</div>
+              <div class="mt-2 text-sm font-semibold text-on-surface">{dgettext("common", "Routed centrally")}</div>
             </div>
             <div class="rounded-md border border-outline-variant bg-surface-container p-4">
               <div class="text-xs font-semibold uppercase tracking-normal text-on-surface-variant">
-                Tool path
+                {dgettext("common", "Tool path")}
               </div>
-              <div class="mt-2 text-sm font-semibold text-on-surface">Namespaced access</div>
+              <div class="mt-2 text-sm font-semibold text-on-surface">{dgettext("common", "Namespaced access")}</div>
             </div>
             <div class="rounded-md border border-outline-variant bg-surface-container p-4">
               <div class="text-xs font-semibold uppercase tracking-normal text-on-surface-variant">
-                Skill path
+                {dgettext("common", "Skill path")}
               </div>
-              <div class="mt-2 text-sm font-semibold text-on-surface">Reusable records</div>
+              <div class="mt-2 text-sm font-semibold text-on-surface">{dgettext("common", "Reusable records")}</div>
             </div>
           </div>
         </div>
@@ -133,12 +132,12 @@
             </div>
             <div class="mt-4 grid gap-2 text-sm">
               <div class="flex items-center justify-between rounded-md bg-surface-container px-3 py-2">
-                <span class="text-on-surface-variant">Agents</span>
-                <span class="font-medium text-on-surface">Public origin</span>
+                <span class="text-on-surface-variant">{dgettext("common", "Agents")}</span>
+                <span class="font-medium text-on-surface">{dgettext("common", "Public origin")}</span>
               </div>
               <div class="flex items-center justify-between rounded-md bg-surface-container px-3 py-2">
                 <span class="text-on-surface-variant">Backplane</span>
-                <span class="font-medium text-on-surface">Private routing</span>
+                <span class="font-medium text-on-surface">{dgettext("common", "Private routing")}</span>
               </div>
             </div>
           </div>
@@ -149,14 +148,14 @@
     <section id="start-here" class="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
       <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p class="text-xs font-semibold uppercase tracking-widest text-primary">Start here</p>
-          <h2 class="mt-2 text-2xl font-semibold tracking-normal text-on-surface">Choose what you want to connect</h2>
+          <p class="text-xs font-semibold uppercase tracking-widest text-primary">{dgettext("common", "Start here")}</p>
+          <h2 class="mt-2 text-2xl font-semibold tracking-normal text-on-surface">{dgettext("common", "Choose what you want to connect")}</h2>
           <p class="mt-2 max-w-2xl text-sm leading-6 text-on-surface-variant">
-            Backplane has two protected resources. Pick the one your client needs, then follow the setup guide for its token and request format.
+            {dgettext("common", "Backplane has two protected resources. Pick the one your client needs, then follow the setup guide for its token and request format.")}
           </p>
         </div>
         <a href={~p"/docs"} class="text-sm font-medium text-primary no-underline hover:underline">
-          Browse all guides <.dm_mdi name="arrow-right" class="inline h-4 w-4" />
+          {dgettext("common", "Browse all guides")} <.dm_mdi name="arrow-right" class="inline h-4 w-4" />
         </a>
       </div>
 
@@ -166,16 +165,16 @@
             <div class="flex items-center gap-3">
               <span class="rounded-md bg-secondary p-2 text-on-secondary"><.dm_mdi name="hubspot" class="h-5 w-5" /></span>
               <div>
-                <p class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">For tools</p>
-                <h2 class="mt-1 text-xl font-semibold tracking-normal">MCP Hub</h2>
+                <p class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "For tools")}</p>
+                <h2 class="mt-1 text-xl font-semibold tracking-normal">{dgettext("common", "MCP Hub")}</h2>
               </div>
             </div>
             <.dm_mdi name="arrow-top-right" class="h-5 w-5 text-secondary" />
           </div>
-          <p class="mt-4 text-sm leading-6 text-on-surface-variant">Connect an MCP client to one Streamable HTTP resource and discover namespaced tools from every configured service.</p>
+          <p class="mt-4 text-sm leading-6 text-on-surface-variant">{dgettext("common", "Connect an MCP client to one Streamable HTTP resource and discover namespaced tools from every configured service.")}</p>
           <div class="mt-4 flex flex-wrap gap-2 text-xs font-medium">
             <code class="rounded bg-surface px-2 py-1 text-secondary">/mcp</code>
-            <span class="rounded bg-surface px-2 py-1 text-on-surface-variant">OAuth + tool scopes</span>
+            <span class="rounded bg-surface px-2 py-1 text-on-surface-variant">{dgettext("common", "OAuth + tool scopes")}</span>
           </div>
         </a>
 
@@ -184,16 +183,16 @@
             <div class="flex items-center gap-3">
               <span class="rounded-md bg-primary p-2 text-on-primary"><.dm_mdi name="routes" class="h-5 w-5" /></span>
               <div>
-                <p class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">For models</p>
-                <h2 class="mt-1 text-xl font-semibold tracking-normal">LLM proxy</h2>
+                <p class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "For models")}</p>
+                <h2 class="mt-1 text-xl font-semibold tracking-normal">{dgettext("common", "LLM proxy")}</h2>
               </div>
             </div>
             <.dm_mdi name="arrow-top-right" class="h-5 w-5 text-primary" />
           </div>
-          <p class="mt-4 text-sm leading-6 text-on-surface-variant">Use an OpenAI or Anthropic compatible API while Backplane keeps provider credentials, routing, and usage behind the gateway.</p>
+          <p class="mt-4 text-sm leading-6 text-on-surface-variant">{dgettext("common", "Use an OpenAI or Anthropic compatible API while Backplane keeps provider credentials, routing, and usage behind the gateway.")}</p>
           <div class="mt-4 flex flex-wrap gap-2 text-xs font-medium">
             <code class="rounded bg-surface px-2 py-1 text-primary">/v1</code>
-            <span class="rounded bg-surface px-2 py-1 text-on-surface-variant">Model + invoke scopes</span>
+            <span class="rounded bg-surface px-2 py-1 text-on-surface-variant">{dgettext("common", "Model + invoke scopes")}</span>
           </div>
         </a>
       </div>
@@ -202,26 +201,26 @@
         <div class="flex items-center gap-3">
           <span class="rounded-md bg-tertiary p-2 text-on-tertiary"><.dm_mdi name="google" class="h-5 w-5" /></span>
           <div>
-            <p class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">For Google clients</p>
-            <h2 class="mt-1 text-xl font-semibold tracking-normal">Google GenAI + agy</h2>
-            <p class="mt-1 text-sm leading-6 text-on-surface-variant">Native Gemini GenerateContent, model discovery, and the separate Antigravity subscription route.</p>
+            <p class="text-xs font-semibold uppercase tracking-widest text-on-surface-variant">{dgettext("common", "For Google clients")}</p>
+            <h2 class="mt-1 text-xl font-semibold tracking-normal">{dgettext("common", "Google GenAI + agy")}</h2>
+            <p class="mt-1 text-sm leading-6 text-on-surface-variant">{dgettext("common", "Native Gemini GenerateContent, model discovery, and the separate Antigravity subscription route.")}</p>
           </div>
         </div>
-        <span class="flex items-center gap-2 text-sm font-medium text-tertiary">Open guide <.dm_mdi name="arrow-right" class="h-4 w-4 transition group-hover:translate-x-0.5" /></span>
+        <span class="flex items-center gap-2 text-sm font-medium text-tertiary">{dgettext("common", "Open guide")} <.dm_mdi name="arrow-right" class="h-4 w-4 transition group-hover:translate-x-0.5" /></span>
       </a>
 
       <div class="mt-10 grid gap-4 md:grid-cols-3">
         <div class="rounded-md border border-outline-variant bg-surface-container p-5">
-          <div class="flex items-center gap-3"><span class="grid h-8 w-8 place-items-center rounded-full bg-primary text-sm font-semibold text-on-primary">1</span><h3 class="font-semibold">Choose a resource</h3></div>
-          <p class="mt-3 text-sm leading-6 text-on-surface-variant">Start with MCP for tools or the LLM proxy for model requests. Tokens are bound to that choice.</p>
+          <div class="flex items-center gap-3"><span class="grid h-8 w-8 place-items-center rounded-full bg-primary text-sm font-semibold text-on-primary">1</span><h3 class="font-semibold">{dgettext("common", "Choose a resource")}</h3></div>
+          <p class="mt-3 text-sm leading-6 text-on-surface-variant">{dgettext("common", "Start with MCP for tools or the LLM proxy for model requests. Tokens are bound to that choice.")}</p>
         </div>
         <div class="rounded-md border border-outline-variant bg-surface-container p-5">
-          <div class="flex items-center gap-3"><span class="grid h-8 w-8 place-items-center rounded-full bg-secondary text-sm font-semibold text-on-secondary">2</span><h3 class="font-semibold">Configure the client</h3></div>
-          <p class="mt-3 text-sm leading-6 text-on-surface-variant">Use the setup guide for your coding agent or a custom OAuth client.</p>
+          <div class="flex items-center gap-3"><span class="grid h-8 w-8 place-items-center rounded-full bg-secondary text-sm font-semibold text-on-secondary">2</span><h3 class="font-semibold">{dgettext("common", "Configure the client")}</h3></div>
+          <p class="mt-3 text-sm leading-6 text-on-surface-variant">{dgettext("common", "Use the setup guide for your coding agent or a custom OAuth client.")}</p>
         </div>
         <div class="rounded-md border border-outline-variant bg-surface-container p-5">
-          <div class="flex items-center gap-3"><span class="grid h-8 w-8 place-items-center rounded-full bg-tertiary text-sm font-semibold text-on-tertiary">3</span><h3 class="font-semibold">Call the API</h3></div>
-          <p class="mt-3 text-sm leading-6 text-on-surface-variant">Copy a safe example, inspect the route reference, and keep access tokens in environment variables.</p>
+          <div class="flex items-center gap-3"><span class="grid h-8 w-8 place-items-center rounded-full bg-tertiary text-sm font-semibold text-on-tertiary">3</span><h3 class="font-semibold">{dgettext("common", "Call the API")}</h3></div>
+          <p class="mt-3 text-sm leading-6 text-on-surface-variant">{dgettext("common", "Copy a safe example, inspect the route reference, and keep access tokens in environment variables.")}</p>
         </div>
       </div>
 
@@ -235,12 +234,12 @@
               <span class="rounded-md bg-primary-container p-2 text-on-primary-container">
                 <.dm_mdi name="routes" class="h-5 w-5" />
               </span>
-              <h2 class="text-xl font-semibold tracking-normal">Model gateway</h2>
+              <h2 class="text-xl font-semibold tracking-normal">{dgettext("common", "Model gateway")}</h2>
             </div>
             <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
-            Provider routing, model aliases, usage capture, and compatible model APIs.
+            {dgettext("common", "Provider routing, model aliases, usage capture, and compatible model APIs.")}
           </p>
         </a>
         <a
@@ -252,12 +251,12 @@
               <span class="rounded-md bg-secondary-container p-2 text-on-secondary-container">
                 <.dm_mdi name="hubspot" class="h-5 w-5" />
               </span>
-              <h2 class="text-xl font-semibold tracking-normal">MCP Hub</h2>
+              <h2 class="text-xl font-semibold tracking-normal">{dgettext("common", "MCP Hub")}</h2>
             </div>
             <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
-            One managed tool gateway with upstream services and namespaced tools.
+            {dgettext("common", "One managed tool gateway with upstream services and namespaced tools.")}
           </p>
         </a>
         <a
@@ -269,12 +268,12 @@
               <span class="rounded-md bg-tertiary-container p-2 text-on-tertiary-container">
                 <.dm_mdi name="library" class="h-5 w-5" />
               </span>
-              <h2 class="text-xl font-semibold tracking-normal">Skills library</h2>
+              <h2 class="text-xl font-semibold tracking-normal">{dgettext("common", "Skills library")}</h2>
             </div>
             <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
-            Reusable skill records, archive handling, and managed skill tools.
+            {dgettext("common", "Reusable skill records, archive handling, and managed skill tools.")}
           </p>
         </a>
         <a
@@ -286,12 +285,12 @@
               <span class="rounded-md bg-primary-container p-2 text-on-primary-container">
                 <.dm_mdi name="console-line" class="h-5 w-5" />
               </span>
-              <h2 class="text-xl font-semibold tracking-normal">Agent setup</h2>
+              <h2 class="text-xl font-semibold tracking-normal">{dgettext("common", "Agent setup")}</h2>
             </div>
             <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
-            Configure coding agents and API clients to use Backplane.
+            {dgettext("common", "Configure coding agents and API clients to use Backplane.")}
           </p>
         </a>
         <a
@@ -303,12 +302,12 @@
               <span class="rounded-md bg-secondary-container p-2 text-on-secondary-container">
                 <.dm_mdi name="shield-key" class="h-5 w-5" />
               </span>
-              <h2 class="text-xl font-semibold tracking-normal">Authentication</h2>
+              <h2 class="text-xl font-semibold tracking-normal">{dgettext("common", "Authentication")}</h2>
             </div>
             <.dm_mdi name="arrow-right" class="h-5 w-5 text-primary transition group-hover:translate-x-0.5" />
           </div>
           <p class="mt-3 text-sm leading-6 text-on-surface-variant">
-            Client tokens, open local mode, and public OAuth endpoints.
+            {dgettext("common", "Client tokens, open local mode, and public OAuth endpoints.")}
           </p>
         </a>
       </div>
@@ -319,45 +318,44 @@
     <div class="mx-auto grid max-w-6xl gap-8 px-4 py-8 sm:px-6 md:grid-cols-[minmax(0,1fr)_18rem] lg:px-8">
       <div>
         <div class="flex flex-wrap gap-2">
-          <.dm_badge variant="primary" soft>Public gateway contract</.dm_badge>
+          <.dm_badge variant="primary" soft>{dgettext("common", "Public gateway contract")}</.dm_badge>
           <.dm_badge variant="secondary" soft>{@base_url}</.dm_badge>
         </div>
         <p class="mt-4 max-w-2xl text-sm leading-6 text-on-surface-variant">
-          Keep agents connected to a stable public origin while Backplane handles model routing,
-          tool namespaces, credentials, and usage capture behind the gateway.
+          {dgettext("common", "Keep agents connected to a stable public origin while Backplane handles model routing, tool namespaces, credentials, and usage capture behind the gateway.")}
         </p>
         <div class="mt-5 flex flex-wrap gap-2">
           <span class="rounded-md bg-surface-container-highest px-3 py-2 text-xs font-medium text-on-surface">
-            One model gateway
+            {dgettext("common", "One model gateway")}
           </span>
           <span class="rounded-md bg-surface-container-highest px-3 py-2 text-xs font-medium text-on-surface">
-            One tool gateway
+            {dgettext("common", "One tool gateway")}
           </span>
           <span class="rounded-md bg-surface-container-highest px-3 py-2 text-xs font-medium text-on-surface">
-            Docs own route details
+            {dgettext("common", "Docs own route details")}
           </span>
         </div>
       </div>
 
-      <nav aria-label="Footer docs" class="grid gap-2 text-sm">
-        <div class="font-semibold text-on-surface">Docs</div>
+      <nav aria-label={dgettext("navigation", "Footer docs")} class="grid gap-2 text-sm">
+        <div class="font-semibold text-on-surface">{dgettext("common", "Docs")}</div>
         <a href={~p"/docs/llm"} class="text-on-surface-variant no-underline hover:text-primary">
-          Model gateway
+          {dgettext("common", "Model gateway")}
         </a>
         <a href={~p"/docs/mcp"} class="text-on-surface-variant no-underline hover:text-primary">
-          MCP Hub
+          {dgettext("common", "MCP Hub")}
         </a>
         <a href={~p"/docs/skills"} class="text-on-surface-variant no-underline hover:text-primary">
-          Skills library
+          {dgettext("common", "Skills library")}
         </a>
         <a href={~p"/docs/agents"} class="text-on-surface-variant no-underline hover:text-primary">
-          Agent setup
+          {dgettext("common", "Agent setup")}
         </a>
         <a
           href={~p"/docs/authentication"}
           class="text-on-surface-variant no-underline hover:text-primary"
         >
-          Authentication
+          {dgettext("common", "Authentication")}
         </a>
       </nav>
     </div>

@@ -1,0 +1,708 @@
+## "msgid"s in this file come from POT (.pot) files.
+###
+### Do not add, change, or remove "msgid"s manually here as
+### they're tied to the ones in the corresponding POT file
+### (with the same domain).
+###
+### Use "mix gettext.extract --merge" or "mix gettext.merge"
+### to merge POT files into PO files.
+msgid ""
+msgstr ""
+"Language: en\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:357
+#: lib/backplane/admin/live/clients_live.ex:211
+#, elixir-autogen, elixir-format
+msgid "%{count}d ago"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:356
+#: lib/backplane/admin/live/clients_live.ex:210
+#, elixir-autogen, elixir-format
+msgid "%{count}h ago"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:355
+#: lib/backplane/admin/live/clients_live.ex:209
+#, elixir-autogen, elixir-format
+msgid "%{count}m ago"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:354
+#: lib/backplane/admin/live/clients_live.ex:208
+#, elixir-autogen, elixir-format
+msgid "%{count}s ago"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:427
+#: lib/backplane/admin/live/agent_mcp_live.ex:540
+#: lib/backplane/admin/live/api_usage_live.ex:250
+#: lib/backplane/admin/live/auth_oauth_live.ex:421
+#: lib/backplane/admin/live/auth_oauth_live.ex:527
+#: lib/backplane/admin/live/auth_oauth_live.ex:567
+#: lib/backplane/admin/live/auth_rbac_live.ex:169
+#: lib/backplane/admin/live/codex_catalog_live.ex:308
+#: lib/backplane/admin/live/embedding_live.ex:303
+#: lib/backplane/admin/live/host_agents_live.ex:374
+#: lib/backplane/admin/live/host_agents_live.ex:559
+#: lib/backplane/admin/live/host_agents_live.ex:687
+#: lib/backplane/admin/live/managed_live.ex:184
+#: lib/backplane/admin/live/monitor_plans_live.ex:346
+#: lib/backplane/admin/live/openai_proxy_live.ex:332
+#: lib/backplane/admin/live/openai_proxy_live.ex:332
+#: lib/backplane/admin/live/provider_show_live.ex:1219
+#: lib/backplane/admin/live/provider_show_live.ex:1219
+#: lib/backplane/admin/live/providers_live.ex:177
+#: lib/backplane/admin/live/settings_live.ex:1447
+#: lib/backplane/admin/live/skill_browse_live.ex:484
+#: lib/backplane/admin/live/skill_draft_live.ex:345
+#: lib/backplane/admin/live/skill_upload_live.ex:610
+#: lib/backplane/admin/live/upstreams_live.ex:443
+#, elixir-autogen, elixir-format
+msgid "Actions"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:331
+#, elixir-autogen, elixir-format
+msgid "Activate"
+msgstr ""
+
+#: lib/backplane/admin/live/api_usage_live.ex:209
+#: lib/backplane/admin/live/api_usage_live.ex:244
+#: lib/backplane/admin/live/auth_oauth_live.ex:719
+#: lib/backplane/admin/live/auth_oauth_live.ex:975
+#: lib/backplane/admin/live/auth_rbac_live.ex:163
+#: lib/backplane/admin/live/clients_live.ex:302
+#: lib/backplane/admin/live/dashboard_live.ex:149
+#: lib/backplane/admin/live/monitor_plans_live.ex:337
+#, elixir-autogen, elixir-format
+msgid "Active"
+msgstr ""
+
+#: lib/backplane/admin/live/openai_proxy_live.ex:289
+#: lib/backplane/admin/live/openai_proxy_live.ex:289
+#: lib/backplane/admin/live/settings_live.ex:1177
+#: lib/backplane/admin/live/settings_live.ex:1244
+#: lib/backplane/admin/live/skill_metadata_live.ex:377
+#, elixir-autogen, elixir-format
+msgid "Add"
+msgstr ""
+
+#: lib/backplane/admin/live/memory_records_live.ex:115
+#, elixir-autogen, elixir-format
+msgid "All"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_components.ex:77
+#: lib/backplane/admin/live/skill_browse_live.ex:435
+#: lib/backplane/admin/live/skill_browse_live.ex:454
+#, elixir-autogen, elixir-format
+msgid "Apply"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:802
+#: lib/backplane/admin/live/api_usage_live.ex:215
+#: lib/backplane/admin/live/clients_live.ex:274
+#: lib/backplane/admin/live/embedding_live.ex:502
+#: lib/backplane/admin/live/host_agents_live.ex:923
+#: lib/backplane/admin/live/host_agents_live.ex:969
+#: lib/backplane/admin/live/host_services_live.ex:178
+#: lib/backplane/admin/live/managed_service_settings_live.ex:745
+#: lib/backplane/admin/live/monitor_plans_live.ex:300
+#: lib/backplane/admin/live/openai_proxy_live.ex:442
+#: lib/backplane/admin/live/openai_proxy_live.ex:442
+#: lib/backplane/admin/live/provider_new_live.ex:413
+#: lib/backplane/admin/live/provider_new_live.ex:530
+#: lib/backplane/admin/live/provider_show_live.ex:1060
+#: lib/backplane/admin/live/provider_show_live.ex:1060
+#: lib/backplane/admin/live/provider_show_live.ex:1299
+#: lib/backplane/admin/live/provider_show_live.ex:1299
+#: lib/backplane/admin/live/settings_live.ex:1529
+#: lib/backplane/admin/live/settings_live.ex:1654
+#: lib/backplane/admin/live/settings_live.ex:1730
+#: lib/backplane/admin/live/settings_live.ex:1778
+#: lib/backplane/admin/live/settings_live.ex:1823
+#: lib/backplane/admin/live/settings_live.ex:1851
+#: lib/backplane/admin/live/settings_live.ex:1893
+#: lib/backplane/admin/live/settings_live.ex:1927
+#: lib/backplane/admin/live/settings_live.ex:1947
+#: lib/backplane/admin/live/skill_browse_live.ex:436
+#: lib/backplane/admin/live/skill_browse_live.ex:455
+#: lib/backplane/admin/live/skill_draft_live.ex:302
+#: lib/backplane/admin/live/skill_metadata_live.ex:202
+#: lib/backplane/admin/live/skill_metadata_live.ex:304
+#: lib/backplane/admin/live/skill_upstream_live.ex:564
+#: lib/backplane/admin/live/skill_upstream_live.ex:720
+#: lib/backplane/admin/live/skill_upstream_live.ex:797
+#: lib/backplane/admin/live/upstreams_live.ex:777
+#, elixir-autogen, elixir-format
+msgid "Cancel"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:829
+#, elixir-autogen, elixir-format
+msgid "Clear"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:253
+#: lib/backplane/admin/live/embedding_live.ex:384
+#: lib/backplane/admin/live/host_agents_live.ex:904
+#: lib/backplane/admin/live/host_agents_live.ex:952
+#: lib/backplane/admin/live/memory_records_live.ex:154
+#: lib/backplane/admin/live/settings_live.ex:1759
+#: lib/backplane/admin/live/skill_browse_live.ex:618
+#: lib/backplane/admin/live/skill_upload_live.ex:509
+#: lib/backplane/admin/live/skill_upload_live.ex:518
+#, elixir-autogen, elixir-format
+msgid "Close"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_draft_live.ex:360
+#, elixir-autogen, elixir-format
+msgid "Confirm Delete"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1700
+#, elixir-autogen, elixir-format
+msgid "Connect"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1288
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1653
+#, elixir-autogen, elixir-format
+msgid "Connected"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_components.ex:96
+#, elixir-autogen, elixir-format
+msgid "Copy"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_draft_live.ex:299
+#: lib/backplane/admin/live/skill_upstream_live.ex:718
+#, elixir-autogen, elixir-format
+msgid "Create"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:330
+#, elixir-autogen, elixir-format
+msgid "Deactivate"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:597
+#, elixir-autogen, elixir-format
+msgid "Debug"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:499
+#: lib/backplane/admin/live/api_usage_live.ex:267
+#: lib/backplane/admin/live/api_usage_live.ex:271
+#: lib/backplane/admin/live/clients_live.ex:343
+#: lib/backplane/admin/live/embedding_live.ex:322
+#: lib/backplane/admin/live/embedding_live.ex:339
+#: lib/backplane/admin/live/host_services_live.ex:192
+#: lib/backplane/admin/live/monitor_plans_live.ex:389
+#: lib/backplane/admin/live/monitor_plans_live.ex:401
+#: lib/backplane/admin/live/openai_proxy_live.ex:375
+#: lib/backplane/admin/live/openai_proxy_live.ex:375
+#: lib/backplane/admin/live/openai_proxy_live.ex:388
+#: lib/backplane/admin/live/openai_proxy_live.ex:388
+#: lib/backplane/admin/live/plugins_live.ex:486
+#: lib/backplane/admin/live/provider_show_live.ex:1309
+#: lib/backplane/admin/live/provider_show_live.ex:1309
+#: lib/backplane/admin/live/providers_live.ex:210
+#: lib/backplane/admin/live/providers_live.ex:222
+#: lib/backplane/admin/live/settings_live.ex:1463
+#: lib/backplane/admin/live/settings_live.ex:1474
+#: lib/backplane/admin/live/settings_live.ex:1530
+#: lib/backplane/admin/live/skill_browse_live.ex:540
+#: lib/backplane/admin/live/skill_draft_live.ex:366
+#: lib/backplane/admin/live/skill_metadata_live.ex:230
+#: lib/backplane/admin/live/skill_metadata_live.ex:334
+#: lib/backplane/admin/live/skill_upload_live.ex:624
+#: lib/backplane/admin/live/skill_upload_live.ex:637
+#: lib/backplane/admin/live/upstreams_live.ex:566
+#, elixir-autogen, elixir-format
+msgid "Delete"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_browse_live.ex:478
+#: lib/backplane/admin/live/skill_browse_live.ex:671
+#: lib/backplane/admin/live/skill_upload_live.ex:581
+#, elixir-autogen, elixir-format
+msgid "Description"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:480
+#: lib/backplane/admin/live/auth_oauth_live.ex:449
+#: lib/backplane/admin/live/auth_rbac_live.ex:179
+#: lib/backplane/admin/live/codex_catalog_live.ex:300
+#: lib/backplane/admin/live/managed_live.ex:227
+#: lib/backplane/admin/live/openai_proxy_live.ex:350
+#: lib/backplane/admin/live/openai_proxy_live.ex:350
+#: lib/backplane/admin/live/openai_proxy_live.ex:370
+#: lib/backplane/admin/live/openai_proxy_live.ex:370
+#: lib/backplane/admin/live/provider_show_live.ex:1123
+#: lib/backplane/admin/live/provider_show_live.ex:1123
+#: lib/backplane/admin/live/provider_show_live.ex:1139
+#: lib/backplane/admin/live/provider_show_live.ex:1139
+#: lib/backplane/admin/live/provider_show_live.ex:1236
+#: lib/backplane/admin/live/provider_show_live.ex:1236
+#: lib/backplane/admin/live/provider_show_live.ex:1252
+#: lib/backplane/admin/live/provider_show_live.ex:1252
+#: lib/backplane/admin/live/providers_live.ex:192
+#: lib/backplane/admin/live/providers_live.ex:207
+#: lib/backplane/admin/live/upstreams_live.ex:533
+#, elixir-autogen, elixir-format
+msgid "Disable"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:464
+#: lib/backplane/admin/live/agent_mcp_live.ex:608
+#: lib/backplane/admin/live/auth_oauth_live.ex:382
+#: lib/backplane/admin/live/auth_oauth_live.ex:453
+#: lib/backplane/admin/live/auth_oauth_live.ex:812
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:535
+#: lib/backplane/admin/live/host_services_live.ex:188
+#: lib/backplane/admin/live/managed_live.ex:196
+#: lib/backplane/admin/live/openai_proxy_live.ex:323
+#: lib/backplane/admin/live/openai_proxy_live.ex:323
+#: lib/backplane/admin/live/plugins_live.ex:376
+#: lib/backplane/admin/live/plugins_live.ex:512
+#: lib/backplane/admin/live/provider_show_live.ex:846
+#: lib/backplane/admin/live/provider_show_live.ex:846
+#: lib/backplane/admin/live/providers_live.ex:97
+#: lib/backplane/admin/live/settings_live.ex:1152
+#: lib/backplane/admin/live/settings_live.ex:1210
+#, elixir-autogen, elixir-format
+msgid "Disabled"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1408
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1710
+#, elixir-autogen, elixir-format
+msgid "Disconnect"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1295
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1660
+#, elixir-autogen, elixir-format
+msgid "Disconnected"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:284
+#, elixir-autogen, elixir-format
+msgid "Dismiss"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:469
+#: lib/backplane/admin/live/api_usage_live.ex:252
+#: lib/backplane/admin/live/api_usage_live.ex:255
+#: lib/backplane/admin/live/auth_oauth_live.ex:427
+#: lib/backplane/admin/live/clients_live.ex:333
+#: lib/backplane/admin/live/embedding_live.ex:305
+#: lib/backplane/admin/live/embedding_live.ex:319
+#: lib/backplane/admin/live/host_services_live.ex:190
+#: lib/backplane/admin/live/monitor_plans_live.ex:348
+#: lib/backplane/admin/live/monitor_plans_live.ex:358
+#: lib/backplane/admin/live/openai_proxy_live.ex:334
+#: lib/backplane/admin/live/openai_proxy_live.ex:334
+#: lib/backplane/admin/live/openai_proxy_live.ex:345
+#: lib/backplane/admin/live/openai_proxy_live.ex:345
+#: lib/backplane/admin/live/plugins_live.ex:486
+#: lib/backplane/admin/live/provider_show_live.ex:1107
+#: lib/backplane/admin/live/provider_show_live.ex:1107
+#: lib/backplane/admin/live/provider_show_live.ex:1120
+#: lib/backplane/admin/live/provider_show_live.ex:1120
+#: lib/backplane/admin/live/provider_show_live.ex:1221
+#: lib/backplane/admin/live/provider_show_live.ex:1221
+#: lib/backplane/admin/live/provider_show_live.ex:1233
+#: lib/backplane/admin/live/provider_show_live.ex:1233
+#: lib/backplane/admin/live/settings_live.ex:1449
+#: lib/backplane/admin/live/settings_live.ex:1459
+#: lib/backplane/admin/live/skill_draft_live.ex:350
+#: lib/backplane/admin/live/skill_upstream_live.ex:589
+#: lib/backplane/admin/live/upstreams_live.ex:520
+#, elixir-autogen, elixir-format
+msgid "Edit"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:480
+#: lib/backplane/admin/live/codex_catalog_live.ex:300
+#: lib/backplane/admin/live/managed_live.ex:227
+#: lib/backplane/admin/live/openai_proxy_live.ex:351
+#: lib/backplane/admin/live/openai_proxy_live.ex:351
+#: lib/backplane/admin/live/openai_proxy_live.ex:371
+#: lib/backplane/admin/live/openai_proxy_live.ex:371
+#: lib/backplane/admin/live/provider_show_live.ex:1123
+#: lib/backplane/admin/live/provider_show_live.ex:1123
+#: lib/backplane/admin/live/provider_show_live.ex:1139
+#: lib/backplane/admin/live/provider_show_live.ex:1139
+#: lib/backplane/admin/live/provider_show_live.ex:1236
+#: lib/backplane/admin/live/provider_show_live.ex:1236
+#: lib/backplane/admin/live/provider_show_live.ex:1252
+#: lib/backplane/admin/live/provider_show_live.ex:1252
+#: lib/backplane/admin/live/providers_live.ex:192
+#: lib/backplane/admin/live/providers_live.ex:207
+#: lib/backplane/admin/live/upstreams_live.ex:534
+#, elixir-autogen, elixir-format
+msgid "Enable"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:463
+#: lib/backplane/admin/live/agent_mcp_live.ex:607
+#: lib/backplane/admin/live/agent_mcp_live.ex:661
+#: lib/backplane/admin/live/auth_oauth_live.ex:383
+#: lib/backplane/admin/live/auth_oauth_live.ex:724
+#: lib/backplane/admin/live/auth_oauth_live.ex:730
+#: lib/backplane/admin/live/auth_oauth_live.ex:736
+#: lib/backplane/admin/live/auth_oauth_live.ex:742
+#: lib/backplane/admin/live/auth_oauth_live.ex:748
+#: lib/backplane/admin/live/auth_oauth_live.ex:788
+#: lib/backplane/admin/live/auth_oauth_live.ex:794
+#: lib/backplane/admin/live/auth_oauth_live.ex:800
+#: lib/backplane/admin/live/auth_oauth_live.ex:806
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:534
+#: lib/backplane/admin/live/host_services_live.ex:188
+#: lib/backplane/admin/live/managed_live.ex:196
+#: lib/backplane/admin/live/openai_proxy_live.ex:322
+#: lib/backplane/admin/live/openai_proxy_live.ex:322
+#: lib/backplane/admin/live/plugins_live.ex:375
+#: lib/backplane/admin/live/plugins_live.ex:512
+#: lib/backplane/admin/live/provider_show_live.ex:845
+#: lib/backplane/admin/live/provider_show_live.ex:845
+#: lib/backplane/admin/live/providers_live.ex:96
+#: lib/backplane/admin/live/settings_live.ex:1152
+#: lib/backplane/admin/live/settings_live.ex:1210
+#, elixir-autogen, elixir-format
+msgid "Enabled"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_llm_live.ex:95
+#: lib/backplane/admin/live/managed_tool_detail_live.ex:343
+#, elixir-autogen, elixir-format
+msgid "Error"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:74
+#: lib/backplane/admin/live/logs_audit_live.ex:51
+#, elixir-autogen, elixir-format
+msgid "Filter"
+msgstr ""
+
+#: lib/backplane/admin/live/audio_live.ex:596
+#, elixir-autogen, elixir-format
+msgid "Format"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:506
+#: lib/backplane/admin/live/skill_upstream_live.ex:562
+#, elixir-autogen, elixir-format
+msgid "Import"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:163
+#: lib/backplane/admin/live/auth_rbac_live.ex:181
+#: lib/backplane/admin/live/clients_live.ex:303
+#: lib/backplane/admin/live/dashboard_client_usage_live.ex:152
+#: lib/backplane/admin/live/monitor_plans_live.ex:338
+#, elixir-autogen, elixir-format
+msgid "Inactive"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:618
+#, elixir-autogen, elixir-format
+msgid "Label"
+msgstr ""
+
+#: lib/backplane/admin/components/usage_time_range.ex:17
+#, elixir-autogen, elixir-format
+msgid "Last 14 days"
+msgstr ""
+
+#: lib/backplane/admin/components/usage_time_range.ex:18
+#, elixir-autogen, elixir-format
+msgid "Last 30 days"
+msgstr ""
+
+#: lib/backplane/admin/components/usage_time_range.ex:16
+#, elixir-autogen, elixir-format
+msgid "Last 7 days"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_llm_live.ex:164
+#: lib/backplane/admin/live/logs_mcp_live.ex:183
+#, elixir-autogen, elixir-format
+msgid "Load more"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_upstream_live.ex:837
+#, elixir-autogen, elixir-format
+msgid "Loading…"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:421
+#: lib/backplane/admin/live/agent_mcp_live.ex:535
+#: lib/backplane/admin/live/agent_mcp_live.ex:588
+#: lib/backplane/admin/live/agent_mcp_live.ex:713
+#: lib/backplane/admin/live/api_usage_live.ex:171
+#: lib/backplane/admin/live/api_usage_live.ex:226
+#: lib/backplane/admin/live/clients_live.ex:234
+#: lib/backplane/admin/live/host_agents_live.ex:367
+#: lib/backplane/admin/live/host_agents_live.ex:525
+#: lib/backplane/admin/live/host_agents_live.ex:530
+#: lib/backplane/admin/live/host_agents_live.ex:558
+#: lib/backplane/admin/live/host_agents_live.ex:609
+#: lib/backplane/admin/live/host_agents_live.ex:962
+#: lib/backplane/admin/live/host_services_live.ex:163
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1455
+#: lib/backplane/admin/live/monitor_plans_live.ex:236
+#: lib/backplane/admin/live/monitor_plans_live.ex:311
+#: lib/backplane/admin/live/provider_new_live.ex:449
+#: lib/backplane/admin/live/provider_show_live.ex:942
+#: lib/backplane/admin/live/provider_show_live.ex:942
+#: lib/backplane/admin/live/settings_live.ex:1418
+#: lib/backplane/admin/live/settings_live.ex:1552
+#: lib/backplane/admin/live/skill_browse_live.ex:477
+#: lib/backplane/admin/live/skill_draft_live.ex:246
+#: lib/backplane/admin/live/skill_draft_live.ex:314
+#: lib/backplane/admin/live/skill_upload_live.ex:576
+#: lib/backplane/admin/live/skill_upstream_live.ex:667
+#: lib/backplane/admin/live/skill_upstream_live.ex:744
+#: lib/backplane/admin/live/upstreams_live.ex:437
+#: lib/backplane/admin/live/upstreams_live.ex:616
+#, elixir-autogen, elixir-format
+msgid "Name"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:400
+#: lib/backplane/admin/live/clients_live.ex:202
+#: lib/backplane/admin/live/plugins_live.ex:484
+#: lib/backplane/admin/live/plugins_live.ex:484
+#: lib/backplane/admin/live/skill_upstream_live.ex:438
+#, elixir-autogen, elixir-format
+msgid "Never"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_browse_live.ex:589
+#, elixir-autogen, elixir-format
+msgid "Next"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_audit_live.ex:64
+#, elixir-autogen, elixir-format
+msgid "Next page"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:230
+#: lib/backplane/admin/live/mcp_inspector_live.ex:1330
+#: lib/backplane/admin/live/upstreams_live.ex:651
+#, elixir-autogen, elixir-format
+msgid "None"
+msgstr ""
+
+#: lib/backplane/admin/build_info.ex:59
+#: lib/backplane/admin/build_info.ex:60
+#: lib/backplane/admin/build_info.ex:61
+#: lib/backplane/admin/build_info.ex:64
+#: lib/backplane/admin/build_info.ex:66
+#: lib/backplane/admin/build_info.ex:67
+#, elixir-autogen, elixir-format
+msgid "Not provided"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_browse_live.ex:577
+#, elixir-autogen, elixir-format
+msgid "Previous"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:79
+#: lib/backplane/admin/live/host_agents_live.ex:672
+#: lib/backplane/admin/live/skill_upstream_live.ex:837
+#, elixir-autogen, elixir-format
+msgid "Refresh"
+msgstr ""
+
+#: lib/backplane/admin/live/codex_catalog_live.ex:309
+#: lib/backplane/admin/live/provider_show_live.ex:1142
+#: lib/backplane/admin/live/provider_show_live.ex:1142
+#: lib/backplane/admin/live/provider_show_live.ex:1154
+#: lib/backplane/admin/live/provider_show_live.ex:1154
+#: lib/backplane/admin/live/provider_show_live.ex:1255
+#: lib/backplane/admin/live/provider_show_live.ex:1255
+#: lib/backplane/admin/live/provider_show_live.ex:1267
+#: lib/backplane/admin/live/provider_show_live.ex:1267
+#: lib/backplane/admin/live/settings_live.ex:1200
+#: lib/backplane/admin/live/settings_live.ex:1263
+#: lib/backplane/admin/live/settings_live.ex:1333
+#, elixir-autogen, elixir-format
+msgid "Remove"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_metadata_live.ex:217
+#: lib/backplane/admin/live/skill_metadata_live.ex:321
+#, elixir-autogen, elixir-format
+msgid "Rename"
+msgstr ""
+
+#: lib/backplane/admin/live/memory_sessions_live.ex:86
+#, elixir-autogen, elixir-format
+msgid "Retry"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:800
+#: lib/backplane/admin/live/api_usage_live.ex:213
+#: lib/backplane/admin/live/clients_live.ex:273
+#: lib/backplane/admin/live/host_agents_live.ex:534
+#: lib/backplane/admin/live/memory_config_live.ex:139
+#: lib/backplane/admin/live/monitor_plans_live.ex:298
+#: lib/backplane/admin/live/settings_live.ex:1308
+#: lib/backplane/admin/live/skill_metadata_live.ex:191
+#: lib/backplane/admin/live/skill_metadata_live.ex:293
+#: lib/backplane/admin/live/skill_upstream_live.ex:795
+#: lib/backplane/admin/live/upstreams_live.ex:775
+#, elixir-autogen, elixir-format
+msgid "Save"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:1651
+#, elixir-autogen, elixir-format
+msgid "Save Changes"
+msgstr ""
+
+#: lib/backplane/admin/live/memory_records_live.ex:107
+#: lib/backplane/admin/live/skill_browse_live.ex:328
+#, elixir-autogen, elixir-format
+msgid "Search"
+msgstr ""
+
+#: lib/backplane/admin/live/managed_service_settings_live.ex:589
+#, elixir-autogen, elixir-format
+msgid "Settings"
+msgstr ""
+
+#: lib/backplane/admin/live/logs_jobs_live.ex:84
+#, elixir-autogen, elixir-format
+msgid "State"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:426
+#: lib/backplane/admin/live/agent_mcp_live.ex:536
+#: lib/backplane/admin/live/agent_mcp_live.ex:590
+#: lib/backplane/admin/live/agent_mcp_live.ex:641
+#: lib/backplane/admin/live/api_usage_live.ex:242
+#: lib/backplane/admin/live/auth_oauth_live.ex:300
+#: lib/backplane/admin/live/auth_oauth_live.ex:379
+#: lib/backplane/admin/live/auth_oauth_live.ex:495
+#: lib/backplane/admin/live/auth_oauth_live.ex:521
+#: lib/backplane/admin/live/auth_oauth_live.ex:561
+#: lib/backplane/admin/live/auth_oauth_live.ex:636
+#: lib/backplane/admin/live/auth_rbac_live.ex:161
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:242
+#: lib/backplane/admin/live/dashboard_plan_usage_live.ex:361
+#: lib/backplane/admin/live/embedding_live.ex:293
+#: lib/backplane/admin/live/host_agents_live.ex:368
+#: lib/backplane/admin/live/host_agents_live.ex:498
+#: lib/backplane/admin/live/host_agents_live.ex:685
+#: lib/backplane/admin/live/logs_llm_live.ex:80
+#: lib/backplane/admin/live/logs_llm_live.ex:150
+#: lib/backplane/admin/live/managed_live.ex:182
+#: lib/backplane/admin/live/memory_overview_live.ex:78
+#: lib/backplane/admin/live/memory_records_live.ex:143
+#: lib/backplane/admin/live/memory_records_live.ex:158
+#: lib/backplane/admin/live/memory_sessions_live.ex:57
+#: lib/backplane/admin/live/monitor_plans_live.ex:331
+#: lib/backplane/admin/live/openai_proxy_live.ex:319
+#: lib/backplane/admin/live/openai_proxy_live.ex:319
+#: lib/backplane/admin/live/provider_show_live.ex:1187
+#: lib/backplane/admin/live/provider_show_live.ex:1187
+#: lib/backplane/admin/live/upstreams_live.ex:441
+#: lib/backplane/admin/live/upstreams_live.ex:490
+#, elixir-autogen, elixir-format
+msgid "Status"
+msgstr ""
+
+#: lib/backplane/admin/components/usage_time_range.ex:14
+#, elixir-autogen, elixir-format
+msgid "Today"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:640
+#: lib/backplane/admin/live/auth_oauth_live.ex:369
+#: lib/backplane/admin/live/auth_rbac_live.ex:219
+#: lib/backplane/admin/live/memory_events_live.ex:34
+#: lib/backplane/admin/live/skill_upstream_live.ex:673
+#: lib/backplane/admin/live/skill_upstream_live.ex:750
+#, elixir-autogen, elixir-format
+msgid "Type"
+msgstr ""
+
+#: lib/backplane/admin/components/usage_time_range.ex:43
+#, elixir-autogen, elixir-format
+msgid "UTC · historical ranges exclude today"
+msgstr ""
+
+#: lib/backplane/admin/live/agent_mcp_live.ex:309
+#: lib/backplane/admin/live/auth_oauth_live.ex:978
+#: lib/backplane/admin/live/auth_oauth_live.ex:1004
+#, elixir-autogen, elixir-format
+msgid "Unknown"
+msgstr ""
+
+#: lib/backplane/admin/live/skill_draft_live.ex:299
+#, elixir-autogen, elixir-format
+msgid "Update"
+msgstr ""
+
+#: lib/backplane/admin/live/settings_live.ex:1444
+#: lib/backplane/admin/live/skill_draft_live.ex:342
+#, elixir-autogen, elixir-format
+msgid "Updated"
+msgstr ""
+
+#: lib/backplane/admin/components/usage_time_range.ex:28
+#, elixir-autogen, elixir-format
+msgid "Usage time range"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:297
+#, elixir-autogen, elixir-format
+msgid "Value"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:398
+#: lib/backplane/admin/live/providers_live.ex:179
+#: lib/backplane/admin/live/providers_live.ex:189
+#: lib/backplane/admin/live/skill_upload_live.ex:612
+#: lib/backplane/admin/live/skill_upload_live.ex:621
+#, elixir-autogen, elixir-format
+msgid "View"
+msgstr ""
+
+#: lib/backplane/admin/components/usage_time_range.ex:15
+#, elixir-autogen, elixir-format
+msgid "Yesterday"
+msgstr ""
+
+#: lib/backplane/admin/live/upstreams_live.ex:450
+#, elixir-autogen, elixir-format
+msgid "disabled"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:112
+#: lib/backplane/admin/live/auth_audit_live.ex:116
+#: lib/backplane/admin/live/auth_audit_live.ex:125
+#, elixir-autogen, elixir-format
+msgid "none"
+msgstr ""
+
+#: lib/backplane/admin/components/memory_components.ex:123
+#, elixir-autogen, elixir-format
+msgid "unknown"
+msgstr ""
+
+#: lib/backplane/admin/live/mcp_inspector_live.ex:979
+#, elixir-autogen, elixir-format
+msgid "— None —"
+msgstr ""

@@ -78,7 +78,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
           {:error, :not_found} ->
             {:noreply,
              socket
-             |> put_flash(:error, "Source not found")
+             |> put_flash(:error, dgettext("errors", "Source not found"))
              |> push_patch(to: ~p"/skills/upstream")}
         end
 
@@ -105,7 +105,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
           {:error, :not_found} ->
             {:noreply,
              socket
-             |> put_flash(:error, "Source not found")
+             |> put_flash(:error, dgettext("errors", "Source not found"))
              |> push_patch(to: ~p"/skills/upstream")}
         end
     end
@@ -124,7 +124,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Source added")
+         |> put_flash(:info, dgettext("admin", "Source added"))
          |> push_navigate(to: ~p"/skills/upstream")}
 
       {:error, changeset} ->
@@ -150,7 +150,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Source '#{updated.name}' updated")
+         |> put_flash(:info, dgettext("admin", "Source '%{name}' updated", name: updated.name))
          |> push_navigate(to: ~p"/skills/upstream")}
 
       {:error, changeset} ->
@@ -178,15 +178,15 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Source deleted")
+             |> put_flash(:info, dgettext("admin", "Source deleted"))
              |> push_navigate(to: ~p"/skills/upstream")}
 
           {:error, _} ->
-            {:noreply, put_flash(socket, :error, "Failed to delete source")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete source"))}
         end
 
       {:error, :not_found} ->
-        {:noreply, put_flash(socket, :error, "Source not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Source not found"))}
     end
   end
 
@@ -198,7 +198,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
         {:noreply, socket}
 
       {:error, :not_found} ->
-        {:noreply, put_flash(socket, :error, "Source not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Source not found"))}
     end
   end
 
@@ -272,8 +272,14 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         msg =
           if failed > 0,
-            do: "Imported #{created} source(s), #{failed} skipped (duplicate or invalid)",
-            else: "Imported #{created} source(s)"
+            do:
+              dgettext(
+                "admin",
+                "Imported %{created} source(s), %{failed} skipped (duplicate or invalid)",
+                created: created,
+                failed: failed
+              ),
+            else: dgettext("admin", "Imported %{created} source(s)", created: created)
 
         {:noreply,
          socket
@@ -282,11 +288,15 @@ defmodule Backplane.Admin.SkillUpstreamLive do
          |> load_sources()}
 
       _ ->
-        {:noreply, put_flash(socket, :error, "Invalid file. Expected a JSON array of sources.")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Invalid file. Expected a JSON array of sources."))}
     end
   rescue
     e ->
-      {:noreply, put_flash(socket, :error, "Import failed: #{Exception.message(e)}")}
+      {:noreply, put_flash(
+         socket,
+         :error,
+         dgettext("errors", "Import failed: %{reason}", reason: Exception.message(e))
+       )}
   end
 
   def handle_event("validate-import", _params, socket) do
@@ -339,14 +349,14 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Synced #{result.synced} skill(s)")
+         |> put_flash(:info, dgettext("admin", "Synced %{count} skill(s)", count: result.synced))
          |> assign(syncing_id: nil)
          |> load_sources()}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Sync failed: #{inspect(reason)}")
+         |> put_flash(:error, dgettext("errors", "Sync failed: %{reason}", reason: inspect(reason)))
          |> assign(syncing_id: nil)
          |> load_sources()}
     end
@@ -369,8 +379,19 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
     msg =
       if errors > 0,
-        do: "Synced #{total} skill(s) from #{length(sources)} source(s), #{errors} failed",
-        else: "Synced #{total} skill(s) from #{length(sources)} source(s)"
+        do:
+          dgettext(
+            "admin",
+            "Synced %{total} skill(s) from %{sources} source(s), %{errors} failed",
+            total: total,
+            sources: length(sources),
+            errors: errors
+          ),
+        else:
+          dgettext("admin", "Synced %{total} skill(s) from %{sources} source(s)",
+            total: total,
+            sources: length(sources)
+          )
 
     flash = if errors > 0, do: :error, else: :info
 
@@ -414,7 +435,7 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     _ -> default
   end
 
-  defp format_dt(nil), do: "Never"
+  defp format_dt(nil), do: dgettext("common", "Never")
 
   defp format_dt(dt) do
     assigns = %{dt: dt}
@@ -466,50 +487,50 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     ~H"""
     <div class="mb-6 flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-bold">Upstream Sources</h1>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "Upstream Sources")}</h1>
         <p class="text-sm text-on-surface-variant mt-1">
-          Configure GitHub repositories to sync skills from.
+          {dgettext("admin", "Configure GitHub repositories to sync skills from.")}
         </p>
       </div>
       <div class="flex items-center gap-1">
-        <.dm_tooltip :let={tooltip_attrs} :if={@sources != []} content="Export" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} :if={@sources != []} content={dgettext("admin", "Export")} position="bottom">
           <.dm_btn {tooltip_attrs}
             size="sm"
             shape="circle"
-            aria-label="Export skill sources"
+            aria-label={dgettext("admin", "Export skill sources")}
             phx-click="export-sources"
           >
             <.dm_mdi name="export" class="w-5 h-5" />
           </.dm_btn>
         </.dm_tooltip>
-        <.dm_tooltip :let={tooltip_attrs} content="Import" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Import")} position="bottom">
           <.dm_btn {tooltip_attrs}
             size="sm"
             shape="circle"
-            aria-label="Import skill sources"
+            aria-label={dgettext("admin", "Import skill sources")}
             phx-click="toggle-import"
           >
             <.dm_mdi name="import" class="w-5 h-5" />
           </.dm_btn>
         </.dm_tooltip>
-        <.dm_tooltip :let={tooltip_attrs} :if={@sources != []} content="Sync all" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} :if={@sources != []} content={dgettext("admin", "Sync all")} position="bottom">
           <.dm_btn {tooltip_attrs}
             size="sm"
             shape="circle"
-            aria-label="Sync all skill sources"
+            aria-label={dgettext("admin", "Sync all skill sources")}
             phx-click="sync-all"
             disabled={@syncing_id == :all}
           >
             <.dm_mdi name="sync" class={["w-5 h-5", @syncing_id == :all && "animate-spin"]} />
           </.dm_btn>
         </.dm_tooltip>
-        <.dm_tooltip :let={tooltip_attrs} content="Add source" position="bottom">
+        <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Add source")} position="bottom">
           <.dm_btn {tooltip_attrs}
             navigate={~p"/skills/upstream/new"}
             variant="primary"
             size="sm"
             shape="circle"
-            aria-label="Add skill source"
+            aria-label={dgettext("admin", "Add skill source")}
           >
             <.dm_mdi name="plus" class="w-5 h-5" />
           </.dm_btn>
@@ -519,12 +540,12 @@ defmodule Backplane.Admin.SkillUpstreamLive do
 
     <%!-- Import panel --%>
     <.dm_card :if={@show_import} variant="bordered" class="mb-6">
-      <:title>Import Sources</:title>
+      <:title>{dgettext("admin", "Import Sources")}</:title>
       <.form for={%{}} phx-submit="import-sources" phx-change="validate-import" class="space-y-4">
         <div>
           <.live_file_input upload={@uploads.import_file} class="file-input file-input-bordered w-full" />
           <p class="mt-1 text-xs text-on-surface-variant">
-            Upload a JSON file exported from another Backplane instance.
+            {dgettext("admin", "Upload a JSON file exported from another Backplane instance.")}
           </p>
         </div>
         <div :for={entry <- @uploads.import_file.entries} class="text-sm">
@@ -538,15 +559,15 @@ defmodule Backplane.Admin.SkillUpstreamLive do
           <.dm_btn type="submit" variant="primary" size="sm"
             disabled={@uploads.import_file.entries == []}
           >
-            Import
+            {dgettext("common", "Import")}
           </.dm_btn>
-          <.dm_btn type="button" size="sm" phx-click="toggle-import">Cancel</.dm_btn>
+          <.dm_btn type="button" size="sm" phx-click="toggle-import">{dgettext("common", "Cancel")}</.dm_btn>
         </div>
       </.form>
     </.dm_card>
 
     <div :if={@sources == []} class="text-on-surface-variant py-12 text-center">
-      No upstream sources configured yet.
+      {dgettext("admin", "No upstream sources configured yet.")}
     </div>
 
     <div :if={@sources != []} class="space-y-4">
@@ -565,23 +586,23 @@ defmodule Backplane.Admin.SkillUpstreamLive do
               </.dm_badge>
             </div>
             <div class="flex items-center gap-1">
-              <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+              <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   navigate={~p"/skills/upstream/#{source.id}/edit"}
                   size="xs"
                   shape="circle"
                   variant="outline"
-                  aria-label={"Edit #{source.name} source"}
+                  aria-label={dgettext("admin", "Edit %{name} source", name: source.name)}
                 >
                   <.dm_mdi name="pencil" class="w-4 h-4" />
                 </.dm_btn>
               </.dm_tooltip>
-              <.dm_tooltip :let={tooltip_attrs} content="Sync" position="bottom">
+              <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Sync")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   size="xs"
                   shape="circle"
                   variant="primary"
-                  aria-label={"Sync #{source.name} source"}
+                  aria-label={dgettext("admin", "Sync %{name} source", name: source.name)}
                   phx-click="sync-source"
                   phx-value-id={source.id}
                   disabled={@syncing_id == source.id}
@@ -594,31 +615,33 @@ defmodule Backplane.Admin.SkillUpstreamLive do
         </:title>
         <div class="text-sm text-on-surface-variant space-y-1">
           <div>
-            <span class="font-medium">URL:</span>
+            <span class="font-medium">{dgettext("admin", "URL:")}</span>
             <a href={source.url} target="_blank" class="ml-1">{source.url}</a>
           </div>
           <div>
-            <span class="font-medium">Branch:</span>
+            <span class="font-medium">{dgettext("admin", "Branch:")}</span>
             <span class="ml-1 font-mono">{source.branch}</span>
-            <span class="ml-3 font-medium">Path:</span>
+            <span class="ml-3 font-medium">{dgettext("admin", "Path:")}</span>
             <span class="ml-1 font-mono">{source.path_prefix}</span>
           </div>
           <div class="flex items-center gap-4">
             <div>
-              <span class="font-medium">Last synced:</span>
+              <span class="font-medium">{dgettext("admin", "Last synced:")}</span>
               <span class="ml-1">{format_dt(source.last_synced_at)}</span>
             </div>
             <div :if={source.selected_skills != []}>
-              <span class="font-medium">Selected:</span>
-              <span class="ml-1">{length(source.selected_skills)} skill(s)</span>
+              <span class="font-medium">{dgettext("admin", "Selected:")}</span>
+              <span class="ml-1">
+                {dgettext("admin", "%{count} skill(s)", count: length(source.selected_skills))}
+              </span>
             </div>
             <div :if={source.sync_tags != []}>
-              <span class="font-medium">Tags:</span>
+              <span class="font-medium">{dgettext("admin", "Tags:")}</span>
               <span class="ml-1">{tags_to_string(source.sync_tags)}</span>
             </div>
           </div>
           <div :if={source.last_sync_error} class="text-error text-xs">
-            Error: {source.last_sync_error}
+            {dgettext("errors", "Error: %{error}", error: source.last_sync_error)}
           </div>
         </div>
       </.dm_card>
@@ -630,24 +653,24 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     ~H"""
     <div class="mb-6">
       <.link navigate={~p"/skills/upstream"} class="text-sm text-on-surface-variant hover:text-on-surface no-underline">
-        ← Back to Upstream Sources
+        {dgettext("admin", "← Back to Upstream Sources")}
       </.link>
     </div>
 
     <.dm_card variant="bordered">
-      <:title>Add Upstream Source</:title>
+      <:title>{dgettext("admin", "Add Upstream Source")}</:title>
       <.form for={@form} phx-submit="save-source" phx-change="validate-source" class="space-y-4">
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <.dm_input
               field={@form[:name]}
-              label="Name"
-              placeholder="My Skills Repo"
+              label={dgettext("common", "Name")}
+              placeholder={dgettext("admin", "My Skills Repo")}
               required
             />
           </div>
           <div>
-            <label class="block text-sm font-medium mb-1">Type</label>
+            <label class="block text-sm font-medium mb-1">{dgettext("common", "Type")}</label>
             <select
               name="skill_source[source_type]"
               class="select select-bordered w-full"
@@ -656,28 +679,28 @@ defmodule Backplane.Admin.SkillUpstreamLive do
               <option value="git" selected={Phoenix.HTML.Form.input_value(@form, :source_type) == "git"}>Git</option>
             </select>
             <p class="mt-1 text-xs text-on-surface-variant">
-              GitHub allows org/repo shorthand. Git requires full URL.
+              {dgettext("admin", "GitHub allows org/repo shorthand. Git requires full URL.")}
             </p>
           </div>
           <div class="sm:col-span-2">
             <.dm_input
               field={@form[:url]}
-              label="Repository URL"
+              label={dgettext("admin", "Repository URL")}
               placeholder={if Phoenix.HTML.Form.input_value(@form, :source_type) == "git", do: "https://git.example.com/org/skills-repo", else: "owner/repo or https://github.com/org/skills-repo"}
               required
             />
           </div>
           <div>
-            <.dm_input field={@form[:branch]} label="Branch" placeholder="main" />
+            <.dm_input field={@form[:branch]} label={dgettext("admin", "Branch")} placeholder="main" />
           </div>
           <div>
-            <.dm_input field={@form[:path_prefix]} label="Path Prefix" placeholder="skills/" />
+            <.dm_input field={@form[:path_prefix]} label={dgettext("admin", "Path Prefix")} placeholder="skills/" />
           </div>
         </div>
 
         <%!-- Sync Tags --%>
         <div>
-          <label class="block text-sm font-medium mb-1">Sync Tags</label>
+          <label class="block text-sm font-medium mb-1">{dgettext("admin", "Sync Tags")}</label>
           <input
             type="text"
             value={@tag_input}
@@ -687,14 +710,14 @@ defmodule Backplane.Admin.SkillUpstreamLive do
             class="input input-bordered w-full"
           />
           <p class="mt-1 text-xs text-on-surface-variant">
-            Comma-separated. These tags will be applied to all synced skills from this source.
+            {dgettext("admin", "Comma-separated. These tags will be applied to all synced skills from this source.")}
           </p>
         </div>
 
         <div class="flex gap-2 pt-2">
-          <.dm_btn type="submit" variant="primary" size="sm">Create</.dm_btn>
+          <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Create")}</.dm_btn>
           <.link navigate={~p"/skills/upstream"} class="no-underline">
-            <.dm_btn type="button" size="sm">Cancel</.dm_btn>
+            <.dm_btn type="button" size="sm">{dgettext("common", "Cancel")}</.dm_btn>
           </.link>
         </div>
       </.form>
@@ -706,25 +729,25 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     ~H"""
     <div class="mb-6">
       <.link navigate={~p"/skills/upstream"} class="text-sm text-on-surface-variant hover:text-on-surface no-underline">
-        ← Back to Upstream Sources
+        {dgettext("admin", "← Back to Upstream Sources")}
       </.link>
     </div>
 
     <%!-- Edit form --%>
     <.dm_card variant="bordered" class="mb-6">
-      <:title>Edit Source</:title>
+      <:title>{dgettext("admin", "Edit Source")}</:title>
       <.form for={@form} phx-submit="update-source" phx-change="validate-source" class="space-y-4">
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <.dm_input
               field={@form[:name]}
-              label="Name"
-              placeholder="My Skills Repo"
+              label={dgettext("common", "Name")}
+              placeholder={dgettext("admin", "My Skills Repo")}
               required
             />
           </div>
           <div>
-            <label class="block text-sm font-medium mb-1">Type</label>
+            <label class="block text-sm font-medium mb-1">{dgettext("common", "Type")}</label>
             <select
               name="skill_source[source_type]"
               class="select select-bordered w-full"
@@ -733,28 +756,28 @@ defmodule Backplane.Admin.SkillUpstreamLive do
               <option value="git" selected={Phoenix.HTML.Form.input_value(@form, :source_type) == "git"}>Git</option>
             </select>
             <p class="mt-1 text-xs text-on-surface-variant">
-              GitHub allows org/repo shorthand. Git requires full URL.
+              {dgettext("admin", "GitHub allows org/repo shorthand. Git requires full URL.")}
             </p>
           </div>
           <div class="sm:col-span-2">
             <.dm_input
               field={@form[:url]}
-              label="Repository URL"
+              label={dgettext("admin", "Repository URL")}
               placeholder="https://github.com/org/skills-repo"
               required
             />
           </div>
           <div>
-            <.dm_input field={@form[:branch]} label="Branch" placeholder="main" />
+            <.dm_input field={@form[:branch]} label={dgettext("admin", "Branch")} placeholder="main" />
           </div>
           <div>
-            <.dm_input field={@form[:path_prefix]} label="Path Prefix" placeholder="skills/" />
+            <.dm_input field={@form[:path_prefix]} label={dgettext("admin", "Path Prefix")} placeholder="skills/" />
           </div>
         </div>
 
         <%!-- Sync Tags --%>
         <div>
-          <label class="block text-sm font-medium mb-1">Sync Tags</label>
+          <label class="block text-sm font-medium mb-1">{dgettext("admin", "Sync Tags")}</label>
           <input
             type="text"
             value={@tag_input}
@@ -764,14 +787,14 @@ defmodule Backplane.Admin.SkillUpstreamLive do
             class="input input-bordered w-full"
           />
           <p class="mt-1 text-xs text-on-surface-variant">
-            Comma-separated. These tags will be applied to all synced skills from this source.
+            {dgettext("admin", "Comma-separated. These tags will be applied to all synced skills from this source.")}
           </p>
         </div>
 
         <div class="flex gap-2 pt-2">
-          <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
+          <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Save")}</.dm_btn>
           <.link navigate={~p"/skills/upstream"} class="no-underline">
-            <.dm_btn type="button" size="sm">Cancel</.dm_btn>
+            <.dm_btn type="button" size="sm">{dgettext("common", "Cancel")}</.dm_btn>
           </.link>
         </div>
       </.form>
@@ -782,9 +805,12 @@ defmodule Backplane.Admin.SkillUpstreamLive do
       <:title>
         <div class="flex items-center justify-between w-full">
           <div class="flex items-center gap-2">
-            <span>Skills to Sync</span>
+            <span>{dgettext("admin", "Skills to Sync")}</span>
             <.dm_badge :if={@remote_skills != []} variant="neutral" size="sm">
-              {MapSet.size(@selected_skills)}/{length(@remote_skills)} selected
+              {dgettext("admin", "%{selected}/%{total} selected",
+                selected: MapSet.size(@selected_skills),
+                total: length(@remote_skills)
+              )}
             </.dm_badge>
           </div>
           <div class="flex items-center gap-2">
@@ -793,14 +819,14 @@ defmodule Backplane.Admin.SkillUpstreamLive do
               size="xs"
               phx-click="select-all-skills"
             >
-              Select All
+              {dgettext("admin", "Select All")}
             </.dm_btn>
             <.dm_btn
               :if={MapSet.size(@selected_skills) > 0}
               size="xs"
               phx-click="clear-skills"
             >
-              Clear
+              {dgettext("common", "Clear")}
             </.dm_btn>
             <.dm_btn
               size="xs"
@@ -808,24 +834,24 @@ defmodule Backplane.Admin.SkillUpstreamLive do
               phx-click="refresh-remote"
               disabled={@remote_loading}
             >
-              {if @remote_loading, do: "Loading…", else: "Refresh"}
+              {if @remote_loading, do: dgettext("common", "Loading…"), else: dgettext("common", "Refresh")}
             </.dm_btn>
           </div>
         </div>
       </:title>
 
       <div :if={@remote_loading} class="text-center py-6 text-on-surface-variant">
-        <div class="text-sm">Fetching skills from upstream source…</div>
+        <div class="text-sm">{dgettext("admin", "Fetching skills from upstream source…")}</div>
       </div>
 
       <div :if={@remote_error} class="py-4">
         <div class="text-sm text-error">
-          Failed to fetch remote skills: {@remote_error}
+          {dgettext("errors", "Failed to fetch remote skills: %{error}", error: @remote_error)}
         </div>
       </div>
 
       <div :if={@remote_skills == [] and not @remote_loading and not is_binary(@remote_error)} class="text-center py-6 text-on-surface-variant text-sm">
-        No remote skills found. Click Refresh to fetch from the upstream source.
+        {dgettext("admin", "No remote skills found. Click Refresh to fetch from the upstream source.")}
       </div>
 
       <div :if={@remote_skills != [] and not @remote_loading} class="divide-y divide-outline-variant/40">
@@ -858,23 +884,27 @@ defmodule Backplane.Admin.SkillUpstreamLive do
     <%!-- Danger zone --%>
     <.dm_card variant="bordered" class="border-error/30">
       <:title>
-        <span class="text-error">Danger Zone</span>
+        <span class="text-error">{dgettext("admin", "Danger Zone")}</span>
       </:title>
       <div class="flex items-center justify-between">
         <div>
-          <div class="text-sm font-medium">Delete this source</div>
+          <div class="text-sm font-medium">{dgettext("admin", "Delete this source")}</div>
           <div class="text-xs text-on-surface-variant">
-            This will remove the upstream source configuration. Previously synced skills will not be deleted.
+            {dgettext("admin", "This will remove the upstream source configuration. Previously synced skills will not be deleted.")}
           </div>
         </div>
         <.dm_btn
           size="sm"
           variant="error"
-          data-confirm={"Delete source #{@editing_source.name}? This cannot be undone."}
+          data-confirm={
+            dgettext("admin", "Delete source %{name}? This cannot be undone.",
+              name: @editing_source.name
+            )
+          }
           phx-click="delete-source"
           phx-value-id={@editing_source.id}
         >
-          Delete Source
+          {dgettext("admin", "Delete Source")}
         </.dm_btn>
       </div>
     </.dm_card>

@@ -1,6 +1,7 @@
 defmodule Backplane.Admin.AudioPreview do
   @moduledoc "Bounded admin preview ownership using the public audio orchestration."
   use GenServer
+  use Gettext, backend: Backplane.Admin.Gettext
 
   alias Backplane.Audio.{AccessLifecycle, Config, Error, Request, Resolver, Speech, Transcription}
   alias Backplane.Audio.Media.Session
@@ -193,7 +194,7 @@ defmodule Backplane.Admin.AudioPreview do
   defp collect({:file, artifact}, acc) do
     case File.open(artifact.path, [:read, :binary], &IO.binread(&1, @limit + 1)) do
       {:ok, bytes} when is_binary(bytes) -> append(acc, bytes)
-      _ -> {:error, Error.new(503, "Preview unavailable", nil, "preview_unavailable"), acc}
+      _ -> {:error, Error.new(503, dgettext("errors", "Preview unavailable"), nil, "preview_unavailable"), acc}
     end
   end
 
@@ -201,5 +202,5 @@ defmodule Backplane.Admin.AudioPreview do
     do: {:ok, acc <> bytes}
 
   defp append(acc, _),
-    do: {:error, Error.new(413, "Preview exceeds 1 MB", nil, "preview_too_large"), acc}
+    do: {:error, Error.new(413, dgettext("errors", "Preview exceeds 1 MB"), nil, "preview_too_large"), acc}
 end

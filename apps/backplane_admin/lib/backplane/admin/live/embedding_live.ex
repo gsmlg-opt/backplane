@@ -52,7 +52,7 @@ defmodule Backplane.Admin.EmbeddingLive do
   def handle_event("edit_provider", %{"id" => id}, socket) do
     case Embedding.get_model(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Embedding provider not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Embedding provider not found"))}
 
       model ->
         {:noreply,
@@ -69,7 +69,7 @@ defmodule Backplane.Admin.EmbeddingLive do
   def handle_event("delete_provider", %{"id" => id}, socket) do
     case Embedding.get_model(id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Embedding provider not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Embedding provider not found"))}
 
       model ->
         case Embedding.soft_delete_provider(model.provider) do
@@ -82,11 +82,11 @@ defmodule Backplane.Admin.EmbeddingLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Embedding provider #{model.provider.name} deleted")
+             |> put_flash(:info, dgettext("admin", "Embedding provider %{name} deleted", name: model.provider.name))
              |> load_embedding_models()}
 
           {:error, _changeset} ->
-            {:noreply, put_flash(socket, :error, "Failed to delete embedding provider")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to delete embedding provider"))}
         end
     end
   end
@@ -108,7 +108,7 @@ defmodule Backplane.Admin.EmbeddingLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Embedding provider updated")
+         |> put_flash(:info, dgettext("admin", "Embedding provider updated"))
          |> assign(
            provider_modal_open: false,
            provider_modal_mode: :new,
@@ -140,7 +140,7 @@ defmodule Backplane.Admin.EmbeddingLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Embedding provider added")
+         |> put_flash(:info, dgettext("admin", "Embedding provider added"))
          |> assign(
            provider_modal_open: false,
            provider_modal_mode: :new,
@@ -167,7 +167,7 @@ defmodule Backplane.Admin.EmbeddingLive do
 
     assign(socket,
       credential_options: credential_options(),
-      host_service_options: [{"", "Direct HTTP"} | HostServices.options(:openai_embeddings)],
+      host_service_options: [{"", dgettext("admin", "Direct HTTP")} | HostServices.options(:openai_embeddings)],
       embedding_models: embedding_models
     )
   end
@@ -180,13 +180,13 @@ defmodule Backplane.Admin.EmbeddingLive do
 
   defp credential_options do
     [
-      {"", "Select a credential..."}
+      {"", dgettext("admin", "Select a credential...")}
       | Credentials.list()
         |> Enum.filter(&(&1.kind == "llm"))
         |> Enum.map(fn cred -> {cred.name, "#{cred.name} (#{cred.kind})"} end)
     ]
   rescue
-    _ -> [{"", "Select a credential..."}]
+    _ -> [{"", dgettext("admin", "Select a credential...")}]
   end
 
   defp provider_defaults do
@@ -229,8 +229,11 @@ defmodule Backplane.Admin.EmbeddingLive do
   defp enabled_variant(true), do: "success"
   defp enabled_variant(false), do: "neutral"
 
-  defp enabled_text(true), do: "Enabled"
-  defp enabled_text(false), do: "Disabled"
+  defp provider_status_text(true), do: dgettext("admin", "Provider Enabled")
+  defp provider_status_text(false), do: dgettext("admin", "Provider Disabled")
+
+  defp model_status_text(true), do: dgettext("admin", "Model Enabled")
+  defp model_status_text(false), do: dgettext("admin", "Model Disabled")
 
   defp error(assigns) do
     ~H"""
@@ -244,9 +247,9 @@ defmodule Backplane.Admin.EmbeddingLive do
     <div>
       <div class="mb-6 flex items-center justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-bold">Embedding Providers</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "Embedding Providers")}</h1>
           <p class="mt-1 text-sm text-on-surface-variant">
-            Manage embedding-only providers and models used for vector requests.
+            {dgettext("admin", "Manage embedding-only providers and models used for vector requests.")}
           </p>
         </div>
 
@@ -257,15 +260,15 @@ defmodule Backplane.Admin.EmbeddingLive do
           phx-click="open_provider_modal"
         >
           <.dm_mdi name="plus" class="h-4 w-4" />
-          Add Provider
+          {dgettext("admin", "Add Provider")}
         </.dm_btn>
       </div>
 
       <.dm_card variant="bordered">
-        <:title>Embedding Models</:title>
+        <:title>{dgettext("admin", "Embedding Models")}</:title>
 
         <div :if={@embedding_models == []} class="text-sm text-on-surface-variant">
-          No embedding models configured.
+          {dgettext("admin", "No embedding models configured.")}
         </div>
 
         <.dm_table
@@ -275,59 +278,65 @@ defmodule Backplane.Admin.EmbeddingLive do
           hover
           zebra
         >
-          <:col :let={model} label="Model">
+          <:col :let={model} label={dgettext("admin", "Model")}>
             <div class="min-w-0">
               <code class="block truncate text-sm">{Embedding.model_id(model)}</code>
               <span class="mt-1 block text-sm text-on-surface-variant">{display_name(model)}</span>
             </div>
           </:col>
-          <:col :let={model} label="Provider">
+          <:col :let={model} label={dgettext("admin", "Provider")}>
             <span class="font-medium">{model.provider.name}</span>
           </:col>
-          <:col :let={model} label="Base URL">
+          <:col :let={model} label={dgettext("admin", "Base URL")}>
             <code class="block max-w-sm truncate text-xs">{model.provider.base_url}</code>
           </:col>
-          <:col :let={model} label="Status">
+          <:col :let={model} label={dgettext("common", "Status")}>
             <div class="flex flex-wrap gap-2">
               <.dm_badge variant={enabled_variant(model.provider.enabled)} size="sm">
-                Provider {enabled_text(model.provider.enabled)}
+                {provider_status_text(model.provider.enabled)}
               </.dm_badge>
               <.dm_badge variant={enabled_variant(model.enabled)} size="sm">
-                Model {enabled_text(model.enabled)}
+                {model_status_text(model.enabled)}
               </.dm_badge>
             </div>
           </:col>
-          <:col :let={model} label="Actions">
+          <:col :let={model} label={dgettext("common", "Actions")}>
             <div class="flex items-center gap-1">
-              <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+              <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   id={"edit-embedding-model-#{model.id}"}
                   type="button"
                   size="xs"
                   shape="circle"
                   variant="outline"
-                  aria-label={"Edit embedding provider #{model.provider.name}"}
+                  aria-label={
+                    dgettext("admin", "Edit embedding provider %{name}", name: model.provider.name)
+                  }
                   phx-click="edit_provider"
                   phx-value-id={model.id}
                 >
                   <.dm_mdi name="pencil" class="h-4 w-4" />
-                  <span class="sr-only">Edit</span>
+                  <span class="sr-only">{dgettext("common", "Edit")}</span>
                 </.dm_btn>
               </.dm_tooltip>
-              <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+              <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   id={"delete-embedding-model-#{model.id}"}
                   type="button"
                   size="xs"
                   shape="circle"
                   variant="error"
-                  aria-label={"Delete embedding provider #{model.provider.name}"}
-                  data-confirm={"Delete embedding provider #{model.provider.name}?"}
+                  aria-label={
+                    dgettext("admin", "Delete embedding provider %{name}", name: model.provider.name)
+                  }
+                  data-confirm={
+                    dgettext("admin", "Delete embedding provider %{name}?", name: model.provider.name)
+                  }
                   phx-click="delete_provider"
                   phx-value-id={model.id}
                 >
                   <.dm_mdi name="delete" class="h-4 w-4" />
-                  <span class="sr-only">Delete</span>
+                  <span class="sr-only">{dgettext("common", "Delete")}</span>
                 </.dm_btn>
               </.dm_tooltip>
             </div>
@@ -372,7 +381,7 @@ defmodule Backplane.Admin.EmbeddingLive do
             type="button"
             class="rounded px-2 py-1 text-sm text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
             phx-click="close_provider_modal"
-            aria-label="Close"
+            aria-label={dgettext("common", "Close")}
           >
             x
           </button>
@@ -389,7 +398,7 @@ defmodule Backplane.Admin.EmbeddingLive do
               <.dm_input
                 id="embedding-provider-name"
                 name="provider[name]"
-                label="Provider"
+                label={dgettext("admin", "Provider")}
                 value={@provider_form[:name].value}
                 placeholder="openai-embeddings"
               />
@@ -400,7 +409,7 @@ defmodule Backplane.Admin.EmbeddingLive do
               <.dm_select
                 id="embedding-provider-credential"
                 name="provider[credential]"
-                label="Credential"
+                label={dgettext("admin", "Credential")}
                 options={@credential_options}
                 value={@provider_form[:credential].value || ""}
               />
@@ -412,7 +421,7 @@ defmodule Backplane.Admin.EmbeddingLive do
               <.dm_checkbox
                 id="embedding-provider-enabled"
                 name="provider[enabled]"
-                label="Enable provider"
+                label={dgettext("admin", "Enable provider")}
                 value="true"
                 checked={@provider_form[:enabled].value in [true, "true", "on"]}
               />
@@ -420,9 +429,9 @@ defmodule Backplane.Admin.EmbeddingLive do
           </div>
 
           <div>
-            <.dm_select id="embedding-provider-host-service" name="provider[host_service_id]" label="Host API Service"
+            <.dm_select id="embedding-provider-host-service" name="provider[host_service_id]" label={dgettext("admin", "Host API Service")}
               options={@host_service_options} value={@provider_form[:host_service_id].value || ""} />
-            <p class="mt-1 text-xs text-on-surface-variant">Hosted services use their configured endpoint. Credential is optional for unauthenticated host services.</p>
+            <p class="mt-1 text-xs text-on-surface-variant">{dgettext("admin", "Hosted services use their configured endpoint. Credential is optional for unauthenticated host services.")}</p>
             <.error errors={@provider_errors} field="host_service_id" />
           </div>
 
@@ -430,7 +439,7 @@ defmodule Backplane.Admin.EmbeddingLive do
             <.dm_input
               id="embedding-provider-base-url"
               name="provider[base_url]"
-              label="Embedding API Base URL"
+              label={dgettext("admin", "Embedding API Base URL")}
               value={@provider_form[:base_url].value}
               placeholder="https://api.openai.com/v1"
             />
@@ -442,7 +451,7 @@ defmodule Backplane.Admin.EmbeddingLive do
               <.dm_input
                 id="embedding-provider-model"
                 name="provider[model]"
-                label="Model"
+                label={dgettext("admin", "Model")}
                 value={@provider_form[:model].value}
                 placeholder="text-embedding-3-small"
               />
@@ -452,7 +461,7 @@ defmodule Backplane.Admin.EmbeddingLive do
             <.dm_input
               id="embedding-provider-display-name"
               name="provider[display_name]"
-              label="Display Name"
+              label={dgettext("admin", "Display Name")}
               value={@provider_form[:display_name].value}
             />
 
@@ -461,7 +470,7 @@ defmodule Backplane.Admin.EmbeddingLive do
               <.dm_checkbox
                 id="embedding-provider-model-enabled"
                 name="provider[model_enabled]"
-                label="Enable model"
+                label={dgettext("admin", "Enable model")}
                 value="true"
                 checked={@provider_form[:model_enabled].value in [true, "true", "on"]}
               />
@@ -472,7 +481,7 @@ defmodule Backplane.Admin.EmbeddingLive do
             <.dm_textarea
               id="embedding-provider-default-headers"
               name="provider[default_headers]"
-              label="Default Headers"
+              label={dgettext("admin", "Default Headers")}
               rows={3}
               value={@provider_form[:default_headers].value}
               class="font-mono"
@@ -481,7 +490,7 @@ defmodule Backplane.Admin.EmbeddingLive do
             <.dm_textarea
               id="embedding-provider-metadata"
               name="provider[metadata]"
-              label="Model Metadata"
+              label={dgettext("admin", "Model Metadata")}
               rows={3}
               value={@provider_form[:metadata].value}
               class="font-mono"
@@ -490,7 +499,7 @@ defmodule Backplane.Admin.EmbeddingLive do
 
           <div class="flex flex-wrap justify-end gap-2">
             <.dm_btn type="button" variant="outline" size="sm" phx-click="close_provider_modal">
-              Cancel
+              {dgettext("common", "Cancel")}
             </.dm_btn>
             <.dm_btn type="submit" variant="primary" size="sm">
               {provider_modal_submit(@mode)}
@@ -502,14 +511,14 @@ defmodule Backplane.Admin.EmbeddingLive do
     """
   end
 
-  defp provider_modal_title(:edit), do: "Edit Embedding Provider"
-  defp provider_modal_title(_mode), do: "Add Embedding Provider"
+  defp provider_modal_title(:edit), do: dgettext("admin", "Edit Embedding Provider")
+  defp provider_modal_title(_mode), do: dgettext("admin", "Add Embedding Provider")
 
-  defp provider_modal_description(:edit), do: "Update the embedding provider and model."
+  defp provider_modal_description(:edit), do: dgettext("admin", "Update the embedding provider and model.")
 
   defp provider_modal_description(_mode),
-    do: "Configure an embedding-only provider and its first model."
+    do: dgettext("admin", "Configure an embedding-only provider and its first model.")
 
-  defp provider_modal_submit(:edit), do: "Save Provider"
-  defp provider_modal_submit(_mode), do: "Add Provider"
+  defp provider_modal_submit(:edit), do: dgettext("admin", "Save Provider")
+  defp provider_modal_submit(_mode), do: dgettext("admin", "Add Provider")
 end

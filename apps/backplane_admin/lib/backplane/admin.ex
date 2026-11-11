@@ -22,6 +22,7 @@ defmodule Backplane.Admin do
         layouts: [html: Backplane.Admin.Layouts]
 
       import Plug.Conn
+      use Gettext, backend: Backplane.Admin.Gettext
 
       unquote(verified_routes())
     end
@@ -61,6 +62,7 @@ defmodule Backplane.Admin do
   defp html_helpers do
     quote do
       import Phoenix.HTML
+      use Gettext, backend: Backplane.Admin.Gettext
 
       use PhoenixDuskmoon.Component
       use PhoenixDuskmoon.ArtComponent

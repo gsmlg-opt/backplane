@@ -1,6 +1,8 @@
 defmodule Backplane.Admin.FigmaOAuth do
   @moduledoc false
 
+  use Gettext, backend: Backplane.Admin.Gettext
+
   alias Backplane.Settings.{Credentials, OAuthRefresher, OAuthStateStore}
 
   @request_timeout_ms 30_000
@@ -48,31 +50,31 @@ defmodule Backplane.Admin.FigmaOAuth do
   def complete_popped(_code, _attrs), do: {:error, :invalid_figma_oauth_state}
 
   @spec format_error(term()) :: String.t()
-  def format_error(:invalid_figma_callback_url), do: "Paste the full Figma callback URL"
-  def format_error(:missing_figma_callback_state), do: "The callback URL is missing state"
-  def format_error(:missing_figma_callback_code), do: "The callback URL is missing code"
+  def format_error(:invalid_figma_callback_url), do: dgettext("errors", "Paste the full Figma callback URL")
+  def format_error(:missing_figma_callback_state), do: dgettext("errors", "The callback URL is missing state")
+  def format_error(:missing_figma_callback_code), do: dgettext("errors", "The callback URL is missing code")
 
   def format_error(:figma_callback_redirect_mismatch),
-    do: "The callback URL does not match this login"
+    do: dgettext("errors", "The callback URL does not match this login")
 
   def format_error(:invalid_figma_oauth_state),
-    do: "OAuth state expired or invalid. Please try again."
+    do: dgettext("errors", "OAuth state expired or invalid. Please try again.")
 
   def format_error(:invalid_figma_oauth_client),
-    do: "The Figma OAuth client is invalid; reconnect"
+    do: dgettext("errors", "The Figma OAuth client is invalid; reconnect")
 
   def format_error(:invalid_figma_token_response),
-    do: "Figma returned an incomplete token response"
+    do: dgettext("errors", "Figma returned an incomplete token response")
 
   def format_error({:credential_store_failed, _reason}),
-    do: "Auth succeeded but failed to save the credential"
+    do: dgettext("errors", "Auth succeeded but failed to save the credential")
 
   def format_error({:provider_error, error, description}) do
     [description, error]
     |> Enum.filter(&is_binary/1)
     |> Enum.join(" (")
     |> then(fn
-      "" -> "Figma denied authorization"
+      "" -> dgettext("errors", "Figma denied authorization")
       message when is_binary(description) and is_binary(error) -> message <> ")"
       message -> message
     end)
@@ -82,7 +84,7 @@ defmodule Backplane.Admin.FigmaOAuth do
     do: "#{description} (#{status})"
 
   def format_error({:http, status, %{"error" => error}}), do: "#{error} (#{status})"
-  def format_error({:http, status, _body}), do: "HTTP #{status}"
+  def format_error({:http, status, _body}), do: dgettext("errors", "HTTP %{status}", status: status)
   def format_error(reason), do: inspect(reason)
 
   defp parse_callback_url(callback_url) do

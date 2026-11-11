@@ -203,12 +203,12 @@ defmodule Backplane.Admin.SettingsLive do
 
     cond do
       model == "" ->
-        {:noreply, put_flash(socket, :error, "Select a target model to add")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Select a target model to add"))}
 
       model in current_model_ids ->
         {:noreply,
          socket
-         |> put_flash(:info, "Model alias '#{name}' already includes #{model}")
+         |> put_flash(:info, dgettext("admin", "Model alias '%{name}' already includes %{model}", name: name, model: model))
          |> load_data("settings")}
 
       true ->
@@ -238,13 +238,13 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Enabled unqualified model aliases for #{provider_name}")
+         |> put_flash(:info, dgettext("admin", "Enabled unqualified model aliases for %{provider}", provider: provider_name))
          |> load_data("settings")}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Failed to enable provider aliases: #{inspect(reason)}")
+         |> put_flash(:error, dgettext("errors", "Failed to enable provider aliases: %{reason}", reason: inspect(reason)))
          |> load_data("settings")}
     end
   end
@@ -256,13 +256,13 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Disabled unqualified model aliases for #{provider_name}")
+         |> put_flash(:info, dgettext("admin", "Disabled unqualified model aliases for %{provider}", provider: provider_name))
          |> load_data("settings")}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Failed to disable provider aliases: #{inspect(reason)}")
+         |> put_flash(:error, dgettext("errors", "Failed to disable provider aliases: %{reason}", reason: inspect(reason)))
          |> load_data("settings")}
     end
   end
@@ -280,14 +280,14 @@ defmodule Backplane.Admin.SettingsLive do
          socket
          |> put_flash(
            :info,
-           "Custom alias '#{model_alias.alias}' points to #{model_alias.target}"
+           dgettext("admin", "Custom alias '%{alias}' points to %{target}", alias: model_alias.alias, target: model_alias.target)
          )
          |> load_data("settings")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Failed to save custom alias: #{changeset_error(changeset)}")
+         |> put_flash(:error, dgettext("errors", "Failed to save custom alias: %{reason}", reason: changeset_error(changeset)))
          |> load_data("settings")}
     end
   end
@@ -299,13 +299,13 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Custom alias '#{model_alias.alias}' removed")
+         |> put_flash(:info, dgettext("admin", "Custom alias '%{alias}' removed", alias: model_alias.alias))
          |> load_data("settings")}
 
       {:error, _reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Failed to remove custom alias")
+         |> put_flash(:error, dgettext("errors", "Failed to remove custom alias"))
          |> load_data("settings")}
     end
   end
@@ -357,13 +357,13 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "OAuth token renewed for '#{name}'")
+         |> put_flash(:info, dgettext("admin", "OAuth token renewed for '%{name}'", name: name))
          |> refresh_credential_edit(name)}
 
       {:error, reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Failed to renew OAuth token: #{format_oauth_error(reason)}")
+         |> put_flash(:error, dgettext("errors", "Failed to renew OAuth token: %{reason}", reason: format_oauth_error(reason)))
          |> refresh_credential_edit(name)}
     end
   end
@@ -386,7 +386,7 @@ defmodule Backplane.Admin.SettingsLive do
 
     cond do
       code == "" ->
-        {:noreply, put_flash(socket, :error, "Authorization code is required")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Authorization code is required"))}
 
       vendor == "figma_oauth" ->
         complete_figma_callback(socket, code, cred_name)
@@ -404,7 +404,7 @@ defmodule Backplane.Admin.SettingsLive do
 
                 {:noreply,
                  socket
-                 |> put_flash(:info, "Connected #{device_flow_label(vendor)} as '#{cred_name}'")
+                 |> put_flash(:info, dgettext("admin", "Connected %{vendor} as '%{name}'", vendor: device_flow_label(vendor), name: cred_name))
                  |> push_patch(to: ~p"/system/credentials")}
 
               {:error, reason} ->
@@ -412,7 +412,7 @@ defmodule Backplane.Admin.SettingsLive do
                  assign(socket,
                    device_flow_state: :error,
                    device_flow_error:
-                     "Auth succeeded but failed to save credential: #{inspect(reason)}",
+                     dgettext("errors", "Auth succeeded but failed to save credential: %{reason}", reason: inspect(reason)),
                    device_flow_error_detail: nil
                  )}
             end
@@ -421,7 +421,7 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: "Code exchange failed: #{format_exchange_error(reason)}",
+               device_flow_error: dgettext("errors", "Code exchange failed: %{reason}", reason: format_exchange_error(reason)),
                device_flow_error_detail: format_exchange_error_detail(reason)
              )}
         end
@@ -436,13 +436,13 @@ defmodule Backplane.Admin.SettingsLive do
     cond do
       vendor != "anthropic_oauth" ->
         {:noreply,
-         put_flash(socket, :error, "CLI auth import is not available for this provider")}
+         put_flash(socket, :error, dgettext("errors", "CLI auth import is not available for this provider"))}
 
       name == "" ->
-        {:noreply, put_flash(socket, :error, "Credential name is required")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Credential name is required"))}
 
       auth_json == "" ->
-        {:noreply, put_flash(socket, :error, "Claude Code auth JSON is required")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is required"))}
 
       true ->
         case import_claude_code_auth(name, auth_json) do
@@ -451,7 +451,7 @@ defmodule Backplane.Admin.SettingsLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Imported Claude Code auth as '#{name}'")
+             |> put_flash(:info, dgettext("admin", "Imported Claude Code auth as '%{name}'", name: name))
              |> push_patch(to: ~p"/system/credentials")}
 
           {:error, reason} ->
@@ -459,7 +459,7 @@ defmodule Backplane.Admin.SettingsLive do
              put_flash(
                socket,
                :error,
-               "Failed to import Claude Code auth JSON: #{format_cli_auth_error(reason)}"
+               dgettext("errors", "Failed to import Claude Code auth JSON: %{reason}", reason: format_cli_auth_error(reason))
              )}
         end
     end
@@ -472,10 +472,10 @@ defmodule Backplane.Admin.SettingsLive do
     cond do
       socket.assigns.cred_auth_type != "anthropic_oauth" ->
         {:noreply,
-         put_flash(socket, :error, "Claude Code auth JSON is only available for Claude Plan")}
+         put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is only available for Claude Plan"))}
 
       auth_json == "" ->
-        {:noreply, put_flash(socket, :error, "Claude Code auth JSON is required")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Claude Code auth JSON is required"))}
 
       true ->
         case import_claude_code_auth(name, auth_json) do
@@ -485,7 +485,7 @@ defmodule Backplane.Admin.SettingsLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Updated Claude Code auth JSON for '#{name}'")
+             |> put_flash(:info, dgettext("admin", "Updated Claude Code auth JSON for '%{name}'", name: name))
              |> assign(auth_json_modal_open: false)
              |> refresh_credential_edit(name)}
 
@@ -494,7 +494,7 @@ defmodule Backplane.Admin.SettingsLive do
              put_flash(
                socket,
                :error,
-               "Failed to update Claude Code auth JSON: #{format_cli_auth_error(reason)}"
+               dgettext("errors", "Failed to update Claude Code auth JSON: %{reason}", reason: format_cli_auth_error(reason))
              )}
         end
     end
@@ -527,14 +527,14 @@ defmodule Backplane.Admin.SettingsLive do
         {:noreply,
          socket
          |> assign(delete_confirm_name: nil)
-         |> put_flash(:info, "Credential '#{name}' deleted")
+         |> put_flash(:info, dgettext("admin", "Credential '%{name}' deleted", name: name))
          |> load_data("credentials")}
 
       {:error, _} ->
         {:noreply,
          socket
          |> assign(delete_confirm_name: nil)
-         |> put_flash(:error, "Failed to delete credential")}
+         |> put_flash(:error, dgettext("errors", "Failed to delete credential"))}
     end
   end
 
@@ -543,14 +543,14 @@ defmodule Backplane.Admin.SettingsLive do
       {:ok, _credential} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Connected Figma MCP as '#{cred_name}'")
+         |> put_flash(:info, dgettext("admin", "Connected Figma MCP as '%{name}'", name: cred_name))
          |> push_patch(to: ~p"/system/credentials")}
 
       {:error, reason} ->
         {:noreply,
          assign(socket,
            device_flow_state: :error,
-           device_flow_error: "Authorization failed: #{FigmaOAuth.format_error(reason)}",
+           device_flow_error: dgettext("errors", "Authorization failed: %{reason}", reason: FigmaOAuth.format_error(reason)),
            device_flow_error_detail: nil
          )}
     end
@@ -570,7 +570,7 @@ defmodule Backplane.Admin.SettingsLive do
 
               {:noreply,
                socket
-               |> put_flash(:info, "Connected OpenAI Codex as '#{cred_name}'")
+               |> put_flash(:info, dgettext("admin", "Connected OpenAI Codex as '%{name}'", name: cred_name))
                |> push_patch(to: ~p"/system/credentials")}
 
             {:error, reason} ->
@@ -578,7 +578,7 @@ defmodule Backplane.Admin.SettingsLive do
                assign(socket,
                  device_flow_state: :error,
                  device_flow_error:
-                   "Auth succeeded but failed to save credential: #{inspect(reason)}",
+                   dgettext("errors", "Auth succeeded but failed to save credential: %{reason}", reason: inspect(reason)),
                  device_flow_error_detail: nil
                )}
           end
@@ -592,7 +592,7 @@ defmodule Backplane.Admin.SettingsLive do
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: "Device authorization code expired. Please try again.",
+             device_flow_error: dgettext("errors", "Device authorization code expired. Please try again."),
              device_flow_error_detail: nil
            )}
 
@@ -600,7 +600,7 @@ defmodule Backplane.Admin.SettingsLive do
           {:noreply,
            assign(socket,
              device_flow_state: :error,
-             device_flow_error: "Authorization failed: #{format_openai_codex_error(reason)}",
+             device_flow_error: dgettext("errors", "Authorization failed: %{reason}", reason: format_openai_codex_error(reason)),
              device_flow_error_detail: nil
            )}
       end
@@ -622,7 +622,7 @@ defmodule Backplane.Admin.SettingsLive do
 
     cond do
       name == "" ->
-        {:noreply, put_flash(socket, :error, "Credential name is required")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Credential name is required"))}
 
       vendor == "openai_oauth" ->
         case OpenAICodexAuth.start_device_login() do
@@ -645,7 +645,7 @@ defmodule Backplane.Admin.SettingsLive do
              assign(socket,
                device_flow_state: :error,
                device_flow_error:
-                 "Failed to request device code: #{format_openai_codex_error(reason)}",
+                 dgettext("errors", "Failed to request device code: %{reason}", reason: format_openai_codex_error(reason)),
                device_flow_error_detail: nil
              )}
         end
@@ -679,7 +679,7 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
+               device_flow_error: dgettext("errors", "Authorization is not configured: %{reason}", reason: inspect(reason)),
                device_flow_error_detail: nil
              )}
 
@@ -708,7 +708,7 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
+               device_flow_error: dgettext("errors", "Authorization is not configured: %{reason}", reason: inspect(reason)),
                device_flow_error_detail: nil
              )}
 
@@ -789,7 +789,7 @@ defmodule Backplane.Admin.SettingsLive do
             {:noreply,
              assign(socket,
                device_flow_state: :error,
-               device_flow_error: "Authorization is not configured: #{inspect(reason)}",
+               device_flow_error: dgettext("errors", "Authorization is not configured: %{reason}", reason: inspect(reason)),
                device_flow_error_detail: nil
              )}
 
@@ -811,7 +811,7 @@ defmodule Backplane.Admin.SettingsLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Model alias '#{name}' updated with #{target_count} target(s)")
+         |> put_flash(:info, dgettext("admin", "Model alias '%{name}' updated with %{count} target(s)", name: name, count: target_count))
          |> load_data("settings")}
 
       {:error, {:missing_models, missing_model_ids}} ->
@@ -819,14 +819,14 @@ defmodule Backplane.Admin.SettingsLive do
          socket
          |> put_flash(
            :error,
-           "No enabled provider model found for: #{Enum.join(missing_model_ids, ", ")}"
+           dgettext("errors", "No enabled provider model found for: %{models}", models: Enum.join(missing_model_ids, ", "))
          )
          |> load_data("settings")}
 
       {:error, _reason} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Failed to update model alias")
+         |> put_flash(:error, dgettext("errors", "Failed to update model alias"))
          |> load_data("settings")}
     end
   end
@@ -845,7 +845,7 @@ defmodule Backplane.Admin.SettingsLive do
     metadata = build_metadata(params)
 
     if name == "" or secret == "" do
-      {:noreply, put_flash(socket, :error, "Name and secret are required")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "Name and secret are required"))}
     else
       case Credentials.store(name, secret, kind, metadata) do
         {:ok, credential} ->
@@ -853,11 +853,11 @@ defmodule Backplane.Admin.SettingsLive do
 
           {:noreply,
            socket
-           |> put_flash(:info, "Credential '#{name}' created")
+           |> put_flash(:info, dgettext("admin", "Credential '%{name}' created", name: name))
            |> push_patch(to: ~p"/system/credentials")}
 
         {:error, _} ->
-          {:noreply, put_flash(socket, :error, "Failed to store credential")}
+          {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to store credential"))}
       end
     end
   end
@@ -883,16 +883,16 @@ defmodule Backplane.Admin.SettingsLive do
 
           {:noreply,
            socket
-           |> put_flash(:info, "Credential '#{name}' updated")
+           |> put_flash(:info, dgettext("admin", "Credential '%{name}' updated", name: name))
            |> push_patch(to: ~p"/system/credentials")}
 
         {:error, _} ->
-          {:noreply, put_flash(socket, :error, "Failed to update credential")}
+          {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to update credential"))}
       end
     else
       {:noreply,
        socket
-       |> put_flash(:info, "Credential '#{name}' updated")
+       |> put_flash(:info, dgettext("admin", "Credential '%{name}' updated", name: name))
        |> push_patch(to: ~p"/system/credentials")}
     end
   end
@@ -902,7 +902,7 @@ defmodule Backplane.Admin.SettingsLive do
     secret = params["secret"] || ""
 
     if secret == "" do
-      {:noreply, put_flash(socket, :error, "New secret is required")}
+      {:noreply, put_flash(socket, :error, dgettext("errors", "New secret is required"))}
     else
       case Credentials.rotate(name, secret) do
         {:ok, credential} ->
@@ -910,36 +910,36 @@ defmodule Backplane.Admin.SettingsLive do
 
           {:noreply,
            socket
-           |> put_flash(:info, "Credential '#{name}' rotated")
+           |> put_flash(:info, dgettext("admin", "Credential '%{name}' rotated", name: name))
            |> push_patch(to: ~p"/system/credentials")}
 
         {:error, _} ->
-          {:noreply, put_flash(socket, :error, "Failed to rotate credential")}
+          {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to rotate credential"))}
       end
     end
   end
 
   # --- Helpers ---
 
-  defp cred_secret_label(_mode, _auth_type, "script"), do: "Script Content"
-  defp cred_secret_label(:rotate, _auth_type, _kind), do: "New Secret"
-  defp cred_secret_label(_mode, "oauth2_client_credentials", _kind), do: "Client Secret"
-  defp cred_secret_label(_mode, _auth_type, _kind), do: "Secret"
+  defp cred_secret_label(_mode, _auth_type, "script"), do: dgettext("admin", "Script Content")
+  defp cred_secret_label(:rotate, _auth_type, _kind), do: dgettext("admin", "New Secret")
+  defp cred_secret_label(_mode, "oauth2_client_credentials", _kind), do: dgettext("admin", "Client Secret")
+  defp cred_secret_label(_mode, _auth_type, _kind), do: dgettext("admin", "Secret")
 
   defp cred_secret_placeholder(:edit, _auth_type, "script"),
-    do: "Leave empty to keep current script content"
+    do: dgettext("admin", "Leave empty to keep current script content")
 
-  defp cred_secret_placeholder(_mode, _auth_type, "script"), do: "Enter script contents here..."
+  defp cred_secret_placeholder(_mode, _auth_type, "script"), do: dgettext("admin", "Enter script contents here...")
 
   defp cred_secret_placeholder(:edit, "oauth2_client_credentials", _kind),
-    do: "Leave empty to keep current client secret"
+    do: dgettext("admin", "Leave empty to keep current client secret")
 
-  defp cred_secret_placeholder(:edit, _auth_type, _kind), do: "Leave empty to keep current"
+  defp cred_secret_placeholder(:edit, _auth_type, _kind), do: dgettext("admin", "Leave empty to keep current")
 
   defp cred_secret_placeholder(_mode, "oauth2_client_credentials", _kind),
-    do: "OAuth2 client secret"
+    do: dgettext("admin", "OAuth2 client secret")
 
-  defp cred_secret_placeholder(_mode, _auth_type, _kind), do: "API key or token"
+  defp cred_secret_placeholder(_mode, _auth_type, _kind), do: dgettext("admin", "API key or token")
 
   defp build_metadata(params) do
     if params["kind"] == "script" do
@@ -985,7 +985,7 @@ defmodule Backplane.Admin.SettingsLive do
   defp custom_alias_target_options do
     built_in_options =
       AutoModel.built_in_names()
-      |> Enum.map(&{&1, "#{&1} (built-in)"})
+      |> Enum.map(&{&1, dgettext("admin", "%{name} (built-in)", name: &1)})
 
     provider_model_options =
       AutoModel.list_available_target_model_ids()
@@ -1042,7 +1042,7 @@ defmodule Backplane.Admin.SettingsLive do
       Enum.map(messages, &"#{Phoenix.Naming.humanize(field)} #{&1}")
     end)
     |> List.first()
-    |> Kernel.||("invalid alias")
+    |> Kernel.||(dgettext("errors", "invalid alias"))
   end
 
   defp device_oauth_auth_type?(auth_type),
@@ -1080,13 +1080,13 @@ defmodule Backplane.Admin.SettingsLive do
     |> apply_action(:credentials_edit, %{"name" => name})
   end
 
-  defp oauth_status_label(%{status: :active}), do: "Active"
-  defp oauth_status_label(%{status: :expiring_soon}), do: "Expiring Soon"
-  defp oauth_status_label(%{status: :expired}), do: "Expired"
-  defp oauth_status_label(%{status: :missing_refresh_token}), do: "Missing Refresh Token"
-  defp oauth_status_label(%{status: :unknown}), do: "Unknown"
-  defp oauth_status_label(%{status: :invalid}), do: "Invalid"
-  defp oauth_status_label(_), do: "Unknown"
+  defp oauth_status_label(%{status: :active}), do: dgettext("admin", "Active")
+  defp oauth_status_label(%{status: :expiring_soon}), do: dgettext("admin", "Expiring Soon")
+  defp oauth_status_label(%{status: :expired}), do: dgettext("admin", "Expired")
+  defp oauth_status_label(%{status: :missing_refresh_token}), do: dgettext("admin", "Missing Refresh Token")
+  defp oauth_status_label(%{status: :unknown}), do: dgettext("admin", "Unknown")
+  defp oauth_status_label(%{status: :invalid}), do: dgettext("admin", "Invalid")
+  defp oauth_status_label(_), do: dgettext("admin", "Unknown")
 
   defp oauth_status_variant(%{status: :active}), do: "success"
   defp oauth_status_variant(%{status: :expiring_soon}), do: "warning"
@@ -1095,7 +1095,7 @@ defmodule Backplane.Admin.SettingsLive do
   defp oauth_status_variant(%{status: :invalid}), do: "error"
   defp oauth_status_variant(_), do: "neutral"
 
-  defp format_oauth_datetime(nil, _id), do: "Unknown"
+  defp format_oauth_datetime(nil, _id), do: dgettext("admin", "Unknown")
 
   defp format_oauth_datetime(datetime, id) do
     assigns = %{datetime: datetime, id: id}
@@ -1105,18 +1105,20 @@ defmodule Backplane.Admin.SettingsLive do
     """
   end
 
-  defp format_oauth_error({:refresh_failed, status}), do: "refresh returned HTTP #{status}"
+  defp format_oauth_error({:refresh_failed, status}), do: dgettext("errors", "refresh returned HTTP %{status}", status: status)
   defp format_oauth_error({:refresh_error, reason}), do: inspect(reason)
   defp format_oauth_error(reason), do: inspect(reason)
 
-  @kind_options [
-    {"llm", "LLM Provider"},
-    {"upstream", "Upstream MCP"},
-    {"service", "Service"},
-    {"admin", "Admin"},
-    {"script", "Script"},
-    {"custom", "Custom"}
-  ]
+  defp kind_options do
+    [
+      {"llm", dgettext("admin", "LLM Provider")},
+      {"upstream", dgettext("admin", "Upstream MCP")},
+      {"service", dgettext("admin", "Service")},
+      {"admin", dgettext("admin", "Admin")},
+      {"script", dgettext("admin", "Script")},
+      {"custom", dgettext("admin", "Custom")}
+    ]
+  end
 
   # --- Render ---
 
@@ -1137,7 +1139,7 @@ defmodule Backplane.Admin.SettingsLive do
     ~H"""
     <div class="space-y-6">
       <section>
-        <h1 class="mb-6 text-2xl font-bold">Model Aliases</h1>
+        <h1 class="mb-6 text-2xl font-bold">{dgettext("navigation", "Model Aliases")}</h1>
         <div class="space-y-4">
           <.dm_card :for={auto_model <- @auto_models} variant="bordered">
             <% target_model_ids = auto_model_target_ids(auto_model) %>
@@ -1147,11 +1149,11 @@ defmodule Backplane.Admin.SettingsLive do
                 <div class="flex items-center gap-2">
                   <code>{auto_model.name}</code>
                   <.dm_badge variant={if auto_model.enabled, do: "success", else: "neutral"}>
-                    {if auto_model.enabled, do: "Enabled", else: "Disabled"}
+                    {if auto_model.enabled, do: dgettext("common", "Enabled"), else: dgettext("common", "Disabled")}
                   </.dm_badge>
                 </div>
                 <span class="text-xs text-on-surface-variant">
-                  {length(auto_model.routes)} routes
+                  {dngettext("admin", "%{count} route", "%{count} routes", length(auto_model.routes))}
                 </span>
               </div>
             </:title>
@@ -1166,13 +1168,13 @@ defmodule Backplane.Admin.SettingsLive do
                 <.dm_select
                   id={"auto-model-#{auto_model.name}-model"}
                   name="model"
-                  label="Target models"
+                  label={dgettext("admin", "Target models")}
                   options={selectable_options}
-                  prompt={if selectable_options == [], do: "No available provider models", else: "Select a model"}
+                  prompt={if selectable_options == [], do: dgettext("admin", "No available provider models"), else: dgettext("admin", "Select a model")}
                   disabled={selectable_options == []}
                 />
               </div>
-              <.dm_btn type="submit" variant="primary" disabled={selectable_options == []}>Add</.dm_btn>
+              <.dm_btn type="submit" variant="primary" disabled={selectable_options == []}>{dgettext("common", "Add")}</.dm_btn>
             </form>
 
             <div
@@ -1180,7 +1182,7 @@ defmodule Backplane.Admin.SettingsLive do
               class="mt-3 flex flex-wrap items-center gap-2"
             >
               <span :if={target_model_ids == []} class="text-sm text-on-surface-variant">
-                No target models selected
+                {dgettext("admin", "No target models selected")}
               </span>
               <span
                 :for={model_id <- target_model_ids}
@@ -1192,10 +1194,10 @@ defmodule Backplane.Admin.SettingsLive do
                   phx-click="remove_auto_model_target"
                   phx-value-name={auto_model.name}
                   phx-value-model={model_id}
-                  aria-label={"Remove #{model_id} from #{auto_model.name}"}
+                  aria-label={dgettext("admin", "Remove %{model} from %{name}", model: model_id, name: auto_model.name)}
                   class="text-xs font-medium text-on-surface-variant hover:text-error"
                 >
-                  Remove
+                  {dgettext("common", "Remove")}
                 </button>
               </span>
             </div>
@@ -1205,7 +1207,7 @@ defmodule Backplane.Admin.SettingsLive do
                 <div class="mb-2 flex items-center justify-between gap-2">
                   <span class="text-sm font-medium">{route_label(route.api_surface)}</span>
                   <.dm_badge variant={if route.enabled, do: "success", else: "neutral"} size="sm">
-                    {if route.enabled, do: "Enabled", else: "Disabled"}
+                    {if route.enabled, do: dgettext("common", "Enabled"), else: dgettext("common", "Disabled")}
                   </.dm_badge>
                 </div>
                 <div class="flex flex-wrap gap-2">
@@ -1213,7 +1215,7 @@ defmodule Backplane.Admin.SettingsLive do
                     {target_model_name(target)}
                   </.dm_badge>
                   <span :if={route.targets == []} class="text-sm text-on-surface-variant">
-                    No targets
+                    {dgettext("admin", "No targets")}
                   </span>
                 </div>
               </div>
@@ -1223,9 +1225,9 @@ defmodule Backplane.Admin.SettingsLive do
       </section>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Provider Aliases</h2>
+        <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Provider Aliases")}</h2>
         <.dm_card variant="bordered">
-          <:title>Expose provider models without a namespace</:title>
+          <:title>{dgettext("admin", "Expose provider models without a namespace")}</:title>
           <form
             id="provider-alias-form"
             phx-submit="add_provider_alias"
@@ -1234,17 +1236,17 @@ defmodule Backplane.Admin.SettingsLive do
             <.dm_select
               id="provider-alias-provider"
               name="provider"
-              label="Provider"
+              label={dgettext("admin", "Provider")}
               options={@provider_alias_options}
-              prompt="Select a provider"
+              prompt={dgettext("admin", "Select a provider")}
               disabled={@provider_alias_options == []}
             />
-            <.dm_btn type="submit" variant="primary" disabled={@provider_alias_options == []}>Add</.dm_btn>
+            <.dm_btn type="submit" variant="primary" disabled={@provider_alias_options == []}>{dgettext("common", "Add")}</.dm_btn>
           </form>
 
           <div id="provider-alias-list" class="mt-3 flex flex-wrap items-center gap-2">
             <span :if={@provider_aliases == []} class="text-sm text-on-surface-variant">
-              No providers configured
+              {dgettext("admin", "No providers configured")}
             </span>
             <span
               :for={provider_name <- @provider_aliases}
@@ -1255,10 +1257,10 @@ defmodule Backplane.Admin.SettingsLive do
                 type="button"
                 phx-click="remove_provider_alias"
                 phx-value-provider={provider_name}
-                aria-label={"Remove provider aliases for #{provider_name}"}
+                aria-label={dgettext("admin", "Remove provider aliases for %{provider}", provider: provider_name)}
                 class="text-xs font-medium text-on-surface-variant hover:text-error"
               >
-                Remove
+                {dgettext("common", "Remove")}
               </button>
             </span>
           </div>
@@ -1266,13 +1268,13 @@ defmodule Backplane.Admin.SettingsLive do
       </section>
 
       <section>
-        <h2 class="mb-3 text-lg font-semibold">Custom Aliases</h2>
+        <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Custom Aliases")}</h2>
         <.dm_card variant="bordered">
           <:title>
             <div class="flex w-full items-center justify-between gap-3">
-              <span>Custom aliases</span>
+              <span>{dgettext("admin", "Custom aliases")}</span>
               <span class="text-xs text-on-surface-variant">
-                {length(@custom_aliases)} aliases
+                {dngettext("admin", "%{count} alias", "%{count} aliases", length(@custom_aliases))}
               </span>
             </div>
           </:title>
@@ -1286,7 +1288,7 @@ defmodule Backplane.Admin.SettingsLive do
               <.dm_input
                 id="custom-model-alias-name"
                 name="alias"
-                label="Alias"
+                label={dgettext("admin", "Alias")}
                 value=""
                 placeholder="coding"
                 required
@@ -1296,14 +1298,14 @@ defmodule Backplane.Admin.SettingsLive do
               <.dm_select
                 id="custom-model-alias-target"
                 name="target"
-                label="Target"
+                label={dgettext("admin", "Target")}
                 options={@custom_alias_target_options}
-                prompt="Select a target"
+                prompt={dgettext("admin", "Select a target")}
                 disabled={@custom_alias_target_options == []}
               />
             </div>
             <.dm_btn type="submit" variant="primary" disabled={@custom_alias_target_options == []}>
-              Save
+              {dgettext("common", "Save")}
             </.dm_btn>
           </form>
 
@@ -1312,7 +1314,7 @@ defmodule Backplane.Admin.SettingsLive do
             class="mt-3 flex flex-wrap items-center gap-2"
           >
             <span :if={@custom_aliases == []} class="text-sm text-on-surface-variant">
-              No custom aliases configured
+              {dgettext("admin", "No custom aliases configured")}
             </span>
             <span
               :for={model_alias <- @custom_aliases}
@@ -1325,10 +1327,10 @@ defmodule Backplane.Admin.SettingsLive do
                 type="button"
                 phx-click="remove_custom_model_alias"
                 phx-value-alias={model_alias.alias}
-                aria-label={"Remove custom alias #{model_alias.alias}"}
+                aria-label={dgettext("admin", "Remove custom alias %{alias}", alias: model_alias.alias)}
                 class="text-xs font-medium text-on-surface-variant hover:text-error"
               >
-                Remove
+                {dgettext("common", "Remove")}
               </button>
             </span>
           </div>
@@ -1339,20 +1341,20 @@ defmodule Backplane.Admin.SettingsLive do
   end
 
   defp render_credentials_tab(assigns) do
-    assigns = assign(assigns, :kind_options, @kind_options)
+    assigns = assign(assigns, :kind_options, kind_options())
 
     ~H"""
     <div>
       <%= case @live_action do %>
         <% :credentials -> %>
           <div class="flex items-center justify-between mb-4">
-            <h1 class="text-2xl font-bold">Credential Store</h1>
+            <h1 class="text-2xl font-bold">{dgettext("admin", "Credential Store")}</h1>
             <div :if={@cred_form_mode == nil} class="flex items-center">
               <.link
                 patch={~p"/system/credentials/new"}
                 class="btn btn-primary split-btn-left"
               >
-                Add Credential
+                {dgettext("admin", "Add Credential")}
               </.link>
               <.dm_dropdown id="cred-add-dropdown" position="bottom" dropdown_class="popover-end split-btn-dropdown">
                 <:trigger class="split-btn-trigger">
@@ -1374,31 +1376,31 @@ defmodule Backplane.Admin.SettingsLive do
                     patch={~p"/system/credentials/new/anthropic_oauth"}
                     class="popover-menu-item"
                   >
-                    Connect Claude Plan
+                    {dgettext("admin", "Connect Claude Plan")}
                   </.link>
                   <.link
                     patch={~p"/system/credentials/new/openai_oauth"}
                     class="popover-menu-item"
                   >
-                    Connect OpenAI Codex
+                    {dgettext("admin", "Connect OpenAI Codex")}
                   </.link>
                   <.link
                     patch={~p"/system/credentials/new/google_oauth"}
                     class="popover-menu-item"
                   >
-                    Connect Google Antigravity
+                    {dgettext("admin", "Connect Google Antigravity")}
                   </.link>
                   <.link
                     patch={~p"/system/credentials/new/xai_oauth"}
                     class="popover-menu-item"
                   >
-                    Connect xAI Grok
+                    {dgettext("admin", "Connect xAI Grok")}
                   </.link>
                   <.link
                     patch={~p"/system/credentials/new/figma_oauth"}
                     class="popover-menu-item"
                   >
-                    Connect Figma MCP
+                    {dgettext("admin", "Connect Figma MCP")}
                   </.link>
                 </:content>
               </.dm_dropdown>
@@ -1409,14 +1411,14 @@ defmodule Backplane.Admin.SettingsLive do
 
           <.dm_card variant="bordered">
             <div :if={@credentials == []} class="py-8 text-center text-on-surface-variant">
-              No credentials stored yet. Click "Add Credential" to create one.
+              {dgettext("admin", "No credentials stored yet. Click \"Add Credential\" to create one.")}
             </div>
             <div :if={@credentials != []}>
               <.dm_table id="credentials-table" data={@credentials} hover zebra>
-                <:col :let={cred} label="Name">
+                <:col :let={cred} label={dgettext("common", "Name")}>
                   <code>{cred.name}</code>
                 </:col>
-                <:col :let={cred} label="Kind">
+                <:col :let={cred} label={dgettext("admin", "Kind")}>
                   <div class="flex items-center gap-1">
                     <.dm_badge variant="neutral">{cred.kind}</.dm_badge>
                     <.dm_badge
@@ -1436,40 +1438,40 @@ defmodule Backplane.Admin.SettingsLive do
                     </.dm_badge>
                   </div>
                 </:col>
-                <:col :let={cred} label="Hint">
+                <:col :let={cred} label={dgettext("admin", "Hint")}>
                   <code class="text-on-surface-variant">{cred.hint}</code>
                 </:col>
-                <:col :let={cred} label="Updated">
+                <:col :let={cred} label={dgettext("common", "Updated")}>
                   <.local_time datetime={cred.updated_at} />
                 </:col>
-                <:col :let={cred} label="Actions">
+                <:col :let={cred} label={dgettext("common", "Actions")}>
                   <div class="flex items-center gap-1">
-                    <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                    <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                       <.dm_btn
                         {tooltip_attrs}
                         patch={~p"/system/credentials/#{cred.name}/edit"}
                         size="xs"
                         shape="circle"
                         variant="outline"
-                        aria-label={"Edit #{cred.name}"}
+                        aria-label={dgettext("admin", "Edit %{name}", name: cred.name)}
                       >
                         <.dm_mdi name="pencil" class="h-4 w-4" />
-                        <span class="sr-only">Edit</span>
+                        <span class="sr-only">{dgettext("common", "Edit")}</span>
                       </.dm_btn>
                     </.dm_tooltip>
 
-                    <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                    <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
                       <.dm_btn {tooltip_attrs}
                         type="button"
                         variant="error"
                         size="xs"
                         shape="circle"
-                        aria-label={"Delete #{cred.name}"}
+                        aria-label={dgettext("admin", "Delete %{name}", name: cred.name)}
                         phx-click="show_delete_confirm"
                         phx-value-name={cred.name}
                       >
                         <.dm_mdi name="delete" class="h-4 w-4" />
-                        <span class="sr-only">Delete</span>
+                        <span class="sr-only">{dgettext("common", "Delete")}</span>
                       </.dm_btn>
                     </.dm_tooltip>
                   </div>
@@ -1481,7 +1483,7 @@ defmodule Backplane.Admin.SettingsLive do
         <% :credentials_new -> %>
           <div class="flex items-center gap-3 mb-6">
             <.link patch={~p"/system/credentials"} class="text-sm text-primary hover:underline">
-              &larr; Credentials
+              &larr; {dgettext("navigation", "Credentials")}
             </.link>
           </div>
           <.render_cred_form kind_options={@kind_options} {assigns} />
@@ -1489,7 +1491,7 @@ defmodule Backplane.Admin.SettingsLive do
         <% :credentials_new_oauth -> %>
           <div class="flex items-center gap-3 mb-6">
             <.link patch={~p"/system/credentials"} class="text-sm text-primary hover:underline">
-              &larr; Credentials
+              &larr; {dgettext("navigation", "Credentials")}
             </.link>
           </div>
           <.render_device_auth_form {assigns} />
@@ -1497,7 +1499,7 @@ defmodule Backplane.Admin.SettingsLive do
         <% :credentials_edit -> %>
           <div class="flex items-center gap-3 mb-6">
             <.link patch={~p"/system/credentials"} class="text-sm text-primary hover:underline">
-              &larr; Credentials
+              &larr; {dgettext("navigation", "Credentials")}
             </.link>
           </div>
           <%= cond do %>
@@ -1517,15 +1519,15 @@ defmodule Backplane.Admin.SettingsLive do
         phx-key="Escape"
       >
         <div class="bg-surface-container rounded-lg shadow-xl p-6 max-w-md w-full mx-4 border border-outline-variant">
-          <h3 class="text-lg font-semibold text-on-surface mb-2">Delete Credential</h3>
+          <h3 class="text-lg font-semibold text-on-surface mb-2">{dgettext("admin", "Delete Credential")}</h3>
           <p class="text-sm text-on-surface-variant mb-6">
-            Are you sure you want to delete credential
+            {dgettext("admin", "Are you sure you want to delete credential")}
             <code class="text-error font-mono">{@delete_confirm_name}</code>?
-            This cannot be undone.
+            {dgettext("admin", "This cannot be undone.")}
           </p>
           <div class="flex justify-end gap-2">
-            <.dm_btn phx-click="cancel_delete">Cancel</.dm_btn>
-            <.dm_btn variant="error" phx-click="confirm_delete" phx-disable-with="Deleting...">Delete</.dm_btn>
+            <.dm_btn phx-click="cancel_delete">{dgettext("common", "Cancel")}</.dm_btn>
+            <.dm_btn variant="error" phx-click="confirm_delete" phx-disable-with={dgettext("admin", "Deleting...")}>{dgettext("common", "Delete")}</.dm_btn>
           </div>
         </div>
       </div>
@@ -1538,8 +1540,8 @@ defmodule Backplane.Admin.SettingsLive do
     <.dm_card variant="bordered" class="mb-6">
       <:title>
         <%= case @cred_form_mode do %>
-          <% :add -> %>New Credential
-          <% :edit -> %>Edit Credential: {@cred_editing_name}
+          <% :add -> %>{dgettext("admin", "New Credential")}
+          <% :edit -> %>{dgettext("admin", "Edit Credential: %{name}", name: @cred_editing_name)}
         <% end %>
       </:title>
       <form phx-submit="save_credential" class="space-y-4" autocomplete="off">
@@ -1547,9 +1549,9 @@ defmodule Backplane.Admin.SettingsLive do
           <.dm_input
             id="cred-name"
             name="name"
-            label="Name"
+            label={dgettext("common", "Name")}
             value={@cred_name}
-            placeholder="e.g. anthropic-prod-key"
+            placeholder={dgettext("admin", "e.g. anthropic-prod-key")}
             autocomplete="off"
             required
           />
@@ -1559,7 +1561,7 @@ defmodule Backplane.Admin.SettingsLive do
           <.dm_select
             id="cred-kind"
             name="kind"
-            label="Kind"
+            label={dgettext("admin", "Kind")}
             options={@kind_options}
             value={@cred_kind}
             phx-change="change_kind"
@@ -1569,8 +1571,8 @@ defmodule Backplane.Admin.SettingsLive do
             <.dm_select
               id="cred-auth-type"
               name="auth_type"
-              label="Auth Type"
-              options={[{"api_key", "API Key"}, {"oauth2_client_credentials", "OAuth2 Client Credentials"}]}
+              label={dgettext("admin", "Auth Type")}
+              options={[{"api_key", dgettext("admin", "API Key")}, {"oauth2_client_credentials", dgettext("admin", "OAuth2 Client Credentials")}]}
               value={@cred_auth_type}
               phx-change="change_auth_type"
             />
@@ -1579,16 +1581,16 @@ defmodule Backplane.Admin.SettingsLive do
               <.dm_input
                 id="cred-client-id"
                 name="client_id"
-                label="Client ID"
+                label={dgettext("admin", "Client ID")}
                 value={@cred_client_id}
-                placeholder="OAuth2 client identifier"
+                placeholder={dgettext("admin", "OAuth2 client identifier")}
                 autocomplete="off"
                 required
               />
               <.dm_input
                 id="cred-token-url"
                 name="token_url"
-                label="Token URL"
+                label={dgettext("admin", "Token URL")}
                 value={@cred_token_url}
                 placeholder="https://auth.example.com/oauth/token"
                 autocomplete="off"
@@ -1597,9 +1599,9 @@ defmodule Backplane.Admin.SettingsLive do
               <.dm_input
                 id="cred-scope"
                 name="scope"
-                label="Scope (optional)"
+                label={dgettext("admin", "Scope (optional)")}
                 value={@cred_scope}
-                placeholder="e.g. read write"
+                placeholder={dgettext("admin", "e.g. read write")}
                 autocomplete="off"
               />
             <% end %>
@@ -1630,7 +1632,7 @@ defmodule Backplane.Admin.SettingsLive do
           />
         <% end %>
         <p :if={@cred_form_mode == :edit} class="text-xs text-on-surface-variant -mt-2">
-          Leave empty to keep the current secret. Enter a new value to rotate it.
+          {dgettext("admin", "Leave empty to keep the current secret. Enter a new value to rotate it.")}
         </p>
 
         <div class="flex gap-2 pt-2">
@@ -1639,17 +1641,17 @@ defmodule Backplane.Admin.SettingsLive do
             variant="primary"
             phx-disable-with={
               case @cred_form_mode do
-                :add -> "Storing..."
-                :edit -> "Saving..."
+                :add -> dgettext("admin", "Storing...")
+                :edit -> dgettext("admin", "Saving...")
               end
             }
           >
             <%= case @cred_form_mode do %>
-              <% :add -> %>Store Credential
-              <% :edit -> %>Save Changes
+              <% :add -> %>{dgettext("admin", "Store Credential")}
+              <% :edit -> %>{dgettext("common", "Save Changes")}
             <% end %>
           </.dm_btn>
-          <.dm_btn type="button" phx-click="cancel_cred_form">Cancel</.dm_btn>
+          <.dm_btn type="button" phx-click="cancel_cred_form">{dgettext("common", "Cancel")}</.dm_btn>
         </div>
       </form>
     </.dm_card>
@@ -1659,7 +1661,7 @@ defmodule Backplane.Admin.SettingsLive do
   defp render_oauth_cred_edit(assigns) do
     ~H"""
     <.dm_card variant="bordered" class="mb-6">
-      <:title>OAuth Credential: {@cred_editing_name}</:title>
+      <:title>{dgettext("admin", "OAuth Credential: %{name}", name: @cred_editing_name)}</:title>
 
       <div class="space-y-5">
         <div class="flex flex-wrap items-center gap-2">
@@ -1671,7 +1673,7 @@ defmodule Backplane.Admin.SettingsLive do
 
         <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
           <div class="rounded-md border border-outline-variant p-3">
-            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Token Expires</div>
+            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">{dgettext("admin", "Token Expires")}</div>
             <div id="oauth-token-expires" class="text-sm text-on-surface">
               {format_oauth_datetime(
                 @oauth_status && @oauth_status.expires_at,
@@ -1680,7 +1682,7 @@ defmodule Backplane.Admin.SettingsLive do
             </div>
           </div>
           <div class="rounded-md border border-outline-variant p-3">
-            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Token Created</div>
+            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">{dgettext("admin", "Token Created")}</div>
             <div id="oauth-token-created" class="text-sm text-on-surface">
               {format_oauth_datetime(
                 @oauth_status && @oauth_status.token_created_at,
@@ -1689,7 +1691,7 @@ defmodule Backplane.Admin.SettingsLive do
             </div>
           </div>
           <div class="rounded-md border border-outline-variant p-3">
-            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">Last Updated</div>
+            <div class="mb-1 text-xs font-medium uppercase text-on-surface-variant">{dgettext("admin", "Last Updated")}</div>
             <div id="oauth-credential-updated" class="text-sm text-on-surface">
               {format_oauth_datetime(
                 @oauth_status && @oauth_status.credential_updated_at,
@@ -1704,17 +1706,17 @@ defmodule Backplane.Admin.SettingsLive do
             type="button"
             variant="primary"
             phx-click="reconnect_oauth"
-            phx-disable-with="Connecting..."
+            phx-disable-with={dgettext("admin", "Connecting...")}
           >
-            Reconnect
+            {dgettext("admin", "Reconnect")}
           </.dm_btn>
           <.dm_btn
             type="button"
             variant="secondary"
             phx-click="renew_oauth_token"
-            phx-disable-with="Renewing Token..."
+            phx-disable-with={dgettext("admin", "Renewing Token...")}
           >
-            Renew Token
+            {dgettext("admin", "Renew Token")}
           </.dm_btn>
           <.dm_btn
             :if={@cred_auth_type == "anthropic_oauth"}
@@ -1723,9 +1725,9 @@ defmodule Backplane.Admin.SettingsLive do
             variant="outline"
             phx-click="open_auth_json_modal"
           >
-            Set Auth JSON
+            {dgettext("admin", "Set Auth JSON")}
           </.dm_btn>
-          <.dm_btn type="button" phx-click="cancel_cred_form">Cancel</.dm_btn>
+          <.dm_btn type="button" phx-click="cancel_cred_form">{dgettext("common", "Cancel")}</.dm_btn>
         </div>
 
         <.claude_auth_json_modal :if={@auth_json_modal_open} />
@@ -1748,13 +1750,13 @@ defmodule Backplane.Admin.SettingsLive do
       <div class="w-full max-w-3xl rounded-lg border border-outline-variant bg-surface-container p-6 shadow-xl">
         <div class="mb-5 flex items-center justify-between gap-4">
           <h2 id="claude-auth-json-modal-title" class="text-lg font-semibold text-on-surface">
-            Set Claude Plan Auth JSON
+            {dgettext("admin", "Set Claude Plan Auth JSON")}
           </h2>
           <button
             type="button"
             class="rounded px-2 py-1 text-sm text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
             phx-click="close_auth_json_modal"
-            aria-label="Close"
+            aria-label={dgettext("common", "Close")}
           >
             x
           </button>
@@ -1764,7 +1766,7 @@ defmodule Backplane.Admin.SettingsLive do
           <.dm_textarea
             id="edit-claude-code-auth-json"
             name="auth_json"
-            label="Auth JSON"
+            label={dgettext("admin", "Auth JSON")}
             value=""
             placeholder={~s({"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":1780094101489}})}
             rows={10}
@@ -1773,15 +1775,15 @@ defmodule Backplane.Admin.SettingsLive do
           />
           <div class="flex flex-wrap justify-end gap-2 pt-2">
             <.dm_btn type="button" variant="outline" size="sm" phx-click="close_auth_json_modal">
-              Cancel
+              {dgettext("common", "Cancel")}
             </.dm_btn>
             <.dm_btn
               type="submit"
               variant="primary"
               size="sm"
-              phx-disable-with="Updating..."
+              phx-disable-with={dgettext("admin", "Updating...")}
             >
-              Update Auth JSON
+              {dgettext("admin", "Update Auth JSON")}
             </.dm_btn>
           </div>
         </form>
@@ -1793,42 +1795,42 @@ defmodule Backplane.Admin.SettingsLive do
   defp render_device_auth_form(assigns) do
     ~H"""
     <.dm_card variant="bordered" class="mb-6">
-      <:title>Connect {device_flow_label(@device_flow_vendor)}</:title>
+      <:title>{dgettext("admin", "Connect %{vendor}", vendor: device_flow_label(@device_flow_vendor))}</:title>
 
       <%= if @device_flow_state == :idle do %>
         <p class="text-sm text-on-surface-variant mb-4">
-          You will be redirected to the provider's login page to authorise.
+          {dgettext("admin", "You will be redirected to the provider's login page to authorise.")}
         </p>
         <p
           :if={@device_flow_vendor == "figma_oauth"}
           id="figma-shared-account-note"
           class="text-sm text-on-surface-variant mb-4"
         >
-          This credential authorizes one shared Figma account for every Backplane caller.
+          {dgettext("admin", "This credential authorizes one shared Figma account for every Backplane caller.")}
         </p>
         <form phx-submit="start_device_auth" class="space-y-4" autocomplete="off">
           <.dm_input
             id="device-cred-name"
             name="cred_name"
-            label="Credential Name"
+            label={dgettext("admin", "Credential Name")}
             value={@device_flow_cred_name}
             placeholder={@device_flow_cred_name || "oauth-cred"}
             autocomplete="off"
             required
           />
           <div class="flex gap-2 pt-2">
-            <.dm_btn type="submit" variant="primary" phx-disable-with="Connecting...">Connect</.dm_btn>
-            <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+            <.dm_btn type="submit" variant="primary" phx-disable-with={dgettext("admin", "Connecting...")}>{dgettext("admin", "Connect")}</.dm_btn>
+            <.dm_btn type="button" phx-click="cancel_device_auth">{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </form>
 
         <div :if={@device_flow_vendor == "anthropic_oauth"} class="mt-6 border-t border-outline-variant pt-5">
-          <h3 class="mb-3 text-sm font-semibold text-on-surface">Claude Code Auth JSON</h3>
+          <h3 class="mb-3 text-sm font-semibold text-on-surface">{dgettext("admin", "Claude Code Auth JSON")}</h3>
           <form phx-submit="import_cli_auth" class="space-y-4" autocomplete="off">
             <.dm_input
               id="cli-auth-cred-name"
               name="cred_name"
-              label="Credential Name"
+              label={dgettext("admin", "Credential Name")}
               value={@device_flow_cred_name}
               placeholder={@device_flow_cred_name || "claude-plan"}
               autocomplete="off"
@@ -1837,7 +1839,7 @@ defmodule Backplane.Admin.SettingsLive do
             <.dm_textarea
               id="claude-code-auth-json"
               name="auth_json"
-              label="Auth JSON"
+              label={dgettext("admin", "Auth JSON")}
               value=""
               placeholder={~s({"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":1780094101489}})}
               rows={8}
@@ -1845,8 +1847,8 @@ defmodule Backplane.Admin.SettingsLive do
               required
             />
             <div class="flex gap-2 pt-2">
-              <.dm_btn type="submit" variant="primary" phx-disable-with="Importing...">Import JSON</.dm_btn>
-              <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+              <.dm_btn type="submit" variant="primary" phx-disable-with={dgettext("admin", "Importing...")}>{dgettext("admin", "Import JSON")}</.dm_btn>
+              <.dm_btn type="button" phx-click="cancel_device_auth">{dgettext("common", "Cancel")}</.dm_btn>
             </div>
           </form>
         </div>
@@ -1855,31 +1857,40 @@ defmodule Backplane.Admin.SettingsLive do
       <%= if @device_flow_state == :waiting_code_input do %>
         <div class="space-y-4">
           <p class="text-sm text-on-surface-variant">
-            Complete authorization in the browser window that just opened,
-            then paste {if @device_flow_vendor == "figma_oauth", do: "the full callback URL", else: "the code"} below.
+            {if @device_flow_vendor == "figma_oauth",
+              do:
+                dgettext(
+                  "admin",
+                  "Complete authorization in the browser window that just opened, then paste the full callback URL below."
+                ),
+              else:
+                dgettext(
+                  "admin",
+                  "Complete authorization in the browser window that just opened, then paste the code below."
+                )}
           </p>
           <p :if={@device_flow_vendor == "figma_oauth"} class="text-sm text-on-surface-variant">
-            After authorization, copy the full URL from the new window's address bar and paste it here.
-            If the localhost callback page cannot open, this is expected: copy its URL anyway.
-            Keep this Backplane page open until you submit the callback URL.
+            {dgettext("admin", "After authorization, copy the full URL from the new window's address bar and paste it here.")}
+            {dgettext("admin", "If the localhost callback page cannot open, this is expected: copy its URL anyway.")}
+            {dgettext("admin", "Keep this Backplane page open until you submit the callback URL.")}
           </p>
           <form phx-submit="submit_auth_code" class="space-y-4" autocomplete="off">
             <.dm_input
               id="oauth-code-input"
               name="code"
-              label={if @device_flow_vendor == "figma_oauth", do: "Callback URL", else: "Authorization Code"}
+              label={if @device_flow_vendor == "figma_oauth", do: dgettext("admin", "Callback URL"), else: dgettext("admin", "Authorization Code")}
               value=""
               placeholder={
                 if @device_flow_vendor == "figma_oauth",
-                  do: "Paste the full http:// or https:// callback URL",
-                  else: "Paste code#state or the callback URL"
+                  do: dgettext("admin", "Paste the full http:// or https:// callback URL"),
+                  else: dgettext("admin", "Paste code#state or the callback URL")
               }
               autocomplete="off"
               required
             />
             <div class="flex gap-2 pt-2">
-              <.dm_btn type="submit" variant="primary" phx-disable-with="Receiving Token...">Submit Code</.dm_btn>
-              <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+              <.dm_btn type="submit" variant="primary" phx-disable-with={dgettext("admin", "Receiving Token...")}>{dgettext("admin", "Submit Code")}</.dm_btn>
+              <.dm_btn type="button" phx-click="cancel_device_auth">{dgettext("common", "Cancel")}</.dm_btn>
             </div>
           </form>
         </div>
@@ -1888,17 +1899,17 @@ defmodule Backplane.Admin.SettingsLive do
       <%= if @device_flow_state == :waiting_code do %>
         <div class="space-y-6">
           <p class="text-sm text-on-surface">
-            Follow these steps to sign in with ChatGPT using device code authorization:
+            {dgettext("admin", "Follow these steps to sign in with ChatGPT using device code authorization:")}
           </p>
           <ol class="list-decimal list-inside space-y-4 text-sm text-on-surface-variant">
             <li>
-              Open this link in your browser and sign in to your account
+              {dgettext("admin", "Open this link in your browser and sign in to your account")}
               <a href={@device_flow_verification_uri} target="_blank" class="text-primary underline ml-1 font-medium">
                 {@device_flow_verification_uri}
               </a>
             </li>
             <li>
-              Enter this one-time code (expires in 15 minutes)
+              {dgettext("admin", "Enter this one-time code (expires in 15 minutes)")}
               <span class="block mt-1 font-mono text-lg font-bold text-primary tracking-wider bg-surface-container px-3 py-1.5 rounded-md border border-outline-variant w-fit">
                 {@device_flow_user_code}
               </span>
@@ -1908,12 +1919,12 @@ defmodule Backplane.Admin.SettingsLive do
           <div class="flex items-center gap-3 py-3 border-t border-outline-variant">
             <span class="loading loading-spinner text-primary"></span>
             <span class="text-sm text-on-surface-variant animate-pulse">
-              Waiting for you to complete authorization...
+              {dgettext("admin", "Waiting for you to complete authorization...")}
             </span>
           </div>
 
           <div class="flex gap-2">
-            <.dm_btn type="button" phx-click="cancel_device_auth">Cancel</.dm_btn>
+            <.dm_btn type="button" phx-click="cancel_device_auth">{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </div>
       <% end %>
@@ -1929,11 +1940,11 @@ defmodule Backplane.Admin.SettingsLive do
             <.dm_btn
               variant="primary"
               phx-click="retry_device_auth"
-              phx-disable-with="Retrying..."
+              phx-disable-with={dgettext("admin", "Retrying...")}
             >
-              Try Again
+              {dgettext("admin", "Try Again")}
             </.dm_btn>
-            <.dm_btn phx-click="cancel_device_auth">Cancel</.dm_btn>
+            <.dm_btn phx-click="cancel_device_auth">{dgettext("common", "Cancel")}</.dm_btn>
           </div>
         </div>
       <% end %>
@@ -2046,18 +2057,18 @@ defmodule Backplane.Admin.SettingsLive do
 
   defp format_figma_oauth_config_error(:partial_figma_mcp_client_credentials),
     do:
-      "FIGMA_MCP_CLIENT_SECRET requires FIGMA_MCP_CLIENT_ID; remove the secret to register automatically"
+      dgettext("errors", "FIGMA_MCP_CLIENT_SECRET requires FIGMA_MCP_CLIENT_ID; remove the secret to register automatically")
 
   defp format_figma_oauth_config_error(:invalid_figma_client_registration),
-    do: "Figma returned an invalid client registration response"
+    do: dgettext("errors", "Figma returned an invalid client registration response")
 
   defp format_figma_oauth_config_error({:figma_client_registration_failed, status}),
     do:
-      "Figma client registration failed (HTTP #{status}); this deployment may require an approved Figma client"
+      dgettext("errors", "Figma client registration failed (HTTP %{status}); this deployment may require an approved Figma client", status: status)
 
   defp format_figma_oauth_config_error({:figma_client_registration_error, _reason}),
     do:
-      "Could not reach Figma client registration; try again or configure an approved Figma client"
+      dgettext("errors", "Could not reach Figma client registration; try again or configure an approved Figma client")
 
   defp google_client_id do
     value =
@@ -2163,8 +2174,8 @@ defmodule Backplane.Admin.SettingsLive do
     end
   end
 
-  defp format_cli_auth_error(:invalid_json), do: "invalid JSON"
-  defp format_cli_auth_error(:unrecognized_format), do: "expected Claude Code auth JSON"
+  defp format_cli_auth_error(:invalid_json), do: dgettext("errors", "invalid JSON")
+  defp format_cli_auth_error(:unrecognized_format), do: dgettext("errors", "expected Claude Code auth JSON")
   defp format_cli_auth_error(reason), do: inspect(reason)
 
   # --- Auth Code Exchange (Claude Code CLI flow) ---
@@ -2625,16 +2636,16 @@ defmodule Backplane.Admin.SettingsLive do
   defp maybe_put_token(map, key, value), do: Map.put(map, key, value)
 
   defp format_exchange_error(:invalid_anthropic_code),
-    do: "Paste the full code in the form code#state"
+    do: dgettext("errors", "Paste the full code in the form code#state")
 
   defp format_exchange_error(:invalid_google_code),
-    do: "Paste the authorization code shown by Google Antigravity"
+    do: dgettext("errors", "Paste the authorization code shown by Google Antigravity")
 
   defp format_exchange_error(:invalid_xai_code),
-    do: "Paste the xAI callback URL or authorization code"
+    do: dgettext("errors", "Paste the xAI callback URL or authorization code")
 
   defp format_exchange_error(:oauth_state_mismatch),
-    do: "OAuth state did not match. Please restart authorization."
+    do: dgettext("errors", "OAuth state did not match. Please restart authorization.")
 
   defp format_exchange_error({:http, status, %{"error_description" => desc}}),
     do: "#{desc} (#{status})"
@@ -2654,7 +2665,7 @@ defmodule Backplane.Admin.SettingsLive do
     do: "#{message} (#{status})"
 
   defp format_exchange_error({:http, status, %{"error" => err}}), do: "#{err} (#{status})"
-  defp format_exchange_error({:http, status, _}), do: "HTTP #{status}"
+  defp format_exchange_error({:http, status, _}), do: dgettext("errors", "HTTP %{status}", status: status)
   defp format_exchange_error(other), do: inspect(other)
 
   defp format_exchange_error_detail({:http, status, body, request_detail}) do
@@ -2675,18 +2686,18 @@ defmodule Backplane.Admin.SettingsLive do
   defp format_exchange_error_detail(reason), do: inspect(reason, pretty: true)
 
   defp format_openai_codex_error(:device_code_login_disabled),
-    do: "Device-code login is not enabled for this account or server."
+    do: dgettext("errors", "Device-code login is not enabled for this account or server.")
 
   defp format_openai_codex_error(:refresh_token_reused),
-    do: "The refresh token was already consumed. Reconnect OpenAI Codex."
+    do: dgettext("errors", "The refresh token was already consumed. Reconnect OpenAI Codex.")
 
   defp format_openai_codex_error({:transport_error, %Req.TransportError{reason: :nxdomain}}),
-    do: "DNS lookup failed for auth.openai.com. Check this server's DNS or proxy settings."
+    do: dgettext("errors", "DNS lookup failed for auth.openai.com. Check this server's DNS or proxy settings.")
 
   defp format_openai_codex_error({:transport_error, %Req.TransportError{reason: reason}}),
-    do: "Network request failed: #{inspect(reason)}"
+    do: dgettext("errors", "Network request failed: %{reason}", reason: inspect(reason))
 
-  defp format_openai_codex_error({:missing_field, field}), do: "Missing #{field}"
+  defp format_openai_codex_error({:missing_field, field}), do: dgettext("errors", "Missing %{field}", field: field)
 
   defp format_openai_codex_error({reason, status}) when is_atom(reason),
     do: "#{reason} (#{status})"

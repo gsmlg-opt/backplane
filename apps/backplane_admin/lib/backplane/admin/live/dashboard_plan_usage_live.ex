@@ -6,17 +6,17 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   @state_refresh_interval 60_000
   @claude_code_windows [
-    {"five_hour", "5-hour"},
-    {"seven_day", "7-day"},
-    {"seven_day_opus", "7-day Opus"},
-    {"seven_day_sonnet", "7-day Sonnet"},
-    {"seven_day_omelette", "7-day Omelette"},
-    {"seven_day_cowork", "7-day Cowork"},
-    {"seven_day_oauth_apps", "7-day OAuth Apps"},
-    {"cinder_cove", "Cinder Cove"},
-    {"iguana_necktie", "Iguana Necktie"},
-    {"omelette_promotional", "Omelette Promotional"},
-    {"tangelo", "Tangelo"}
+    "five_hour",
+    "seven_day",
+    "seven_day_opus",
+    "seven_day_sonnet",
+    "seven_day_omelette",
+    "seven_day_cowork",
+    "seven_day_oauth_apps",
+    "cinder_cove",
+    "iguana_necktie",
+    "omelette_promotional",
+    "tangelo"
   ]
 
   @impl true
@@ -71,21 +71,21 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     ~H"""
     <div class="space-y-6">
       <div class="flex items-center justify-between gap-4">
-        <h1 class="text-2xl font-bold">Plan Usage</h1>
+        <h1 class="text-2xl font-bold">{dgettext("navigation", "Plan Usage")}</h1>
         <div class="flex items-center gap-3">
           <.link navigate={~p"/system/monitor/plans"} class="text-sm text-primary underline">
-            Manage Plans
+            {dgettext("admin", "Manage Plans")}
           </.link>
-          <.dm_btn variant="primary" size="sm" phx-click="refresh">Refresh</.dm_btn>
+          <.dm_btn variant="primary" size="sm" phx-click="refresh">{dgettext("common", "Refresh")}</.dm_btn>
         </div>
       </div>
 
       <div :if={@plan_data == [] && !@loading} class="text-on-surface-variant">
-        No active plans configured.
+        {dgettext("admin", "No active plans configured.")}
         <.link navigate={~p"/system/monitor/plans"} class="text-primary underline">
-          Add a plan
+          {dgettext("admin", "Add a plan")}
         </.link>
-        to start monitoring usage.
+        {dgettext("admin", "to start monitoring usage.")}
       </div>
 
       <div class="grid grid-cols-1 gap-6">
@@ -126,7 +126,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">z.ai</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated <.local_time datetime={@fetched_at} format="time" />
+            {dgettext("admin", "Updated")} <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
@@ -136,24 +136,24 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <span class="text-sm font-medium">{limit_label(limit.type)}</span>
             <div class="flex items-center gap-2">
               <span :if={limit.remaining} class="text-xs text-on-surface-variant">
-                {limit.remaining} remaining
+                {dgettext("admin", "%{remaining} remaining", remaining: limit.remaining)}
               </span>
               <.dm_badge variant={percentage_variant(limit.percentage)} size="sm">
-                {limit.percentage}% used
+                {dgettext("admin", "%{percentage}% used", percentage: limit.percentage)}
               </.dm_badge>
             </div>
           </div>
           <.usage_bar percentage={limit.percentage} />
           <div class="flex items-center justify-between text-xs text-on-surface-variant">
-            <span>Window: {limit.number} {unit_label(limit.unit)}</span>
+            <span>{dgettext("admin", "Window: %{number} %{unit}", number: limit.number, unit: unit_label(limit.unit))}</span>
             <span :if={limit.next_reset}>
-              Resets: <.local_time datetime={limit.next_reset} format="short" />
+              {dgettext("admin", "Resets:")} <.local_time datetime={limit.next_reset} format="short" />
             </span>
           </div>
           <div :if={limit.details != []} class="mt-2">
             <.dm_table id={"zai-details-#{limit.type}"} data={limit.details} hover zebra>
-              <:col :let={d} label="Tool">{d.tool_name}</:col>
-              <:col :let={d} label="Used">{d.used}</:col>
+              <:col :let={d} label={dgettext("admin", "Tool")}>{d.tool_name}</:col>
+              <:col :let={d} label={dgettext("admin", "Used")}>{d.used}</:col>
             </.dm_table>
           </div>
         </div>
@@ -174,34 +174,34 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">MiniMax</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated <.local_time datetime={@fetched_at} format="time" />
+            {dgettext("admin", "Updated")} <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
       <div class="space-y-3">
         <.dm_table id={"minimax-models-#{@plan.id}"} data={@data.models} hover zebra>
-          <:col :let={m} label="Category">{m.name}</:col>
-          <:col :let={m} label="Current (5h)">
+          <:col :let={m} label={dgettext("admin", "Category")}>{m.name}</:col>
+          <:col :let={m} label={dgettext("admin", "Current (5h)")}>
             <div class="space-y-1">
               <div class="flex items-center gap-2">
                 <.usage_bar_inline used={100 - (m.current_interval_remaining_percent || 0)} total={100} />
-                <span class="text-xs font-medium">{m.current_interval_remaining_percent}% remaining</span>
+                <span class="text-xs font-medium">{dgettext("admin", "%{percent}% remaining", percent: m.current_interval_remaining_percent)}</span>
               </div>
               <div class="text-[10px] text-on-surface-variant flex flex-col gap-0.5">
                 <span :if={m.start_time && m.end_time}>{format_time_range(m.start_time, m.end_time)}</span>
-                <span :if={m.remains_time} class="text-info font-medium">{format_duration(m.remains_time)} left</span>
+                <span :if={m.remains_time} class="text-info font-medium">{dgettext("admin", "%{duration} left", duration: format_duration(m.remains_time))}</span>
               </div>
             </div>
           </:col>
-          <:col :let={m} label="Weekly">
+          <:col :let={m} label={dgettext("admin", "Weekly")}>
             <div class="space-y-1">
               <div class="flex items-center gap-2">
                 <.usage_bar_inline used={100 - (m.current_weekly_remaining_percent || 0)} total={100} />
-                <span class="text-xs font-medium">{m.current_weekly_remaining_percent}% remaining</span>
+                <span class="text-xs font-medium">{dgettext("admin", "%{percent}% remaining", percent: m.current_weekly_remaining_percent)}</span>
               </div>
               <div class="text-[10px] text-on-surface-variant flex flex-col gap-0.5">
                 <span :if={m.weekly_start_time && m.weekly_end_time}>{format_time_range(m.weekly_start_time, m.weekly_end_time)}</span>
-                <span :if={m.weekly_remains_time} class="text-info font-medium">{format_duration(m.weekly_remains_time)} left</span>
+                <span :if={m.weekly_remains_time} class="text-info font-medium">{dgettext("admin", "%{duration} left", duration: format_duration(m.weekly_remains_time))}</span>
               </div>
             </div>
           </:col>
@@ -228,22 +228,22 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">OpenAI Codex</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated <.local_time datetime={@fetched_at} format="time" />
+            {dgettext("admin", "Updated")} <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
       <div class="space-y-4">
         <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
           <div>
-            <dt class="text-xs text-on-surface-variant">Plan</dt>
+            <dt class="text-xs text-on-surface-variant">{dgettext("admin", "Plan")}</dt>
             <dd class="font-medium">{@plan_type}</dd>
           </div>
           <div>
-            <dt class="text-xs text-on-surface-variant">Status</dt>
+            <dt class="text-xs text-on-surface-variant">{dgettext("common", "Status")}</dt>
             <dd class="font-medium">{@data.status || "ok"}</dd>
           </div>
           <div>
-            <dt class="text-xs text-on-surface-variant">Buckets</dt>
+            <dt class="text-xs text-on-surface-variant">{dgettext("admin", "Buckets")}</dt>
             <dd class="font-medium">{length(@limits)}</dd>
           </div>
         </dl>
@@ -263,13 +263,13 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
                 variant="error"
                 size="sm"
               >
-                Limited
+                {dgettext("admin", "Limited")}
               </.dm_badge>
             </div>
 
             <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <.openai_codex_window title="Primary" window={limit.primary} />
-              <.openai_codex_window title="Secondary" window={limit.secondary} />
+              <.openai_codex_window title={dgettext("admin", "Primary")} window={limit.primary} />
+              <.openai_codex_window title={dgettext("admin", "Secondary")} window={limit.secondary} />
             </div>
 
             <dl
@@ -277,11 +277,11 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
               class="mt-3 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2"
             >
               <div :if={limit.credits}>
-                <dt class="text-on-surface-variant">Credits</dt>
+                <dt class="text-on-surface-variant">{dgettext("admin", "Credits")}</dt>
                 <dd class="font-medium">{format_openai_codex_credits(limit.credits)}</dd>
               </div>
               <div :if={limit.rate_limit_reached_type}>
-                <dt class="text-on-surface-variant">Limit reached</dt>
+                <dt class="text-on-surface-variant">{dgettext("admin", "Limit reached")}</dt>
                 <dd class="font-medium">{limit.rate_limit_reached_type}</dd>
               </div>
             </dl>
@@ -289,7 +289,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
         </div>
 
         <div :if={@limits == []} class="text-sm text-on-surface-variant">
-          No OpenAI Codex usage buckets reported.
+          {dgettext("admin", "No OpenAI Codex usage buckets reported.")}
         </div>
       </div>
     </.dm_card>
@@ -307,7 +307,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
       <div class="mb-2 flex items-center justify-between gap-3">
         <span class="text-xs font-medium">{@title}</span>
         <.dm_badge :if={@window} variant={percentage_variant(@percentage)} size="sm">
-          {format_used_percent(@used_percent)} used
+          {dgettext("admin", "%{percent} used", percent: format_used_percent(@used_percent))}
         </.dm_badge>
       </div>
 
@@ -320,7 +320,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
       </div>
 
       <div :if={!@window} class="text-xs text-on-surface-variant">
-        Not reported
+        {dgettext("admin", "Not reported")}
       </div>
     </div>
     """
@@ -347,22 +347,22 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">Google Antigravity</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated <.local_time datetime={@fetched_at} format="time" />
+            {dgettext("admin", "Updated")} <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
       <div class="space-y-4">
         <dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
           <div>
-            <dt class="text-xs text-on-surface-variant">Plan</dt>
+            <dt class="text-xs text-on-surface-variant">{dgettext("admin", "Plan")}</dt>
             <dd class="font-medium">{@plan_type}</dd>
           </div>
           <div>
-            <dt class="text-xs text-on-surface-variant">Status</dt>
+            <dt class="text-xs text-on-surface-variant">{dgettext("common", "Status")}</dt>
             <dd class="font-medium">{@status}</dd>
           </div>
           <div>
-            <dt class="text-xs text-on-surface-variant">Usage Groups</dt>
+            <dt class="text-xs text-on-surface-variant">{dgettext("admin", "Usage Groups")}</dt>
             <dd class="font-medium">{length(@credits)}</dd>
           </div>
         </dl>
@@ -394,13 +394,13 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <.google_quota_window
               :if={!map_value(credit, "buckets") || map_value(credit, "buckets") == []}
               window={credit}
-              label="Quota remaining"
+              label={dgettext("admin", "Quota remaining")}
             />
           </div>
         </div>
 
         <div :if={@credits == []} class="text-sm text-on-surface-variant">
-          No Google Antigravity credit buckets reported.
+          {dgettext("admin", "No Google Antigravity credit buckets reported.")}
         </div>
 
         <div :if={@links != []} class="flex flex-wrap gap-3 text-sm">
@@ -442,8 +442,11 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
         <span class="font-medium">{@label}</span>
         <span class="font-medium text-on-surface-variant">
           {if is_number(@remaining),
-            do: "#{:erlang.float_to_binary(@remaining / 1, decimals: 2)}% remaining",
-            else: "Quota unavailable"}
+            do:
+              dgettext("admin", "%{percent}% remaining",
+                percent: :erlang.float_to_binary(@remaining / 1, decimals: 2)
+              ),
+            else: dgettext("admin", "Quota unavailable")}
         </span>
       </div>
       <div
@@ -453,7 +456,11 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
         aria-valuemin="0"
         aria-valuemax="100"
         aria-valuenow={@remaining}
-        aria-valuetext={"#{:erlang.float_to_binary(@remaining / 1, decimals: 2)}% remaining"}
+        aria-valuetext={
+          dgettext("admin", "%{percent}% remaining",
+            percent: :erlang.float_to_binary(@remaining / 1, decimals: 2)
+          )
+        }
         class="h-2.5 w-full rounded-full bg-surface-container-high"
       >
         <div
@@ -463,10 +470,10 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
         </div>
       </div>
       <div class="text-on-surface-variant">
-        <span :if={@quota_available}>Quota available</span>
-        <span :if={@refresh_in}>Refreshes in {@refresh_in} ·</span>
-        <span :if={@reset_time}>Resets {format_reset_at(@reset_time)}</span>
-        <span :if={!@reset_time && !@quota_available}>No reset reported</span>
+        <span :if={@quota_available}>{dgettext("admin", "Quota available")}</span>
+        <span :if={@refresh_in}>{dgettext("admin", "Refreshes in %{duration} ·", duration: @refresh_in)}</span>
+        <span :if={@reset_time}>{dgettext("admin", "Resets")} {format_reset_at(@reset_time)}</span>
+        <span :if={!@reset_time && !@quota_available}>{dgettext("admin", "No reset reported")}</span>
       </div>
     </div>
     """
@@ -489,7 +496,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <.dm_badge variant="info" size="sm">Claude Code</.dm_badge>
           </div>
           <span class="text-xs text-on-surface-variant">
-            Updated <.local_time datetime={@fetched_at} format="time" />
+            {dgettext("admin", "Updated")} <.local_time datetime={@fetched_at} format="time" />
           </span>
         </div>
       </:title>
@@ -505,13 +512,13 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             <div class="mb-3 flex items-center justify-between gap-3">
               <span class="text-sm font-medium">{window.label}</span>
               <.dm_badge variant={percentage_variant(window.utilization)} size="sm">
-                {window.utilization}% used
+                {dgettext("admin", "%{percentage}% used", percentage: window.utilization)}
               </.dm_badge>
             </div>
             <.usage_bar percentage={window.utilization} />
             <div class="mt-2 text-xs text-on-surface-variant">
-              <span :if={window.resets_at}>Resets {format_reset_at(window.resets_at)}</span>
-              <span :if={!window.resets_at}>No reset reported</span>
+              <span :if={window.resets_at}>{dgettext("admin", "Resets")} {format_reset_at(window.resets_at)}</span>
+              <span :if={!window.resets_at}>{dgettext("admin", "No reset reported")}</span>
             </div>
           </div>
         </div>
@@ -521,9 +528,11 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
           class="rounded border border-outline-variant bg-surface-container-low p-4"
         >
           <div class="mb-3 flex items-center justify-between gap-3">
-            <span class="text-sm font-medium">Extra Usage</span>
+            <span class="text-sm font-medium">{dgettext("admin", "Extra Usage")}</span>
             <.dm_badge variant={if @extra_usage.enabled, do: "success", else: "warning"} size="sm">
-              {if @extra_usage.enabled, do: "Enabled", else: "Disabled"}
+              {if @extra_usage.enabled,
+                do: dgettext("common", "Enabled"),
+                else: dgettext("common", "Disabled")}
             </.dm_badge>
           </div>
 
@@ -532,27 +541,27 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
             class="mb-3 flex items-center justify-between gap-3"
           >
             <.usage_bar_inline used={@extra_usage.utilization} total={100} />
-            <span class="text-xs font-medium">{@extra_usage.utilization}% used</span>
+            <span class="text-xs font-medium">{dgettext("admin", "%{percentage}% used", percentage: @extra_usage.utilization)}</span>
           </div>
 
           <dl class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
             <div>
-              <dt class="text-on-surface-variant">Used Credits</dt>
+              <dt class="text-on-surface-variant">{dgettext("admin", "Used Credits")}</dt>
               <dd class="font-medium">{format_credit(@extra_usage.used_credits, @extra_usage.currency)}</dd>
             </div>
             <div>
-              <dt class="text-on-surface-variant">Monthly Limit</dt>
+              <dt class="text-on-surface-variant">{dgettext("admin", "Monthly Limit")}</dt>
               <dd class="font-medium">{format_credit(@extra_usage.monthly_limit, @extra_usage.currency)}</dd>
             </div>
             <div>
-              <dt class="text-on-surface-variant">Reason</dt>
-              <dd class="font-medium">{@extra_usage.disabled_reason || "None"}</dd>
+              <dt class="text-on-surface-variant">{dgettext("admin", "Reason")}</dt>
+              <dd class="font-medium">{@extra_usage.disabled_reason || dgettext("admin", "None")}</dd>
             </div>
           </dl>
         </div>
 
         <div :if={@usage_windows == [] && !@extra_usage} class="text-sm text-on-surface-variant">
-          No Claude Code usage windows reported.
+          {dgettext("admin", "No Claude Code usage windows reported.")}
         </div>
       </div>
     </.dm_card>
@@ -570,11 +579,11 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
           <.dm_badge variant="info" size="sm">
             {Plan.provider_label(@plan.provider)}
           </.dm_badge>
-          <.dm_badge variant="warning" size="sm">Coming Soon</.dm_badge>
+          <.dm_badge variant="warning" size="sm">{dgettext("admin", "Coming Soon")}</.dm_badge>
         </div>
       </:title>
       <p class="text-sm text-on-surface-variant">
-        Usage monitoring for {Plan.provider_label(@plan.provider)} is not yet implemented.
+        {dgettext("admin", "Usage monitoring for %{provider} is not yet implemented.", provider: Plan.provider_label(@plan.provider))}
       </p>
     </.dm_card>
     """
@@ -591,11 +600,11 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
           <.dm_badge variant="info" size="sm">
             {Plan.provider_label(@plan.provider)}
           </.dm_badge>
-          <.dm_badge variant="error" size="sm">Error</.dm_badge>
+          <.dm_badge variant="error" size="sm">{dgettext("errors", "Error")}</.dm_badge>
         </div>
       </:title>
       <p class="text-sm text-error">
-        Failed to fetch usage: {format_error(@reason)}
+        {dgettext("errors", "Failed to fetch usage: %{reason}", reason: format_error(@reason))}
       </p>
     </.dm_card>
     """
@@ -612,7 +621,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
           </.dm_badge>
         </div>
       </:title>
-      <p class="text-sm text-on-surface-variant">Usage is loading.</p>
+      <p class="text-sm text-on-surface-variant">{dgettext("admin", "Usage is loading.")}</p>
     </.dm_card>
     """
   end
@@ -654,12 +663,12 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   # --- Helpers ---
 
-  defp limit_label("TOKENS_LIMIT"), do: "Token Quota"
-  defp limit_label("TIME_LIMIT"), do: "MCP Tool Calls"
+  defp limit_label("TOKENS_LIMIT"), do: dgettext("admin", "Token Quota")
+  defp limit_label("TIME_LIMIT"), do: dgettext("admin", "MCP Tool Calls")
   defp limit_label(other), do: other
 
-  defp unit_label(3), do: "hours"
-  defp unit_label(5), do: "month"
+  defp unit_label(3), do: dgettext("admin", "hours")
+  defp unit_label(5), do: dgettext("admin", "month")
   defp unit_label(_), do: ""
 
   defp percentage_variant(p) when p >= 90, do: "error"
@@ -672,7 +681,9 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   defp claude_code_usage_windows(payload) when is_map(payload) do
     @claude_code_windows
-    |> Enum.flat_map(fn {key, label} ->
+    |> Enum.flat_map(fn key ->
+      label = claude_code_window_label(key)
+
       case map_value(payload, key) do
         %{} = window ->
           utilization = normalize_percentage(map_value(window, "utilization"))
@@ -690,6 +701,24 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
   end
 
   defp claude_code_usage_windows(_), do: []
+
+  defp claude_code_window_label("five_hour"), do: dgettext("admin", "5-hour")
+  defp claude_code_window_label("seven_day"), do: dgettext("admin", "7-day")
+  defp claude_code_window_label("seven_day_opus"), do: dgettext("admin", "7-day Opus")
+  defp claude_code_window_label("seven_day_sonnet"), do: dgettext("admin", "7-day Sonnet")
+  defp claude_code_window_label("seven_day_omelette"), do: dgettext("admin", "7-day Omelette")
+  defp claude_code_window_label("seven_day_cowork"), do: dgettext("admin", "7-day Cowork")
+
+  defp claude_code_window_label("seven_day_oauth_apps"),
+    do: dgettext("admin", "7-day OAuth Apps")
+
+  defp claude_code_window_label("cinder_cove"), do: dgettext("admin", "Cinder Cove")
+  defp claude_code_window_label("iguana_necktie"), do: dgettext("admin", "Iguana Necktie")
+
+  defp claude_code_window_label("omelette_promotional"),
+    do: dgettext("admin", "Omelette Promotional")
+
+  defp claude_code_window_label("tangelo"), do: dgettext("admin", "Tangelo")
 
   defp claude_code_extra_usage(payload) when is_map(payload) do
     case map_value(payload, "extra_usage") do
@@ -815,14 +844,16 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     {id, label, description} =
       case group do
         :gemini ->
-          {"gemini-models", "Gemini Models", "Gemini Flash and Gemini Pro quota usage"}
+          {"gemini-models", dgettext("admin", "Gemini Models"),
+           dgettext("admin", "Gemini Flash and Gemini Pro quota usage")}
 
         :claude_gpt_oss ->
-          {"claude-gpt-oss-models", "Claude / GPT-OSS Models",
-           "Claude Sonnet/Opus and GPT-OSS quota usage"}
+          {"claude-gpt-oss-models", dgettext("admin", "Claude / GPT-OSS Models"),
+           dgettext("admin", "Claude Sonnet/Opus and GPT-OSS quota usage")}
 
         :argon ->
-          {"gemini-4-argon", "Gemini 4 Argon", "Separate Gemini 4 Argon quota usage"}
+          {"gemini-4-argon", dgettext("admin", "Gemini 4 Argon"),
+           dgettext("admin", "Separate Gemini 4 Argon quota usage")}
       end
 
     most_constrained =
@@ -867,8 +898,8 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   defp google_antigravity_links(links) when is_map(links) do
     [
-      {"Credits", map_value(links, "credits")},
-      {"Activity", map_value(links, "activity")}
+      {dgettext("admin", "Credits"), map_value(links, "credits")},
+      {dgettext("admin", "Activity"), map_value(links, "activity")}
     ]
     |> Enum.filter(fn {_label, url} -> is_binary(url) and url != "" end)
   end
@@ -883,14 +914,14 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
       is_binary(name) and name != "" -> name
       id == "codex" -> "Codex"
       is_binary(id) -> id
-      true -> "Usage"
+      true -> dgettext("admin", "Usage")
     end
   end
 
   defp openai_codex_used_percent(%{} = window), do: map_value(window, "used_percent")
   defp openai_codex_used_percent(_), do: nil
 
-  defp format_plan_type(nil), do: "Unknown"
+  defp format_plan_type(nil), do: dgettext("admin", "Unknown")
 
   defp format_plan_type(plan_type) when is_binary(plan_type) do
     plan_type
@@ -946,7 +977,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     """
   end
 
-  defp format_used_percent(nil), do: "unknown"
+  defp format_used_percent(nil), do: dgettext("admin", "unknown")
   defp format_used_percent(value) when is_integer(value), do: "#{value}%"
 
   defp format_used_percent(value) when is_float(value) do
@@ -961,7 +992,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
 
   defp format_used_percent(value), do: "#{value}%"
 
-  defp format_window_minutes(nil), do: "Window not reported"
+  defp format_window_minutes(nil), do: dgettext("admin", "Window not reported")
 
   defp format_window_minutes(minutes) when is_number(minutes) do
     minutes = round(minutes)
@@ -986,7 +1017,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     end
   end
 
-  defp format_unix_reset_at(nil), do: "No reset"
+  defp format_unix_reset_at(nil), do: dgettext("admin", "No reset")
 
   defp format_unix_reset_at(value) when is_integer(value) do
     dt = DateTime.from_unix!(value)
@@ -1003,62 +1034,81 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
     |> format_unix_reset_at()
   end
 
-  defp format_unix_reset_at(_), do: "No reset"
+  defp format_unix_reset_at(_), do: dgettext("admin", "No reset")
 
   defp format_openai_codex_credits(%{} = credits) do
     cond do
       map_value(credits, "unlimited") == true ->
-        "Unlimited"
+        dgettext("admin", "Unlimited")
 
       balance = map_value(credits, "balance") ->
         to_string(balance)
 
       map_value(credits, "has_credits") == false ->
-        "None"
+        dgettext("admin", "None")
 
       true ->
-        "Not reported"
+        dgettext("admin", "Not reported")
     end
   end
 
-  defp format_openai_codex_credits(_), do: "Not reported"
+  defp format_openai_codex_credits(_), do: dgettext("admin", "Not reported")
 
-  defp format_credit(nil, _currency), do: "Not set"
+  defp format_credit(nil, _currency), do: dgettext("admin", "Not set")
   defp format_credit(value, nil), do: to_string(value)
   defp format_credit(value, currency), do: "#{value} #{currency}"
 
-  defp format_error(:not_found), do: "Credential not found"
-  defp format_error(:decryption_failed), do: "Failed to decrypt credential"
-  defp format_error(:provider_not_supported), do: "Provider not yet supported"
-  defp format_error(:missing_access_token), do: "OAuth access token is missing"
-  defp format_error(:missing_chatgpt_account_id), do: "OpenAI Codex account ID is missing"
-  defp format_error(:invalid_usage_response), do: "Usage response was not recognized"
-  defp format_error(:unauthorized), do: "OAuth token was rejected; reconnect is required"
+  defp format_error(:not_found), do: dgettext("errors", "Credential not found")
+  defp format_error(:decryption_failed), do: dgettext("errors", "Failed to decrypt credential")
+  defp format_error(:provider_not_supported), do: dgettext("errors", "Provider not yet supported")
+  defp format_error(:missing_access_token), do: dgettext("errors", "OAuth access token is missing")
+
+  defp format_error(:missing_chatgpt_account_id),
+    do: dgettext("errors", "OpenAI Codex account ID is missing")
+
+  defp format_error(:invalid_usage_response),
+    do: dgettext("errors", "Usage response was not recognized")
+
+  defp format_error(:unauthorized),
+    do: dgettext("errors", "OAuth token was rejected; reconnect is required")
 
   defp format_error({:invalid_credential_kind, kind, expected}),
-    do: "Credential kind #{kind} is not #{expected}"
+    do: dgettext("errors", "Credential kind %{kind} is not %{expected}", kind: kind, expected: expected)
 
   defp format_error({:invalid_credential_auth_type, auth_type, expected}),
-    do: "Credential auth type #{auth_type} is not #{expected}"
+    do:
+      dgettext("errors", "Credential auth type %{auth_type} is not %{expected}",
+        auth_type: auth_type,
+        expected: expected
+      )
 
-  defp format_error({:api_error, status, _}), do: "API returned #{status}"
-  defp format_error({:refresh_failed, status}), do: "OAuth refresh returned #{status}"
+  defp format_error({:api_error, status, _}),
+    do: dgettext("errors", "API returned %{status}", status: status)
+
+  defp format_error({:refresh_failed, status}),
+    do: dgettext("errors", "OAuth refresh returned %{status}", status: status)
 
   defp format_error({:refresh_error, %Req.TransportError{reason: :nxdomain}}),
-    do: "OAuth refresh host could not be resolved; check DNS or proxy settings"
+    do:
+      dgettext(
+        "errors",
+        "OAuth refresh host could not be resolved; check DNS or proxy settings"
+      )
 
   defp format_error({:refresh_error, %Req.TransportError{reason: reason}}),
-    do: "OAuth refresh request failed: #{inspect(reason)}"
+    do: dgettext("errors", "OAuth refresh request failed: %{reason}", reason: inspect(reason))
 
   defp format_error({:refresh_error, reason}),
-    do: "OAuth refresh request failed: #{inspect(reason)}"
+    do: dgettext("errors", "OAuth refresh request failed: %{reason}", reason: inspect(reason))
 
-  defp format_error({:rate_limited, nil}), do: "Usage endpoint is rate limited"
+  defp format_error({:rate_limited, nil}), do: dgettext("errors", "Usage endpoint is rate limited")
 
   defp format_error({:rate_limited, seconds}),
-    do: "Usage endpoint is rate limited for #{seconds}s"
+    do: dgettext("errors", "Usage endpoint is rate limited for %{seconds}s", seconds: seconds)
 
-  defp format_error({:request_failed, reason}), do: "Request failed: #{inspect(reason)}"
+  defp format_error({:request_failed, reason}),
+    do: dgettext("errors", "Request failed: %{reason}", reason: inspect(reason))
+
   defp format_error(other), do: inspect(other)
 
   defp format_time_range(start_time, end_time) do

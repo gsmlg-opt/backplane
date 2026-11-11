@@ -56,7 +56,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
 
     view |> element("#client-usage-tab-mcp") |> render_click()
     assert_patch(view, "/dashboard/usage/clients/mcp?range=week")
-    assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "最近一周")
+    assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "Last 7 days")
     assert has_element?(view, "#client-mcp-tools-table td", "yesterday::tool")
     assert has_element?(view, "#client-usage-idle", "No MCP usage: idle-client")
 
@@ -82,7 +82,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
     for path <- ["/dashboard/usage/clients", "/dashboard/usage/clients?range=invalid"] do
       render_patch(view, path)
 
-      assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "今天")
+      assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "Today")
 
       each_usage_table(view, path, fn selector, suffix ->
         assert has_element?(view, selector, "today#{suffix}")
@@ -91,7 +91,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
       end)
     end
 
-    for label <- ["今天", "昨天", "最近一周", "最近二周", "最近一月"] do
+    for label <- ["Today", "Yesterday", "Last 7 days", "Last 14 days", "Last 30 days"] do
       assert has_element?(view, "#client-usage-range a", label)
     end
 
@@ -131,10 +131,10 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
     {:ok, view, _html} = live_with_sandbox(conn, "/dashboard/usage/clients")
 
     for {range, days, label} <- [
-          {"yesterday", 1, "昨天"},
-          {"week", 7, "最近一周"},
-          {"fortnight", 14, "最近二周"},
-          {"month", 30, "最近一月"}
+          {"yesterday", 1, "Yesterday"},
+          {"week", 7, "Last 7 days"},
+          {"fortnight", 14, "Last 14 days"},
+          {"month", 30, "Last 30 days"}
         ] do
       path = "/dashboard/usage/clients?range=#{range}"
       view |> element(~s(#client-usage-range a[href="#{path}"])) |> render_click()
@@ -160,7 +160,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
     view |> element(~s(#client-usage-range a[href="#{path}"])) |> render_click()
     assert_patch(view, path)
 
-    assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "今天")
+    assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "Today")
 
     each_usage_table(view, path, fn selector, suffix ->
       assert has_element?(view, selector, "day-0#{suffix}")

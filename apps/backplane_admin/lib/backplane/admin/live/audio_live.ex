@@ -81,7 +81,7 @@ defmodule Backplane.Admin.AudioLive do
           socket
           |> assign(setup_form: to_form(params, as: :setup), setup_error: nil)
           |> load()
-          |> put_flash(:info, "MiniMax audio routes saved. Enable audio separately when ready.")
+          |> put_flash(:info, dgettext("admin", "MiniMax audio routes saved. Enable audio separately when ready."))
 
         {:noreply, prefill_preview_models(socket)}
 
@@ -94,7 +94,7 @@ defmodule Backplane.Admin.AudioLive do
          |> assign(
            setup_form: to_form(params, as: :setup),
            setup_error:
-             "Routes were saved, but native voice IDs could not be enabled. Audio voice configuration needs attention."
+             dgettext("errors", "Routes were saved, but native voice IDs could not be enabled. Audio voice configuration needs attention.")
          )}
 
       {:error, reason} ->
@@ -125,14 +125,14 @@ defmodule Backplane.Admin.AudioLive do
       String.length(params["input"] || "") > 200 ->
         {:noreply,
          assign(socket,
-           tts_result: "Speech preview is limited to 200 characters",
+           tts_result: dgettext("errors", "Speech preview is limited to 200 characters"),
            preview_audio: nil
          )}
 
       not AudioVoices.valid?(params["voice"]) ->
         {:noreply,
          assign(socket,
-           tts_result: "Choose a system voice before running speech preview",
+           tts_result: dgettext("errors", "Choose a system voice before running speech preview"),
            preview_audio: nil
          )}
 
@@ -146,13 +146,13 @@ defmodule Backplane.Admin.AudioLive do
             {:noreply,
              assign(socket,
                tts_job: job,
-               tts_result: "Speech preview running",
+               tts_result: dgettext("admin", "Speech preview running"),
                preview_audio: nil
              )}
 
           _ ->
             {:noreply,
-             assign(socket, tts_result: "Audio capacity unavailable", preview_audio: nil)}
+             assign(socket, tts_result: dgettext("errors", "Audio capacity unavailable"), preview_audio: nil)}
         end
     end
   end
@@ -169,7 +169,7 @@ defmodule Backplane.Admin.AudioLive do
       upload_errors(upload) != [] or
           Enum.any?(upload.entries, &(upload_errors(upload, &1) != [] or not allowed_upload?(&1))) ->
         {:noreply,
-         socket |> close_upload() |> assign(asr_result: "Upload rejected; select a file again")}
+         socket |> close_upload() |> assign(asr_result: dgettext("errors", "Upload rejected; select a file again"))}
 
       upload.entries == [] or not is_nil(socket.assigns.asr_job) or
           not is_nil(socket.assigns.asr_session) ->
@@ -191,7 +191,7 @@ defmodule Backplane.Admin.AudioLive do
             {:noreply,
              socket
              |> close_upload()
-             |> assign(asr_result: "Audio upload capacity unavailable; select a file again")}
+             |> assign(asr_result: dgettext("errors", "Audio upload capacity unavailable; select a file again"))}
         end
     end
   end
@@ -208,10 +208,10 @@ defmodule Backplane.Admin.AudioLive do
         {:noreply,
          socket
          |> close_upload()
-         |> assign(asr_result: "Acknowledge provider charges for transcription")}
+         |> assign(asr_result: dgettext("errors", "Acknowledge provider charges for transcription"))}
 
       not is_pid(socket.assigns.asr_session) or not Process.alive?(socket.assigns.asr_session) ->
-        {:noreply, socket |> close_upload() |> assign(asr_result: "Select a file again")}
+        {:noreply, socket |> close_upload() |> assign(asr_result: dgettext("errors", "Select a file again"))}
 
       true ->
         case uploaded_entries(socket, :audio) do
@@ -220,14 +220,14 @@ defmodule Backplane.Admin.AudioLive do
               start_asr(socket, params)
             else
               {:noreply,
-               socket |> close_upload() |> assign(asr_result: "Unsupported upload format")}
+               socket |> close_upload() |> assign(asr_result: dgettext("errors", "Unsupported upload format"))}
             end
 
           _ ->
             {:noreply,
              socket
              |> close_upload()
-             |> assign(asr_result: "Complete one upload before running transcription")}
+             |> assign(asr_result: dgettext("errors", "Complete one upload before running transcription"))}
         end
     end
   end
@@ -244,7 +244,7 @@ defmodule Backplane.Admin.AudioLive do
     {:noreply,
      assign(socket,
        readiness_checking?: false,
-       readiness_error: "Readiness check failed. Try again."
+       readiness_error: dgettext("errors", "Readiness check failed. Try again.")
      )}
   end
 
@@ -255,7 +255,7 @@ defmodule Backplane.Admin.AudioLive do
         {:noreply,
          assign(socket,
            tts_job: nil,
-           tts_result: "Speech preview ready",
+           tts_result: dgettext("admin", "Speech preview ready"),
            preview_format: format,
            preview_audio: "data:#{mime(format)};base64,#{Base.encode64(bytes)}"
          )}
@@ -276,7 +276,7 @@ defmodule Backplane.Admin.AudioLive do
 
       message =
         if job == socket.assigns.asr_session and result == {:error, :timeout},
-          do: "Selected file expired; select a file again",
+          do: dgettext("errors", "Selected file expired; select a file again"),
           else: message
 
       {:noreply, socket |> close_upload() |> assign(asr_job: nil, asr_result: message)}
@@ -291,15 +291,15 @@ defmodule Backplane.Admin.AudioLive do
         {:noreply,
          assign(socket,
            tts_job: nil,
-           tts_result: "Preview stopped; provider usage may have occurred",
+           tts_result: dgettext("errors", "Preview stopped; provider usage may have occurred"),
            preview_audio: nil
          )}
 
       job in [socket.assigns.asr_job, socket.assigns.asr_session] ->
         message =
           if job == socket.assigns.asr_session,
-            do: "Upload stopped; select a file again",
-            else: "Preview stopped; provider usage may have occurred"
+            do: dgettext("errors", "Upload stopped; select a file again"),
+            else: dgettext("errors", "Preview stopped; provider usage may have occurred")
 
         {:noreply,
          socket
@@ -347,10 +347,10 @@ defmodule Backplane.Admin.AudioLive do
        |> assign(
          asr_session: nil,
          asr_job: job,
-         asr_result: "Transcription preview running"
+         asr_result: dgettext("admin", "Transcription preview running")
        )}
     else
-      {:noreply, socket |> close_upload() |> assign(asr_result: "Upload could not be prepared")}
+      {:noreply, socket |> close_upload() |> assign(asr_result: dgettext("errors", "Upload could not be prepared"))}
     end
   end
 
@@ -402,68 +402,68 @@ defmodule Backplane.Admin.AudioLive do
       {:noreply, socket}
     else
       {:noreply,
-       socket |> close_upload() |> assign(asr_result: "Upload rejected; select a file again")}
+       socket |> close_upload() |> assign(asr_result: dgettext("errors", "Upload rejected; select a file again"))}
     end
   end
 
   defp preview_error(%Error{code: "audio_disabled"}),
     do:
-      "Audio is disabled (audio_disabled). Select Enable audio in Audio service before previewing."
+      dgettext("errors", "Audio is disabled (audio_disabled). Select Enable audio in Audio service before previewing.")
 
   defp preview_error(:cancelled),
     do:
-      "Preview cancelled; provider usage may have occurred. Cancellation does not guarantee a refund."
+      dgettext("errors", "Preview cancelled; provider usage may have occurred. Cancellation does not guarantee a refund.")
 
   defp preview_error(:timeout),
-    do: "Preview timed out; provider execution is uncertain. No automatic retry was made."
+    do: dgettext("errors", "Preview timed out; provider execution is uncertain. No automatic retry was made.")
 
   defp preview_error(%Error{code: "audio_provider_error"}),
     do:
-      "Provider rejected synthesis (audio_provider_error). Check the selected account, region and model access. Provider usage may have occurred."
+      dgettext("errors", "Provider rejected synthesis (audio_provider_error). Check the selected account, region and model access. Provider usage may have occurred.")
 
   defp preview_error(%Error{code: "audio_incomplete_stream"}),
     do:
-      "Provider response ended before audio completion (audio_incomplete_stream). Provider usage may have occurred."
+      dgettext("errors", "Provider response ended before audio completion (audio_incomplete_stream). Provider usage may have occurred.")
 
   defp preview_error(%Error{code: "audio_invalid_response", message: "Invalid MP3 stream"}),
     do:
-      "Provider audio failed MP3 validation (audio_invalid_response). Provider usage may have occurred."
+      dgettext("errors", "Provider audio failed MP3 validation (audio_invalid_response). Provider usage may have occurred.")
 
   defp preview_error(%Error{
          code: "audio_invalid_response",
          message: "Provider audio status is missing"
        }),
        do:
-         "Provider stream omitted its business status (audio_invalid_response). Provider usage may have occurred."
+         dgettext("errors", "Provider stream omitted its business status (audio_invalid_response). Provider usage may have occurred.")
 
   defp preview_error(%Error{code: "audio_invalid_response", message: "Provider audio is missing"}),
     do:
-      "Provider stream omitted its audio data (audio_invalid_response). Provider usage may have occurred."
+      dgettext("errors", "Provider stream omitted its audio data (audio_invalid_response). Provider usage may have occurred.")
 
   defp preview_error(%Error{
          code: "audio_invalid_response",
          message: "Empty provider audio chunk"
        }),
        do:
-         "Provider stream contained an empty audio chunk (audio_invalid_response). Provider usage may have occurred."
+         dgettext("errors", "Provider stream contained an empty audio chunk (audio_invalid_response). Provider usage may have occurred.")
 
   defp preview_error(%Error{
          code: "audio_invalid_response",
          message: "Invalid provider audio status"
        }),
        do:
-         "Provider stream contained an invalid audio status (audio_invalid_response). Provider usage may have occurred."
+         dgettext("errors", "Provider stream contained an invalid audio status (audio_invalid_response). Provider usage may have occurred.")
 
   defp preview_error(%Error{
          code: "audio_invalid_response",
          message: "Invalid provider streaming response"
        }),
        do:
-         "Provider returned an invalid non-SSE response (audio_invalid_response). Provider usage may have occurred."
+         dgettext("errors", "Provider returned an invalid non-SSE response (audio_invalid_response). Provider usage may have occurred.")
 
   defp preview_error(_),
     do:
-      "Preview failed; check bindings, voices, media readiness and limits. Provider usage may have occurred."
+      dgettext("errors", "Preview failed; check bindings, voices, media readiness and limits. Provider usage may have occurred.")
 
   defp mime("wav"), do: "audio/wav"
   defp mime("flac"), do: "audio/flac"
@@ -472,17 +472,17 @@ defmodule Backplane.Admin.AudioLive do
   defp mime("pcm"), do: "application/octet-stream"
   defp mime(_), do: "audio/mpeg"
 
-  defp preset_error(:ineligible_credential), do: "Choose an eligible API-key credential."
-  defp preset_error(:invalid_region), do: "Choose the region authorized for this key."
+  defp preset_error(:ineligible_credential), do: dgettext("errors", "Choose an eligible API-key credential.")
+  defp preset_error(:invalid_region), do: dgettext("errors", "Choose the region authorized for this key.")
 
   defp preset_error(:provider_conflict),
-    do: "The minimax-audio provider already exists and is not owned by audio setup."
+    do: dgettext("errors", "The minimax-audio provider already exists and is not owned by audio setup.")
 
   defp preset_error(:route_conflict),
     do:
-      "Existing audio models or bindings differ from the preset. Audio route configuration needs operator attention."
+      dgettext("errors", "Existing audio models or bindings differ from the preset. Audio route configuration needs operator attention.")
 
-  defp preset_error(_), do: "Audio routes could not be saved."
+  defp preset_error(_), do: dgettext("errors", "Audio routes could not be saved.")
 
   defp prefill_preview_models(socket) do
     tts = socket.assigns.tts_form.params
@@ -543,73 +543,79 @@ defmodule Backplane.Admin.AudioLive do
       Binding.changeset(binding, %{}).valid?
   end
 
+  defp ready_text(true), do: dgettext("admin", "ready")
+  defp ready_text(_), do: dgettext("admin", "missing")
+
+  defp valid_text(true), do: dgettext("admin", "valid")
+  defp valid_text(_), do: dgettext("admin", "invalid")
+
   @impl true
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
-      <header><h1 class="text-2xl font-bold">MiniMax Audio</h1><p class="text-sm text-on-surface-variant">Configure MiniMax speech and transcription. Preview requests may incur provider charges.</p></header>
-      <.dm_card variant="bordered"><:title>Audio service</:title>
-        <p>Audio is {if @enabled, do: "enabled", else: "disabled"}.</p>
-        <p class="text-sm text-warning">Previews may incur provider charges, including credit use with a Subscription Key.</p>
-        <.dm_btn id="toggle-audio" phx-click="enable" phx-value-enabled={to_string(!@enabled)}>{if @enabled, do: "Disable audio", else: "Enable audio"}</.dm_btn>
+      <header><h1 class="text-2xl font-bold">{dgettext("admin", "MiniMax Audio")}</h1><p class="text-sm text-on-surface-variant">{dgettext("admin", "Configure MiniMax speech and transcription. Preview requests may incur provider charges.")}</p></header>
+      <.dm_card variant="bordered"><:title>{dgettext("admin", "Audio service")}</:title>
+        <p>{if @enabled, do: dgettext("admin", "Audio is enabled."), else: dgettext("admin", "Audio is disabled.")}</p>
+        <p class="text-sm text-warning">{dgettext("admin", "Previews may incur provider charges, including credit use with a Subscription Key.")}</p>
+        <.dm_btn id="toggle-audio" phx-click="enable" phx-value-enabled={to_string(!@enabled)}>{if @enabled, do: dgettext("admin", "Disable audio"), else: dgettext("admin", "Enable audio")}</.dm_btn>
       </.dm_card>
-      <.dm_card variant="bordered"><:title>MiniMax audio setup</:title>
-        <p>Store your MiniMax API token in <a href="/system/credentials" class="text-primary underline">System → Credentials</a>, then select its credential name and authorized region here. This saves speech and transcription routes without contacting MiniMax.</p>
+      <.dm_card variant="bordered"><:title>{dgettext("admin", "MiniMax audio setup")}</:title>
+        <p>{dgettext("admin", "Store your MiniMax API token in")} <a href="/system/credentials" class="text-primary underline">{dgettext("admin", "System → Credentials")}</a>{dgettext("admin", ", then select its credential name and authorized region here. This saves speech and transcription routes without contacting MiniMax.")}</p>
         <.form for={@setup_form} id="audio-preset-form" phx-submit="save_preset" class="grid gap-3 md:grid-cols-2">
-          <.dm_select field={@setup_form[:credential]} label="MiniMax API-key credential" options={Enum.map(@credentials, &{&1.name, &1.name})} prompt="Choose credential" />
-          <.dm_select field={@setup_form[:region]} label="API region" options={[{"global", "Global (api.minimax.io)"}, {"china", "China (api.minimaxi.com)"}]} prompt="Choose region" />
+          <.dm_select field={@setup_form[:credential]} label={dgettext("admin", "MiniMax API-key credential")} options={Enum.map(@credentials, &{&1.name, &1.name})} prompt={dgettext("admin", "Choose credential")} />
+          <.dm_select field={@setup_form[:region]} label={dgettext("admin", "API region")} options={[{"global", dgettext("admin", "Global (api.minimax.io)")}, {"china", dgettext("admin", "China (api.minimaxi.com)")}]} prompt={dgettext("admin", "Choose region")} />
           <p :if={@setup_error} id="audio-setup-error" class="text-error md:col-span-2">{@setup_error}</p>
-          <.dm_btn id="save-audio-preset" type="submit" variant="primary">Save audio setup</.dm_btn>
+          <.dm_btn id="save-audio-preset" type="submit" variant="primary">{dgettext("admin", "Save audio setup")}</.dm_btn>
         </.form>
-        <p :if={@preset.configured?}>Models: {PresetSetup.model_name(:speech)} and {PresetSetup.model_name(:transcription)}. Speech requests must supply a native MiniMax voice ID.</p>
+        <p :if={@preset.configured?}>{dgettext("admin", "Models: %{speech} and %{transcription}. Speech requests must supply a native MiniMax voice ID.", speech: PresetSetup.model_name(:speech), transcription: PresetSetup.model_name(:transcription))}</p>
       </.dm_card>
-      <.dm_card variant="bordered"><:title>Readiness</:title>
-        <p>Run a local codec, ffprobe, FFmpeg, sandbox and temporary storage check. No provider request is made.</p>
-        <.dm_btn id="check-audio-readiness" phx-click="check_readiness" disabled={@readiness_checking?}>{if @readiness_checking?, do: "Checking readiness...", else: "Check readiness"}</.dm_btn>
+      <.dm_card variant="bordered"><:title>{dgettext("admin", "Readiness")}</:title>
+        <p>{dgettext("admin", "Run a local codec, ffprobe, FFmpeg, sandbox and temporary storage check. No provider request is made.")}</p>
+        <.dm_btn id="check-audio-readiness" phx-click="check_readiness" disabled={@readiness_checking?}>{if @readiness_checking?, do: dgettext("admin", "Checking readiness..."), else: dgettext("admin", "Check readiness")}</.dm_btn>
         <p :if={@readiness_error} id="audio-readiness-error" class="text-error">{@readiness_error}</p>
         <div :if={@readiness} id="audio-readiness">
-          <p id="audio-policy-readiness">Policy: {if @policy_valid, do: "valid", else: "invalid"}</p>
-          <p>{if @readiness.ready?, do: "Media ready", else: "Media unavailable"} · sandbox: {@readiness.sandbox}</p>
-          <p :for={{format, ready?} <- @readiness.asr_formats}>ASR {format}: {if ready?, do: "ready", else: "missing"}</p>
-          <p :for={{format, ready?} <- @readiness.formats}>{format}: {if ready?, do: "ready", else: "missing"}</p>
-          <p :for={binding <- @bindings} id={"audio-readiness-#{binding.id}"}>{binding.provider.name}/{binding.provider_model.model} {binding.operation}: {if binding_valid?(binding, @credentials), do: "valid", else: "invalid"}</p>
+          <p id="audio-policy-readiness">{dgettext("admin", "Policy: %{state}", state: valid_text(@policy_valid))}</p>
+          <p>{if @readiness.ready?, do: dgettext("admin", "Media ready"), else: dgettext("admin", "Media unavailable")} · {dgettext("admin", "sandbox: %{sandbox}", sandbox: @readiness.sandbox)}</p>
+          <p :for={{format, ready?} <- @readiness.asr_formats}>{dgettext("admin", "ASR %{format}: %{state}", format: format, state: ready_text(ready?))}</p>
+          <p :for={{format, ready?} <- @readiness.formats}>{format}: {ready_text(ready?)}</p>
+          <p :for={binding <- @bindings} id={"audio-readiness-#{binding.id}"}>{binding.provider.name}/{binding.provider_model.model} {binding.operation}: {valid_text(binding_valid?(binding, @credentials))}</p>
         </div>
       </.dm_card>
-      <.dm_card variant="bordered"><:title>Speech preview</:title>
-        <p>Explicit preview sends text to the selected provider and may incur charges. Text is limited to 200 characters and output to 1 MB in this browser session. Previews expire after at most two minutes.</p>
+      <.dm_card variant="bordered"><:title>{dgettext("admin", "Speech preview")}</:title>
+        <p>{dgettext("admin", "Explicit preview sends text to the selected provider and may incur charges. Text is limited to 200 characters and output to 1 MB in this browser session. Previews expire after at most two minutes.")}</p>
         <.form for={@tts_form} id="audio-tts-preview" phx-submit="preview_tts">
-          <.dm_input field={@tts_form[:model]} label="Public model or provider/model" list="audio-speech-models" placeholder="Search or enter a model" autocomplete="off" />
+          <.dm_input field={@tts_form[:model]} label={dgettext("admin", "Public model or provider/model")} list="audio-speech-models" placeholder={dgettext("admin", "Search or enter a model")} autocomplete="off" />
           <datalist id="audio-speech-models">
             <option :for={name <- @speech_models} value={name}>{name}</option>
           </datalist>
-          <.dm_input field={@tts_form[:voice]} label="Voice" list="audio-system-voices" placeholder="Search and choose a voice" autocomplete="off" />
+          <.dm_input field={@tts_form[:voice]} label={dgettext("admin", "Voice")} list="audio-system-voices" placeholder={dgettext("admin", "Search and choose a voice")} autocomplete="off" />
           <datalist id="audio-system-voices">
             <option :for={{native_id, label} <- @voice_options} value={native_id} label={label}>{label}</option>
           </datalist>
-          <.dm_textarea field={@tts_form[:input]} label="Text (maximum 200 characters)" maxlength={200} />
-          <.dm_select field={@tts_form[:response_format]} label="Format" options={Enum.map(~w(mp3 opus aac flac wav pcm), &{&1, &1})} />
-          <.dm_btn type="submit" disabled={not is_nil(@tts_job)}>Run speech preview</.dm_btn>
+          <.dm_textarea field={@tts_form[:input]} label={dgettext("admin", "Text (maximum 200 characters)")} maxlength={200} />
+          <.dm_select field={@tts_form[:response_format]} label={dgettext("common", "Format")} options={Enum.map(~w(mp3 opus aac flac wav pcm), &{&1, &1})} />
+          <.dm_btn type="submit" disabled={not is_nil(@tts_job)}>{dgettext("admin", "Run speech preview")}</.dm_btn>
         </.form>
-        <.dm_btn :if={@tts_job} id="cancel-audio-tts" phx-click="cancel_tts">Cancel speech preview</.dm_btn>
+        <.dm_btn :if={@tts_job} id="cancel-audio-tts" phx-click="cancel_tts">{dgettext("admin", "Cancel speech preview")}</.dm_btn>
         <p :if={@tts_result} id="audio-tts-result">{@tts_result}</p>
         <audio :if={@preview_audio && @preview_format != "pcm"} controls src={@preview_audio}></audio>
-        <a :if={@preview_audio} id="audio-preview-download" href={@preview_audio} download={"preview.#{@preview_format}"}>Download preview</a>
-        <p :if={@preview_audio && @preview_format == "pcm"}>Raw PCM: signed 16-bit little-endian, 24,000 Hz, mono. Download and open with these parameters; browser playback is unavailable.</p>
+        <a :if={@preview_audio} id="audio-preview-download" href={@preview_audio} download={"preview.#{@preview_format}"}>{dgettext("admin", "Download preview")}</a>
+        <p :if={@preview_audio && @preview_format == "pcm"}>{dgettext("admin", "Raw PCM: signed 16-bit little-endian, 24,000 Hz, mono. Download and open with these parameters; browser playback is unavailable.")}</p>
       </.dm_card>
-      <.dm_card variant="bordered"><:title>Transcription preview</:title>
-        <p>Accepted files: FLAC, MP3, MP4, MPEG, MPGA, M4A, OGG, WAV and WebM. Submitting a file may incur provider charges. A selected file expires after two minutes.</p>
+      <.dm_card variant="bordered"><:title>{dgettext("admin", "Transcription preview")}</:title>
+        <p>{dgettext("admin", "Accepted files: FLAC, MP3, MP4, MPEG, MPGA, M4A, OGG, WAV and WebM. Submitting a file may incur provider charges. A selected file expires after two minutes.")}</p>
         <.form for={@asr_form} id="audio-asr-preview" phx-submit="preview_asr" phx-change="validate_asr">
-          <.dm_input field={@asr_form[:model]} label="Public model or provider/model" list="audio-transcription-models" placeholder="Search or enter a model" autocomplete="off" />
+          <.dm_input field={@asr_form[:model]} label={dgettext("admin", "Public model or provider/model")} list="audio-transcription-models" placeholder={dgettext("admin", "Search or enter a model")} autocomplete="off" />
           <datalist id="audio-transcription-models">
             <option :for={name <- @transcription_models} value={name}>{name}</option>
           </datalist>
-          <.dm_input field={@asr_form[:language]} label="Language (optional)" />
+          <.dm_input field={@asr_form[:language]} label={dgettext("admin", "Language (optional)")} />
           <.live_file_input upload={@uploads.audio} disabled={not is_nil(@asr_job) or @asr_upload_closing} />
           <p :for={entry <- @uploads.audio.entries}>{entry.client_name}</p>
-          <label><input type="checkbox" name="asr[ack]" value="true" /> I acknowledge provider charges for this transcription preview</label>
-          <.dm_btn type="submit" disabled={not is_nil(@asr_job) or @asr_upload_closing}>Run transcription preview</.dm_btn>
+          <label><input type="checkbox" name="asr[ack]" value="true" /> {dgettext("admin", "I acknowledge provider charges for this transcription preview")}</label>
+          <.dm_btn type="submit" disabled={not is_nil(@asr_job) or @asr_upload_closing}>{dgettext("admin", "Run transcription preview")}</.dm_btn>
         </.form>
-        <.dm_btn :if={@asr_job} id="cancel-audio-asr" phx-click="cancel_asr">Cancel transcription preview</.dm_btn>
+        <.dm_btn :if={@asr_job} id="cancel-audio-asr" phx-click="cancel_asr">{dgettext("admin", "Cancel transcription preview")}</.dm_btn>
         <p :if={@asr_result} id="audio-asr-result">{@asr_result}</p>
       </.dm_card>
     </div>

@@ -41,7 +41,7 @@ defmodule Backplane.Admin.ProviderShowLive do
       nil ->
         {:noreply,
          socket
-         |> put_flash(:error, "Provider not found")
+         |> put_flash(:error, dgettext("errors", "Provider not found"))
          |> push_navigate(to: ~p"/llama/providers")}
 
       provider ->
@@ -77,7 +77,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
           {:noreply,
            socket
-           |> put_flash(:info, "Provider updated")
+           |> put_flash(:info, dgettext("admin", "Provider updated"))
            |> assign_provider(provider)}
 
         {:error, errors} ->
@@ -105,13 +105,19 @@ defmodule Backplane.Admin.ProviderShowLive do
         put_flash(
           socket,
           :info,
-          "Reloaded #{result.discovered} model(s): #{result.created} new, #{result.updated} updated"
+          dgettext("admin", "Reloaded %{discovered} model(s): %{created} new, %{updated} updated",
+            discovered: result.discovered,
+            created: result.created,
+            updated: result.updated
+          )
         )
       else
         put_flash(
           socket,
           :error,
-          "Model reload finished with errors: #{Enum.join(result.errors, "; ")}"
+          dgettext("errors", "Model reload finished with errors: %{errors}",
+            errors: Enum.join(result.errors, "; ")
+          )
         )
       end
 
@@ -146,7 +152,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
           {:noreply,
            socket
-           |> put_flash(:info, "Model added")
+           |> put_flash(:info, dgettext("admin", "Model added"))
            |> assign_provider(Provider.get(provider.id))
            |> assign(model_form: to_form(model_defaults(), as: :model), model_errors: %{})}
 
@@ -165,7 +171,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     case model_for_provider(provider, id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Model not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Model not found"))}
 
       model ->
         {:noreply,
@@ -184,7 +190,7 @@ defmodule Backplane.Admin.ProviderShowLive do
   def handle_event("confirm_delete_model", %{"id" => id}, socket) do
     case model_for_provider(socket.assigns.provider, id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Model not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Model not found"))}
 
       model ->
         {:noreply, assign(socket, deleting_model: model)}
@@ -220,7 +226,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
           {:noreply,
            socket
-           |> put_flash(:info, "Model updated")
+           |> put_flash(:info, dgettext("admin", "Model updated"))
            |> assign_provider(Provider.get(provider.id))
            |> assign(editing_model: nil, edit_model_form: nil, edit_model_errors: %{})}
 
@@ -239,7 +245,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     case model_for_provider(provider, id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Model not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Model not found"))}
 
       model ->
         case ProviderModel.update(model, %{enabled: !model.enabled}) do
@@ -248,7 +254,7 @@ defmodule Backplane.Admin.ProviderShowLive do
             {:noreply, assign_provider(socket, Provider.get(provider.id))}
 
           {:error, _changeset} ->
-            {:noreply, put_flash(socket, :error, "Failed to update model")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to update model"))}
         end
     end
   end
@@ -258,7 +264,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     case model_for_provider(provider, id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Model not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Model not found"))}
 
       model ->
         case ProviderModel.delete(model) do
@@ -267,12 +273,12 @@ defmodule Backplane.Admin.ProviderShowLive do
 
             {:noreply,
              socket
-             |> put_flash(:info, "Model removed")
+             |> put_flash(:info, dgettext("admin", "Model removed"))
              |> assign_provider(Provider.get(provider.id))
              |> assign(deleting_model: nil)}
 
           {:error, _changeset} ->
-            {:noreply, put_flash(socket, :error, "Failed to remove model")}
+            {:noreply, put_flash(socket, :error, dgettext("errors", "Failed to remove model"))}
         end
     end
   end
@@ -373,7 +379,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     options =
       [
-        {"", "Select a credential..."}
+        {"", dgettext("admin", "Select a credential...")}
         | creds
           |> Enum.filter(&credential_allowed?(preset, &1))
           |> Enum.map(fn cred -> {cred.name, credential_label(cred)} end)
@@ -381,13 +387,14 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     options =
       if provider && provider.credential && not MapSet.member?(known_names, provider.credential) do
-        options ++ [{provider.credential, "#{provider.credential} (missing)"}]
+        options ++ [{provider.credential,
+           dgettext("admin", "%{name} (missing)", name: provider.credential)}]
       else
         options
       end
 
     assign(socket,
-      host_service_options: [{"", "Direct HTTP"} | HostServices.options()],
+      host_service_options: [{"", dgettext("admin", "Direct HTTP")} | HostServices.options()],
       credential_options: options
     )
   end
@@ -576,7 +583,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp validate_provider_params(provider, params) do
     %{}
-    |> require_field(params, "name", "Name is required")
+    |> require_field(params, "name", dgettext("errors", "Name is required"))
     |> require_credential(params)
     |> require_allowed_credential(provider_preset(provider), params)
     |> require_api_surfaces(params, provider)
@@ -584,7 +591,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp require_credential(errors, params) do
     if blank?(params["host_service_id"]),
-      do: require_field(errors, params, "credential", "Credential is required"),
+      do: require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
       else: errors
   end
 
@@ -614,10 +621,12 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp credential_error(%{credential_auth_type: auth_type}) when is_binary(auth_type) do
-    "Credential must use #{auth_type} auth type"
+    dgettext("errors", "Credential must use %{auth_type} auth type", auth_type: auth_type)
   end
 
-  defp credential_error(preset), do: "Credential must be a #{preset.credential_kind} credential"
+  defp credential_error(preset),
+    do:
+      dgettext("errors", "Credential must be a %{kind} credential", kind: preset.credential_kind)
 
   defp require_api_surface(errors, params, surface) do
     if truthy?(params["#{surface}_enabled"]) and blank?(params["host_service_id"]) do
@@ -625,7 +634,7 @@ defmodule Backplane.Admin.ProviderShowLive do
         errors,
         params,
         "#{surface}_base_url",
-        "#{surface_label(surface)} base URL is required"
+        dgettext("errors", "%{surface} base URL is required", surface: surface_label(surface))
       )
     else
       errors
@@ -640,7 +649,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp validate_model_params(provider, params) do
     %{}
-    |> require_field(params, "model", "Model is required")
+    |> require_field(params, "model", dgettext("errors", "Model is required"))
     |> require_one_surface(provider, params)
   end
 
@@ -648,7 +657,7 @@ defmodule Backplane.Admin.ProviderShowLive do
     if Enum.any?(provider.apis, &truthy?(params["surface_#{&1.id}"])) do
       errors
     else
-      Map.put(errors, "surfaces", "Select at least one API surface")
+      Map.put(errors, "surfaces", dgettext("errors", "Select at least one API surface"))
     end
   end
 
@@ -833,22 +842,22 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp enabled_variant(true), do: "success"
   defp enabled_variant(false), do: "neutral"
 
-  defp enabled_text(true), do: "Enabled"
-  defp enabled_text(false), do: "Disabled"
+  defp enabled_text(true), do: dgettext("common", "Enabled")
+  defp enabled_text(false), do: dgettext("common", "Disabled")
 
   defp google_apis(provider) do
     Enum.filter(provider.apis, &(&1.api_surface == :google))
   end
 
   defp google_api_version(api) do
-    if String.contains?(api.base_url || "", "/v1beta"), do: "v1beta", else: "Unknown"
+    if String.contains?(api.base_url || "", "/v1beta"), do: "v1beta", else: dgettext("admin", "Unknown")
   end
 
   defp google_credential_auth_type(provider) do
     case provider_preset(provider) do
-      %{credential_auth_type: "api_key"} -> "API key"
+      %{credential_auth_type: "api_key"} -> dgettext("admin", "API key")
       %{credential_auth_type: auth_type} when is_binary(auth_type) -> auth_type
-      _ -> "Unknown"
+      _ -> dgettext("admin", "Unknown")
     end
   end
 
@@ -862,7 +871,7 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp metadata_value(metadata, keys) do
-    Enum.find_value(keys, "Unknown", fn key ->
+    Enum.find_value(keys, dgettext("admin", "Unknown"), fn key ->
       case Map.get(metadata, key) do
         value when value in [nil, ""] -> nil
         value -> to_string(value)
@@ -873,15 +882,17 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp metadata_list(metadata, key) do
     case Map.get(metadata, key) do
       values when is_list(values) and values != [] -> Enum.join(values, ", ")
-      _ -> "Unknown"
+      _ -> dgettext("admin", "Unknown")
     end
   end
 
   defp directory_status(nil), do: nil
-  defp directory_status(%{errors: []}), do: "Last reload completed successfully."
+  defp directory_status(%{errors: []}),
+    do: dgettext("admin", "Last reload completed successfully.")
 
   defp directory_status(%{errors: errors}),
-    do: "Last reload incomplete: #{Enum.join(errors, "; ")}"
+    do:
+      dgettext("errors", "Last reload incomplete: %{errors}", errors: Enum.join(errors, "; "))
 
   defp error(assigns) do
     ~H"""
@@ -897,7 +908,7 @@ defmodule Backplane.Admin.ProviderShowLive do
         <div>
           <div class="mb-1">
             <.link navigate={~p"/llama/providers"} class="text-sm text-primary underline">
-              Back to providers
+              {dgettext("navigation", "Back to providers")}
             </.link>
           </div>
           <h1 class="text-2xl font-bold">{@provider.name}</h1>
@@ -905,10 +916,10 @@ defmodule Backplane.Admin.ProviderShowLive do
             <.dm_badge variant={enabled_variant(@provider.enabled)} size="sm">
               {enabled_text(@provider.enabled)}
             </.dm_badge>
-            <span :if={@provider.preset_key}>Preset: {@provider.preset_key}</span>
-            <span>Credential: <code>{@provider.credential}</code></span>
+            <span :if={@provider.preset_key}>{dgettext("admin", "Preset: %{key}", key: @provider.preset_key)}</span>
+            <span>{dgettext("admin", "Credential:")} <code>{@provider.credential}</code></span>
             <span :if={google_apis(@provider) != []}>
-              Credential auth: {google_credential_auth_type(@provider)}
+              {dgettext("admin", "Credential auth: %{type}", type: google_credential_auth_type(@provider))}
             </span>
           </div>
         </div>
@@ -916,7 +927,7 @@ defmodule Backplane.Admin.ProviderShowLive do
       </div>
 
       <.dm_card variant="bordered" class="mb-6">
-        <:title>Edit Provider</:title>
+        <:title>{dgettext("admin", "Edit Provider")}</:title>
         <.form
           for={@provider_form}
           phx-submit="save_provider"
@@ -928,7 +939,7 @@ defmodule Backplane.Admin.ProviderShowLive do
               <.dm_input
                 id="provider-name"
                 name="provider[name]"
-                label="Name"
+                label={dgettext("common", "Name")}
                 value={@provider_form[:name].value}
               />
               <.error errors={@provider_errors} field="name" />
@@ -938,7 +949,7 @@ defmodule Backplane.Admin.ProviderShowLive do
               <.dm_select
                 id="provider-credential"
                 name="provider[credential]"
-                label="Credential"
+                label={dgettext("admin", "Credential")}
                 options={@credential_options}
                 value={@provider_form[:credential].value || ""}
               />
@@ -946,10 +957,10 @@ defmodule Backplane.Admin.ProviderShowLive do
             </div>
 
             <div>
-              <.dm_select id="provider-host-service" name="provider[host_service_id]" label="Host API Service"
+              <.dm_select id="provider-host-service" name="provider[host_service_id]" label={dgettext("admin", "Host API Service")}
                 options={@host_service_options} value={@provider_form[:host_service_id].value || ""} />
               <.error errors={@provider_errors} field="host_service_id" />
-              <p class="mt-1 text-xs text-on-surface-variant">Hosted APIs use the service endpoints. Credential is optional for unauthenticated local services.</p>
+              <p class="mt-1 text-xs text-on-surface-variant">{dgettext("admin", "Hosted APIs use the service endpoints. Credential is optional for unauthenticated local services.")}</p>
             </div>
 
             <div>
@@ -957,7 +968,7 @@ defmodule Backplane.Admin.ProviderShowLive do
               <.dm_checkbox
                 id="provider-enabled"
                 name="provider[enabled]"
-                label="Enable provider"
+                label={dgettext("admin", "Enable provider")}
                 value="true"
                 checked={@provider_form[:enabled].value in [true, "true", "on"]}
               />
@@ -967,7 +978,7 @@ defmodule Backplane.Admin.ProviderShowLive do
               <.dm_input
                 id="provider-rpm-limit"
                 name="provider[rpm_limit]"
-                label="RPM Limit"
+                label={dgettext("admin", "RPM Limit")}
                 value={@provider_form[:rpm_limit].value}
               />
             </div>
@@ -988,40 +999,40 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.dm_textarea
             id="provider-default-headers"
             name="provider[default_headers]"
-            label="Provider Default Headers"
+            label={dgettext("admin", "Provider Default Headers")}
             rows={3}
             value={@provider_form[:default_headers].value}
             class="font-mono"
           />
 
-          <.dm_btn type="submit" variant="primary">Save Provider</.dm_btn>
+          <.dm_btn type="submit" variant="primary">{dgettext("admin", "Save Provider")}</.dm_btn>
         </.form>
       </.dm_card>
 
       <.dm_card :if={google_apis(@provider) != []} variant="bordered" class="mb-6">
-        <:title>Directory refresh</:title>
+        <:title>{dgettext("admin", "Directory refresh")}</:title>
         <div class="space-y-2 text-sm">
           <div :for={api <- google_apis(@provider)}>
             <span class="font-medium">Google GenerateContent:</span>
-            <span>API version: {google_api_version(api)}.</span>
+            <span>{dgettext("admin", "API version: %{version}.", version: google_api_version(api))}</span>
             <span :if={api.last_discovered_at}>
-              Last successful discovery: {api.last_discovered_at}
+              {dgettext("admin", "Last successful discovery: %{time}", time: api.last_discovered_at)}
             </span>
-            <span :if={!api.last_discovered_at}>No successful discovery recorded.</span>
+            <span :if={!api.last_discovered_at}>{dgettext("admin", "No successful discovery recorded.")}</span>
           </div>
           <p :if={directory_status(@model_reload_status)} class="text-on-surface-variant">
             {directory_status(@model_reload_status)}
           </p>
-          <p class="text-on-surface-variant">Directory refresh reads the model catalog only; it never starts a generation.</p>
+          <p class="text-on-surface-variant">{dgettext("admin", "Directory refresh reads the model catalog only; it never starts a generation.")}</p>
         </div>
       </.dm_card>
 
       <.dm_card variant="bordered" class="mb-6">
         <:title>
           <div class="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <span>Add Model</span>
+            <span>{dgettext("admin", "Add Model")}</span>
             <.dm_btn type="button" size="sm" variant="secondary" phx-click="reload_models">
-              Load Models from API
+              {dgettext("admin", "Load Models from API")}
             </.dm_btn>
           </div>
         </:title>
@@ -1031,31 +1042,31 @@ defmodule Backplane.Admin.ProviderShowLive do
           provider={@provider}
           submit="add_model"
           change="validate_model"
-          button="Add Model"
+          button={dgettext("admin", "Add Model")}
         />
       </.dm_card>
 
       <.dm_card :if={@editing_model} variant="bordered" class="mb-6">
-        <:title>Edit Model: {@editing_model.model}</:title>
+        <:title>{dgettext("admin", "Edit Model: %{model}", model: @editing_model.model)}</:title>
         <.model_form
           form={@edit_model_form}
           errors={@edit_model_errors}
           provider={@provider}
           submit="update_model"
           change="validate_edit_model"
-          button="Save Model"
+          button={dgettext("admin", "Save Model")}
         />
         <.dm_btn type="button" size="sm" class="mt-3" phx-click="cancel_edit_model">
-          Cancel
+          {dgettext("common", "Cancel")}
         </.dm_btn>
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Models</:title>
+        <:title>{dgettext("admin", "Models")}</:title>
         <.delete_model_modal :if={@deleting_model} model={@deleting_model} />
 
         <div :if={@provider.models == []} class="text-sm text-on-surface-variant">
-          No models configured.
+          {dgettext("admin", "No models configured.")}
         </div>
 
         <div :if={antigravity_provider?(@provider)} class="space-y-3">
@@ -1064,7 +1075,7 @@ defmodule Backplane.Admin.ProviderShowLive do
               <div>
                 <div class="font-medium">{group.label}</div>
                 <div class="text-xs text-on-surface-variant">
-                  {length(group.variants)} backend variants
+                  {dgettext("admin", "%{count} backend variants", count: length(group.variants))}
                 </div>
               </div>
               <.dm_badge variant="neutral" size="sm">{group.family}</.dm_badge>
@@ -1080,7 +1091,7 @@ defmodule Backplane.Admin.ProviderShowLive do
                     <span>{model.source}</span>
                     <span :if={model.metadata["tagTitle"]}>{model.metadata["tagTitle"]}</span>
                     <span :if={model.metadata["thinkingBudget"]}>
-                      thinking budget: {model.metadata["thinkingBudget"]}
+                      {dgettext("admin", "thinking budget: %{value}", value: model.metadata["thinkingBudget"])}
                     </span>
                   </div>
                   <.antigravity_model_metadata_popover
@@ -1093,7 +1104,7 @@ defmodule Backplane.Admin.ProviderShowLive do
                   <.dm_badge variant={enabled_variant(model.enabled)} size="sm">
                     {enabled_text(model.enabled)}
                   </.dm_badge>
-                  <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                     <.dm_btn
                       {tooltip_attrs}
                       id={"edit-model-#{model.id}"}
@@ -1101,42 +1112,46 @@ defmodule Backplane.Admin.ProviderShowLive do
                       size="xs"
                       shape="circle"
                       variant="outline"
-                      aria-label={"Edit model #{model.model}"}
+                      aria-label={dgettext("admin", "Edit model %{model}", model: model.model)}
                       phx-click="edit_model"
                       phx-value-id={model.id}
                     >
                       <.dm_mdi name="pencil" class="h-4 w-4" />
-                      <span class="sr-only">Edit</span>
+                      <span class="sr-only">{dgettext("common", "Edit")}</span>
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content={if model.enabled, do: "Disable", else: "Enable"} position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={if model.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")} position="bottom">
                     <.dm_btn
                       {tooltip_attrs}
                       type="button"
                       size="xs"
                       shape="circle"
                       variant={if model.enabled, do: "warning", else: "success"}
-                      aria-label={if model.enabled, do: "Disable model #{model.model}", else: "Enable model #{model.model}"}
+                      aria-label={
+                        if model.enabled,
+                          do: dgettext("admin", "Disable model %{model}", model: model.model),
+                          else: dgettext("admin", "Enable model %{model}", model: model.model)
+                      }
                       phx-click="toggle_model"
                       phx-value-id={model.id}
                     >
                       <.dm_mdi name={if model.enabled, do: "pause", else: "play"} class="h-4 w-4" />
-                      <span class="sr-only">{if model.enabled, do: "Disable", else: "Enable"}</span>
+                      <span class="sr-only">{if model.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")}</span>
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content="Remove" position="bottom">
+                  <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Remove")} position="bottom">
                     <.dm_btn
                       {tooltip_attrs}
                       type="button"
                       size="xs"
                       shape="circle"
                       variant="error"
-                      aria-label={"Remove model #{model.model}"}
+                      aria-label={dgettext("admin", "Remove model %{model}", model: model.model)}
                       phx-click="confirm_delete_model"
                       phx-value-id={model.id}
                     >
                       <.dm_mdi name="delete" class="h-4 w-4" />
-                      <span class="sr-only">Remove</span>
+                      <span class="sr-only">{dgettext("common", "Remove")}</span>
                     </.dm_btn>
                   </.dm_tooltip>
                 </div>
@@ -1152,7 +1167,7 @@ defmodule Backplane.Admin.ProviderShowLive do
           hover
           zebra
         >
-          <:col :let={model} label="Model">
+          <:col :let={model} label={dgettext("admin", "Model")}>
             <div class="min-w-0">
               <code class="block truncate text-sm">{model.model}</code>
               <span :if={model.display_name} class="mt-1 block text-sm text-on-surface-variant">
@@ -1169,15 +1184,15 @@ defmodule Backplane.Admin.ProviderShowLive do
               />
             </div>
           </:col>
-          <:col :let={model} label="Status">
+          <:col :let={model} label={dgettext("common", "Status")}>
             <.dm_badge variant={enabled_variant(model.enabled)} size="sm">
               {enabled_text(model.enabled)}
             </.dm_badge>
           </:col>
-          <:col :let={model} label="Source">
+          <:col :let={model} label={dgettext("admin", "Source")}>
             <.dm_badge variant="neutral" size="sm">{model.source}</.dm_badge>
           </:col>
-          <:col :let={model} label="API surfaces">
+          <:col :let={model} label={dgettext("admin", "API surfaces")}>
             <div class="flex flex-wrap gap-2">
               <.dm_badge
                 :for={api <- @provider.apis}
@@ -1188,35 +1203,37 @@ defmodule Backplane.Admin.ProviderShowLive do
                 }
                 size="sm"
               >
-                {api_label(api.api_surface)} {if surface_enabled?(model, api), do: "on", else: "off"}
+                {if surface_enabled?(model, api),
+                  do: dgettext("admin", "%{api} on", api: api_label(api.api_surface)),
+                  else: dgettext("admin", "%{api} off", api: api_label(api.api_surface))}
               </.dm_badge>
             </div>
           </:col>
-          <:col :let={model} label="Routing">
+          <:col :let={model} label={dgettext("admin", "Routing")}>
             <div :if={google_model_metadata(model, @provider)} class="flex flex-wrap gap-2">
-              <.dm_badge variant="success" size="sm">Native Google GenerateContent</.dm_badge>
-              <.dm_badge variant="neutral" size="sm">Translation unavailable</.dm_badge>
+              <.dm_badge variant="success" size="sm">{dgettext("admin", "Native Google GenerateContent")}</.dm_badge>
+              <.dm_badge variant="neutral" size="sm">{dgettext("admin", "Translation unavailable")}</.dm_badge>
             </div>
-            <span :if={!google_model_metadata(model, @provider)} class="text-on-surface-variant">Unknown</span>
+            <span :if={!google_model_metadata(model, @provider)} class="text-on-surface-variant">{dgettext("admin", "Unknown")}</span>
           </:col>
-          <:col :let={model} label="Actions">
+          <:col :let={model} label={dgettext("common", "Actions")}>
             <div class="flex items-center gap-1">
-              <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+              <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   id={"edit-model-#{model.id}"}
                   type="button"
                   size="xs"
                   shape="circle"
                   variant="outline"
-                  aria-label={"Edit model #{model.model}"}
+                  aria-label={dgettext("admin", "Edit model %{model}", model: model.model)}
                   phx-click="edit_model"
                   phx-value-id={model.id}
                 >
                   <.dm_mdi name="pencil" class="h-4 w-4" />
-                  <span class="sr-only">Edit</span>
+                  <span class="sr-only">{dgettext("common", "Edit")}</span>
                 </.dm_btn>
               </.dm_tooltip>
-              <.dm_tooltip :let={tooltip_attrs} content={if model.enabled, do: "Disable", else: "Enable"} position="bottom">
+              <.dm_tooltip :let={tooltip_attrs} content={if model.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   id={"toggle-model-#{model.id}"}
                   type="button"
@@ -1225,29 +1242,29 @@ defmodule Backplane.Admin.ProviderShowLive do
                   variant={if model.enabled, do: "warning", else: "success"}
                   aria-label={
                     if model.enabled,
-                      do: "Disable model #{model.model}",
-                      else: "Enable model #{model.model}"
+                      do: dgettext("admin", "Disable model %{model}", model: model.model),
+                      else: dgettext("admin", "Enable model %{model}", model: model.model)
                   }
                   phx-click="toggle_model"
                   phx-value-id={model.id}
                 >
                   <.dm_mdi name={if model.enabled, do: "pause", else: "play"} class="h-4 w-4" />
-                  <span class="sr-only">{if model.enabled, do: "Disable", else: "Enable"}</span>
+                  <span class="sr-only">{if model.enabled, do: dgettext("common", "Disable"), else: dgettext("common", "Enable")}</span>
                 </.dm_btn>
               </.dm_tooltip>
-              <.dm_tooltip :let={tooltip_attrs} content="Remove" position="bottom">
+              <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Remove")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   id={"open-delete-model-modal-#{model.id}"}
                   type="button"
                   size="xs"
                   shape="circle"
                   variant="error"
-                  aria-label={"Remove model #{model.model}"}
+                  aria-label={dgettext("admin", "Remove model %{model}", model: model.model)}
                   phx-click="confirm_delete_model"
                   phx-value-id={model.id}
                 >
                   <.dm_mdi name="delete" class="h-4 w-4" />
-                  <span class="sr-only">Remove</span>
+                  <span class="sr-only">{dgettext("common", "Remove")}</span>
                 </.dm_btn>
               </.dm_tooltip>
             </div>
@@ -1271,15 +1288,15 @@ defmodule Backplane.Admin.ProviderShowLive do
     >
       <div class="w-full max-w-md rounded-lg border border-outline-variant bg-surface-container p-6 shadow-xl">
         <h2 id="delete-model-modal-title" class="mb-2 text-lg font-semibold text-on-surface">
-          Delete Model
+          {dgettext("admin", "Delete Model")}
         </h2>
         <p class="mb-6 text-sm text-on-surface-variant">
-          Remove model <code class="font-mono text-error">{@model.model}</code>?
-          This cannot be undone.
+          {dgettext("admin", "Remove model")} <code class="font-mono text-error">{@model.model}</code>?
+          {dgettext("admin", "This cannot be undone.")}
         </p>
         <div class="flex justify-end gap-2">
           <.dm_btn type="button" variant="outline" size="sm" phx-click="cancel_delete_model">
-            Cancel
+            {dgettext("common", "Cancel")}
           </.dm_btn>
           <.dm_btn
             id="delete-model-confirm"
@@ -1289,7 +1306,7 @@ defmodule Backplane.Admin.ProviderShowLive do
             phx-click="delete_model"
             phx-value-id={@model.id}
           >
-            Delete
+            {dgettext("common", "Delete")}
           </.dm_btn>
         </div>
       </div>
@@ -1302,11 +1319,11 @@ defmodule Backplane.Admin.ProviderShowLive do
   defp google_model_metadata(assigns) do
     ~H"""
     <dl class="mt-2 space-y-1 text-xs text-on-surface-variant">
-      <div>Native resource: <code>{metadata_value(@metadata, ["name", "resource_name"])}</code></div>
-      <div>Input token limit: {metadata_value(@metadata, ["inputTokenLimit", "context_window"])}</div>
-      <div>Output token limit: {metadata_value(@metadata, ["outputTokenLimit", "max_output_tokens"])}</div>
-      <div>Supported methods: {metadata_list(@metadata, "supportedGenerationMethods")}</div>
-      <div>Advanced capabilities: Unknown</div>
+      <div>{dgettext("admin", "Native resource:")} <code>{metadata_value(@metadata, ["name", "resource_name"])}</code></div>
+      <div>{dgettext("admin", "Input token limit: %{value}", value: metadata_value(@metadata, ["inputTokenLimit", "context_window"]))}</div>
+      <div>{dgettext("admin", "Output token limit: %{value}", value: metadata_value(@metadata, ["outputTokenLimit", "max_output_tokens"]))}</div>
+      <div>{dgettext("admin", "Supported methods: %{value}", value: metadata_list(@metadata, "supportedGenerationMethods"))}</div>
+      <div>{dgettext("admin", "Advanced capabilities: Unknown")}</div>
     </dl>
     """
   end
@@ -1337,22 +1354,22 @@ defmodule Backplane.Admin.ProviderShowLive do
         <button
           type="button"
           class="inline-flex items-center rounded p-1 text-on-surface-variant hover:bg-surface-container-high"
-          aria-label={"Show metadata for #{@model.model}"}
+          aria-label={dgettext("admin", "Show metadata for %{model}", model: @model.model)}
         >
           <.dm_mdi name="information-outline" class="h-4 w-4" />
         </button>
       </:trigger>
       <div class="relative z-50 max-w-2xl space-y-2 rounded-md border border-outline-variant bg-surface p-3 text-xs text-on-surface-variant shadow-lg">
         <div>
-          <span class="font-medium">Native display name:</span>
+          <span class="font-medium">{dgettext("admin", "Native display name:")}</span>
           {metadata_value(@metadata, ["displayName"])}
         </div>
         <div>
-          <span class="font-medium">Quota:</span>
+          <span class="font-medium">{dgettext("admin", "Quota:")}</span>
           {native_metadata_value(@metadata, "quotaInfo")}
         </div>
         <div>
-          <div class="font-medium">Native metadata:</div>
+          <div class="font-medium">{dgettext("admin", "Native metadata:")}</div>
           <pre class="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-container p-2"><code>{encode_json_map(@metadata)}</code></pre>
         </div>
       </div>
@@ -1362,7 +1379,7 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp native_metadata_value(metadata, key) do
     case Map.get(metadata, key) do
-      value when value in [nil, ""] -> "Unavailable"
+      value when value in [nil, ""] -> dgettext("admin", "Unavailable")
       value when is_map(value) or is_list(value) -> Jason.encode!(value)
       value -> to_string(value)
     end
@@ -1383,7 +1400,7 @@ defmodule Backplane.Admin.ProviderShowLive do
         <.dm_checkbox
           id={"provider-#{@key}-enabled"}
           name={"provider[#{@key}_enabled]"}
-          label={"Enable #{surface_label(@key)} API"}
+          label={dgettext("admin", "Enable %{surface} API", surface: surface_label(@key))}
           value="true"
           checked={field_value(@form, @key, "enabled") in [true, "true", "on"]}
         />
@@ -1392,7 +1409,7 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.dm_input
             id={"provider-#{@key}-base-url"}
             name={"provider[#{@key}_base_url]"}
-            label="Base URL"
+            label={dgettext("admin", "Base URL")}
             value={field_value(@form, @key, "base_url")}
           />
           <.error errors={@errors} field={"#{@key}_base_url"} />
@@ -1402,25 +1419,25 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.dm_input
             id="provider-antigravity-project-id"
             name="provider[antigravity_project_id]"
-            label="Project ID"
+            label={dgettext("admin", "Project ID")}
             value={field_value(@form, "antigravity", "project_id")}
           />
           <.dm_input
             id="provider-antigravity-user-agent"
             name="provider[antigravity_user_agent]"
-            label="User Agent"
+            label={dgettext("admin", "User Agent")}
             value={field_value(@form, "antigravity", "user_agent")}
           />
           <.dm_input
             id="provider-antigravity-client-version"
             name="provider[antigravity_client_version]"
-            label="Client Version"
+            label={dgettext("admin", "Client Version")}
             value={field_value(@form, "antigravity", "client_version")}
           />
         </div>
 
         <div :if={@protocols != []} class="space-y-2">
-          <p class="text-sm font-medium">Native wire protocols</p>
+          <p class="text-sm font-medium">{dgettext("admin", "Native wire protocols")}</p>
           <div :for={protocol <- @protocols}>
             <input type="hidden" name={protocol_input_name(@key, protocol)} value="false" />
             <.dm_checkbox
@@ -1439,14 +1456,12 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.dm_checkbox
             id="provider-openai-responses-websocket"
             name="provider[openai_responses_websocket]"
-            label="Upstream supports Responses WebSocket"
+            label={dgettext("admin", "Upstream supports Responses WebSocket")}
             value="true"
             checked={field_value(@form, @key, "responses_websocket") in [true, "true", "on"]}
           />
           <p class="text-sm text-base-content/60">
-            Requires native Responses. Enables WebSocket forwarding with an explicit model query.
-            Does not enable background cancellation or steering. WebSocket token usage is not yet
-            included in gateway usage totals.
+            {dgettext("admin", "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering. WebSocket token usage is not yet included in gateway usage totals.")}
           </p>
           <.error errors={@errors} field="openai_responses_websocket" />
         </div>
@@ -1455,7 +1470,7 @@ defmodule Backplane.Admin.ProviderShowLive do
         <.dm_checkbox
           id={"provider-#{@key}-discovery-enabled"}
           name={"provider[#{@key}_model_discovery_enabled]"}
-          label="Enable model discovery"
+          label={dgettext("admin", "Enable model discovery")}
           value="true"
           checked={field_value(@form, @key, "model_discovery_enabled") in [true, "true", "on"]}
         />
@@ -1463,14 +1478,14 @@ defmodule Backplane.Admin.ProviderShowLive do
         <.dm_input
           id={"provider-#{@key}-discovery-path"}
           name={"provider[#{@key}_model_discovery_path]"}
-          label="Model Discovery Path"
+          label={dgettext("admin", "Model Discovery Path")}
           value={field_value(@form, @key, "model_discovery_path")}
         />
 
         <.dm_textarea
           id={"provider-#{@key}-default-headers"}
           name={"provider[#{@key}_default_headers]"}
-          label="Default Headers"
+          label={dgettext("admin", "Default Headers")}
           rows={3}
           value={field_value(@form, @key, "default_headers")}
           class="font-mono"
@@ -1488,7 +1503,7 @@ defmodule Backplane.Admin.ProviderShowLive do
           <.dm_input
             id={"#{@submit}-model"}
             name="model[model]"
-            label="Model"
+            label={dgettext("admin", "Model")}
             value={@form[:model].value}
             placeholder="provider-model-id"
           />
@@ -1498,7 +1513,7 @@ defmodule Backplane.Admin.ProviderShowLive do
         <.dm_input
           id={"#{@submit}-display-name"}
           name="model[display_name]"
-          label="Display Name"
+          label={dgettext("admin", "Display Name")}
           value={@form[:display_name].value}
         />
       </div>
@@ -1507,13 +1522,13 @@ defmodule Backplane.Admin.ProviderShowLive do
       <.dm_checkbox
         id={"#{@submit}-enabled"}
         name="model[enabled]"
-        label="Enable model"
+        label={dgettext("admin", "Enable model")}
         value="true"
         checked={@form[:enabled].value in [true, "true", "on"]}
       />
 
       <div>
-        <div class="mb-2 text-sm font-medium">API Surfaces</div>
+        <div class="mb-2 text-sm font-medium">{dgettext("admin", "API Surfaces")}</div>
         <div class="flex flex-wrap gap-4">
           <label :for={api <- @provider.apis} class="inline-flex items-center gap-2 text-sm">
             <input type="hidden" name={"model[surface_#{api.id}]"} value="false" />
@@ -1533,7 +1548,7 @@ defmodule Backplane.Admin.ProviderShowLive do
       <.dm_textarea
         id={"#{@submit}-metadata"}
         name="model[metadata]"
-        label="Metadata"
+        label={dgettext("admin", "Metadata")}
         rows={3}
         value={@form[:metadata].value}
         class="font-mono"

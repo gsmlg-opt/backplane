@@ -79,13 +79,13 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     for path <- ["/dashboard/usage/llm", "/dashboard/usage/llm?range=invalid"] do
       render_patch(view, path)
 
-      assert has_element?(view, ~s(#llm-usage-range a[aria-current="true"]), "今天")
+      assert has_element?(view, ~s(#llm-usage-range a[aria-current="true"]), "Today")
       assert has_element?(view, "#llm-provider-model-usage-table", "today-model")
       refute has_element?(view, "#llm-provider-model-usage-table", "yesterday-model")
       refute has_element?(view, "#llm-provider-model-usage-table", "future-model")
     end
 
-    for label <- ["今天", "昨天", "最近一周", "最近二周", "最近一月"] do
+    for label <- ["Today", "Yesterday", "Last 7 days", "Last 14 days", "Last 30 days"] do
       assert has_element?(view, "#llm-usage-range a", label)
     end
 
@@ -139,10 +139,10 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     {:ok, view, _html} = live_with_sandbox(conn, "/dashboard/usage/llm")
 
     for {range, days, label} <- [
-          {"yesterday", 1, "昨天"},
-          {"week", 7, "最近一周"},
-          {"fortnight", 14, "最近二周"},
-          {"month", 30, "最近一月"}
+          {"yesterday", 1, "Yesterday"},
+          {"week", 7, "Last 7 days"},
+          {"fortnight", 14, "Last 14 days"},
+          {"month", 30, "Last 30 days"}
         ] do
       path = "/dashboard/usage/llm?range=#{range}"
       view |> element(~s(#llm-usage-range a[href="#{path}"])) |> render_click()
@@ -174,7 +174,7 @@ defmodule Backplane.Admin.DashboardUsageLiveTest do
     end
 
     {:ok, reloaded, _html} = live_with_sandbox(conn, "/dashboard/usage/llm?range=month")
-    assert has_element?(reloaded, ~s(#llm-usage-range a[aria-current="true"]), "最近一月")
+    assert has_element?(reloaded, ~s(#llm-usage-range a[aria-current="true"]), "Last 30 days")
     assert has_element?(reloaded, "#llm-provider-model-usage-table", "period-day-30-model")
     refute has_element?(reloaded, "#llm-provider-model-usage-table", "period-day-0-model")
   end

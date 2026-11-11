@@ -6,35 +6,66 @@ defmodule Backplane.Admin.OpenAIProxyLive do
   alias Backplane.LLM.Provider
   alias Backplane.Settings.Credentials
 
-  @pages %{
-    decisions: %{
-      title: "OpenAI Decisions",
+  defp page(:decisions) do
+    %{
+      title: dgettext("admin", "OpenAI Decisions"),
       description:
-        "Route classification, choice and scoring requests to an explicitly configured model.",
+        dgettext(
+          "admin",
+          "Route classification, choice and scoring requests to an explicitly configured model."
+        ),
       endpoints: ["POST /v1/decisions"],
       example: "gpt-6-luna"
-    },
-    images: %{
-      title: "OpenAI Images",
-      description: "Configure native image generation and editing, including image uploads.",
+    }
+  end
+
+  defp page(:images) do
+    %{
+      title: dgettext("admin", "OpenAI Images"),
+      description:
+        dgettext(
+          "admin",
+          "Configure native image generation and editing, including image uploads."
+        ),
       endpoints: ["POST /v1/images/generations", "POST /v1/images/edits"],
-      example: "Enter the image model IDs available to your account"
-    },
-    speech: %{
-      title: "OpenAI Text to Speech",
-      description: "Configure the native Speech API and its audio or event stream output.",
+      example: dgettext("admin", "Enter the image model IDs available to your account")
+    }
+  end
+
+  defp page(:speech) do
+    %{
+      title: dgettext("admin", "OpenAI Text to Speech"),
+      description:
+        dgettext(
+          "admin",
+          "Configure the native Speech API and its audio or event stream output."
+        ),
       endpoints: ["POST /v1/audio/speech"],
-      example: "Enter the Speech API model IDs available to your account"
-    },
-    transcription: %{
-      title: "OpenAI Transcription",
-      description: "Configure recorded-audio uploads and native transcription results or events.",
+      example: dgettext("admin", "Enter the Speech API model IDs available to your account")
+    }
+  end
+
+  defp page(:transcription) do
+    %{
+      title: dgettext("admin", "OpenAI Transcription"),
+      description:
+        dgettext(
+          "admin",
+          "Configure recorded-audio uploads and native transcription results or events."
+        ),
       endpoints: ["POST /v1/audio/transcriptions"],
       example: "gpt-transcribe"
-    },
-    realtime: %{
-      title: "OpenAI Realtime",
-      description: "Configure bidirectional WebSocket sessions and browser WebRTC setup.",
+    }
+  end
+
+  defp page(:realtime) do
+    %{
+      title: dgettext("admin", "OpenAI Realtime"),
+      description:
+        dgettext(
+          "admin",
+          "Configure bidirectional WebSocket sessions and browser WebRTC setup."
+        ),
       endpoints: [
         "GET /v1/realtime (WebSocket)",
         "POST /v1/realtime/calls",
@@ -42,7 +73,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
       ],
       example: "gpt-realtime-2.1"
     }
-  }
+  end
 
   @limits ~w(request_timeout_ms max_request_bytes max_response_bytes max_session_ms)
 
@@ -57,7 +88,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
      socket
      |> assign(
        kind: kind,
-       page: Map.fetch!(@pages, kind),
+       page: page(kind),
        current_path: "/llama/openai/#{kind}",
        editing_id: nil,
        modal_open: false,
@@ -95,7 +126,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
          socket
          |> reset_form()
          |> load()
-         |> put_flash(:info, "API proxy configuration saved")}
+         |> put_flash(:info, dgettext("admin", "API proxy configuration saved"))}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
@@ -105,14 +136,14 @@ defmodule Backplane.Admin.OpenAIProxyLive do
          )}
 
       {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Configuration is no longer available")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Configuration is no longer available"))}
     end
   end
 
   def handle_event("edit", %{"id" => id}, socket) do
     case scoped_service(socket, id) do
       nil ->
-        {:noreply, put_flash(socket, :error, "Configuration not found")}
+        {:noreply, put_flash(socket, :error, dgettext("errors", "Configuration not found"))}
 
       service ->
         values =
@@ -140,9 +171,9 @@ defmodule Backplane.Admin.OpenAIProxyLive do
     with %Service{} = service <- scoped_service(socket, id),
          {:ok, _} <- Service.delete(service) do
       Audit.record("openai_service.delete", "openai_service", id)
-      {:noreply, socket |> reset_form() |> load() |> put_flash(:info, "Configuration deleted")}
+      {:noreply, socket |> reset_form() |> load() |> put_flash(:info, dgettext("admin", "Configuration deleted"))}
     else
-      _ -> {:noreply, put_flash(socket, :error, "Configuration could not be deleted")}
+      _ -> {:noreply, put_flash(socket, :error, dgettext("errors", "Configuration could not be deleted"))}
     end
   end
 
@@ -152,7 +183,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
       Audit.record("openai_service.toggle", "openai_service", id)
       {:noreply, load(socket)}
     else
-      _ -> {:noreply, put_flash(socket, :error, "Configuration could not be changed")}
+      _ -> {:noreply, put_flash(socket, :error, dgettext("errors", "Configuration could not be changed"))}
     end
   end
 
@@ -173,7 +204,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
     assign(socket,
       services: Service.list(socket.assigns.kind),
       providers: providers,
-      provider_options: [{"", "Select a provider"} | Enum.map(providers, &{&1.id, &1.name})]
+      provider_options: [{"", dgettext("admin", "Select a provider")} | Enum.map(providers, &{&1.id, &1.name})]
     )
   end
 
@@ -230,7 +261,7 @@ defmodule Backplane.Admin.OpenAIProxyLive do
 
   defp endpoint(provider) do
     case Enum.find(provider.apis, &(&1.api_surface == :openai)) do
-      nil -> "OpenAI API unavailable"
+      nil -> dgettext("admin", "OpenAI API unavailable")
       api -> api.base_url
     end
   end
@@ -255,90 +286,106 @@ defmodule Backplane.Admin.OpenAIProxyLive do
           </div>
         </div>
         <.dm_btn id="add-openai-service" type="button" variant="primary" phx-click={JS.push("add") |> JS.push_focus()}>
-          Add
+          {dgettext("common", "Add")}
         </.dm_btn>
       </div>
 
       <.dm_alert :if={@kind == :speech} variant="warning" id="speech-deprecation">
-        OpenAI lists tts-1, tts-1-hd and gpt-4o-mini-tts for shutdown on January 6, 2027.
-        Configure Realtime separately for the replacement workflow.
+        {dgettext(
+          "admin",
+          "OpenAI lists tts-1, tts-1-hd and gpt-4o-mini-tts for shutdown on January 6, 2027. Configure Realtime separately for the replacement workflow."
+        )}
       </.dm_alert>
 
       <.dm_card variant="bordered">
-        <:title>Configured routes</:title>
+        <:title>{dgettext("admin", "Configured routes")}</:title>
         <p :if={@services == []} id="openai-services-empty" class="text-sm text-on-surface-variant">
-          No routes configured for this API. Click Add to select a provider and allowed models.
+          {dgettext("admin", "No routes configured for this API. Click Add to select a provider and allowed models.")}
         </p>
         <div :if={@services != []} class="overflow-x-auto">
           <.dm_table style="min-width: 42rem" id="openai-services-table" data={@services} hover zebra>
-            <:col :let={service} label="Provider">
+            <:col :let={service} label={dgettext("admin", "Provider")}>
               <div class="font-medium">{service.provider.name}</div>
-              <div class="text-xs text-on-surface-variant">Credential: {service.provider.credential}</div>
+              <div class="text-xs text-on-surface-variant">{dgettext("admin", "Credential: %{name}", name: service.provider.credential)}</div>
             </:col>
-            <:col :let={service} label="Models">
+            <:col :let={service} label={dgettext("admin", "Models")}>
               <code :for={model <- service.models} class="block text-xs">
                 {service.provider.name}/{model}
               </code>
               <p :if={service.default_model} class="mt-1 text-xs text-on-surface-variant">
-                Default: {service.default_model}
+                {dgettext("admin", "Default: %{model}", model: service.default_model)}
               </p>
             </:col>
-            <:col :let={service} label="Status">
+            <:col :let={service} label={dgettext("common", "Status")}>
               <.dm_badge variant={if service.enabled, do: "success", else: "neutral"}>
-                {if service.enabled, do: "Enabled", else: "Disabled"}
+                {if service.enabled,
+                  do: dgettext("common", "Enabled"),
+                  else: dgettext("common", "Disabled")}
               </.dm_badge>
               <p :if={not service.provider.enabled} class="mt-1 text-xs text-on-surface-variant">
-                Provider disabled
+                {dgettext("admin", "Provider disabled")}
               </p>
               <p :if={not available_api?(@providers, service.provider_id)} class="mt-1 text-xs text-on-surface-variant">
-                OpenAI API or credential unavailable
+                {dgettext("admin", "OpenAI API or credential unavailable")}
               </p>
             </:col>
-            <:col :let={service} label="Actions">
+            <:col :let={service} label={dgettext("common", "Actions")}>
               <div class="flex items-center gap-1">
-                <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Edit")} position="bottom">
                   <.dm_btn {tooltip_attrs}
                     id={"edit-service-#{service.id}"}
                     type="button"
                     size="xs"
                     shape="circle"
                     variant="outline"
-                    aria-label={"Edit #{service.provider.name} route"}
+                    aria-label={dgettext("admin", "Edit %{name} route", name: service.provider.name)}
                     phx-click={JS.push("edit", value: %{id: service.id}) |> JS.push_focus()}
                   >
                     <.dm_mdi name="pencil" class="h-4 w-4" />
-                    <span class="sr-only">Edit</span>
+                    <span class="sr-only">{dgettext("common", "Edit")}</span>
                   </.dm_btn>
                 </.dm_tooltip>
-                <.dm_tooltip :let={tooltip_attrs} content={if service.enabled, do: "Disable", else: "Enable"} position="bottom">
+                <.dm_tooltip :let={tooltip_attrs} content={
+                    if service.enabled,
+                      do: dgettext("common", "Disable"),
+                      else: dgettext("common", "Enable")
+                  } position="bottom">
                   <.dm_btn {tooltip_attrs}
                     id={"toggle-service-#{service.id}"}
                     type="button"
                     size="xs"
                     shape="circle"
                     variant="ghost"
-                    aria-label={"#{if service.enabled, do: "Disable", else: "Enable"} #{service.provider.name} route"}
+                    aria-label={
+                      if service.enabled,
+                        do: dgettext("admin", "Disable %{name} route", name: service.provider.name),
+                        else: dgettext("admin", "Enable %{name} route", name: service.provider.name)
+                    }
                     phx-click="toggle"
                     phx-value-id={service.id}
                   >
                     <.dm_mdi name={if service.enabled, do: "pause", else: "play"} class="h-4 w-4" />
-                    <span class="sr-only">{if service.enabled, do: "Disable", else: "Enable"}</span>
+                    <span class="sr-only">
+                      {if service.enabled,
+                        do: dgettext("common", "Disable"),
+                        else: dgettext("common", "Enable")}
+                    </span>
                   </.dm_btn>
                 </.dm_tooltip>
-                <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "Delete")} position="bottom">
                   <.dm_btn {tooltip_attrs}
                     id={"delete-service-#{service.id}"}
                     type="button"
                     size="xs"
                     shape="circle"
                     variant="error"
-                    aria-label={"Delete #{service.provider.name} route"}
+                    aria-label={dgettext("admin", "Delete %{name} route", name: service.provider.name)}
                     phx-click="delete"
                     phx-value-id={service.id}
-                    data-confirm="Delete this API proxy configuration?"
+                    data-confirm={dgettext("admin", "Delete this API proxy configuration?")}
                   >
                     <.dm_mdi name="delete" class="h-4 w-4" />
-                    <span class="sr-only">Delete</span>
+                    <span class="sr-only">{dgettext("common", "Delete")}</span>
                   </.dm_btn>
                 </.dm_tooltip>
               </div>
@@ -354,46 +401,52 @@ defmodule Backplane.Admin.OpenAIProxyLive do
         phx-hook="OpenAIServiceModal"
         phx-remove={JS.pop_focus()}
       >
-        <:title>{if @editing_id, do: "Edit route", else: "Add route"}</:title>
+        <:title>
+          {if @editing_id,
+            do: dgettext("admin", "Edit route"),
+            else: dgettext("admin", "Add route")}
+        </:title>
         <:body>
           <p class="mb-4 text-sm text-on-surface-variant">
-            The provider owns the API endpoint and credential. Each API has its own allowed models and enablement.
-            <.link navigate={~p"/llama/providers"} class="text-primary underline">Manage providers</.link>
+            {dgettext("admin", "The provider owns the API endpoint and credential. Each API has its own allowed models and enablement.")}
+            <.link navigate={~p"/llama/providers"} class="text-primary underline">{dgettext("admin", "Manage providers")}</.link>
           </p>
           <.dm_alert :if={@providers == []} variant="info">
-            Add a provider with an OpenAI API surface and an API-key credential first.
+            {dgettext("admin", "Add a provider with an OpenAI API surface and an API-key credential first.")}
           </.dm_alert>
           <div :if={@errors != []} id="openai-service-errors" role="alert" class="mb-4 text-sm text-error">
             <p :for={error <- @errors}>{error}</p>
           </div>
           <.form for={@form} id="openai-service-form" phx-submit="save" class="space-y-4">
-            <.dm_select field={@form[:provider_id]} label="Provider" options={@provider_options} autofocus />
-            <.dm_textarea field={@form[:models_text]} label="Allowed model IDs (one per line)" placeholder={@page.example} rows={3} />
-            <.dm_input field={@form[:default_model]} label="Default model (optional)" />
+            <.dm_select field={@form[:provider_id]} label={dgettext("admin", "Provider")} options={@provider_options} autofocus />
+            <.dm_textarea field={@form[:models_text]} label={dgettext("admin", "Allowed model IDs (one per line)")} placeholder={@page.example} rows={3} />
+            <.dm_input field={@form[:default_model]} label={dgettext("admin", "Default model (optional)")} />
             <p class="text-xs text-on-surface-variant">
-              Send provider/model to select a route explicitly. An omitted model requires an unambiguous configured default.
+              {dgettext("admin", "Send provider/model to select a route explicitly. An omitted model requires an unambiguous configured default.")}
             </p>
             <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <.dm_input field={@form[:request_timeout_ms]} type="number" label="Request timeout (ms)" min="1000" />
-              <.dm_input field={@form[:max_request_bytes]} type="number" label="Maximum upload (bytes)" min="1024" />
-              <.dm_input field={@form[:max_response_bytes]} type="number" label="Maximum output (bytes)" min="1024" />
-              <.dm_input :if={@kind == :realtime} field={@form[:max_session_ms]} type="number" label="Session lifetime (ms)" min="1000" />
+              <.dm_input field={@form[:request_timeout_ms]} type="number" label={dgettext("admin", "Request timeout (ms)")} min="1000" />
+              <.dm_input field={@form[:max_request_bytes]} type="number" label={dgettext("admin", "Maximum upload (bytes)")} min="1024" />
+              <.dm_input field={@form[:max_response_bytes]} type="number" label={dgettext("admin", "Maximum output (bytes)")} min="1024" />
+              <.dm_input :if={@kind == :realtime} field={@form[:max_session_ms]} type="number" label={dgettext("admin", "Session lifetime (ms)")} min="1000" />
             </div>
             <p :if={@kind == :realtime} class="text-xs text-on-surface-variant">
-              Upload and output limits apply to cumulative WebSocket traffic per session. WebRTC media travels directly to OpenAI.
-              Request timeout applies to HTTP setup; WebSocket connection and write deadlines are fixed.
+              {dgettext(
+                "admin",
+                "Upload and output limits apply to cumulative WebSocket traffic per session. WebRTC media travels directly to OpenAI. Request timeout applies to HTTP setup; WebSocket connection and write deadlines are fixed."
+              )}
             </p>
             <input :if={@kind != :realtime} type="hidden" name="service[max_session_ms]" value={@form[:max_session_ms].value} />
             <div class="flex gap-2">
-              <.dm_btn type="submit" variant="primary">Save configuration</.dm_btn>
-              <.dm_btn id="cancel-openai-service" type="button" variant="ghost" command="close" commandfor="openai-service-modal">Cancel</.dm_btn>
+              <.dm_btn type="submit" variant="primary">{dgettext("admin", "Save configuration")}</.dm_btn>
+              <.dm_btn id="cancel-openai-service" type="button" variant="ghost" command="close" commandfor="openai-service-modal">{dgettext("common", "Cancel")}</.dm_btn>
             </div>
           </.form>
         </:body>
       </.dm_modal>
 
       <.dm_card :if={@providers != []} variant="bordered">
-        <:title>Provider connections</:title>
+        <:title>{dgettext("admin", "Provider connections")}</:title>
         <div :for={provider <- @providers} class="mb-3 text-sm">
           <span class="font-medium">{provider.name}</span>
           <span class="text-on-surface-variant"> · {provider.credential}</span>

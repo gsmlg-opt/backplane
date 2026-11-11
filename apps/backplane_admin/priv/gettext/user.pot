@@ -1,0 +1,903 @@
+## This file is a PO Template file.
+##
+## "msgid"s here are often extracted from source code.
+## Add new messages manually only if they're dynamic
+## messages that can't be statically extracted.
+##
+## Run "mix gettext.extract" to bring this file up to
+## date. Leave "msgstr"s empty as changing them here has no
+## effect: edit them in PO (.po) files instead.
+#
+msgid ""
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:787
+#, elixir-autogen, elixir-format
+msgid "/.well-known/openid-configuration advertises issuer metadata."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:793
+#, elixir-autogen, elixir-format
+msgid "/oauth/authorize issues codes only after local user login."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:805
+#, elixir-autogen, elixir-format
+msgid "/oauth/userinfo resolves active bearer tokens to local auth users."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:799
+#, elixir-autogen, elixir-format
+msgid "Access tokens are RS256 signed and backed by server-side revocation state."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:90
+#, elixir-autogen, elixir-format
+msgid "Actor"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:56
+#, elixir-autogen, elixir-format
+msgid "All severities"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:829
+#, elixir-autogen, elixir-format
+msgid "Applications allowed to request Backplane Auth authorization codes and tokens."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:261
+#, elixir-autogen, elixir-format
+msgid "Assign Role"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:238
+#, elixir-autogen, elixir-format
+msgid "Assignments"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:38
+#, elixir-autogen, elixir-format
+msgid "Audit Events"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:69
+#, elixir-autogen, elixir-format
+msgid "Auth"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:31
+#, elixir-autogen, elixir-format
+msgid "Auth Audit"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:278
+#, elixir-autogen, elixir-format
+msgid "Auth Inventory"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:547
+#, elixir-autogen, elixir-format
+msgid "Auth Tokens"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:233
+#, elixir-autogen, elixir-format
+msgid "Auth session revoked."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:237
+#, elixir-autogen, elixir-format
+msgid "Auth session was not found."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:43
+#, elixir-autogen, elixir-format
+msgid "Auth user created."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:59
+#, elixir-autogen, elixir-format
+msgid "Auth user disabled."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:722
+#, elixir-autogen, elixir-format
+msgid "Authorization Endpoint"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:256
+#, elixir-autogen, elixir-format
+msgid "Authorization Server"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:792
+#, elixir-autogen, elixir-format
+msgid "Authorization code + PKCE"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:764
+#, elixir-autogen, elixir-format
+msgid "Authorize and token requests must use a registered URI."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:635
+#, elixir-autogen, elixir-format
+msgid "Backplane Behavior"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:292
+#, elixir-autogen, elixir-format
+msgid "Backplane OAuth Provider"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:280
+#, elixir-autogen, elixir-format
+msgid "Bearer Token — copy now, shown only once"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:547
+#, elixir-autogen, elixir-format
+msgid "Browser Sessions"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:294
+#: lib/backplane/admin/live/auth_oauth_live.ex:632
+#, elixir-autogen, elixir-format
+msgid "Capability"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:836
+#, elixir-autogen, elixir-format
+msgid "Choose which Backplane protected resources this OAuth client may access."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:365
+#: lib/backplane/admin/live/auth_oauth_live.ex:512
+#, elixir-autogen, elixir-format
+msgid "Client"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:152
+#, elixir-autogen, elixir-format
+msgid "Client %{name} created"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:111
+#, elixir-autogen, elixir-format
+msgid "Client %{name} deleted"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:170
+#, elixir-autogen, elixir-format
+msgid "Client %{name} updated"
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_live.ex:179
+#, elixir-autogen, elixir-format
+msgid "Client ID:"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:810
+#, elixir-autogen, elixir-format
+msgid "Client credentials grant"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:312
+#, elixir-autogen, elixir-format
+msgid "Client name"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:356
+#, elixir-autogen, elixir-format
+msgid "Client secret for %{name}"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:693
+#, elixir-autogen, elixir-format
+msgid "Clients"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:329
+#: lib/backplane/admin/live/auth_oauth_live.ex:373
+#, elixir-autogen, elixir-format
+msgid "Confidential"
+msgstr ""
+
+#: lib/backplane/admin/controllers/oauth_callback_controller.ex:63
+#, elixir-autogen, elixir-format
+msgid "Connected %{vendor} as '%{name}'"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:348
+#, elixir-autogen, elixir-format
+msgid "Create Client"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:206
+#, elixir-autogen, elixir-format
+msgid "Create Role"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:606
+#, elixir-autogen, elixir-format
+msgid "Create Scope"
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:604
+#: lib/backplane/admin/live/host_agents_live.ex:612
+#, elixir-autogen, elixir-format
+msgid "Create Token"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:148
+#, elixir-autogen, elixir-format
+msgid "Create User"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:221
+#, elixir-autogen, elixir-format
+msgid "Custom"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:338
+#, elixir-autogen, elixir-format
+msgid "Delete client %{name}? This cannot be undone."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:177
+#, elixir-autogen, elixir-format
+msgid "Disable Auth user %{email}?"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:447
+#, elixir-autogen, elixir-format
+msgid "Disable OAuth client %{name}?"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:139
+#, elixir-autogen, elixir-format
+msgid "Display name"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:228
+#, elixir-autogen, elixir-format
+msgid "Edit Client"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:835
+#, elixir-autogen, elixir-format
+msgid "Edit OAuth Client"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:460
+#, elixir-autogen, elixir-format
+msgid "Edit OAuth Client Resources"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:285
+#, elixir-autogen, elixir-format
+msgid "Effective Scopes"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:759
+#: lib/backplane/admin/live/auth_oauth_live.ex:765
+#: lib/backplane/admin/live/auth_oauth_live.ex:771
+#: lib/backplane/admin/live/auth_oauth_live.ex:777
+#, elixir-autogen, elixir-format
+msgid "Enforced"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:494
+#, elixir-autogen, elixir-format
+msgid "Enforcement"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:83
+#, elixir-autogen, elixir-format
+msgid "Event"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:49
+#, elixir-autogen, elixir-format
+msgid "Event type"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:254
+#, elixir-autogen, elixir-format
+msgid "Examples: * (all), skill::* (all skill tools), math::evaluate (single tool)"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:977
+#, elixir-autogen, elixir-format
+msgid "Expired"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:524
+#: lib/backplane/admin/live/auth_oauth_live.ex:564
+#, elixir-autogen, elixir-format
+msgid "Expires"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:417
+#, elixir-autogen, elixir-format
+msgid "Identity only"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:858
+#, elixir-autogen, elixir-format
+msgid "Implemented OAuth and OIDC protocol capabilities."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:775
+#, elixir-autogen, elixir-format
+msgid "Implicit flow disabled"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:144
+#, elixir-autogen, elixir-format
+msgid "Initial password"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:740
+#, elixir-autogen, elixir-format
+msgid "Introspection Endpoint"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:267
+#, elixir-autogen, elixir-format
+msgid "Issue Token"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:502
+#, elixir-autogen, elixir-format
+msgid "Issued Tokens"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:866
+#, elixir-autogen, elixir-format
+msgid "Issued authorization codes, access tokens, refresh-token families, and revocation state."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:717
+#, elixir-autogen, elixir-format
+msgid "Issuer"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:798
+#, elixir-autogen, elixir-format
+msgid "JWT access tokens"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:198
+#, elixir-autogen, elixir-format
+msgid "Label"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:166
+#, elixir-autogen, elixir-format
+msgid "Last Login"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:319
+#, elixir-autogen, elixir-format
+msgid "Last seen: %{time}"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:335
+#, elixir-autogen, elixir-format
+msgid "Local Backplane Auth users who can authorize first-party OAuth clients."
+msgstr ""
+
+#: lib/backplane/admin/live/dashboard_client_usage_live.ex:101
+#, elixir-autogen, elixir-format
+msgid "Manage clients"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:96
+#, elixir-autogen, elixir-format
+msgid "Metadata"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:221
+#: lib/backplane/admin/live/clients_live.ex:227
+#, elixir-autogen, elixir-format
+msgid "New Client"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:79
+#, elixir-autogen, elixir-format
+msgid "No Auth audit events recorded."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:361
+#, elixir-autogen, elixir-format
+msgid "No OAuth clients registered."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:611
+#, elixir-autogen, elixir-format
+msgid "No OAuth scopes configured."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:504
+#, elixir-autogen, elixir-format
+msgid "No OAuth tokens issued."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:211
+#, elixir-autogen, elixir-format
+msgid "No RBAC roles configured."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:549
+#, elixir-autogen, elixir-format
+msgid "No browser Auth sessions."
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:288
+#, elixir-autogen, elixir-format
+msgid "No clients configured. Create a client to issue a scoped access token."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:153
+#, elixir-autogen, elixir-format
+msgid "No local Auth users."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:266
+#, elixir-autogen, elixir-format
+msgid "No role assignments configured."
+msgstr ""
+
+#: lib/backplane/admin/live/host_agents_live.ex:551
+#, elixir-autogen, elixir-format
+msgid "No tokens assigned."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:811
+#, elixir-autogen, elixir-format
+msgid "Not exposed in the first release."
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:307
+#, elixir-autogen, elixir-format
+msgid "Not issued"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:827
+#, elixir-autogen, elixir-format
+msgid "OAuth Clients"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:842
+#, elixir-autogen, elixir-format
+msgid "OAuth Providers"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:872
+#, elixir-autogen, elixir-format
+msgid "OAuth Scopes"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:864
+#, elixir-autogen, elixir-format
+msgid "OAuth Tokens"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:85
+#, elixir-autogen, elixir-format
+msgid "OAuth client could not be created."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:68
+#: lib/backplane/admin/live/auth_oauth_live.ex:77
+#, elixir-autogen, elixir-format
+msgid "OAuth client created."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:143
+#, elixir-autogen, elixir-format
+msgid "OAuth client disabled."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:122
+#, elixir-autogen, elixir-format
+msgid "OAuth client resources could not be updated."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:115
+#, elixir-autogen, elixir-format
+msgid "OAuth client resources updated."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:851
+#, elixir-autogen, elixir-format
+msgid "OAuth client safety rules enforced by Backplane Auth."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:173
+#, elixir-autogen, elixir-format
+msgid "OAuth client secret could not be rotated."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:168
+#, elixir-autogen, elixir-format
+msgid "OAuth client secret rotated."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:45
+#: lib/backplane/admin/live/auth_oauth_live.ex:147
+#, elixir-autogen, elixir-format
+msgid "OAuth client was not found."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:242
+#, elixir-autogen, elixir-format
+msgid "OAuth protected resources require an HTTPS API origin."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:198
+#, elixir-autogen, elixir-format
+msgid "OAuth scope could not be created."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:194
+#, elixir-autogen, elixir-format
+msgid "OAuth scope created."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:218
+#, elixir-autogen, elixir-format
+msgid "OAuth token revoked."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:222
+#, elixir-autogen, elixir-format
+msgid "OAuth token was not found."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:786
+#, elixir-autogen, elixir-format
+msgid "OIDC discovery"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:776
+#, elixir-autogen, elixir-format
+msgid "Only authorization code and refresh-token grants are exposed."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:33
+#, elixir-autogen, elixir-format
+msgid "Persisted security events from the Backplane Auth provider."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:491
+#, elixir-autogen, elixir-format
+msgid "Policy"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:623
+#, elixir-autogen, elixir-format
+msgid "Private"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:844
+#, elixir-autogen, elixir-format
+msgid "Provider metadata for Backplane's built-in OAuth and OIDC authorization server."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:374
+#: lib/backplane/admin/live/auth_oauth_live.ex:603
+#: lib/backplane/admin/live/auth_oauth_live.ex:622
+#, elixir-autogen, elixir-format
+msgid "Public"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:757
+#, elixir-autogen, elixir-format
+msgid "Public clients require PKCE"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:344
+#, elixir-autogen, elixir-format
+msgid "RBAC Roles"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:333
+#, elixir-autogen, elixir-format
+msgid "RBAC Users"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:107
+#, elixir-autogen, elixir-format
+msgid "RBAC role assigned."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:80
+#, elixir-autogen, elixir-format
+msgid "RBAC role created."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:99
+#, elixir-autogen, elixir-format
+msgid "Recorded"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:386
+#, elixir-autogen, elixir-format
+msgid "Redirect URIs"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:763
+#, elixir-autogen, elixir-format
+msgid "Redirect URIs match exactly"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:769
+#, elixir-autogen, elixir-format
+msgid "Refresh tokens rotate"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:307
+#, elixir-autogen, elixir-format
+msgid "Registered Clients"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:758
+#, elixir-autogen, elixir-format
+msgid "Rejected at client registration and token exchange."
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:264
+#, elixir-autogen, elixir-format
+msgid "Replace this client's token now? Its current token will stop working."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:403
+#, elixir-autogen, elixir-format
+msgid "Resources"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:770
+#, elixir-autogen, elixir-format
+msgid "Reuse revokes the token family."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:746
+#, elixir-autogen, elixir-format
+msgid "Revocation Endpoint"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:537
+#: lib/backplane/admin/live/auth_oauth_live.ex:577
+#, elixir-autogen, elixir-format
+msgid "Revoke"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:575
+#, elixir-autogen, elixir-format
+msgid "Revoke this Auth session?"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:535
+#, elixir-autogen, elixir-format
+msgid "Revoke this OAuth token?"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:976
+#, elixir-autogen, elixir-format
+msgid "Revoked"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:215
+#: lib/backplane/admin/live/auth_rbac_live.ex:274
+#, elixir-autogen, elixir-format
+msgid "Role"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:351
+#, elixir-autogen, elixir-format
+msgid "Role Assignments"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:278
+#, elixir-autogen, elixir-format
+msgid "Role Scopes"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:345
+#, elixir-autogen, elixir-format
+msgid "Role definitions and the OAuth scopes they grant."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:187
+#, elixir-autogen, elixir-format
+msgid "Roles"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:438
+#, elixir-autogen, elixir-format
+msgid "Rotate"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:268
+#, elixir-autogen, elixir-format
+msgid "Rotate Token"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:436
+#, elixir-autogen, elixir-format
+msgid "Rotate secret for %{name}?"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:483
+#, elixir-autogen, elixir-format
+msgid "Save Resources"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:615
+#, elixir-autogen, elixir-format
+msgid "Scope"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:587
+#, elixir-autogen, elixir-format
+msgid "Scope Catalog"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:873
+#, elixir-autogen, elixir-format
+msgid "Scope catalog used by OAuth clients and RBAC role grants."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:396
+#: lib/backplane/admin/live/auth_oauth_live.ex:518
+#: lib/backplane/admin/live/auth_oauth_live.ex:698
+#: lib/backplane/admin/live/auth_rbac_live.ex:224
+#, elixir-autogen, elixir-format
+msgid "Scopes"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:244
+#, elixir-autogen, elixir-format
+msgid "Scopes (comma-separated)"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:71
+#, elixir-autogen, elixir-format
+msgid "Search ids"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:257
+#, elixir-autogen, elixir-format
+msgid "Select role"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:249
+#, elixir-autogen, elixir-format
+msgid "Select user"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:553
+#, elixir-autogen, elixir-format
+msgid "Session"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:87
+#, elixir-autogen, elixir-format
+msgid "Severity"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:821
+#, elixir-autogen, elixir-format
+msgid "Standalone Backplane OAuth provider inventory and runtime status."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:515
+#, elixir-autogen, elixir-format
+msgid "Subject"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:221
+#, elixir-autogen, elixir-format
+msgid "System"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:93
+#, elixir-autogen, elixir-format
+msgid "Target"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:64
+#, elixir-autogen, elixir-format
+msgid "Target type"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:508
+#, elixir-autogen, elixir-format
+msgid "Token"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:728
+#, elixir-autogen, elixir-format
+msgid "Token Endpoint"
+msgstr ""
+
+#: lib/backplane/admin/live/clients_live.ex:133
+#, elixir-autogen, elixir-format
+msgid "Token replaced for %{name}"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:703
+#, elixir-autogen, elixir-format
+msgid "Tokens"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:948
+#, elixir-autogen, elixir-format
+msgid "Unknown client"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:957
+#, elixir-autogen, elixir-format
+msgid "Unknown subject"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:557
+#: lib/backplane/admin/live/auth_rbac_live.ex:157
+#: lib/backplane/admin/live/auth_rbac_live.ex:270
+#, elixir-autogen, elixir-format
+msgid "User"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_rbac_live.ex:352
+#, elixir-autogen, elixir-format
+msgid "User-to-role bindings with effective OAuth scope previews."
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:804
+#, elixir-autogen, elixir-format
+msgid "UserInfo"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:734
+#, elixir-autogen, elixir-format
+msgid "UserInfo Endpoint"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:708
+#: lib/backplane/admin/live/auth_rbac_live.ex:128
+#, elixir-autogen, elixir-format
+msgid "Users"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:619
+#, elixir-autogen, elixir-format
+msgid "Visibility"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:705
+#, elixir-autogen, elixir-format
+msgid "active access grants"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:700
+#, elixir-autogen, elixir-format
+msgid "grantable permissions"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:710
+#, elixir-autogen, elixir-format
+msgid "local auth users"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_oauth_live.ex:695
+#, elixir-autogen, elixir-format
+msgid "registered OAuth apps"
+msgstr ""
+
+#: lib/backplane/admin/live/auth_audit_live.ex:108
+#, elixir-autogen, elixir-format
+msgid "system"
+msgstr ""

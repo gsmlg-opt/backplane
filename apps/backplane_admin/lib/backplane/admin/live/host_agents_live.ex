@@ -3,16 +3,7 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   alias Backplane.Skills.{AgentManage, AgentPlugins, DesiredState, Host, Hosts}
 
-  @tabs [
-    {"overview", "Overview"},
-    {"auth", "Auth"},
-    {"config", "Config"},
-    {"plugin", "Plugin"},
-    {"desired", "Desired State"},
-    {"sync", "Sync/MCP"},
-    {"danger", "Danger"}
-  ]
-  @tab_ids Enum.map(@tabs, &elem(&1, 0))
+  @tab_ids ["overview", "auth", "config", "plugin", "desired", "sync", "danger"]
   @default_tab "overview"
   @memory_plugin_rows [
     %{
@@ -54,7 +45,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     {:ok,
      assign(socket,
        current_path: "/system/host-agents",
-       tabs: @tabs,
+       tabs: tabs(),
        agents: [],
        entry: nil,
        active_tab: "overview",
@@ -70,6 +61,18 @@ defmodule Backplane.Admin.HostAgentsLive do
        plugin_result: nil,
        plugin_error: nil
      )}
+  end
+
+  defp tabs do
+    [
+      {"overview", dgettext("admin", "Overview")},
+      {"auth", dgettext("user", "Auth")},
+      {"config", dgettext("admin", "Config")},
+      {"plugin", dgettext("admin", "Plugin")},
+      {"desired", dgettext("admin", "Desired State")},
+      {"sync", dgettext("admin", "Sync/MCP")},
+      {"danger", dgettext("admin", "Danger")}
+    ]
   end
 
   @impl true
@@ -128,7 +131,7 @@ defmodule Backplane.Admin.HostAgentsLive do
         {:noreply,
          assign(socket,
            plugin_statuses: statuses,
-           plugin_result: "Plugin status refreshed",
+           plugin_result: dgettext("admin", "Plugin status refreshed"),
            plugin_error: nil
          )}
 
@@ -190,8 +193,8 @@ defmodule Backplane.Admin.HostAgentsLive do
     params =
       params
       |> normalize_token_params()
-      |> Map.update("name", "#{entry.host.name} token", fn
-        "" -> "#{entry.host.name} token"
+      |> Map.update("name", default_token_name(entry.host), fn
+        "" -> default_token_name(entry.host)
         name -> name
       end)
 
@@ -216,7 +219,7 @@ defmodule Backplane.Admin.HostAgentsLive do
          assign(socket, revealed_token: %{token_id: id, value: token}, token_error: nil)}
 
       {:error, _reason} ->
-        {:noreply, assign(socket, token_error: "Unable to reveal token")}
+        {:noreply, assign(socket, token_error: dgettext("errors", "Unable to reveal token"))}
     end
   end
 
@@ -231,7 +234,7 @@ defmodule Backplane.Admin.HostAgentsLive do
          |> load_show(entry.host.id, socket.assigns.active_tab)}
 
       {:error, _reason} ->
-        {:noreply, assign(socket, token_error: "Unable to revoke token")}
+        {:noreply, assign(socket, token_error: dgettext("errors", "Unable to revoke token"))}
     end
   end
 
@@ -254,11 +257,17 @@ defmodule Backplane.Admin.HostAgentsLive do
 
         {:error, _changeset} ->
           {:noreply,
-           assign(socket, delete_modal_open: true, delete_error: "Failed to delete agent")}
+           assign(socket,
+             delete_modal_open: true,
+             delete_error: dgettext("errors", "Failed to delete agent")
+           )}
       end
     else
       {:noreply,
-       assign(socket, delete_modal_open: true, delete_error: "Type the agent name to confirm")}
+       assign(socket,
+         delete_modal_open: true,
+         delete_error: dgettext("errors", "Type the agent name to confirm")
+       )}
     end
   end
 
@@ -268,7 +277,7 @@ defmodule Backplane.Admin.HostAgentsLive do
     <div>
       <div class="mb-6">
         <.link navigate={~p"/system/host-agents"} class="text-sm text-primary underline">
-          Host Agents
+          {dgettext("navigation", "Host Agents")}
         </.link>
         <div class="mt-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -282,7 +291,7 @@ defmodule Backplane.Admin.HostAgentsLive do
       </div>
 
       <.link id="host-api-services-link" navigate={~p"/system/host-agents/#{@entry.host.id}/services"} class="mb-4 inline-block text-sm text-primary">
-        Configure API Services
+        {dgettext("admin", "Configure API Services")}
       </.link>
 
       <div class="mb-6 flex flex-wrap gap-2 border-b border-outline-variant pb-2">
@@ -332,9 +341,9 @@ defmodule Backplane.Admin.HostAgentsLive do
     <div>
       <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 class="text-2xl font-bold">Host Agent Management</h1>
+          <h1 class="text-2xl font-bold">{dgettext("navigation", "Host Agent Management")}</h1>
           <p class="mt-1 text-sm text-on-surface-variant">
-            Durable host agents, their cached manager state, and the latest live connection metadata.
+            {dgettext("admin", "Durable host agents, their cached manager state, and the latest live connection metadata.")}
           </p>
         </div>
 
@@ -345,7 +354,7 @@ defmodule Backplane.Admin.HostAgentsLive do
           size="sm"
           phx-click="open_agent_modal"
         >
-          Add Agent
+          {dgettext("admin", "Add Agent")}
         </.dm_btn>
       </div>
 
@@ -355,20 +364,20 @@ defmodule Backplane.Admin.HostAgentsLive do
         <table id="host-agents-table" class="min-w-full text-sm">
           <thead class="bg-surface-container-high text-on-surface">
             <tr>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Connect IP</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Agent Version</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Targets</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Last Connected</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Last Sync</th>
-              <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Name")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Connect IP")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Agent Version")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Targets")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Last Connected")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Last Sync")}</th>
+              <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Actions")}</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-outline-variant">
             <tr :if={@agents == []}>
               <td colspan="8" class="px-3 py-6 text-center text-on-surface-variant">
-                No host agents registered.
+                {dgettext("admin", "No host agents registered.")}
               </td>
             </tr>
             <tr :for={entry <- @agents} class="hover:bg-surface-container-high">
@@ -386,14 +395,14 @@ defmodule Backplane.Admin.HostAgentsLive do
               <td class="px-3 py-2 align-top">{relative_time(entry.connected_at)}</td>
               <td class="px-3 py-2 align-top">{relative_time(entry.last_sync)}</td>
               <td class="px-3 py-2 align-top">
-                <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
+                <.dm_tooltip :let={tooltip_attrs} content={dgettext("common", "View")} position="bottom">
                   <.dm_btn
                     {tooltip_attrs}
                     navigate={~p"/system/host-agents/#{entry.host.id}/overview"}
                     size="xs"
                     shape="circle"
                     variant="outline"
-                    aria-label={"View #{entry.host.name} host agent"}
+                    aria-label={dgettext("admin", "View %{name} host agent", name: entry.host.name)}
                   >
                     <.dm_mdi name="eye" class="w-4 h-4" />
                   </.dm_btn>
@@ -431,7 +440,7 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   defp load_show(socket, nil, _tab) do
     socket
-    |> put_flash(:error, "Host agent not found")
+    |> put_flash(:error, dgettext("errors", "Host agent not found"))
     |> push_navigate(to: ~p"/system/host-agents")
   end
 
@@ -483,41 +492,46 @@ defmodule Backplane.Admin.HostAgentsLive do
     ~H"""
     <div class="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
       <.dm_card variant="bordered">
-        <:title>Overview</:title>
+        <:title>{dgettext("admin", "Overview")}</:title>
         <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
           <div>
-            <dt class="font-medium">Status</dt>
+            <dt class="font-medium">{dgettext("common", "Status")}</dt>
             <dd class="text-on-surface-variant">{status_label(@entry.status)}</dd>
           </div>
           <div>
-            <dt class="font-medium">Connect IP</dt>
+            <dt class="font-medium">{dgettext("admin", "Connect IP")}</dt>
             <dd class="text-on-surface-variant">{connect_ip(@entry)}</dd>
           </div>
           <div>
-            <dt class="font-medium">IP Source</dt>
+            <dt class="font-medium">{dgettext("admin", "IP Source")}</dt>
             <dd class="text-on-surface-variant">{@entry.connect_ip_source || "-"}</dd>
           </div>
           <div>
-            <dt class="font-medium">Agent Version</dt>
+            <dt class="font-medium">{dgettext("admin", "Agent Version")}</dt>
             <dd class="text-on-surface-variant">{agent_version(@entry)}</dd>
           </div>
           <div>
-            <dt class="font-medium">Targets</dt>
+            <dt class="font-medium">{dgettext("admin", "Targets")}</dt>
             <dd class="text-on-surface-variant">{targets_summary(@entry)}</dd>
           </div>
           <div>
-            <dt class="font-medium">Connected</dt>
+            <dt class="font-medium">{dgettext("admin", "Connected")}</dt>
             <dd class="text-on-surface-variant">{relative_time(@entry.connected_at)}</dd>
           </div>
         </dl>
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Name</:title>
+        <:title>{dgettext("common", "Name")}</:title>
         <form id="agent-name-form" phx-submit="rename_agent" class="space-y-4">
-          <.dm_input id="agent-name" name="agent[name]" label="Name" value={@entry.host.name} />
+          <.dm_input
+            id="agent-name"
+            name="agent[name]"
+            label={dgettext("common", "Name")}
+            value={@entry.host.name}
+          />
           <p :if={@error} class="text-sm text-error">{@error}</p>
-          <.dm_btn type="submit" variant="primary" size="sm">Save</.dm_btn>
+          <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Save")}</.dm_btn>
         </form>
       </.dm_card>
     </div>
@@ -530,19 +544,19 @@ defmodule Backplane.Admin.HostAgentsLive do
       <.token_notice :if={@revealed_token} generated_token={%{value: @revealed_token.value}} />
 
       <.dm_card variant="bordered">
-        <:title>Auth Tokens</:title>
+        <:title>{dgettext("user", "Auth Tokens")}</:title>
         <p :if={@error} class="mb-3 text-sm text-error">{@error}</p>
 
         <div :if={@entry.tokens == []} class="text-sm text-on-surface-variant">
-          No tokens assigned.
+          {dgettext("user", "No tokens assigned.")}
         </div>
 
         <div :if={@entry.tokens != []} class="overflow-x-auto">
           <table id="agent-auth-table" class="min-w-full text-sm">
             <thead class="bg-surface-container-high text-on-surface">
               <tr>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Name</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Name")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Actions")}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-outline-variant">
@@ -550,28 +564,28 @@ defmodule Backplane.Admin.HostAgentsLive do
                 <td class="px-3 py-2 align-top">{token.name}</td>
                 <td class="px-3 py-2 align-top">
                   <div class="flex flex-wrap gap-1">
-                    <.dm_tooltip :let={tooltip_attrs} content="Reveal" position="bottom">
+                    <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Reveal")} position="bottom">
                       <.dm_btn {tooltip_attrs}
                         id={"reveal-token-#{token.id}"}
                         type="button"
                         variant="outline"
                         size="xs"
                         shape="circle"
-                        aria-label={"Reveal #{token.name} token"}
+                        aria-label={dgettext("admin", "Reveal %{name} token", name: token.name)}
                         phx-click="reveal_token"
                         phx-value-id={token.id}
                       >
                         <.dm_mdi name="eye" class="w-4 h-4" />
                       </.dm_btn>
                     </.dm_tooltip>
-                    <.dm_tooltip :let={tooltip_attrs} content="Revoke" position="bottom">
+                    <.dm_tooltip :let={tooltip_attrs} content={dgettext("admin", "Revoke")} position="bottom">
                       <.dm_btn {tooltip_attrs}
                         id={"revoke-token-#{token.id}"}
                         type="button"
                         variant="error"
                         size="xs"
                         shape="circle"
-                        aria-label={"Revoke #{token.name} token"}
+                        aria-label={dgettext("admin", "Revoke %{name} token", name: token.name)}
                         phx-click="revoke_token"
                         phx-value-id={token.id}
                       >
@@ -587,10 +601,15 @@ defmodule Backplane.Admin.HostAgentsLive do
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Create Token</:title>
+        <:title>{dgettext("user", "Create Token")}</:title>
         <form id="create-agent-token-form" phx-submit="create_token" class="space-y-4">
-          <.dm_input id="token-name" name="token[name]" label="Name" value={"#{@entry.host.name} token"} />
-          <.dm_btn type="submit" variant="primary" size="sm">Create Token</.dm_btn>
+          <.dm_input
+            id="token-name"
+            name="token[name]"
+            label={dgettext("common", "Name")}
+            value={default_token_name(@entry.host)}
+          />
+          <.dm_btn type="submit" variant="primary" size="sm">{dgettext("user", "Create Token")}</.dm_btn>
         </form>
       </.dm_card>
     </div>
@@ -601,10 +620,10 @@ defmodule Backplane.Admin.HostAgentsLive do
     ~H"""
     <div class="space-y-6">
       <.dm_card variant="bordered">
-        <:title>Setup Example</:title>
+        <:title>{dgettext("admin", "Setup Example")}</:title>
         <div class="space-y-4 text-sm">
           <p class="text-on-surface-variant">
-            Use this host ID with an assigned token on the host agent.
+            {dgettext("admin", "Use this host ID with an assigned token on the host agent.")}
           </p>
           <pre
             id="setup-example-yaml"
@@ -614,15 +633,15 @@ defmodule Backplane.Admin.HostAgentsLive do
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Reported Config</:title>
+        <:title>{dgettext("admin", "Reported Config")}</:title>
         <div :if={is_nil(@entry.config)} class="text-sm text-on-surface-variant">
-          Config not reported yet.
+          {dgettext("admin", "Config not reported yet.")}
         </div>
 
         <div :if={@entry.config} class="space-y-4">
-          <p :if={config_stale?(@entry)} id="host-report-stale" class="text-sm text-warning">Last-known report; stale since disconnect or reconnect.</p>
+          <p :if={config_stale?(@entry)} id="host-report-stale" class="text-sm text-warning">{dgettext("admin", "Last-known report; stale since disconnect or reconnect.")}</p>
           <dl class="space-y-2 text-sm">
-            <div id="host-local-settings-report"><dt class="font-medium">Local settings applied</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || "Unavailable"}</dd><dd>Report received: {report_timestamp(Map.get(@entry, :config_reported_at))}</dd></div>
+            <div id="host-local-settings-report"><dt class="font-medium">{dgettext("admin", "Local settings applied")}</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || dgettext("admin", "Unavailable")}</dd><dd>{dgettext("admin", "Report received: %{time}", time: report_timestamp(Map.get(@entry, :config_reported_at)))}</dd></div>
           </dl>
           <pre
             id="reported-config-yaml"
@@ -644,13 +663,13 @@ defmodule Backplane.Admin.HostAgentsLive do
     ~H"""
     <div class="space-y-6">
       <.dm_card variant="bordered">
-        <:title>Packaged Plugins</:title>
+        <:title>{dgettext("admin", "Packaged Plugins")}</:title>
         <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div class="text-sm text-on-surface-variant">
-            Memory is the only packaged plugin currently available; install it for any supported client.
+            {dgettext("admin", "Memory is the only packaged plugin currently available; install it for any supported client.")}
           </div>
           <.dm_btn id="refresh-plugin-status" type="button" size="sm" variant="outline" phx-click="refresh_plugins">
-            Refresh
+            {dgettext("common", "Refresh")}
           </.dm_btn>
         </div>
 
@@ -661,11 +680,11 @@ defmodule Backplane.Admin.HostAgentsLive do
           <table id="host-agent-plugins-table" class="min-w-full text-sm">
             <thead class="bg-surface-container-high text-on-surface">
               <tr>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Plugin</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Runtime</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Status</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Target</th>
-                <th scope="col" class="px-3 py-2 text-left font-semibold">Actions</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Plugin")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Runtime")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Status")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("admin", "Target")}</th>
+                <th scope="col" class="px-3 py-2 text-left font-semibold">{dgettext("common", "Actions")}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-outline-variant">
@@ -680,7 +699,7 @@ defmodule Backplane.Admin.HostAgentsLive do
                 <td class="px-3 py-2 align-top">
                   <code class="text-xs break-all">{row["target_path"]}</code>
                   <div :if={next_steps(row) != []} class="mt-2 space-y-1">
-                    <div class="text-xs font-medium">Next steps</div>
+                    <div class="text-xs font-medium">{dgettext("admin", "Next steps")}</div>
                     <code :for={step <- next_steps(row)} class="block text-xs break-all">{step}</code>
                   </div>
                 </td>
@@ -691,14 +710,14 @@ defmodule Backplane.Admin.HostAgentsLive do
                       <input type="hidden" name="plugin[runtime]" value={row["runtime"]} />
                       <input type="hidden" name="plugin[force]" value="true" />
                       <.dm_btn type="submit" size="xs" variant="primary">
-                        Install
+                        {dgettext("admin", "Install")}
                       </.dm_btn>
                     </form>
                     <form id={"remove-plugin-#{row["runtime"]}"} phx-submit="remove_plugin">
                       <input type="hidden" name="plugin[plugin]" value={row["plugin"]} />
                       <input type="hidden" name="plugin[runtime]" value={row["runtime"]} />
                       <.dm_btn type="submit" size="xs" variant="outline">
-                        Remove
+                        {dgettext("admin", "Remove")}
                       </.dm_btn>
                     </form>
                   </div>
@@ -710,14 +729,14 @@ defmodule Backplane.Admin.HostAgentsLive do
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>Plugin Config</:title>
+        <:title>{dgettext("admin", "Plugin Config")}</:title>
         <dl class="mb-4 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
           <div>
-            <dt class="font-medium">Local MCP Endpoint</dt>
+            <dt class="font-medium">{dgettext("admin", "Local MCP Endpoint")}</dt>
             <dd class="text-on-surface-variant break-all">{@plugin_endpoint}</dd>
           </div>
           <div>
-            <dt class="font-medium">Tool Prefix</dt>
+            <dt class="font-medium">{dgettext("admin", "Tool Prefix")}</dt>
             <dd class="text-on-surface-variant">host_agent</dd>
           </div>
         </dl>
@@ -732,7 +751,7 @@ defmodule Backplane.Admin.HostAgentsLive do
 
     ~H"""
     <.dm_card variant="bordered">
-      <:title>Desired State</:title>
+      <:title>{dgettext("admin", "Desired State")}</:title>
       <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-xs"><code>{json(@desired)}</code></pre>
     </.dm_card>
     """
@@ -745,28 +764,28 @@ defmodule Backplane.Admin.HostAgentsLive do
     <div class="grid grid-cols-1 gap-6 md:grid-cols-2">
       <div id="host-memory-health"><.memory_health entry={@entry} /></div>
       <.dm_card variant="bordered">
-        <:title>Sync</:title>
+        <:title>{dgettext("admin", "Sync")}</:title>
         <dl class="space-y-3 text-sm">
           <div>
-            <dt class="font-medium">Last Sync</dt>
+            <dt class="font-medium">{dgettext("admin", "Last Sync")}</dt>
             <dd class="text-on-surface-variant">{relative_time(@entry.last_sync)}</dd>
           </div>
           <div>
-            <dt class="font-medium">Last Error</dt>
+            <dt class="font-medium">{dgettext("admin", "Last Error")}</dt>
             <dd class="text-on-surface-variant">{@entry.last_error || "-"}</dd>
           </div>
         </dl>
       </.dm_card>
 
       <.dm_card variant="bordered">
-        <:title>MCP</:title>
+        <:title>{dgettext("admin", "MCP")}</:title>
         <dl class="space-y-3 text-sm">
           <div>
-            <dt class="font-medium">Desired Servers</dt>
+            <dt class="font-medium">{dgettext("admin", "Desired Servers")}</dt>
             <dd class="text-on-surface-variant">{length(@desired["mcp_servers"] || [])}</dd>
           </div>
           <div>
-            <dt class="font-medium">Desired Skills</dt>
+            <dt class="font-medium">{dgettext("admin", "Desired Skills")}</dt>
             <dd class="text-on-surface-variant">{length(@desired["skills"] || [])}</dd>
           </div>
         </dl>
@@ -794,39 +813,39 @@ defmodule Backplane.Admin.HostAgentsLive do
 
     ~H"""
     <.dm_card variant="bordered">
-      <:title>Memory health</:title>
-      <p :if={is_map(get_in(@entry, [:runtime, :memory])) and report_stale?(@entry)} class="mb-3 text-sm text-warning">Last-known Memory report; stale since disconnect or reconnect.</p>
-      <p :if={@memory_disabled} class="mb-3 text-sm text-on-surface-variant">Local memory is disabled on this host.</p>
-      <p :if={@memory_unavailable} class="mb-3 text-sm text-on-surface-variant">Local memory store is not running.</p>
+      <:title>{dgettext("admin", "Memory health")}</:title>
+      <p :if={is_map(get_in(@entry, [:runtime, :memory])) and report_stale?(@entry)} class="mb-3 text-sm text-warning">{dgettext("admin", "Last-known Memory report; stale since disconnect or reconnect.")}</p>
+      <p :if={@memory_disabled} class="mb-3 text-sm text-on-surface-variant">{dgettext("admin", "Local memory is disabled on this host.")}</p>
+      <p :if={@memory_unavailable} class="mb-3 text-sm text-on-surface-variant">{dgettext("admin", "Local memory store is not running.")}</p>
       <dl :if={not @memory_disabled and not @memory_unavailable} class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-        <div><dt class="font-medium">Pending uploads: {memory_value(@memory["outbox_pending"])}</dt></div>
+        <div><dt class="font-medium">{dgettext("admin", "Pending uploads: %{count}", count: memory_value(@memory["outbox_pending"]))}</dt></div>
         <div>
           <dt class="font-medium">
-            Failed uploads: {memory_value(@failed_uploads)}
-            <.dm_badge :if={@failed_warning} variant="warning">Needs attention</.dm_badge>
+            {dgettext("admin", "Failed uploads: %{count}", count: memory_value(@failed_uploads))}
+            <.dm_badge :if={@failed_warning} variant="warning">{dgettext("admin", "Needs attention")}</.dm_badge>
           </dt>
           <dd :if={@failed_warning and is_binary(@last_failed_error) and @last_failed_error != ""} id="host-memory-failed-error" class="break-all text-warning">{@last_failed_error}</dd>
         </div>
-        <div><dt class="font-medium">Local records: {memory_value(@memory["local_records"])}</dt></div>
-        <div><dt class="font-medium">Last sync: {memory_value(@memory["last_sync_at"])}</dt></div>
-        <div :if={is_binary(@last_error) and @last_error != ""}><dt class="font-medium">Last error</dt><dd class="break-all text-on-surface-variant">{@last_error}</dd></div>
+        <div><dt class="font-medium">{dgettext("admin", "Local records: %{count}", count: memory_value(@memory["local_records"]))}</dt></div>
+        <div><dt class="font-medium">{dgettext("admin", "Last sync: %{time}", time: memory_value(@memory["last_sync_at"]))}</dt></div>
+        <div :if={is_binary(@last_error) and @last_error != ""}><dt class="font-medium">{dgettext("admin", "Last error")}</dt><dd class="break-all text-on-surface-variant">{@last_error}</dd></div>
       </dl>
       <dl class="mt-3 text-sm">
-        <div><dt class="font-medium">Last heartbeat: {report_timestamp(@entry.last_heartbeat_at)}</dt></div>
+        <div><dt class="font-medium">{dgettext("admin", "Last heartbeat: %{time}", time: report_timestamp(@entry.last_heartbeat_at))}</dt></div>
       </dl>
       <dl :if={@entry.config} class="mt-3 space-y-2 text-sm">
-        <div :if={config_stale?(@entry)} class="text-warning">Last-known local settings; stale.</div>
-        <div><dt class="font-medium">Local settings applied</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || "Unavailable"}</dd></div>
+        <div :if={config_stale?(@entry)} class="text-warning">{dgettext("admin", "Last-known local settings; stale.")}</div>
+        <div><dt class="font-medium">{dgettext("admin", "Local settings applied")}</dt><dd>{get_in(@entry.config, ["local_settings_applied_at"]) || dgettext("admin", "Unavailable")}</dd></div>
       </dl>
     </.dm_card>
     """
   end
 
-  defp memory_value(nil), do: "Unavailable"
+  defp memory_value(nil), do: dgettext("admin", "Unavailable")
   defp memory_value(value), do: value
 
   defp report_timestamp(%DateTime{} = time), do: DateTime.to_iso8601(time)
-  defp report_timestamp(_), do: "Unavailable"
+  defp report_timestamp(_), do: dgettext("admin", "Unavailable")
 
   defp config_stale?(entry) do
     entry.status != :online or
@@ -845,10 +864,10 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp danger_tab(assigns) do
     ~H"""
     <.dm_card variant="bordered">
-      <:title>Delete Agent</:title>
+      <:title>{dgettext("admin", "Delete Agent")}</:title>
       <div class="space-y-4">
         <p class="text-sm text-on-surface-variant">
-          Delete this agent and revoke its assigned tokens.
+          {dgettext("admin", "Delete this agent and revoke its assigned tokens.")}
         </p>
         <.dm_btn
           id="open-delete-agent-modal"
@@ -857,7 +876,7 @@ defmodule Backplane.Admin.HostAgentsLive do
           size="sm"
           phx-click="open_delete_modal"
         >
-          Delete Agent
+          {dgettext("admin", "Delete Agent")}
         </.dm_btn>
       </div>
     </.dm_card>
@@ -876,13 +895,13 @@ defmodule Backplane.Admin.HostAgentsLive do
       <div class="w-full max-w-lg rounded-lg border border-outline-variant bg-surface shadow-xl">
         <div class="flex items-center justify-between border-b border-outline-variant px-5 py-4">
           <h2 id="delete-agent-modal-title" class="text-lg font-semibold text-on-surface">
-            Delete Agent
+            {dgettext("admin", "Delete Agent")}
           </h2>
           <button
             type="button"
             class="rounded px-2 py-1 text-sm text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
             phx-click="close_delete_modal"
-            aria-label="Close"
+            aria-label={dgettext("common", "Close")}
           >
             x
           </button>
@@ -890,20 +909,20 @@ defmodule Backplane.Admin.HostAgentsLive do
         <div class="px-5 py-5">
           <form id="delete-agent-form" phx-submit="delete_agent" class="space-y-4">
             <p class="text-sm text-on-surface-variant">
-              Type <strong>{@entry.host.name}</strong> to delete this agent and revoke its assigned tokens.
+              {dgettext("admin", "Type")} <strong>{@entry.host.name}</strong> {dgettext("admin", "to delete this agent and revoke its assigned tokens.")}
             </p>
             <.dm_input
               id="delete-confirmation"
               name="delete[confirmation]"
-              label="Agent name"
+              label={dgettext("admin", "Agent name")}
               value=""
             />
             <p :if={@error} class="text-sm text-error">{@error}</p>
             <div class="flex flex-wrap justify-end gap-2">
               <.dm_btn type="button" variant="outline" size="sm" phx-click="close_delete_modal">
-                Cancel
+                {dgettext("common", "Cancel")}
               </.dm_btn>
-              <.dm_btn type="submit" variant="error" size="sm">Delete Agent</.dm_btn>
+              <.dm_btn type="submit" variant="error" size="sm">{dgettext("admin", "Delete Agent")}</.dm_btn>
             </div>
           </form>
         </div>
@@ -924,26 +943,32 @@ defmodule Backplane.Admin.HostAgentsLive do
       <div class="w-full max-w-lg rounded-lg border border-outline-variant bg-surface shadow-xl">
         <div class="flex items-center justify-between border-b border-outline-variant px-5 py-4">
           <h2 id="host-agent-modal-title" class="text-lg font-semibold text-on-surface">
-            Add Agent
+            {dgettext("admin", "Add Agent")}
           </h2>
           <button
             type="button"
             class="rounded px-2 py-1 text-sm text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
             phx-click="close_agent_modal"
-            aria-label="Close"
+            aria-label={dgettext("common", "Close")}
           >
             x
           </button>
         </div>
         <div class="px-5 py-5">
           <form id="host-agent-form" phx-submit="create_agent" class="space-y-4">
-            <.dm_input id="agent-name" name="agent[name]" label="Name" value="" placeholder="workstation" />
+            <.dm_input
+              id="agent-name"
+              name="agent[name]"
+              label={dgettext("common", "Name")}
+              value=""
+              placeholder={dgettext("admin", "workstation")}
+            />
             <p :if={@error} class="text-sm text-error">{@error}</p>
             <div class="flex flex-wrap justify-end gap-2">
               <.dm_btn type="button" variant="outline" size="sm" phx-click="close_agent_modal">
-                Cancel
+                {dgettext("common", "Cancel")}
               </.dm_btn>
-              <.dm_btn type="submit" variant="primary" size="sm">Add Agent</.dm_btn>
+              <.dm_btn type="submit" variant="primary" size="sm">{dgettext("admin", "Add Agent")}</.dm_btn>
             </div>
           </form>
         </div>
@@ -955,8 +980,8 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp token_notice(assigns) do
     ~H"""
     <div class="mb-6 rounded-md border border-warning bg-surface-container px-4 py-3">
-      <div class="text-sm font-medium text-warning">Host agent token</div>
-      <p class="mt-1 text-xs text-on-surface-variant">Copy this value for the host agent config.</p>
+      <div class="text-sm font-medium text-warning">{dgettext("admin", "Host agent token")}</div>
+      <p class="mt-1 text-xs text-on-surface-variant">{dgettext("admin", "Copy this value for the host agent config.")}</p>
       <code class="mt-3 block rounded bg-surface-container-high px-3 py-2 font-mono text-xs break-all text-warning">
         {@generated_token.value}
       </code>
@@ -1003,6 +1028,8 @@ defmodule Backplane.Admin.HostAgentsLive do
     """
   end
 
+  defp default_token_name(host), do: dgettext("admin", "%{name} token", name: host.name)
+
   defp connect_ip(%{connect_ip: nil}), do: "-"
   defp connect_ip(%{connect_ip: ip, connect_ip_source: nil}), do: ip
   defp connect_ip(%{connect_ip: ip, connect_ip_source: source}), do: "#{ip} (#{source})"
@@ -1047,10 +1074,10 @@ defmodule Backplane.Admin.HostAgentsLive do
     |> Kernel.++([status])
   end
 
-  defp plugin_status_label(%{"valid" => true}), do: "Installed"
-  defp plugin_status_label(%{"installed" => true}), do: "Invalid"
-  defp plugin_status_label(%{"installed" => false}), do: "Not installed"
-  defp plugin_status_label(_row), do: "Unknown"
+  defp plugin_status_label(%{"valid" => true}), do: dgettext("admin", "Installed")
+  defp plugin_status_label(%{"installed" => true}), do: dgettext("admin", "Invalid")
+  defp plugin_status_label(%{"installed" => false}), do: dgettext("admin", "Not installed")
+  defp plugin_status_label(_row), do: dgettext("admin", "Unknown")
 
   defp plugin_status_variant(%{"valid" => true}), do: "success"
   defp plugin_status_variant(%{"installed" => true}), do: "warning"
@@ -1060,7 +1087,7 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp plugin_endpoint(entry) do
     case AgentPlugins.endpoint(entry) do
       {:ok, url} -> url
-      {:error, reason} -> "Unavailable: #{plugin_error(reason)}"
+      {:error, reason} -> dgettext("errors", "Unavailable: %{reason}", reason: plugin_error(reason))
     end
   end
 
@@ -1089,11 +1116,27 @@ defmodule Backplane.Admin.HostAgentsLive do
   end
 
   defp plugin_action_message(status, action) do
-    base = "#{status["name"] || status["plugin"]} #{runtime_label(status["runtime"])} #{action}"
+    name = status["name"] || status["plugin"]
+    runtime = runtime_label(status["runtime"])
+
+    base =
+      case action do
+        "installed" ->
+          dgettext("admin", "%{name} %{runtime} installed", name: name, runtime: runtime)
+
+        "removed" ->
+          dgettext("admin", "%{name} %{runtime} removed", name: name, runtime: runtime)
+      end
 
     case next_steps(status) do
-      [] -> base
-      steps -> base <> ". Next steps: " <> Enum.join(steps, " ; ")
+      [] ->
+        base
+
+      steps ->
+        dgettext("admin", "%{message}. Next steps: %{steps}",
+          message: base,
+          steps: Enum.join(steps, " ; ")
+        )
     end
   end
 
@@ -1102,18 +1145,25 @@ defmodule Backplane.Admin.HostAgentsLive do
 
   defp next_steps(_status), do: []
 
-  defp plugin_error(:http_disabled), do: "host-agent HTTP endpoint is disabled"
-  defp plugin_error(:http_unavailable), do: "host-agent HTTP endpoint is unavailable"
-  defp plugin_error(:connect_ip_unavailable), do: "host-agent connect IP is unavailable"
+  defp plugin_error(:http_disabled), do: dgettext("errors", "host-agent HTTP endpoint is disabled")
+
+  defp plugin_error(:http_unavailable),
+    do: dgettext("errors", "host-agent HTTP endpoint is unavailable")
+
+  defp plugin_error(:connect_ip_unavailable),
+    do: dgettext("errors", "host-agent connect IP is unavailable")
 
   defp plugin_error(%{__struct__: struct, reason: reason}) when is_atom(struct),
     do: "#{inspect(struct)}: #{inspect(reason)}"
 
-  defp plugin_error({:http_error, status, _body}), do: "HTTP #{status}"
-  defp plugin_error({:unexpected_result, result}), do: "unexpected result: #{inspect(result)}"
+  defp plugin_error({:http_error, status, _body}),
+    do: dgettext("errors", "HTTP %{status}", status: status)
+
+  defp plugin_error({:unexpected_result, result}),
+    do: dgettext("errors", "unexpected result: %{result}", result: inspect(result))
 
   defp plugin_error({:unexpected_response, response}),
-    do: "unexpected response: #{inspect(response)}"
+    do: dgettext("errors", "unexpected response: %{response}", response: inspect(response))
 
   defp plugin_error(reason) when is_binary(reason), do: reason
   defp plugin_error(reason), do: inspect(reason)
@@ -1124,13 +1174,18 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp runtime_label("hermes"), do: "Hermes"
   defp runtime_label("openclaw"), do: "OpenClaw"
   defp runtime_label(runtime) when is_binary(runtime), do: String.capitalize(runtime)
-  defp runtime_label(_runtime), do: "Unknown"
+  defp runtime_label(_runtime), do: dgettext("admin", "Unknown")
+
+  defp status_label(:online), do: dgettext("admin", "Online")
+  defp status_label(:offline), do: dgettext("admin", "Offline")
+  defp status_label("online"), do: dgettext("admin", "Online")
+  defp status_label("offline"), do: dgettext("admin", "Offline")
 
   defp status_label(status) when is_atom(status),
     do: status |> Atom.to_string() |> String.capitalize()
 
   defp status_label(status) when is_binary(status), do: String.capitalize(status)
-  defp status_label(_status), do: "Unknown"
+  defp status_label(_status), do: dgettext("admin", "Unknown")
 
   defp status_variant(:online), do: "success"
   defp status_variant(:offline), do: "neutral"
@@ -1141,16 +1196,16 @@ defmodule Backplane.Admin.HostAgentsLive do
   defp status_variant("error"), do: "error"
   defp status_variant(_status), do: "info"
 
-  defp relative_time(nil), do: "Never"
+  defp relative_time(nil), do: dgettext("admin", "Never")
 
   defp relative_time(datetime) do
     diff = DateTime.diff(DateTime.utc_now(), datetime, :second)
 
     cond do
-      diff < 60 -> "#{diff}s ago"
-      diff < 3600 -> "#{div(diff, 60)}m ago"
-      diff < 86_400 -> "#{div(diff, 3600)}h ago"
-      true -> "#{div(diff, 86_400)}d ago"
+      diff < 60 -> dgettext("admin", "%{count}s ago", count: diff)
+      diff < 3600 -> dgettext("admin", "%{count}m ago", count: div(diff, 60))
+      diff < 86_400 -> dgettext("admin", "%{count}h ago", count: div(diff, 3600))
+      true -> dgettext("admin", "%{count}d ago", count: div(diff, 86_400))
     end
   end
 
@@ -1255,7 +1310,7 @@ defmodule Backplane.Admin.HostAgentsLive do
       end)
     end)
     |> Enum.flat_map(fn {field, messages} ->
-      Enum.map(messages, &"#{field} #{&1}")
+      Enum.map(messages, &dgettext("errors", "%{field} %{message}", field: field, message: &1))
     end)
     |> Enum.join(", ")
   end

@@ -3,8 +3,6 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
   alias Backplane.Auth
 
-  @https_required_message "OAuth protected resources require an HTTPS API origin."
-
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -44,7 +42,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
       {:error, :not_found} ->
         {:noreply,
          socket
-         |> put_flash(:error, "OAuth client was not found.")
+         |> put_flash(:error, dgettext("user", "OAuth client was not found."))
          |> push_navigate(to: ~p"/auth/oauth/clients")}
     end
   end
@@ -67,7 +65,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "OAuth client created.")
+         |> put_flash(:info, dgettext("user", "OAuth client created."))
          |> assign(:client_secret, %{client_id: client.id, name: client.name, secret: secret})
          |> assign_action_data(socket.assigns.live_action)}
 
@@ -76,15 +74,15 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "OAuth client created.")
+         |> put_flash(:info, dgettext("user", "OAuth client created."))
          |> assign(:client_secret, nil)
          |> assign_action_data(socket.assigns.live_action)}
 
       {:error, :https_required} ->
-        {:noreply, put_flash(socket, :error, @https_required_message)}
+        {:noreply, put_flash(socket, :error, https_required_message())}
 
       {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "OAuth client could not be created.")}
+        {:noreply, put_flash(socket, :error, dgettext("user", "OAuth client could not be created."))}
     end
   end
 
@@ -114,14 +112,14 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "OAuth client resources updated.")
+         |> put_flash(:info, dgettext("user", "OAuth client resources updated."))
          |> assign(:editing_client, updated)}
 
       {:error, :https_required} ->
-        {:noreply, put_flash(socket, :error, @https_required_message)}
+        {:noreply, put_flash(socket, :error, https_required_message())}
 
       {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "OAuth client resources could not be updated.")}
+        {:noreply, put_flash(socket, :error, dgettext("user", "OAuth client resources could not be updated."))}
     end
   end
 
@@ -142,11 +140,11 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "OAuth client disabled.")
+       |> put_flash(:info, dgettext("user", "OAuth client disabled."))
        |> assign_action_data(socket.assigns.live_action)}
     else
       _error ->
-        {:noreply, put_flash(socket, :error, "OAuth client was not found.")}
+        {:noreply, put_flash(socket, :error, dgettext("user", "OAuth client was not found."))}
     end
   end
 
@@ -167,12 +165,12 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
       {:noreply,
        socket
-       |> put_flash(:info, "OAuth client secret rotated.")
+       |> put_flash(:info, dgettext("user", "OAuth client secret rotated."))
        |> assign(:client_secret, %{client_id: rotated.id, name: rotated.name, secret: secret})
        |> assign_action_data(socket.assigns.live_action)}
     else
       _error ->
-        {:noreply, put_flash(socket, :error, "OAuth client secret could not be rotated.")}
+        {:noreply, put_flash(socket, :error, dgettext("user", "OAuth client secret could not be rotated."))}
     end
   end
 
@@ -193,11 +191,11 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "OAuth scope created.")
+         |> put_flash(:info, dgettext("user", "OAuth scope created."))
          |> assign_action_data(socket.assigns.live_action)}
 
       {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "OAuth scope could not be created.")}
+        {:noreply, put_flash(socket, :error, dgettext("user", "OAuth scope could not be created."))}
     end
   end
 
@@ -217,11 +215,11 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "OAuth token revoked.")
+         |> put_flash(:info, dgettext("user", "OAuth token revoked."))
          |> assign_action_data(socket.assigns.live_action)}
 
       {:error, :not_found} ->
-        {:noreply, put_flash(socket, :error, "OAuth token was not found.")}
+        {:noreply, put_flash(socket, :error, dgettext("user", "OAuth token was not found."))}
     end
   end
 
@@ -232,13 +230,16 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
         {:noreply,
          socket
-         |> put_flash(:info, "Auth session revoked.")
+         |> put_flash(:info, dgettext("user", "Auth session revoked."))
          |> assign_action_data(socket.assigns.live_action)}
 
       {:error, :not_found} ->
-        {:noreply, put_flash(socket, :error, "Auth session was not found.")}
+        {:noreply, put_flash(socket, :error, dgettext("user", "Auth session was not found."))}
     end
   end
+
+  defp https_required_message,
+    do: dgettext("user", "OAuth protected resources require an HTTPS API origin.")
 
   defp admin_actor, do: %{actor_type: "admin_ui", actor_id: "backplane_admin"}
 
@@ -252,29 +253,29 @@ defmodule Backplane.Admin.AuthOAuthLive do
       </div>
 
       <.dm_card variant="bordered">
-        <:title>Authorization Server</:title>
+        <:title>{dgettext("user", "Authorization Server")}</:title>
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>
-            <div class="text-xs font-medium uppercase text-on-surface-variant">Issuer</div>
+            <div class="text-xs font-medium uppercase text-on-surface-variant">{dgettext("admin", "Issuer")}</div>
             <code class="mt-1 block break-all text-sm">{@issuer}</code>
           </div>
           <div>
-            <div class="text-xs font-medium uppercase text-on-surface-variant">Authorize</div>
+            <div class="text-xs font-medium uppercase text-on-surface-variant">{dgettext("admin", "Authorize")}</div>
             <code class="mt-1 block break-all text-sm">/oauth/authorize</code>
           </div>
           <div>
-            <div class="text-xs font-medium uppercase text-on-surface-variant">Token</div>
+            <div class="text-xs font-medium uppercase text-on-surface-variant">{dgettext("admin", "Token")}</div>
             <code class="mt-1 block break-all text-sm">/oauth/token</code>
           </div>
           <div>
-            <div class="text-xs font-medium uppercase text-on-surface-variant">JWKS</div>
+            <div class="text-xs font-medium uppercase text-on-surface-variant">{dgettext("admin", "JWKS")}</div>
             <code class="mt-1 block break-all text-sm">/oauth/jwks</code>
           </div>
         </div>
       </.dm_card>
 
       <.dm_card :if={@live_action == :overview} variant="bordered">
-        <:title>Auth Inventory</:title>
+        <:title>{dgettext("user", "Auth Inventory")}</:title>
         <div class="grid gap-3 md:grid-cols-4">
           <div
             :for={stat <- @overview_stats}
@@ -288,27 +289,27 @@ defmodule Backplane.Admin.AuthOAuthLive do
       </.dm_card>
 
       <.dm_card :if={@live_action == :providers} variant="bordered">
-        <:title>Backplane OAuth Provider</:title>
+        <:title>{dgettext("user", "Backplane OAuth Provider")}</:title>
         <.dm_table id="auth-provider-metadata-table" data={@provider_metadata} hover zebra>
-          <:col :let={item} label="Capability">
+          <:col :let={item} label={dgettext("user", "Capability")}>
             <div class="font-medium">{item.name}</div>
           </:col>
-          <:col :let={item} label="Value">
+          <:col :let={item} label={dgettext("common", "Value")}>
             <code class="break-all text-xs text-on-surface-variant">{item.value}</code>
           </:col>
-          <:col :let={item} label="Status">
+          <:col :let={item} label={dgettext("common", "Status")}>
             <.dm_badge variant={item.variant}>{item.status}</.dm_badge>
           </:col>
         </.dm_table>
       </.dm_card>
 
       <.dm_card :if={@live_action == :clients} variant="bordered">
-        <:title>Registered Clients</:title>
+        <:title>{dgettext("user", "Registered Clients")}</:title>
         <form id="oauth-client-form" phx-submit="create-client" class="mb-4 grid gap-3 lg:grid-cols-5">
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
             name="client[name]"
-            placeholder="Client name"
+            placeholder={dgettext("user", "Client name")}
             required
           />
           <input
@@ -325,26 +326,26 @@ defmodule Backplane.Admin.AuthOAuthLive do
           <label class="flex items-center gap-2 text-sm">
             <input type="hidden" name="client[confidential]" value="false" />
             <input type="checkbox" name="client[confidential]" value="true" checked />
-            Confidential
+            {dgettext("user", "Confidential")}
           </label>
           <div class="flex flex-wrap gap-4 lg:col-span-5">
             <.dm_checkbox
               id="oauth-client-resource-mcp"
               name="client[resources][mcp]"
-              label="MCP (/mcp)"
+              label={dgettext("admin", "MCP (/mcp)")}
               value="true"
               checked={false}
             />
             <.dm_checkbox
               id="oauth-client-resource-v1"
               name="client[resources][v1]"
-              label="LLM API (/v1)"
+              label={dgettext("admin", "LLM API (/v1)")}
               value="true"
               checked={false}
             />
           </div>
           <div class="lg:col-span-5">
-            <.dm_btn type="submit" variant="primary" size="sm">Create Client</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">{dgettext("user", "Create Client")}</.dm_btn>
           </div>
         </form>
 
@@ -352,33 +353,37 @@ defmodule Backplane.Admin.AuthOAuthLive do
           :if={@client_secret}
           class="mb-4 rounded-md border border-outline-variant bg-surface-container-high p-3"
         >
-          <div class="text-sm font-medium">Client secret for {@client_secret.name}</div>
+          <div class="text-sm font-medium">{dgettext("user", "Client secret for %{name}", name: @client_secret.name)}</div>
           <code class="mt-1 block break-all text-sm">{@client_secret.secret}</code>
         </div>
 
         <div :if={@clients == []} class="py-8 text-center text-on-surface-variant">
-          No OAuth clients registered.
+          {dgettext("user", "No OAuth clients registered.")}
         </div>
 
         <.dm_table :if={@clients != []} id="oauth-client-table" data={@clients} hover zebra>
-          <:col :let={client} label="Client">
+          <:col :let={client} label={dgettext("user", "Client")}>
             <div class="font-medium">{client.name}</div>
             <code class="text-xs text-on-surface-variant">{client.id}</code>
           </:col>
-          <:col :let={client} label="Type">
+          <:col :let={client} label={dgettext("common", "Type")}>
             <div class="flex flex-wrap gap-1">
               <.dm_badge variant={if client.confidential, do: "info", else: "secondary"}>
-                {if client.confidential, do: "Confidential", else: "Public"}
+                {if client.confidential,
+                  do: dgettext("user", "Confidential"),
+                  else: dgettext("user", "Public")}
               </.dm_badge>
-              <.dm_badge :if={client.pkce} variant="success">PKCE</.dm_badge>
+              <.dm_badge :if={client.pkce} variant="success">{dgettext("admin", "PKCE")}</.dm_badge>
             </div>
           </:col>
-          <:col :let={client} label="Status">
+          <:col :let={client} label={dgettext("common", "Status")}>
             <.dm_badge variant={if client_disabled?(client), do: "error", else: "success"}>
-              {if client_disabled?(client), do: "Disabled", else: "Enabled"}
+              {if client_disabled?(client),
+                do: dgettext("common", "Disabled"),
+                else: dgettext("common", "Enabled")}
             </.dm_badge>
           </:col>
-          <:col :let={client} label="Redirect URIs">
+          <:col :let={client} label={dgettext("user", "Redirect URIs")}>
             <div class="space-y-1">
               <code
                 :for={uri <- client.redirect_uris}
@@ -388,14 +393,14 @@ defmodule Backplane.Admin.AuthOAuthLive do
               </code>
             </div>
           </:col>
-          <:col :let={client} label="Scopes">
+          <:col :let={client} label={dgettext("user", "Scopes")}>
             <div class="flex flex-wrap gap-1">
               <.dm_badge :for={scope <- scope_names(client.authorized_scopes)} variant="neutral" size="sm">
                 {scope}
               </.dm_badge>
             </div>
           </:col>
-          <:col :let={client} label="Resources">
+          <:col :let={client} label={dgettext("user", "Resources")}>
             <div class="flex flex-wrap gap-1">
               <.dm_badge
                 :for={resource <- Auth.OAuth.client_resources(client)}
@@ -409,17 +414,17 @@ defmodule Backplane.Admin.AuthOAuthLive do
                 variant="neutral"
                 size="sm"
               >
-                Identity only
+                {dgettext("user", "Identity only")}
               </.dm_badge>
             </div>
           </:col>
-          <:col :let={client} label="Actions">
+          <:col :let={client} label={dgettext("common", "Actions")}>
             <div class="flex flex-wrap gap-2">
               <.link
                 navigate={~p"/auth/oauth/clients/#{client.id}/edit"}
                 class="no-underline"
               >
-                <.dm_btn type="button" variant="outline" size="xs">Edit</.dm_btn>
+                <.dm_btn type="button" variant="outline" size="xs">{dgettext("common", "Edit")}</.dm_btn>
               </.link>
               <.dm_btn
                 :if={client.confidential}
@@ -428,9 +433,9 @@ defmodule Backplane.Admin.AuthOAuthLive do
                 size="xs"
                 phx-click="rotate-client-secret"
                 phx-value-id={client.id}
-                data-confirm={"Rotate secret for #{client.name}?"}
+                data-confirm={dgettext("user", "Rotate secret for %{name}?", name: client.name)}
               >
-                Rotate
+                {dgettext("user", "Rotate")}
               </.dm_btn>
               <.dm_btn
                 :if={!client_disabled?(client)}
@@ -439,20 +444,20 @@ defmodule Backplane.Admin.AuthOAuthLive do
                 size="xs"
                 phx-click="disable-client"
                 phx-value-id={client.id}
-                data-confirm={"Disable OAuth client #{client.name}?"}
+                data-confirm={dgettext("user", "Disable OAuth client %{name}?", name: client.name)}
               >
-                Disable
+                {dgettext("common", "Disable")}
               </.dm_btn>
             </div>
             <span :if={client_disabled?(client)} class="text-sm text-on-surface-variant">
-              Disabled
+              {dgettext("common", "Disabled")}
             </span>
           </:col>
         </.dm_table>
       </.dm_card>
 
       <.dm_card :if={@live_action == :client_edit && @editing_client} variant="bordered">
-        <:title>Edit OAuth Client Resources</:title>
+        <:title>{dgettext("user", "Edit OAuth Client Resources")}</:title>
         <div class="mb-4">
           <div class="font-medium">{@editing_client.name}</div>
           <code class="text-xs text-on-surface-variant">{@editing_client.id}</code>
@@ -462,64 +467,64 @@ defmodule Backplane.Admin.AuthOAuthLive do
             <.dm_checkbox
               id="oauth-client-resource-mcp"
               name="client[resources][mcp]"
-              label="MCP (/mcp)"
+              label={dgettext("admin", "MCP (/mcp)")}
               value="true"
               checked={client_resource?(@editing_client, :mcp)}
             />
             <.dm_checkbox
               id="oauth-client-resource-v1"
               name="client[resources][v1]"
-              label="LLM API (/v1)"
+              label={dgettext("admin", "LLM API (/v1)")}
               value="true"
               checked={client_resource?(@editing_client, :v1)}
             />
           </div>
           <div class="mt-4">
-            <.dm_btn type="submit" variant="primary" size="sm">Save Resources</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">{dgettext("user", "Save Resources")}</.dm_btn>
           </div>
         </form>
       </.dm_card>
 
       <.dm_card :if={@live_action == :client_policies} variant="bordered">
-        <:title>Client Policies</:title>
+        <:title>{dgettext("navigation", "Client Policies")}</:title>
         <.dm_table id="client-policy-table" data={client_policies()} hover zebra>
-          <:col :let={policy} label="Policy">
+          <:col :let={policy} label={dgettext("user", "Policy")}>
             <div class="font-medium">{policy.name}</div>
           </:col>
-          <:col :let={policy} label="Enforcement">{policy.enforcement}</:col>
-          <:col :let={policy} label="Status">
+          <:col :let={policy} label={dgettext("user", "Enforcement")}>{policy.enforcement}</:col>
+          <:col :let={policy} label={dgettext("common", "Status")}>
             <.dm_badge variant={policy.variant}>{policy.status}</.dm_badge>
           </:col>
         </.dm_table>
       </.dm_card>
 
       <.dm_card :if={@live_action == :tokens} variant="bordered">
-        <:title>Issued Tokens</:title>
+        <:title>{dgettext("user", "Issued Tokens")}</:title>
         <div :if={@tokens == []} class="py-8 text-center text-on-surface-variant">
-          No OAuth tokens issued.
+          {dgettext("user", "No OAuth tokens issued.")}
         </div>
 
         <.dm_table :if={@tokens != []} id="oauth-token-table" data={@tokens} hover zebra>
-          <:col :let={token} label="Token">
+          <:col :let={token} label={dgettext("user", "Token")}>
             <div class="font-medium">{token.type}</div>
             <code class="text-xs text-on-surface-variant">{token.id}</code>
           </:col>
-          <:col :let={token} label="Client">
+          <:col :let={token} label={dgettext("user", "Client")}>
             <span>{client_name(token)}</span>
           </:col>
-          <:col :let={token} label="Subject">
+          <:col :let={token} label={dgettext("user", "Subject")}>
             <span>{subject_label(token, @users_by_id)}</span>
           </:col>
-          <:col :let={token} label="Scopes">
+          <:col :let={token} label={dgettext("user", "Scopes")}>
             <span class="text-sm">{token.scope}</span>
           </:col>
-          <:col :let={token} label="Status">
-            <.dm_badge variant={token_status_variant(token)}>{token_status(token)}</.dm_badge>
+          <:col :let={token} label={dgettext("common", "Status")}>
+            <.dm_badge variant={token_status_variant(token)}>{status_label(token_status(token))}</.dm_badge>
           </:col>
-          <:col :let={token} label="Expires">
+          <:col :let={token} label={dgettext("user", "Expires")}>
             <span class="text-sm text-on-surface-variant">{format_unix(token.expires_at)}</span>
           </:col>
-          <:col :let={token} label="Actions">
+          <:col :let={token} label={dgettext("common", "Actions")}>
             <.dm_btn
               :if={token_status(token) == "Active"}
               type="button"
@@ -527,39 +532,39 @@ defmodule Backplane.Admin.AuthOAuthLive do
               size="xs"
               phx-click="revoke-token"
               phx-value-id={token.id}
-              data-confirm="Revoke this OAuth token?"
+              data-confirm={dgettext("user", "Revoke this OAuth token?")}
             >
-              Revoke
+              {dgettext("user", "Revoke")}
             </.dm_btn>
             <span :if={token_status(token) != "Active"} class="text-sm text-on-surface-variant">
-              {token_status(token)}
+              {status_label(token_status(token))}
             </span>
           </:col>
         </.dm_table>
       </.dm_card>
 
       <.dm_card :if={@live_action == :tokens} variant="bordered">
-        <:title>Browser Sessions</:title>
+        <:title>{dgettext("user", "Browser Sessions")}</:title>
         <div :if={@sessions == []} class="py-8 text-center text-on-surface-variant">
-          No browser Auth sessions.
+          {dgettext("user", "No browser Auth sessions.")}
         </div>
 
         <.dm_table :if={@sessions != []} id="auth-session-table" data={@sessions} hover zebra>
-          <:col :let={session} label="Session">
+          <:col :let={session} label={dgettext("user", "Session")}>
             <div class="font-medium">auth_session</div>
             <code class="text-xs text-on-surface-variant">{session.id}</code>
           </:col>
-          <:col :let={session} label="User">
+          <:col :let={session} label={dgettext("user", "User")}>
             <div class="font-medium">{session.user.name || session.user.email}</div>
             <code class="text-xs text-on-surface-variant">{session.user.email}</code>
           </:col>
-          <:col :let={session} label="Status">
-            <.dm_badge variant={session_status_variant(session)}>{session_status(session)}</.dm_badge>
+          <:col :let={session} label={dgettext("common", "Status")}>
+            <.dm_badge variant={session_status_variant(session)}>{status_label(session_status(session))}</.dm_badge>
           </:col>
-          <:col :let={session} label="Expires">
+          <:col :let={session} label={dgettext("user", "Expires")}>
             <span class="text-sm text-on-surface-variant">{format_datetime(session.expires_at)}</span>
           </:col>
-          <:col :let={session} label="Actions">
+          <:col :let={session} label={dgettext("common", "Actions")}>
             <.dm_btn
               :if={session_status(session) == "Active"}
               type="button"
@@ -567,19 +572,19 @@ defmodule Backplane.Admin.AuthOAuthLive do
               size="xs"
               phx-click="revoke-session"
               phx-value-id={session.id}
-              data-confirm="Revoke this Auth session?"
+              data-confirm={dgettext("user", "Revoke this Auth session?")}
             >
-              Revoke
+              {dgettext("user", "Revoke")}
             </.dm_btn>
             <span :if={session_status(session) != "Active"} class="text-sm text-on-surface-variant">
-              {session_status(session)}
+              {status_label(session_status(session))}
             </span>
           </:col>
         </.dm_table>
       </.dm_card>
 
       <.dm_card :if={@live_action == :scopes} variant="bordered">
-        <:title>Scope Catalog</:title>
+        <:title>{dgettext("user", "Scope Catalog")}</:title>
         <form id="oauth-scope-form" phx-submit="create-scope" class="mb-4 grid gap-3 md:grid-cols-4">
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
@@ -590,43 +595,45 @@ defmodule Backplane.Admin.AuthOAuthLive do
           <input
             class="rounded-md border border-outline bg-surface px-3 py-2 text-sm md:col-span-2"
             name="scope[label]"
-            placeholder="Display label"
+            placeholder={dgettext("admin", "Display label")}
           />
           <label class="flex items-center gap-2 text-sm">
             <input type="hidden" name="scope[public]" value="false" />
             <input type="checkbox" name="scope[public]" value="true" checked />
-            Public
+            {dgettext("user", "Public")}
           </label>
           <div class="md:col-span-4">
-            <.dm_btn type="submit" variant="primary" size="sm">Create Scope</.dm_btn>
+            <.dm_btn type="submit" variant="primary" size="sm">{dgettext("user", "Create Scope")}</.dm_btn>
           </div>
         </form>
 
         <div :if={@scopes == []} class="py-8 text-center text-on-surface-variant">
-          No OAuth scopes configured.
+          {dgettext("user", "No OAuth scopes configured.")}
         </div>
 
         <.dm_table :if={@scopes != []} id="oauth-scope-table" data={@scopes} hover zebra>
-          <:col :let={scope} label="Scope">
+          <:col :let={scope} label={dgettext("user", "Scope")}>
             <code>{scope.name}</code>
           </:col>
-          <:col :let={scope} label="Label">{scope.label || scope.name}</:col>
-          <:col :let={scope} label="Visibility">
+          <:col :let={scope} label={dgettext("common", "Label")}>{scope.label || scope.name}</:col>
+          <:col :let={scope} label={dgettext("user", "Visibility")}>
             <.dm_badge variant={if scope.public, do: "success", else: "warning"}>
-              {if scope.public, do: "Public", else: "Private"}
+              {if scope.public,
+                do: dgettext("user", "Public"),
+                else: dgettext("user", "Private")}
             </.dm_badge>
           </:col>
         </.dm_table>
       </.dm_card>
 
       <.dm_card :if={@live_action == :protocol_support} variant="bordered">
-        <:title>Protocol Support</:title>
+        <:title>{dgettext("navigation", "Protocol Support")}</:title>
         <.dm_table id="protocol-support-table" data={protocol_capabilities()} hover zebra>
-          <:col :let={capability} label="Capability">
+          <:col :let={capability} label={dgettext("user", "Capability")}>
             <div class="font-medium">{capability.name}</div>
           </:col>
-          <:col :let={capability} label="Backplane Behavior">{capability.behavior}</:col>
-          <:col :let={capability} label="Status">
+          <:col :let={capability} label={dgettext("user", "Backplane Behavior")}>{capability.behavior}</:col>
+          <:col :let={capability} label={dgettext("common", "Status")}>
             <.dm_badge variant={capability.variant}>{capability.status}</.dm_badge>
           </:col>
         </.dm_table>
@@ -682,48 +689,63 @@ defmodule Backplane.Admin.AuthOAuthLive do
     tokens = Auth.Tokens.list_tokens()
 
     [
-      %{label: "Clients", value: length(clients), note: "registered OAuth apps"},
-      %{label: "Scopes", value: length(Auth.OAuth.list_scopes()), note: "grantable permissions"},
       %{
-        label: "Tokens",
-        value: Enum.count(tokens, &(token_status(&1) == "Active")),
-        note: "active access grants"
+        label: dgettext("user", "Clients"),
+        value: length(clients),
+        note: dgettext("user", "registered OAuth apps")
       },
-      %{label: "Users", value: length(Auth.Accounts.list_users()), note: "local auth users"}
+      %{
+        label: dgettext("user", "Scopes"),
+        value: length(Auth.OAuth.list_scopes()),
+        note: dgettext("user", "grantable permissions")
+      },
+      %{
+        label: dgettext("user", "Tokens"),
+        value: Enum.count(tokens, &(token_status(&1) == "Active")),
+        note: dgettext("user", "active access grants")
+      },
+      %{
+        label: dgettext("user", "Users"),
+        value: length(Auth.Accounts.list_users()),
+        note: dgettext("user", "local auth users")
+      }
     ]
   end
 
   defp provider_metadata(issuer) do
     [
-      %{name: "Issuer", value: issuer, status: "Active", variant: "success"},
+      %{name: dgettext("user", "Issuer"),
+        value: issuer,
+        status: dgettext("common", "Active"),
+        variant: "success"},
       %{
-        name: "Authorization Endpoint",
+        name: dgettext("user", "Authorization Endpoint"),
         value: "#{issuer}/oauth/authorize",
-        status: "Enabled",
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "Token Endpoint",
+        name: dgettext("user", "Token Endpoint"),
         value: "#{issuer}/oauth/token",
-        status: "Enabled",
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "UserInfo Endpoint",
+        name: dgettext("user", "UserInfo Endpoint"),
         value: "#{issuer}/oauth/userinfo",
-        status: "Enabled",
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "Introspection Endpoint",
+        name: dgettext("user", "Introspection Endpoint"),
         value: "#{issuer}/oauth/introspect",
-        status: "Enabled",
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "Revocation Endpoint",
+        name: dgettext("user", "Revocation Endpoint"),
         value: "#{issuer}/oauth/revoke",
-        status: "Enabled",
+        status: dgettext("common", "Enabled"),
         variant: "success"
       }
     ]
@@ -732,27 +754,27 @@ defmodule Backplane.Admin.AuthOAuthLive do
   defp client_policies do
     [
       %{
-        name: "Public clients require PKCE",
-        enforcement: "Rejected at client registration and token exchange.",
-        status: "Enforced",
+        name: dgettext("user", "Public clients require PKCE"),
+        enforcement: dgettext("user", "Rejected at client registration and token exchange."),
+        status: dgettext("user", "Enforced"),
         variant: "success"
       },
       %{
-        name: "Redirect URIs match exactly",
-        enforcement: "Authorize and token requests must use a registered URI.",
-        status: "Enforced",
+        name: dgettext("user", "Redirect URIs match exactly"),
+        enforcement: dgettext("user", "Authorize and token requests must use a registered URI."),
+        status: dgettext("user", "Enforced"),
         variant: "success"
       },
       %{
-        name: "Refresh tokens rotate",
-        enforcement: "Reuse revokes the token family.",
-        status: "Enforced",
+        name: dgettext("user", "Refresh tokens rotate"),
+        enforcement: dgettext("user", "Reuse revokes the token family."),
+        status: dgettext("user", "Enforced"),
         variant: "success"
       },
       %{
-        name: "Implicit flow disabled",
-        enforcement: "Only authorization code and refresh-token grants are exposed.",
-        status: "Enforced",
+        name: dgettext("user", "Implicit flow disabled"),
+        enforcement: dgettext("user", "Only authorization code and refresh-token grants are exposed."),
+        status: dgettext("user", "Enforced"),
         variant: "success"
       }
     ]
@@ -761,33 +783,33 @@ defmodule Backplane.Admin.AuthOAuthLive do
   defp protocol_capabilities do
     [
       %{
-        name: "OIDC discovery",
-        behavior: "/.well-known/openid-configuration advertises issuer metadata.",
-        status: "Enabled",
+        name: dgettext("user", "OIDC discovery"),
+        behavior: dgettext("user", "/.well-known/openid-configuration advertises issuer metadata."),
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "Authorization code + PKCE",
-        behavior: "/oauth/authorize issues codes only after local user login.",
-        status: "Enabled",
+        name: dgettext("user", "Authorization code + PKCE"),
+        behavior: dgettext("user", "/oauth/authorize issues codes only after local user login."),
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "JWT access tokens",
-        behavior: "Access tokens are RS256 signed and backed by server-side revocation state.",
-        status: "Enabled",
+        name: dgettext("user", "JWT access tokens"),
+        behavior: dgettext("user", "Access tokens are RS256 signed and backed by server-side revocation state."),
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "UserInfo",
-        behavior: "/oauth/userinfo resolves active bearer tokens to local auth users.",
-        status: "Enabled",
+        name: dgettext("user", "UserInfo"),
+        behavior: dgettext("user", "/oauth/userinfo resolves active bearer tokens to local auth users."),
+        status: dgettext("common", "Enabled"),
         variant: "success"
       },
       %{
-        name: "Client credentials grant",
-        behavior: "Not exposed in the first release.",
-        status: "Disabled",
+        name: dgettext("user", "Client credentials grant"),
+        behavior: dgettext("user", "Not exposed in the first release."),
+        status: dgettext("common", "Disabled"),
         variant: "neutral"
       }
     ]
@@ -795,60 +817,60 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
   defp page(:overview) do
     %{
-      title: "Auth Overview",
-      description: "Standalone Backplane OAuth provider inventory and runtime status."
+      title: dgettext("navigation", "Auth Overview"),
+      description: dgettext("user", "Standalone Backplane OAuth provider inventory and runtime status.")
     }
   end
 
   defp page(:clients) do
     %{
-      title: "OAuth Clients",
+      title: dgettext("user", "OAuth Clients"),
       description:
-        "Applications allowed to request Backplane Auth authorization codes and tokens."
+        dgettext("user", "Applications allowed to request Backplane Auth authorization codes and tokens.")
     }
   end
 
   defp page(:client_edit) do
     %{
-      title: "Edit OAuth Client",
-      description: "Choose which Backplane protected resources this OAuth client may access."
+      title: dgettext("user", "Edit OAuth Client"),
+      description: dgettext("user", "Choose which Backplane protected resources this OAuth client may access.")
     }
   end
 
   defp page(:providers) do
     %{
-      title: "OAuth Providers",
+      title: dgettext("user", "OAuth Providers"),
       description:
-        "Provider metadata for Backplane's built-in OAuth and OIDC authorization server."
+        dgettext("user", "Provider metadata for Backplane's built-in OAuth and OIDC authorization server.")
     }
   end
 
   defp page(:client_policies) do
     %{
-      title: "Client Policies",
-      description: "OAuth client safety rules enforced by Backplane Auth."
+      title: dgettext("navigation", "Client Policies"),
+      description: dgettext("user", "OAuth client safety rules enforced by Backplane Auth.")
     }
   end
 
   defp page(:protocol_support) do
     %{
-      title: "Protocol Support",
-      description: "Implemented OAuth and OIDC protocol capabilities."
+      title: dgettext("navigation", "Protocol Support"),
+      description: dgettext("user", "Implemented OAuth and OIDC protocol capabilities.")
     }
   end
 
   defp page(:tokens) do
     %{
-      title: "OAuth Tokens",
+      title: dgettext("user", "OAuth Tokens"),
       description:
-        "Issued authorization codes, access tokens, refresh-token families, and revocation state."
+        dgettext("user", "Issued authorization codes, access tokens, refresh-token families, and revocation state.")
     }
   end
 
   defp page(:scopes) do
     %{
-      title: "OAuth Scopes",
-      description: "Scope catalog used by OAuth clients and RBAC role grants."
+      title: dgettext("user", "OAuth Scopes"),
+      description: dgettext("user", "Scope catalog used by OAuth clients and RBAC role grants.")
     }
   end
 
@@ -923,7 +945,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
 
   defp client_name(%{client: %{name: name}}) when is_binary(name) and name != "", do: name
   defp client_name(%{client_id: client_id}) when is_binary(client_id), do: client_id
-  defp client_name(_token), do: "Unknown client"
+  defp client_name(_token), do: dgettext("user", "Unknown client")
 
   defp subject_label(%{sub: sub}, users_by_id) when is_binary(sub) do
     case Map.get(users_by_id, sub) do
@@ -932,7 +954,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
     end
   end
 
-  defp subject_label(_token, _users_by_id), do: "Unknown subject"
+  defp subject_label(_token, _users_by_id), do: dgettext("user", "Unknown subject")
 
   defp token_status(%{revoked_at: %DateTime{}}), do: "Revoked"
 
@@ -949,6 +971,11 @@ defmodule Backplane.Admin.AuthOAuthLive do
   end
 
   defp session_status(_session), do: "Unknown"
+
+  defp status_label("Active"), do: dgettext("common", "Active")
+  defp status_label("Revoked"), do: dgettext("user", "Revoked")
+  defp status_label("Expired"), do: dgettext("user", "Expired")
+  defp status_label(_status), do: dgettext("common", "Unknown")
 
   defp token_status_variant(token) do
     case token_status(token) do
@@ -974,7 +1001,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
     |> format_datetime()
   end
 
-  defp format_unix(_expires_at), do: "Unknown"
+  defp format_unix(_expires_at), do: dgettext("common", "Unknown")
 
   defp format_datetime(%DateTime{} = datetime),
     do: Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S UTC")

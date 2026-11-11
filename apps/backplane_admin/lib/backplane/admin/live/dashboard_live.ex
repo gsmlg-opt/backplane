@@ -60,7 +60,12 @@ defmodule Backplane.Admin.DashboardLive do
 
     {:noreply,
      socket
-     |> put_flash(:info, "Reconnect triggered for #{count} degraded/disconnected upstreams")
+     |> put_flash(
+       :info,
+       dgettext("admin", "Reconnect triggered for %{count} degraded/disconnected upstreams",
+         count: count
+       )
+     )
      |> load_dashboard_data()}
   end
 
@@ -111,67 +116,67 @@ defmodule Backplane.Admin.DashboardLive do
     ~H"""
     <div>
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold">Dashboard</h1>
+        <h1 class="text-2xl font-bold">{dgettext("navigation", "Dashboard")}</h1>
         <div class="flex gap-2">
           <.dm_btn variant="warning" size="sm" phx-click="reconnect_degraded">
-            Reconnect Degraded
+            {dgettext("admin", "Reconnect Degraded")}
           </.dm_btn>
         </div>
       </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
-        <.dm_stat title="Total Tools" value={to_string(@tool_count)} />
-        <.dm_stat title="Native Tools" value={to_string(@native_tool_count)} />
-        <.dm_stat title="Upstream Tools" value={to_string(@upstream_tool_count)} />
-        <.dm_stat title="Skills" value={to_string(@skill_count)} />
+        <.dm_stat title={dgettext("admin", "Total Tools")} value={to_string(@tool_count)} />
+        <.dm_stat title={dgettext("admin", "Native Tools")} value={to_string(@native_tool_count)} />
+        <.dm_stat title={dgettext("admin", "Upstream Tools")} value={to_string(@upstream_tool_count)} />
+        <.dm_stat title={dgettext("admin", "Skills")} value={to_string(@skill_count)} />
       </div>
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
-        <.dm_stat title="Upstreams" value={to_string(@upstream_count)} />
+        <.dm_stat title={dgettext("admin", "Upstreams")} value={to_string(@upstream_count)} />
         <.dm_stat
-          title="Total Requests"
+          title={dgettext("admin", "Total Requests")}
           value={to_string(get_in(@metrics, [:requests, :total]) || 0)}
         />
       </div>
 
       <div :if={@plan_credentials != []} class="mt-8">
-        <h2 class="text-lg font-semibold mb-4">AI Plan Usage</h2>
+        <h2 class="text-lg font-semibold mb-4">{dgettext("admin", "AI Plan Usage")}</h2>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <.dm_card :for={cred <- @plan_credentials} variant="bordered">
             <:title>
               <div class="flex items-center justify-between">
                 <span>{plan_label((cred.metadata || %{})["auth_type"])}</span>
-                <.dm_badge variant="success">Active</.dm_badge>
+                <.dm_badge variant="success">{dgettext("common", "Active")}</.dm_badge>
               </div>
             </:title>
             <div class="text-sm space-y-1">
               <p class="text-on-surface-variant">
-                Credential: <span class="text-on-surface font-mono">{cred.name}</span>
+                {dgettext("admin", "Credential:")} <span class="text-on-surface font-mono">{cred.name}</span>
               </p>
               <%= case (cred.metadata || %{})["auth_type"] do %>
                 <% "anthropic_oauth" -> %>
                   <p :if={(cred.metadata || %{})["subscription_type"]} class="text-on-surface-variant">
-                    Plan:
+                    {dgettext("admin", "Plan:")}
                     <span class="text-on-surface font-medium">
                       {(cred.metadata || %{})["subscription_type"]}
                     </span>
                   </p>
                   <p :if={(cred.metadata || %{})["organization_uuid"]} class="text-on-surface-variant">
-                    Org:
+                    {dgettext("admin", "Org:")}
                     <span class="text-on-surface font-mono text-xs">
                       {(cred.metadata || %{})["organization_uuid"]}
                     </span>
                   </p>
                 <% "openai_oauth" -> %>
                   <p :if={(cred.metadata || %{})["account_id"]} class="text-on-surface-variant">
-                    Account:
+                    {dgettext("admin", "Account:")}
                     <span class="text-on-surface font-mono text-xs">
                       {(cred.metadata || %{})["account_id"]}
                     </span>
                   </p>
                 <% "google_oauth" -> %>
                   <p :if={(cred.metadata || %{})["client_id"]} class="text-on-surface-variant">
-                    Client ID:
+                    {dgettext("user", "Client ID:")}
                     <span class="text-on-surface font-mono text-xs">
                       {(cred.metadata || %{})["client_id"]}
                     </span>
@@ -179,7 +184,7 @@ defmodule Backplane.Admin.DashboardLive do
                 <% _ -> %>
               <% end %>
               <p class="text-xs text-on-surface-variant mt-2">
-                Updated <.local_time datetime={cred.updated_at} />
+                {dgettext("admin", "Updated")} <.local_time datetime={cred.updated_at} />
               </p>
             </div>
           </.dm_card>
@@ -187,9 +192,9 @@ defmodule Backplane.Admin.DashboardLive do
       </div>
 
       <div class="mt-8">
-        <h2 class="text-lg font-semibold mb-4">Upstream Status</h2>
+        <h2 class="text-lg font-semibold mb-4">{dgettext("admin", "Upstream Status")}</h2>
         <div :if={@upstreams == []} class="text-on-surface-variant text-sm">
-          No upstream MCP servers configured.
+          {dgettext("admin", "No upstream MCP servers configured.")}
         </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <.dm_card :for={upstream <- @upstreams} variant="bordered">
@@ -197,14 +202,14 @@ defmodule Backplane.Admin.DashboardLive do
               <div class="flex items-center justify-between">
                 <span>{upstream.name}</span>
                 <.dm_badge variant={upstream_badge_color(upstream)}>
-                  {upstream_status(upstream) |> to_string() |> String.capitalize()}
+                  {upstream_status_label(upstream_status(upstream))}
                 </.dm_badge>
               </div>
             </:title>
             <div class="text-sm text-on-surface-variant">
-              <p>Prefix: <span class="text-on-surface">{upstream.prefix}::</span></p>
-              <p>Transport: <span class="text-on-surface">{upstream.transport}</span></p>
-              <p>Tools: <span class="text-on-surface">{upstream.tool_count || 0}</span></p>
+              <p>{dgettext("admin", "Prefix:")} <span class="text-on-surface">{upstream.prefix}::</span></p>
+              <p>{dgettext("admin", "Transport:")} <span class="text-on-surface">{upstream.transport}</span></p>
+              <p>{dgettext("admin", "Tools:")} <span class="text-on-surface">{upstream.tool_count || 0}</span></p>
             </div>
           </.dm_card>
         </div>
@@ -223,6 +228,10 @@ defmodule Backplane.Admin.DashboardLive do
   defp upstream_status(%{status: :degraded}), do: :degraded
   defp upstream_status(%{connected: true}), do: :connected
   defp upstream_status(_), do: :disconnected
+
+  defp upstream_status_label(:connected), do: dgettext("admin", "Connected")
+  defp upstream_status_label(:degraded), do: dgettext("admin", "Degraded")
+  defp upstream_status_label(:disconnected), do: dgettext("admin", "Disconnected")
 
   defp upstream_badge_color(upstream) do
     case upstream_status(upstream) do

@@ -64,7 +64,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
          assign(socket,
            entries: entries(socket.assigns.query),
            mutation_error: nil,
-           mutation_success: "Setting saved and audited."
+           mutation_success: dgettext("admin", "Setting saved and audited.")
          )}
 
       {:error, reason} ->
@@ -79,7 +79,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
   def handle_event("set-setting", _params, socket) do
     {:noreply,
      assign(socket,
-       mutation_error: "This route is not authorized to change Memory settings.",
+       mutation_error: dgettext("errors", "This route is not authorized to change Memory settings."),
        mutation_success: nil
      )}
   end
@@ -98,27 +98,28 @@ defmodule Backplane.Admin.MemoryConfigLive do
   def render(assigns) do
     ~H"""
     <div id="memory-config">
-      <.memory_page_header title="Config" subtitle="Capture, processing, and retrieval settings with their effective runtime state" />
-      <.form id="memory-config-filter" for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="max-w-xl"><.dm_input id="memory-config-query" name="filters[q]" label="Filter settings" value={@query} phx-debounce="300" /></.form>
-      <.dm_alert :if={!@authorized?} id="config-unauthorized" variant="warning" title="Read-only configuration" class="mt-4">This LiveView was not mounted through the trusted Memory operator route.</.dm_alert>
-      <.dm_alert :if={@mutation_error} id="config-mutation-error" variant="error" title="Setting not saved" class="mt-4">{@mutation_error}</.dm_alert>
-      <.dm_alert :if={@mutation_success} id="config-mutation-success" variant="success" title="Setting saved" class="mt-4">{@mutation_success}</.dm_alert>
-      <.dm_card :if={@entries == []} id="config-empty" variant="bordered" padding="lg" class="mt-4"><h2 class="text-lg font-semibold">No configuration matches</h2></.dm_card>
-      <.dm_alert id="memory-config-policy" variant="info" title="Persistent central policy" class="mt-4">
-        Changes are stored centrally. Provider resolution below confirms routing, not a successful provider request.
-        Host capture paths and local limits are configured in the standalone YAML. A host applies central sync policy during negotiation;
-        check its last report on the host page and treat disconnected reports as stale.
+      <.memory_page_header title={dgettext("admin", "Config")} subtitle={dgettext("admin", "Capture, processing, and retrieval settings with their effective runtime state")} />
+      <.form id="memory-config-filter" for={%{}} as={:filters} phx-change="filter" phx-submit="filter" class="max-w-xl"><.dm_input id="memory-config-query" name="filters[q]" label={dgettext("admin", "Filter settings")} value={@query} phx-debounce="300" /></.form>
+      <.dm_alert :if={!@authorized?} id="config-unauthorized" variant="warning" title={dgettext("admin", "Read-only configuration")} class="mt-4">{dgettext("admin", "This LiveView was not mounted through the trusted Memory operator route.")}</.dm_alert>
+      <.dm_alert :if={@mutation_error} id="config-mutation-error" variant="error" title={dgettext("errors", "Setting not saved")} class="mt-4">{@mutation_error}</.dm_alert>
+      <.dm_alert :if={@mutation_success} id="config-mutation-success" variant="success" title={dgettext("admin", "Setting saved")} class="mt-4">{@mutation_success}</.dm_alert>
+      <.dm_card :if={@entries == []} id="config-empty" variant="bordered" padding="lg" class="mt-4"><h2 class="text-lg font-semibold">{dgettext("admin", "No configuration matches")}</h2></.dm_card>
+      <.dm_alert id="memory-config-policy" variant="info" title={dgettext("admin", "Persistent central policy")} class="mt-4">
+        {dgettext(
+          "admin",
+          "Changes are stored centrally. Provider resolution below confirms routing, not a successful provider request. Host capture paths and local limits are configured in the standalone YAML. A host applies central sync policy during negotiation; check its last report on the host page and treat disconnected reports as stale."
+        )}
       </.dm_alert>
-      <p class="mt-5 mb-3 text-sm text-on-surface-variant">{length(@entries)} settings</p>
+      <p class="mt-5 mb-3 text-sm text-on-surface-variant">{dngettext("admin", "1 setting", "%{count} settings", length(@entries))}</p>
       <div :if={@entries != []} id="memory-config-table" class="space-y-3">
         <section :for={entry <- @entries} class="memory-setting" aria-label={entry.label}>
           <div>
             <h2 class="font-semibold">{entry.label}</h2>
             <code class="mt-1 block text-xs text-on-surface-variant">{entry.key}</code>
-            <p class="mt-3 text-xs text-on-surface-variant">Configured: <code class="text-on-surface">{display(entry.configured)}</code></p>
+            <p class="mt-3 text-xs text-on-surface-variant">{dgettext("admin", "Configured:")} <code class="text-on-surface">{display(entry.configured)}</code></p>
           </div>
           <div>
-            <h3 class="memory-eyebrow mb-2">Effective state</h3>
+            <h3 class="memory-eyebrow mb-2">{dgettext("admin", "Effective state")}</h3>
             <code class="text-sm">{display(entry.effective)}</code>
             <p class="mt-1 text-xs text-on-surface-variant">{entry.reason}</p>
             <p :if={entry.type == :model} class="mt-1 text-sm" id={"route-" <> form_id(entry.key)}>{entry.route_status}</p>
@@ -135,7 +136,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
                 type="number" step={if entry.type == :float, do: "any", else: "1"}
                 min={entry.minimum} max={entry.maximum} value={entry.configured} disabled={!@authorized?} />
             </div>
-            <.dm_btn type="submit" native_submit variant="secondary" size="sm" disabled={!@authorized?}>Save</.dm_btn>
+            <.dm_btn type="submit" native_submit variant="secondary" size="sm" disabled={!@authorized?}>{dgettext("common", "Save")}</.dm_btn>
           </.form>
         </section>
       </div>
@@ -184,8 +185,12 @@ defmodule Backplane.Admin.MemoryConfigLive do
         {value, value}
       end)
 
-    aliases = Enum.map(Backplane.LLM.ModelAlias.list(), &{&1.alias, &1.alias <> " (alias)"})
-    [{"", "No model"} | Enum.sort(Enum.uniq(routes ++ aliases))]
+    aliases =
+      Enum.map(
+        Backplane.LLM.ModelAlias.list(),
+        &{&1.alias, dgettext("admin", "%{name} (alias)", name: &1.alias)}
+      )
+    [{"", dgettext("admin", "No model")} | Enum.sort(Enum.uniq(routes ++ aliases))]
   end
 
   defp credential_options do
@@ -196,7 +201,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
       )
       |> Enum.map(&{&1.name, &1.name})
 
-    [{"", "No resource credential"} | names]
+    [{"", dgettext("admin", "No resource credential")} | names]
   end
 
   defp embedding_options do
@@ -207,13 +212,13 @@ defmodule Backplane.Admin.MemoryConfigLive do
         {value, value}
       end)
 
-    [{"", "No model"} | models]
+    [{"", dgettext("admin", "No model")} | models]
   end
 
   defp with_current(options, current) when is_binary(current) and current != "" do
     if Enum.any?(options, &(elem(&1, 0) == current)),
       do: options,
-      else: options ++ [{current, current <> " (unavailable)"}]
+      else: options ++ [{current, dgettext("admin", "%{name} (unavailable)", name: current)}]
   end
 
   defp with_current(options, _), do: options
@@ -222,20 +227,30 @@ defmodule Backplane.Admin.MemoryConfigLive do
        when key == @embedding_model_key and is_binary(model) do
     case Backplane.Embedding.resolve_model(model) do
       {:ok, provider, raw_model} ->
-        "Route resolved: " <> provider.name <> " / " <> raw_model <> "; request health unverified"
+        dgettext(
+          "admin",
+          "Route resolved: %{provider} / %{model}; request health unverified",
+          provider: provider.name,
+          model: raw_model
+        )
 
       _ ->
-        "Blocked: selected model has no enabled embedding provider route"
+        dgettext("admin", "Blocked: selected model has no enabled embedding provider route")
     end
   end
 
   defp route_status(%{type: :model, effective: model}) when is_binary(model) do
     case Backplane.LLM.ModelResolver.resolve(:openai, model) do
       {:ok, provider, raw_model} ->
-        "Route resolved: " <> provider.name <> " / " <> raw_model <> "; request health unverified"
+        dgettext(
+          "admin",
+          "Route resolved: %{provider} / %{model}; request health unverified",
+          provider: provider.name,
+          model: raw_model
+        )
 
       _ ->
-        "Blocked: selected model has no enabled OpenAI-compatible provider route"
+        dgettext("admin", "Blocked: selected model has no enabled OpenAI-compatible provider route")
     end
   end
 
@@ -247,7 +262,7 @@ defmodule Backplane.Admin.MemoryConfigLive do
   defp display(value), do: inspect(value)
   defp form_id(key), do: String.replace(key, ".", "-")
 
-  defp setting_error(:invalid_value), do: "The value is outside the typed setting bounds."
-  defp setting_error(:unknown_setting), do: "The submitted setting is not editable here."
-  defp setting_error(_reason), do: "The setting could not be saved."
+  defp setting_error(:invalid_value), do: dgettext("errors", "The value is outside the typed setting bounds.")
+  defp setting_error(:unknown_setting), do: dgettext("errors", "The submitted setting is not editable here.")
+  defp setting_error(_reason), do: dgettext("errors", "The setting could not be saved.")
 end

@@ -35,11 +35,11 @@ defmodule Backplane.Admin.LogsComponents do
     """
   end
 
-  attr(:message, :string, default: "Loading records…")
+  attr(:message, :string, default: nil)
 
   def loading_state(assigns) do
     ~H"""
-    <p class="text-sm text-on-surface-variant">{@message}</p>
+    <p class="text-sm text-on-surface-variant">{@message || dgettext("admin", "Loading records…")}</p>
     """
   end
 
@@ -55,14 +55,14 @@ defmodule Backplane.Admin.LogsComponents do
         type="text"
         name="since"
         class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
-        placeholder="Since (ISO8601)"
+        placeholder={dgettext("admin", "Since (ISO8601)")}
         value={datetime_param(@since)}
       />
       <input
         type="text"
         name="until"
         class="rounded-md border border-outline bg-surface px-3 py-2 text-sm"
-        placeholder="Until (ISO8601)"
+        placeholder={dgettext("admin", "Until (ISO8601)")}
         value={datetime_param(@until)}
       />
       <div :for={field <- @fields} class="contents">
@@ -74,7 +74,7 @@ defmodule Backplane.Admin.LogsComponents do
         />
       </div>
       <div class="flex gap-2 md:col-span-2">
-        <.dm_btn type="submit" variant="primary" size="sm">Apply</.dm_btn>
+        <.dm_btn type="submit" variant="primary" size="sm">{dgettext("common", "Apply")}</.dm_btn>
       </div>
     </form>
     """
@@ -93,13 +93,13 @@ defmodule Backplane.Admin.LogsComponents do
         size="sm"
         phx-click={JS.push("copy_text", value: %{text: @value})}
       >
-        Copy
+        {dgettext("common", "Copy")}
       </.dm_btn>
     </div>
     """
   end
 
-  def metadata_summary(metadata) when metadata in [nil, %{}], do: "none"
+  def metadata_summary(metadata) when metadata in [nil, %{}], do: dgettext("admin", "none")
 
   def metadata_summary(metadata) when is_map(metadata) do
     metadata
@@ -110,10 +110,10 @@ defmodule Backplane.Admin.LogsComponents do
       bounded
     end)
   rescue
-    _ -> "[unavailable]"
+    _ -> dgettext("admin", "[unavailable]")
   end
 
-  def metadata_summary(_), do: "none"
+  def metadata_summary(_), do: dgettext("admin", "none")
 
   def bounded_error(nil), do: nil
 
@@ -126,8 +126,8 @@ defmodule Backplane.Admin.LogsComponents do
 
   def payload_status(record) do
     cond do
-      record_has_bytes?(record) -> "bytes only"
-      true -> "none"
+      record_has_bytes?(record) -> dgettext("admin", "bytes only")
+      true -> dgettext("admin", "none")
     end
   end
 

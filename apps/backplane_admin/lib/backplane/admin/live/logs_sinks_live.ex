@@ -42,9 +42,9 @@ defmodule Backplane.Admin.LogsSinksLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="mb-2 text-2xl font-bold">Observability Sinks</h1>
+      <h1 class="mb-2 text-2xl font-bold">{dgettext("admin", "Observability Sinks")}</h1>
       <p class="mb-4 text-sm text-on-surface-variant">
-        Writer queue health and runtime sink status. Historical usage is available on the logs pages.
+        {dgettext("admin", "Writer queue health and runtime sink status. Historical usage is available on the logs pages.")}
       </p>
 
       <div :if={@loading}>
@@ -53,39 +53,39 @@ defmodule Backplane.Admin.LogsSinksLive do
 
       <div :if={!@loading} class="space-y-6">
         <section>
-          <h2 class="mb-3 text-lg font-semibold">Policy settings</h2>
+          <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Policy settings")}</h2>
           <.dm_card variant="bordered">
             <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.settings, pretty: true)}</pre>
           </.dm_card>
         </section>
 
         <section>
-          <h2 class="mb-3 text-lg font-semibold">Feature flags</h2>
+          <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Feature flags")}</h2>
           <.dm_card variant="bordered">
             <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.flags, pretty: true)}</pre>
           </.dm_card>
         </section>
 
         <section>
-          <h2 class="mb-3 text-lg font-semibold">Writers</h2>
+          <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Writers")}</h2>
           <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <.writer_card title="LLM LogWriter" health={@llm_writer} />
+            <.writer_card title={dgettext("admin", "LLM LogWriter")} health={@llm_writer} />
             <.mcp_writer_card health={aggregate_mcp_health(@mcp_writer, @mcp_tool_writer)} />
-            <.writer_card title="Audit Writer" health={@audit_writer} />
+            <.writer_card title={dgettext("admin", "Audit Writer")} health={@audit_writer} />
           </div>
         </section>
 
         <section>
-          <h2 class="mb-3 text-lg font-semibold">Runtime sink</h2>
+          <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Runtime sink")}</h2>
           <.dm_card variant="bordered">
             <pre class="overflow-x-auto text-xs">{Jason.encode!(@observability.runtime_sink, pretty: true)}</pre>
           </.dm_card>
         </section>
 
         <section>
-          <h2 class="mb-3 text-lg font-semibold">Buffers</h2>
+          <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Buffers")}</h2>
           <div :if={map_size(@observability.buffers) == 0} class="text-sm text-on-surface-variant">
-            No named buffers registered.
+            {dgettext("admin", "No named buffers registered.")}
           </div>
           <div class="grid gap-4 md:grid-cols-2">
             <.dm_card :for={{name, health} <- @observability.buffers} variant="bordered">
@@ -96,22 +96,22 @@ defmodule Backplane.Admin.LogsSinksLive do
         </section>
 
         <section>
-          <h2 class="mb-3 text-lg font-semibold">Runtime counters (since restart)</h2>
+          <h2 class="mb-3 text-lg font-semibold">{dgettext("admin", "Runtime counters (since restart)")}</h2>
           <div class="grid gap-4 md:grid-cols-2">
             <.dm_stat
-              title="Tool calls total"
+              title={dgettext("admin", "Tool calls total")}
               value={to_string(get_in(@metrics, [:counters, "tool_calls_total"]) || 0)}
             />
             <.dm_stat
-              title="LLM proxy accepted"
+              title={dgettext("admin", "LLM proxy accepted")}
               value={to_string(get_in(@metrics, [:counters, "observability.events.accepted.llm_proxy"]) || 0)}
             />
             <.dm_stat
-              title="MCP proxy accepted"
+              title={dgettext("admin", "MCP proxy accepted")}
               value={to_string(get_in(@metrics, [:counters, "observability.events.accepted.mcp_proxy_root"]) || 0)}
             />
             <.dm_stat
-              title="Writer drops (LLM)"
+              title={dgettext("admin", "Writer drops (LLM)")}
               value={to_string(get_in(@metrics, [:counters, "observability.events.dropped.llm_proxy"]) || 0)}
             />
           </div>
@@ -128,11 +128,11 @@ defmodule Backplane.Admin.LogsSinksLive do
     ~H"""
     <.dm_card variant="bordered">
       <:title>{@title}</:title>
-      <.dm_badge variant={status_variant(@health[:status])}>{@health[:status] || "unknown"}</.dm_badge>
+      <.dm_badge variant={status_variant(@health[:status])}>{@health[:status] || dgettext("admin", "unknown")}</.dm_badge>
       <dl class="mt-3 space-y-1 text-sm">
-        <div><dt class="inline text-on-surface-variant">Inserted:</dt> <dd class="inline">{format_number(@health[:inserted_total])}</dd></div>
-        <div><dt class="inline text-on-surface-variant">Dropped:</dt> <dd class="inline">{format_number(@health[:dropped_total])}</dd></div>
-        <div><dt class="inline text-on-surface-variant">Failed:</dt> <dd class="inline">{format_number(@health[:failed_total])}</dd></div>
+        <div><dt class="inline text-on-surface-variant">{dgettext("admin", "Inserted:")}</dt> <dd class="inline">{format_number(@health[:inserted_total])}</dd></div>
+        <div><dt class="inline text-on-surface-variant">{dgettext("admin", "Dropped:")}</dt> <dd class="inline">{format_number(@health[:dropped_total])}</dd></div>
+        <div><dt class="inline text-on-surface-variant">{dgettext("admin", "Failed:")}</dt> <dd class="inline">{format_number(@health[:failed_total])}</dd></div>
       </dl>
     </.dm_card>
     """
@@ -143,17 +143,17 @@ defmodule Backplane.Admin.LogsSinksLive do
   defp mcp_writer_card(assigns) do
     ~H"""
     <.dm_card variant="bordered">
-      <:title>MCP LogWriter</:title>
+      <:title>{dgettext("admin", "MCP LogWriter")}</:title>
       <.dm_badge variant={status_variant(@health.status)}>{status_label(@health.status)}</.dm_badge>
       <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-        <div><dt class="inline text-on-surface-variant">Inserted records:</dt> <dd class="inline">{format_number(@health.inserted_total)}</dd></div>
-        <div><dt class="inline text-on-surface-variant">Dropped:</dt> <dd class="inline">{format_number(@health.dropped_total)}</dd></div>
-        <div><dt class="inline text-on-surface-variant">Failed:</dt> <dd class="inline">{format_number(@health.failed_total)}</dd></div>
-        <div><dt class="inline text-on-surface-variant">Duplicates:</dt> <dd class="inline">{format_number(@health.duplicate_total)}</dd></div>
+        <div><dt class="inline text-on-surface-variant">{dgettext("admin", "Inserted records:")}</dt> <dd class="inline">{format_number(@health.inserted_total)}</dd></div>
+        <div><dt class="inline text-on-surface-variant">{dgettext("admin", "Dropped:")}</dt> <dd class="inline">{format_number(@health.dropped_total)}</dd></div>
+        <div><dt class="inline text-on-surface-variant">{dgettext("admin", "Failed:")}</dt> <dd class="inline">{format_number(@health.failed_total)}</dd></div>
+        <div><dt class="inline text-on-surface-variant">{dgettext("admin", "Duplicates:")}</dt> <dd class="inline">{format_number(@health.duplicate_total)}</dd></div>
       </dl>
       <div class="mt-3 space-y-2 border-t border-outline-variant pt-3 text-xs">
-        <.mcp_channel_row label="Request records" health={@health.root} />
-        <.mcp_channel_row label="Tool calls" health={@health.tools} />
+        <.mcp_channel_row label={dgettext("admin", "Request records")} health={@health.root} />
+        <.mcp_channel_row label={dgettext("admin", "Tool calls")} health={@health.tools} />
       </div>
     </.dm_card>
     """
@@ -167,11 +167,11 @@ defmodule Backplane.Admin.LogsSinksLive do
     <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span class="font-medium">{@label}</span>
       <.dm_badge variant={status_variant(@health.status)}>{status_label(@health.status)}</.dm_badge>
-      <span class="text-on-surface-variant">queue {format_number(@health.queue.queued)}/{format_number(@health.queue.capacity)}</span>
-      <span class="text-on-surface-variant">inserted {format_number(@health.inserted_total)}</span>
-      <span :if={@health.dropped_total > 0} class="text-on-surface-variant">dropped {format_number(@health.dropped_total)}</span>
-      <span :if={@health.failed_total > 0} class="text-error">failed {format_number(@health.failed_total)}</span>
-      <span :if={@health.duplicate_total > 0} class="text-on-surface-variant">duplicates {format_number(@health.duplicate_total)}</span>
+      <span class="text-on-surface-variant">{dgettext("admin", "queue %{queued}/%{capacity}", queued: format_number(@health.queue.queued), capacity: format_number(@health.queue.capacity))}</span>
+      <span class="text-on-surface-variant">{dgettext("admin", "inserted %{count}", count: format_number(@health.inserted_total))}</span>
+      <span :if={@health.dropped_total > 0} class="text-on-surface-variant">{dgettext("admin", "dropped %{count}", count: format_number(@health.dropped_total))}</span>
+      <span :if={@health.failed_total > 0} class="text-error">{dgettext("admin", "failed %{count}", count: format_number(@health.failed_total))}</span>
+      <span :if={@health.duplicate_total > 0} class="text-on-surface-variant">{dgettext("admin", "duplicates %{count}", count: format_number(@health.duplicate_total))}</span>
     </div>
     """
   end
@@ -239,8 +239,12 @@ defmodule Backplane.Admin.LogsSinksLive do
   defp status_variant(:disabled), do: "neutral"
   defp status_variant(_), do: "neutral"
 
-  defp status_label(:degraded), do: "degraded"
-  defp status_label(status), do: to_string(status || :unavailable)
+  defp status_label(:ok), do: dgettext("admin", "ok")
+  defp status_label(:degraded), do: dgettext("admin", "degraded")
+  defp status_label(:disabled), do: dgettext("admin", "disabled")
+  defp status_label(:unavailable), do: dgettext("admin", "unavailable")
+  defp status_label(nil), do: dgettext("admin", "unavailable")
+  defp status_label(status), do: to_string(status)
 
   defp safe_call(fun, default \\ %{}) do
     fun.()

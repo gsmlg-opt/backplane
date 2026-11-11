@@ -6,7 +6,7 @@ defmodule Backplane.Admin.PageController do
   end
 
   def not_found(conn, _params) do
-    Plug.Conn.send_resp(conn, 404, "not found")
+    Plug.Conn.send_resp(conn, 404, dgettext("errors", "not found"))
   end
 
   def legacy_embedding(conn, _params), do: redirect(conn, to: ~p"/llama/embedding")

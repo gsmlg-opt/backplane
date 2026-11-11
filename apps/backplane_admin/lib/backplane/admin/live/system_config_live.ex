@@ -35,13 +35,16 @@ defmodule Backplane.Admin.SystemConfigLive do
             {:noreply,
              socket
              |> clear_flash()
-             |> put_flash(:info, "API information fetching updated.")}
+             |> put_flash(:info, dgettext("admin", "API information fetching updated."))}
 
           {:error, _reason} ->
             {:noreply,
              socket
              |> clear_flash()
-             |> put_flash(:error, "Setting updated, but the audit record could not be saved.")}
+             |> put_flash(
+               :error,
+               dgettext("errors", "Setting updated, but the audit record could not be saved.")
+             )}
         end
 
       {:error, _reason} ->
@@ -49,7 +52,10 @@ defmodule Backplane.Admin.SystemConfigLive do
          socket
          |> assign(fetching_enabled: ApiAccounts.fetching_enabled?())
          |> clear_flash()
-         |> put_flash(:error, "Could not update API information fetching. Please try again.")}
+         |> put_flash(
+           :error,
+           dgettext("errors", "Could not update API information fetching. Please try again.")
+         )}
     end
   end
 
@@ -57,7 +63,7 @@ defmodule Backplane.Admin.SystemConfigLive do
     {:noreply,
      socket
      |> clear_flash()
-     |> put_flash(:error, "Invalid API fetching setting.")}
+     |> put_flash(:error, dgettext("errors", "Invalid API fetching setting."))}
   end
 
   def handle_event("set-secrethub", %{"secrethub" => %{"enabled" => value}}, socket)
@@ -146,12 +152,12 @@ defmodule Backplane.Admin.SystemConfigLive do
     ~H"""
     <div id="system-config" class="space-y-6">
       <div>
-        <h1 class="text-2xl font-bold">System Config</h1>
-        <p class="mt-1 text-on-surface-variant">Global operational settings</p>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "System Config")}</h1>
+        <p class="mt-1 text-on-surface-variant">{dgettext("admin", "Global operational settings")}</p>
       </div>
 
       <.dm_card id="api-fetching-config" variant="bordered">
-        <:title>API Usage fetching</:title>
+        <:title>{dgettext("admin", "API Usage fetching")}</:title>
         <div class="space-y-4">
           <.form
             id="api-fetching-config-form"
@@ -162,29 +168,26 @@ defmodule Backplane.Admin.SystemConfigLive do
             <.dm_switch
               id="api-information-fetching"
               name="config[enabled]"
-              label="API information fetching"
+              label={dgettext("admin", "API information fetching")}
               checked={@fetching_enabled}
-              helper="Enabled by default. Changes are saved immediately."
+              helper={dgettext("admin", "Enabled by default. Changes are saved immediately.")}
             />
           </.form>
 
           <.dm_badge id="api-fetching-status" variant={if @fetching_enabled, do: "success", else: "warning"}>
-            {if @fetching_enabled, do: "Fetching enabled", else: "Fetching disabled"}
+            {if @fetching_enabled, do: dgettext("admin", "Fetching enabled"), else: dgettext("admin", "Fetching disabled")}
           </.dm_badge>
 
           <p class="text-on-surface-variant">
-            This global switch controls automatic and manual API information fetching.
-            Disabling cancels in-flight requests and preserves cached successful snapshots.
-            Re-enabling refreshes active accounts.
+            {dgettext("admin", "This global switch controls automatic and manual API information fetching. Disabling cancels in-flight requests and preserves cached successful snapshots. Re-enabling refreshes active accounts.")}
           </p>
           <p class="text-on-surface-variant">
-            Subscription Plan Usage is independent and unaffected. The per-account active
-            flags still apply; enabling this switch does not resume paused accounts.
+            {dgettext("admin", "Subscription Plan Usage is independent and unaffected. The per-account active flags still apply; enabling this switch does not resume paused accounts.")}
           </p>
 
           <div class="flex flex-wrap gap-4">
-            <.dm_link navigate="/system/monitor/api-usage">Configure API accounts</.dm_link>
-            <.dm_link navigate="/dashboard/usage/api">View API Usage dashboard</.dm_link>
+            <.dm_link navigate="/system/monitor/api-usage">{dgettext("admin", "Configure API accounts")}</.dm_link>
+            <.dm_link navigate="/dashboard/usage/api">{dgettext("admin", "View API Usage dashboard")}</.dm_link>
           </div>
         </div>
       </.dm_card>

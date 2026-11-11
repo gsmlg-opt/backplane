@@ -1,0 +1,831 @@
+## This file is a PO Template file.
+##
+## "msgid"s here are often extracted from source code.
+## Add new messages manually only if they're dynamic
+## messages that can't be statically extracted.
+##
+## Run "mix gettext.extract" to bring this file up to
+## date. Leave "msgstr"s empty as changing them here has no
+## effect: edit them in PO (.po) files instead.
+#
+msgid ""
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:47
+#, elixir-autogen, elixir-format
+msgid "%{heading} - Backplane Docs"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:323
+#, elixir-autogen, elixir-format
+msgid "%{mcp_url} and %{v1_url} are separate OAuth audiences. Resource-bound OAuth access tokens are audience-specific: a token issued for one resource is not valid for the other. PAT and legacy credentials follow the configured compatibility policy."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:70
+#, elixir-autogen, elixir-format
+msgid "%{mcp_url} is the canonical Streamable HTTP endpoint. An unauthenticated request returns a WWW-Authenticate challenge that points to %{mcp_metadata_url}."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:338
+#, elixir-autogen, elixir-format
+msgid "A refresh token request that omits resource inherits its original resource, supporting durable ChatGPT connectivity across reconnects. Revoke access at %{revoke_url}."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:192
+#, elixir-autogen, elixir-format
+msgid "API reference"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:278
+#: lib/backplane/api/controllers/page_controller.ex:279
+#: lib/backplane/api/controllers/page_html/home.html.heex:97
+#: lib/backplane/api/controllers/page_html/home.html.heex:288
+#: lib/backplane/api/controllers/page_html/home.html.heex:352
+#, elixir-autogen, elixir-format
+msgid "Agent setup"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:135
+#, elixir-autogen, elixir-format
+msgid "Agents"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:328
+#, elixir-autogen, elixir-format
+msgid "All protected API resources accept Authorization: Bearer <token>. x-api-key is an equivalent Backplane client-token alias. Google GenAI clients may also use x-goog-api-key on /v1beta; send only one credential header per request."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:348
+#, elixir-autogen, elixir-format
+msgid "Assign matching client scopes and user scopes before starting authorization."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:75
+#, elixir-autogen, elixir-format
+msgid "Assign the same MCP tool scopes to the predefined client and the signing-in user. Backplane exposes permitted tools with stable prefix::tool names."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:121
+#, elixir-autogen, elixir-format
+msgid "Audio voice discovery (Backplane extension)"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:315
+#: lib/backplane/api/controllers/page_controller.ex:316
+#: lib/backplane/api/controllers/page_html/home.html.heex:305
+#: lib/backplane/api/controllers/page_html/home.html.heex:358
+#, elixir-autogen, elixir-format
+msgid "Authentication"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:108
+#, elixir-autogen, elixir-format
+msgid "Authorize API clients for Backplane's separate /v1 resource, then call model endpoints with a resource-bound bearer token."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:149
+#, elixir-autogen, elixir-format
+msgid "Authorize with PKCE"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:139
+#, elixir-autogen, elixir-format
+msgid "Authorize with resource=%{v1_url}, then exchange $CODE with the same resource value and the original $CODE_VERIFIER."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:45
+#: lib/backplane/api/controllers/page_html/home.html.heex:45
+#, elixir-autogen, elixir-format
+msgid "Auto"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:45
+#: lib/backplane/api/controllers/page_html/docs.html.heex:78
+#: lib/backplane/api/controllers/page_html/docs.html.heex:82
+#, elixir-autogen, elixir-format
+msgid "Backplane Docs"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:154
+#, elixir-autogen, elixir-format
+msgid "Backplane has two protected resources. Pick the one your client needs, then follow the setup guide for its token and request format."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:87
+#, elixir-autogen, elixir-format
+msgid "Backplane is the stable entry point for model traffic and MCP sessions. Docs now own the endpoint catalog, client setup, and authentication details."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:158
+#, elixir-autogen, elixir-format
+msgid "Browse all guides"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:222
+#, elixir-autogen, elixir-format
+msgid "Call the API"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:159
+#, elixir-autogen, elixir-format
+msgid "Call the model gateway"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:296
+#, elixir-autogen, elixir-format
+msgid "ChatGPT MCP configuration"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:91
+#, elixir-autogen, elixir-format
+msgid "ChatGPT endpoint values"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:103
+#, elixir-autogen, elixir-format
+msgid "Choose a guide"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:214
+#, elixir-autogen, elixir-format
+msgid "Choose a resource"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:126
+#, elixir-autogen, elixir-format
+msgid "Choose a voice for the selected provider"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:152
+#, elixir-autogen, elixir-format
+msgid "Choose what you want to connect"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:301
+#, elixir-autogen, elixir-format
+msgid "Claude Code configuration"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:310
+#, elixir-autogen, elixir-format
+msgid "Client tokens, open local mode, and public OAuth endpoints."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:306
+#, elixir-autogen, elixir-format
+msgid "Codex configuration"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:96
+#, elixir-autogen, elixir-format
+msgid "Compatible model APIs with resource-bound access tokens."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:82
+#, elixir-autogen, elixir-format
+msgid "Configure ChatGPT's MCP server URL as %{mcp_url}. Enter $CLIENT_ID and $CLIENT_SECRET in ChatGPT's OAuth settings, then test the connection."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:293
+#, elixir-autogen, elixir-format
+msgid "Configure coding agents and API clients to use Backplane."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:218
+#, elixir-autogen, elixir-format
+msgid "Configure the client"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:170
+#, elixir-autogen, elixir-format
+msgid "Configure your client"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:131
+#, elixir-autogen, elixir-format
+msgid "Connect & secure"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:65
+#, elixir-autogen, elixir-format
+msgid "Connect ChatGPT and other MCP clients to Backplane's resource-bound tool gateway."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:174
+#, elixir-autogen, elixir-format
+msgid "Connect an MCP client to one Streamable HTTP resource and discover namespaced tools from every configured service."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:223
+#, elixir-autogen, elixir-format
+msgid "Copy a safe example, inspect the route reference, and keep access tokens in environment variables."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:79
+#, elixir-autogen, elixir-format
+msgid "Copy the exact callback URI shown in the ChatGPT app-management page. It has a shape such as https://chatgpt.com/connector/oauth/<callback_id>. Do not change the callback ID or add a trailing slash."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:80
+#, elixir-autogen, elixir-format
+msgid "Create a predefined confidential Backplane OAuth client, keep PKCE S256 enabled, and register that exact callback URI. Copy the generated $CLIENT_ID and one-time client secret into $CLIENT_SECRET when it is shown; Backplane will not show it again."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:347
+#, elixir-autogen, elixir-format
+msgid "Create a predefined confidential client, keep PKCE S256 enabled, register exact redirect URIs, and assign one or both protected resources."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:137
+#, elixir-autogen, elixir-format
+msgid "Create or select a predefined confidential OAuth client with PKCE S256, enable LLM API (/v1), and assign llm::models and llm::invoke as needed."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:326
+#, elixir-autogen, elixir-format
+msgid "Credential header compatibility"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:86
+#, elixir-autogen, elixir-format
+msgid "Discover MCP OAuth"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:144
+#, elixir-autogen, elixir-format
+msgid "Discover the LLM resource"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:163
+#, elixir-autogen, elixir-format
+msgid "Discover voices for a speech model"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:133
+#, elixir-autogen, elixir-format
+msgid "Discovery uses the local MiniMax system-voice snapshot dated 2026-10-06, shared with the admin preview, plus configured voice aliases. It makes no upstream requests, reads no vault secrets, and incurs no provider usage charges; it does not discover account-specific cloned voices or prove credential entitlement or synthesis readiness. Audio disabled returns 503 audio_disabled. An enabled service with no eligible providers or voice policy returns an empty list. Invalid model returns 400 invalid_parameter, unknown or disabled model returns 404 model_not_found, a model for another operation returns 400 operation_mismatch, and an alias loop returns 400 alias_loop."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:12
+#: lib/backplane/api/controllers/page_html/docs.html.heex:14
+#: lib/backplane/api/controllers/page_html/docs.html.heex:15
+#: lib/backplane/api/controllers/page_html/docs.html.heex:17
+#: lib/backplane/api/controllers/page_html/docs.html.heex:104
+#: lib/backplane/api/controllers/page_html/home.html.heex:12
+#: lib/backplane/api/controllers/page_html/home.html.heex:14
+#: lib/backplane/api/controllers/page_html/home.html.heex:15
+#: lib/backplane/api/controllers/page_html/home.html.heex:17
+#: lib/backplane/api/controllers/page_html/home.html.heex:341
+#, elixir-autogen, elixir-format
+msgid "Docs"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:335
+#, elixir-autogen, elixir-format
+msgid "Docs own route details"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:81
+#, elixir-autogen, elixir-format
+msgid "Docs-first contract"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:81
+#, elixir-autogen, elixir-format
+msgid "Enable MCP (/mcp), assign matching tool scopes to the client, and grant matching scopes to the signing-in user."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:154
+#, elixir-autogen, elixir-format
+msgid "Exchange the authorization code"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:116
+#, elixir-autogen, elixir-format
+msgid "Existing credentials remain valid"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:138
+#, elixir-autogen, elixir-format
+msgid "Fetch the protected-resource metadata and make an unauthenticated GET request to the canonical /v1 resource to inspect its challenge."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:290
+#, elixir-autogen, elixir-format
+msgid "For ChatGPT, register the exact callback it supplies, select the predefined OAuth client, and configure the MCP endpoint."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:291
+#, elixir-autogen, elixir-format
+msgid "For Claude Code, configure the Anthropic-compatible /v1 base URL and add Backplane as an HTTP MCP server."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:292
+#, elixir-autogen, elixir-format
+msgid "For Codex, define a Backplane model provider and MCP server, with token values supplied through environment variables."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:204
+#, elixir-autogen, elixir-format
+msgid "For Google clients"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:212
+#, elixir-autogen, elixir-format
+msgid "For agy, select the separate google-antigravity preset and its Google OAuth credential. Keep its model aliases and project configuration separate from the Gemini API-key provider."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:186
+#, elixir-autogen, elixir-format
+msgid "For models"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:168
+#, elixir-autogen, elixir-format
+msgid "For tools"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:123
+#, elixir-autogen, elixir-format
+msgid "GET /v1/audio/voices uses the Backplane bearer token and llm::models scope. This is a Backplane extension, not an official OpenAI list endpoint; OpenAI's POST /v1/audio/voices creates custom voices. Call this GET directly with your HTTP client. Optional model accepts a public speech model alias or provider/model and restricts results to its provider; omit it to list providers with enabled speech bindings, models, and providers."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:80
+#, elixir-autogen, elixir-format
+msgid "Gateway overview"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:194
+#, elixir-autogen, elixir-format
+msgid "Gemini Developer API"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:220
+#, elixir-autogen, elixir-format
+msgid "Generate content"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:204
+#, elixir-autogen, elixir-format
+msgid "Google Antigravity (agy)"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:188
+#, elixir-autogen, elixir-format
+msgid "Google GenAI"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:205
+#, elixir-autogen, elixir-format
+msgid "Google GenAI + agy"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:230
+#, elixir-autogen, elixir-format
+msgid "Google GenAI SDK base URL"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:189
+#, elixir-autogen, elixir-format
+msgid "Google GenAI and agy"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:113
+#, elixir-autogen, elixir-format
+msgid "Grant llm::models for model and audio voice discovery and llm::invoke for inference operations, including speech synthesis. Request only the scopes the client and user share."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:211
+#, elixir-autogen, elixir-format
+msgid "Grant the client llm::models and/or llm::invoke, then use the Google resource path under /v1beta with the Backplane bearer token."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:341
+#, elixir-autogen, elixir-format
+msgid "HTTPS and troubleshooting"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:261
+#, elixir-autogen, elixir-format
+msgid "Host-agent support"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:210
+#, elixir-autogen, elixir-format
+msgid "In the admin LLM provider page, create Google Gemini Developer API with the google-gemini-developer preset, bind an API-key credential, and confirm the base URL ends in /v1beta."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:325
+#, elixir-autogen, elixir-format
+msgid "Keep agents connected to a stable public origin while Backplane handles model routing, tool namespaces, credentials, and usage capture behind the gateway."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:284
+#, elixir-autogen, elixir-format
+msgid "Keep endpoints distinct"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:105
+#: lib/backplane/api/controllers/page_controller.ex:106
+#: lib/backplane/api/controllers/page_html/docs.html.heex:95
+#: lib/backplane/api/controllers/page_html/home.html.heex:187
+#, elixir-autogen, elixir-format
+msgid "LLM proxy"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:111
+#, elixir-autogen, elixir-format
+msgid "LLM scopes"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:216
+#, elixir-autogen, elixir-format
+msgid "List Google models"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:90
+#: lib/backplane/api/controllers/page_html/home.html.heex:169
+#: lib/backplane/api/controllers/page_html/home.html.heex:254
+#: lib/backplane/api/controllers/page_html/home.html.heex:346
+#, elixir-autogen, elixir-format
+msgid "MCP Hub"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:286
+#, elixir-autogen, elixir-format
+msgid "MCP clients connect to %{mcp_url}; model clients use %{v1_url}. Resource-bound OAuth access tokens are audience-specific, so use separate $MCP_ACCESS_TOKEN and $LLM_ACCESS_TOKEN values. PAT and legacy credentials follow the configured compatibility policy."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:62
+#: lib/backplane/api/controllers/page_controller.ex:63
+#, elixir-autogen, elixir-format
+msgid "MCP hub"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:318
+#, elixir-autogen, elixir-format
+msgid "Manage predefined OAuth clients and troubleshoot the separate MCP and LLM protected resources."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:256
+#, elixir-autogen, elixir-format
+msgid "Managed service tools"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:195
+#, elixir-autogen, elixir-format
+msgid "Model + invoke scopes"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:237
+#: lib/backplane/api/controllers/page_html/home.html.heex:343
+#, elixir-autogen, elixir-format
+msgid "Model gateway"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:105
+#, elixir-autogen, elixir-format
+msgid "Model path"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:94
+#, elixir-autogen, elixir-format
+msgid "Models"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:66
+#: lib/backplane/api/controllers/page_html/home.html.heex:66
+#, elixir-autogen, elixir-format
+msgid "Moonlight"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:113
+#, elixir-autogen, elixir-format
+msgid "Namespaced access"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:206
+#, elixir-autogen, elixir-format
+msgid "Native Gemini GenerateContent, model discovery, and the separate Antigravity subscription route."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:199
+#, elixir-autogen, elixir-format
+msgid "Native Google GenerateContent operations"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:177
+#, elixir-autogen, elixir-format
+msgid "OAuth + tool scopes"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:363
+#, elixir-autogen, elixir-format
+msgid "OAuth error guide"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:343
+#, elixir-autogen, elixir-format
+msgid "OAuth protected resources require HTTPS outside the explicit local development override. invalid_target means the requested resource is missing, repeated, unsupported, or disallowed; invalid_token means the bearer token is invalid or bound to the wrong audience; insufficient_scope means the valid token lacks the required operation scope."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:259
+#, elixir-autogen, elixir-format
+msgid "One managed tool gateway with upstream services and namespaced tools."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:329
+#, elixir-autogen, elixir-format
+msgid "One model gateway"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:68
+#, elixir-autogen, elixir-format
+msgid "One protected MCP resource"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:84
+#, elixir-autogen, elixir-format
+msgid "One public surface for agents, tools, and model traffic"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:332
+#, elixir-autogen, elixir-format
+msgid "One tool gateway"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:92
+#, elixir-autogen, elixir-format
+msgid "Open docs"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:209
+#, elixir-autogen, elixir-format
+msgid "Open guide"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:232
+#, elixir-autogen, elixir-format
+msgid "Open section"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:115
+#, elixir-autogen, elixir-format
+msgid "Overview"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:331
+#, elixir-autogen, elixir-format
+msgid "Predefined clients and PKCE"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:140
+#, elixir-autogen, elixir-format
+msgid "Private routing"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:354
+#, elixir-autogen, elixir-format
+msgid "Protected resource audiences"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:242
+#, elixir-autogen, elixir-format
+msgid "Provider routing, model aliases, usage capture, and compatible model APIs."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:11
+#: lib/backplane/api/controllers/page_html/home.html.heex:11
+#, elixir-autogen, elixir-format
+msgid "Public API"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:321
+#, elixir-autogen, elixir-format
+msgid "Public gateway contract"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:85
+#, elixir-autogen, elixir-format
+msgid "Public gateway references for MCP tools, model traffic, skills, agent setup, and authentication."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:136
+#, elixir-autogen, elixir-format
+msgid "Public origin"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:256
+#, elixir-autogen, elixir-format
+msgid "Reference"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:336
+#, elixir-autogen, elixir-format
+msgid "Refresh and revocation"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:179
+#, elixir-autogen, elixir-format
+msgid "Request examples"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:118
+#, elixir-autogen, elixir-format
+msgid "Resource OAuth is additive compatibility: existing PAT and legacy bearer access continue under the deployment's configured authentication policy."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:119
+#, elixir-autogen, elixir-format
+msgid "Reusable records"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:276
+#, elixir-autogen, elixir-format
+msgid "Reusable skill records, archive handling, and managed skill tools."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:358
+#, elixir-autogen, elixir-format
+msgid "Revoke a token"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:350
+#, elixir-autogen, elixir-format
+msgid "Revoke tokens when access should end, and use the returned OAuth error names to diagnose failed requests."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:107
+#, elixir-autogen, elixir-format
+msgid "Routed centrally"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:73
+#, elixir-autogen, elixir-format
+msgid "Scoped access"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:30
+#: lib/backplane/api/controllers/page_html/docs.html.heex:36
+#: lib/backplane/api/controllers/page_html/home.html.heex:30
+#: lib/backplane/api/controllers/page_html/home.html.heex:36
+#, elixir-autogen, elixir-format
+msgid "Select theme"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:140
+#, elixir-autogen, elixir-format
+msgid "Send the returned bearer token to /v1 operations and keep provider credentials inside Backplane."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:321
+#, elixir-autogen, elixir-format
+msgid "Separate resource audiences"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:248
+#, elixir-autogen, elixir-format
+msgid "Serve, import, export, and browse reusable agent skills through the public Skills API and MCP tools."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:251
+#, elixir-autogen, elixir-format
+msgid "Skill archive routes"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:117
+#, elixir-autogen, elixir-format
+msgid "Skill path"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:245
+#: lib/backplane/api/controllers/page_controller.ex:246
+#: lib/backplane/api/controllers/page_html/home.html.heex:271
+#: lib/backplane/api/controllers/page_html/home.html.heex:349
+#, elixir-autogen, elixir-format
+msgid "Skills library"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:151
+#, elixir-autogen, elixir-format
+msgid "Start here"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:215
+#, elixir-autogen, elixir-format
+msgid "Start with MCP for tools or the LLM proxy for model requests. Tokens are bound to that choice."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:225
+#, elixir-autogen, elixir-format
+msgid "Stream or count tokens"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:91
+#, elixir-autogen, elixir-format
+msgid "Streamable HTTP, OAuth discovery, and namespaced tools."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:55
+#: lib/backplane/api/controllers/page_html/home.html.heex:55
+#, elixir-autogen, elixir-format
+msgid "Sunshine"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:206
+#, elixir-autogen, elixir-format
+msgid "The google-antigravity provider is a separate OAuth subscription surface for the existing agy workflow. It uses its own native Cloud Code protocol and credential; do not reuse a Gemini API key or treat Antigravity as the public Gemini Developer API."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:196
+#, elixir-autogen, elixir-format
+msgid "The google-gemini-developer provider uses the official Gemini GenerateContent API at /v1beta. Configure an API-key credential in the admin provider settings; Backplane injects it upstream and never forwards caller credentials. Clients may authenticate with Authorization: Bearer, x-api-key, or the Google SDK's x-goog-api-key compatibility header using the same Backplane client token."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:263
+#, elixir-autogen, elixir-format
+msgid "The host-agent socket can synchronize local skill and memory context with Backplane."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:201
+#, elixir-autogen, elixir-format
+msgid "The native Google surface supports model listing, model details, generateContent, streamGenerateContent with alt=sse, and countTokens. Use the Google-shaped request and response bodies; this route does not silently translate to OpenAI."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:128
+#, elixir-autogen, elixir-format
+msgid "The response is an object=list with data rows containing id, object=audio.voice, name, language (or null), provider, native_id, and type (system or alias), sorted by provider then id. Send the returned id as speech.voice with a model belonging to that provider. Native system voices appear only when allow_native is true; configured aliases appear regardless and override a native voice with the same public id. There is no implicit conversion of OpenAI voices such as alloy."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:258
+#, elixir-autogen, elixir-format
+msgid "The skills managed service exposes skill discovery and retrieval through MCP for connected agents."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:21
+#: lib/backplane/api/controllers/page_html/docs.html.heex:34
+#: lib/backplane/api/controllers/page_html/home.html.heex:21
+#: lib/backplane/api/controllers/page_html/home.html.heex:34
+#, elixir-autogen, elixir-format
+msgid "Theme"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:111
+#, elixir-autogen, elixir-format
+msgid "Tool path"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:89
+#, elixir-autogen, elixir-format
+msgid "Tools"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:253
+#, elixir-autogen, elixir-format
+msgid "Use /skills to list or create records, /skills/export for a bundle, and /skills/:slug/archive for a single archive."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/docs.html.heex:117
+#, elixir-autogen, elixir-format
+msgid "Use Backplane"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:168
+#, elixir-autogen, elixir-format
+msgid "Use a discovered voice ID"
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:192
+#, elixir-autogen, elixir-format
+msgid "Use an OpenAI or Anthropic compatible API while Backplane keeps provider credentials, routing, and usage behind the gateway."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:333
+#, elixir-autogen, elixir-format
+msgid "Use predefined OAuth clients. ChatGPT uses a confidential client with its exact registered callback and PKCE S256; the client secret is displayed only once."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:281
+#, elixir-autogen, elixir-format
+msgid "Use the configured Backplane origin for ChatGPT, Claude Code, and Codex without embedding real credentials."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:191
+#, elixir-autogen, elixir-format
+msgid "Use the native Gemini Developer API through Backplane, or keep the existing Google Antigravity (agy) subscription route explicit and separate."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:349
+#, elixir-autogen, elixir-format
+msgid "Use the same resource during authorization and code exchange. On refresh, omit resource to inherit the original binding or supply that same exact value."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_html/home.html.heex:219
+#, elixir-autogen, elixir-format
+msgid "Use the setup guide for your coding agent or a custom OAuth client."
+msgstr ""
+
+#: lib/backplane/api/controllers/page_controller.ex:131
+#, elixir-autogen, elixir-format
+msgid "Voice catalog and discovery errors"
+msgstr ""

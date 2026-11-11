@@ -5,7 +5,7 @@ defmodule Backplane.Admin.AppearanceLive do
   def mount(_params, _session, socket) do
     {:ok,
      assign(socket,
-       page_title: "Appearance",
+       page_title: dgettext("navigation", "Appearance"),
        current_path: "/system/appearance"
      )}
   end
@@ -15,9 +15,9 @@ defmodule Backplane.Admin.AppearanceLive do
     ~H"""
     <div class="space-y-6">
       <div>
-        <h1 class="text-2xl font-bold tracking-tight text-on-surface">Appearance</h1>
+        <h1 class="text-2xl font-bold tracking-tight text-on-surface">{dgettext("navigation", "Appearance")}</h1>
         <p class="mt-1 text-sm text-on-surface-variant">
-          Choose system theme preference: automatic, light, or dark.
+          {dgettext("admin", "Choose system theme preference: automatic, light, or dark.")}
         </p>
       </div>
 
@@ -26,7 +26,7 @@ defmodule Backplane.Admin.AppearanceLive do
           id="appearance-theme-switcher"
           class="segment-control"
           role="radiogroup"
-          aria-label="Theme preference"
+          aria-label={dgettext("admin", "Theme preference")}
           phx-hook="ThemeSegmentControl"
         >
           <button
@@ -37,7 +37,7 @@ defmodule Backplane.Admin.AppearanceLive do
             data-theme-value="default"
           >
             <.dm_bsi name="display" class="segment-icon" />
-            <span>Auto</span>
+            <span>{dgettext("admin", "Auto")}</span>
           </button>
           <button
             type="button"
@@ -47,7 +47,7 @@ defmodule Backplane.Admin.AppearanceLive do
             data-theme-value="sunshine"
           >
             <.dm_bsi name="sun" class="segment-icon" />
-            <span>Light</span>
+            <span>{dgettext("admin", "Light")}</span>
           </button>
           <button
             type="button"
@@ -57,7 +57,7 @@ defmodule Backplane.Admin.AppearanceLive do
             data-theme-value="moonlight"
           >
             <.dm_bsi name="moon" class="segment-icon" />
-            <span>Dark</span>
+            <span>{dgettext("admin", "Dark")}</span>
           </button>
         </div>
       </div>

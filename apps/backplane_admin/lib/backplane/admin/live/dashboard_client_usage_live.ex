@@ -76,8 +76,8 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
     ~H"""
     <div class="space-y-6">
       <div>
-        <h1 class="text-2xl font-bold">Client Usage</h1>
-        <p class="mt-1 text-sm text-on-surface-variant">LLM models and MCP operations used by each registered client.</p>
+        <h1 class="text-2xl font-bold">{dgettext("admin", "Client Usage")}</h1>
+        <p class="mt-1 text-sm text-on-surface-variant">{dgettext("admin", "LLM models and MCP operations used by each registered client.")}</p>
       </div>
 
       <div id="client-usage-tabs" class="tabs tabs-lifted" role="tablist">
@@ -95,46 +95,46 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
 
       <.usage_time_range id="client-usage-range" action={tab_path(@live_action)} selected={@range} />
 
-      <div :if={@loading} class="text-sm text-on-surface-variant">Loading client usage...</div>
+      <div :if={@loading} class="text-sm text-on-surface-variant">{dgettext("admin", "Loading client usage...")}</div>
       <div :if={!@loading and @clients == []} class="text-sm text-on-surface-variant">
-        No clients configured.
-        <.link navigate={~p"/system/clients"} class="text-primary underline">Manage clients</.link>
+        {dgettext("admin", "No clients configured.")}
+        <.link navigate={~p"/system/clients"} class="text-primary underline">{dgettext("user", "Manage clients")}</.link>
       </div>
 
       <section :if={!@loading and @clients != [] and tab_action(@live_action) == :llm} id="client-llm-usage" class="space-y-3">
-        <div :if={@llm_rows == []} class="text-sm text-on-surface-variant">No LLM usage recorded in this range.</div>
+        <div :if={@llm_rows == []} class="text-sm text-on-surface-variant">{dgettext("admin", "No LLM usage recorded in this range.")}</div>
         <div :if={@llm_rows != []} class="overflow-x-auto">
           <.dm_table id="client-llm-usage-table" data={@llm_rows} hover zebra>
-            <:col :let={row} label="Client"><.client_name client={row.client} /></:col>
-            <:col :let={row} label="Model"><code>{row.model}</code></:col>
-            <:col :let={row} label="Requests" class="tabular-nums">{format_number(row.requests)}</:col>
-            <:col :let={row} label="Input Tokens" class="tabular-nums">{format_input_tokens(row)}</:col>
-            <:col :let={row} label="Output Tokens" class="tabular-nums">{format_number(row.output_tokens)}</:col>
+            <:col :let={row} label={dgettext("admin", "Client")}><.client_name client={row.client} /></:col>
+            <:col :let={row} label={dgettext("admin", "Model")}><code>{row.model}</code></:col>
+            <:col :let={row} label={dgettext("admin", "Requests")} class="tabular-nums">{format_number(row.requests)}</:col>
+            <:col :let={row} label={dgettext("admin", "Input Tokens")} class="tabular-nums">{format_input_tokens(row)}</:col>
+            <:col :let={row} label={dgettext("admin", "Output Tokens")} class="tabular-nums">{format_number(row.output_tokens)}</:col>
           </.dm_table>
         </div>
         <.idle_clients clients={@idle_clients} kind="LLM" />
       </section>
 
       <section :if={!@loading and @clients != [] and tab_action(@live_action) == :mcp} id="client-mcp-usage" class="space-y-6">
-        <div :if={@tool_rows == [] and @rpc_rows == []} class="text-sm text-on-surface-variant">No MCP usage recorded in this range.</div>
+        <div :if={@tool_rows == [] and @rpc_rows == []} class="text-sm text-on-surface-variant">{dgettext("admin", "No MCP usage recorded in this range.")}</div>
         <div :if={@tool_rows != []} class="space-y-2">
-          <h2 class="font-semibold">Tool Calls</h2>
+          <h2 class="font-semibold">{dgettext("admin", "Tool Calls")}</h2>
           <div class="overflow-x-auto">
             <.dm_table id="client-mcp-tools-table" data={@tool_rows} hover zebra>
-              <:col :let={row} label="Client"><.client_name client={row.client} /></:col>
-              <:col :let={row} label="Tool"><code>{row.tool}</code></:col>
-              <:col :let={row} label="Calls" class="tabular-nums">{format_number(row.requests)}</:col>
+              <:col :let={row} label={dgettext("admin", "Client")}><.client_name client={row.client} /></:col>
+              <:col :let={row} label={dgettext("admin", "Tool")}><code>{row.tool}</code></:col>
+              <:col :let={row} label={dgettext("admin", "Calls")} class="tabular-nums">{format_number(row.requests)}</:col>
             </.dm_table>
           </div>
         </div>
         <div :if={@rpc_rows != []} class="space-y-2">
-          <h2 class="font-semibold">RPC Methods</h2>
+          <h2 class="font-semibold">{dgettext("admin", "RPC Methods")}</h2>
           <div class="overflow-x-auto">
             <.dm_table id="client-mcp-rpc-table" data={@rpc_rows} hover zebra>
-              <:col :let={row} label="Client"><.client_name client={row.client} /></:col>
-              <:col :let={row} label="Method"><code>{row.method}</code></:col>
-              <:col :let={row} label="Requests" class="tabular-nums">{format_number(row.requests)}</:col>
-              <:col :let={row} label="Avg Duration" class="tabular-nums">{format_number(row.avg_duration_ms)} ms</:col>
+              <:col :let={row} label={dgettext("admin", "Client")}><.client_name client={row.client} /></:col>
+              <:col :let={row} label={dgettext("admin", "Method")}><code>{row.method}</code></:col>
+              <:col :let={row} label={dgettext("admin", "Requests")} class="tabular-nums">{format_number(row.requests)}</:col>
+              <:col :let={row} label={dgettext("admin", "Avg Duration")} class="tabular-nums">{dgettext("admin", "%{value} ms", value: format_number(row.avg_duration_ms))}</:col>
             </.dm_table>
           </div>
         </div>
@@ -149,7 +149,7 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
   defp client_name(assigns) do
     ~H"""
     <span class="font-medium">{@client.name}</span>
-    <.dm_badge :if={!@client.active} variant="neutral" size="sm">Inactive</.dm_badge>
+    <.dm_badge :if={!@client.active} variant="neutral" size="sm">{dgettext("common", "Inactive")}</.dm_badge>
     """
   end
 
@@ -159,7 +159,7 @@ defmodule Backplane.Admin.DashboardClientUsageLive do
   defp idle_clients(assigns) do
     ~H"""
     <p :if={@clients != []} id="client-usage-idle" class="text-sm text-on-surface-variant">
-      No {@kind} usage: {Enum.map_join(@clients, ", ", & &1.name)}
+      {dgettext("admin", "No %{kind} usage: %{clients}", kind: @kind, clients: Enum.map_join(@clients, ", ", & &1.name))}
     </p>
     """
   end

@@ -61,43 +61,43 @@ defmodule Backplane.Admin.LogsLlmLive do
     <div>
       <div class="mb-4">
         <.link navigate={~p"/system/logs/llm"} class="text-sm text-primary underline">
-          ← Back to LLM logs
+          {dgettext("admin", "← Back to LLM logs")}
         </.link>
       </div>
 
       <div :if={@error}>
-        <.error_state title="Record unavailable" message={@error} />
+        <.error_state title={dgettext("admin", "Record unavailable")} message={@error} />
       </div>
 
       <div :if={@record}>
-        <h1 class="mb-4 text-2xl font-bold">LLM Request Detail</h1>
+        <h1 class="mb-4 text-2xl font-bold">{dgettext("admin", "LLM Request Detail")}</h1>
 
         <.dm_card variant="bordered" class="mb-6">
           <dl class="grid gap-3 text-sm sm:grid-cols-2">
-            <div><dt class="text-on-surface-variant">Model</dt><dd class="font-mono text-xs">{model_label(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">Client</dt><dd>{client_label(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">Outcome</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
-            <div><dt class="text-on-surface-variant">Status</dt><dd>{@record.status || "-"}</dd></div>
-            <div><dt class="text-on-surface-variant">Protocol</dt><dd>{protocol_label(@record.api_surface)}</dd></div>
-            <div><dt class="text-on-surface-variant">Operation</dt><dd>{operation_label(@record.operation)}</dd></div>
-            <div><dt class="text-on-surface-variant">Usage observation</dt><dd>{usage_observation(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">Duration</dt><dd>{@record.duration_ms || "-"} ms</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Model")}</dt><dd class="font-mono text-xs">{model_label(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Client")}</dt><dd>{client_label(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Outcome")}</dt><dd><.dm_badge variant={outcome_badge_variant(@record.outcome)}>{@record.outcome}</.dm_badge></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("common", "Status")}</dt><dd>{@record.status || "-"}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Protocol")}</dt><dd>{protocol_label(@record.api_surface)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Operation")}</dt><dd>{operation_label(@record.operation)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Usage observation")}</dt><dd>{usage_observation(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Duration")}</dt><dd>{@record.duration_ms || "-"} ms</dd></div>
             <div id="llm-detail-ttft"><dt class="text-on-surface-variant"><.ttft_label /></dt><dd>{format_ttft(@record)}</dd></div>
             <div id="llm-detail-tokens-per-second"><dt class="text-on-surface-variant"><.tokens_per_second_label /></dt><dd>{format_tokens_per_second(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">Tokens</dt><dd>{token_summary(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">Payload</dt><dd>{payload_status(@record)}</dd></div>
-            <div><dt class="text-on-surface-variant">Recorded</dt><dd><.local_time datetime={@record.inserted_at} /></dd></div>
-            <div><dt class="text-on-surface-variant">Request ID</dt><dd><.copy_field label="Request ID" value={@record.request_id} /></dd></div>
-            <div><dt class="text-on-surface-variant">Trace ID</dt><dd><.copy_field label="Trace ID" value={@record.trace_id} /></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Tokens")}</dt><dd>{token_summary(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Payload")}</dt><dd>{payload_status(@record)}</dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Recorded")}</dt><dd><.local_time datetime={@record.inserted_at} /></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Request ID")}</dt><dd><.copy_field label={dgettext("admin", "Request ID")} value={@record.request_id} /></dd></div>
+            <div><dt class="text-on-surface-variant">{dgettext("admin", "Trace ID")}</dt><dd><.copy_field label={dgettext("admin", "Trace ID")} value={@record.trace_id} /></dd></div>
           </dl>
 
           <div :if={@record.error_reason} class="mt-4">
-            <h3 class="text-sm font-semibold">Error</h3>
+            <h3 class="text-sm font-semibold">{dgettext("common", "Error")}</h3>
             <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-container-high p-3 text-xs">{bounded_error(@record.error_reason)}</pre>
           </div>
 
           <div class="mt-4">
-            <h3 class="text-sm font-semibold">Metadata</h3>
+            <h3 class="text-sm font-semibold">{dgettext("admin", "Metadata")}</h3>
             <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-container-high p-3 text-xs">{metadata_summary(@record.metadata)}</pre>
           </div>
         </.dm_card>
@@ -109,18 +109,18 @@ defmodule Backplane.Admin.LogsLlmLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="mb-2 text-2xl font-bold">LLM Logs</h1>
-      <p class="mb-4 text-sm text-on-surface-variant">Persisted LLM proxy access records.</p>
+      <h1 class="mb-2 text-2xl font-bold">{dgettext("navigation", "LLM Logs")}</h1>
+      <p class="mb-4 text-sm text-on-surface-variant">{dgettext("admin", "Persisted LLM proxy access records.")}</p>
 
       <.time_range_form
         action={~p"/system/logs/llm"}
         since={@time_range.since}
         until={@time_range.until}
         fields={[
-          %{name: "model", placeholder: "Model", value: @filters[:model]},
-          %{name: "outcome", placeholder: "Outcome", value: @filters[:outcome]},
-          %{name: "request_id", placeholder: "Request ID", value: @filters[:request_id]},
-          %{name: "trace_id", placeholder: "Trace ID", value: @filters[:trace_id]}
+          %{name: "model", placeholder: dgettext("admin", "Model"), value: @filters[:model]},
+          %{name: "outcome", placeholder: dgettext("admin", "Outcome"), value: @filters[:outcome]},
+          %{name: "request_id", placeholder: dgettext("admin", "Request ID"), value: @filters[:request_id]},
+          %{name: "trace_id", placeholder: dgettext("admin", "Trace ID"), value: @filters[:trace_id]}
         ]}
       />
 
@@ -129,39 +129,39 @@ defmodule Backplane.Admin.LogsLlmLive do
       </div>
 
       <div :if={!@loading and @records == []}>
-        <.empty_state title="No LLM logs found" message="Try widening the time range or clearing filters." />
+        <.empty_state title={dgettext("admin", "No LLM logs found")} message={dgettext("admin", "Try widening the time range or clearing filters.")} />
       </div>
 
       <div :if={!@loading and @records != []} id="llm-logs-table-scroll" class="min-w-0 w-full overflow-x-auto">
         <.dm_table id="llm-logs-table" data={@records} hover zebra>
-          <:col :let={row} label="Client">{client_label(row)}</:col>
-          <:col :let={row} label="Provider">{row.provider_name || "-"}</:col>
-          <:col :let={row} label="Model">
+          <:col :let={row} label={dgettext("admin", "Client")}>{client_label(row)}</:col>
+          <:col :let={row} label={dgettext("admin", "Provider")}>{row.provider_name || "-"}</:col>
+          <:col :let={row} label={dgettext("admin", "Model")}>
             <.link navigate={~p"/system/logs/llm/#{row.id}"} class="font-mono text-xs text-primary underline">
               {model_label(row)}
             </.link>
           </:col>
-          <:col :let={row} label="Protocol">{protocol_label(row.api_surface)}</:col>
-          <:col :let={row} label="Operation">{operation_label(row.operation)}</:col>
-          <:col :let={row} label="Usage observation">{usage_observation(row)}</:col>
-          <:col :let={row} label="Outcome">
+          <:col :let={row} label={dgettext("admin", "Protocol")}>{protocol_label(row.api_surface)}</:col>
+          <:col :let={row} label={dgettext("admin", "Operation")}>{operation_label(row.operation)}</:col>
+          <:col :let={row} label={dgettext("admin", "Usage observation")}>{usage_observation(row)}</:col>
+          <:col :let={row} label={dgettext("admin", "Outcome")}>
             <.dm_badge variant={outcome_badge_variant(row.outcome)} size="sm">{row.outcome}</.dm_badge>
           </:col>
-          <:col :let={row} label="Status">{row.status || "-"}</:col>
-          <:col :let={row} label="Duration">{row.duration_ms || "-"} ms</:col>
-          <:col :let={row} label="TTFT" header={ttft_label(assigns)}>{format_ttft(row)}</:col>
-          <:col :let={row} label="T/S" header={tokens_per_second_label(assigns)}>{format_tokens_per_second(row)}</:col>
-          <:col :let={row} label="Input Tokens">{format_token_count(row.input_tokens)}</:col>
-          <:col :let={row} label="Cached Tokens">{format_token_count(row.cached_tokens)}</:col>
-          <:col :let={row} label="Output Tokens">{format_token_count(row.output_tokens)}</:col>
-          <:col :let={row} label="Recorded">
+          <:col :let={row} label={dgettext("common", "Status")}>{row.status || "-"}</:col>
+          <:col :let={row} label={dgettext("admin", "Duration")}>{row.duration_ms || "-"} ms</:col>
+          <:col :let={row} label={dgettext("admin", "TTFT")} header={ttft_label(assigns)}>{format_ttft(row)}</:col>
+          <:col :let={row} label={dgettext("admin", "T/S")} header={tokens_per_second_label(assigns)}>{format_tokens_per_second(row)}</:col>
+          <:col :let={row} label={dgettext("admin", "Input Tokens")}>{format_token_count(row.input_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Cached Tokens")}>{format_token_count(row.cached_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Output Tokens")}>{format_token_count(row.output_tokens)}</:col>
+          <:col :let={row} label={dgettext("admin", "Recorded")}>
             <.local_time datetime={row.inserted_at} format="short" />
           </:col>
         </.dm_table>
       </div>
 
       <div :if={@next_cursor} class="mt-4">
-        <.dm_btn phx-click="load_more" size="sm">Load more</.dm_btn>
+        <.dm_btn phx-click="load_more" size="sm">{dgettext("common", "Load more")}</.dm_btn>
       </div>
     </div>
     """
@@ -202,7 +202,7 @@ defmodule Backplane.Admin.LogsLlmLive do
   defp load_detail(socket, %{"id" => id}) do
     case LogQuery.get(id) do
       nil ->
-        {:noreply, assign(socket, loading: false, record: nil, error: "Record not found")}
+        {:noreply, assign(socket, loading: false, record: nil, error: dgettext("errors", "Record not found"))}
 
       record ->
         {:noreply, assign(socket, loading: false, record: record, error: nil)}
@@ -214,13 +214,22 @@ defmodule Backplane.Admin.LogsLlmLive do
     out_val = out_t || 0
     total = record.total_tokens || in_val + out_val
 
-    cached =
-      case record.cached_tokens do
-        nil -> ""
-        value -> " / #{format_token_count(value)} cached"
-      end
+    case record.cached_tokens do
+      nil ->
+        dgettext("admin", "%{total} (%{input} input / %{output} output)",
+          total: format_token_count(total),
+          input: format_token_count(in_val),
+          output: format_token_count(out_val)
+        )
 
-    "#{format_token_count(total)} (#{format_token_count(in_val)} input#{cached} / #{format_token_count(out_val)} output)"
+      cached ->
+        dgettext("admin", "%{total} (%{input} input / %{cached} cached / %{output} output)",
+          total: format_token_count(total),
+          input: format_token_count(in_val),
+          cached: format_token_count(cached),
+          output: format_token_count(out_val)
+        )
+    end
   end
 
   defp model_label(%{requested_model: requested, resolved_model: resolved} = record)
@@ -247,15 +256,15 @@ defmodule Backplane.Admin.LogsLlmLive do
   defp protocol_label("openai_chat_completions"), do: "OpenAI Chat Completions"
   defp protocol_label("openai_responses"), do: "OpenAI Responses"
   defp protocol_label("anthropic_messages"), do: "Anthropic Messages"
-  defp protocol_label(nil), do: "Unknown"
+  defp protocol_label(nil), do: dgettext("admin", "Unknown")
   defp protocol_label(value), do: value
 
-  defp operation_label("load_code_assist"), do: "Load Code Assist"
-  defp operation_label("onboard_user"), do: "Onboard User"
-  defp operation_label("fetch_available_models"), do: "Fetch Available Models"
-  defp operation_label("generate_content"), do: "Generate Content"
-  defp operation_label("stream_generate_content"), do: "Stream Generate Content"
-  defp operation_label(nil), do: "Unknown"
+  defp operation_label("load_code_assist"), do: dgettext("admin", "Load Code Assist")
+  defp operation_label("onboard_user"), do: dgettext("admin", "Onboard User")
+  defp operation_label("fetch_available_models"), do: dgettext("admin", "Fetch Available Models")
+  defp operation_label("generate_content"), do: dgettext("admin", "Generate Content")
+  defp operation_label("stream_generate_content"), do: dgettext("admin", "Stream Generate Content")
+  defp operation_label(nil), do: dgettext("admin", "Unknown")
   defp operation_label(value), do: value
 
   defp usage_observation(%{metadata: metadata}) when is_map(metadata) do
@@ -275,31 +284,33 @@ defmodule Backplane.Admin.LogsLlmLive do
 
         cond do
           observation_status in ["unavailable", :unavailable] ->
-            "Unavailable"
+            dgettext("admin", "Unavailable")
 
           observation_status in ["incomplete", :incomplete] ->
-            "Incomplete"
+            dgettext("admin", "Incomplete")
 
           usage_status in ["partial", :partial] ->
-            "Incomplete"
+            dgettext("admin", "Incomplete")
 
           observation_status in ["complete", :complete] and
               usage_status in ["complete", :complete] ->
-            "Complete"
+            dgettext("admin", "Complete")
 
           usage_status in ["not_applicable", :not_applicable] ->
-            "Unavailable"
+            dgettext("admin", "Unavailable")
 
           true ->
-            "Unknown"
+            dgettext("admin", "Unknown")
         end
 
       _ ->
-        if unavailable_observation?(fallback), do: "Unavailable", else: "Unknown"
+        if unavailable_observation?(fallback),
+          do: dgettext("admin", "Unavailable"),
+          else: dgettext("admin", "Unknown")
     end
   end
 
-  defp usage_observation(_record), do: "Unknown"
+  defp usage_observation(_record), do: dgettext("admin", "Unknown")
 
   defp unavailable_observation?(observation) when is_map(observation) do
     Map.get(observation, "unavailable") == true or Map.get(observation, :unavailable) == true
@@ -313,16 +324,16 @@ defmodule Backplane.Admin.LogsLlmLive do
   # Migrate these fallback spans to dm_tooltip; the installed release supports popovers.
   defp ttft_label(assigns) do
     ~H"""
-    <span title="Time from request start to first generated content." aria-label="TTFT: Time from request start to first generated content." tabindex="0" class="cursor-help">
-      TTFT
+    <span title={dgettext("admin", "Time from request start to first generated content.")} aria-label={dgettext("admin", "TTFT: Time from request start to first generated content.")} tabindex="0" class="cursor-help">
+      {dgettext("admin", "TTFT")}
     </span>
     """
   end
 
   defp tokens_per_second_label(assigns) do
     ~H"""
-    <span title="Output tokens per second, measured from first generated content until the stream ends." aria-label="T/S: Output tokens per second, measured from first generated content until the stream ends." tabindex="0" class="cursor-help">
-      T/S
+    <span title={dgettext("admin", "Output tokens per second, measured from first generated content until the stream ends.")} aria-label={dgettext("admin", "T/S: Output tokens per second, measured from first generated content until the stream ends.")} tabindex="0" class="cursor-help">
+      {dgettext("admin", "T/S")}
     </span>
     """
   end

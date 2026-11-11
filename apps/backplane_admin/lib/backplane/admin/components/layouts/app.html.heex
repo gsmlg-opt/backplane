@@ -7,8 +7,8 @@
 <% active_left_item = left_nav_items |> Enum.flat_map(fn item -> Map.get(item, :items, [item]) end) |> Enum.find(&Backplane.Admin.Layouts.active_left_nav?(current_path, &1)) %>
 <% memory_page_label = cond do
   active_left_item -> active_left_item.label
-  String.starts_with?(current_path, "/memory/events") -> "Events"
-  true -> "Overview"
+  String.starts_with?(current_path, "/memory/events") -> dgettext("navigation", "Events")
+  true -> dgettext("navigation", "Overview")
 end %>
 
 <div class="min-h-full bg-surface text-on-surface">
@@ -35,7 +35,7 @@ end %>
           id="appbar-version-trigger"
           type="button"
           class="cursor-help rounded-full"
-          aria-label="Version details"
+          aria-label={dgettext("admin", "Version details")}
           {trigger_attrs}
         >
           <.dm_badge
@@ -51,7 +51,7 @@ end %>
       </.dm_tooltip>
     </div>
 
-    <nav class="appbar-actions admin-top-nav" aria-label="Main navigation">
+    <nav class="appbar-actions admin-top-nav" aria-label={dgettext("navigation", "Main navigation")}>
       <.link
         :for={item <- Backplane.Admin.Layouts.top_nav_items()}
         navigate={item.path}
@@ -82,14 +82,14 @@ end %>
       socket={@socket}
       groups={left_nav_groups}
       active={Backplane.Admin.Layouts.active_left_nav_id(current_path)}
-      nav_label={left_nav_heading <> " navigation"}
+      nav_label={dgettext("navigation", "%{section} navigation", section: left_nav_heading)}
       class="admin-sidebar admin-desktop-sidebar sticky top-16 h-[calc(100dvh-4rem)]"
     />
 
     <aside :if={memory_section?} class="memory-mobile-sidebar lg:hidden">
       <details id="memory-mobile-navigation" class="memory-mobile-menu">
-        <summary><span class="text-xs text-on-surface-variant">Memory /</span><span>{memory_page_label}</span><.dm_mdi name="chevron-down" class="ml-auto h-5 w-5" /></summary>
-        <nav aria-label="Memory navigation" class="memory-mobile-links">
+        <summary><span class="text-xs text-on-surface-variant">{dgettext("navigation", "Memory /")}</span><span>{memory_page_label}</span><.dm_mdi name="chevron-down" class="ml-auto h-5 w-5" /></summary>
+        <nav aria-label={dgettext("navigation", "Memory navigation")} class="memory-mobile-links">
           <div :for={group <- left_nav_groups} class="memory-mobile-group">
             <span :if={!String.starts_with?(group.id, "links-")} class="memory-eyebrow">{group.label}</span>
             <.link :for={child <- group.items} navigate={child.to} aria-current={Backplane.Admin.Layouts.active_left_nav_id(current_path) == child.id && "page"}>
@@ -101,7 +101,7 @@ end %>
     </aside>
 
     <aside :if={!memory_section?} class="admin-sidebar lg:hidden">
-      <nav class="admin-sidebar-nav" aria-label={left_nav_heading <> " navigation"}>
+      <nav class="admin-sidebar-nav" aria-label={dgettext("navigation", "%{section} navigation", section: left_nav_heading)}>
         <div class="admin-sidebar-section">{left_nav_heading}</div>
         <div :for={item <- left_nav_items} class="contents">
           <div :if={Map.has_key?(item, :items)} class="admin-sidebar-group">
@@ -142,7 +142,7 @@ end %>
     <main class={["min-w-0 flex-1 flex flex-col", memory_section? && "memory-workspace"]}>
       <div class="admin-content mx-auto max-w-7xl w-full flex-1 flex flex-col px-4 py-6 sm:px-6 lg:px-8">
         <.dm_flash_group flash={@flash} />
-        <.dm_alert :if={assigns[:memory_refresh_error]} id="memory-refresh-error" variant="error" title="Refresh unavailable">{assigns[:memory_refresh_error]}</.dm_alert>
+        <.dm_alert :if={assigns[:memory_refresh_error]} id="memory-refresh-error" variant="error" title={dgettext("errors", "Refresh unavailable")}>{assigns[:memory_refresh_error]}</.dm_alert>
     {@inner_content}
       </div>
     </main>

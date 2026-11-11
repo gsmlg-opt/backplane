@@ -47,8 +47,8 @@ defmodule Backplane.Admin.LogsJobsLive do
   def render(assigns) do
     ~H"""
     <div>
-      <h1 class="mb-2 text-2xl font-bold">Background Jobs</h1>
-      <p class="mb-4 text-sm text-on-surface-variant">Recent Styx job activity.</p>
+      <h1 class="mb-2 text-2xl font-bold">{dgettext("admin", "Background Jobs")}</h1>
+      <p class="mb-4 text-sm text-on-surface-variant">{dgettext("admin", "Recent Styx job activity.")}</p>
 
       <.dm_card
         :if={@selected_job}
@@ -57,22 +57,22 @@ defmodule Backplane.Admin.LogsJobsLive do
         padding="sm"
         class="mb-6"
       >
-        <h2 class="font-semibold">Job detail</h2>
+        <h2 class="font-semibold">{dgettext("admin", "Job detail")}</h2>
         <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-          <div><dt class="text-on-surface-variant">Worker</dt><dd class="font-mono text-xs">{@selected_job.worker}</dd></div>
-          <div><dt class="text-on-surface-variant">Queue / state</dt><dd>{@selected_job.queue} / {@selected_job.state}</dd></div>
-          <div><dt class="text-on-surface-variant">Attempt</dt><dd>{@selected_job.attempt}/{@selected_job.max_attempts}</dd></div>
+          <div><dt class="text-on-surface-variant">{dgettext("admin", "Worker")}</dt><dd class="font-mono text-xs">{@selected_job.worker}</dd></div>
+          <div><dt class="text-on-surface-variant">{dgettext("admin", "Queue / state")}</dt><dd>{@selected_job.queue} / {@selected_job.state}</dd></div>
+          <div><dt class="text-on-surface-variant">{dgettext("admin", "Attempt")}</dt><dd>{@selected_job.attempt}/{@selected_job.max_attempts}</dd></div>
         </dl>
-        <h3 class="mt-4 text-sm font-semibold">Sanitized error</h3>
+        <h3 class="mt-4 text-sm font-semibold">{dgettext("admin", "Sanitized error")}</h3>
         <pre class="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{@selected_job.error_detail}</pre>
       </.dm_card>
 
       <div :if={@jobs == []}>
-        <.empty_state title="No recent jobs found" />
+        <.empty_state title={dgettext("admin", "No recent jobs found")} />
       </div>
 
       <.dm_table :if={@jobs != []} id="jobs-table" data={@jobs} hover zebra>
-        <:col :let={job} label="Worker">
+        <:col :let={job} label={dgettext("admin", "Worker")}>
           <.link
             patch={~p"/system/logs/jobs?#{%{job_id: job.id}}"}
             class="font-mono text-xs text-primary underline"
@@ -80,15 +80,15 @@ defmodule Backplane.Admin.LogsJobsLive do
             {short_worker(job.worker)}
           </.link>
         </:col>
-        <:col :let={job} label="Queue">{job.queue}</:col>
-        <:col :let={job} label="State">
+        <:col :let={job} label={dgettext("admin", "Queue")}>{job.queue}</:col>
+        <:col :let={job} label={dgettext("common", "State")}>
           <.dm_badge variant={state_badge_variant(job.state)} size="sm">{job.state}</.dm_badge>
         </:col>
-        <:col :let={job} label="Attempt">{job.attempt}/{job.max_attempts}</:col>
-        <:col :let={job} label="Started">
+        <:col :let={job} label={dgettext("admin", "Attempt")}>{job.attempt}/{job.max_attempts}</:col>
+        <:col :let={job} label={dgettext("admin", "Started")}>
           <.local_time datetime={job.attempted_at} format="short" />
         </:col>
-        <:col :let={job} label="Completed">
+        <:col :let={job} label={dgettext("admin", "Completed")}>
           <.local_time datetime={job.completed_at} format="short" />
         </:col>
       </.dm_table>

@@ -105,38 +105,48 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
     <div class="space-y-6">
       <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-bold">API Usage</h1>
+          <h1 class="text-2xl font-bold">{dgettext("admin", "API Usage")}</h1>
           <p class="text-sm text-on-surface-variant">
-            API account balances and key spending, independent of subscription plans and LLM routing.
-            Active accounts refresh every five minutes when API information fetching is enabled.
+            {dgettext(
+              "admin",
+              "API account balances and key spending, independent of subscription plans and LLM routing. Active accounts refresh every five minutes when API information fetching is enabled."
+            )}
           </p>
         </div>
         <div class="flex items-center gap-3">
           <.dm_btn id="refresh-all-api-accounts" size="sm" phx-click="refresh_all" disabled={!@fetching_enabled}>
-            Refresh All
+            {dgettext("admin", "Refresh All")}
           </.dm_btn>
           <.link navigate={~p"/system/monitor/api-usage"} class="text-primary underline text-sm">
-            Manage API Accounts
+            {dgettext("admin", "Manage API Accounts")}
           </.link>
         </div>
       </div>
       <div id="api-fetching-status" role="status" class="text-sm">
         <.dm_badge variant={if @fetching_enabled, do: "success", else: "warning"} size="sm">
-          API information fetching: {if @fetching_enabled, do: "Enabled", else: "Disabled"}
+          {if @fetching_enabled,
+            do: dgettext("admin", "API information fetching: Enabled"),
+            else: dgettext("admin", "API information fetching: Disabled")}
         </.dm_badge>
         <p :if={!@fetching_enabled} class="mt-2 text-on-surface-variant">
-          API information fetching is disabled globally. Cached data from the last successful refresh remains visible.
-          Enable fetching in <.link navigate={~p"/system/config"} class="text-primary underline">System Config</.link>.
+          {dgettext(
+            "admin",
+            "API information fetching is disabled globally. Cached data from the last successful refresh remains visible."
+          )}
+          {dgettext("admin", "Enable fetching in")}
+          <.link navigate={~p"/system/config"} class="text-primary underline">
+            {dgettext("admin", "System Config")}
+          </.link>.
         </p>
       </div>
       <p :if={@states == []} class="text-on-surface-variant">
-        No API accounts configured. Manage API Accounts to add an API-key credential from the vault.
+        {dgettext("admin", "No API accounts configured. Manage API Accounts to add an API-key credential from the vault.")}
       </p>
       <.form :if={@organizations != []} for={%{}} id="api-organization-filter" phx-change="select_organization">
-        <.dm_select id="api-usage-organization" name="organization_id" label="OpenAI Organization"
+        <.dm_select id="api-usage-organization" name="organization_id" label={dgettext("admin", "OpenAI Organization")}
           value={@selected_organization} options={Enum.map(@organizations, &{&1, &1})}
-          prompt="All OpenAI organizations"
-          helper="Filter configured OpenAI organizations. Other providers remain visible." />
+          prompt={dgettext("admin", "All OpenAI organizations")}
+          helper={dgettext("admin", "Filter configured OpenAI organizations. Other providers remain visible.")} />
       </.form>
       <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <.account_card :for={state <- @visible_states} state={state} fetching_enabled={@fetching_enabled} />
@@ -152,38 +162,54 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
         <div class="flex flex-wrap items-center gap-3">
           <h2 class="text-lg font-semibold">{@state.account.name}</h2>
           <.dm_badge variant="info" size="sm">{provider_label(@state.account.provider)}</.dm_badge>
-          <.dm_badge :if={!@state.account.active} variant="warning" size="sm">Paused</.dm_badge>
-          <.dm_badge :if={@state.refreshing} variant="info" size="sm">Refreshing</.dm_badge>
+          <.dm_badge :if={!@state.account.active} variant="warning" size="sm">{dgettext("admin", "Paused")}</.dm_badge>
+          <.dm_badge :if={@state.refreshing} variant="info" size="sm">{dgettext("admin", "Refreshing")}</.dm_badge>
         </div>
       </:title>
       <div class="space-y-4">
         <div :if={@state.account.provider == "openai"} class="text-sm space-y-2">
-          <p>Organization: <code class="font-mono">{@state.account.organization_id}</code></p>
+          <p>
+            {dgettext("admin", "Organization:")} <code class="font-mono">{@state.account.organization_id}</code>
+          </p>
           <p class="text-on-surface-variant">
-            Spending covers the whole organization. Completions usage shows tokens and requests;
-            daily and month-to-date periods use UTC. OpenAI may report usage with a delay.
+            {dgettext(
+              "admin",
+              "Spending covers the whole organization. Completions usage shows tokens and requests; daily and month-to-date periods use UTC. OpenAI may report usage with a delay."
+            )}
           </p>
           <.openai_balance_placeholder />
         </div>
         <p :if={@state.usage != nil && (!@fetching_enabled || !@state.account.active)} role="status" class="text-sm text-on-surface-variant">
-          Cached data from the last successful refresh; fetching is {if @fetching_enabled, do: "paused for this account", else: "disabled globally"}.
+          {if @fetching_enabled,
+            do:
+              dgettext(
+                "admin",
+                "Cached data from the last successful refresh; fetching is paused for this account."
+              ),
+            else:
+              dgettext(
+                "admin",
+                "Cached data from the last successful refresh; fetching is disabled globally."
+              )}
         </p>
         <div class="text-xs text-on-surface-variant space-y-1">
-          <p>Last success: <.timestamp id={"api-account-#{@state.account.id}-success"} datetime={@state.last_success_at} /></p>
-          <p>Last attempt: <.timestamp id={"api-account-#{@state.account.id}-attempt"} datetime={@state.fetched_at} /></p>
+          <p>{dgettext("admin", "Last success:")} <.timestamp id={"api-account-#{@state.account.id}-success"} datetime={@state.last_success_at} /></p>
+          <p>{dgettext("admin", "Last attempt:")} <.timestamp id={"api-account-#{@state.account.id}-attempt"} datetime={@state.fetched_at} /></p>
         </div>
         <div :if={@state.error != nil} role="alert" class="text-sm text-error">
-          Refresh failed. {error_message(@state.error, @state.account.provider)}
-          <p :if={@state.usage != nil}>Retained data from last successful refresh; values may be stale.</p>
+          {dgettext("admin", "Refresh failed.")} {error_message(@state.error, @state.account.provider)}
+          <p :if={@state.usage != nil}>
+            {dgettext("admin", "Retained data from last successful refresh; values may be stale.")}
+          </p>
         </div>
         <p :if={@state.usage == nil} class="text-sm text-on-surface-variant">
-          Usage unavailable. No successful snapshot yet.
+          {dgettext("admin", "Usage unavailable. No successful snapshot yet.")}
         </p>
         <.usage_details :if={@state.usage != nil} account={@state.account} data={@state.usage} />
         <div class="flex flex-wrap items-center gap-3">
           <.dm_btn id={"refresh-api-account-#{@state.account.id}"} size="sm" phx-click="refresh"
             phx-value-id={@state.account.id} disabled={!@fetching_enabled || !@state.account.active || @state.refreshing}>
-            Refresh
+            {dgettext("admin", "Refresh")}
           </.dm_btn>
 
         </div>
@@ -196,10 +222,10 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
   defp openai_balance_placeholder(assigns) do
     ~H"""
     <section>
-      <h3 class="font-semibold">Account balances</h3>
-      <p class="text-sm text-on-surface-variant">Unavailable — public API balance support pending.</p>
+      <h3 class="font-semibold">{dgettext("admin", "Account balances")}</h3>
+      <p class="text-sm text-on-surface-variant">{dgettext("admin", "Unavailable — public API balance support pending.")}</p>
       <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank"
-        rel="noopener noreferrer" class="text-primary underline text-sm">Open OpenAI Platform billing</a>
+        rel="noopener noreferrer" class="text-primary underline text-sm">{dgettext("admin", "Open OpenAI Platform billing")}</a>
     </section>
     """
   end
@@ -208,21 +234,23 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
     ~H"""
     <div class="space-y-4">
       <section :if={@account.provider != "openai"}>
-        <h3 class="font-semibold">Account balances</h3>
-        <p :if={@data.balances == []} class="text-sm text-on-surface-variant">Unavailable</p>
+        <h3 class="font-semibold">{dgettext("admin", "Account balances")}</h3>
+        <p :if={@data.balances == []} class="text-sm text-on-surface-variant">{dgettext("admin", "Unavailable")}</p>
         <dl :for={balance <- @data.balances} class="text-sm space-y-1 mt-2">
-          <div class="flex justify-between gap-3"><dt>Total balance</dt><dd>{amount(balance.total_balance, balance.currency)}</dd></div>
-          <div :if={@account.provider == "deepseek"} class="flex justify-between gap-3"><dt>Granted</dt><dd>{amount(balance.granted_balance, balance.currency)}</dd></div>
-          <div class="flex justify-between gap-3"><dt>{if @account.provider == "deepseek", do: "Topped up", else: "Purchased credits"}</dt><dd>{amount(balance.topped_up_balance, balance.currency)}</dd></div>
+          <div class="flex justify-between gap-3"><dt>{dgettext("admin", "Total balance")}</dt><dd>{amount(balance.total_balance, balance.currency)}</dd></div>
+          <div :if={@account.provider == "deepseek"} class="flex justify-between gap-3"><dt>{dgettext("admin", "Granted")}</dt><dd>{amount(balance.granted_balance, balance.currency)}</dd></div>
+          <div class="flex justify-between gap-3"><dt>{if @account.provider == "deepseek", do: dgettext("admin", "Topped up"), else: dgettext("admin", "Purchased credits")}</dt><dd>{amount(balance.topped_up_balance, balance.currency)}</dd></div>
         </dl>
         <p :if={@account.provider == "openrouter"} class="text-xs text-on-surface-variant mt-2">
-          Management credential required for OpenRouter account credits. These balances are account-wide,
-          not this API key's remaining limit. Credit failures do not hide key spending.
+          {dgettext(
+            "admin",
+            "Management credential required for OpenRouter account credits. These balances are account-wide, not this API key's remaining limit. Credit failures do not hide key spending."
+          )}
         </p>
       </section>
       <section :if={@account.provider == "openai"}>
-        <h3 class="font-semibold">Completions usage</h3>
-        <p :if={Map.get(@data, :metrics, []) == []} class="text-sm text-on-surface-variant">Unavailable</p>
+        <h3 class="font-semibold">{dgettext("admin", "Completions usage")}</h3>
+        <p :if={Map.get(@data, :metrics, []) == []} class="text-sm text-on-surface-variant">{dgettext("admin", "Unavailable")}</p>
         <dl class="text-sm space-y-1 mt-2">
           <div :for={metric <- Map.get(@data, :metrics, [])} class="flex justify-between gap-3">
             <dt>{metric.label}</dt><dd>{metric.amount} {metric.unit}</dd>
@@ -230,13 +258,15 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
         </dl>
       </section>
       <section>
-        <h3 class="font-semibold">{if @account.provider == "openrouter", do: "API key spending / account spending", else: "Spending"}</h3>
+        <h3 class="font-semibold">{if @account.provider == "openrouter", do: dgettext("admin", "API key spending / account spending"), else: dgettext("admin", "Spending")}</h3>
         <p :if={@account.provider == "openrouter"} class="text-xs text-on-surface-variant">
-          Key usage covers only the selected API key. Account usage covers the whole account,
-          when a management credential is configured.
+          {dgettext(
+            "admin",
+            "Key usage covers only the selected API key. Account usage covers the whole account, when a management credential is configured."
+          )}
         </p>
         <p :if={@data.usage == []} class="text-sm text-on-surface-variant">
-          {if @account.provider == "deepseek", do: "Unavailable — DeepSeek does not provide spending totals.", else: "Unavailable"}
+          {if @account.provider == "deepseek", do: dgettext("admin", "Unavailable — DeepSeek does not provide spending totals."), else: dgettext("admin", "Unavailable")}
         </p>
         <dl :if={@data.usage != []} class="text-sm space-y-1 mt-2">
           <div :for={usage <- @data.usage} class="flex justify-between gap-3">
@@ -245,16 +275,16 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
         </dl>
       </section>
       <section :if={@data.limit != nil || @account.provider == "openrouter"}>
-        <h3 class="font-semibold">{if @account.provider == "firecrawl", do: "Credit limit", else: "API key limit"}</h3>
-        <p :if={@data.limit == nil} class="text-sm text-on-surface-variant">Unavailable / no configured limit</p>
+        <h3 class="font-semibold">{if @account.provider == "firecrawl", do: dgettext("admin", "Credit limit"), else: dgettext("admin", "API key limit")}</h3>
+        <p :if={@data.limit == nil} class="text-sm text-on-surface-variant">{dgettext("admin", "Unavailable / no configured limit")}</p>
         <dl :if={@data.limit != nil} class="text-sm space-y-1 mt-2">
-          <div class="flex justify-between gap-3"><dt>Limit</dt><dd>{amount(@data.limit.amount, @data.limit.currency)}</dd></div>
-          <div class="flex justify-between gap-3"><dt>Remaining</dt><dd>{amount(@data.limit.remaining, @data.limit.currency)}</dd></div>
-          <div class="flex justify-between gap-3"><dt>Reset</dt><dd>{@data.limit.reset || "Unavailable"}</dd></div>
+          <div class="flex justify-between gap-3"><dt>{dgettext("admin", "Limit")}</dt><dd>{amount(@data.limit.amount, @data.limit.currency)}</dd></div>
+          <div class="flex justify-between gap-3"><dt>{dgettext("admin", "Remaining")}</dt><dd>{amount(@data.limit.remaining, @data.limit.currency)}</dd></div>
+          <div class="flex justify-between gap-3"><dt>{dgettext("admin", "Reset")}</dt><dd>{@data.limit.reset || dgettext("admin", "Unavailable")}</dd></div>
         </dl>
       </section>
       <p :if={@data.is_available != nil} class="text-sm">
-        {if @data.is_available, do: "Available for API requests", else: "Unavailable for API requests"}
+        {if @data.is_available, do: dgettext("admin", "Available for API requests"), else: dgettext("admin", "Unavailable for API requests")}
       </p>
       <p :for={warning <- visible_warnings(@data.warnings)} role="status" class="text-sm text-warning">
         {warning_message(warning)}
@@ -265,12 +295,12 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
 
   defp timestamp(assigns) do
     ~H"""
-    <span :if={@datetime == nil}>Never</span>
+    <span :if={@datetime == nil}>{dgettext("admin", "Never")}</span>
     <.local_time :if={@datetime != nil} id={@id} datetime={@datetime} format="datetime" />
     """
   end
 
-  defp amount(nil, _currency), do: "Unavailable"
+  defp amount(nil, _currency), do: dgettext("admin", "Unavailable")
   defp amount(value, currency), do: "#{value} #{currency}"
   defp provider_label("openrouter"), do: "OpenRouter"
   defp provider_label("deepseek"), do: "DeepSeek"
@@ -285,37 +315,37 @@ defmodule Backplane.Admin.DashboardApiUsageLive do
   defp warning_message({field, {:http_error, status}})
        when field in [:organization_costs, :organization_usage] and status in [401, 403],
        do:
-         "OpenAI rejected access to some organization data. Check the organization's Admin API key and Usage read permission. Successfully fetched fields are still shown."
+         dgettext("errors", "OpenAI rejected access to some organization data. Check the organization's Admin API key and Usage read permission. Successfully fetched fields are still shown.")
 
   defp warning_message({:organization_costs, _reason}),
-    do: "OpenAI organization spending unavailable. Successfully fetched usage is still shown."
+    do: dgettext("errors", "OpenAI organization spending unavailable. Successfully fetched usage is still shown.")
 
   defp warning_message({:organization_usage, _reason}),
-    do: "OpenAI Completions usage unavailable. Successfully fetched spending is still shown."
+    do: dgettext("errors", "OpenAI Completions usage unavailable. Successfully fetched spending is still shown.")
 
   defp warning_message({:account_credits, _reason}),
     do:
-      "OpenRouter account credits unavailable. Successfully fetched key spending is still shown."
+      dgettext("errors", "OpenRouter account credits unavailable. Successfully fetched key spending is still shown.")
 
   defp warning_message({:usage_unavailable, :team_management_key_required}),
     do:
-      "Exa usage analytics are unavailable for ordinary accounts. Exa requires Team Management API access; contact Exa support to enable it."
+      dgettext("errors", "Exa usage analytics are unavailable for ordinary accounts. Exa requires Team Management API access; contact Exa support to enable it.")
 
   defp warning_message(_warning),
     do:
-      "Some provider data is unavailable. Displayed values represent only successfully fetched fields."
+      dgettext("errors", "Some provider data is unavailable. Displayed values represent only successfully fetched fields.")
 
   defp error_message({:http_error, status}, "openai") when status in [401, 403],
-    do: "Check the organization's Admin API key and Usage read permission."
+    do: dgettext("errors", "Check the organization's Admin API key and Usage read permission.")
 
   defp error_message(:credential_not_found, _provider),
-    do: "Check the referenced vault credential."
+    do: dgettext("errors", "Check the referenced vault credential.")
 
-  defp error_message(:timeout, _provider), do: "The provider timed out."
+  defp error_message(:timeout, _provider), do: dgettext("errors", "The provider timed out.")
 
   defp error_message({:http_error, status}, _provider) when status in [401, 403],
-    do: "The provider rejected authorization."
+    do: dgettext("errors", "The provider rejected authorization.")
 
   defp error_message(_reason, _provider),
-    do: "Check provider availability and API-key credentials."
+    do: dgettext("errors", "Check provider availability and API-key credentials.")
 end

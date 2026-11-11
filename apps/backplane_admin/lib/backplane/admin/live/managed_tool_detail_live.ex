@@ -59,7 +59,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
       nil ->
         {:noreply,
          socket
-         |> put_flash(:error, "Unknown managed service: #{prefix}")
+         |> put_flash(:error, dgettext("errors", "Unknown managed service: %{prefix}", prefix: prefix))
          |> push_navigate(to: ~p"/mcp/managed")}
 
       service ->
@@ -67,7 +67,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
           nil ->
             {:noreply,
              socket
-             |> put_flash(:error, "Unknown tool: #{full_name}")
+             |> put_flash(:error, dgettext("errors", "Unknown tool: %{name}", name: full_name))
              |> push_navigate(to: ~p"/mcp/managed")}
 
           tool ->
@@ -124,8 +124,8 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
   defp decode_arguments(arguments) do
     case Jason.decode(arguments) do
       {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _} -> {:error, "Arguments must be a JSON object"}
-      {:error, error} -> {:error, "Invalid JSON: #{Exception.message(error)}"}
+      {:ok, _} -> {:error, dgettext("errors", "Arguments must be a JSON object")}
+      {:error, error} -> {:error, dgettext("errors", "Invalid JSON: %{message}", message: Exception.message(error))}
     end
   end
 
@@ -215,7 +215,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
     <div>
       <div class="mb-6 flex items-center gap-3">
         <.dm_btn variant="link" size="sm" phx-click={JS.navigate(~p"/mcp/managed")}>
-          &larr; Managed Services
+          &larr; {dgettext("navigation", "Managed Services")}
         </.dm_btn>
         <div>
           <h1 class="text-2xl font-bold">{@tool.name}</h1>
@@ -226,21 +226,21 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
       <div class="space-y-4">
         <%!-- Tool Info --%>
         <.dm_card variant="bordered">
-          <:title>Tool Information</:title>
+          <:title>{dgettext("admin", "Tool Information")}</:title>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <h4 class="text-xs font-medium text-on-surface-variant mb-1">Full Name</h4>
+              <h4 class="text-xs font-medium text-on-surface-variant mb-1">{dgettext("admin", "Full Name")}</h4>
               <code class="text-sm font-mono bg-surface-container-high px-2 py-1 rounded">{@tool.name}</code>
             </div>
             <div>
-              <h4 class="text-xs font-medium text-on-surface-variant mb-1">Service</h4>
+              <h4 class="text-xs font-medium text-on-surface-variant mb-1">{dgettext("admin", "Service")}</h4>
               <div class="flex items-center gap-2">
                 <span class="text-sm">{@service.name}</span>
                 <.dm_badge variant="ghost" size="sm">{@service.prefix}::</.dm_badge>
               </div>
             </div>
             <div class="md:col-span-2">
-              <h4 class="text-xs font-medium text-on-surface-variant mb-1">Description</h4>
+              <h4 class="text-xs font-medium text-on-surface-variant mb-1">{dgettext("admin", "Description")}</h4>
               <p class="text-sm">{@tool.description}</p>
             </div>
           </div>
@@ -248,17 +248,17 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
 
         <%!-- Input Schema --%>
         <.dm_card variant="bordered">
-          <:title>Input Schema</:title>
+          <:title>{dgettext("admin", "Input Schema")}</:title>
           <div class="space-y-4">
             <%!-- Properties table --%>
             <div :if={schema_properties(@tool) != []} class="overflow-x-auto">
               <table class="w-full text-sm">
                 <thead>
                   <tr class="border-b border-outline-variant">
-                    <th class="text-left py-2 pr-4 text-xs font-medium text-on-surface-variant">Parameter</th>
-                    <th class="text-left py-2 pr-4 text-xs font-medium text-on-surface-variant">Type</th>
-                    <th class="text-left py-2 pr-4 text-xs font-medium text-on-surface-variant">Required</th>
-                    <th class="text-left py-2 text-xs font-medium text-on-surface-variant">Description</th>
+                    <th class="text-left py-2 pr-4 text-xs font-medium text-on-surface-variant">{dgettext("admin", "Parameter")}</th>
+                    <th class="text-left py-2 pr-4 text-xs font-medium text-on-surface-variant">{dgettext("admin", "Type")}</th>
+                    <th class="text-left py-2 pr-4 text-xs font-medium text-on-surface-variant">{dgettext("admin", "Required")}</th>
+                    <th class="text-left py-2 text-xs font-medium text-on-surface-variant">{dgettext("admin", "Description")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -276,10 +276,10 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
                         variant="warning"
                         size="sm"
                       >
-                        required
+                        {dgettext("admin", "required")}
                       </.dm_badge>
                       <span :if={not MapSet.member?(schema_required(@tool), name)} class="text-xs text-on-surface-variant">
-                        optional
+                        {dgettext("admin", "optional")}
                       </span>
                     </td>
                     <td class="py-2 text-xs text-on-surface-variant">{prop["description"] || "—"}</td>
@@ -291,7 +291,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
             <%!-- Raw JSON schema --%>
             <details class="group">
               <summary class="cursor-pointer text-xs text-on-surface-variant hover:text-on-surface transition-colors">
-                Raw JSON Schema ▸
+                {dgettext("admin", "Raw JSON Schema ▸")}
               </summary>
               <pre class="mt-2 overflow-x-auto rounded-md bg-surface-container-high p-4 text-sm"><code>{@schema_text}</code></pre>
             </details>
@@ -302,13 +302,13 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
         <.dm_card variant="bordered">
           <:title>
             <div class="flex items-center justify-between w-full">
-              <span>Test Tool</span>
-              <.dm_tooltip :let={tooltip_attrs} :if={@test_result || @test_error} content="Clear results" position="bottom">
+              <span>{dgettext("admin", "Test Tool")}</span>
+              <.dm_tooltip :let={tooltip_attrs} :if={@test_result || @test_error} content={dgettext("admin", "Clear results")} position="bottom">
                 <.dm_btn {tooltip_attrs}
                   size="xs"
                   shape="circle"
                   variant="ghost"
-                  aria-label={"Clear #{@tool.name} test results"}
+                  aria-label={dgettext("admin", "Clear %{name} test results", name: @tool.name)}
                   phx-click="clear_result"
                 >
                   <.dm_mdi name="close" class="w-4 h-4" />
@@ -319,7 +319,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
           <form id="tool-test-form" phx-submit="run_test" class="space-y-4">
             <div>
               <label class="block text-xs font-medium text-on-surface-variant mb-1">
-                Arguments (JSON)
+                {dgettext("admin", "Arguments (JSON)")}
               </label>
               <.dm_textarea
                 id="tool-test-arguments"
@@ -330,7 +330,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
               />
             </div>
             <.dm_btn type="submit" variant="primary">
-              <.dm_mdi name="play" class="w-4 h-4 mr-1" /> Call Tool
+              <.dm_mdi name="play" class="w-4 h-4 mr-1" /> {dgettext("admin", "Call Tool")}
             </.dm_btn>
           </form>
         </.dm_card>
@@ -340,7 +340,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
           <:title>
             <div class="flex items-center gap-2">
               <.dm_mdi name="alert-circle" class="w-5 h-5 text-error" />
-              <span>Error</span>
+              <span>{dgettext("common", "Error")}</span>
             </div>
           </:title>
           <p class="text-sm text-error">{@test_error}</p>
@@ -351,7 +351,7 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
           <:title>
             <div class="flex items-center gap-2">
               <.dm_mdi name="check-circle" class="w-5 h-5 text-success" />
-              <span>Result</span>
+              <span>{dgettext("admin", "Result")}</span>
             </div>
           </:title>
           <pre class="overflow-x-auto rounded-md bg-surface-container-high p-4 text-sm"><code>{@test_result}</code></pre>
