@@ -172,7 +172,7 @@ defmodule Backplane.Admin.FigmaOAuth do
         |> OAuthRefresher.request_options()
         |> Keyword.merge(form: body, headers: headers, receive_timeout: @request_timeout_ms)
 
-      case Req.post(token_url, request_options) do
+      case Backplane.HTTPClient.post(token_url, request_options) do
         {:ok, %{status: 200, body: response}} ->
           normalize_tokens(response, attrs, oauth_client)
 

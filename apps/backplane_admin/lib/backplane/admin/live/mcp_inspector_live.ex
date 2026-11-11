@@ -562,15 +562,15 @@ defmodule Backplane.Admin.McpInspectorLive do
   defp do_http_post(url, body, headers) do
     req_headers = Map.new(headers)
 
-    case Req.post(url, json: body, headers: req_headers, receive_timeout: 30_000) do
-      {:ok, %Req.Response{status: status, body: body, headers: response_headers}}
+    case Backplane.HTTPClient.post(url, json: body, headers: req_headers, receive_timeout: 30_000) do
+      {:ok, %Backplane.HTTPClient.Response{status: status, body: body, headers: response_headers}}
       when status in 200..299 ->
         case parse_mcp_response(body) do
           {:ok, response} -> {:ok, response, response_headers}
           {:error, reason} -> {:error, reason}
         end
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Backplane.HTTPClient.Response{status: status, body: body}} ->
         {:error, "HTTP #{status}: #{inspect(body)}"}
 
       {:error, exception} ->
@@ -582,7 +582,7 @@ defmodule Backplane.Admin.McpInspectorLive do
 
   defp parse_mcp_response(""), do: {:ok, %{}}
 
-  # Response is already decoded JSON (Req auto-decodes application/json)
+  # Response is already decoded JSON (HTTPClient decodes application/json)
   defp parse_mcp_response(%{} = map), do: {:ok, map}
 
   # Response is a binary — could be raw JSON or SSE format

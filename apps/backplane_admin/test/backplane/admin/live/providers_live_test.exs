@@ -776,34 +776,29 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "provider detail loads models from the API", %{conn: conn} do
-      previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+      previous = Application.get_env(:backplane, :llm_model_discovery_http_options)
 
-      Application.put_env(:backplane, :llm_model_discovery_req_options,
-        plug: {Req.Test, __MODULE__}
+      Application.put_env(:backplane, :llm_model_discovery_http_options,
+        adapter: {HTTP.Test, __MODULE__}
       )
 
       on_exit(fn ->
         if previous do
-          Application.put_env(:backplane, :llm_model_discovery_req_options, previous)
+          Application.put_env(:backplane, :llm_model_discovery_http_options, previous)
         else
-          Application.delete_env(:backplane, :llm_model_discovery_req_options)
+          Application.delete_env(:backplane, :llm_model_discovery_http_options)
         end
       end)
 
-      Req.Test.stub(__MODULE__, fn conn ->
-        assert conn.request_path == "/v1/models"
-        assert ["Bearer sk-test"] = Plug.Conn.get_req_header(conn, "authorization")
+      HTTP.Test.stub(__MODULE__, fn request ->
+        assert request.url.path == "/v1/models"
+        assert ["Bearer sk-test"] = HTTP.Headers.get_all(request.headers, "authorization")
 
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.resp(
-          200,
-          Jason.encode!(%{
-            "data" => [
-              %{"id" => "provider-api-model"}
-            ]
-          })
-        )
+        HTTP.Test.json(%{
+          "data" => [
+            %{"id" => "provider-api-model"}
+          ]
+        })
       end)
 
       {:ok, provider} =
@@ -918,33 +913,28 @@ defmodule Backplane.Admin.ProvidersLiveTest do
     end
 
     test "provider detail loads openai codex oauth models from api", %{conn: conn} do
-      previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+      previous = Application.get_env(:backplane, :llm_model_discovery_http_options)
 
-      Application.put_env(:backplane, :llm_model_discovery_req_options,
-        plug: {Req.Test, __MODULE__}
+      Application.put_env(:backplane, :llm_model_discovery_http_options,
+        adapter: {HTTP.Test, __MODULE__}
       )
 
       on_exit(fn ->
         if previous do
-          Application.put_env(:backplane, :llm_model_discovery_req_options, previous)
+          Application.put_env(:backplane, :llm_model_discovery_http_options, previous)
         else
-          Application.delete_env(:backplane, :llm_model_discovery_req_options)
+          Application.delete_env(:backplane, :llm_model_discovery_http_options)
         end
       end)
 
-      Req.Test.stub(__MODULE__, fn conn ->
-        assert conn.request_path == "/backend-api/codex/models"
-        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer oauth-token"]
-        assert Plug.Conn.get_req_header(conn, "chatgpt-account-id") == ["codex-account"]
+      HTTP.Test.stub(__MODULE__, fn request ->
+        assert request.url.path == "/backend-api/codex/models"
+        assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer oauth-token"]
+        assert HTTP.Headers.get_all(request.headers, "chatgpt-account-id") == ["codex-account"]
 
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.resp(
-          200,
-          Jason.encode!(%{
-            "models" => [%{"slug" => "gpt-codex-live-test", "capabilities" => %{}}]
-          })
-        )
+        HTTP.Test.json(%{
+          "models" => [%{"slug" => "gpt-codex-live-test", "capabilities" => %{}}]
+        })
       end)
 
       expires_at = System.system_time(:millisecond) + 60 * 60 * 1000

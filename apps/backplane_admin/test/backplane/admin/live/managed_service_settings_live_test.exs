@@ -7,15 +7,15 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
   alias Backplane.Services.WebSearch
 
   setup do
-    previous_search = Application.get_env(:backplane, :web_search_req_options)
-    previous_fetch = Application.get_env(:backplane, :web_fetch_req_options)
-    previous_x_search = Application.get_env(:backplane, :web_x_search_req_options)
+    previous_search = Application.get_env(:backplane, :web_search_http_options)
+    previous_fetch = Application.get_env(:backplane, :web_fetch_http_options)
+    previous_x_search = Application.get_env(:backplane, :web_x_search_http_options)
 
-    Application.put_env(:backplane, :web_search_req_options, plug: {Req.Test, WebSearch})
-    Application.put_env(:backplane, :web_fetch_req_options, plug: {Req.Test, WebFetch})
+    Application.put_env(:backplane, :web_search_http_options, adapter: {HTTP.Test, WebSearch})
+    Application.put_env(:backplane, :web_fetch_http_options, adapter: {HTTP.Test, WebFetch})
 
-    Application.put_env(:backplane, :web_x_search_req_options,
-      plug: {Req.Test, Backplane.Services.WebXSearch}
+    Application.put_env(:backplane, :web_x_search_http_options,
+      adapter: {HTTP.Test, Backplane.Services.WebXSearch}
     )
 
     Settings.set("services.web_fetch.default_backend", "direct")
@@ -33,21 +33,21 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
 
     on_exit(fn ->
       if previous_search do
-        Application.put_env(:backplane, :web_search_req_options, previous_search)
+        Application.put_env(:backplane, :web_search_http_options, previous_search)
       else
-        Application.delete_env(:backplane, :web_search_req_options)
+        Application.delete_env(:backplane, :web_search_http_options)
       end
 
       if previous_fetch do
-        Application.put_env(:backplane, :web_fetch_req_options, previous_fetch)
+        Application.put_env(:backplane, :web_fetch_http_options, previous_fetch)
       else
-        Application.delete_env(:backplane, :web_fetch_req_options)
+        Application.delete_env(:backplane, :web_fetch_http_options)
       end
 
       if previous_x_search do
-        Application.put_env(:backplane, :web_x_search_req_options, previous_x_search)
+        Application.put_env(:backplane, :web_x_search_http_options, previous_x_search)
       else
-        Application.delete_env(:backplane, :web_x_search_req_options)
+        Application.delete_env(:backplane, :web_x_search_http_options)
       end
     end)
 
@@ -249,13 +249,11 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     Settings.set("services.web_search.ollama.credential", "ollama-debug-key")
     Settings.set("services.web_search.ollama.enabled", true)
 
-    Req.Test.stub(WebSearch, fn conn ->
-      {:ok, _body, conn} = Plug.Conn.read_body(conn)
+    HTTP.Test.stub(WebSearch, fn request ->
+      assert request.url.path == "/api/web_search"
+      assert "Bearer ollama-secret" in HTTP.Headers.get_all(request.headers, "authorization")
 
-      assert conn.request_path == "/api/web_search"
-      assert {"authorization", "Bearer ollama-secret"} in conn.req_headers
-
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "results" => [
           %{
             "title" => "Phoenix LiveView",
@@ -300,14 +298,14 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
     {:ok, _credential} = Credentials.store("xai-debug-key", "xai-secret", "service")
     Settings.set("services.web_x_search.credential", "xai-debug-key")
 
-    Req.Test.stub(Backplane.Services.WebXSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+    HTTP.Test.stub(Backplane.Services.WebXSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
 
-      assert conn.request_path == "/v1/responses"
-      assert {"authorization", "Bearer xai-secret"} in conn.req_headers
+      assert request.url.path == "/v1/responses"
+      assert "Bearer xai-secret" in HTTP.Headers.get_all(request.headers, "authorization")
       assert Jason.decode!(body)["tools"] == [%{"type" => "x_search"}]
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "id" => "resp_debug",
         "model" => "grok-4.3",
         "output" => [
@@ -411,8 +409,8 @@ defmodule Backplane.Admin.ManagedServiceSettingsLiveTest do
   end
 
   test "web fetch debug tab calls selected managed tool", %{conn: conn} do
-    Req.Test.stub(WebFetch, fn conn ->
-      Req.Test.html(conn, """
+    HTTP.Test.stub(WebFetch, fn _request ->
+      HTTP.Test.html("""
       <!doctype html>
       <html>
         <head><title>Example Page</title></head>

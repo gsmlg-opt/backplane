@@ -330,19 +330,19 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
                "agent" => %{"host_id" => host.id, "machine_name" => "steps", "http_port" => 4222}
              })
 
-    previous = Application.get_env(:backplane_skills, :host_agent_plugin_req_options)
+    previous = Application.get_env(:backplane_skills, :host_agent_plugin_http_options)
 
-    Application.put_env(:backplane_skills, :host_agent_plugin_req_options,
-      plug: {Req.Test, __MODULE__}
+    Application.put_env(:backplane_skills, :host_agent_plugin_http_options,
+      adapter: {HTTP.Test, __MODULE__}
     )
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:backplane_skills, :host_agent_plugin_req_options, previous),
-        else: Application.delete_env(:backplane_skills, :host_agent_plugin_req_options)
+        do: Application.put_env(:backplane_skills, :host_agent_plugin_http_options, previous),
+        else: Application.delete_env(:backplane_skills, :host_agent_plugin_http_options)
     end)
 
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       status = %{
         "plugin" => "memory",
         "name" => "Backplane Memory",
@@ -352,7 +352,7 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
         "next_steps" => ["claude plugin marketplace add /d/plugins/claude"]
       }
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "jsonrpc" => "2.0",
         "id" => 1,
         "result" => %{
@@ -361,8 +361,6 @@ defmodule Backplane.Admin.HostAgentsLiveTest do
         }
       })
     end)
-
-    Req.Test.set_req_test_to_shared()
 
     {:ok, view, _html} = live(conn, "/system/host-agents/#{host.id}/plugin")
 

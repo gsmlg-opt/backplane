@@ -19,9 +19,9 @@ defmodule Backplane.Admin.ApiUsageLiveTest do
     }
 
     options = [
-      openrouter_req_options: [plug: {Req.Test, OpenRouter}],
-      deepseek_req_options: [plug: {Req.Test, DeepSeek}],
-      req_test_owner: self()
+      openrouter_http_options: [adapter: {HTTP.Test, OpenRouter}],
+      deepseek_http_options: [adapter: {HTTP.Test, DeepSeek}],
+      http_test_owner: self()
     ]
 
     previous =
@@ -43,12 +43,12 @@ defmodule Backplane.Admin.ApiUsageLiveTest do
       end)
     end)
 
-    Req.Test.stub(OpenRouter, fn conn ->
-      Req.Test.json(conn, %{"data" => %{"usage" => 0, "limit" => nil}})
+    HTTP.Test.stub(OpenRouter, fn _request ->
+      HTTP.Test.json(%{"data" => %{"usage" => 0, "limit" => nil}})
     end)
 
-    Req.Test.stub(DeepSeek, fn conn ->
-      Req.Test.json(conn, %{
+    HTTP.Test.stub(DeepSeek, fn _request ->
+      HTTP.Test.json(%{
         "is_available" => true,
         "balance_infos" => [
           %{

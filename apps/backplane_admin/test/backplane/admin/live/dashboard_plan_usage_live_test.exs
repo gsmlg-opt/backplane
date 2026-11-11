@@ -7,27 +7,27 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
   alias Backplane.Monitor.Providers.{ClaudeCode, GoogleAntigravity, MiniMax, OpenAICodex}
 
   setup do
-    previous_minimax = Application.get_env(:backplane, :minimax_monitor_req_options)
-    previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
-    previous_google = Application.get_env(:backplane, :google_antigravity_monitor_req_options)
-    previous_claude = Application.get_env(:backplane, :claude_code_monitor_req_options)
-    previous_req_test_owner = Application.get_env(:backplane_monitor, :req_test_owner)
+    previous_minimax = Application.get_env(:backplane, :minimax_monitor_http_options)
+    previous_openai = Application.get_env(:backplane, :openai_codex_monitor_http_options)
+    previous_google = Application.get_env(:backplane, :google_antigravity_monitor_http_options)
+    previous_claude = Application.get_env(:backplane, :claude_code_monitor_http_options)
+    previous_http_test_owner = Application.get_env(:backplane_monitor, :http_test_owner)
 
-    Application.put_env(:backplane, :minimax_monitor_req_options, plug: {Req.Test, MiniMax})
+    Application.put_env(:backplane, :minimax_monitor_http_options, adapter: {HTTP.Test, MiniMax})
 
-    Application.put_env(:backplane, :openai_codex_monitor_req_options,
-      plug: {Req.Test, OpenAICodex}
+    Application.put_env(:backplane, :openai_codex_monitor_http_options,
+      adapter: {HTTP.Test, OpenAICodex}
     )
 
-    Application.put_env(:backplane, :google_antigravity_monitor_req_options,
-      plug: {Req.Test, GoogleAntigravity}
+    Application.put_env(:backplane, :google_antigravity_monitor_http_options,
+      adapter: {HTTP.Test, GoogleAntigravity}
     )
 
-    Application.put_env(:backplane, :claude_code_monitor_req_options,
-      plug: {Req.Test, ClaudeCode}
+    Application.put_env(:backplane, :claude_code_monitor_http_options,
+      adapter: {HTTP.Test, ClaudeCode}
     )
 
-    Application.put_env(:backplane_monitor, :req_test_owner, self())
+    Application.put_env(:backplane_monitor, :http_test_owner, self())
 
     Ecto.Adapters.SQL.Sandbox.allow(Backplane.Repo, self(), Backplane.Settings.Credentials.Vault)
 
@@ -43,33 +43,33 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
 
     on_exit(fn ->
       if previous_minimax do
-        Application.put_env(:backplane, :minimax_monitor_req_options, previous_minimax)
+        Application.put_env(:backplane, :minimax_monitor_http_options, previous_minimax)
       else
-        Application.delete_env(:backplane, :minimax_monitor_req_options)
+        Application.delete_env(:backplane, :minimax_monitor_http_options)
       end
 
       if previous_openai do
-        Application.put_env(:backplane, :openai_codex_monitor_req_options, previous_openai)
+        Application.put_env(:backplane, :openai_codex_monitor_http_options, previous_openai)
       else
-        Application.delete_env(:backplane, :openai_codex_monitor_req_options)
+        Application.delete_env(:backplane, :openai_codex_monitor_http_options)
       end
 
       if previous_google do
-        Application.put_env(:backplane, :google_antigravity_monitor_req_options, previous_google)
+        Application.put_env(:backplane, :google_antigravity_monitor_http_options, previous_google)
       else
-        Application.delete_env(:backplane, :google_antigravity_monitor_req_options)
+        Application.delete_env(:backplane, :google_antigravity_monitor_http_options)
       end
 
       if previous_claude do
-        Application.put_env(:backplane, :claude_code_monitor_req_options, previous_claude)
+        Application.put_env(:backplane, :claude_code_monitor_http_options, previous_claude)
       else
-        Application.delete_env(:backplane, :claude_code_monitor_req_options)
+        Application.delete_env(:backplane, :claude_code_monitor_http_options)
       end
 
-      if previous_req_test_owner do
-        Application.put_env(:backplane_monitor, :req_test_owner, previous_req_test_owner)
+      if previous_http_test_owner do
+        Application.put_env(:backplane_monitor, :http_test_owner, previous_http_test_owner)
       else
-        Application.delete_env(:backplane_monitor, :req_test_owner)
+        Application.delete_env(:backplane_monitor, :http_test_owner)
       end
     end)
 
@@ -78,7 +78,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
 
   test "renders MiniMax plan usage details with current and weekly remaining percents and time ranges",
        %{conn: conn} do
-    Req.Test.stub(MiniMax, fn conn ->
+    HTTP.Test.stub(MiniMax, fn _request ->
       body = %{
         "model_remains" => [
           %{
@@ -107,9 +107,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         }
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     # Ensure the credential is in the Vault ETS cache right before rendering
@@ -126,12 +124,10 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
   end
 
   test "renders Claude Code OAuth usage windows", %{conn: conn} do
-    Req.Test.stub(MiniMax, fn conn ->
+    HTTP.Test.stub(MiniMax, fn _request ->
       body = %{"model_remains" => []}
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     usage = %{
@@ -162,13 +158,15 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
       "tangelo" => nil
     }
 
-    Req.Test.stub(ClaudeCode, fn conn ->
-      assert {"authorization", "Bearer sk-ant-oat01-dashboard"} in conn.req_headers
-      assert {"anthropic-beta", "oauth-2025-04-20"} in conn.req_headers
+    HTTP.Test.stub(ClaudeCode, fn request ->
+      assert "Bearer sk-ant-oat01-dashboard" in HTTP.Headers.get_all(
+               request.headers,
+               "authorization"
+             )
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(usage))
+      assert "oauth-2025-04-20" in HTTP.Headers.get_all(request.headers, "anthropic-beta")
+
+      HTTP.Test.json(usage)
     end)
 
     raw_json =
@@ -210,15 +208,13 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
   end
 
   test "renders OpenAI Codex usage buckets and credits", %{conn: conn} do
-    Req.Test.stub(MiniMax, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(%{"model_remains" => []}))
+    HTTP.Test.stub(MiniMax, fn _request ->
+      HTTP.Test.json(%{"model_remains" => []})
     end)
 
-    Req.Test.stub(OpenAICodex, fn conn ->
-      assert {"authorization", "Bearer codex-access"} in conn.req_headers
-      assert {"chatgpt-account-id", "acc-123"} in conn.req_headers
+    HTTP.Test.stub(OpenAICodex, fn request ->
+      assert "Bearer codex-access" in HTTP.Headers.get_all(request.headers, "authorization")
+      assert "acc-123" in HTTP.Headers.get_all(request.headers, "chatgpt-account-id")
 
       body = %{
         "plan_type" => "plus",
@@ -255,9 +251,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         "rate_limit_reached_type" => %{"type" => "rate_limit_reached"}
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     {:ok, credential} =
@@ -291,16 +285,14 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
   end
 
   test "renders Google Antigravity model quota buckets as supported usage groups", %{conn: conn} do
-    Req.Test.stub(MiniMax, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(%{"model_remains" => []}))
+    HTTP.Test.stub(MiniMax, fn _request ->
+      HTTP.Test.json(%{"model_remains" => []})
     end)
 
-    Req.Test.stub(GoogleAntigravity, fn conn ->
-      assert {"authorization", "Bearer google-access"} in conn.req_headers
+    HTTP.Test.stub(GoogleAntigravity, fn request ->
+      assert "Bearer google-access" in HTTP.Headers.get_all(request.headers, "authorization")
 
-      assert conn.request_path in [
+      assert request.url.path in [
                "/v1internal:retrieveUserQuotaSummary",
                "/v1internal:loadCodeAssist"
              ]
@@ -340,9 +332,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         ]
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     {:ok, credential} =
@@ -386,13 +376,11 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
   test "renders Google Antigravity multi-window quota summary with Weekly and 5-Hour limits", %{
     conn: conn
   } do
-    Req.Test.stub(MiniMax, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(%{"model_remains" => []}))
+    HTTP.Test.stub(MiniMax, fn _request ->
+      HTTP.Test.json(%{"model_remains" => []})
     end)
 
-    Req.Test.stub(GoogleAntigravity, fn conn ->
+    HTTP.Test.stub(GoogleAntigravity, fn _request ->
       body = %{
         "plan_type" => "Google AI Pro",
         "credits" => [
@@ -429,9 +417,7 @@ defmodule Backplane.Admin.DashboardPlanUsageLiveTest do
         "links" => %{"upgrade" => "https://one.google.com/explore-plan/ai-pro"}
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     {:ok, credential} =

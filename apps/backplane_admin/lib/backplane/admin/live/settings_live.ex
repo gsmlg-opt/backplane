@@ -2255,7 +2255,7 @@ defmodule Backplane.Admin.SettingsLive do
         |> OAuthRefresher.request_options()
         |> Keyword.merge(form: body, headers: google_token_headers(), receive_timeout: 30_000)
 
-      case Req.post(token_url, req_opts) do
+      case Backplane.HTTPClient.post(token_url, req_opts) do
         {:ok, %{status: 200, body: %{"access_token" => access} = resp}} ->
           refresh = resp["refresh_token"] || ""
 
@@ -2310,7 +2310,7 @@ defmodule Backplane.Admin.SettingsLive do
         |> OAuthRefresher.request_options()
         |> Keyword.merge(form: body, receive_timeout: 30_000)
 
-      case Req.post(token_url, req_opts) do
+      case Backplane.HTTPClient.post(token_url, req_opts) do
         {:ok, %{status: 200, body: %{"access_token" => access} = resp}} ->
           refresh = resp["refresh_token"] || ""
 
@@ -2354,7 +2354,7 @@ defmodule Backplane.Admin.SettingsLive do
     request_detail = anthropic_token_request_detail(token_url, body)
     log_anthropic_token_request(request_detail)
 
-    case Req.post(token_url,
+    case Backplane.HTTPClient.post(token_url,
            json: body,
            headers: Backplane.Settings.OAuthRefresher.anthropic_oauth_token_headers(),
            receive_timeout: 30_000
@@ -2691,10 +2691,10 @@ defmodule Backplane.Admin.SettingsLive do
   defp format_openai_codex_error(:refresh_token_reused),
     do: dgettext("errors", "The refresh token was already consumed. Reconnect OpenAI Codex.")
 
-  defp format_openai_codex_error({:transport_error, %Req.TransportError{reason: :nxdomain}}),
+  defp format_openai_codex_error({:transport_error, %Backplane.HTTPClient.Error{reason: :nxdomain}}),
     do: dgettext("errors", "DNS lookup failed for auth.openai.com. Check this server's DNS or proxy settings.")
 
-  defp format_openai_codex_error({:transport_error, %Req.TransportError{reason: reason}}),
+  defp format_openai_codex_error({:transport_error, %Backplane.HTTPClient.Error{reason: reason}}),
     do: dgettext("errors", "Network request failed: %{reason}", reason: inspect(reason))
 
   defp format_openai_codex_error({:missing_field, field}), do: dgettext("errors", "Missing %{field}", field: field)

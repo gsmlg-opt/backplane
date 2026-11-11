@@ -9,18 +9,18 @@ defmodule Backplane.Admin.CodexCatalogLiveTest do
   @path "/llama/codex-catalog"
 
   setup do
-    previous = Application.fetch_env(:backplane, :llm_model_discovery_req_options)
+    previous = Application.fetch_env(:backplane, :llm_model_discovery_http_options)
 
     Application.put_env(
       :backplane,
-      :llm_model_discovery_req_options,
-      plug: {Req.Test, __MODULE__}
+      :llm_model_discovery_http_options,
+      adapter: {HTTP.Test, __MODULE__}
     )
 
     on_exit(fn ->
       case previous do
-        {:ok, value} -> Application.put_env(:backplane, :llm_model_discovery_req_options, value)
-        :error -> Application.delete_env(:backplane, :llm_model_discovery_req_options)
+        {:ok, value} -> Application.put_env(:backplane, :llm_model_discovery_http_options, value)
+        :error -> Application.delete_env(:backplane, :llm_model_discovery_http_options)
       end
     end)
 
@@ -84,10 +84,10 @@ defmodule Backplane.Admin.CodexCatalogLiveTest do
 
     test_pid = self()
 
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       send(test_pid, :refresh_request)
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "models" => [
           model("gpt-ui-a", "Updated", 120_000),
           model("gpt-ui-b", "Updated second", 220_000),
@@ -197,14 +197,14 @@ defmodule Backplane.Admin.CodexCatalogLiveTest do
     render_async(view)
     before = Map.new(CodexCatalog.list(), &{&1.id, &1.metadata})
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      Plug.Conn.resp(conn, 503, "upstream-secret-payload")
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.response(503, "upstream-secret-payload")
     end)
 
     Application.put_env(
       :backplane,
-      :llm_model_discovery_req_options,
-      plug: {Req.Test, __MODULE__},
+      :llm_model_discovery_http_options,
+      adapter: {HTTP.Test, __MODULE__},
       retry: false
     )
 
@@ -234,12 +234,12 @@ defmodule Backplane.Admin.CodexCatalogLiveTest do
     entry = Enum.find(CodexCatalog.list(), &(&1.public_model_id == "gpt-ui-busy"))
     test_pid = self()
 
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       send(test_pid, {:refresh_started, self()})
 
       receive do
         :release_refresh ->
-          Req.Test.json(conn, %{"models" => [model("gpt-ui-busy", "After", 120_000)]})
+          HTTP.Test.json(%{"models" => [model("gpt-ui-busy", "After", 120_000)]})
       end
     end)
 
@@ -263,7 +263,7 @@ defmodule Backplane.Admin.CodexCatalogLiveTest do
   end
 
   defp stub_models(models) do
-    Req.Test.stub(__MODULE__, fn conn -> Req.Test.json(conn, %{"models" => models}) end)
+    HTTP.Test.stub(__MODULE__, fn _request -> HTTP.Test.json(%{"models" => models}) end)
   end
 
   defp model(slug, name, context_window) do

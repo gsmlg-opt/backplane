@@ -19,10 +19,10 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     }
 
     options = [
-      openrouter_req_options: [plug: {Req.Test, OpenRouter}],
-      deepseek_req_options: [plug: {Req.Test, DeepSeek}],
-      openai_req_options: [plug: {Req.Test, OpenAI}],
-      req_test_owner: self()
+      openrouter_http_options: [adapter: {HTTP.Test, OpenRouter}],
+      deepseek_http_options: [adapter: {HTTP.Test, DeepSeek}],
+      openai_http_options: [adapter: {HTTP.Test, OpenAI}],
+      http_test_owner: self()
     ]
 
     previous =
@@ -46,12 +46,12 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
       end)
     end)
 
-    Req.Test.stub(OpenRouter, fn conn ->
-      Req.Test.json(conn, %{"data" => %{"usage" => 0, "limit" => nil}})
+    HTTP.Test.stub(OpenRouter, fn _request ->
+      HTTP.Test.json(%{"data" => %{"usage" => 0, "limit" => nil}})
     end)
 
-    Req.Test.stub(DeepSeek, fn conn ->
-      Req.Test.json(conn, %{
+    HTTP.Test.stub(DeepSeek, fn _request ->
+      HTTP.Test.json(%{
         "is_available" => true,
         "balance_infos" => [
           %{
@@ -78,10 +78,10 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
 
   test "OpenAI displays organization spending, token units, and pending balance support",
        %{conn: conn, credential: credential} do
-    Req.Test.stub(OpenAI, fn conn ->
-      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer #{@secret}"]
-      assert Plug.Conn.get_req_header(conn, "openai-organization") == ["org-primary"]
-      openai_response(conn)
+    HTTP.Test.stub(OpenAI, fn request ->
+      assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer #{@secret}"]
+      assert HTTP.Headers.get_all(request.headers, "openai-organization") == ["org-primary"]
+      openai_response(request)
     end)
 
     account = create_openai_account(credential, "org-primary")
@@ -159,11 +159,11 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
 
   test "OpenAI partial access failure preserves spending with a safe Admin key message",
        %{conn: conn, credential: credential} do
-    Req.Test.stub(OpenAI, fn conn ->
-      if conn.request_path == "/v1/organization/costs" do
-        openai_response(conn)
+    HTTP.Test.stub(OpenAI, fn request ->
+      if request.url.path == "/v1/organization/costs" do
+        openai_response(request)
       else
-        Plug.Conn.send_resp(conn, 403, @secret)
+        HTTP.Test.response(403, @secret)
       end
     end)
 
@@ -181,7 +181,7 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
 
   test "OpenAI rejected authorization leaves balance pending and explains Admin key requirements",
        %{conn: conn, credential: credential} do
-    Req.Test.stub(OpenAI, &Plug.Conn.send_resp(&1, 401, @secret))
+    HTTP.Test.stub(OpenAI, fn _request -> HTTP.Test.response(401, @secret) end)
     account = create_openai_account(credential, "org-primary")
     :ok = ApiAccounts.refresh_account(account.id)
     await_state(account.id, &(&1.error != nil and not &1.refreshing))
@@ -252,9 +252,9 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     :ok = ApiAccounts.set_fetching_enabled(false)
     owner = self()
 
-    Req.Test.stub(OpenRouter, fn conn ->
+    HTTP.Test.stub(OpenRouter, fn _request ->
       send(owner, :unexpected_provider_fetch)
-      Req.Test.json(conn, %{"data" => %{"usage" => 0}})
+      HTTP.Test.json(%{"data" => %{"usage" => 0}})
     end)
 
     account = create_account(credential, "openrouter")
@@ -274,10 +274,10 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
        %{conn: conn, credential: credential, management: management} do
     put_credential(management, "service", %{}, "management-secret-never-render")
 
-    Req.Test.stub(OpenRouter, fn conn ->
-      case conn.request_path do
+    HTTP.Test.stub(OpenRouter, fn request ->
+      case request.url.path do
         "/api/v1/key" ->
-          Req.Test.json(conn, %{
+          HTTP.Test.json(%{
             "data" => %{
               "usage" => 1,
               "limit" => 5,
@@ -287,7 +287,7 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
           })
 
         "/api/v1/credits" ->
-          Req.Test.json(conn, %{"data" => %{"total_credits" => 10, "total_usage" => 3}})
+          HTTP.Test.json(%{"data" => %{"total_credits" => 10, "total_usage" => 3}})
       end
     end)
 
@@ -317,11 +317,11 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
        %{conn: conn, credential: credential, management: management} do
     put_credential(management, "service", %{}, "management-secret-never-render")
 
-    Req.Test.stub(OpenRouter, fn conn ->
-      if conn.request_path == "/api/v1/key" do
-        Req.Test.json(conn, %{"data" => %{"usage" => 2.5}})
+    HTTP.Test.stub(OpenRouter, fn request ->
+      if request.url.path == "/api/v1/key" do
+        HTTP.Test.json(%{"data" => %{"usage" => 2.5}})
       else
-        Plug.Conn.send_resp(conn, 403, "management-secret-never-render")
+        HTTP.Test.response(403, "management-secret-never-render")
       end
     end)
 
@@ -345,8 +345,8 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
 
   test "DeepSeek preserves currency decimals, availability and absent spending",
        %{conn: conn, credential: credential} do
-    Req.Test.stub(DeepSeek, fn conn ->
-      Req.Test.json(conn, %{
+    HTTP.Test.stub(DeepSeek, fn _request ->
+      HTTP.Test.json(%{
         "is_available" => false,
         "balance_infos" => [
           %{
@@ -391,8 +391,8 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     assert html =~ "Unavailable"
     refute html =~ @secret
 
-    Req.Test.stub(OpenRouter, fn conn ->
-      conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => @secret})
+    HTTP.Test.stub(OpenRouter, fn _request ->
+      HTTP.Test.json(%{"error" => @secret}, 401)
     end)
 
     view |> element("#refresh-api-account-#{account.id}") |> render_click()
@@ -414,8 +414,8 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     await_state(account.id, &(&1.last_success_at != nil))
     {:ok, view, _html} = live(conn, @path)
 
-    Req.Test.stub(OpenRouter, fn conn ->
-      Req.Test.json(conn, %{
+    HTTP.Test.stub(OpenRouter, fn _request ->
+      HTTP.Test.json(%{
         "data" => %{"label" => @secret, "usage" => 2.5, "limit" => 10, "limit_reset" => @secret}
       })
     end)
@@ -437,13 +437,13 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
        %{conn: conn, credential: credential} do
     owner = self()
 
-    Req.Test.stub(DeepSeek, fn conn ->
+    HTTP.Test.stub(DeepSeek, fn _request ->
       send(owner, {:fetch_started, self()})
 
       receive do
-        :complete -> Req.Test.json(conn, %{"is_available" => true, "balance_infos" => []})
+        :complete -> HTTP.Test.json(%{"is_available" => true, "balance_infos" => []})
       after
-        3_000 -> Req.Test.json(conn, %{"is_available" => true, "balance_infos" => []})
+        3_000 -> HTTP.Test.json(%{"is_available" => true, "balance_infos" => []})
       end
     end)
 
@@ -496,14 +496,14 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     account
   end
 
-  defp openai_response(conn) do
+  defp openai_response(request) do
     now = DateTime.utc_now()
 
     start_time =
       now |> DateTime.to_date() |> DateTime.new!(~T[00:00:00], "Etc/UTC") |> DateTime.to_unix()
 
     result =
-      case conn.request_path do
+      case request.url.path do
         "/v1/organization/costs" ->
           %{"amount" => %{"value" => 1.25, "currency" => "usd"}}
 
@@ -516,7 +516,7 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
           }
       end
 
-    Req.Test.json(conn, %{
+    HTTP.Test.json(%{
       "data" => [
         %{
           "object" => "bucket",

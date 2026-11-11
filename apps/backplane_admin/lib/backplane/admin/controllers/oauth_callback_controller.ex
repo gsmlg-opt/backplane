@@ -119,7 +119,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
       "code_verifier" => code_verifier
     }
 
-    case Req.post(@anthropic_token_url,
+    case Backplane.HTTPClient.post(@anthropic_token_url,
            json: body,
            headers: OAuthRefresher.anthropic_oauth_token_headers(),
            receive_timeout: @request_timeout_ms
@@ -151,7 +151,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
       "code_verifier" => code_verifier
     }
 
-    case Req.post(@openai_token_url, form: body, receive_timeout: @request_timeout_ms) do
+    case Backplane.HTTPClient.post(@openai_token_url, form: body, receive_timeout: @request_timeout_ms) do
       {:ok, %{status: 200, body: resp}} ->
         access = resp["access_token"]
         refresh = resp["refresh_token"] || ""
@@ -182,7 +182,7 @@ defmodule Backplane.Admin.OAuthCallbackController do
         }
         |> maybe_put("client_secret", client_secret)
 
-      case Req.post(google_token_url(), form: body, receive_timeout: @request_timeout_ms) do
+      case Backplane.HTTPClient.post(google_token_url(), form: body, receive_timeout: @request_timeout_ms) do
         {:ok, %{status: 200, body: resp}} ->
           access = resp["access_token"]
           refresh = resp["refresh_token"] || ""

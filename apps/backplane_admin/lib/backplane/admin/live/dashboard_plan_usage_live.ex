@@ -1088,14 +1088,14 @@ defmodule Backplane.Admin.DashboardPlanUsageLive do
   defp format_error({:refresh_failed, status}),
     do: dgettext("errors", "OAuth refresh returned %{status}", status: status)
 
-  defp format_error({:refresh_error, %Req.TransportError{reason: :nxdomain}}),
+  defp format_error({:refresh_error, %Backplane.HTTPClient.Error{reason: :nxdomain}}),
     do:
       dgettext(
         "errors",
         "OAuth refresh host could not be resolved; check DNS or proxy settings"
       )
 
-  defp format_error({:refresh_error, %Req.TransportError{reason: reason}}),
+  defp format_error({:refresh_error, %Backplane.HTTPClient.Error{reason: reason}}),
     do: dgettext("errors", "OAuth refresh request failed: %{reason}", reason: inspect(reason))
 
   defp format_error({:refresh_error, reason}),
