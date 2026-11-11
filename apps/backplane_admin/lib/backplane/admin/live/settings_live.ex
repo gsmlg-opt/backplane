@@ -15,6 +15,7 @@ defmodule Backplane.Admin.SettingsLive do
   alias Backplane.Settings.OAuthStateStore
 
   @google_antigravity_redirect_uri "https://antigravity.google/oauth-callback"
+  @figma_redirect_uri "http://localhost:4221/callback"
   @google_token_url "https://oauth2.googleapis.com/token"
   @google_antigravity_scopes [
     "https://www.googleapis.com/auth/cloud-platform",
@@ -727,7 +728,11 @@ defmodule Backplane.Admin.SettingsLive do
         end
 
       vendor == "figma_oauth" ->
-        redirect_uri = Backplane.WebOrigins.admin_url("/oauth/callback")
+        redirect_uri =
+          case OAuthRefresher.figma_mcp_client_credentials() do
+            {:ok, _client_id, _client_secret} -> Backplane.WebOrigins.admin_url("/oauth/callback")
+            {:error, :missing_figma_mcp_client_id} -> @figma_redirect_uri
+          end
 
         case OAuthRefresher.resolve_figma_mcp_client(redirect_uri) do
           {:ok, oauth_client, persist_oauth_client?} ->
@@ -1853,6 +1858,11 @@ defmodule Backplane.Admin.SettingsLive do
           <p class="text-sm text-on-surface-variant">
             Complete authorization in the browser window that just opened,
             then paste {if @device_flow_vendor == "figma_oauth", do: "the full callback URL", else: "the code"} below.
+          </p>
+          <p :if={@device_flow_vendor == "figma_oauth"} class="text-sm text-on-surface-variant">
+            After authorization, copy the full URL from the new window's address bar and paste it here.
+            If the localhost callback page cannot open, this is expected: copy its URL anyway.
+            Keep this Backplane page open until you submit the callback URL.
           </p>
           <form phx-submit="submit_auth_code" class="space-y-4" autocomplete="off">
             <.dm_input

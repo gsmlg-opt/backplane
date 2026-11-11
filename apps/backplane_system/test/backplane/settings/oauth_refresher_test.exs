@@ -217,28 +217,33 @@ defmodule Backplane.Settings.OAuthRefresherTest do
     end
 
     post "/figma/register" do
-      if conn.body_params["token_endpoint_auth_method"] == "none" do
-        response =
-          if hd(conn.body_params["redirect_uris"]) =~ "secret-callback" do
-            %{
-              "client_id" => "public-dynamic-client",
-              "client_secret" => "optional-unused-secret",
-              "token_endpoint_auth_method" => "none"
-            }
-          else
-            %{
-              "client_id" => "public-dynamic-client",
-              "token_endpoint_auth_method" => "none"
-            }
-          end
-
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(201, Jason.encode!(response))
+      if conn.body_params["client_name"] != "Codex" do
+        conn |> send_resp(403, "Forbidden") |> halt()
       else
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(400, Jason.encode!(%{"error" => "invalid_client_metadata"}))
+        if conn.body_params["token_endpoint_auth_method"] == "client_secret_basic" do
+          response =
+            if hd(conn.body_params["redirect_uris"]) =~ "secret-callback" do
+              %{
+                "client_id" => "public-dynamic-client",
+                "client_secret" => "optional-unused-secret",
+                "token_endpoint_auth_method" => "none"
+              }
+            else
+              %{
+                "client_id" => "dynamic-client",
+                "client_secret" => "dynamic-secret",
+                "token_endpoint_auth_method" => "client_secret_basic"
+              }
+            end
+
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(201, Jason.encode!(response))
+        else
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(400, Jason.encode!(%{"error" => "invalid_client_metadata"}))
+        end
       end
     end
 
@@ -392,11 +397,12 @@ defmodule Backplane.Settings.OAuthRefresherTest do
   end
 
   describe "refresh/2 :figma_oauth" do
-    test "registers a public PKCE client without requiring a secret" do
+    test "registers with the accepted Codex name and requests Basic client authentication" do
       assert {:ok,
               %{
-                "client_id" => "public-dynamic-client",
-                "token_endpoint_auth_method" => "none"
+                "client_id" => "dynamic-client",
+                "client_secret" => "dynamic-secret",
+                "token_endpoint_auth_method" => "client_secret_basic"
               }} =
                OAuthRefresher.register_figma_mcp_client("http://127.0.0.1:51176/callback")
     end
