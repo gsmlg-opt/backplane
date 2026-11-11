@@ -1,6 +1,8 @@
 defmodule Backplane.HostAgent.ApiRequest do
   @moduledoc "Executes one declared host API request with acknowledged response chunks."
 
+  alias Backplane.HostAgent.HTTPBody
+
   @derive {Inspect, only: [:request_id, :api]}
   defstruct [:request_id, :service_id, :api, :endpoint_url, :headers, :body, :timeout_ms]
 
@@ -10,6 +12,7 @@ defmodule Backplane.HostAgent.ApiRequest do
   @chunk_bytes 48 * 1024
   @request_header_name ~r/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
   @blocked_request_headers ~w(host cookie cookie2 forwarded x-real-ip connection keep-alive te trailer transfer-encoding upgrade content-length accept-encoding)
+  @timeout_reasons [:timeout, :read_idle_timeout, :idle_timeout]
   @hop_headers ~w(connection keep-alive proxy-authenticate proxy-authorization te trailer transfer-encoding upgrade content-length set-cookie)
 
   def apis, do: @apis
@@ -78,51 +81,63 @@ defmodule Backplane.HostAgent.ApiRequest do
 
   defp do_run(request, push) do
     transfer = %{headers?: false, sequence: 0, bytes: 0, error: nil}
+    deadline = System.monotonic_time(:millisecond) + request.timeout_ms
+    idle_timeout = min(request.timeout_ms, 120_000)
 
-    req =
-      Req.new(
-        method: :post,
-        url: request.endpoint_url,
-        headers: request.headers,
-        body: request.body,
-        redirect: false,
-        retry: false,
-        raw: true,
-        compressed: false,
-        decode_body: false,
-        receive_timeout: min(request.timeout_ms, 120_000),
-        request_timeout: request.timeout_ms,
-        connect_options: [timeout: min(request.timeout_ms, 10_000)],
-        into: fn {:data, bytes}, {req, response} ->
-          transfer = Req.Request.get_private(req, :backplane_host_api)
+    fetch_options = [
+      method: "POST",
+      headers: request.headers,
+      body: request.body,
+      redirect: :manual,
+      decode_body: false,
+      stream_response: true,
+      timeout: request.timeout_ms,
+      connect_timeout: min(request.timeout_ms, 10_000),
+      read_idle_timeout: idle_timeout,
+      response_stream_idle_timeout: idle_timeout,
+      response_stream_ack_timeout: request.timeout_ms
+    ]
 
-          case forward_bytes(transfer, response, bytes, request.request_id, push) do
-            {:ok, transfer} ->
-              {:cont, {Req.Request.put_private(req, :backplane_host_api, transfer), response}}
+    request.endpoint_url
+    |> HTTP.fetch(fetch_options)
+    |> HTTP.Promise.await(request.timeout_ms + 5_000)
+    |> handle_response(transfer, deadline, request.request_id, push)
+  end
 
-            {:error, code, transfer} ->
-              transfer = %{transfer | error: code}
-              {:halt, {Req.Request.put_private(req, :backplane_host_api, transfer), response}}
-          end
-        end
-      )
-      |> Req.Request.put_private(:backplane_host_api, transfer)
+  defp handle_response(%HTTP.Response{} = response, transfer, deadline, id, push) do
+    response = %{status: response.status, headers: response_headers(response), raw: response}
 
-    {req, response} = Req.run(req)
-    transfer = Req.Request.get_private(req, :backplane_host_api)
-
-    case {transfer.error, response} do
-      {nil, %Req.Response{} = response} ->
-        with {:ok, _transfer} <- forward_headers(transfer, response, request.request_id, push) do
-          push.(%{"request_id" => request.request_id, "type" => "done"})
-        end
-
-      {nil, exception} ->
-        emit_error(push, request.request_id, error_code(exception))
-
-      {code, _response} ->
-        emit_error(push, request.request_id, code)
+    forward = fn bytes, transfer ->
+      case forward_bytes(transfer, response, bytes, id, push) do
+        {:ok, transfer} -> {:cont, transfer}
+        {:error, code, transfer} -> {:halt, %{transfer | error: code}}
+      end
     end
+
+    case HTTPBody.reduce(response.raw, deadline, transfer, forward) do
+      {:ok, transfer} ->
+        with {:ok, _transfer} <- forward_headers(transfer, response, id, push) do
+          push.(%{"request_id" => id, "type" => "done"})
+        end
+
+      {:halt, transfer} ->
+        emit_error(push, id, transfer.error)
+
+      {:error, reason, _transfer} ->
+        emit_error(push, id, error_code(reason))
+    end
+  end
+
+  defp handle_response({:error, reason}, _transfer, _deadline, id, push),
+    do: emit_error(push, id, error_code(reason))
+
+  defp handle_response(_other, _transfer, _deadline, id, push),
+    do: emit_error(push, id, :upstream_error)
+
+  defp response_headers(%HTTP.Response{headers: %HTTP.Headers{headers: headers}}) do
+    Enum.map(headers, fn {name, value} ->
+      {name |> to_string() |> String.downcase(), to_string(value)}
+    end)
   end
 
   defp forward_bytes(transfer, response, bytes, id, push) do
@@ -140,9 +155,8 @@ defmodule Backplane.HostAgent.ApiRequest do
 
   defp forward_headers(transfer, response, id, push) do
     headers =
-      response
-      |> Req.get_headers_list()
-      |> Enum.reject(fn {name, _value} -> String.downcase(name) in @hop_headers end)
+      response.headers
+      |> Enum.reject(fn {name, _value} -> name in @hop_headers end)
       |> Enum.map(fn {name, value} -> [name, value] end)
 
     case push.(%{
@@ -235,6 +249,8 @@ defmodule Backplane.HostAgent.ApiRequest do
     end
   end
 
-  defp error_code(%{reason: :timeout}), do: :timeout
+  defp error_code(%HTTP.RequestError{reason: reason}), do: error_code(reason)
+  defp error_code({:timeout, _detail}), do: :timeout
+  defp error_code(reason) when reason in @timeout_reasons, do: :timeout
   defp error_code(_error), do: :upstream_error
 end

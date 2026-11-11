@@ -3,10 +3,11 @@ defmodule Backplane.HostAgent.Installer do
   Installs validated extracted skills into configured local target roots.
   """
 
-  alias Backplane.HostAgent.{Channel, Checksum, LocalStore, SkillBundle}
+  alias Backplane.HostAgent.{Channel, Checksum, HTTPBody, LocalStore, SkillBundle}
 
   @slug_format ~r/\A[a-z0-9][a-z0-9-]*\z/
   @bundle_chunk_size 49_152
+  @download_idle_timeout 15_000
 
   def install(skill, config) do
     slug = field(skill, :slug)
@@ -226,19 +227,9 @@ defmodule Backplane.HostAgent.Installer do
           end
 
         _fun ->
-          req_options =
-            config
-            |> field(:req_options, [])
-            |> Keyword.merge(
-              url: url,
-              headers: headers,
-              into: File.stream!(archive_path),
-              retry: false
-            )
-
-          case Req.get(req_options) do
-            {:ok, %{status: status}} when status in 200..299 -> {:ok, archive_path}
-            {:ok, %{status: status}} -> {:error, {:download_failed, status}}
+          case http_download(url, headers, archive_path, field(config, :http_options, [])) do
+            {:ok, status} when status in 200..299 -> {:ok, archive_path}
+            {:ok, status} -> {:error, {:download_failed, status}}
             {:error, reason} -> {:error, {:download_failed, reason}}
           end
       end
@@ -246,6 +237,48 @@ defmodule Backplane.HostAgent.Installer do
     |> case do
       {:ok, ^archive_path} -> :ok
       other -> other
+    end
+  end
+
+  # Streams the response body into the archive file, whatever the status, then
+  # reports the status. Reads idle out after 15 s without data.
+  defp http_download(url, headers, archive_path, http_options) do
+    fetch_options =
+      Keyword.merge(
+        [
+          method: "GET",
+          headers: headers,
+          stream_response: true,
+          timeout: :infinity,
+          read_idle_timeout: @download_idle_timeout,
+          response_stream_idle_timeout: @download_idle_timeout
+        ],
+        http_options
+      )
+
+    case url |> HTTP.fetch(fetch_options) |> HTTP.Promise.await(:infinity) do
+      %HTTP.Response{status: status} = response ->
+        write_body(response, archive_path, status)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp write_body(response, archive_path, status) do
+    {file, collect} = Collectable.into(File.stream!(archive_path))
+    write = fn chunk, file -> {:cont, collect.(file, {:cont, chunk})} end
+
+    case HTTPBody.reduce(response, :infinity, file, write) do
+      {:ok, file} ->
+        collect.(file, :done)
+        {:ok, status}
+
+      {:error, reason, file} ->
+        collect.(file, :halt)
+        {:error, reason}
     end
   end
 

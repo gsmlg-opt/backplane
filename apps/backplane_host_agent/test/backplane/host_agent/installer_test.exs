@@ -46,6 +46,43 @@ defmodule Backplane.HostAgent.InstallerTest do
   end
 
   @tag :tmp_dir
+  test "downloads an HTTP archive with the host token and installs it", %{tmp_dir: tmp_dir} do
+    archive = skill_archive(tmp_dir, "repo-review", "# Repo Review")
+    archive_bytes = File.read!(archive)
+    target = Path.join(tmp_dir, "target")
+    File.mkdir_p!(target)
+
+    HTTP.Test.stub(InstallerDownload, fn request ->
+      assert request.method == :get
+      assert request.url.path == "/skills/repo-review/archive"
+      assert HTTP.Headers.get(request.headers, "x-backplane-host-token") == "host-token"
+      HTTP.Test.response(200, archive_bytes, [{"content-type", "application/gzip"}])
+    end)
+
+    skill = %{
+      "slug" => "repo-review",
+      "checksum" => "sha256:" <> sha256_file(archive),
+      "targets" => ["agents"],
+      "download_url" => "/skills/repo-review/archive"
+    }
+
+    config = %{
+      work_dir: Path.join(tmp_dir, "work"),
+      targets: [%{name: "agents", path: target, enabled: true}],
+      hub_url: "http://hub.test",
+      token: "host-token",
+      http_options: [adapter: {HTTP.Test, InstallerDownload}]
+    }
+
+    assert {:ok, ["agents"]} = Installer.install(skill, config)
+    assert File.read!(Path.join([target, "repo-review", "SKILL.md"])) == "# Repo Review"
+
+    HTTP.Test.stub(InstallerDownload, fn _request -> HTTP.Test.text("missing", 404) end)
+
+    assert {:error, {:download_failed, 404}} = Installer.install(skill, config)
+  end
+
+  @tag :tmp_dir
   test "does not install archive with mismatched checksum", %{tmp_dir: tmp_dir} do
     archive = skill_archive(tmp_dir, "repo-review", "# Repo Review")
     target = Path.join(tmp_dir, "target")
