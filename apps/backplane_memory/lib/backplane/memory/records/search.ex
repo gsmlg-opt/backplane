@@ -125,8 +125,8 @@ defmodule Backplane.Memory.Records.Search do
   end
 
   defp embed_query(query) do
-    req_options = Application.get_env(:backplane_memory, :embedding_req_options, [])
-    Client.embed([query], :query, req_options: req_options)
+    http_options = Application.get_env(:backplane_memory, :embedding_http_options, [])
+    Client.embed([query], :query, http_options: http_options)
   end
 
   # Reciprocal-rank fusion. A record that has no embedding yet (the embed worker

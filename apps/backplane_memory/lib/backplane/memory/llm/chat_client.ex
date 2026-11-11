@@ -32,7 +32,7 @@ defmodule Backplane.Memory.LLM.ChatClient do
   defp do_complete(messages, tools, model, opts) do
     base_url = Application.fetch_env!(:backplane_memory, :llm_proxy_url)
 
-    req_opts =
+    request_opts =
       [
         url: base_url <> "/v1/chat/completions",
         headers: [
@@ -48,10 +48,10 @@ defmodule Backplane.Memory.LLM.ChatClient do
         },
         receive_timeout: Keyword.get(opts, :receive_timeout, @default_receive_timeout),
         retry: false
-      ] ++ Keyword.get(opts, :req_options, [])
+      ] ++ Keyword.get(opts, :http_options, [])
 
-    case Backplane.Memory.ProxyAuth.authorize(req_opts) do
-      {:ok, req_opts} -> request(req_opts, model)
+    case Backplane.Memory.ProxyAuth.authorize(request_opts) do
+      {:ok, request_opts} -> request(request_opts, model)
       {:error, _} -> {:error, "proxy credential unavailable"}
     end
   end
@@ -67,8 +67,8 @@ defmodule Backplane.Memory.LLM.ChatClient do
     }
   end
 
-  defp request(req_opts, model) do
-    case Req.post(req_opts) do
+  defp request(request_opts, model) do
+    case Backplane.HTTPClient.post(request_opts) do
       {:ok, %{status: 200, body: %{"choices" => [%{"message" => message} | _]} = body}}
       when is_map(message) ->
         with {:ok, calls} <- tool_calls(message["tool_calls"], model) do
@@ -129,6 +129,14 @@ defmodule Backplane.Memory.LLM.ChatClient do
     case Jason.encode(body) do
       {:ok, json} -> preview(json)
       _ -> preview(inspect(body))
+    end
+  end
+
+  # Keep transport failures readable ("connection refused"), not an inspected atom.
+  defp reason_text(%Backplane.HTTPClient.Error{reason: reason}) when is_atom(reason) do
+    case :inet.format_error(reason) do
+      ~c"unknown POSIX error" -> inspect(reason)
+      message -> List.to_string(message)
     end
   end
 

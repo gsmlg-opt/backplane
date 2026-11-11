@@ -1,9 +1,16 @@
 defmodule Backplane.Memory.Embedding.ClientTest do
   use ExUnit.Case, async: true
 
+  alias Backplane.HTTPClient
   alias Backplane.Memory.Embedding.Client
 
   @model "test-embedding-model"
+  @http_options [adapter: {HTTP.Test, __MODULE__}]
+
+  setup do
+    HTTP.Test.verify_on_exit!()
+    :ok
+  end
 
   describe "query_instruction/0" do
     test "returns non-empty string starting with 'Instruct:'" do
@@ -13,7 +20,7 @@ defmodule Backplane.Memory.Embedding.ClientTest do
 
   describe "embed/3" do
     test "rejects empty, malformed and oversized input before contacting a provider" do
-      mock = fn _req -> flunk("invalid input reached provider") end
+      HTTP.Test.stub(__MODULE__, fn _request -> flunk("invalid input reached provider") end)
 
       for texts <- [
             [],
@@ -26,13 +33,13 @@ defmodule Backplane.Memory.Embedding.ClientTest do
             [String.duplicate("x", 80_001)]
           ] do
         assert {:error, :invalid_embedding_input} =
-                 Client.embed(texts, :document, model: @model, req_options: [adapter: mock])
+                 Client.embed(texts, :document, model: @model, http_options: @http_options)
       end
 
       assert {:error, :invalid_embedding_input} =
                Client.embed([String.duplicate("x", 80_000)], :query,
                  model: @model,
-                 req_options: [adapter: mock]
+                 http_options: @http_options
                )
     end
 
@@ -44,13 +51,13 @@ defmodule Backplane.Memory.Embedding.ClientTest do
             [],
             "invalid"
           ] do
-        mock = fn req ->
-          assert Jason.decode!(req.body)["dimensions"] == 2560
-          {req, Req.Response.new(status: 200, body: %{"data" => data})}
-        end
+        HTTP.Test.stub(__MODULE__, fn request ->
+          assert Jason.decode!(IO.iodata_to_binary(request.body))["dimensions"] == 2560
+          HTTP.Test.json(%{"data" => data})
+        end)
 
         assert {:error, :invalid_embedding_response} =
-                 Client.embed(["text"], :document, model: @model, req_options: [adapter: mock])
+                 Client.embed(["text"], :document, model: @model, http_options: @http_options)
       end
     end
 
@@ -61,37 +68,34 @@ defmodule Backplane.Memory.Embedding.ClientTest do
             [%{"index" => 0, "embedding" => vector}],
             [%{"index" => 0, "embedding" => vector}, %{"index" => 0, "embedding" => vector}]
           ] do
-        mock = fn req -> {req, Req.Response.new(status: 200, body: %{"data" => data})} end
+        HTTP.Test.stub(__MODULE__, fn _request -> HTTP.Test.json(%{"data" => data}) end)
 
         assert {:error, :invalid_embedding_response} =
                  Client.embed(["first", "second"], :document,
                    model: @model,
-                   req_options: [adapter: mock]
+                   http_options: @http_options
                  )
       end
     end
 
     test "returns {:error, _} on non-200 response" do
-      mock = fn req ->
-        {req, Req.Response.new(status: 500, body: %{"error" => "oops"})}
-      end
+      HTTP.Test.stub(__MODULE__, fn _request -> HTTP.Test.json(%{"error" => "oops"}, 500) end)
 
       assert {:error, {:llm_proxy_error, 500}} =
-               Client.embed(["text"], :document, model: @model, req_options: [adapter: mock])
+               Client.embed(["text"], :document, model: @model, http_options: @http_options)
     end
 
     test "returns {:ok, vectors} on success with 2560-dim vector" do
       vector = Enum.map(1..2560, fn _ -> 0.001 end)
 
-      mock = fn req ->
-        assert Req.Request.get_header(req, "x-backplane-memory-origin") == ["embedding"]
-        assert Req.Request.get_header(req, "x-backplane-memory-capture") == ["skip"]
-        body = %{"data" => [%{"embedding" => vector, "index" => 0}]}
-        {req, Req.Response.new(status: 200, body: body)}
-      end
+      HTTP.Test.stub(__MODULE__, fn request ->
+        assert HTTP.Headers.get_all(request.headers, "x-backplane-memory-origin") == ["embedding"]
+        assert HTTP.Headers.get_all(request.headers, "x-backplane-memory-capture") == ["skip"]
+        HTTP.Test.json(%{"data" => [%{"embedding" => vector, "index" => 0}]})
+      end)
 
       assert {:ok, [result_vec]} =
-               Client.embed(["hello"], :document, model: @model, req_options: [adapter: mock])
+               Client.embed(["hello"], :document, model: @model, http_options: @http_options)
 
       assert length(result_vec) == 2560
     end
@@ -100,16 +104,14 @@ defmodule Backplane.Memory.Embedding.ClientTest do
       v1 = Enum.map(1..2560, fn _ -> 0.1 end)
       v2 = Enum.map(1..2560, fn _ -> 0.2 end)
 
-      mock = fn req ->
-        body = %{
+      HTTP.Test.stub(__MODULE__, fn _request ->
+        HTTP.Test.json(%{
           "data" => [%{"embedding" => v2, "index" => 1}, %{"embedding" => v1, "index" => 0}]
-        }
-
-        {req, Req.Response.new(status: 200, body: body)}
-      end
+        })
+      end)
 
       assert {:ok, [first, second]} =
-               Client.embed(["a", "b"], :document, model: @model, req_options: [adapter: mock])
+               Client.embed(["a", "b"], :document, model: @model, http_options: @http_options)
 
       assert hd(first) == 0.1
       assert hd(second) == 0.2
@@ -118,34 +120,38 @@ defmodule Backplane.Memory.Embedding.ClientTest do
     test "query mode prepends instruction prefix to each input" do
       pid = self()
 
-      mock = fn req ->
-        %{"input" => inputs} = Jason.decode!(req.body)
+      HTTP.Test.stub(__MODULE__, fn request ->
+        %{"input" => inputs} = Jason.decode!(IO.iodata_to_binary(request.body))
         send(pid, {:input, inputs})
-        body = %{"data" => [%{"embedding" => Enum.map(1..2560, fn _ -> 0.0 end), "index" => 0}]}
-        {req, Req.Response.new(status: 200, body: body)}
-      end
 
-      Client.embed(["my query"], :query, model: @model, req_options: [adapter: mock])
+        HTTP.Test.json(%{
+          "data" => [%{"embedding" => Enum.map(1..2560, fn _ -> 0.0 end), "index" => 0}]
+        })
+      end)
+
+      Client.embed(["my query"], :query, model: @model, http_options: @http_options)
 
       assert_receive {:input, [prefixed]}
       assert String.starts_with?(prefixed, "Instruct:")
     end
 
     test "returns {:error, _} on network failure" do
-      mock = fn req -> {req, %Req.TransportError{reason: :econnrefused}} end
+      HTTP.Test.stub(__MODULE__, fn _request -> HTTP.Test.transport_error(:econnrefused) end)
 
-      assert {:error, {:http_error, %Req.TransportError{reason: :econnrefused}}} =
-               Client.embed(["text"], :document, model: @model, req_options: [adapter: mock])
+      assert {:error, {:http_error, %HTTPClient.Error{reason: :econnrefused}}} =
+               Client.embed(["text"], :document, model: @model, http_options: @http_options)
     end
 
     test "returns not configured without sending a request when no model is configured" do
-      mock = fn req ->
-        send(self(), :unexpected_request)
-        {req, Req.Response.new(status: 200, body: %{"data" => []})}
-      end
+      owner = self()
+
+      HTTP.Test.stub(__MODULE__, fn _request ->
+        send(owner, :unexpected_request)
+        HTTP.Test.json(%{"data" => []})
+      end)
 
       assert {:error, :embedding_model_not_configured} =
-               Client.embed(["text"], :document, req_options: [adapter: mock])
+               Client.embed(["text"], :document, http_options: @http_options)
 
       refute_received :unexpected_request
     end

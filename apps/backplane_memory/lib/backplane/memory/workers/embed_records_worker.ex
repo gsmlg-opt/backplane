@@ -43,7 +43,7 @@ defmodule Backplane.Memory.Workers.EmbedRecordsWorker do
 
   defp embed(rows) do
     texts = Enum.map(rows, fn {_id, title, content} -> text(title, content) end)
-    opts = [req_options: Application.get_env(:backplane_memory, :embedding_req_options, [])]
+    opts = [http_options: Application.get_env(:backplane_memory, :embedding_http_options, [])]
 
     case Client.embed(texts, :document, opts) do
       {:ok, vectors} ->

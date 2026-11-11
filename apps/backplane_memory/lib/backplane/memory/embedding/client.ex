@@ -52,9 +52,9 @@ defmodule Backplane.Memory.Embedding.Client do
     inputs = prepare_inputs(texts, mode)
     base_url = Application.fetch_env!(:backplane_memory, :llm_proxy_url)
     url = "#{base_url}/v1/embeddings"
-    req_options = Keyword.get(opts, :req_options, [])
+    http_options = Keyword.get(opts, :http_options, [])
 
-    req_opts =
+    request_opts =
       [
         url: url,
         headers: [
@@ -64,15 +64,15 @@ defmodule Backplane.Memory.Embedding.Client do
         json: %{model: model, input: inputs, encoding_format: "float", dimensions: @dimensions},
         receive_timeout: 10_000,
         retry: false
-      ] ++ req_options
+      ] ++ http_options
 
-    with {:ok, req_opts} <- Backplane.Memory.ProxyAuth.authorize(req_opts) do
-      request(req_opts, length(texts))
+    with {:ok, request_opts} <- Backplane.Memory.ProxyAuth.authorize(request_opts) do
+      request(request_opts, length(texts))
     end
   end
 
-  defp request(req_opts, count) do
-    case Req.post(req_opts) do
+  defp request(request_opts, count) do
+    case Backplane.HTTPClient.post(request_opts) do
       {:ok, %{status: 200, body: %{"data" => data}}} ->
         validate_vectors(data, count)
 

@@ -11,17 +11,22 @@ defmodule Backplane.Memory.Records.SearchTest do
 
   setup do
     CircuitBreaker.reset()
+    HTTP.Test.verify_on_exit!()
 
     on_exit(fn ->
       Application.delete_env(:backplane_memory, :embed_model)
-      Application.delete_env(:backplane_memory, :embedding_req_options)
+      Application.delete_env(:backplane_memory, :embedding_http_options)
       CircuitBreaker.reset()
     end)
   end
 
-  defp configure(plug) do
+  defp configure(fixture) do
+    HTTP.Test.stub(EmbeddingStub, fixture)
     Application.put_env(:backplane_memory, :embed_model, "test-embed")
-    Application.put_env(:backplane_memory, :embedding_req_options, plug: plug)
+
+    Application.put_env(:backplane_memory, :embedding_http_options,
+      adapter: {HTTP.Test, EmbeddingStub}
+    )
   end
 
   defp remember!(content, extra \\ %{}) do
@@ -45,7 +50,7 @@ defmodule Backplane.Memory.Records.SearchTest do
     assert far.id in ids(Records.search("zzqq", %{}))
 
     Application.delete_env(:backplane_memory, :embed_model)
-    Application.delete_env(:backplane_memory, :embedding_req_options)
+    Application.delete_env(:backplane_memory, :embedding_http_options)
     assert Records.search("zzqq", %{}) == []
   end
 
@@ -119,13 +124,13 @@ defmodule Backplane.Memory.Records.SearchTest do
 
   test "open breaker skips embedding and uses full-text" do
     r = remember!("giraffe notes")
-    configure(fn _conn -> flunk("breaker open; proxy must not be called") end)
+    configure(fn _request -> flunk("breaker open; proxy must not be called") end)
     for _ <- 1..5, do: CircuitBreaker.record_failure()
     assert [r.id] == ids(Records.search("giraffe", %{}))
   end
 
   test "a blank query never calls the proxy and does not count as a breaker failure" do
-    configure(fn _conn -> flunk("blank query must not be embedded") end)
+    configure(fn _request -> flunk("blank query must not be embedded") end)
 
     for _ <- 1..10, do: assert(Records.search("   ", %{}) == [])
 

@@ -1,5 +1,5 @@
 defmodule Backplane.Memory.EmbeddingStub do
-  @moduledoc "Test helper: Req plug stub serving deterministic 2560-dim vectors."
+  @moduledoc "Test helper: HTTP.Test fixtures serving deterministic 2560-dim vectors."
 
   @dims 2560
 
@@ -9,15 +9,13 @@ defmodule Backplane.Memory.EmbeddingStub do
   end
 
   @doc """
-  Plug serving vectors: input text containing `axis:N` maps to `vector(N)`;
+  Fixture serving vectors: input text containing `axis:N` maps to `vector(N)`;
   anything else maps to axis 0.
   """
-  def plug(conn) do
-    {:ok, body, conn} = Plug.Conn.read_body(conn)
-    %{"input" => inputs} = Jason.decode!(body)
-
+  def plug(request) do
     data =
-      inputs
+      request
+      |> inputs()
       |> Enum.with_index()
       |> Enum.map(fn {text, index} ->
         axis =
@@ -29,23 +27,21 @@ defmodule Backplane.Memory.EmbeddingStub do
         %{"index" => index, "embedding" => vector(axis)}
       end)
 
-    conn
-    |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(200, Jason.encode!(%{"data" => data}))
+    HTTP.Test.json(%{"data" => data})
   end
 
-  def error_plug(conn), do: Plug.Conn.send_resp(conn, 500, "boom")
+  def error_plug(_request), do: HTTP.Test.response(500, "boom")
 
-  def short_plug(conn) do
-    {:ok, body, conn} = Plug.Conn.read_body(conn)
-    %{"input" => inputs} = Jason.decode!(body)
-
+  def short_plug(request) do
     data =
-      for {_t, i} <- Enum.with_index(inputs),
+      for {_t, i} <- Enum.with_index(inputs(request)),
           do: %{"index" => i, "embedding" => [0.1, 0.2]}
 
-    conn
-    |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(200, Jason.encode!(%{"data" => data}))
+    HTTP.Test.json(%{"data" => data})
+  end
+
+  defp inputs(request) do
+    %{"input" => inputs} = request.body |> IO.iodata_to_binary() |> Jason.decode!()
+    inputs
   end
 end

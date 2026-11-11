@@ -16,6 +16,7 @@ defmodule Backplane.Memory.ProxyAuthTest do
     end)
 
     :ets.insert(:backplane_settings, {"memory.llm_model", "synthetic-model"})
+    HTTP.Test.verify_on_exit!()
     :ok
   end
 
@@ -24,29 +25,34 @@ defmodule Backplane.Memory.ProxyAuthTest do
     assert {:ok, _} = Credentials.store(name, "synthetic-resource-token", "service")
     :ets.insert(:backplane_settings, {"memory.proxy_credential", name})
 
-    adapter = fn req ->
-      assert Req.Request.get_header(req, "authorization") == ["Bearer synthetic-resource-token"]
-      assert Req.Request.get_header(req, "x-backplane-memory-capture") == ["skip"]
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert HTTP.Headers.get_all(request.headers, "authorization") == [
+               "Bearer synthetic-resource-token"
+             ]
 
-      body = %{"data" => [%{"index" => 0, "embedding" => List.duplicate(0.1, 2560)}]}
+      assert HTTP.Headers.get_all(request.headers, "x-backplane-memory-capture") == ["skip"]
 
-      {req, Req.Response.new(status: 200, body: body)}
-    end
+      HTTP.Test.json(%{"data" => [%{"index" => 0, "embedding" => List.duplicate(0.1, 2560)}]})
+    end)
 
     assert {:ok, [_]} =
              Client.embed(["alpha"], :document,
                model: "embedding",
-               req_options: [adapter: adapter]
+               http_options: [adapter: {HTTP.Test, __MODULE__}]
              )
   end
 
   test "an unavailable configured credential fails before sending the provider request" do
     :ets.insert(:backplane_settings, {"memory.proxy_credential", "missing-memory-resource-token"})
-    adapter = fn _req -> flunk("must not send an unauthenticated request") end
+
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      flunk("must not send an unauthenticated request")
+    end)
+
     assert {:error, :proxy_credential_unavailable} =
              Client.embed(["alpha"], :document,
                model: "embedding",
-               req_options: [adapter: adapter]
+               http_options: [adapter: {HTTP.Test, __MODULE__}]
              )
   end
 end
