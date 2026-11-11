@@ -1,11 +1,13 @@
 defmodule Backplane.Monitor.ApiUsageFetcher do
   @moduledoc "Resolves vaulted API keys and returns secret-free provider usage snapshots."
 
-  alias Backplane.Monitor.{ApiAccount, ApiAccounts}
+  alias Backplane.Monitor.{ApiAccount, ApiAccounts, HttpProxy}
   alias Backplane.Monitor.Providers.{DeepSeek, OpenAI, OpenRouter}
   alias Backplane.Monitor.Providers.{Exa, Firecrawl, Tavily}
   alias Backplane.Settings.Encryption
   alias Backplane.Settings.Credentials.Vault
+
+  @credential_kinds ApiAccounts.credential_kinds()
 
   @type reason ::
           :provider_not_supported
@@ -90,7 +92,7 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
       nil ->
         {:error, :credential_not_found}
 
-      %{kind: kind} when kind not in ["llm", "service"] ->
+      %{kind: kind} when kind not in @credential_kinds ->
         {:error, :invalid_credential_kind}
 
       %{encrypted_value: encrypted} = credential ->
@@ -135,6 +137,7 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
         ],
         decode_body: false
       )
+      |> put_proxy(url)
 
     case Req.get(options) do
       {:ok, %{status: 200, body: body}} when is_binary(body) ->
@@ -156,6 +159,14 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
     _exception -> {:error, :request_failed}
   catch
     :exit, _reason -> {:error, :request_failed}
+  end
+
+  # Req rejects :connect_options alongside :finch, so proxy settings go into Mint conn_opts.
+  defp put_proxy(options, url) do
+    case HttpProxy.connect_options(url) do
+      [] -> options
+      proxy -> update_in(options, [:finch, :conn_opts], &Keyword.merge(&1, proxy))
+    end
   end
 
   @doc false

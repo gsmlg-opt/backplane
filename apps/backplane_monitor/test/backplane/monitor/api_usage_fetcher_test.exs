@@ -42,7 +42,7 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
           {"openrouter", OpenRouter, %{data: %{usage: 1}}},
           {"deepseek", DeepSeek, %{is_available: true, balance_infos: []}}
         ],
-        kind <- ["llm", "service"],
+        kind <- ["llm", "service", "admin"],
         auth_type <- [nil, "api_key"] do
       name = credential(kind, auth_type, "private-key")
 
@@ -62,7 +62,7 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
 
     assert {:error, :credential_not_found} = ApiUsageFetcher.fetch_usage(account("deepseek", nil))
 
-    for kind <- ["script", "admin", "upstream", "custom"] do
+    for kind <- ["script", "upstream", "custom"] do
       name = credential(kind, nil, "private-key")
 
       assert {:error, :invalid_credential_kind} =

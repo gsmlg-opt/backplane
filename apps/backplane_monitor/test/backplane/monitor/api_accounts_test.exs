@@ -58,10 +58,21 @@ defmodule Backplane.Monitor.ApiAccountsTest do
     assert other.organization_id == nil
   end
 
-  test "rejects credential kinds outside account monitoring", %{credential: credential} do
-    Vault.put(%{Vault.get(credential) | kind: "admin"})
-    assert {:error, changeset} = ApiAccounts.create_account(attrs(credential))
-    assert changeset.errors[:credential_name]
+  test "accepts admin API keys and rejects other credential kinds", %{credential: credential} do
+    Vault.put(%{Vault.get(credential) | kind: "admin", metadata: %{"auth_type" => "api_key"}})
+    assert Enum.any?(ApiAccounts.credential_options(), &(&1.name == credential))
+
+    assert {:ok, _account} =
+             ApiAccounts.create_account(
+               Map.merge(attrs(credential), %{provider: "openai", organization_id: "org-admin"})
+             )
+
+    for kind <- ["script", "upstream", "custom"] do
+      Vault.put(%{Vault.get(credential) | kind: kind})
+      refute Enum.any?(ApiAccounts.credential_options(), &(&1.name == credential))
+      assert {:error, changeset} = ApiAccounts.create_account(attrs(credential))
+      assert changeset.errors[:credential_name]
+    end
   end
 
   test "validates optional management references without exposing values", %{
