@@ -149,8 +149,8 @@ defmodule Backplane.Monitor.PlanSupervisor do
   end
 
   defp start_opts(%Plan{} = plan) do
-    case Application.get_env(:backplane_monitor, :req_test_owner) do
-      owner when is_pid(owner) -> [plan: plan, req_test_owner: owner]
+    case Application.get_env(:backplane_monitor, :http_test_owner) do
+      owner when is_pid(owner) -> [plan: plan, http_test_owner: owner]
       _ -> [plan: plan]
     end
   end

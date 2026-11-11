@@ -42,40 +42,41 @@ defmodule Backplane.Monitor.UsageFetcherTest do
   setup tags do
     BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
     Ecto.Adapters.SQL.Sandbox.allow(Backplane.Repo, self(), Backplane.Settings.Credentials.Vault)
+    HTTP.Test.verify_on_exit!()
 
-    previous_openai = Application.get_env(:backplane, :openai_codex_monitor_req_options)
-    previous_claude = Application.get_env(:backplane, :claude_code_monitor_req_options)
-    previous_google = Application.get_env(:backplane, :google_antigravity_monitor_req_options)
+    previous_openai = Application.get_env(:backplane, :openai_codex_monitor_http_options)
+    previous_claude = Application.get_env(:backplane, :claude_code_monitor_http_options)
+    previous_google = Application.get_env(:backplane, :google_antigravity_monitor_http_options)
 
-    Application.put_env(:backplane, :openai_codex_monitor_req_options,
-      plug: {Req.Test, OpenAICodex}
+    Application.put_env(:backplane, :openai_codex_monitor_http_options,
+      adapter: {HTTP.Test, OpenAICodex}
     )
 
-    Application.put_env(:backplane, :claude_code_monitor_req_options,
-      plug: {Req.Test, ClaudeCode}
+    Application.put_env(:backplane, :claude_code_monitor_http_options,
+      adapter: {HTTP.Test, ClaudeCode}
     )
 
-    Application.put_env(:backplane, :google_antigravity_monitor_req_options,
-      plug: {Req.Test, GoogleAntigravity}
+    Application.put_env(:backplane, :google_antigravity_monitor_http_options,
+      adapter: {HTTP.Test, GoogleAntigravity}
     )
 
     on_exit(fn ->
       if previous_openai do
-        Application.put_env(:backplane, :openai_codex_monitor_req_options, previous_openai)
+        Application.put_env(:backplane, :openai_codex_monitor_http_options, previous_openai)
       else
-        Application.delete_env(:backplane, :openai_codex_monitor_req_options)
+        Application.delete_env(:backplane, :openai_codex_monitor_http_options)
       end
 
       if previous_claude do
-        Application.put_env(:backplane, :claude_code_monitor_req_options, previous_claude)
+        Application.put_env(:backplane, :claude_code_monitor_http_options, previous_claude)
       else
-        Application.delete_env(:backplane, :claude_code_monitor_req_options)
+        Application.delete_env(:backplane, :claude_code_monitor_http_options)
       end
 
       if previous_google do
-        Application.put_env(:backplane, :google_antigravity_monitor_req_options, previous_google)
+        Application.put_env(:backplane, :google_antigravity_monitor_http_options, previous_google)
       else
-        Application.delete_env(:backplane, :google_antigravity_monitor_req_options)
+        Application.delete_env(:backplane, :google_antigravity_monitor_http_options)
       end
     end)
 
@@ -116,9 +117,9 @@ defmodule Backplane.Monitor.UsageFetcherTest do
 
     {:ok, _credential} = Credentials.import_cli_auth(credential_name, raw_json)
 
-    Req.Test.stub(ClaudeCode, fn conn ->
-      assert {"authorization", "Bearer sk-ant-oat01-usage"} in conn.req_headers
-      assert {"anthropic-beta", "oauth-2025-04-20"} in conn.req_headers
+    HTTP.Test.stub(ClaudeCode, fn request ->
+      assert header(request, "authorization") == ["Bearer sk-ant-oat01-usage"]
+      assert header(request, "anthropic-beta") == ["oauth-2025-04-20"]
 
       body = %{
         "five_hour" => %{
@@ -132,9 +133,7 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         "extra_usage" => %{"is_enabled" => false}
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     plan = %Plan{
@@ -172,13 +171,11 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         %{"account_id" => "acc-123"}
       )
 
-    Req.Test.stub(OpenAICodex, fn conn ->
-      assert {"authorization", "Bearer old-access"} in conn.req_headers
-      assert {"chatgpt-account-id", "acc-123"} in conn.req_headers
+    HTTP.Test.stub(OpenAICodex, fn request ->
+      assert header(request, "authorization") == ["Bearer old-access"]
+      assert header(request, "chatgpt-account-id") == ["acc-123"]
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(openai_usage_body()))
+      HTTP.Test.json(openai_usage_body())
     end)
 
     plan = %Plan{
@@ -204,13 +201,11 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         openai_token_set("old-access", "refresh-token", "acc-token-only")
       )
 
-    Req.Test.stub(OpenAICodex, fn conn ->
-      assert {"authorization", "Bearer old-access"} in conn.req_headers
-      assert {"chatgpt-account-id", "acc-token-only"} in conn.req_headers
+    HTTP.Test.stub(OpenAICodex, fn request ->
+      assert header(request, "authorization") == ["Bearer old-access"]
+      assert header(request, "chatgpt-account-id") == ["acc-token-only"]
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(openai_usage_body()))
+      HTTP.Test.json(openai_usage_body())
     end)
 
     plan = %Plan{
@@ -242,13 +237,11 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         }
       )
 
-    Req.Test.stub(OpenAICodex, fn conn ->
-      assert {"authorization", "Bearer old-access"} in conn.req_headers
-      assert {"chatgpt-account-id", "acc-claim-only"} in conn.req_headers
+    HTTP.Test.stub(OpenAICodex, fn request ->
+      assert header(request, "authorization") == ["Bearer old-access"]
+      assert header(request, "chatgpt-account-id") == ["acc-claim-only"]
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(openai_usage_body()))
+      HTTP.Test.json(openai_usage_body())
     end)
 
     plan = %Plan{
@@ -296,13 +289,11 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         }
       )
 
-    Req.Test.stub(OpenAICodex, fn conn ->
-      assert {"authorization", "Bearer new-access"} in conn.req_headers
-      assert {"chatgpt-account-id", "acc-refreshed"} in conn.req_headers
+    HTTP.Test.stub(OpenAICodex, fn request ->
+      assert header(request, "authorization") == ["Bearer new-access"]
+      assert header(request, "chatgpt-account-id") == ["acc-refreshed"]
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(openai_usage_body()))
+      HTTP.Test.json(openai_usage_body())
     end)
 
     plan = %Plan{
@@ -375,20 +366,17 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         %{"account_id" => "acc-123"}
       )
 
-    Req.Test.stub(OpenAICodex, fn conn ->
+    HTTP.Test.stub(OpenAICodex, fn request ->
       count = Agent.get_and_update(call_count, &{&1, &1 + 1})
 
       case count do
         0 ->
-          assert {"authorization", "Bearer old-access"} in conn.req_headers
-          Plug.Conn.send_resp(conn, 401, "Unauthorized")
+          assert header(request, "authorization") == ["Bearer old-access"]
+          HTTP.Test.response(401, "Unauthorized")
 
         1 ->
-          assert {"authorization", "Bearer new-access"} in conn.req_headers
-
-          conn
-          |> Plug.Conn.put_resp_content_type("application/json")
-          |> Plug.Conn.send_resp(200, Jason.encode!(openai_usage_body()))
+          assert header(request, "authorization") == ["Bearer new-access"]
+          HTTP.Test.json(openai_usage_body())
       end
     end)
 
@@ -415,15 +403,15 @@ defmodule Backplane.Monitor.UsageFetcherTest do
         %{"auth_mode" => "antigravity"}
       )
 
-    Req.Test.stub(GoogleAntigravity, fn conn ->
-      assert {"authorization", "Bearer google-access"} in conn.req_headers
+    HTTP.Test.stub(GoogleAntigravity, fn request ->
+      assert header(request, "authorization") == ["Bearer google-access"]
 
-      case conn.request_path do
+      case request.url.path do
         "/v1internal:retrieveUserQuotaSummary" ->
-          Req.Test.json(conn, google_antigravity_usage_body())
+          HTTP.Test.json(google_antigravity_usage_body())
 
         "/v1internal:loadCodeAssist" ->
-          Req.Test.json(conn, %{})
+          HTTP.Test.json(%{})
       end
     end)
 
@@ -521,4 +509,6 @@ defmodule Backplane.Monitor.UsageFetcherTest do
     encoded_payload = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
     "header.#{encoded_payload}.sig"
   end
+
+  defp header(request, name), do: HTTP.Headers.get_all(request.headers, name)
 end

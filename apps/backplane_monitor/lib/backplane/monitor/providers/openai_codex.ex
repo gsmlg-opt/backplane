@@ -6,9 +6,9 @@ defmodule Backplane.Monitor.Providers.OpenAICodex do
   backend endpoint behind a provider boundary so the caller only sees normalized
   usage data.
   """
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
   alias Backplane.Monitor.HttpProxy
-
-
   @default_url "https://chatgpt.com/backend-api/wham/usage"
   @default_user_agent "codex-cli"
   @default_receive_timeout 15_000
@@ -71,27 +71,27 @@ defmodule Backplane.Monitor.Providers.OpenAICodex do
   defp request_usage(access_token, chatgpt_account_id, config) do
     url = config_value(config, "api_url") || @default_url
 
-    case Req.get(
+    case HTTPClient.get(
            url,
            [
              headers: request_headers(access_token, chatgpt_account_id, config),
              receive_timeout: receive_timeout(config),
              retry: false
-           ] ++ req_options(url)
+           ] ++ http_options(url)
          ) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
+      {:ok, %Response{status: 200, body: body}} ->
         case normalize_usage_response(body) do
           {:error, reason} -> {:error, reason}
           normalized -> {:ok, normalized}
         end
 
-      {:ok, %Req.Response{status: 401}} ->
+      {:ok, %Response{status: 401}} ->
         {:error, :unauthorized}
 
-      {:ok, %Req.Response{status: 429} = response} ->
+      {:ok, %Response{status: 429} = response} ->
         {:error, {:rate_limited, retry_after(response)}}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->
@@ -267,25 +267,11 @@ defmodule Backplane.Monitor.Providers.OpenAICodex do
     end
   end
 
-  defp retry_after(%Req.Response{} = response) do
+  defp retry_after(%Response{} = response) do
     response
-    |> response_header("retry-after")
+    |> Response.get_header("retry-after")
+    |> List.first()
     |> parse_retry_after()
-  end
-
-  defp response_header(%Req.Response{headers: headers}, name) do
-    normalized = String.downcase(name)
-
-    Enum.find_value(headers || [], fn
-      {key, [value | _]} when is_binary(value) ->
-        if String.downcase(to_string(key)) == normalized, do: value
-
-      {key, value} when is_binary(value) ->
-        if String.downcase(to_string(key)) == normalized, do: value
-
-      _ ->
-        nil
-    end)
   end
 
   defp parse_retry_after(nil), do: nil
@@ -297,14 +283,14 @@ defmodule Backplane.Monitor.Providers.OpenAICodex do
     end
   end
 
-  defp req_options(url) do
-    case Application.fetch_env(:backplane, :openai_codex_monitor_req_options) do
+  defp http_options(url) do
+    case Application.fetch_env(:backplane, :openai_codex_monitor_http_options) do
       {:ok, opts} -> opts
-      :error -> default_req_options(url)
+      :error -> default_http_options(url)
     end
   end
 
-  defp default_req_options(url) do
+  defp default_http_options(url) do
     case HttpProxy.connect_options(url) do
       [] -> [inet6: true]
       connect_options -> [connect_options: connect_options]

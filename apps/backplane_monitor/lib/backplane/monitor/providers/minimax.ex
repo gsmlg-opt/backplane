@@ -37,23 +37,26 @@ defmodule Backplane.Monitor.Providers.MiniMax do
   ```
   """
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
+
   @default_url "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains"
 
   @doc "Fetch MiniMax coding plan usage data."
   @spec fetch(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def fetch(api_key, config \\ %{}) do
     url = config["api_url"] || @default_url
-    req_options = Application.get_env(:backplane, :minimax_monitor_req_options, [])
+    http_options = Application.get_env(:backplane, :minimax_monitor_http_options, [])
 
-    case Req.get(
+    case HTTPClient.get(
            url,
            [headers: [{"authorization", "Bearer #{api_key}"}], receive_timeout: 15_000] ++
-             req_options
+             http_options
          ) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
+      {:ok, %Response{status: 200, body: body}} ->
         {:ok, parse_response(body)}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->

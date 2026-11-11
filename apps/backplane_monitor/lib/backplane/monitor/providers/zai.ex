@@ -33,6 +33,9 @@ defmodule Backplane.Monitor.Providers.ZAI do
   ```
   """
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
+
   @default_url "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
 
   @doc "Fetch z.ai usage quota data."
@@ -40,11 +43,14 @@ defmodule Backplane.Monitor.Providers.ZAI do
   def fetch(api_key, config \\ %{}) do
     url = config["api_url"] || @default_url
 
-    case Req.get(url, headers: [{"authorization", "Bearer #{api_key}"}], receive_timeout: 15_000) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
+    case HTTPClient.get(url,
+           headers: [{"authorization", "Bearer #{api_key}"}],
+           receive_timeout: 15_000
+         ) do
+      {:ok, %Response{status: 200, body: body}} ->
         {:ok, parse_response(body)}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->

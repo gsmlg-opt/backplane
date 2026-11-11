@@ -4,7 +4,6 @@ defmodule Backplane.Monitor.ApiUsageServer do
   use GenServer
 
   alias Backplane.Monitor.{ApiAccounts, ApiUsageFetcher}
-  alias Backplane.Monitor.Providers.{DeepSeek, Exa, Firecrawl, OpenAI, OpenRouter, Tavily}
 
   @refresh_interval :timer.minutes(5)
   @request_timeout :timer.seconds(45)
@@ -318,11 +317,11 @@ defmodule Backplane.Monitor.ApiUsageServer do
     case snapshot do
       %{account: %{active: true} = account, refreshing: false} = snapshot ->
         fetcher = state.fetcher
-        owner = Application.get_env(:backplane_monitor, :req_test_owner)
+        owner = Application.get_env(:backplane_monitor, :http_test_owner)
 
         task =
           Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-            allow_req_test(account.provider, owner)
+            join_http_test_owner(owner)
             safely_fetch(fetcher, account)
           end)
 
@@ -435,21 +434,16 @@ defmodule Backplane.Monitor.ApiUsageServer do
 
   defp schedule_poll(state), do: state
 
-  defp allow_req_test(_provider, nil), do: :ok
-
-  defp allow_req_test(provider, owner) do
-    if Code.ensure_loaded?(Req.Test) do
-      stub =
-        case provider do
-          "openrouter" -> OpenRouter
-          "deepseek" -> DeepSeek
-          "exa" -> Exa
-          "tavily" -> Tavily
-          "firecrawl" -> Firecrawl
-          "openai" -> OpenAI
-        end
-
-      Req.Test.allow(stub, owner, self())
+  # Test-only: HTTP.Test.allow/3 must be called by the fixture owner, so the
+  # fetch task joins the owner's caller chain instead, which lets it resolve the
+  # owner's provider stubs (OpenRouter, DeepSeek, OpenAI, Tavily, Firecrawl).
+  defp join_http_test_owner(owner) when is_pid(owner) do
+    if Code.ensure_loaded?(HTTP.Test) do
+      Process.put(:"$callers", Process.get(:"$callers", []) ++ [owner])
     end
+
+    :ok
   end
+
+  defp join_http_test_owner(_owner), do: :ok
 end

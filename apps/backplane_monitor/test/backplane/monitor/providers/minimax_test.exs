@@ -4,14 +4,16 @@ defmodule Backplane.Monitor.Providers.MiniMaxTest do
   alias Backplane.Monitor.Providers.MiniMax
 
   setup do
-    previous = Application.get_env(:backplane, :minimax_monitor_req_options)
-    Application.put_env(:backplane, :minimax_monitor_req_options, plug: {Req.Test, MiniMax})
+    HTTP.Test.verify_on_exit!()
+
+    previous = Application.get_env(:backplane, :minimax_monitor_http_options)
+    Application.put_env(:backplane, :minimax_monitor_http_options, adapter: {HTTP.Test, MiniMax})
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane, :minimax_monitor_req_options, previous)
+        Application.put_env(:backplane, :minimax_monitor_http_options, previous)
       else
-        Application.delete_env(:backplane, :minimax_monitor_req_options)
+        Application.delete_env(:backplane, :minimax_monitor_http_options)
       end
     end)
 
@@ -19,9 +21,9 @@ defmodule Backplane.Monitor.Providers.MiniMaxTest do
   end
 
   test "fetch/2 returns parsed data for the old/counting format" do
-    Req.Test.stub(MiniMax, fn conn ->
-      assert conn.request_path == "/v1/api/openplatform/coding_plan/remains"
-      assert {"authorization", "Bearer test-key"} in conn.req_headers
+    HTTP.Test.stub(MiniMax, fn request ->
+      assert request.url.path == "/v1/api/openplatform/coding_plan/remains"
+      assert "Bearer test-key" in HTTP.Headers.get_all(request.headers, "authorization")
 
       body = %{
         "model_remains" => [
@@ -36,9 +38,7 @@ defmodule Backplane.Monitor.Providers.MiniMaxTest do
         ]
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     assert {:ok, result} = MiniMax.fetch("test-key")
@@ -55,7 +55,7 @@ defmodule Backplane.Monitor.Providers.MiniMaxTest do
   end
 
   test "fetch/2 returns parsed data for the new/percent format" do
-    Req.Test.stub(MiniMax, fn conn ->
+    HTTP.Test.stub(MiniMax, fn _request ->
       body = %{
         "model_remains" => [
           %{
@@ -84,9 +84,7 @@ defmodule Backplane.Monitor.Providers.MiniMaxTest do
         }
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     assert {:ok, result} = MiniMax.fetch("test-key")
@@ -111,8 +109,8 @@ defmodule Backplane.Monitor.Providers.MiniMaxTest do
   end
 
   test "fetch/2 handles API errors" do
-    Req.Test.stub(MiniMax, fn conn ->
-      Plug.Conn.send_resp(conn, 401, "Unauthorized")
+    HTTP.Test.stub(MiniMax, fn _request ->
+      HTTP.Test.response(401, "Unauthorized")
     end)
 
     assert {:error, {:api_error, 401, "Unauthorized"}} = MiniMax.fetch("test-key")

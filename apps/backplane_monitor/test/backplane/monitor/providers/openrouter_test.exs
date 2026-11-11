@@ -5,31 +5,25 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
 
   alias Backplane.Monitor.Providers.OpenRouter
 
-  defmodule InspectingAdapter do
-    def run(request) do
-      send(self(), {:request, request})
-      {request, Req.Response.new(status: 200, body: Jason.encode!(%{data: %{usage: 1}}))}
-    end
-  end
-
   defmodule RaisingAdapter do
-    def run(_request), do: raise("private-key")
-  end
-
-  setup_all do
-    {:ok, _apps} = Application.ensure_all_started(:req)
-    :ok
+    @behaviour HTTP.Adapter
+    def prepare(_request, _options), do: raise("private-key")
+    def execute(_request, _context, _signal), do: raise("private-key")
   end
 
   setup do
-    previous = Application.get_env(:backplane_monitor, :openrouter_req_options)
-    Application.put_env(:backplane_monitor, :openrouter_req_options, plug: {Req.Test, OpenRouter})
+    HTTP.Test.verify_on_exit!()
+    previous = Application.get_env(:backplane_monitor, :openrouter_http_options)
+
+    Application.put_env(:backplane_monitor, :openrouter_http_options,
+      adapter: {HTTP.Test, OpenRouter}
+    )
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane_monitor, :openrouter_req_options, previous)
+        Application.put_env(:backplane_monitor, :openrouter_http_options, previous)
       else
-        Application.delete_env(:backplane_monitor, :openrouter_req_options)
+        Application.delete_env(:backplane_monitor, :openrouter_http_options)
       end
     end)
 
@@ -37,14 +31,14 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   end
 
   test "fetches authenticated key usage and limits without exposing key metadata" do
-    Req.Test.stub(OpenRouter, fn conn ->
-      assert conn.method == "GET"
-      assert conn.scheme == :https
-      assert conn.host == "openrouter.ai"
-      assert conn.request_path == "/api/v1/key"
-      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer private-key"]
+    HTTP.Test.stub(OpenRouter, fn request ->
+      assert request.method == :get
+      assert request.url.scheme == "https"
+      assert request.url.host == "openrouter.ai"
+      assert request.url.path == "/api/v1/key"
+      assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer private-key"]
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         data: %{
           label: "private-key",
           limit: 100,
@@ -76,19 +70,19 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   end
 
   test "optional management credits use their own key and exact decimal subtraction" do
-    Req.Test.stub(OpenRouter, fn conn ->
-      case conn.request_path do
+    HTTP.Test.stub(OpenRouter, fn request ->
+      case request.url.path do
         "/api/v1/key" ->
-          assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer key"]
+          assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer key"]
 
-          Req.Test.json(conn, %{
+          HTTP.Test.json(%{
             data: %{usage: 0, limit: nil, limit_remaining: nil, limit_reset: nil}
           })
 
         "/api/v1/credits" ->
-          assert conn.host == "openrouter.ai"
-          assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer management"]
-          Req.Test.json(conn, %{data: %{total_credits: 0.3, total_usage: 0.1}})
+          assert request.url.host == "openrouter.ai"
+          assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer management"]
+          HTTP.Test.json(%{data: %{total_credits: 0.3, total_usage: 0.1}})
       end
     end)
 
@@ -112,7 +106,10 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   end
 
   test "missing and null fields stay unavailable, never fabricated as zero" do
-    Req.Test.stub(OpenRouter, &Req.Test.json(&1, %{data: %{limit: nil, usage_daily: nil}}))
+    HTTP.Test.stub(OpenRouter, fn _request ->
+      HTTP.Test.json(%{data: %{limit: nil, usage_daily: nil}})
+    end)
+
     assert {:ok, %{balances: [], usage: [], limit: nil}} = OpenRouter.fetch("key")
   end
 
@@ -124,16 +121,11 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
           {"1e35", "1", String.duplicate("9", 35)},
           {"100000000000000000000000000000000001", "1", trillion_trillions}
         ] do
-      Req.Test.stub(OpenRouter, fn conn ->
-        if conn.request_path == "/api/v1/key" do
-          Req.Test.json(conn, %{data: %{usage: 1}})
+      HTTP.Test.stub(OpenRouter, fn request ->
+        if request.url.path == "/api/v1/key" do
+          HTTP.Test.json(%{data: %{usage: 1}})
         else
-          conn
-          |> Plug.Conn.put_resp_content_type("application/json")
-          |> Plug.Conn.send_resp(
-            200,
-            ~s({"data":{"total_credits":#{credits},"total_usage":#{usage}}})
-          )
+          json_bytes(~s({"data":{"total_credits":#{credits},"total_usage":#{usage}}}))
         end
       end)
 
@@ -145,13 +137,11 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   end
 
   test "optional account arithmetic overflow preserves key success with a safe warning" do
-    Req.Test.stub(OpenRouter, fn conn ->
-      if conn.request_path == "/api/v1/key" do
-        Req.Test.json(conn, %{data: %{usage: 1}})
+    HTTP.Test.stub(OpenRouter, fn request ->
+      if request.url.path == "/api/v1/key" do
+        HTTP.Test.json(%{data: %{usage: 1}})
       else
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.send_resp(200, ~s({"data":{"total_credits":9e6144,"total_usage":-9e6144}}))
+        json_bytes(~s({"data":{"total_credits":9e6144,"total_usage":-9e6144}}))
       end
     end)
 
@@ -165,14 +155,20 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
 
   test "only documented reset values and nil are accepted" do
     for reset <- [nil, "daily", "weekly", "monthly"] do
-      Req.Test.stub(OpenRouter, &Req.Test.json(&1, %{data: %{limit: 10, limit_reset: reset}}))
+      HTTP.Test.stub(OpenRouter, fn _request ->
+        HTTP.Test.json(%{data: %{limit: 10, limit_reset: reset}})
+      end)
+
       assert {:ok, %{limit: %{reset: ^reset}}} = OpenRouter.fetch("private-key")
     end
   end
 
   test "unexpected or secret-bearing resets never enter a snapshot or error" do
     for reset <- ["private-key", "monthly private-key", "", "yearly"] do
-      Req.Test.stub(OpenRouter, &Req.Test.json(&1, %{data: %{usage: 1, limit_reset: reset}}))
+      HTTP.Test.stub(OpenRouter, fn _request ->
+        HTTP.Test.json(%{data: %{usage: 1, limit_reset: reset}})
+      end)
+
       assert {:error, :invalid_response} = result = OpenRouter.fetch("private-key")
       refute inspect(result) =~ "private-key"
     end
@@ -180,34 +176,34 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
 
   test "malformed key responses produce only safe errors" do
     for data <- [%{usage: "private-key"}, %{usage: false}, %{limit: []}, %{limit_reset: 42}] do
-      Req.Test.stub(OpenRouter, &Req.Test.json(&1, %{data: data}))
+      HTTP.Test.stub(OpenRouter, fn _request -> HTTP.Test.json(%{data: data}) end)
       assert {:error, :invalid_response} = OpenRouter.fetch("private-key")
     end
 
     for body <- [%{}, %{data: []}, %{data: nil}] do
-      Req.Test.stub(OpenRouter, &Req.Test.json(&1, body))
+      HTTP.Test.stub(OpenRouter, fn _request -> HTTP.Test.json(body) end)
       assert {:error, :invalid_response} = OpenRouter.fetch("key")
     end
   end
 
   test "optional credit HTTP, network and parsing failures preserve successful key usage" do
     for failure <- [:http, :network, :malformed, :missing] do
-      Req.Test.stub(OpenRouter, fn conn ->
-        if conn.request_path == "/api/v1/key" do
-          Req.Test.json(conn, %{data: %{usage: 1}})
+      HTTP.Test.stub(OpenRouter, fn request ->
+        if request.url.path == "/api/v1/key" do
+          HTTP.Test.json(%{data: %{usage: 1}})
         else
           case failure do
             :http ->
-              Plug.Conn.send_resp(conn, 403, "management-secret")
+              HTTP.Test.response(403, "management-secret")
 
             :network ->
-              Req.Test.transport_error(conn, :timeout)
+              HTTP.Test.transport_error(:timeout)
 
             :malformed ->
-              Req.Test.json(conn, %{data: %{total_credits: "management-secret", total_usage: 0}})
+              HTTP.Test.json(%{data: %{total_credits: "management-secret", total_usage: 0}})
 
             :missing ->
-              Req.Test.json(conn, %{data: %{total_credits: 10}})
+              HTTP.Test.json(%{data: %{total_credits: 10}})
           end
         end
       end)
@@ -222,12 +218,12 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
 
   test "HTTP errors and redirects never return response bodies or follow locations" do
     for status <- [301, 302, 307, 308, 401, 429, 500] do
-      Req.Test.expect(OpenRouter, fn conn ->
-        assert conn.host == "openrouter.ai"
+      HTTP.Test.expect(OpenRouter, fn request ->
+        assert request.url.host == "openrouter.ai"
 
-        conn
-        |> Plug.Conn.put_resp_header("location", "https://example.com/private-key")
-        |> Plug.Conn.send_resp(status, "private-key")
+        HTTP.Test.response(status, "private-key", [
+          {"location", "https://example.com/private-key"}
+        ])
       end)
 
       assert {:error, {:http_error, ^status}} = OpenRouter.fetch("private-key")
@@ -237,14 +233,10 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   test "network and malformed JSON errors are redacted and not logged" do
     log =
       capture_log(fn ->
-        Req.Test.stub(OpenRouter, &Req.Test.transport_error(&1, :timeout))
+        HTTP.Test.expect(OpenRouter, fn _request -> HTTP.Test.transport_error(:timeout) end)
         assert {:error, :request_failed} = OpenRouter.fetch("private-key")
 
-        Req.Test.stub(OpenRouter, fn conn ->
-          conn
-          |> Plug.Conn.put_resp_content_type("application/json")
-          |> Plug.Conn.send_resp(200, "private-key")
-        end)
+        HTTP.Test.expect(OpenRouter, fn _request -> json_bytes("private-key") end)
 
         assert {:error, :invalid_response} = OpenRouter.fetch("private-key")
       end)
@@ -255,8 +247,10 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   test "request options enforce fixed endpoints, bounded timeouts and disabled logging" do
     clear_proxy_env()
 
-    Application.put_env(:backplane_monitor, :openrouter_req_options,
-      adapter: InspectingAdapter,
+    test_pid = self()
+
+    Application.put_env(:backplane_monitor, :openrouter_http_options,
+      adapter: {HTTP.Test, OpenRouter},
       url: "https://example.com",
       auth: {:bearer, "wrong-key"},
       redirect: true,
@@ -264,35 +258,30 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
       receive_timeout: :infinity
     )
 
+    HTTP.Test.stub(OpenRouter, fn request ->
+      send(test_pid, {:request, request})
+      HTTP.Test.json(%{data: %{usage: 1}})
+    end)
+
     assert {:ok, _result} = OpenRouter.fetch("key")
     assert_receive {:request, request}
     assert request.method == :get
     assert URI.to_string(request.url) == "https://openrouter.ai/api/v1/key"
-    assert request.options.redirect == false
-    assert request.options.retry == false
-    assert request.options.redirect_log_level == false
-    assert request.options.retry_log_level == false
-    assert request.options.decode_body == false
+    assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer key"]
 
-    assert request.options.finch == [
-             pool_timeout: 5_000,
-             receive_timeout: 10_000,
-             request_timeout: 15_000,
-             conn_opts: [transport_opts: [timeout: 5_000]]
-           ]
-
-    assert Req.Request.get_header(request, "authorization") == ["Bearer key"]
+    transport = request.transport_options
+    assert transport[:redirect] == :manual
+    assert transport[:timeout] == 15_000
+    assert transport[:connect_timeout] == 5_000
+    refute Keyword.has_key?(transport, :proxy)
 
     System.put_env("HTTPS_PROXY", "http://10.0.0.1:3128")
     assert {:ok, _result} = OpenRouter.fetch("key")
     assert_receive {:request, request}
-    refute Map.has_key?(request.options, :connect_options)
-
-    assert request.options.finch[:conn_opts] == [
-             transport_opts: [timeout: 5_000],
-             proxy: {:http, "10.0.0.1", 3128, []}
-           ]
+    assert request.transport_options[:proxy] == {:http, "10.0.0.1", 3128, []}
   end
+
+  defp json_bytes(body), do: HTTP.Test.response(200, body, [{"content-type", "application/json"}])
 
   @proxy_vars ~w(HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy)
 
@@ -309,7 +298,7 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   end
 
   test "adapter exceptions containing secrets are returned as safe request failures" do
-    Application.put_env(:backplane_monitor, :openrouter_req_options, adapter: RaisingAdapter)
+    Application.put_env(:backplane_monitor, :openrouter_http_options, adapter: RaisingAdapter)
 
     log =
       capture_log(fn ->

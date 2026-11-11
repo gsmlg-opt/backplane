@@ -1,14 +1,12 @@
 defmodule Backplane.Monitor.ApiUsageFetcherTest do
   use ExUnit.Case, async: false
 
-  alias Backplane.Monitor.{ApiAccount, ApiUsageFetcher}
+  alias Backplane.Monitor.{ApiAccount, ApiUsageFetcher, ApiUsageServer}
   alias Backplane.Monitor.Providers.{DeepSeek, OpenAI, OpenRouter}
   alias Backplane.Settings.{Credential, Encryption}
   alias Backplane.Settings.Credentials.Vault
 
   setup_all do
-    {:ok, _apps} = Application.ensure_all_started(:req)
-
     if :ets.whereis(:credentials_vault) == :undefined do
       :ets.new(:credentials_vault, [:named_table, :set, :public])
     end
@@ -17,13 +15,15 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
   end
 
   setup do
+    HTTP.Test.verify_on_exit!()
+
     for {option, provider} <- [
-          openrouter_req_options: OpenRouter,
-          deepseek_req_options: DeepSeek,
-          openai_req_options: OpenAI
+          openrouter_http_options: OpenRouter,
+          deepseek_http_options: DeepSeek,
+          openai_http_options: OpenAI
         ] do
       previous = Application.get_env(:backplane_monitor, option)
-      Application.put_env(:backplane_monitor, option, plug: {Req.Test, provider})
+      Application.put_env(:backplane_monitor, option, adapter: {HTTP.Test, provider})
 
       on_exit(fn ->
         if previous do
@@ -46,9 +46,9 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
         auth_type <- [nil, "api_key"] do
       name = credential(kind, auth_type, "private-key")
 
-      Req.Test.stub(module, fn conn ->
-        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer private-key"]
-        Req.Test.json(conn, body)
+      HTTP.Test.stub(module, fn request ->
+        assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer private-key"]
+        HTTP.Test.json(body)
       end)
 
       assert {:ok, result} = ApiUsageFetcher.fetch_usage(account(provider, name))
@@ -91,9 +91,9 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
   end
 
   test "optional missing or ineligible management credentials preserve successful key usage" do
-    Req.Test.stub(OpenRouter, fn conn ->
-      assert conn.request_path == "/api/v1/key"
-      Req.Test.json(conn, %{data: %{usage: 1}})
+    HTTP.Test.stub(OpenRouter, fn request ->
+      assert request.url.path == "/api/v1/key"
+      HTTP.Test.json(%{data: %{usage: 1}})
     end)
 
     name = credential("llm", nil, "private-key")
@@ -114,20 +114,25 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
     name = credential("llm", nil, "private-key")
     management = credential("service", "api_key", "management-secret")
 
-    Req.Test.stub(OpenRouter, fn conn ->
-      if conn.request_path == "/api/v1/key" do
-        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer private-key"]
-        Req.Test.json(conn, %{data: %{usage: 1}})
+    HTTP.Test.stub(OpenRouter, fn request ->
+      if request.url.path == "/api/v1/key" do
+        assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer private-key"]
+        HTTP.Test.json(%{data: %{usage: 1}})
       else
-        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer management-secret"]
-        Req.Test.json(conn, %{data: %{total_credits: 10, total_usage: 1}})
+        assert HTTP.Headers.get_all(request.headers, "authorization") == [
+                 "Bearer management-secret"
+               ]
+
+        HTTP.Test.json(%{data: %{total_credits: 10, total_usage: 1}})
       end
     end)
 
     assert {:ok, %{balances: [%{total_balance: "9"}], warnings: []}} =
              ApiUsageFetcher.fetch_usage(account("openrouter", name, management))
 
-    Req.Test.stub(DeepSeek, &Req.Test.json(&1, %{is_available: true, balance_infos: []}))
+    HTTP.Test.stub(DeepSeek, fn _request ->
+      HTTP.Test.json(%{is_available: true, balance_infos: []})
+    end)
 
     assert {:ok, %{warnings: []}} =
              ApiUsageFetcher.fetch_usage(account("deepseek", name, "missing"))
@@ -141,11 +146,14 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
   test "dispatches OpenAI Admin keys with an explicit organization and rejects OAuth" do
     name = credential("service", "api_key", "private-admin-key")
 
-    Req.Test.stub(OpenAI, fn conn ->
-      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer private-admin-key"]
-      assert Plug.Conn.get_req_header(conn, "openai-organization") == ["org-selected"]
-      assert conn.request_path in ["/v1/organization/costs", "/v1/organization/usage/completions"]
-      Req.Test.json(conn, %{data: [], has_more: false, next_page: nil})
+    HTTP.Test.stub(OpenAI, fn request ->
+      assert HTTP.Headers.get_all(request.headers, "authorization") == [
+               "Bearer private-admin-key"
+             ]
+
+      assert HTTP.Headers.get_all(request.headers, "openai-organization") == ["org-selected"]
+      assert request.url.path in ["/v1/organization/costs", "/v1/organization/usage/completions"]
+      HTTP.Test.json(%{data: [], has_more: false, next_page: nil})
     end)
 
     definition = struct!(account("openai", name), organization_id: "org-selected")
@@ -164,18 +172,68 @@ defmodule Backplane.Monitor.ApiUsageFetcherTest do
 
   test "provider mock ownership can be explicitly allowed to a polling task" do
     name = credential("service", nil, "private-key")
-    Req.Test.stub(OpenRouter, &Req.Test.json(&1, %{data: %{usage: 1}}))
+    HTTP.Test.stub(OpenRouter, fn _request -> HTTP.Test.json(%{data: %{usage: 1}}) end)
 
+    # spawn/1 has no $callers chain, so the explicit allowance is what grants access.
     task =
-      Task.async(fn ->
+      spawn_task(fn ->
         receive do
           :fetch -> ApiUsageFetcher.fetch_usage(account("openrouter", name))
         end
       end)
 
-    Req.Test.allow(OpenRouter, self(), task.pid)
-    send(task.pid, :fetch)
-    assert {:ok, %{warnings: []}} = Task.await(task)
+    HTTP.Test.allow(OpenRouter, self(), task)
+    send(task, :fetch)
+    assert_receive {:fetched, {:ok, %{warnings: []}}}
+  end
+
+  test "ApiUsageServer polling tasks reach the configured :http_test_owner stubs" do
+    name = credential("service", nil, "private-key")
+    HTTP.Test.stub(OpenRouter, fn _request -> HTTP.Test.json(%{data: %{usage: 1}}) end)
+
+    previous = Application.get_env(:backplane_monitor, :http_test_owner)
+    Application.put_env(:backplane_monitor, :http_test_owner, self())
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:backplane_monitor, :http_test_owner, previous),
+        else: Application.delete_env(:backplane_monitor, :http_test_owner)
+    end)
+
+    supervisor = start_supervised!(Task.Supervisor)
+
+    server =
+      start_supervised!(
+        {ApiUsageServer,
+         name: nil,
+         task_supervisor: supervisor,
+         enabled_reader: fn -> true end,
+         refresh_interval: 0}
+      )
+
+    account = struct!(account("openrouter", name), id: Ecto.UUID.generate())
+    ApiUsageServer.sync(server, [account])
+
+    assert %{usage: %{warnings: []}, error: nil} = await_usage(server, account.id)
+  end
+
+  defp await_usage(server, id, attempts \\ 100)
+  defp await_usage(_server, _id, 0), do: flunk("refresh did not finish")
+
+  defp await_usage(server, id, attempts) do
+    case Enum.find(ApiUsageServer.states(server), &(&1.account.id == id)) do
+      %{refreshing: false, fetched_at: %DateTime{}} = snapshot ->
+        snapshot
+
+      _snapshot ->
+        Process.sleep(10)
+        await_usage(server, id, attempts - 1)
+    end
+  end
+
+  defp spawn_task(fun) do
+    parent = self()
+    spawn(fn -> send(parent, {:fetched, fun.()}) end)
   end
 
   defp account(provider, name, management \\ nil) do

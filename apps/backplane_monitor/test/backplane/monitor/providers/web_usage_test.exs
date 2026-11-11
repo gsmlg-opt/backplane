@@ -4,9 +4,11 @@ defmodule Backplane.Monitor.Providers.WebUsageTest do
   alias Backplane.Monitor.Providers.{Exa, Firecrawl, Tavily}
 
   setup do
-    for {option, provider} <- [tavily_req_options: Tavily, firecrawl_req_options: Firecrawl] do
+    HTTP.Test.verify_on_exit!()
+
+    for {option, provider} <- [tavily_http_options: Tavily, firecrawl_http_options: Firecrawl] do
       previous = Application.get_env(:backplane_monitor, option)
-      Application.put_env(:backplane_monitor, option, plug: {Req.Test, provider})
+      Application.put_env(:backplane_monitor, option, adapter: {HTTP.Test, provider})
 
       on_exit(fn ->
         if previous,
@@ -19,11 +21,11 @@ defmodule Backplane.Monitor.Providers.WebUsageTest do
   end
 
   test "Tavily returns key and account usage" do
-    Req.Test.stub(Tavily, fn conn ->
-      assert conn.request_path == "/usage"
-      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer tavily-key"]
+    HTTP.Test.stub(Tavily, fn request ->
+      assert request.url.path == "/usage"
+      assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer tavily-key"]
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         key: %{usage: 3, limit: 10, search_usage: 2},
         account: %{usage: 4}
       })
@@ -36,10 +38,10 @@ defmodule Backplane.Monitor.Providers.WebUsageTest do
   end
 
   test "Firecrawl returns remaining and plan credits" do
-    Req.Test.stub(Firecrawl, fn conn ->
-      assert conn.request_path == "/v2/team/credit-usage"
+    HTTP.Test.stub(Firecrawl, fn request ->
+      assert request.url.path == "/v2/team/credit-usage"
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         success: true,
         data: %{remainingCredits: 12, planCredits: 100, billingPeriodEnd: "2026-10-01T00:00:00Z"}
       })

@@ -51,7 +51,7 @@ defmodule Backplane.Monitor.Providers.OpenAI do
     url = @base_url <> path <> "?" <> URI.encode_query(params)
 
     with {:ok, body} <-
-           ApiUsageFetcher.request(:openai_req_options, url, key, "authorization", [
+           ApiUsageFetcher.request(:openai_http_options, url, key, "authorization", [
              {"openai-organization", organization}
            ]),
          %{"data" => data, "has_more" => more} when is_list(data) and is_boolean(more) <- body,

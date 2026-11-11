@@ -3,6 +3,9 @@ defmodule Backplane.Monitor.Providers.ClaudeCode do
   Fetches Claude Code usage from Anthropic OAuth credentials.
   """
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
+
   @provider "claude_code"
   @default_usage_url "https://api.anthropic.com/api/oauth/usage"
   @anthropic_beta "oauth-2025-04-20"
@@ -23,27 +26,27 @@ defmodule Backplane.Monitor.Providers.ClaudeCode do
   defp request_oauth_usage(access_token, config) do
     url = config_value(config, "api_url") || @default_usage_url
 
-    case Req.get(
+    case HTTPClient.get(
            url,
            [
              headers: oauth_headers(access_token),
              receive_timeout: @default_receive_timeout,
              retry: false
-           ] ++ req_options(url)
+           ] ++ http_options(url)
          ) do
-      {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
+      {:ok, %Response{status: 200, body: body}} when is_map(body) ->
         {:ok, %{provider: @provider, usage: body}}
 
-      {:ok, %Req.Response{status: 200}} ->
+      {:ok, %Response{status: 200}} ->
         {:error, :invalid_usage_response}
 
-      {:ok, %Req.Response{status: 401}} ->
+      {:ok, %Response{status: 401}} ->
         {:error, :unauthorized}
 
-      {:ok, %Req.Response{status: 429}} ->
+      {:ok, %Response{status: 429}} ->
         {:error, :rate_limited}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->
@@ -65,14 +68,14 @@ defmodule Backplane.Monitor.Providers.ClaudeCode do
     |> normalize_optional_string()
   end
 
-  defp req_options(url) do
-    case Application.fetch_env(:backplane, :claude_code_monitor_req_options) do
+  defp http_options(url) do
+    case Application.fetch_env(:backplane, :claude_code_monitor_http_options) do
       {:ok, opts} -> opts
-      :error -> default_req_options(url)
+      :error -> default_http_options(url)
     end
   end
 
-  defp default_req_options(url) do
+  defp default_http_options(url) do
     case proxy_connect_options(url) do
       [] -> []
       connect_options -> [connect_options: connect_options]

@@ -6,17 +6,18 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
   alias Backplane.Monitor.Providers.GoogleAntigravity
 
   setup do
-    previous = Application.get_env(:backplane, :google_antigravity_monitor_req_options)
+    HTTP.Test.verify_on_exit!()
+    previous = Application.get_env(:backplane, :google_antigravity_monitor_http_options)
 
-    Application.put_env(:backplane, :google_antigravity_monitor_req_options,
-      plug: {Req.Test, GoogleAntigravity}
+    Application.put_env(:backplane, :google_antigravity_monitor_http_options,
+      adapter: {HTTP.Test, GoogleAntigravity}
     )
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane, :google_antigravity_monitor_req_options, previous)
+        Application.put_env(:backplane, :google_antigravity_monitor_http_options, previous)
       else
-        Application.delete_env(:backplane, :google_antigravity_monitor_req_options)
+        Application.delete_env(:backplane, :google_antigravity_monitor_http_options)
       end
     end)
 
@@ -24,22 +25,24 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
   end
 
   test "fetch/2 uses the current CLI identity and REST quota summary with all quota groups" do
-    Req.Test.stub(GoogleAntigravity, fn conn ->
-      assert conn.method == "POST"
-      assert {"authorization", "Bearer google-access"} in conn.req_headers
+    HTTP.Test.stub(GoogleAntigravity, fn request ->
+      assert request.method == :post
+      assert header(request, "authorization") == ["Bearer google-access"]
 
-      assert {"user-agent", "antigravity/cli/1.4.0 (aidev_client; os_type=linux; arch=amd64)"} in conn.req_headers
+      assert header(request, "user-agent") == [
+               "antigravity/cli/1.4.0 (aidev_client; os_type=linux; arch=amd64)"
+             ]
 
-      assert {"content-type", "application/json"} in conn.req_headers
+      assert header(request, "content-type") == ["application/json"]
 
-      case conn.request_path do
+      case request.url.path do
         "/v1internal:retrieveUserQuotaSummary" ->
-          {:ok, body, conn} = Plug.Conn.read_body(conn)
+          body = IO.iodata_to_binary(request.body)
           assert Jason.decode!(body) == %{"project" => "projects/test-project"}
-          Req.Test.json(conn, current_quota_summary())
+          HTTP.Test.json(current_quota_summary())
 
         "/v1internal:loadCodeAssist" ->
-          Req.Test.json(conn, %{"paidTier" => %{"name" => "Google AI Pro"}})
+          HTTP.Test.json(%{"paidTier" => %{"name" => "Google AI Pro"}})
       end
     end)
 
@@ -74,9 +77,9 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
 
   test "REST authentication and rate limiting errors do not fall back to another API" do
     for {status, expected} <- [{401, :unauthorized}, {429, {:rate_limited, 60}}] do
-      Req.Test.stub(GoogleAntigravity, fn conn ->
-        assert conn.request_path == "/v1internal:retrieveUserQuotaSummary"
-        conn |> Plug.Conn.put_resp_header("retry-after", "60") |> Plug.Conn.send_resp(status, "")
+      HTTP.Test.stub(GoogleAntigravity, fn request ->
+        assert request.url.path == "/v1internal:retrieveUserQuotaSummary"
+        HTTP.Test.response(status, "", [{"retry-after", "60"}])
       end)
 
       assert {:error, ^expected} = GoogleAntigravity.fetch("google-access", %{})
@@ -84,16 +87,16 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
   end
 
   test "REST discovery falls back to the production endpoint on transport failure" do
-    Req.Test.stub(GoogleAntigravity, fn conn ->
-      case {conn.host, conn.request_path} do
+    HTTP.Test.stub(GoogleAntigravity, fn request ->
+      case {request.url.host, request.url.path} do
         {"daily-cloudcode-pa.googleapis.com", "/v1internal:retrieveUserQuotaSummary"} ->
-          Plug.Conn.send_resp(conn, 503, "unavailable")
+          HTTP.Test.response(503, "unavailable")
 
         {"cloudcode-pa.googleapis.com", "/v1internal:retrieveUserQuotaSummary"} ->
-          Req.Test.json(conn, current_quota_summary())
+          HTTP.Test.json(current_quota_summary())
 
         {"cloudcode-pa.googleapis.com", "/v1internal:loadCodeAssist"} ->
-          Req.Test.json(conn, %{"paidTier" => %{"name" => "Google AI Pro"}})
+          HTTP.Test.json(%{"paidTier" => %{"name" => "Google AI Pro"}})
       end
     end)
 
@@ -102,23 +105,25 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
   end
 
   test "fetch/2 sends Antigravity OAuth headers and returns normalized credits" do
-    Req.Test.stub(GoogleAntigravity, fn conn ->
-      assert conn.method == "POST"
+    HTTP.Test.stub(GoogleAntigravity, fn request ->
+      assert request.method == :post
 
-      assert conn.request_path ==
+      assert request.url.path ==
                "/google.internal.cloud.code.v1internal.PredictionService/RetrieveUserQuota"
 
-      assert {"authorization", "Bearer google-access"} in conn.req_headers
+      assert header(request, "authorization") == ["Bearer google-access"]
 
-      assert {"user-agent", "antigravity/cli/1.4.0 (aidev_client; os_type=linux; arch=amd64)"} in conn.req_headers
+      assert header(request, "user-agent") == [
+               "antigravity/cli/1.4.0 (aidev_client; os_type=linux; arch=amd64)"
+             ]
 
-      assert {"accept", "application/grpc"} in conn.req_headers
-      assert {"content-type", "application/grpc"} in conn.req_headers
+      assert header(request, "accept") == ["application/grpc"]
+      assert header(request, "content-type") == ["application/grpc"]
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/grpc")
-      |> Plug.Conn.put_resp_header("grpc-status", "0")
-      |> Plug.Conn.send_resp(200, grpc_response(quota_response()))
+      HTTP.Test.response(200, grpc_response(quota_response()), [
+        {"content-type", "application/grpc"},
+        {"grpc-status", "0"}
+      ])
     end)
 
     assert {:ok, result} =
@@ -153,11 +158,8 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
   end
 
   test "fetch/2 maps grpc unauthenticated to unauthorized" do
-    Req.Test.stub(GoogleAntigravity, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/grpc")
-      |> Plug.Conn.put_resp_header("grpc-status", "16")
-      |> Plug.Conn.send_resp(200, "")
+    HTTP.Test.stub(GoogleAntigravity, fn _request ->
+      HTTP.Test.response(200, "", [{"content-type", "application/grpc"}, {"grpc-status", "16"}])
     end)
 
     assert {:error, :unauthorized} =
@@ -360,4 +362,6 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravityTest do
   defp encode_varint(value) do
     <<(value &&& 0x7F) ||| 0x80>> <> encode_varint(value >>> 7)
   end
+
+  defp header(request, name), do: HTTP.Headers.get_all(request.headers, name)
 end

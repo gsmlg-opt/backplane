@@ -25,7 +25,7 @@ defmodule Backplane.Monitor.Providers.OpenRouter do
   end
 
   defp request(url, key),
-    do: ApiUsageFetcher.request(:openrouter_req_options, url, key)
+    do: ApiUsageFetcher.request(:openrouter_http_options, url, key)
 
   defp parse_key(%{"data" => key_data}) when is_map(key_data) do
     with {:ok, usage} <- parse_usage(key_data),

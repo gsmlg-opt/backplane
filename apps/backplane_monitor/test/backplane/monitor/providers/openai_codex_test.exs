@@ -4,17 +4,18 @@ defmodule Backplane.Monitor.Providers.OpenAICodexTest do
   alias Backplane.Monitor.Providers.OpenAICodex
 
   setup do
-    previous = Application.get_env(:backplane, :openai_codex_monitor_req_options)
+    HTTP.Test.verify_on_exit!()
+    previous = Application.get_env(:backplane, :openai_codex_monitor_http_options)
 
-    Application.put_env(:backplane, :openai_codex_monitor_req_options,
-      plug: {Req.Test, OpenAICodex}
+    Application.put_env(:backplane, :openai_codex_monitor_http_options,
+      adapter: {HTTP.Test, OpenAICodex}
     )
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane, :openai_codex_monitor_req_options, previous)
+        Application.put_env(:backplane, :openai_codex_monitor_http_options, previous)
       else
-        Application.delete_env(:backplane, :openai_codex_monitor_req_options)
+        Application.delete_env(:backplane, :openai_codex_monitor_http_options)
       end
     end)
 
@@ -22,12 +23,12 @@ defmodule Backplane.Monitor.Providers.OpenAICodexTest do
   end
 
   test "fetch/2 sends Codex OAuth headers and returns normalized usage" do
-    Req.Test.stub(OpenAICodex, fn conn ->
-      assert conn.request_path == "/backend-api/wham/usage"
-      assert {"authorization", "Bearer access-token"} in conn.req_headers
-      assert {"chatgpt-account-id", "acc-123"} in conn.req_headers
-      assert {"user-agent", "codex-cli"} in conn.req_headers
-      assert {"accept", "application/json"} in conn.req_headers
+    HTTP.Test.stub(OpenAICodex, fn request ->
+      assert request.url.path == "/backend-api/wham/usage"
+      assert HTTP.Headers.get_all(request.headers, "authorization") == ["Bearer access-token"]
+      assert HTTP.Headers.get_all(request.headers, "chatgpt-account-id") == ["acc-123"]
+      assert HTTP.Headers.get_all(request.headers, "user-agent") == ["codex-cli"]
+      assert HTTP.Headers.get_all(request.headers, "accept") == ["application/json"]
 
       body = %{
         "plan_type" => "plus",
@@ -64,9 +65,7 @@ defmodule Backplane.Monitor.Providers.OpenAICodexTest do
         "rate_limit_reached_type" => %{"type" => "rate_limit_reached"}
       }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      HTTP.Test.json(body)
     end)
 
     assert {:ok, result} =
@@ -99,8 +98,8 @@ defmodule Backplane.Monitor.Providers.OpenAICodexTest do
   end
 
   test "fetch/2 maps 401 to unauthorized" do
-    Req.Test.stub(OpenAICodex, fn conn ->
-      Plug.Conn.send_resp(conn, 401, "Unauthorized")
+    HTTP.Test.stub(OpenAICodex, fn _request ->
+      HTTP.Test.response(401, "Unauthorized")
     end)
 
     assert {:error, :unauthorized} =
@@ -108,10 +107,8 @@ defmodule Backplane.Monitor.Providers.OpenAICodexTest do
   end
 
   test "fetch/2 maps 429 retry-after" do
-    Req.Test.stub(OpenAICodex, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_header("retry-after", "60")
-      |> Plug.Conn.send_resp(429, "Too Many Requests")
+    HTTP.Test.stub(OpenAICodex, fn _request ->
+      HTTP.Test.response(429, "Too Many Requests", [{"retry-after", "60"}])
     end)
 
     assert {:error, {:rate_limited, 60}} =

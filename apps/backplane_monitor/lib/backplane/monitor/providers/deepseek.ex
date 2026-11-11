@@ -7,7 +7,7 @@ defmodule Backplane.Monitor.Providers.DeepSeek do
 
   @spec fetch(String.t()) :: {:ok, ApiUsageFetcher.data()} | {:error, ApiUsageFetcher.reason()}
   def fetch(key) do
-    with {:ok, body} <- ApiUsageFetcher.request(:deepseek_req_options, @url, key) do
+    with {:ok, body} <- ApiUsageFetcher.request(:deepseek_http_options, @url, key) do
       parse(body)
     end
   end

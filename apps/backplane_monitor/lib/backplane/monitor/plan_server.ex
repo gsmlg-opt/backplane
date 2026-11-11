@@ -9,7 +9,6 @@ defmodule Backplane.Monitor.PlanServer do
   use GenServer
 
   alias Backplane.Monitor.Plan
-  alias Backplane.Monitor.Providers.{ClaudeCode, GoogleAntigravity, MiniMax, OpenAICodex, ZAI}
   alias Backplane.Monitor.UsageFetcher
 
   @registry Backplane.Monitor.PlanRegistry
@@ -76,7 +75,7 @@ defmodule Backplane.Monitor.PlanServer do
     plan = Keyword.fetch!(opts, :plan)
     refresh_interval = Keyword.get(opts, :refresh_interval, @refresh_interval)
 
-    allow_req_test(plan, Keyword.get(opts, :req_test_owner))
+    join_http_test_owner(Keyword.get(opts, :http_test_owner))
 
     state = %__MODULE__{
       plan: plan,
@@ -153,26 +152,18 @@ defmodule Backplane.Monitor.PlanServer do
     end
   end
 
-  defp allow_req_test(_plan, nil), do: :ok
-
-  defp allow_req_test(%Plan{provider: provider}, owner) when is_pid(owner) do
-    with {:module, Req.Test} <- Code.ensure_loaded(Req.Test),
-         stub_name when not is_nil(stub_name) <- req_test_stub_name(provider) do
-      Req.Test.allow(stub_name, owner, self())
-      :ok
-    else
-      _ -> :ok
+  # Test-only: HTTP.Test.allow/3 must be called by the fixture owner, so the
+  # server joins the owner's caller chain instead, which lets it resolve the
+  # owner's provider stubs (MiniMax, ClaudeCode, OpenAICodex, GoogleAntigravity).
+  defp join_http_test_owner(owner) when is_pid(owner) do
+    if Code.ensure_loaded?(HTTP.Test) do
+      Process.put(:"$callers", Process.get(:"$callers", []) ++ [owner])
     end
-  rescue
-    _ -> :ok
+
+    :ok
   end
 
-  defp req_test_stub_name("zai"), do: ZAI
-  defp req_test_stub_name("minimax"), do: MiniMax
-  defp req_test_stub_name("claude_code"), do: ClaudeCode
-  defp req_test_stub_name("openai_codex"), do: OpenAICodex
-  defp req_test_stub_name("google_ai"), do: GoogleAntigravity
-  defp req_test_stub_name(_provider), do: nil
+  defp join_http_test_owner(_owner), do: :ok
 
   defp schedule_refresh(%{refresh_interval: interval} = state)
        when is_integer(interval) and interval > 0 do

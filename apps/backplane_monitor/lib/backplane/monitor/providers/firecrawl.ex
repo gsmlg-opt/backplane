@@ -7,7 +7,7 @@ defmodule Backplane.Monitor.Providers.Firecrawl do
 
   @spec fetch(String.t()) :: {:ok, ApiUsageFetcher.data()} | {:error, ApiUsageFetcher.reason()}
   def fetch(key) do
-    with {:ok, body} <- ApiUsageFetcher.request(:firecrawl_req_options, @url, key),
+    with {:ok, body} <- ApiUsageFetcher.request(:firecrawl_http_options, @url, key),
          {:ok, data} <- parse(body) do
       {:ok, data}
     end

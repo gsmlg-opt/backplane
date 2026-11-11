@@ -1,7 +1,8 @@
 defmodule Backplane.Monitor.ApiUsageFetcher do
   @moduledoc "Resolves vaulted API keys and returns secret-free provider usage snapshots."
 
-  alias Backplane.Monitor.{ApiAccount, ApiAccounts, HttpProxy}
+  alias Backplane.HTTPClient
+  alias Backplane.Monitor.{ApiAccount, ApiAccounts}
   alias Backplane.Monitor.Providers.{DeepSeek, OpenAI, OpenRouter}
   alias Backplane.Monitor.Providers.{Exa, Firecrawl, Tavily}
   alias Backplane.Settings.Encryption
@@ -119,7 +120,7 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
     options =
       :backplane_monitor
       |> Application.get_env(option, [])
-      |> Keyword.take([:plug, :adapter])
+      |> Keyword.take([:adapter])
       |> Keyword.merge(
         url: url,
         headers:
@@ -127,19 +128,16 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
             extra_headers,
         redirect: false,
         retry: false,
-        redirect_log_level: false,
         retry_log_level: false,
-        finch: [
-          pool_timeout: 5_000,
-          receive_timeout: 10_000,
-          request_timeout: 15_000,
-          conn_opts: [transport_opts: [timeout: 5_000]]
-        ],
+        # Bounded deadlines carried over from the former Finch pool settings:
+        # 5 s connect, 15 s for the whole request.
+        receive_timeout: 15_000,
+        connect_options: [timeout: 5_000],
+        proxy: :env,
         decode_body: false
       )
-      |> put_proxy(url)
 
-    case Req.get(options) do
+    case HTTPClient.get(options) do
       {:ok, %{status: 200, body: body}} when is_binary(body) ->
         case Jason.decode(body, floats: :decimals) do
           {:ok, data} when is_map(data) -> {:ok, data}
@@ -159,14 +157,6 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
     _exception -> {:error, :request_failed}
   catch
     :exit, _reason -> {:error, :request_failed}
-  end
-
-  # Req rejects :connect_options alongside :finch, so proxy settings go into Mint conn_opts.
-  defp put_proxy(options, url) do
-    case HttpProxy.connect_options(url) do
-      [] -> options
-      proxy -> update_in(options, [:finch, :conn_opts], &Keyword.merge(&1, proxy))
-    end
   end
 
   @doc false

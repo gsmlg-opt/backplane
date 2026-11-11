@@ -36,14 +36,14 @@ defmodule Backplane.Monitor.Providers.ClaudeCodeTest do
     {:ok, pid} = Gaoxy.HTTP.start_link(plug: {__MODULE__.UsageProxyEndpoint, []}, port: 0)
     %{local: {:ok, {_ip, port}}} = Gaoxy.info(pid, :http)
 
-    previous_opts = Application.get_env(:backplane, :claude_code_monitor_req_options)
+    previous_opts = Application.get_env(:backplane, :claude_code_monitor_http_options)
 
     previous_env =
       snapshot_env(
         ~w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy]
       )
 
-    Application.delete_env(:backplane, :claude_code_monitor_req_options)
+    Application.delete_env(:backplane, :claude_code_monitor_http_options)
     System.put_env("HTTP_PROXY", "http://localhost:#{port}")
     System.delete_env("http_proxy")
     System.delete_env("HTTPS_PROXY")
@@ -55,9 +55,9 @@ defmodule Backplane.Monitor.Providers.ClaudeCodeTest do
 
     on_exit(fn ->
       if previous_opts do
-        Application.put_env(:backplane, :claude_code_monitor_req_options, previous_opts)
+        Application.put_env(:backplane, :claude_code_monitor_http_options, previous_opts)
       else
-        Application.delete_env(:backplane, :claude_code_monitor_req_options)
+        Application.delete_env(:backplane, :claude_code_monitor_http_options)
       end
 
       restore_env(previous_env)

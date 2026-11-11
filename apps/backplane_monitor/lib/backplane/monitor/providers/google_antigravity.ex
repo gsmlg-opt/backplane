@@ -8,6 +8,9 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
 
   import Bitwise
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
+
   @provider "google_ai"
   @default_endpoint "https://daily-cloudcode-pa.googleapis.com"
   @fallback_endpoint "https://cloudcode-pa.googleapis.com"
@@ -154,25 +157,25 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
 
     body = Jason.encode!(%{"project" => project})
 
-    case Req.post(
+    case HTTPClient.post(
            url,
            [
              headers: headers,
              body: body,
              receive_timeout: receive_timeout(config),
              retry: false
-           ] ++ req_options(url)
+           ] ++ http_options(url)
          ) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
+      {:ok, %Response{status: 200, body: body}} ->
         decode_json_body(body)
 
-      {:ok, %Req.Response{status: 401}} ->
+      {:ok, %Response{status: 401}} ->
         {:error, :unauthorized}
 
-      {:ok, %Req.Response{status: 429} = response} ->
+      {:ok, %Response{status: 429} = response} ->
         {:error, {:rate_limited, retry_after(response)}}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, {:api_error, status, body}}
 
       {:error, reason} ->
@@ -190,16 +193,16 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
       {"accept", "application/json"}
     ]
 
-    case Req.post(
+    case HTTPClient.post(
            url,
            [
              headers: headers,
              body: "{}",
              receive_timeout: receive_timeout(config),
              retry: false
-           ] ++ req_options(url)
+           ] ++ http_options(url)
          ) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
+      {:ok, %Response{status: 200, body: body}} ->
         case decode_json_body(body) do
           {:ok, map} -> map
           _ -> %{}
@@ -254,16 +257,16 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     with {:ok, body} <- request_body(config) do
       url = config_value(config, "api_url") || @default_url
 
-      case Req.post(
+      case HTTPClient.post(
              url,
              [
                headers: request_headers(access_token, config),
                body: body,
                receive_timeout: receive_timeout(config),
                retry: false
-             ] ++ req_options(url)
+             ] ++ http_options(url)
            ) do
-        {:ok, %Req.Response{status: 200} = response} ->
+        {:ok, %Response{status: 200} = response} ->
           case decode_response_body(response) do
             {:ok, body} ->
               case normalize_usage_response(body) do
@@ -275,13 +278,13 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
               {:error, reason}
           end
 
-        {:ok, %Req.Response{status: 401}} ->
+        {:ok, %Response{status: 401}} ->
           {:error, :unauthorized}
 
-        {:ok, %Req.Response{status: 429} = response} ->
+        {:ok, %Response{status: 429} = response} ->
           {:error, {:rate_limited, retry_after(response)}}
 
-        {:ok, %Req.Response{status: status, body: body}} ->
+        {:ok, %Response{status: status, body: body}} ->
           {:error, {:api_error, status, body}}
 
         {:error, reason} ->
@@ -783,7 +786,7 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
 
   defp required_string(_, reason), do: {:error, reason}
 
-  defp decode_response_body(%Req.Response{} = response) do
+  defp decode_response_body(%Response{} = response) do
     case grpc_status(response) do
       "0" ->
         decode_success_body(response.body)
@@ -1043,26 +1046,14 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     end
   end
 
-  defp retry_after(%Req.Response{} = response) do
+  defp retry_after(%Response{} = response) do
     response
     |> response_header("retry-after")
     |> parse_retry_after()
   end
 
-  defp response_header(%Req.Response{headers: headers}, name) do
-    normalized = String.downcase(name)
-
-    Enum.find_value(headers || [], fn
-      {key, [value | _]} when is_binary(value) ->
-        if String.downcase(to_string(key)) == normalized, do: value
-
-      {key, value} when is_binary(value) ->
-        if String.downcase(to_string(key)) == normalized, do: value
-
-      _ ->
-        nil
-    end)
-  end
+  defp response_header(%Response{} = response, name),
+    do: response |> Response.get_header(name) |> List.first()
 
   defp parse_retry_after(nil), do: nil
 
@@ -1073,14 +1064,14 @@ defmodule Backplane.Monitor.Providers.GoogleAntigravity do
     end
   end
 
-  defp req_options(url) do
-    case Application.fetch_env(:backplane, :google_antigravity_monitor_req_options) do
+  defp http_options(url) do
+    case Application.fetch_env(:backplane, :google_antigravity_monitor_http_options) do
       {:ok, opts} -> opts
-      :error -> default_req_options(url)
+      :error -> default_http_options(url)
     end
   end
 
-  defp default_req_options(url) do
+  defp default_http_options(url) do
     case proxy_connect_options(url) do
       [] -> [inet6: true]
       connect_options -> [connect_options: connect_options]
