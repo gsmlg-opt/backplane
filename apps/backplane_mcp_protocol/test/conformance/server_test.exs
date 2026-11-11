@@ -14,26 +14,38 @@ defmodule Conformance.ServerTest do
     assert %{local: {:ok, {{127, 0, 0, 1}, port}}} = Gaoxy.info(listener, :http)
     assert port > 0
 
-    response =
-      Req.post!("http://127.0.0.1:#{port}/mcp",
+    payload = %{
+      jsonrpc: "2.0",
+      id: "smoke",
+      method: "server/discover",
+      params: %{
+        "_meta" => %{
+          "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities" => %{}
+        }
+      }
+    }
+
+    %HTTP.Response{} =
+      fetched =
+      "http://127.0.0.1:#{port}/mcp"
+      |> HTTP.fetch(
+        method: "POST",
         headers: [
+          {"content-type", "application/json"},
           {"mcp-protocol-version", "2026-07-28"},
           {"mcp-method", "server/discover"},
           {"accept", "application/json, text/event-stream"}
         ],
-        json: %{
-          jsonrpc: "2.0",
-          id: "smoke",
-          method: "server/discover",
-          params: %{
-            "_meta" => %{
-              "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
-              "io.modelcontextprotocol/clientCapabilities" => %{}
-            }
-          }
-        },
-        retry: false
+        body: JSON.encode!(payload)
       )
+      |> HTTP.Promise.await()
+
+    response = %{
+      status: fetched.status,
+      headers: HTTP.Headers.to_map(fetched.headers),
+      body: fetched |> HTTP.Response.read_all() |> JSON.decode!()
+    }
 
     assert response.status == 200
     assert response.body["id"] == "smoke"

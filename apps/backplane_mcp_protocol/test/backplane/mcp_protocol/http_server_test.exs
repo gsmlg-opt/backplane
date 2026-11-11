@@ -142,7 +142,13 @@ defmodule Backplane.McpProtocol.Test.HTTPServerTest do
   end
 
   defp request(server, method, path) do
-    Req.request!(url: "http://127.0.0.1:#{server.port}#{path}", method: method, retry: false)
+    %HTTP.Response{} =
+      response =
+      "http://127.0.0.1:#{server.port}#{path}"
+      |> HTTP.fetch(method: method)
+      |> HTTP.Promise.await()
+
+    %{status: response.status, body: HTTP.Response.read_all(response)}
   end
 
   defp connect(server) do
