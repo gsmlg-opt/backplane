@@ -8,8 +8,8 @@ defmodule Backplane.Services.WebSearchTest do
   @backends ~w(exa tavily ollama minimax)
 
   setup do
-    previous = Application.get_env(:backplane, :web_search_req_options)
-    Application.put_env(:backplane, :web_search_req_options, plug: {Req.Test, WebSearch})
+    previous = Application.get_env(:backplane, :web_search_http_options)
+    Application.put_env(:backplane, :web_search_http_options, adapter: {HTTP.Test, WebSearch})
     Settings.set("services.web.enabled", true)
     Settings.set("services.web_search.default_backend", nil)
 
@@ -21,9 +21,9 @@ defmodule Backplane.Services.WebSearchTest do
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane, :web_search_req_options, previous)
+        Application.put_env(:backplane, :web_search_http_options, previous)
       else
-        Application.delete_env(:backplane, :web_search_req_options)
+        Application.delete_env(:backplane, :web_search_http_options)
       end
     end)
 
@@ -51,7 +51,7 @@ defmodule Backplane.Services.WebSearchTest do
     Settings.set("services.web_search.exa.credential", "exa-key")
     Settings.set("services.web_search.tavily.credential", "tavily-key")
 
-    Req.Test.stub(WebSearch, fn conn -> Req.Test.json(conn, %{"results" => []}) end)
+    HTTP.Test.stub(WebSearch, fn _request -> HTTP.Test.json(%{"results" => []}) end)
 
     assert {:ok, %{"backend" => "exa"}} = WebSearch.handle_search(%{"query" => "elixir"})
 
@@ -70,11 +70,11 @@ defmodule Backplane.Services.WebSearchTest do
     {:ok, _} = Credentials.store("exa-key", "exa-secret", "service")
     Settings.set("services.web_search.exa.credential", "exa-key")
 
-    Req.Test.stub(WebSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      assert conn.host == "api.exa.ai"
-      assert conn.request_path == "/search"
-      assert {"x-api-key", "exa-secret"} in conn.req_headers
+    HTTP.Test.stub(WebSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
+      assert request.url.host == "api.exa.ai"
+      assert request.url.path == "/search"
+      assert HTTP.Headers.get(request.headers, "x-api-key") == "exa-secret"
 
       assert Jason.decode!(body) == %{
                "query" => "elixir mcp",
@@ -93,7 +93,7 @@ defmodule Backplane.Services.WebSearchTest do
                }
              }
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "results" => [
           %{
             "title" => "Elixir MCP",
@@ -168,11 +168,11 @@ defmodule Backplane.Services.WebSearchTest do
     {:ok, _} = Credentials.store("tavily-key", "tavily-secret", "service")
     Settings.set("services.web_search.tavily.credential", "tavily-key")
 
-    Req.Test.stub(WebSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      assert conn.host == "api.tavily.com"
-      assert conn.request_path == "/search"
-      assert {"authorization", "Bearer tavily-secret"} in conn.req_headers
+    HTTP.Test.stub(WebSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
+      assert request.url.host == "api.tavily.com"
+      assert request.url.path == "/search"
+      assert HTTP.Headers.get(request.headers, "authorization") == "Bearer tavily-secret"
 
       assert Jason.decode!(body) == %{
                "query" => "phoenix",
@@ -191,7 +191,7 @@ defmodule Backplane.Services.WebSearchTest do
                "include_usage" => true
              }
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "results" => [
           %{
             "title" => "Phoenix",
@@ -273,10 +273,10 @@ defmodule Backplane.Services.WebSearchTest do
     Settings.set("services.web_search.exa.credential", "exa-key")
     Settings.set("services.web_search.tavily.credential", "tavily-key")
 
-    Req.Test.stub(WebSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+    HTTP.Test.stub(WebSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
 
-      case conn.host do
+      case request.url.host do
         "api.exa.ai" ->
           assert Jason.decode!(body) == %{
                    "query" => "exa query",
@@ -304,7 +304,7 @@ defmodule Backplane.Services.WebSearchTest do
                  }
       end
 
-      Req.Test.json(conn, %{"results" => []})
+      HTTP.Test.json(%{"results" => []})
     end)
 
     assert {:ok, %{"backend" => "exa"}} =
@@ -318,8 +318,8 @@ defmodule Backplane.Services.WebSearchTest do
     {:ok, _} = Credentials.store("exa-key", "exa-secret", "service")
     Settings.set("services.web_search.exa.credential", "exa-key")
 
-    Req.Test.stub(WebSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+    HTTP.Test.stub(WebSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
       payload = Jason.decode!(body)
 
       assert payload["category"] == "company"
@@ -328,7 +328,7 @@ defmodule Backplane.Services.WebSearchTest do
       refute Map.has_key?(payload, "startPublishedDate")
       refute Map.has_key?(payload, "endPublishedDate")
 
-      Req.Test.json(conn, %{"results" => []})
+      HTTP.Test.json(%{"results" => []})
     end)
 
     assert {:ok, _result} =
@@ -384,8 +384,8 @@ defmodule Backplane.Services.WebSearchTest do
     {:ok, _} = Credentials.store("ollama-key", "ollama-secret", "service")
     Settings.set("services.web_search.ollama.enabled", true)
 
-    Req.Test.stub(WebSearch, fn conn ->
-      Req.Test.json(conn, %{
+    HTTP.Test.stub(WebSearch, fn _request ->
+      HTTP.Test.json(%{
         "results" => [
           %{"url" => "https://example.test", "content" => String.duplicate("a", 1600)}
         ]
@@ -431,20 +431,20 @@ defmodule Backplane.Services.WebSearchTest do
     Settings.set("services.web_search.ollama.enabled", true)
     Settings.set("services.web_search.minimax.enabled", true)
 
-    Req.Test.stub(WebSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+    HTTP.Test.stub(WebSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
 
-      case conn.request_path do
+      case request.url.path do
         "/api/web_search" ->
-          assert {"authorization", "Bearer ollama-secret"} in conn.req_headers
+          assert HTTP.Headers.get(request.headers, "authorization") == "Bearer ollama-secret"
           assert Jason.decode!(body) == %{"query" => "ollama query", "max_results" => 2}
-          Req.Test.json(conn, %{"results" => []})
+          HTTP.Test.json(%{"results" => []})
 
         "/v1/coding_plan/search" ->
-          assert {"authorization", "Bearer minimax-secret"} in conn.req_headers
-          assert {"mm-api-source", "Minimax-MCP"} in conn.req_headers
+          assert HTTP.Headers.get(request.headers, "authorization") == "Bearer minimax-secret"
+          assert HTTP.Headers.get(request.headers, "mm-api-source") == "Minimax-MCP"
           assert Jason.decode!(body) == %{"q" => "minimax query"}
-          Req.Test.json(conn, %{"organic" => []})
+          HTTP.Test.json(%{"organic" => []})
       end
     end)
 
@@ -472,9 +472,9 @@ defmodule Backplane.Services.WebSearchTest do
 
     test_pid = self()
 
-    Req.Test.stub(WebSearch, fn conn ->
-      send(test_pid, {:searched, conn.host})
-      Plug.Conn.send_resp(conn, 503, ~s({"error":"unavailable"}))
+    HTTP.Test.stub(WebSearch, fn request ->
+      send(test_pid, {:searched, request.url.host})
+      HTTP.Test.response(503, ~s({"error":"unavailable"}))
     end)
 
     assert {:error, %{message: message}} = WebSearch.handle_search(%{"query" => "elixir"})
@@ -487,7 +487,7 @@ defmodule Backplane.Services.WebSearchTest do
     {:ok, _} = Credentials.store("exa-key", "exa-secret", "service")
     Settings.set("services.web_search.exa.credential", "exa-key")
 
-    Req.Test.stub(WebSearch, fn conn -> Req.Test.json(conn, %{"requestId" => "req_1"}) end)
+    HTTP.Test.stub(WebSearch, fn _request -> HTTP.Test.json(%{"requestId" => "req_1"}) end)
 
     assert {:error, %{message: "Exa returned a malformed response"}} =
              WebSearch.handle_search(%{"query" => "elixir"})
@@ -502,8 +502,8 @@ defmodule Backplane.Services.WebSearchTest do
     {:ok, _} = Credentials.store("exa-key", "exa-secret", "service")
     Settings.set("services.web_search.exa.credential", "exa-key")
 
-    Req.Test.stub(WebSearch, fn conn ->
-      Req.Test.json(conn, %{"error" => "invalid credential exa-secret"})
+    HTTP.Test.stub(WebSearch, fn _request ->
+      HTTP.Test.json(%{"error" => "invalid credential exa-secret"})
     end)
 
     assert {:error, %{message: message}} = WebSearch.handle_search(%{"query" => "elixir"})
@@ -516,8 +516,8 @@ defmodule Backplane.Services.WebSearchTest do
       {:ok, _} = Credentials.store(credential, "#{backend}-secret", "service")
       Settings.set("services.web_search.#{backend}.credential", credential)
 
-      Req.Test.stub(WebSearch, fn conn ->
-        Req.Test.json(conn, %{
+      HTTP.Test.stub(WebSearch, fn _request ->
+        HTTP.Test.json(%{
           "results" => [nil, 42, %{}, %{"title" => "Missing URL"}]
         })
       end)
@@ -534,8 +534,8 @@ defmodule Backplane.Services.WebSearchTest do
       {:ok, _} = Credentials.store(credential, "#{backend}-secret", "service")
       Settings.set("services.web_search.#{backend}.credential", credential)
 
-      Req.Test.stub(WebSearch, fn conn ->
-        Req.Test.json(conn, %{
+      HTTP.Test.stub(WebSearch, fn _request ->
+        HTTP.Test.json(%{
           "error" => %{"message" => "invalid #{backend}-secret"},
           "results" => [%{"title" => "Fake", "url" => "https://example.test"}]
         })
@@ -553,8 +553,8 @@ defmodule Backplane.Services.WebSearchTest do
     {:ok, _} = Credentials.store("exa-key", "exa-secret", "service")
     Settings.set("services.web_search.exa.credential", "exa-key")
 
-    Req.Test.stub(WebSearch, fn conn ->
-      Req.Test.json(conn, %{"results" => [], "costDollars" => 0.01})
+    HTTP.Test.stub(WebSearch, fn _request ->
+      HTTP.Test.json(%{"results" => [], "costDollars" => 0.01})
     end)
 
     assert {:error, %{message: "Exa returned a malformed response"}} =

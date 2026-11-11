@@ -6,10 +6,10 @@ defmodule Backplane.Services.WebXSearchTest do
   alias Backplane.Settings.Credentials
 
   setup do
-    previous = Application.get_env(:backplane, :web_x_search_req_options)
+    previous = Application.get_env(:backplane, :web_x_search_http_options)
 
-    Application.put_env(:backplane, :web_x_search_req_options,
-      plug: {Req.Test, Backplane.Services.WebXSearch}
+    Application.put_env(:backplane, :web_x_search_http_options,
+      adapter: {HTTP.Test, Backplane.Services.WebXSearch}
     )
 
     Settings.set("services.web.enabled", true)
@@ -18,9 +18,9 @@ defmodule Backplane.Services.WebXSearchTest do
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane, :web_x_search_req_options, previous)
+        Application.put_env(:backplane, :web_x_search_http_options, previous)
       else
-        Application.delete_env(:backplane, :web_x_search_req_options)
+        Application.delete_env(:backplane, :web_x_search_http_options)
       end
     end)
 
@@ -45,11 +45,11 @@ defmodule Backplane.Services.WebXSearchTest do
     {:ok, _} = Credentials.store("xai-api-key", "xai-secret", "service")
     Settings.set("services.web_x_search.credential", "xai-api-key")
 
-    Req.Test.stub(Backplane.Services.WebXSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+    HTTP.Test.stub(Backplane.Services.WebXSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
 
-      assert conn.request_path == "/v1/responses"
-      assert {"authorization", "Bearer xai-secret"} in conn.req_headers
+      assert request.url.path == "/v1/responses"
+      assert HTTP.Headers.get(request.headers, "authorization") == "Bearer xai-secret"
 
       decoded = Jason.decode!(body)
       assert decoded["model"] == "grok-4.3"
@@ -60,7 +60,7 @@ defmodule Backplane.Services.WebXSearchTest do
 
       assert decoded["tools"] == [%{"type" => "x_search"}]
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "id" => "resp_1",
         "model" => "grok-4.3",
         "output" => [
@@ -118,16 +118,16 @@ defmodule Backplane.Services.WebXSearchTest do
 
     Settings.set("services.web_x_search.credential", "xai-grok")
 
-    Req.Test.stub(Backplane.Services.WebXSearch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
+    HTTP.Test.stub(Backplane.Services.WebXSearch, fn request ->
+      body = IO.iodata_to_binary(request.body)
 
-      assert conn.request_path == "/v1/responses"
-      assert {"authorization", "Bearer xai-oauth-access"} in conn.req_headers
+      assert request.url.path == "/v1/responses"
+      assert HTTP.Headers.get(request.headers, "authorization") == "Bearer xai-oauth-access"
 
       decoded = Jason.decode!(body)
       assert decoded["tools"] == [%{"type" => "x_search"}]
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "id" => "resp_oauth",
         "model" => "grok-4.3",
         "output" => [

@@ -6,8 +6,8 @@ defmodule Backplane.Services.WebFetchTest do
   alias Backplane.Settings.Credentials
 
   setup do
-    previous = Application.get_env(:backplane, :web_fetch_req_options)
-    Application.put_env(:backplane, :web_fetch_req_options, plug: {Req.Test, WebFetch})
+    previous = Application.get_env(:backplane, :web_fetch_http_options)
+    Application.put_env(:backplane, :web_fetch_http_options, adapter: {HTTP.Test, WebFetch})
 
     Settings.set("services.web.enabled", true)
     Settings.set("services.web_fetch.default_backend", "direct")
@@ -16,9 +16,9 @@ defmodule Backplane.Services.WebFetchTest do
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane, :web_fetch_req_options, previous)
+        Application.put_env(:backplane, :web_fetch_http_options, previous)
       else
-        Application.delete_env(:backplane, :web_fetch_req_options)
+        Application.delete_env(:backplane, :web_fetch_http_options)
       end
     end)
 
@@ -34,10 +34,10 @@ defmodule Backplane.Services.WebFetchTest do
   end
 
   test "direct fetch remains the default and returns cleaned markdown" do
-    Req.Test.stub(WebFetch, fn conn ->
-      assert conn.method == "GET"
+    HTTP.Test.stub(WebFetch, fn request ->
+      assert request.method == :get
 
-      Req.Test.html(conn, """
+      HTTP.Test.html("""
       <!doctype html>
       <html>
         <head><title>Example Page</title><style>.hidden { display: none; }</style></head>
@@ -55,16 +55,43 @@ defmodule Backplane.Services.WebFetchTest do
   end
 
   test "direct fetch preserves raw content and HTTP error behavior" do
-    Req.Test.stub(WebFetch, fn conn -> Req.Test.text(conn, "plain response") end)
+    HTTP.Test.stub(WebFetch, fn _request -> HTTP.Test.text("plain response") end)
 
     assert {:ok, result} = WebFetch.handle_fetch(%{"url" => "https://example.test/plain"})
     assert result.title == "Raw Content"
     assert result.content == "```\nplain response\n```"
 
-    Req.Test.stub(WebFetch, fn conn -> Plug.Conn.send_resp(conn, 404, "not found") end)
+    HTTP.Test.stub(WebFetch, fn _request -> HTTP.Test.text("not found", 404) end)
 
     assert {:error, %{message: "HTTP 404"}} =
              WebFetch.handle_fetch(%{"url" => "https://example.test/missing"})
+  end
+
+  test "direct fetch follows up to five redirects" do
+    HTTP.Test.stub(WebFetch, fn request ->
+      case request.url.path do
+        "/hop/" <> count ->
+          next = String.to_integer(count) + 1
+          HTTP.Test.response(302, "", [{"location", "/hop/#{next}"}])
+
+        "/final" ->
+          HTTP.Test.text("arrived")
+      end
+    end)
+
+    assert {:error, %{message: "too many redirects (5)"}} =
+             WebFetch.handle_fetch(%{"url" => "https://example.test/hop/0"})
+
+    HTTP.Test.stub(WebFetch, fn request ->
+      case request.url.path do
+        "/start" -> HTTP.Test.response(301, "", [{"location", "https://other.test/final"}])
+        "/final" -> HTTP.Test.text("arrived")
+      end
+    end)
+
+    assert {:ok, result} = WebFetch.handle_fetch(%{"url" => "https://example.test/start"})
+    assert result.content == "```\narrived\n```"
+    assert result.url == "https://example.test/start"
   end
 
   test "firecrawl fetch uses configured URL, bearer credential, and normalized metadata" do
@@ -73,19 +100,18 @@ defmodule Backplane.Services.WebFetchTest do
     Settings.set("services.web_fetch.firecrawl.base_url", "https://crawl.example.test/api")
     Settings.set("services.web_fetch.firecrawl.credential", "firecrawl-key")
 
-    Req.Test.stub(WebFetch, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      assert conn.method == "POST"
-      assert conn.host == "crawl.example.test"
-      assert conn.request_path == "/api/v2/scrape"
-      assert {"authorization", "Bearer firecrawl-secret"} in conn.req_headers
+    HTTP.Test.stub(WebFetch, fn request ->
+      assert request.method == :post
+      assert request.url.host == "crawl.example.test"
+      assert request.url.path == "/api/v2/scrape"
+      assert HTTP.Headers.get(request.headers, "authorization") == "Bearer firecrawl-secret"
 
-      assert Jason.decode!(body) == %{
+      assert request.body |> IO.iodata_to_binary() |> Jason.decode!() == %{
                "url" => "https://example.test/page",
                "formats" => ["markdown"]
              }
 
-      Req.Test.json(conn, %{
+      HTTP.Test.json(%{
         "success" => true,
         "data" => %{
           "markdown" => "# Firecrawl page",
@@ -114,8 +140,8 @@ defmodule Backplane.Services.WebFetchTest do
     {:ok, _} = Credentials.store("firecrawl-key", "firecrawl-secret", "service")
     Settings.set("services.web_fetch.firecrawl.credential", "firecrawl-key")
 
-    Req.Test.stub(WebFetch, fn conn ->
-      Req.Test.json(conn, %{"success" => false, "error" => "firecrawl-secret"})
+    HTTP.Test.stub(WebFetch, fn _request ->
+      HTTP.Test.json(%{"success" => false, "error" => "firecrawl-secret"})
     end)
 
     assert {:error, %{code: "web_fetch_error", message: message}} =
@@ -129,13 +155,13 @@ defmodule Backplane.Services.WebFetchTest do
     {:ok, _} = Credentials.store("firecrawl-key", "firecrawl-secret", "service")
     Settings.set("services.web_fetch.firecrawl.credential", "firecrawl-key")
 
-    Req.Test.stub(WebFetch, fn conn -> Plug.Conn.send_resp(conn, 429, "firecrawl-secret") end)
+    HTTP.Test.stub(WebFetch, fn _request -> HTTP.Test.text("firecrawl-secret", 429) end)
 
     assert {:error, %{message: "Firecrawl HTTP 429"}} =
              WebFetch.handle_fetch(%{"url" => "https://example.test", "backend" => "firecrawl"})
 
-    Req.Test.stub(WebFetch, fn conn ->
-      Req.Test.json(conn, %{
+    HTTP.Test.stub(WebFetch, fn _request ->
+      HTTP.Test.json(%{
         "success" => true,
         "data" => %{"markdown" => "content", "metadata" => ["invalid"]}
       })
@@ -144,8 +170,8 @@ defmodule Backplane.Services.WebFetchTest do
     assert {:error, %{message: "Firecrawl returned a malformed response"}} =
              WebFetch.handle_fetch(%{"url" => "https://example.test", "backend" => "firecrawl"})
 
-    Req.Test.stub(WebFetch, fn conn ->
-      Req.Test.json(conn, %{
+    HTTP.Test.stub(WebFetch, fn _request ->
+      HTTP.Test.json(%{
         "success" => true,
         "data" => %{"markdown" => String.duplicate("x", 10_000_001), "metadata" => %{}}
       })

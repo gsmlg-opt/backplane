@@ -8,6 +8,8 @@ defmodule Backplane.Services.WebXSearch do
   TODO: Defer the x_search redesign and replace the current xAI/Grok Responses API with the X API.
   """
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.OAuthRefresher
@@ -126,13 +128,13 @@ defmodule Backplane.Services.WebXSearch do
         json: body,
         receive_timeout: 60_000
       )
-      |> Keyword.merge(Application.get_env(:backplane, :web_x_search_req_options, []))
+      |> Keyword.merge(Application.get_env(:backplane, :web_x_search_http_options, []))
 
-    case Req.post(options) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+    case HTTPClient.post(options) do
+      {:ok, %Response{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, "HTTP #{status}: #{response_message(body)}"}
 
       {:error, reason} ->

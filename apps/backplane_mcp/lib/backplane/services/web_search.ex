@@ -6,6 +6,8 @@ defmodule Backplane.Services.WebSearch do
   contract. Ollama and MiniMax remain explicitly enabled basic-search backups.
   """
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
@@ -516,10 +518,10 @@ defmodule Backplane.Services.WebSearch do
         json: request_body(backend, query, options),
         receive_timeout: receive_timeout(backend, options)
       ]
-      |> Keyword.merge(Application.get_env(:backplane, :web_search_req_options, []))
+      |> Keyword.merge(Application.get_env(:backplane, :web_search_http_options, []))
 
-    case Req.post(request_options) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+    case HTTPClient.post(request_options) do
+      {:ok, %Response{status: status, body: body}} when status in 200..299 ->
         body = decode_response_body(body)
 
         case provider_error(backend, body) do
@@ -527,7 +529,7 @@ defmodule Backplane.Services.WebSearch do
           _message -> {:error, "#{backend_label(backend)} API request failed"}
         end
 
-      {:ok, %Req.Response{status: status}} ->
+      {:ok, %Response{status: status}} ->
         {:error, "HTTP #{status} from #{backend_label(backend)}"}
 
       {:error, _reason} ->

@@ -7,11 +7,14 @@ defmodule Backplane.Services.WebFetch do
   """
 
   @max_body_bytes 10_000_000
+  @max_redirects 5
   @user_agent "Backplane-WebFetch/1.0 (+https://github.com/gsmlg-opt/backplane)"
   @ignored_tags ~w(script style nav header footer aside svg canvas)
   @backends ~w(direct firecrawl)
   @firecrawl_base_url "https://api.firecrawl.dev"
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
   alias Backplane.Settings
   alias Backplane.Settings.Credentials
 
@@ -68,32 +71,58 @@ defmodule Backplane.Services.WebFetch do
   end
 
   defp fetch_url(url) do
-    options =
-      [
-        url: url,
-        headers: [{"user-agent", @user_agent}],
-        redirect: true,
-        max_redirects: 5,
-        receive_timeout: 15_000,
-        decode_body: false
-      ]
-      |> Keyword.merge(Application.get_env(:backplane, :web_fetch_req_options, []))
-
-    case Req.get(options) do
-      {:ok, %Req.Response{status: status, body: body} = resp} when status in 200..299 ->
+    case follow_redirects(url, 0) do
+      {:ok, %Response{status: status, body: body} = resp} when status in 200..299 ->
         if byte_size(body) <= @max_body_bytes do
           {:ok, %{response: resp, url: url}}
         else
           {:error, "response body exceeds #{@max_body_bytes} bytes"}
         end
 
-      {:ok, %Req.Response{status: status}} ->
+      {:ok, %Response{status: status}} ->
         {:error, "HTTP #{status}"}
 
       {:error, err} ->
         {:error, error_message(err)}
     end
   end
+
+  # Redirects are followed here rather than by the client so the hop limit
+  # stays at @max_redirects (http_fetch's own follow limit is fixed at 20).
+  defp follow_redirects(url, hops) do
+    options =
+      [
+        url: url,
+        headers: [{"user-agent", @user_agent}],
+        receive_timeout: 15_000,
+        decode_body: false
+      ]
+      |> Keyword.merge(Application.get_env(:backplane, :web_fetch_http_options, []))
+      |> Keyword.put(:redirect, false)
+
+    with {:ok, %Response{} = response} <- HTTPClient.get(options) do
+      case redirect_location(response) do
+        nil ->
+          {:ok, response}
+
+        _location when hops >= @max_redirects ->
+          {:error, "too many redirects (#{@max_redirects})"}
+
+        location ->
+          url |> URI.merge(location) |> URI.to_string() |> follow_redirects(hops + 1)
+      end
+    end
+  end
+
+  defp redirect_location(%Response{status: status} = response)
+       when status in [301, 302, 303, 307, 308] do
+    case Response.get_header(response, "location") do
+      [location | _] -> location
+      [] -> nil
+    end
+  end
+
+  defp redirect_location(_response), do: nil
 
   defp convert_to_markdown(%{response: response, url: url}) do
     body = response.body || ""
@@ -160,13 +189,13 @@ defmodule Backplane.Services.WebFetch do
         json: %{"url" => url, "formats" => ["markdown"]},
         receive_timeout: 30_000
       ]
-      |> Keyword.merge(Application.get_env(:backplane, :web_fetch_req_options, []))
+      |> Keyword.merge(Application.get_env(:backplane, :web_fetch_http_options, []))
 
-    case Req.post(options) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+    case HTTPClient.post(options) do
+      {:ok, %Response{status: status, body: body}} when status in 200..299 ->
         {:ok, decode_response_body(body)}
 
-      {:ok, %Req.Response{status: status}} ->
+      {:ok, %Response{status: status}} ->
         {:error, "Firecrawl HTTP #{status}"}
 
       {:error, _reason} ->
