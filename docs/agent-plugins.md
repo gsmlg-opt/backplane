@@ -110,17 +110,23 @@ catalog commit 和插件来源。每个无效条目留下安全、按索引定�
 
 `Client` 不依赖 Phoenix/Repo；调用者提供 HTTP transport 和认证。transport 负责 TLS、超时、
 接收大小与不向其他 origin 转发认证。共享 `Client.download/3` 再验证 digest、归档和组件。
-不设置自动重定向的 Req 适配示例：
+不设置自动重定向的 http_fetch 适配示例：
 
 ```elixir
 client = Backplane.PluginProtocol.Client.new(
   base_url: "https://gateway.example",
   auth: access_token,
   transport: fn request ->
-    case Req.request(method: request.method, url: request.url, headers: request.headers,
-           body: request.body, decode_body: false, redirect: false, retry: false) do
-      {:ok, response} -> {:ok, %{status: response.status, body: response.body}}
-      {:error, reason} -> {:error, reason}
+    request.url
+    |> HTTP.fetch(method: request.method, headers: request.headers, body: request.body,
+         redirect: :manual)
+    |> HTTP.Promise.await()
+    |> case do
+      %HTTP.Response{} = response ->
+        {:ok, %{status: response.status, body: HTTP.Response.read_all(response)}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 )

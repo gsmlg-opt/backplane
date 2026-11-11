@@ -143,7 +143,7 @@ canonical scope registry (§8).
 The upstream IdP is the only outward dependency and authenticates the human at `/authorize`.
 
 - `Backplane.Accounts.FederatedLogin` runs a standard OIDC/OAuth2 authorization-code flow
-  against the configured provider, reusing `Req`, the `Backplane.Settings.OAuthStateStore`
+  against the configured provider, reusing `Backplane.HTTPClient`, the `Backplane.Settings.OAuthStateStore`
   pattern (state + PKCE + nonce, short TTL, single-use), and `Encryption` for the stored
   client secret. Required claim checks: `iss`, `aud`, `exp`, `nonce`. Generic OIDC first
   (covers Google and most providers); GitHub supported as an OAuth2 variant.
