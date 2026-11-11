@@ -3965,7 +3965,8 @@ defmodule Backplane.AgentRuntime.Conversation do
 
   defp stop_immediately(s, reason) do
     s = invalidate_run_timer(s)
-    task_stop = if s.effect, do: kill_task(s.effect), else: :ok
+    effect = s.effect
+    task_stop = if effect, do: kill_task(effect), else: :ok
     if s.preparation, do: kill_task(s.preparation)
     reject_nested_preparation(s, Error.new(:cancelled, "run cancelled"))
     if s.goal_delivery, do: kill_task(s.goal_delivery)
@@ -4006,12 +4007,27 @@ defmodule Backplane.AgentRuntime.Conversation do
                 task_stop != :ok or
                   s.resource_cleanup != :confirmed or
                   map_size(Map.get(s.run, :active_tools, %{})) > 0 or
-                  not is_nil(Map.get(s.run, :active_provider))
+                  not provider_retired?(reason, Map.get(s.run, :active_provider), effect, task_stop)
             }
     }
 
     if s.commit, do: s, else: advance_stop(s)
   end
+
+  # A provider attempt has no external effect to reconcile, so an explicit
+  # cancellation retires it once the worker running that exact attempt is
+  # confirmed down. Deadlines and failures keep their uncertain settlement.
+  defp provider_retired?(_reason, nil, _effect, _task_stop), do: true
+
+  defp provider_retired?(
+         :cancelled,
+         %{step_id: step_id, attempt_id: attempt_id},
+         %{task: %{pid: _}, role: {:provider, %{step_id: step_id, attempt_id: attempt_id}, _}},
+         :ok
+       ),
+       do: true
+
+  defp provider_retired?(_reason, _active, _effect, _task_stop), do: false
 
   defp advance_stop(%{commit: commit} = s) when not is_nil(commit), do: s
   defp advance_stop(%{stopping: %{task: task}} = s) when not is_nil(task), do: s

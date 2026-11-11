@@ -1306,6 +1306,22 @@ defmodule Backplane.AgentRuntime.ConversationTest do
     end
   end
 
+  test "cancelling a confirmed-stopped provider attempt settles cancelled" do
+    {pid, _} = start(run_timeout: :infinity)
+    {:ok, _} = Conversation.prompt(pid, "cancel")
+    assert_receive {:provider, _, provider}
+    assert Conversation.status(pid).run.active_provider
+
+    monitor = Process.monitor(provider)
+    assert :ok = Conversation.cancel(pid)
+    assert_receive {:DOWN, ^monitor, :process, ^provider, _}, 500
+    assert_receive {:agent_runtime, "test", %{type: :run_cancelled, state: :cancelled}}, 500
+
+    status = Conversation.status(pid)
+    assert status.phase == :terminal
+    assert status.run.state == :cancelled
+  end
+
   test "default busy prompt is a follow-up, and hooks retain prompt then stop order" do
     {pid, _} = start(hooks: Hooks)
     {:ok, _} = Conversation.prompt(pid, "first")
