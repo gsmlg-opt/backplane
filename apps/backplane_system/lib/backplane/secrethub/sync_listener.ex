@@ -45,13 +45,13 @@ defmodule Backplane.SecretHub.SyncListener do
   defp enqueue(args) do
     case SyncWorker.enqueue(args) do
       {:ok, _job} -> :ok
-      other -> Logger.warning("SecretHub sync job not enqueued: #{inspect(error_reason(other))}")
+      {:error, reason} -> Logger.warning("SecretHub sync job not enqueued: #{inspect(error_reason(reason))}")
     end
   rescue
     error -> Logger.warning("SecretHub sync job not enqueued: #{inspect(error.__struct__)}")
   end
 
-  defp error_reason({:error, %Ecto.Changeset{}}), do: :invalid_job
-  defp error_reason({:error, reason}), do: reason
-  defp error_reason(other), do: other
+  # Changesets can carry job args; log only that the job was invalid.
+  defp error_reason(%Ecto.Changeset{}), do: :invalid_job
+  defp error_reason(reason), do: reason
 end

@@ -41,7 +41,7 @@ defmodule Backplane.SecretHub.Sync do
   def transient?(reason), do: reason in @transient
 
   @doc "The SecretHub path for a credential, or an error for an unusable name."
-  @spec path_for(Credential.t()) :: {:ok, String.t()} | {:error, :invalid_name}
+  @spec path_for(%Credential{}) :: {:ok, String.t()} | {:error, :invalid_name}
   def path_for(%Credential{kind: kind, name: name}) do
     {:ok, SecretHub.SDK.path([@prefix, kind, name])}
   rescue
