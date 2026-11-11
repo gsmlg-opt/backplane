@@ -127,7 +127,7 @@ defmodule Backplane.LLM.ResponsesLifecycleMapper do
         if size + byte_size(state.prefix) > @max_frame_bytes do
           fail(state, :responses_frame_too_large, output)
         else
-          <<frame::binary-size(size), rest::binary>> = state.buffer
+          <<frame::binary-size(^size), rest::binary>> = state.buffer
 
           case frame_record(state, frame) do
             {:ok, next_state} ->

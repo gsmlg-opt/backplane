@@ -161,7 +161,7 @@ defmodule Backplane.HostAgent.ApiRequest do
 
   defp forward_chunks(bytes, transfer, id, push) do
     size = min(byte_size(bytes), @chunk_bytes)
-    <<chunk::binary-size(size), rest::binary>> = bytes
+    <<chunk::binary-size(^size), rest::binary>> = bytes
 
     case push.(%{
            "request_id" => id,

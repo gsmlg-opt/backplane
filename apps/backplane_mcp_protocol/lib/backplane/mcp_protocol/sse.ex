@@ -173,7 +173,7 @@ defmodule Backplane.McpProtocol.SSE do
         raise ArgumentError, "SSE frame exceeds buffer limit"
 
       {position, size} ->
-        <<frame::binary-size(position), _separator::binary-size(size), rest::binary>> = data
+        <<frame::binary-size(^position), _separator::binary-size(^size), rest::binary>> = data
         {events, rest} = parse_chunk("", rest)
         {Parser.run(frame <> "\n\n") ++ events, rest}
 

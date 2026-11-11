@@ -193,7 +193,7 @@ defmodule Backplane.PluginProtocol.Archive do
          true <- total + size <= Keyword.get(opts, :max_total_bytes, 67_108_864),
          pad = padding(size),
          true <- byte_size(rest) >= size + pad,
-         <<body::binary-size(size), _pad::binary-size(pad), remaining::binary>> <- rest do
+         <<body::binary-size(^size), _pad::binary-size(^pad), remaining::binary>> <- rest do
       next = if type == :file, do: Map.put(files, path, body), else: files
       entries(remaining, next, Map.put(seen, path, {type, mode}), count + 1, total + size, opts)
     else
