@@ -20,7 +20,11 @@ defmodule Backplane.Application do
   def start(_type, _args) do
     validate_config_at_boot()
 
-    children = [{Styx, Application.fetch_env!(:backplane, Styx)}]
+    children = [
+      {Styx, Application.fetch_env!(:backplane, Styx)},
+      # Enqueues SecretHub sync jobs; must start after Styx.
+      Backplane.SecretHub.SyncListener
+    ]
 
     opts = [strategy: :one_for_one, name: Backplane.Supervisor]
 
