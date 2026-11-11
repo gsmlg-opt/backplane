@@ -422,8 +422,8 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
       function = delta["function"] || %{}
       old = Map.get(state.tool_calls, index, %{id: nil, name: nil, arguments: ""})
 
-      with {:ok, id} <- append_fragment(old.id, delta["id"], "id"),
-           {:ok, name} <- append_fragment(old.name, function["name"], "name"),
+      with {:ok, id} <- merge_identity(old.id, delta["id"], "id"),
+           {:ok, name} <- merge_identity(old.name, function["name"], "name"),
            {:ok, arguments} <-
              append_fragment(old.arguments, function["arguments"], "arguments") do
         next = %{id: id, name: name, arguments: arguments}
@@ -452,6 +452,13 @@ defmodule Backplane.AiProtocol.Codec.OpenAI do
 
   defp decode_tool_deltas(state, _deltas, _events),
     do: {:error, Error.invalid!("OpenAI tool deltas must be a list"), state}
+
+  # Some OpenAI-compatible servers repeat the full tool id and name on later
+  # deltas for the same index while others stream them as fragments. Keep an
+  # identical repeat as-is; any other value remains a streamed fragment.
+  defp merge_identity(old, old, _field) when is_binary(old), do: {:ok, old}
+  defp merge_identity(old, "", _field), do: {:ok, old}
+  defp merge_identity(old, new, field), do: append_fragment(old, new, field)
 
   defp append_fragment(nil, nil, _field), do: {:ok, nil}
   defp append_fragment(value, nil, _field) when is_binary(value), do: {:ok, value}

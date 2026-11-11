@@ -294,6 +294,38 @@ defmodule Backplane.AiProtocol.ProviderCodecTest do
     assert {:ok, _, []} = Codec.stream_finish(:openai, state, :eof)
   end
 
+  test "openai keeps repeated tool ids and names as identities" do
+    tool_chunk = fn tool ->
+      sse(%{"choices" => [%{"index" => 0, "delta" => %{"tool_calls" => [tool]}}]})
+    end
+
+    id = "chatcmpl-tool-92c99d62e706395b"
+
+    chunks = [
+      tool_chunk.(%{
+        "index" => 0,
+        "id" => id,
+        "function" => %{"name" => "synapsis::ask_user", "arguments" => "{\"q\":"}
+      }),
+      tool_chunk.(%{
+        "index" => 0,
+        "id" => id,
+        "function" => %{"name" => "synapsis::ask_user", "arguments" => "\"hi\"}"}
+      }),
+      sse(%{"choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "tool_calls"}]}),
+      "data: [DONE]\n\n"
+    ]
+
+    {_state, events} = feed_all(:openai, chunks)
+
+    deltas = Enum.filter(events, &(&1.type == :tool_call_delta))
+    assert Enum.map(deltas, & &1.call_id) == [id, id]
+    assert Enum.map(deltas, & &1.name) == ["synapsis::ask_user", "synapsis::ask_user"]
+
+    assert %StreamEvent{type: :tool_call_done, call_id: ^id, name: "synapsis::ask_user"} =
+             Enum.find(events, &(&1.type == :tool_call_done))
+  end
+
   test "openai rejects invalid completed tool JSON" do
     state = Codec.stream_new(:openai, [])
 
