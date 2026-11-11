@@ -42,6 +42,18 @@ defmodule Backplane.SkillProtocol.LifecycleHTTPServer do
 
   defp respond(socket, owner, :stall), do: observe_close(socket, owner)
 
+  defp respond(socket, owner, {:response, status, headers, body}) do
+    header_lines = Enum.map_join(headers, fn {name, value} -> "#{name}: #{value}\r\n" end)
+
+    :ok =
+      :gen_tcp.send(
+        socket,
+        "HTTP/1.1 #{status} Status\r\n#{header_lines}content-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n#{body}"
+      )
+
+    observe_close(socket, owner)
+  end
+
   defp respond(socket, owner, {:chunks, interval_ms}) do
     :ok =
       :gen_tcp.send(

@@ -2,6 +2,7 @@ defmodule Backplane.SkillProtocol.Client do
   @moduledoc "Instance-scoped, bounded client for the Skill Protocol v1 read API."
 
   alias Backplane.SkillProtocol.{Bundle, Error, SkillRef, Telemetry, Wire}
+  alias Backplane.SkillProtocol.Transport.Fetch
 
   @default_json_bytes 4 * 1024 * 1024
   @default_artifact_bytes 16 * 1024 * 1024
@@ -32,11 +33,10 @@ defmodule Backplane.SkillProtocol.Client do
     source_id = Keyword.get(opts, :source_id)
     access_context_id = Keyword.get(opts, :access_context_id)
     supplier = Keyword.get(opts, :credential_supplier, fn -> nil end)
-    transport = Keyword.get_lazy(opts, :transport, &default_transport/0)
+    transport = Keyword.get(opts, :transport, Fetch)
     max_attempts = Keyword.get(opts, :max_attempts, 3)
 
     with {:ok, endpoint} <- endpoint(endpoint),
-         :ok <- transport_available(transport),
          :ok <- nonempty(source_id, "source_id"),
          :ok <- nonempty(access_context_id, "access_context_id"),
          true <- is_function(supplier, 0),
@@ -63,17 +63,6 @@ defmodule Backplane.SkillProtocol.Client do
       _ -> error(:invalid_request, "client configuration is invalid")
     end
   end
-
-  # Req is an optional dependency; consumers without it must supply :transport.
-  defp default_transport do
-    if Code.ensure_loaded?(Backplane.SkillProtocol.Transport.Req),
-      do: Backplane.SkillProtocol.Transport.Req
-  end
-
-  defp transport_available(nil),
-    do: error(:invalid_request, "client requires :transport when Req is not available")
-
-  defp transport_available(_transport), do: :ok
 
   @spec new!(keyword()) :: t()
   def new!(opts) do
