@@ -1,19 +1,21 @@
-# Current Code Mode adapter scope — internal request #54
+# Code Mode backend decision
 
-The current PR extends the existing packaged Deno process adapter. It does not
-migrate to Denox. The source contract remains Codex revision
-`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`; current guarantees, fixtures, and
-remaining native-engine differential limits are described in
-[code-mode-conformance.md](code-mode-conformance.md). The milestone recorded
-below is historical and does not describe these new changes.
+## Current decision — 2026-11-10
 
-# Code Mode backend decision — 2026-10-01
+Denox is retired as a candidate for the next Code Mode backend. Backplane
+currently uses the packaged Deno process adapter. Selection of its successor
+remains open.
 
-The current milestone repairs ordinary commands and the shared Conversation
-runtime (R18, R19-runtime, R20, R21). Code Mode execution-backend selection and
-migration are deferred by the user. Denox NIF is the preferred future candidate;
-it is neither adopted nor verified by this milestone. No Denox dependency,
-adapter, engine framework, or additional Deno process infrastructure is added.
+The source contract is Codex revision
+`46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. See
+[Code Mode conformance](code-mode-conformance.md) for current guarantees,
+fixtures, and native-engine differential limits.
+
+## Historical milestone — 2026-10-01
+
+This milestone repaired ordinary commands and the shared Conversation runtime
+(R18, R19-runtime, R20, R21). It deferred backend migration and recorded Denox
+as a candidate. It did not adopt or verify that candidate.
 
 Existing Code Mode profiles remain explicitly opt-in and fail closed on missing
 lifecycle capabilities. Their current Deno adapter and native tests remain in
@@ -22,10 +24,9 @@ Conversation admission, authorization, commits, interaction, and publication;
 they are shared-runtime integration evidence, not native Code Mode conformance.
 
 Backplane retains tools, authorization, approvals, budgets, Store commits,
-invocation identity, and continuation ownership. A future Denox integration
-would provide JavaScript execution and low-level engine lifecycle capabilities,
-not scheduling or authorization authority. It must retain commit-before-dispatch,
-exact grants/revisions, cancellation fences, and honest uncertain outcomes.
+invocation identity, and continuation ownership. A replacement backend must
+preserve commit-before-dispatch, exact grants and revisions, cancellation
+fences, and accurate reporting of uncertain outcomes.
 
 ## Deferred engine checklist
 

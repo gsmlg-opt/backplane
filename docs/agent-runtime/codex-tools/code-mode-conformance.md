@@ -2,7 +2,7 @@
 
 The selected source is `openai/codex` revision
 `46fdd5ef39735f4159cdcf0ec5e85c10521494e5`. Backplane retains its
-permission-denied Deno process adapter. This change does not migrate to Denox.
+permission-denied Deno process adapter.
 The focused evidence below was obtained with Deno 2.8.3 on Linux.
 
 ## Independent reference fixtures

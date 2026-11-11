@@ -323,7 +323,7 @@
     "No durable extension restart recovery was run.",
     "Native Codex event, worker, PTY, and complete output-schema parity remain incomplete.",
     "Historical macOS validation did not execute R14 Linux process cleanup or R17 real Deno deadline suspension; current milestone evidence is recorded separately.",
-    "Code Mode backend migration is deferred; Denox NIF is a preferred future candidate, not adopted or verified.",
+    "Code Mode still uses the packaged Deno process adapter. Denox is retired as a replacement candidate. A successor has yet to be selected.",
     "R19-runtime and R20 shared-runtime integration tests do not verify engine-level interruption, resource limits, callback cancellation, shutdown, isolation, continuations or engine timer generations."
   ],
   "runtime_repairs_milestone": {
