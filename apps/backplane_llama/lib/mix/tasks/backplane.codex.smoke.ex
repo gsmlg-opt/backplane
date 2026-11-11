@@ -10,6 +10,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
 
   use Mix.Task
 
+  alias Backplane.HTTPClient
   alias Backplane.LLM.{OpenAICodex, Provider, ProviderApi}
   alias Backplane.Repo
   alias Backplane.WebOrigins
@@ -58,7 +59,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
         do: "/models?client_version=#{URI.encode_www_form(client_version)}",
         else: "/models"
 
-    models_response = Req.get(base_url <> models_path, request_options(headers))
+    models_response = HTTPClient.get(base_url <> models_path, request_options(headers))
     print_result("models", models_response)
 
     models_response
@@ -66,7 +67,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
     |> require_model!(model)
 
     responses_response =
-      Req.post(
+      HTTPClient.post(
         base_url <> "/responses",
         request_options(stream_headers(headers),
           json: responses_request(model, "Respond with the word: ok")
@@ -80,7 +81,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
     |> require_stream_events!()
 
     tool_response =
-      Req.post(
+      HTTPClient.post(
         base_url <> "/responses",
         request_options(stream_headers(headers),
           json:
@@ -109,7 +110,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
       Jason.encode!(responses_request(model, "Respond with the word: streamed-ok"))
 
     stream_response =
-      Req.post(
+      HTTPClient.post(
         base_url <> "/responses",
         request_options(stream_headers(headers), body: stream_body)
       )
@@ -121,7 +122,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
     |> require_stream_events!()
 
     compact_response =
-      Req.post(
+      HTTPClient.post(
         base_url <> "/responses",
         request_options(
           compact_v2_headers(headers),
@@ -165,7 +166,7 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
 
   defp request_options(headers, options \\ []) do
     [headers: headers, receive_timeout: 300_000]
-    |> Keyword.merge(Application.get_env(:backplane, :codex_smoke_req_options, []))
+    |> Keyword.merge(Application.get_env(:backplane, :codex_smoke_http_options, []))
     |> Keyword.merge(options)
   end
 
@@ -363,7 +364,10 @@ defmodule Mix.Tasks.Backplane.Codex.Smoke do
         frame
         |> String.split("\n")
         |> Enum.filter(&String.starts_with?(&1, "data:"))
-        |> Enum.map_join("\n", &(&1 |> String.replace_prefix("data:", "") |> String.trim_leading()))
+        |> Enum.map_join(
+          "\n",
+          &(&1 |> String.replace_prefix("data:", "") |> String.trim_leading())
+        )
 
       case Jason.decode(data) do
         {:ok, event} when is_map(event) -> [event]

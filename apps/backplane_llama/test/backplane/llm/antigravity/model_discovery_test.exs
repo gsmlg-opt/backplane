@@ -5,16 +5,17 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
   alias Backplane.Settings.Credentials
 
   setup do
-    previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+    HTTP.Test.verify_on_exit!()
+    previous = Application.get_env(:backplane, :llm_model_discovery_http_options)
 
-    Application.put_env(:backplane, :llm_model_discovery_req_options,
-      plug: {Req.Test, __MODULE__}
+    Application.put_env(:backplane, :llm_model_discovery_http_options,
+      adapter: {HTTP.Test, __MODULE__}
     )
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:backplane, :llm_model_discovery_req_options, previous),
-        else: Application.delete_env(:backplane, :llm_model_discovery_req_options)
+        do: Application.put_env(:backplane, :llm_model_discovery_http_options, previous),
+        else: Application.delete_env(:backplane, :llm_model_discovery_http_options)
     end)
 
     {:ok, _} =
@@ -48,15 +49,18 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
     provider: provider,
     api: api
   } do
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert conn.method == "POST"
-      assert conn.request_path == "/v1internal:fetchAvailableModels"
-      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer oauth-discovery-secret"]
-      assert Plug.Conn.get_req_header(conn, "x-client-version") == ["1.0"]
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      assert Jason.decode!(body) == %{"project" => "managed-project"}
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert request.method == :post
+      assert request.url.path == "/v1internal:fetchAvailableModels"
 
-      json(conn, %{
+      assert HTTP.Headers.get_all(request.headers, "authorization") == [
+               "Bearer oauth-discovery-secret"
+             ]
+
+      assert HTTP.Headers.get_all(request.headers, "x-client-version") == ["1.0"]
+      assert Jason.decode!(IO.iodata_to_binary(request.body)) == %{"project" => "managed-project"}
+
+      json(%{
         "models" => %{
           "gemini-3-pro" => %{
             "displayName" => "Gemini 3 Pro",
@@ -82,7 +86,7 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
   } do
     refresher = Backplane.Settings.OAuthRefresher
     previous = Application.get_env(:backplane, refresher)
-    Application.put_env(:backplane, refresher, req_options: [plug: {Req.Test, __MODULE__}])
+    Application.put_env(:backplane, refresher, http_options: [adapter: {HTTP.Test, __MODULE__}])
 
     on_exit(fn ->
       if previous,
@@ -97,12 +101,15 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
         "expires_at" => System.system_time(:millisecond) - 60_000
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      if conn.request_path == "/v1internal:fetchAvailableModels" do
-        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer refreshed-token"]
-        json(conn, %{"models" => %{"refreshed-model" => %{"displayName" => "Refreshed"}}})
+    HTTP.Test.stub(__MODULE__, fn request ->
+      if request.url.path == "/v1internal:fetchAvailableModels" do
+        assert HTTP.Headers.get_all(request.headers, "authorization") == [
+                 "Bearer refreshed-token"
+               ]
+
+        json(%{"models" => %{"refreshed-model" => %{"displayName" => "Refreshed"}}})
       else
-        json(conn, %{"access_token" => "refreshed-token", "expires_in" => 3600})
+        json(%{"access_token" => "refreshed-token", "expires_in" => 3600})
       end
     end)
 
@@ -114,13 +121,13 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
     provider: provider,
     api: api
   } do
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       {:ok, _api} =
         ProviderApi.update(ProviderApi.get(api.id), %{
           backend_config: %{"project_id" => "rotated-project"}
         })
 
-      json(conn, %{"models" => %{"late-model" => %{"displayName" => "Late"}}})
+      json(%{"models" => %{"late-model" => %{"displayName" => "Late"}}})
     end)
 
     assert %{discovered: 0, errors: [error]} = ModelDiscovery.reload_api(provider, api)
@@ -139,7 +146,7 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
       {:ok, _} = Provider.update(Provider.get(provider.id), %{enabled: true})
       {:ok, _} = ProviderApi.update(ProviderApi.get(api.id), %{enabled: true})
 
-      Req.Test.stub(__MODULE__, fn conn ->
+      HTTP.Test.stub(__MODULE__, fn _request ->
         case mutation do
           :provider ->
             Provider.update(Provider.get(provider.id), %{enabled: false})
@@ -158,7 +165,7 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
             })
         end
 
-        json(conn, %{"models" => %{"existing" => %{}, "late-model" => %{}}})
+        json(%{"models" => %{"existing" => %{}, "late-model" => %{}}})
       end)
 
       assert %{discovered: 0, errors: [_]} = ModelDiscovery.reload_api(provider, api)
@@ -181,23 +188,24 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
         }
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert Plug.Conn.get_req_header(conn, "x-client-name") == ["antigravity"]
-      assert Plug.Conn.get_req_header(conn, "x-goog-user-project") == []
-      assert Plug.Conn.get_req_header(conn, "x-api-key") == []
-      Process.put(:ag_discovery_attempts, Process.get(:ag_discovery_attempts, 0) + 1)
-      Plug.Conn.send_resp(conn, 429, "private upstream body")
+    owner = self()
+
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert HTTP.Headers.get_all(request.headers, "x-client-name") == ["antigravity"]
+      assert HTTP.Headers.get_all(request.headers, "x-goog-user-project") == []
+      assert HTTP.Headers.get_all(request.headers, "x-api-key") == []
+      send(owner, :ag_discovery_attempt)
+      HTTP.Test.response(429, "private upstream body")
     end)
 
     assert %{discovered: 0, errors: [error]} = ModelDiscovery.reload_api(provider, api)
     assert error =~ "429"
     refute error =~ "private"
-    assert Process.get(:ag_discovery_attempts) == 1
+    assert_received :ag_discovery_attempt
+    refute_received :ag_discovery_attempt
   end
 
-  defp json(conn, body) do
-    conn
-    |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(200, Jason.encode!(body))
+  defp json(body) do
+    HTTP.Test.json(body)
   end
 end

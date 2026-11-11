@@ -1,7 +1,7 @@
 defmodule Backplane.Audio.Adapters.MiniMax do
   @moduledoc "MiniMax's native TTS and file-transcription wire contracts."
 
-  alias Backplane.Audio.{AccessLifecycle, Error, HTTP, Stream}
+  alias Backplane.Audio.{AccessLifecycle, Error, HTTP, Multipart, Stream}
   alias Backplane.Settings.Credentials
   alias Backplane.Settings.Credentials.Vault
 
@@ -177,7 +177,7 @@ defmodule Backplane.Audio.Adapters.MiniMax do
     mime = prepared.mime
 
     multipart =
-      Req.Utils.encode_form_multipart([
+      Multipart.encode([
         {"model", resolution.model},
         {"response_format", "json"},
         {"file",

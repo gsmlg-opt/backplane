@@ -54,7 +54,7 @@ defmodule Backplane.LLM.CodexVersion do
   end
 
   defp github_release_request(url) do
-    Req.get(url,
+    Backplane.HTTPClient.get(url,
       headers: [{"accept", "application/vnd.github+json"}, {"user-agent", "backplane"}],
       receive_timeout: 5_000,
       retry: false

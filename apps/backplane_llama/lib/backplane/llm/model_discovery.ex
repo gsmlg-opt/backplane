@@ -17,6 +17,7 @@ defmodule Backplane.LLM.ModelDiscovery do
 
   alias Backplane.Repo
   alias Backplane.AiProtocol.Antigravity
+  alias Backplane.HTTPClient
   alias Backplane.LLM.Google.RequestTarget
   alias Backplane.Settings.Credential
   alias Backplane.Settings.Credentials
@@ -169,9 +170,9 @@ defmodule Backplane.LLM.ModelDiscovery do
     url = native_discovery_url(api, "/api/show")
 
     Enum.map(details, fn detail ->
-      options = Keyword.put(supplemental_req_options(url, headers), :json, %{model: detail.id})
+      options = Keyword.put(supplemental_http_options(url, headers), :json, %{model: detail.id})
 
-      case Req.post(url, options) do
+      case HTTPClient.post(url, options) do
         {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
           if is_map(body["model_info"]) or is_map(body["details"]) or
                is_list(body["capabilities"]) do
@@ -209,10 +210,10 @@ defmodule Backplane.LLM.ModelDiscovery do
   defp get_sglang_model_info(api, headers) do
     url = native_discovery_url(api, "/model_info")
 
-    case Req.get(url, supplemental_req_options(url, headers)) do
+    case HTTPClient.get(url, supplemental_http_options(url, headers)) do
       {:ok, %{status: status}} when status in [404, 405] ->
         fallback_url = native_discovery_url(api, "/get_model_info")
-        Req.get(fallback_url, supplemental_req_options(fallback_url, headers))
+        HTTPClient.get(fallback_url, supplemental_http_options(fallback_url, headers))
 
       result ->
         result
@@ -246,9 +247,9 @@ defmodule Backplane.LLM.ModelDiscovery do
     |> URI.to_string()
   end
 
-  defp supplemental_req_options(url, headers) do
+  defp supplemental_http_options(url, headers) do
     url
-    |> req_options(headers)
+    |> http_options(headers)
     |> Keyword.put(:redirect, false)
     |> Keyword.put(:retry, false)
   end
@@ -373,7 +374,7 @@ defmodule Backplane.LLM.ModelDiscovery do
     url = if Keyword.get(opts, :codex, false), do: put_codex_client_version(url), else: url
 
     url
-    |> Req.get(req_options(url, headers))
+    |> HTTPClient.get(http_options(url, headers))
     |> case do
       {:ok, %{status: status} = response} when status in 200..299 -> {:ok, response}
       {:ok, %{status: status}} -> {:error, "HTTP #{status}"}
@@ -395,8 +396,8 @@ defmodule Backplane.LLM.ModelDiscovery do
         end)
 
     url
-    |> Req.post(
-      req_options(url, headers)
+    |> HTTPClient.post(
+      http_options(url, headers)
       |> Keyword.put(:json, request.body)
       |> Keyword.put(:redirect, false)
       |> Keyword.put(:retry, false)
@@ -458,7 +459,7 @@ defmodule Backplane.LLM.ModelDiscovery do
   defp do_get_google_model_pages(api, headers, token, seen, details, page_count) do
     url = google_page_url(discovery_url(api), token)
 
-    case Req.get(url, google_req_options(url, headers)) do
+    case HTTPClient.get(url, google_http_options(url, headers)) do
       {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
         with {:ok, page_details} <- parse_google_model_details(body, api),
              {:ok, next_token} <- google_next_page_token(body, seen) do
@@ -549,23 +550,23 @@ defmodule Backplane.LLM.ModelDiscovery do
     end
   end
 
-  defp req_options(url, headers) do
+  defp http_options(url, headers) do
     [
       headers: headers,
       receive_timeout: @request_timeout_ms
     ]
-    |> Keyword.merge(default_req_options(url))
-    |> Keyword.merge(Application.get_env(:backplane, :llm_model_discovery_req_options, []))
+    |> Keyword.merge(default_http_options(url))
+    |> Keyword.merge(Application.get_env(:backplane, :llm_model_discovery_http_options, []))
   end
 
-  defp google_req_options(url, headers) do
+  defp google_http_options(url, headers) do
     url
-    |> req_options(headers)
+    |> http_options(headers)
     |> Keyword.put(:redirect, false)
     |> Keyword.put(:retry, false)
   end
 
-  defp default_req_options(url) do
+  defp default_http_options(url) do
     case proxy_connect_options(url) do
       [] -> []
       connect_options -> [connect_options: connect_options]

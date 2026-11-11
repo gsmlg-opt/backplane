@@ -7,16 +7,17 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
   alias Backplane.Settings.Credentials
 
   setup do
+    HTTP.Test.verify_on_exit!()
     previous_api_url = Application.get_env(:backplane, :api_url)
-    previous_req_options = Application.get_env(:backplane, :codex_smoke_req_options)
+    previous_http_options = Application.get_env(:backplane, :codex_smoke_http_options)
     previous_smoke = System.get_env("BACKPLANE_CODEX_SMOKE")
     previous_api_key = System.get_env("BACKPLANE_API_KEY")
     previous_client_version = System.get_env("OPENAI_CODEX_CLIENT_VERSION")
 
     Application.put_env(:backplane, :api_url, "https://backplane.test")
 
-    Application.put_env(:backplane, :codex_smoke_req_options,
-      plug: {Req.Test, __MODULE__},
+    Application.put_env(:backplane, :codex_smoke_http_options,
+      adapter: {HTTP.Test, __MODULE__},
       retry: false
     )
 
@@ -26,7 +27,7 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
 
     on_exit(fn ->
       restore_app_env(:api_url, previous_api_url)
-      restore_app_env(:codex_smoke_req_options, previous_req_options)
+      restore_app_env(:codex_smoke_http_options, previous_http_options)
       restore_system_env("BACKPLANE_CODEX_SMOKE", previous_smoke)
       restore_system_env("BACKPLANE_API_KEY", previous_api_key)
       restore_system_env("OPENAI_CODEX_CLIENT_VERSION", previous_client_version)
@@ -70,36 +71,32 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
   test "routes model and response probes through the Backplane provider endpoint" do
     test_pid = self()
 
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn request ->
       assert ["Bearer backplane-client-token"] =
-               Plug.Conn.get_req_header(conn, "authorization")
+               HTTP.Headers.get_all(request.headers, "authorization")
 
-      refute Enum.any?(conn.req_headers, fn {_name, value} ->
+      refute Enum.any?(HTTP.Headers.to_list(request.headers), fn {_name, value} ->
                String.contains?(value, "upstream-token-must-not-be-used-by-smoke")
              end)
 
-      case {conn.method, conn.request_path} do
-        {"GET", "/v1/providers/codex-smoke/models"} ->
-          assert conn.query_string == "client_version=0.51.0"
+      case {request.method, request.url.path} do
+        {:get, "/v1/providers/codex-smoke/models"} ->
+          assert request.url.query == "client_version=0.51.0"
           send(test_pid, {:smoke_request, :models})
 
-          conn
-          |> Plug.Conn.put_resp_content_type("application/json")
-          |> Plug.Conn.put_resp_header("x-request-id", "req-models")
-          |> Plug.Conn.send_resp(
-            200,
-            Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
-          )
+          HTTP.Test.response(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}), [
+            {"content-type", "application/json"},
+            {"x-request-id", "req-models"}
+          ])
 
-        {"POST", "/v1/providers/codex-smoke/responses"} ->
-          {:ok, body, conn} = Plug.Conn.read_body(conn)
-          decoded = Jason.decode!(body)
+        {:post, "/v1/providers/codex-smoke/responses"} ->
+          decoded = Jason.decode!(IO.iodata_to_binary(request.body))
           assert decoded["model"] == "gpt-5.6-sol"
 
           cond do
             compaction_v2_request?(decoded) ->
               assert ["remote_compaction_v2"] =
-                       Plug.Conn.get_req_header(conn, "x-codex-beta-features")
+                       HTTP.Headers.get_all(request.headers, "x-codex-beta-features")
 
               assert [
                        %{
@@ -113,11 +110,8 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
               assert decoded["stream"] == true
               send(test_pid, {:smoke_request, :compact_v2, decoded})
 
-              conn
-              |> Plug.Conn.put_resp_content_type("text/event-stream")
-              |> Plug.Conn.put_resp_header("x-request-id", "req-compact-v2")
-              |> Plug.Conn.send_resp(
-                200,
+              event_stream(
+                "req-compact-v2",
                 ~s|event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"summary"}}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n|
               )
 
@@ -127,11 +121,8 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
               assert decoded["tool_choice"] == "required"
               send(test_pid, {:smoke_request, :responses, decoded})
 
-              conn
-              |> Plug.Conn.put_resp_content_type("text/event-stream")
-              |> Plug.Conn.put_resp_header("x-request-id", "req-tool-call")
-              |> Plug.Conn.send_resp(
-                200,
+              event_stream(
+                "req-tool-call",
                 ~s|event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","name":"smoke_probe","call_id":"call-smoke","arguments":"{}"}}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n|
               )
 
@@ -139,11 +130,8 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
               assert_single_user_message(decoded)
               send(test_pid, {:smoke_request, :responses, decoded})
 
-              conn
-              |> Plug.Conn.put_resp_content_type("text/event-stream")
-              |> Plug.Conn.put_resp_header("x-request-id", "req-stream")
-              |> Plug.Conn.send_resp(
-                200,
+              event_stream(
+                "req-stream",
                 ~s|event: response.created\ndata: {"type":"response.created"}\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n|
               )
 
@@ -151,17 +139,14 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
               assert_single_user_message(decoded)
               send(test_pid, {:smoke_request, :responses, decoded})
 
-              conn
-              |> Plug.Conn.put_resp_content_type("text/event-stream")
-              |> Plug.Conn.put_resp_header("x-request-id", "req-response")
-              |> Plug.Conn.send_resp(
-                200,
+              event_stream(
+                "req-response",
                 ~s|event: response.created\ndata: {"type":"response.created"}\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n|
               )
           end
 
-        request ->
-          flunk("unexpected smoke request: #{inspect(request)}")
+        unexpected ->
+          flunk("unexpected smoke request: #{inspect(unexpected)}")
       end
     end)
 
@@ -196,21 +181,23 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
                     %{"stream" => true, "tools" => [%{"name" => "smoke_probe"}]}}
 
     assert_receive {:smoke_request, :responses, %{"stream" => true}}
+
     assert_receive {:smoke_request, :compact_v2,
                     %{
                       "stream" => true,
                       "input" => [_message, %{"type" => "compaction_trigger"}]
                     }}
+
     refute output =~ "backplane-client-token"
     refute output =~ "upstream-token-must-not-be-used-by-smoke"
   end
 
   test "fails instead of reporting success when an upstream probe is not successful" do
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.put_resp_header("x-request-id", "req-upstream-failure")
-      |> Plug.Conn.send_resp(502, Jason.encode!(%{"error" => "upstream unavailable"}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.response(502, Jason.encode!(%{"error" => "upstream unavailable"}), [
+        {"content-type", "application/json"},
+        {"x-request-id", "req-upstream-failure"}
+      ])
     end)
 
     assert_raise Mix.Error, ~r/models failed with status 502/, fn ->
@@ -223,6 +210,13 @@ defmodule Mix.Tasks.Backplane.Codex.SmokeTest do
         ])
       end)
     end
+  end
+
+  defp event_stream(request_id, body) do
+    HTTP.Test.response(200, body, [
+      {"content-type", "text/event-stream"},
+      {"x-request-id", request_id}
+    ])
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:backplane, key)

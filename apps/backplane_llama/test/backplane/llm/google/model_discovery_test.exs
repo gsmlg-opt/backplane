@@ -12,16 +12,17 @@ defmodule Backplane.LLM.Google.ModelDiscoveryTest do
   alias Backplane.Settings.Credentials
 
   setup do
-    previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+    HTTP.Test.verify_on_exit!()
+    previous = Application.get_env(:backplane, :llm_model_discovery_http_options)
 
-    Application.put_env(:backplane, :llm_model_discovery_req_options,
-      plug: {Req.Test, __MODULE__}
+    Application.put_env(:backplane, :llm_model_discovery_http_options,
+      adapter: {HTTP.Test, __MODULE__}
     )
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:backplane, :llm_model_discovery_req_options, previous),
-        else: Application.delete_env(:backplane, :llm_model_discovery_req_options)
+        do: Application.put_env(:backplane, :llm_model_discovery_http_options, previous),
+        else: Application.delete_env(:backplane, :llm_model_discovery_http_options)
     end)
 
     {:ok, _} = Credentials.store("google-discovery-key", "upstream-secret", "llm")
@@ -51,19 +52,19 @@ defmodule Backplane.LLM.Google.ModelDiscoveryTest do
   } do
     owner = self()
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert Plug.Conn.get_req_header(conn, "x-goog-api-key") == ["upstream-secret"]
-      assert Plug.Conn.get_req_header(conn, "authorization") == []
-      send(owner, {:page, conn.query_string})
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert HTTP.Headers.get_all(request.headers, "x-goog-api-key") == ["upstream-secret"]
+      assert HTTP.Headers.get_all(request.headers, "authorization") == []
+      send(owner, {:page, request.url.query || ""})
 
-      case URI.decode_query(conn.query_string) do
+      case URI.decode_query(request.url.query || "") do
         %{"pageToken" => "page-2"} ->
-          json(conn, %{
+          json(%{
             "models" => [google_model("models/gemini-2.5-pro", "Gemini 2.5 Pro")]
           })
 
         %{} ->
-          json(conn, %{
+          json(%{
             "models" => [google_model("models/gemini-2.5-flash", "Gemini 2.5 Flash")],
             "nextPageToken" => "page-2"
           })
@@ -88,9 +89,9 @@ defmodule Backplane.LLM.Google.ModelDiscoveryTest do
   end
 
   test "drops a late discovery result after the API is disabled", %{provider: provider, api: api} do
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       {:ok, _api} = ProviderApi.update(ProviderApi.get(api.id), %{enabled: false})
-      json(conn, %{"models" => [google_model("models/late-model", "Late model")]})
+      json(%{"models" => [google_model("models/late-model", "Late model")]})
     end)
 
     assert %{discovered: 0, errors: [error]} = ModelDiscovery.reload_api(provider, api)
@@ -102,11 +103,11 @@ defmodule Backplane.LLM.Google.ModelDiscoveryTest do
     provider: provider,
     api: api
   } do
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       {:ok, _credential} =
         Credentials.store("google-discovery-key", "rotated-upstream-secret", "llm")
 
-      json(conn, %{"models" => [google_model("models/stale-key-model", "Stale key model")]})
+      json(%{"models" => [google_model("models/stale-key-model", "Stale key model")]})
     end)
 
     assert %{discovered: 0, errors: [error]} = ModelDiscovery.reload_api(provider, api)
@@ -133,10 +134,10 @@ defmodule Backplane.LLM.Google.ModelDiscoveryTest do
 
     provider = Provider.get(provider.id)
 
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       {:ok, _surface} = Repo.delete(surface)
 
-      json(conn, %{
+      json(%{
         "models" => [google_model("models/operator-removed", "Operator removed")]
       })
     end)
@@ -152,13 +153,13 @@ defmodule Backplane.LLM.Google.ModelDiscoveryTest do
     provider: provider,
     api: api
   } do
-    Req.Test.stub(__MODULE__, fn conn ->
-      case URI.decode_query(conn.query_string) do
+    HTTP.Test.stub(__MODULE__, fn request ->
+      case URI.decode_query(request.url.query || "") do
         %{"pageToken" => "broken"} ->
-          Plug.Conn.send_resp(conn, 503, "unavailable")
+          HTTP.Test.response(503, "unavailable")
 
         %{} ->
-          json(conn, %{
+          json(%{
             "models" => [google_model("models/partial", "Partial")],
             "nextPageToken" => "broken"
           })
@@ -180,9 +181,7 @@ defmodule Backplane.LLM.Google.ModelDiscoveryTest do
     }
   end
 
-  defp json(conn, body) do
-    conn
-    |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(200, Jason.encode!(body))
+  defp json(body) do
+    HTTP.Test.json(body)
   end
 end

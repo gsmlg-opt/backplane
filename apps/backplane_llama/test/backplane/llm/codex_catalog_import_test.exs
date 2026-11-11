@@ -18,16 +18,17 @@ defmodule Backplane.LLM.CodexCatalogImportTest do
   alias Backplane.Settings.Credentials
 
   setup do
-    previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+    HTTP.Test.verify_on_exit!()
+    previous = Application.get_env(:backplane, :llm_model_discovery_http_options)
 
-    Application.put_env(:backplane, :llm_model_discovery_req_options,
-      plug: {Req.Test, __MODULE__}
+    Application.put_env(:backplane, :llm_model_discovery_http_options,
+      adapter: {HTTP.Test, __MODULE__}
     )
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:backplane, :llm_model_discovery_req_options, previous),
-        else: Application.delete_env(:backplane, :llm_model_discovery_req_options)
+        do: Application.put_env(:backplane, :llm_model_discovery_http_options, previous),
+        else: Application.delete_env(:backplane, :llm_model_discovery_http_options)
     end)
 
     credential = "catalog-import-#{System.unique_integer([:positive])}"
@@ -144,11 +145,11 @@ defmodule Backplane.LLM.CodexCatalogImportTest do
     assert {:ok, _} = CodexCatalog.import_provider(provider.id)
     entry = Repo.get_by!(CodexCatalogEntry, public_model_id: "gpt-catalog-a")
 
-    Req.Test.stub(__MODULE__, fn conn -> Req.Test.json(conn, %{"models" => []}) end)
+    HTTP.Test.stub(__MODULE__, fn _request -> HTTP.Test.json(%{"models" => []}) end)
     assert {:error, %{errors: [_]}} = CodexCatalog.refresh(entry.id)
     assert CodexCatalog.get(entry.id).metadata["codex_raw"] == first
 
-    Req.Test.stub(__MODULE__, fn conn -> send_resp(conn, 503, "unavailable") end)
+    HTTP.Test.stub(__MODULE__, fn _request -> HTTP.Test.response(503, "unavailable") end)
     assert {:error, %{errors: [_]}} = CodexCatalog.refresh(entry.id)
     assert CodexCatalog.get(entry.id).metadata["codex_raw"] == first
 
@@ -187,9 +188,9 @@ defmodule Backplane.LLM.CodexCatalogImportTest do
     assert {:ok, _} = CodexCatalog.import_provider(provider.id)
     entry = Repo.get_by!(CodexCatalogEntry, public_model_id: "gpt-catalog-a")
 
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn _request ->
       assert {:ok, _} = CodexCatalog.delete(entry)
-      Req.Test.json(conn, %{"models" => [descriptor("gpt-catalog-a")]})
+      HTTP.Test.json(%{"models" => [descriptor("gpt-catalog-a")]})
     end)
 
     assert {:error, :invalid_codex_entry} = CodexCatalog.refresh(entry.id)
@@ -271,11 +272,14 @@ defmodule Backplane.LLM.CodexCatalogImportTest do
   end
 
   defp stub_models(models) do
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert conn.request_path == "/backend-api/codex/models"
-      assert ["Bearer catalog-access-token"] = get_req_header(conn, "authorization")
-      assert ["catalog-account"] = get_req_header(conn, "chatgpt-account-id")
-      Req.Test.json(conn, %{"models" => models})
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert request.url.path == "/backend-api/codex/models"
+
+      assert ["Bearer catalog-access-token"] =
+               HTTP.Headers.get_all(request.headers, "authorization")
+
+      assert ["catalog-account"] = HTTP.Headers.get_all(request.headers, "chatgpt-account-id")
+      HTTP.Test.json(%{"models" => models})
     end)
   end
 end

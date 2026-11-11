@@ -16,7 +16,7 @@ defmodule BackplaneLlama.Test.HTTPServerTest do
       end)
 
     response =
-      Req.post!("http://127.0.0.1:#{server.port}/v1/embeddings",
+      Backplane.HTTPClient.post!("http://127.0.0.1:#{server.port}/v1/embeddings",
         json: %{input: ["fixture evidence"]},
         headers: [{"authorization", "Bearer fixture-token"}],
         retry: false

@@ -31,6 +31,7 @@ defmodule BackplaneLlama.MixProject do
 
   defp deps do
     [
+      {:http_test, "~> 1.0.0-rc.13", only: :test},
       {:backplane_system, in_umbrella: true},
       {:backplane_auth, in_umbrella: true},
       {:backplane_telemetry, in_umbrella: true},
@@ -41,7 +42,7 @@ defmodule BackplaneLlama.MixProject do
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
       {:styx, "~> 0.1.1"},
-      {:req, "~> 0.5", override: true},
+      {:http_fetch, "~> 1.0.0-rc.13"},
       {:jason, "~> 1.4"},
       {:http_web_socket, "~> 1.0.0-rc.5"},
       {:telemetry_poller, "~> 1.1"},

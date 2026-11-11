@@ -6,17 +6,18 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
   alias Backplane.Settings.{Credentials, TokenCache}
 
   setup do
-    previous_req_options = Application.get_env(:backplane, :llm_model_discovery_req_options)
+    HTTP.Test.verify_on_exit!()
+    previous_http_options = Application.get_env(:backplane, :llm_model_discovery_http_options)
 
-    Application.put_env(:backplane, :llm_model_discovery_req_options,
-      plug: {Req.Test, __MODULE__}
+    Application.put_env(:backplane, :llm_model_discovery_http_options,
+      adapter: {HTTP.Test, __MODULE__}
     )
 
     on_exit(fn ->
-      if previous_req_options do
-        Application.put_env(:backplane, :llm_model_discovery_req_options, previous_req_options)
+      if previous_http_options do
+        Application.put_env(:backplane, :llm_model_discovery_http_options, previous_http_options)
       else
-        Application.delete_env(:backplane, :llm_model_discovery_req_options)
+        Application.delete_env(:backplane, :llm_model_discovery_http_options)
       end
     end)
 
@@ -83,25 +84,23 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
         metadata: %{"capabilities" => %{"reasoning" => false}, "surface_note" => "keep"}
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert conn.request_path == "/backend-api/codex/models"
-      assert ["Bearer chatgpt-access-token"] = Plug.Conn.get_req_header(conn, "authorization")
-      assert ["acc-123"] = Plug.Conn.get_req_header(conn, "chatgpt-account-id")
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert request.url.path == "/backend-api/codex/models"
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(
-        200,
-        Jason.encode!(%{
-          "models" => [
-            %{
-              "id" => "wrong-id",
-              "slug" => "gpt-5.6-sol",
-              "capabilities" => %{"reasoning" => true}
-            }
-          ]
-        })
-      )
+      assert ["Bearer chatgpt-access-token"] =
+               HTTP.Headers.get_all(request.headers, "authorization")
+
+      assert ["acc-123"] = HTTP.Headers.get_all(request.headers, "chatgpt-account-id")
+
+      HTTP.Test.json(%{
+        "models" => [
+          %{
+            "id" => "wrong-id",
+            "slug" => "gpt-5.6-sol",
+            "capabilities" => %{"reasoning" => true}
+          }
+        ]
+      })
     end)
 
     assert %{discovered: 1, created: 0, updated: 1, errors: []} =
@@ -141,10 +140,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
         source: :manual
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)
 
     assert %{discovered: 1, errors: []} =
@@ -156,10 +153,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
     assert %{source: :discovered, enabled: false, surfaces: []} =
              ProviderModel.get_by_provider_and_model(provider.id, "gpt-5.5")
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.5"}]}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.5"}]})
     end)
 
     assert %{discovered: 1, errors: []} =
@@ -181,15 +176,10 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
 
     {:ok, _surface} = ProviderModelSurface.update(surface, %{enabled: false})
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(
-        200,
-        Jason.encode!(%{
-          "models" => [%{"slug" => "gpt-5.5", "capabilities" => %{"reasoning" => true}}]
-        })
-      )
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{
+        "models" => [%{"slug" => "gpt-5.5", "capabilities" => %{"reasoning" => true}}]
+      })
     end)
 
     assert %{discovered: 1, updated: 1, errors: []} =
@@ -216,10 +206,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
         metadata: %{"backplane_discovery_stale" => true, "local_note" => "keep"}
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.5"}]}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.5"}]})
     end)
 
     assert %{discovered: 1, updated: 1, errors: []} =
@@ -253,10 +241,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
         model_discovery_path: "/models"
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)
 
     assert %{errors: [_error]} = ModelDiscovery.reload_api(provider, foreign_api)
@@ -265,7 +251,7 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
   end
 
   test "keeps last-known-good models on discovery failure", %{provider: provider} do
-    Req.Test.stub(__MODULE__, fn conn -> Plug.Conn.resp(conn, 401, "unauthorized") end)
+    HTTP.Test.stub(__MODULE__, fn _request -> HTTP.Test.response(401, "unauthorized") end)
 
     assert %{errors: ["openai: HTTP 401"]} =
              ModelDiscovery.reload_provider(Provider.get(provider.id))
@@ -280,12 +266,10 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
       Application.delete_env(:backplane, :openai_codex_client_version)
     end)
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert conn.query_string == "client_version=0.51.0"
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert (request.url.query || "") == "client_version=0.51.0"
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}))
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)
 
     assert %{discovered: 1, errors: []} =
@@ -306,15 +290,13 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
         model_discovery_path: "/models?region=west"
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert URI.decode_query(conn.query_string) == %{
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert URI.decode_query(request.url.query || "") == %{
                "client_version" => "0.0.0",
                "region" => "west"
              }
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}))
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)
 
     assert %{discovered: 1, errors: []} =
@@ -333,12 +315,10 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
       restore_system_env("OPENAI_CODEX_CLIENT_VERSION", previous_env)
     end)
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      assert conn.query_string == "client_version=0.0.0"
+    HTTP.Test.stub(__MODULE__, fn request ->
+      assert (request.url.query || "") == "client_version=0.0.0"
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}))
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)
 
     assert %{discovered: 1, errors: []} =
@@ -348,10 +328,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
   test "does not prune last-known-good catalog when Codex returns empty models", %{
     provider: provider
   } do
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => []}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"models" => []})
     end)
 
     assert %{errors: ["openai: :empty_model_list"]} =
@@ -363,10 +341,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
   test "does not prune last-known-good catalog when OpenAI data list is empty", %{
     provider: provider
   } do
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"data" => []}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"data" => []})
     end)
 
     assert %{errors: ["openai: :empty_model_list"]} =
@@ -379,13 +355,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
     provider: provider,
     api: api
   } do
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(
-        200,
-        Jason.encode!(%{"models" => [%{"id" => "wrong-id", "display_name" => "GPT"}]})
-      )
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"models" => [%{"id" => "wrong-id", "display_name" => "GPT"}]})
     end)
 
     assert %{errors: ["openai: :empty_model_list"]} =
@@ -421,16 +392,14 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
         }
       })
 
-    Req.Test.stub(__MODULE__, fn conn ->
+    HTTP.Test.stub(__MODULE__, fn request ->
       assert ["Bearer chatgpt-access-token"] =
-               Plug.Conn.get_req_header(conn, "authorization")
+               HTTP.Headers.get_all(request.headers, "authorization")
 
-      assert ["acc-123"] = Plug.Conn.get_req_header(conn, "chatgpt-account-id")
-      assert ["provider-originator"] = Plug.Conn.get_req_header(conn, "originator")
+      assert ["acc-123"] = HTTP.Headers.get_all(request.headers, "chatgpt-account-id")
+      assert ["provider-originator"] = HTTP.Headers.get_all(request.headers, "originator")
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}))
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)
 
     assert %{discovered: 1, errors: []} =
@@ -449,10 +418,8 @@ defmodule Backplane.LLM.ModelDiscoveryProxyTest do
       nil
     )
 
-    Req.Test.stub(__MODULE__, fn conn ->
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => [%{"slug" => "gpt-5.6-sol"}]}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.6-sol"}]})
     end)
 
     assert %{discovered: 1, errors: []} =

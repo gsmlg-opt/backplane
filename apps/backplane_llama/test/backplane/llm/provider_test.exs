@@ -497,17 +497,18 @@ defmodule Backplane.LLM.ProviderTest do
 
   describe "ModelDiscovery.reload_provider/1" do
     setup do
-      previous = Application.get_env(:backplane, :llm_model_discovery_req_options)
+      HTTP.Test.verify_on_exit!()
+      previous = Application.get_env(:backplane, :llm_model_discovery_http_options)
 
-      Application.put_env(:backplane, :llm_model_discovery_req_options,
-        plug: {Req.Test, __MODULE__}
+      Application.put_env(:backplane, :llm_model_discovery_http_options,
+        adapter: {HTTP.Test, __MODULE__}
       )
 
       on_exit(fn ->
         if previous do
-          Application.put_env(:backplane, :llm_model_discovery_req_options, previous)
+          Application.put_env(:backplane, :llm_model_discovery_http_options, previous)
         else
-          Application.delete_env(:backplane, :llm_model_discovery_req_options)
+          Application.delete_env(:backplane, :llm_model_discovery_http_options)
         end
       end)
 
@@ -515,21 +516,16 @@ defmodule Backplane.LLM.ProviderTest do
     end
 
     test "reloads models from provider API discovery endpoint" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        assert conn.request_path == "/models"
-        assert ["Bearer sk-test-value"] = Plug.Conn.get_req_header(conn, "authorization")
+      HTTP.Test.stub(__MODULE__, fn request ->
+        assert request.url.path == "/models"
+        assert ["Bearer sk-test-value"] = HTTP.Headers.get_all(request.headers, "authorization")
 
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.resp(
-          200,
-          Jason.encode!(%{
-            "data" => [
-              %{"id" => "model-a"},
-              %{"id" => "model-b"}
-            ]
-          })
-        )
+        HTTP.Test.json(%{
+          "data" => [
+            %{"id" => "model-a"},
+            %{"id" => "model-b"}
+          ]
+        })
       end)
 
       provider = create_provider()
@@ -554,12 +550,10 @@ defmodule Backplane.LLM.ProviderTest do
     end
 
     test "records the actual API surface in discovered model metadata" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        assert conn.request_path == "/v1/models"
+      HTTP.Test.stub(__MODULE__, fn request ->
+        assert request.url.path == "/v1/models"
 
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.resp(200, Jason.encode!(%{"data" => [%{"id" => "claude-test"}]}))
+        HTTP.Test.json(%{"data" => [%{"id" => "claude-test"}]})
       end)
 
       provider = create_provider()
@@ -601,21 +595,16 @@ defmodule Backplane.LLM.ProviderTest do
 
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
-      Req.Test.stub(__MODULE__, fn conn ->
-        assert conn.request_path == "/v1/models"
-        assert ["Bearer sk-test-value"] = Plug.Conn.get_req_header(conn, "authorization")
-        assert ["application/json"] = Plug.Conn.get_req_header(conn, "content-type")
+      HTTP.Test.stub(__MODULE__, fn request ->
+        assert request.url.path == "/v1/models"
+        assert ["Bearer sk-test-value"] = HTTP.Headers.get_all(request.headers, "authorization")
+        assert ["application/json"] = HTTP.Headers.get_all(request.headers, "content-type")
 
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.resp(
-          200,
-          Jason.encode!(%{
-            "data" => [
-              %{"id" => "grok-4.3"}
-            ]
-          })
-        )
+        HTTP.Test.json(%{
+          "data" => [
+            %{"id" => "grok-4.3"}
+          ]
+        })
       end)
 
       provider = create_provider(%{preset_key: "x-ai"})
@@ -638,13 +627,8 @@ defmodule Backplane.LLM.ProviderTest do
     end
 
     test "discovers OpenAI Codex OAuth models from the provider API" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.resp(
-          200,
-          Jason.encode!(%{"models" => [%{"slug" => "gpt-5.3-codex-spark"}]})
-        )
+      HTTP.Test.stub(__MODULE__, fn _request ->
+        HTTP.Test.json(%{"models" => [%{"slug" => "gpt-5.3-codex-spark"}]})
       end)
 
       credential = credential_name()
@@ -690,13 +674,13 @@ defmodule Backplane.LLM.ProviderTest do
     end
 
     test "uses the configured endpoint instead of a retired static Google catalog" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        assert conn.request_path == "/v1/models"
+      HTTP.Test.stub(__MODULE__, fn request ->
+        assert request.url.path == "/v1/models"
 
         assert ["Bearer configured-google-access-token"] =
-                 Plug.Conn.get_req_header(conn, "authorization")
+                 HTTP.Headers.get_all(request.headers, "authorization")
 
-        Req.Test.json(conn, %{"data" => [%{"id" => "configured-google-model"}]})
+        HTTP.Test.json(%{"data" => [%{"id" => "configured-google-model"}]})
       end)
 
       credential = credential_name()
