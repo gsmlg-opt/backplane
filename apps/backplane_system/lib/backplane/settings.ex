@@ -23,6 +23,17 @@ defmodule Backplane.Settings do
   # --- Defaults ---
 
   @defaults %{
+    # SecretHub credential publication through the local SecretHub Agent
+    "secrethub.sync.enabled" => %{
+      value: false,
+      type: "boolean",
+      desc: "Publish API key credentials to SecretHub through the local SecretHub Agent"
+    },
+    "secrethub.sync.socket_path" => %{
+      value: nil,
+      type: "string",
+      desc: "SecretHub Agent socket path; nil uses SECRET_HUB_AGENT_SOCKET_PATH or the Agent default"
+    },
     "monitor.api_usage.enabled" => %{
       value: true,
       type: "boolean",

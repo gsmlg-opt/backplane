@@ -44,6 +44,8 @@ config :backplane, Styx,
        {"*/5 * * * *", Backplane.Memory.Workers.EmbedRecordsWorker},
        # OAuth credential refresh: every 10 minutes
        {"*/10 * * * *", Backplane.Settings.OAuthTokenRefreshWorker},
+       # SecretHub publication reconciliation (no-op while disabled): every 5 minutes
+       {"*/5 * * * *", Backplane.SecretHub.SyncWorker},
        # Observability retention workers
        {"0 4 * * *", Backplane.Jobs.LlmProxyRetention},
        {"15 4 * * *", Backplane.Jobs.McpProxyRetention},

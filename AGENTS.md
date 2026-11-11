@@ -131,7 +131,7 @@ All tools use `::` as the namespace separator: `<prefix>::<tool_name>` (e.g., `s
 - `BackplaneLlama.Application` owns Relayixir, model resolution, route loading, rate limiting, and conditional LLM writing.
 - `BackplaneSkills.Application` owns the skills registry and agent MCP management supervision.
 - `BackplaneMonitor.Application` owns plan supervision, the monitor TaskSupervisor, and `Backplane.Monitor.ApiUsageServer`.
-- `Backplane.Application` supervises Styx and performs gateway boot reconciliation.
+- `Backplane.Application` supervises Styx and `Backplane.SecretHub.SyncListener`, and performs gateway boot reconciliation.
 - `Backplane.Api.Application` and `Backplane.Admin.Application` own their separate Phoenix endpoints.
 - `BackplaneTelemetry.Supervisor` owns observability settings and the runtime sink when v2 policy is active.
 
@@ -143,6 +143,12 @@ After its supervisor starts, the gateway registers native hub/admin tools, recon
 - System → Config controls `monitor.api_usage.enabled` (default true) in the existing Settings store. Runtime policy prevents all provider requests while disabled, cancels in-flight requests, and retains last-success data. Re-enable reconciles authoritative definitions and refreshes active accounts. Individual account activation still applies; subscription Plan Usage is unaffected. Restart after upgrading supervision or GenServer state; Phoenix dev code reload does not update either automatically.
 - Account definitions store vault credential names only. Eligible credentials have kind `llm`, `service`, or `admin` (OpenAI usage requires an Admin key) and metadata `auth_type` absent/nil or `api_key`; forms use safe metadata, and secrets are resolved only during provider polling. The optional management credential applies only to OpenRouter. Never render or audit plaintext keys or raw provider responses; CRUD/toggle audit records contain action, entity type, and ID only.
 - OpenRouter key usage/limits are key-scoped; optional management-key credits, remaining balance, and account spending are account-wide. Management-credit failures must not hide successful key usage. DeepSeek supplies per-currency total/granted/topped-up balances and API availability, not spending totals. Unsupported or missing fields are unavailable, never fabricated zero; preserve decimal strings and currencies. Refresh errors retain last-success data with a stale-data indication and separate last-attempt/last-success timestamps.
+
+### SecretHub Sync
+
+- System → Config controls `secrethub.sync.enabled` (default false) and `secrethub.sync.socket_path` (nil uses `SECRET_HUB_AGENT_SOCKET_PATH` or the Agent default). When enabled, every API key credential (any kind; metadata `auth_type` absent/nil or `api_key`) is published to SecretHub through the local SecretHub Agent with the Hex `secrethub_sdk`, at `backplane.<kind>.<name>` as `%{"api_key" => value}`. OAuth, device and imported CLI credentials are never published.
+- SecretHub is a downstream mirror: credential storage never depends on it. `Backplane.SecretHub.SyncListener` only enqueues `Backplane.SecretHub.SyncWorker` jobs on credential/setting changes; the worker retries transient failures (Agent or SecretHub unavailable), and the cron run reconciles every five minutes. A per-credential advisory lock serializes concurrent syncs. Kind changes withdraw the old path; deleted or no-longer-eligible credentials are withdrawn; names normalizing to an already-published path are refused (`path_collision`). Disabling stops publication without removing published secrets.
+- `secrethub_publications` records paths, confirmed versions and error codes only. Logs, audit records and the admin UI never contain values. SecretHub must grant the Agent `secret_write`/`secret_delete` on `backplane.**`.
 
 ### Observability v2
 
@@ -168,6 +174,7 @@ PostgreSQL with pgvector. Core tables include:
 - `llm_logs` — Insert-only LLM proxy access records (Observability v2 durable writes)
 - `mcp_native_math_config` — Singleton native math limits/timeouts
 - `monitor_api_accounts` — UUID, unique name, provider, API-key/optional management credential names, active flag, and timestamps; schema/context belong to `backplane_monitor`, migration to `backplane_system`
+- `secrethub_publications` — Credential name → published SecretHub path, confirmed version and last error code (no values or digests); belongs to `Backplane.SecretHub.Sync`
 - `memory_records` — Global memory store (kind, subjects, property, status, provenance); `bpm_events` and session projections hold captured events; all belong to the memory domain
 
 Use the shared Repo through app-owned contexts. Schema and migration changes belong in the relevant domain and `backplane_system` migration directory respectively.
