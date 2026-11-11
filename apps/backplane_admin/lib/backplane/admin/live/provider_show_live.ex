@@ -1093,43 +1093,52 @@ defmodule Backplane.Admin.ProviderShowLive do
                   <.dm_badge variant={enabled_variant(model.enabled)} size="sm">
                     {enabled_text(model.enabled)}
                   </.dm_badge>
-                  <.dm_btn
-                    id={"edit-model-#{model.id}"}
-                    type="button"
-                    size="xs"
-                    shape="circle"
-                    variant="outline"
-                    aria-label={"Edit model #{model.model}"}
-                    phx-click="edit_model"
-                    phx-value-id={model.id}
-                  >
-                    <.dm_mdi name="pencil" class="h-4 w-4" />
-                    <span class="sr-only">Edit</span>
-                  </.dm_btn>
-                  <.dm_btn
-                    type="button"
-                    size="xs"
-                    shape="circle"
-                    variant={if model.enabled, do: "warning", else: "success"}
-                    aria-label={if model.enabled, do: "Disable model #{model.model}", else: "Enable model #{model.model}"}
-                    phx-click="toggle_model"
-                    phx-value-id={model.id}
-                  >
-                    <.dm_mdi name={if model.enabled, do: "pause", else: "play"} class="h-4 w-4" />
-                    <span class="sr-only">{if model.enabled, do: "Disable", else: "Enable"}</span>
-                  </.dm_btn>
-                  <.dm_btn
-                    type="button"
-                    size="xs"
-                    shape="circle"
-                    variant="error"
-                    aria-label={"Remove model #{model.model}"}
-                    phx-click="confirm_delete_model"
-                    phx-value-id={model.id}
-                  >
-                    <.dm_mdi name="delete" class="h-4 w-4" />
-                    <span class="sr-only">Remove</span>
-                  </.dm_btn>
+                  <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                    <.dm_btn
+                      {tooltip_attrs}
+                      id={"edit-model-#{model.id}"}
+                      type="button"
+                      size="xs"
+                      shape="circle"
+                      variant="outline"
+                      aria-label={"Edit model #{model.model}"}
+                      phx-click="edit_model"
+                      phx-value-id={model.id}
+                    >
+                      <.dm_mdi name="pencil" class="h-4 w-4" />
+                      <span class="sr-only">Edit</span>
+                    </.dm_btn>
+                  </.dm_tooltip>
+                  <.dm_tooltip :let={tooltip_attrs} content={if model.enabled, do: "Disable", else: "Enable"} position="bottom">
+                    <.dm_btn
+                      {tooltip_attrs}
+                      type="button"
+                      size="xs"
+                      shape="circle"
+                      variant={if model.enabled, do: "warning", else: "success"}
+                      aria-label={if model.enabled, do: "Disable model #{model.model}", else: "Enable model #{model.model}"}
+                      phx-click="toggle_model"
+                      phx-value-id={model.id}
+                    >
+                      <.dm_mdi name={if model.enabled, do: "pause", else: "play"} class="h-4 w-4" />
+                      <span class="sr-only">{if model.enabled, do: "Disable", else: "Enable"}</span>
+                    </.dm_btn>
+                  </.dm_tooltip>
+                  <.dm_tooltip :let={tooltip_attrs} content="Remove" position="bottom">
+                    <.dm_btn
+                      {tooltip_attrs}
+                      type="button"
+                      size="xs"
+                      shape="circle"
+                      variant="error"
+                      aria-label={"Remove model #{model.model}"}
+                      phx-click="confirm_delete_model"
+                      phx-value-id={model.id}
+                    >
+                      <.dm_mdi name="delete" class="h-4 w-4" />
+                      <span class="sr-only">Remove</span>
+                    </.dm_btn>
+                  </.dm_tooltip>
                 </div>
               </div>
             </div>

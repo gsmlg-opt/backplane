@@ -204,17 +204,22 @@ defmodule Backplane.Admin.ManagedLive do
               <td class="px-3 py-1.5 align-middle">
                 <div class="flex items-center gap-1">
                   <.dm_tooltip :let={tooltip_attrs} content="Settings" position="bottom">
-                    <.link {tooltip_attrs} navigate={service.settings_path}>
-                      <.dm_btn size="xs" variant="outline" shape="circle">
-                        <.dm_mdi name="cog" class="w-4 h-4" />
-                      </.dm_btn>
-                    </.link>
+                    <.dm_btn {tooltip_attrs}
+                      navigate={service.settings_path}
+                      size="xs"
+                      shape="circle"
+                      variant="outline"
+                      aria-label={"Open #{service.name} settings"}
+                    >
+                      <.dm_mdi name="cog" class="w-4 h-4" />
+                    </.dm_btn>
                   </.dm_tooltip>
                   <.dm_tooltip :let={tooltip_attrs} content={if service.enabled, do: "Disable", else: "Enable"} position="bottom">
                     <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant={if service.enabled, do: "warning", else: "primary"}
+                      aria-label={"#{if service.enabled, do: "Disable", else: "Enable"} #{service.name} service"}
                       phx-click="toggle"
                       phx-value-prefix={service.prefix}
                     >

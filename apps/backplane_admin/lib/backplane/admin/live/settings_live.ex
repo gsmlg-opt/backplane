@@ -1445,18 +1445,17 @@ defmodule Backplane.Admin.SettingsLive do
                 <:col :let={cred} label="Actions">
                   <div class="flex items-center gap-1">
                     <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
-                      <.link {tooltip_attrs} patch={~p"/system/credentials/#{cred.name}/edit"} class="no-underline">
-                        <.dm_btn
-                          type="button"
-                          size="xs"
-                          shape="circle"
-                          variant="outline"
-                          aria-label={"Edit #{cred.name}"}
-                        >
-                          <.dm_mdi name="pencil" class="h-4 w-4" />
-                          <span class="sr-only">Edit</span>
-                        </.dm_btn>
-                      </.link>
+                      <.dm_btn
+                        {tooltip_attrs}
+                        patch={~p"/system/credentials/#{cred.name}/edit"}
+                        size="xs"
+                        shape="circle"
+                        variant="outline"
+                        aria-label={"Edit #{cred.name}"}
+                      >
+                        <.dm_mdi name="pencil" class="h-4 w-4" />
+                        <span class="sr-only">Edit</span>
+                      </.dm_btn>
                     </.dm_tooltip>
 
                     <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">

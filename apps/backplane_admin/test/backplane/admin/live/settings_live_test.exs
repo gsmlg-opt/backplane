@@ -359,18 +359,15 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       assert has_element?(
                view,
-               ~s(a[href="/system/credentials/plain-action-key/edit"] el-dm-button[aria-label="Edit plain-action-key"])
+               ~s(a.btn-circle[href="/system/credentials/plain-action-key/edit"][aria-label="Edit plain-action-key"])
              )
 
       assert has_element?(
                view,
-               ~s(a[href="/system/credentials/oauth-action-key/edit"] el-dm-button[aria-label="Edit oauth-action-key"])
+               ~s(a.btn-circle[href="/system/credentials/oauth-action-key/edit"][aria-label="Edit oauth-action-key"])
              )
 
-      refute has_element?(
-               view,
-               ~s(a[href="/system/credentials/new/anthropic_oauth"] el-dm-button[aria-label="Reconnect oauth-action-key"])
-             )
+      refute has_element?(view, ~s([aria-label="Reconnect oauth-action-key"]))
 
       assert has_element?(
                view,

@@ -188,13 +188,25 @@ defmodule Backplane.Admin.SkillMetadataLive do
                     class="input input-bordered input-sm flex-1"
                     autofocus
                   />
-                  <.dm_tooltip :let={tooltip_attrs} content="Save">
-                    <.dm_btn {tooltip_attrs} type="submit" size="xs" variant="primary" shape="circle">
+                  <.dm_tooltip :let={tooltip_attrs} content="Save" position="bottom">
+                    <.dm_btn {tooltip_attrs}
+                      type="submit"
+                      size="xs"
+                      variant="primary"
+                      shape="circle"
+                      aria-label={"Save #{tag_info.tag} tag name"}
+                    >
                       <.dm_mdi name="check" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content="Cancel">
-                    <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" phx-click="cancel-edit-tag">
+                  <.dm_tooltip :let={tooltip_attrs} content="Cancel" position="bottom">
+                    <.dm_btn {tooltip_attrs}
+                      type="button"
+                      size="xs"
+                      shape="circle"
+                      aria-label={"Cancel renaming #{tag_info.tag} tag"}
+                      phx-click="cancel-edit-tag"
+                    >
                       <.dm_mdi name="close" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
@@ -202,23 +214,26 @@ defmodule Backplane.Admin.SkillMetadataLive do
               </div>
 
               <div :if={@editing_tag != tag_info.tag} class="flex gap-1">
-                <.dm_tooltip :let={tooltip_attrs} content="Rename">
+                <.dm_tooltip :let={tooltip_attrs} content="Rename" position="bottom">
                   <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
+                    variant="outline"
+                    aria-label={"Rename #{tag_info.tag} tag"}
                     phx-click="edit-tag"
                     phx-value-tag={tag_info.tag}
                   >
                     <.dm_mdi name="pencil" class="w-4 h-4" />
                   </.dm_btn>
                 </.dm_tooltip>
-                <.dm_tooltip :let={tooltip_attrs} content="Delete">
+                <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
                   <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
                     variant="error"
+                    aria-label={"Delete #{tag_info.tag} tag"}
                     data-confirm={"Remove tag '#{tag_info.tag}' from all #{tag_info.count} skill(s)?"}
                     phx-click="delete-tag"
                     phx-value-tag={tag_info.tag}
@@ -267,13 +282,25 @@ defmodule Backplane.Admin.SkillMetadataLive do
                     class="input input-bordered input-sm flex-1"
                     autofocus
                   />
-                  <.dm_tooltip :let={tooltip_attrs} content="Save">
-                    <.dm_btn {tooltip_attrs} type="submit" size="xs" variant="primary" shape="circle">
+                  <.dm_tooltip :let={tooltip_attrs} content="Save" position="bottom">
+                    <.dm_btn {tooltip_attrs}
+                      type="submit"
+                      size="xs"
+                      variant="primary"
+                      shape="circle"
+                      aria-label={"Save #{cat_info.category} category name"}
+                    >
                       <.dm_mdi name="check" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content="Cancel">
-                    <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" phx-click="cancel-edit-category">
+                  <.dm_tooltip :let={tooltip_attrs} content="Cancel" position="bottom">
+                    <.dm_btn {tooltip_attrs}
+                      type="button"
+                      size="xs"
+                      shape="circle"
+                      aria-label={"Cancel renaming #{cat_info.category} category"}
+                      phx-click="cancel-edit-category"
+                    >
                       <.dm_mdi name="close" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
@@ -281,23 +308,26 @@ defmodule Backplane.Admin.SkillMetadataLive do
               </div>
 
               <div :if={@editing_category != cat_info.category} class="flex gap-1">
-                <.dm_tooltip :let={tooltip_attrs} content="Rename">
+                <.dm_tooltip :let={tooltip_attrs} content="Rename" position="bottom">
                   <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
+                    variant="outline"
+                    aria-label={"Rename #{cat_info.category} category"}
                     phx-click="edit-category"
                     phx-value-category={cat_info.category}
                   >
                     <.dm_mdi name="pencil" class="w-4 h-4" />
                   </.dm_btn>
                 </.dm_tooltip>
-                <.dm_tooltip :let={tooltip_attrs} content="Delete">
+                <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
                   <.dm_btn {tooltip_attrs}
                     type="button"
                     size="xs"
                     shape="circle"
                     variant="error"
+                    aria-label={"Delete #{cat_info.category} category"}
                     data-confirm={"Remove category '#{cat_info.category}' from all #{cat_info.count} skill(s)?"}
                     phx-click="delete-category"
                     phx-value-category={cat_info.category}
@@ -326,8 +356,14 @@ defmodule Backplane.Admin.SkillMetadataLive do
                   class="input input-bordered input-sm w-full"
                 />
               </div>
-              <.dm_tooltip :let={tooltip_attrs} content="Add">
-                <.dm_btn {tooltip_attrs} type="submit" size="sm" variant="primary" shape="circle">
+              <.dm_tooltip :let={tooltip_attrs} content="Add" position="bottom">
+                <.dm_btn {tooltip_attrs}
+                  type="submit"
+                  size="sm"
+                  variant="primary"
+                  shape="circle"
+                  aria-label="Add category"
+                >
                   <.dm_mdi name="plus" class="w-4 h-4" />
                 </.dm_btn>
               </.dm_tooltip>

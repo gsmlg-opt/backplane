@@ -387,14 +387,16 @@ defmodule Backplane.Admin.HostAgentsLive do
               <td class="px-3 py-2 align-top">{relative_time(entry.last_sync)}</td>
               <td class="px-3 py-2 align-top">
                 <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
-                  <.link {tooltip_attrs}
+                  <.dm_btn
+                    {tooltip_attrs}
                     navigate={~p"/system/host-agents/#{entry.host.id}/overview"}
-                    aria-label="View"
+                    size="xs"
+                    shape="circle"
+                    variant="outline"
+                    aria-label={"View #{entry.host.name} host agent"}
                   >
-                    <.dm_btn type="button" size="xs" shape="circle" variant="outline" aria-label="View">
-                      <.dm_mdi name="eye" class="w-4 h-4" />
-                    </.dm_btn>
-                  </.link>
+                    <.dm_mdi name="eye" class="w-4 h-4" />
+                  </.dm_btn>
                 </.dm_tooltip>
               </td>
             </tr>
@@ -555,7 +557,7 @@ defmodule Backplane.Admin.HostAgentsLive do
                         variant="outline"
                         size="xs"
                         shape="circle"
-                        aria-label="Reveal"
+                        aria-label={"Reveal #{token.name} token"}
                         phx-click="reveal_token"
                         phx-value-id={token.id}
                       >
@@ -569,7 +571,7 @@ defmodule Backplane.Admin.HostAgentsLive do
                         variant="error"
                         size="xs"
                         shape="circle"
-                        aria-label="Revoke"
+                        aria-label={"Revoke #{token.name} token"}
                         phx-click="revoke_token"
                         phx-value-id={token.id}
                       >

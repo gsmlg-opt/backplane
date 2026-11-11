@@ -475,11 +475,23 @@ defmodule Backplane.Admin.UpstreamsLive do
               </td>
               <td class="px-3 py-1.5 align-middle">
                 <div class="flex items-center gap-1">
+                  <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                    <.dm_btn {tooltip_attrs}
+                      patch={~p"/mcp/upstreams/#{upstream.id}/edit"}
+                      size="xs"
+                      shape="circle"
+                      variant="outline"
+                      aria-label={"Edit #{upstream.name} upstream"}
+                    >
+                      <.dm_mdi name="pencil" class="w-4 h-4" />
+                    </.dm_btn>
+                  </.dm_tooltip>
                   <.dm_tooltip :let={tooltip_attrs} content={if upstream.enabled, do: "Disable", else: "Enable"} position="bottom">
                     <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant={if upstream.enabled, do: "warning", else: "primary"}
+                      aria-label={"#{if upstream.enabled, do: "Disable", else: "Enable"} #{upstream.name} upstream"}
                       phx-click="toggle"
                       phx-value-id={upstream.id}
                     >
@@ -494,24 +506,19 @@ defmodule Backplane.Admin.UpstreamsLive do
                       size="xs"
                       shape="circle"
                       variant="primary"
+                      aria-label={"Connect #{upstream.name} upstream"}
                       phx-click="connect"
                       phx-value-id={upstream.id}
                     >
                       <.dm_mdi name="connection" class="w-4 h-4" />
                     </.dm_btn>
                   </.dm_tooltip>
-                  <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
-                    <.link {tooltip_attrs} patch={~p"/mcp/upstreams/#{upstream.id}/edit"}>
-                      <.dm_btn size="xs" shape="circle" variant="outline">
-                        <.dm_mdi name="pencil" class="w-4 h-4" />
-                      </.dm_btn>
-                    </.link>
-                  </.dm_tooltip>
                   <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
                     <.dm_btn {tooltip_attrs}
                       size="xs"
                       shape="circle"
                       variant="error"
+                      aria-label={"Delete #{upstream.name} upstream"}
                       phx-click="delete"
                       phx-value-id={upstream.id}
                       data-confirm={"Delete upstream #{upstream.name}?"}

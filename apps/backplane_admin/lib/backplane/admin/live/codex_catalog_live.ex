@@ -281,14 +281,20 @@ defmodule Backplane.Admin.CodexCatalogLive do
             <:col :let={entry} label="Reasoning"><span class="text-xs">{reasoning_summary(entry)}</span></:col>
             <:col :let={entry} label="Exposure">
               <div class="flex items-center gap-2">
-                <.dm_btn type="button" size="xs" shape="circle" variant={if entry.enabled, do: "success", else: "outline"} phx-click="toggle" phx-value-id={entry.id} disabled={@busy != nil or (not imported?(entry) and not entry.enabled)} aria-label={if entry.enabled, do: "Disable #{entry.public_model_id}", else: "Enable #{entry.public_model_id}"}>
-                  <.dm_mdi name={if entry.enabled, do: "check", else: "minus"} class="h-4 w-4" />
-                </.dm_btn>
+                <.dm_tooltip :let={tooltip_attrs} content={if entry.enabled, do: "Disable", else: "Enable"} position="bottom">
+                  <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" variant={if entry.enabled, do: "success", else: "outline"} phx-click="toggle" phx-value-id={entry.id} disabled={@busy != nil or (not imported?(entry) and not entry.enabled)} aria-label={if entry.enabled, do: "Disable #{entry.public_model_id}", else: "Enable #{entry.public_model_id}"}>
+                    <.dm_mdi name={if entry.enabled, do: "check", else: "minus"} class="h-4 w-4" />
+                  </.dm_btn>
+                </.dm_tooltip>
                 <span class="text-xs whitespace-nowrap">{status(entry, @invalid_entries)}</span>
               </div>
             </:col>
             <:col :let={entry} label="Actions">
-              <.dm_btn type="button" size="xs" variant="error" phx-click="delete" phx-value-id={entry.id} disabled={@busy != nil} data-confirm="Remove this Codex catalog entry?" aria-label={"Remove #{entry.public_model_id}"}><.dm_mdi name="delete" class="h-4 w-4" /></.dm_btn>
+              <.dm_tooltip :let={tooltip_attrs} content="Remove" position="bottom">
+                <.dm_btn {tooltip_attrs} type="button" size="xs" shape="circle" variant="error" phx-click="delete" phx-value-id={entry.id} disabled={@busy != nil} data-confirm="Remove this Codex catalog entry?" aria-label={"Remove #{entry.public_model_id}"}>
+                  <.dm_mdi name="delete" class="h-4 w-4" />
+                </.dm_btn>
+              </.dm_tooltip>
             </:col>
           </.dm_table>
         </div>

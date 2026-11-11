@@ -173,18 +173,17 @@ defmodule Backplane.Admin.ProvidersLive do
         <:col :let={provider} label="Actions">
           <div class="flex items-center gap-1">
             <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
-              <.link {tooltip_attrs} navigate={~p"/llama/providers/#{provider.id}"} class="no-underline">
-                <.dm_btn
-                  type="button"
-                  size="xs"
-                  shape="circle"
-                  variant="outline"
-                  aria-label={"View #{provider.name}"}
-                >
-                  <.dm_mdi name="eye" class="h-4 w-4" />
-                  <span class="sr-only">View</span>
-                </.dm_btn>
-              </.link>
+              <.dm_btn
+                {tooltip_attrs}
+                navigate={~p"/llama/providers/#{provider.id}"}
+                size="xs"
+                shape="circle"
+                variant="outline"
+                aria-label={"View #{provider.name}"}
+              >
+                <.dm_mdi name="eye" class="h-4 w-4" />
+                <span class="sr-only">View</span>
+              </.dm_btn>
             </.dm_tooltip>
             <.dm_tooltip :let={tooltip_attrs} content={if provider.enabled, do: "Disable", else: "Enable"} position="bottom">
               <.dm_btn {tooltip_attrs}

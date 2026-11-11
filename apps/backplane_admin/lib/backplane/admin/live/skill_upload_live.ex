@@ -485,12 +485,18 @@ defmodule Backplane.Admin.SkillUploadLive do
         <:title>
           <div class="flex items-center justify-between">
             <span>Skill Detail: {@detail_skill.name}</span>
-            <.dm_btn type="button" size="xs" shape="circle" class="group relative" phx-click="close-detail">
-              <.dm_mdi name="close" class="w-4 h-4" />
-              <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
-                Close
-              </span>
-            </.dm_btn>
+            <.dm_tooltip :let={tooltip_attrs} content="Close" position="bottom">
+              <.dm_btn {tooltip_attrs}
+                type="button"
+                size="xs"
+                shape="circle"
+                aria-label={"Close #{@detail_skill.name} skill details"}
+                phx-click="close-detail"
+              >
+                <.dm_mdi name="close" class="w-4 h-4" />
+                <span class="sr-only">Close</span>
+              </.dm_btn>
+            </.dm_tooltip>
           </div>
         </:title>
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
@@ -582,30 +588,34 @@ defmodule Backplane.Admin.SkillUploadLive do
         </:col>
         <:col :let={skill} label="Actions">
           <div class="flex gap-1">
-            <.link patch={~p"/skills/upload/#{skill.id}"} class="no-underline">
-              <.dm_btn type="button" size="xs" shape="circle" class="group relative">
+            <.dm_tooltip :let={tooltip_attrs} content="View" position="bottom">
+              <.dm_btn {tooltip_attrs}
+                patch={~p"/skills/upload/#{skill.id}"}
+                size="xs"
+                shape="circle"
+                variant="outline"
+                aria-label={"View #{skill.name} skill"}
+              >
                 <.dm_mdi name="eye" class="w-4 h-4" />
-                <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
-                  View
-                </span>
+                <span class="sr-only">View</span>
               </.dm_btn>
-            </.link>
-            <.dm_btn
-              type="button"
-              size="xs"
-              shape="circle"
-              variant="error"
-              class="group relative"
-              confirm={"Delete skill '#{skill.name}'?"}
-              confirm_title="Confirm Delete"
-              phx-click="delete"
-              phx-value-id={skill.id}
-            >
-              <.dm_mdi name="delete" class="w-4 h-4" />
-              <span class="pointer-events-none invisible group-hover:visible absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-inverse-surface px-2 py-1 text-xs text-inverse-on-surface shadow-md z-50">
-                Delete
-              </span>
-            </.dm_btn>
+            </.dm_tooltip>
+            <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+              <.dm_btn {tooltip_attrs}
+                type="button"
+                size="xs"
+                shape="circle"
+                variant="error"
+                aria-label={"Delete #{skill.name} skill"}
+                confirm={"Delete skill '#{skill.name}'?"}
+                confirm_title="Confirm Delete"
+                phx-click="delete"
+                phx-value-id={skill.id}
+              >
+                <.dm_mdi name="delete" class="w-4 h-4" />
+                <span class="sr-only">Delete</span>
+              </.dm_btn>
+            </.dm_tooltip>
           </div>
         </:col>
       </.dm_table>
