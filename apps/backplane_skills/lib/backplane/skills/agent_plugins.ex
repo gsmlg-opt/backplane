@@ -3,6 +3,8 @@ defmodule Backplane.Skills.AgentPlugins do
   Client helpers for host-agent packaged plugin management.
   """
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
   alias Backplane.Skills.AgentManage
 
   @default_http_port 4222
@@ -86,13 +88,15 @@ defmodule Backplane.Skills.AgentPlugins do
         receive_timeout: @receive_timeout,
         retry: false
       ]
-      |> Keyword.merge(Application.get_env(:backplane_skills, :host_agent_plugin_req_options, []))
+      |> Keyword.merge(
+        Application.get_env(:backplane_skills, :host_agent_plugin_http_options, [])
+      )
 
-    case Req.post(url, request_opts) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+    case HTTPClient.post(url, request_opts) do
+      {:ok, %Response{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, {:http_error, status, body}}
 
       {:error, reason} ->

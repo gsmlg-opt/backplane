@@ -6,6 +6,8 @@ defmodule Backplane.Skills.Sources.GitHub do
   under the configured path prefix.
   """
 
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
   alias Backplane.Skills.Loader
   alias Backplane.Skills.SkillSource
 
@@ -42,11 +44,15 @@ defmodule Backplane.Skills.Sources.GitHub do
           on_timeout: :kill_task
         )
         |> Enum.flat_map(fn
-          {:ok, {:ok, skill}} -> [skill]
+          {:ok, {:ok, skill}} ->
+            [skill]
+
           {:ok, {:error, reason}} ->
             Logger.warning("Failed to parse skill: #{inspect(reason)}")
             []
-          {:exit, _reason} -> []
+
+          {:exit, _reason} ->
+            []
         end)
 
       {:ok, skills}
@@ -54,7 +60,8 @@ defmodule Backplane.Skills.Sources.GitHub do
   end
 
   @doc "Fetch a single skill file content from GitHub."
-  @spec fetch_skill(String.t(), String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec fetch_skill(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
   def fetch_skill(owner, repo, branch, path) do
     fetch_and_parse_skill(owner, repo, branch, path)
   end
@@ -93,17 +100,17 @@ defmodule Backplane.Skills.Sources.GitHub do
 
     headers = github_headers()
 
-    case Req.get(url, headers: headers, receive_timeout: 15_000) do
-      {:ok, %Req.Response{status: 200, body: %{"tree" => tree}}} ->
+    case HTTPClient.get(url, headers: headers, receive_timeout: 15_000) do
+      {:ok, %Response{status: 200, body: %{"tree" => tree}}} ->
         {:ok, tree}
 
-      {:ok, %Req.Response{status: 404}} ->
+      {:ok, %Response{status: 404}} ->
         {:error, :repo_not_found}
 
-      {:ok, %Req.Response{status: 403}} ->
+      {:ok, %Response{status: 403}} ->
         {:error, :rate_limited}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, %Response{status: status, body: body}} ->
         {:error, {:github_api_error, status, body}}
 
       {:error, reason} ->
@@ -114,8 +121,8 @@ defmodule Backplane.Skills.Sources.GitHub do
   defp fetch_and_parse_skill(owner, repo, branch, path) do
     url = "https://raw.githubusercontent.com/#{owner}/#{repo}/#{branch}/#{path}"
 
-    case Req.get(url, headers: github_headers(), receive_timeout: 10_000) do
-      {:ok, %Req.Response{status: 200, body: body}} when is_binary(body) ->
+    case HTTPClient.get(url, headers: github_headers(), receive_timeout: 10_000) do
+      {:ok, %Response{status: 200, body: body}} when is_binary(body) ->
         case Loader.parse(body) do
           {:ok, entry} ->
             # Derive a slug from the path
@@ -132,7 +139,7 @@ defmodule Backplane.Skills.Sources.GitHub do
             {:error, {:parse_error, path, reason}}
         end
 
-      {:ok, %Req.Response{status: status}} ->
+      {:ok, %Response{status: status}} ->
         {:error, {:fetch_error, path, status}}
 
       {:error, reason} ->

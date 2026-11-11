@@ -4,17 +4,17 @@ defmodule Backplane.Skills.AgentPluginsTest do
   alias Backplane.Skills.AgentPlugins
 
   setup do
-    previous = Application.get_env(:backplane_skills, :host_agent_plugin_req_options)
+    previous = Application.get_env(:backplane_skills, :host_agent_plugin_http_options)
 
-    Application.put_env(:backplane_skills, :host_agent_plugin_req_options,
-      plug: {Req.Test, __MODULE__}
+    Application.put_env(:backplane_skills, :host_agent_plugin_http_options,
+      adapter: {HTTP.Test, __MODULE__}
     )
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:backplane_skills, :host_agent_plugin_req_options, previous)
+        Application.put_env(:backplane_skills, :host_agent_plugin_http_options, previous)
       else
-        Application.delete_env(:backplane_skills, :host_agent_plugin_req_options)
+        Application.delete_env(:backplane_skills, :host_agent_plugin_http_options)
       end
     end)
 
@@ -33,8 +33,8 @@ defmodule Backplane.Skills.AgentPluginsTest do
   end
 
   test "lists plugin status through host-agent local MCP" do
-    Req.Test.stub(__MODULE__, fn conn ->
-      Req.Test.json(conn, mcp_result(%{"plugins" => [plugin_status("hermes", true)]}))
+    HTTP.Test.stub(__MODULE__, fn _request ->
+      HTTP.Test.json(mcp_result(%{"plugins" => [plugin_status("hermes", true)]}))
     end)
 
     assert {:ok, [%{"plugin" => "memory", "runtime" => "hermes", "installed" => true}]} =
@@ -42,12 +42,11 @@ defmodule Backplane.Skills.AgentPluginsTest do
   end
 
   test "installs and removes plugin through host-agent local MCP" do
-    Req.Test.stub(__MODULE__, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      request = Jason.decode!(body)
-      args = request["params"]["arguments"]
+    HTTP.Test.stub(__MODULE__, fn request ->
+      rpc = request.body |> IO.iodata_to_binary() |> Jason.decode!()
+      args = rpc["params"]["arguments"]
 
-      Req.Test.json(conn, mcp_result(plugin_status(args["runtime"], false)))
+      HTTP.Test.json(mcp_result(plugin_status(args["runtime"], false)))
     end)
 
     assert {:ok, %{"plugin" => "memory", "runtime" => "openclaw"}} =
