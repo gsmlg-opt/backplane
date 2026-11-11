@@ -15,6 +15,8 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   require Logger
 
+  alias Backplane.HTTPClient
+
   @anthropic_client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
   @anthropic_token_url "https://platform.claude.com/v1/oauth/token"
   @anthropic_oauth_user_agent "claude-cli/2.1.165 (external, cli)"
@@ -129,7 +131,7 @@ defmodule Backplane.Settings.OAuthRefresher do
       redirect: false,
       decode_body: false
     )
-    |> then(&Req.post(registration_url, &1))
+    |> then(&HTTPClient.post(registration_url, &1))
     |> normalize_figma_client_registration()
   end
 
@@ -228,9 +230,9 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   @spec request_options(String.t()) :: keyword()
   def request_options(url) do
-    case Keyword.fetch(Application.get_env(:backplane, __MODULE__, []), :req_options) do
+    case Keyword.fetch(Application.get_env(:backplane, __MODULE__, []), :http_options) do
       {:ok, opts} -> opts
-      :error -> default_req_options(url)
+      :error -> default_http_options(url)
     end
   end
 
@@ -364,7 +366,7 @@ defmodule Backplane.Settings.OAuthRefresher do
       request_options(url)
       |> Keyword.merge(req_body_options(encoding, body, headers))
 
-    case Req.post(url, req_opts) do
+    case HTTPClient.post(url, req_opts) do
       {:ok, %{status: 200, body: %{"access_token" => access} = resp}} ->
         expires_in = resp["expires_in"] || 3600
         refresh = resp["refresh_token"] || body["refresh_token"]
@@ -471,7 +473,7 @@ defmodule Backplane.Settings.OAuthRefresher do
     cfg(:request_timeout_ms) || @request_timeout_ms
   end
 
-  defp default_req_options(url) do
+  defp default_http_options(url) do
     case proxy_connect_options(url) do
       [] -> [inet6: true]
       connect_options -> [connect_options: connect_options]

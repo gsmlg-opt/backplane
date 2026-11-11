@@ -5,6 +5,8 @@ defmodule Backplane.Accounts.FederatedLogin do
 
   alias Backplane.Accounts
   alias Backplane.Accounts.AuthProvider
+  alias Backplane.HTTPClient
+  alias Backplane.HTTPClient.Response
   alias Backplane.Settings.OAuthStateStore
   alias Backplane.WebOrigins
 
@@ -156,8 +158,8 @@ defmodule Backplane.Accounts.FederatedLogin do
     }
 
     provider.token_url
-    |> Req.post(
-      Keyword.merge(req_options(opts), form: form, receive_timeout: 15_000, retry: false)
+    |> HTTPClient.post(
+      Keyword.merge(http_options(opts), form: form, receive_timeout: 15_000, retry: false)
     )
     |> decode_response(:token_exchange_failed)
   end
@@ -191,7 +193,7 @@ defmodule Backplane.Accounts.FederatedLogin do
 
   defp fetch_jwks(provider, opts) do
     provider.jwks_uri
-    |> Req.get(Keyword.merge(req_options(opts), receive_timeout: 15_000, retry: false))
+    |> HTTPClient.get(Keyword.merge(http_options(opts), receive_timeout: 15_000, retry: false))
     |> decode_response({:invalid_id_token, :jwks})
   end
 
@@ -334,8 +336,8 @@ defmodule Backplane.Accounts.FederatedLogin do
 
   defp fetch_userinfo(provider, access_token, opts) do
     provider.userinfo_url
-    |> Req.get(
-      Keyword.merge(req_options(opts),
+    |> HTTPClient.get(
+      Keyword.merge(http_options(opts),
         headers: [{"authorization", "Bearer #{access_token}"}],
         receive_timeout: 15_000,
         retry: false
@@ -364,12 +366,12 @@ defmodule Backplane.Accounts.FederatedLogin do
     end
   end
 
-  defp decode_response({:ok, %Req.Response{status: status, body: body}}, error)
+  defp decode_response({:ok, %Response{status: status, body: body}}, error)
        when status in 200..299 do
     decode_body(body, error)
   end
 
-  defp decode_response({:ok, %Req.Response{status: status}}, error) when is_integer(status),
+  defp decode_response({:ok, %Response{status: status}}, error) when is_integer(status),
     do: {:error, {error, status}}
 
   defp decode_response({:error, reason}, error), do: {:error, {error, reason}}
@@ -408,10 +410,10 @@ defmodule Backplane.Accounts.FederatedLogin do
     |> Base.url_encode64(padding: false)
   end
 
-  defp req_options(opts) do
+  defp http_options(opts) do
     :backplane
-    |> Application.get_env(:federated_login_req_options, [])
-    |> Keyword.merge(Keyword.get(opts, :req_options, []))
+    |> Application.get_env(:federated_login_http_options, [])
+    |> Keyword.merge(Keyword.get(opts, :http_options, []))
   end
 
   defp validate_url(url, _error) when is_binary(url) and url != "", do: :ok

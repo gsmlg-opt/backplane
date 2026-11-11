@@ -31,6 +31,8 @@ defmodule BackplaneSystem.MixProject do
 
   defp deps do
     [
+      {:http_fetch, "~> 1.0.0-rc.13"},
+      {:http_test, "~> 1.0.0-rc.13", only: :test},
       {:backplane_memory_contract, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},
@@ -38,7 +40,6 @@ defmodule BackplaneSystem.MixProject do
       {:pgvector, "~> 0.3"},
       {:phoenix_pubsub, "~> 2.1"},
       {:bcrypt_elixir, "~> 3.0"},
-      {:req, "~> 0.5", override: true},
       {:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, override: true},
       {:styx, "~> 0.1.1"},
       {:secrethub_sdk, "~> 1.0.0-rc.32"},

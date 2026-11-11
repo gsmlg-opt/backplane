@@ -123,11 +123,11 @@ defmodule Backplane.Settings.OAuthDeviceFlow do
   @request_timeout_ms 30_000
 
   defp post_form(url, body) do
-    Req.post(url, form: body, receive_timeout: @request_timeout_ms)
+    Backplane.HTTPClient.post(url, form: body, receive_timeout: @request_timeout_ms)
   end
 
   defp post_json(url, body) do
-    Req.post(url, json: body, receive_timeout: @request_timeout_ms)
+    Backplane.HTTPClient.post(url, json: body, receive_timeout: @request_timeout_ms)
   end
 
   defp parse_device_code_response({:ok, %{status: 200, body: body}}) do

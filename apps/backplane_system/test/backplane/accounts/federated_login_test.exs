@@ -7,19 +7,21 @@ defmodule Backplane.Accounts.FederatedLoginTest do
   alias Backplane.Settings.OAuthStateStore
 
   setup do
-    previous_req_options = Application.get_env(:backplane, :federated_login_req_options)
+    previous_http_options = Application.get_env(:backplane, :federated_login_http_options)
 
-    Application.put_env(:backplane, :federated_login_req_options, plug: {Req.Test, __MODULE__})
+    Application.put_env(:backplane, :federated_login_http_options,
+      adapter: {HTTP.Test, __MODULE__}
+    )
 
     OAuthStateStore.clear()
 
     on_exit(fn ->
       OAuthStateStore.clear()
 
-      if is_nil(previous_req_options) do
-        Application.delete_env(:backplane, :federated_login_req_options)
+      if is_nil(previous_http_options) do
+        Application.delete_env(:backplane, :federated_login_http_options)
       else
-        Application.put_env(:backplane, :federated_login_req_options, previous_req_options)
+        Application.put_env(:backplane, :federated_login_http_options, previous_http_options)
       end
     end)
 
@@ -526,10 +528,9 @@ defmodule Backplane.Accounts.FederatedLoginTest do
   defp apply_claim_override(claims, overrides), do: Map.merge(claims, overrides)
 
   defp stub_oidc_provider(id_token, public_jwk) do
-    Req.Test.stub(__MODULE__, fn
-      %Plug.Conn{method: "POST", request_path: "/token"} = conn ->
-        {:ok, body, conn} = Plug.Conn.read_body(conn)
-        form = URI.decode_query(body)
+    HTTP.Test.stub(__MODULE__, fn
+      %HTTP.Request{method: :post, url: %URI{path: "/token"}} = request ->
+        form = request.body |> IO.iodata_to_binary() |> URI.decode_query()
 
         assert %{
                  "grant_type" => "authorization_code",
@@ -543,14 +544,14 @@ defmodule Backplane.Accounts.FederatedLoginTest do
         assert is_binary(code_verifier)
         assert byte_size(code_verifier) >= 32
 
-        Req.Test.json(conn, %{
+        HTTP.Test.json(%{
           "access_token" => "google-access",
           "id_token" => id_token,
           "token_type" => "Bearer"
         })
 
-      %Plug.Conn{method: "GET", request_path: "/jwks"} = conn ->
-        Req.Test.json(conn, %{"keys" => [public_jwk]})
+      %HTTP.Request{method: :get, url: %URI{path: "/jwks"}} ->
+        HTTP.Test.json(%{"keys" => [public_jwk]})
     end)
   end
 
@@ -564,10 +565,9 @@ defmodule Backplane.Accounts.FederatedLoginTest do
         "token_type" => "Bearer"
       })
 
-    Req.Test.stub(__MODULE__, fn
-      %Plug.Conn{method: "POST", request_path: "/login/oauth/access_token"} = conn ->
-        {:ok, body, conn} = Plug.Conn.read_body(conn)
-        form = URI.decode_query(body)
+    HTTP.Test.stub(__MODULE__, fn
+      %HTTP.Request{method: :post, url: %URI{path: "/login/oauth/access_token"}} = request ->
+        form = request.body |> IO.iodata_to_binary() |> URI.decode_query()
 
         assert %{
                  "grant_type" => "authorization_code",
@@ -582,18 +582,18 @@ defmodule Backplane.Accounts.FederatedLoginTest do
         assert byte_size(code_verifier) >= 32
 
         if token_status in 200..299 do
-          Req.Test.json(conn, token_body)
+          HTTP.Test.json(token_body)
         else
-          Plug.Conn.resp(conn, token_status, "token error")
+          HTTP.Test.text("token error", token_status)
         end
 
-      %Plug.Conn{method: "GET", request_path: "/user"} = conn ->
-        assert ["Bearer github-access"] = Plug.Conn.get_req_header(conn, "authorization")
+      %HTTP.Request{method: :get, url: %URI{path: "/user"}} = request ->
+        assert "Bearer github-access" = HTTP.Headers.get(request.headers, "authorization")
 
         if userinfo_status in 200..299 do
-          Req.Test.json(conn, userinfo)
+          HTTP.Test.json(userinfo)
         else
-          Plug.Conn.resp(conn, userinfo_status, "userinfo error")
+          HTTP.Test.text("userinfo error", userinfo_status)
         end
     end)
   end
