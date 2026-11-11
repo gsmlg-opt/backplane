@@ -39,7 +39,7 @@ defmodule BackplaneSkillProtocol.MixProject do
 
   defp deps do
     [
-      {:req, "~> 0.5"},
+      {:req, "~> 0.5", optional: true},
       {:telemetry, "~> 1.2"},
       {:yaml_elixir, "~> 2.9"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
