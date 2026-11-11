@@ -820,37 +820,44 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
   end
 
   defp speech(ctx, format, accept_encoding \\ "identity") do
-    Req.post!(ctx.base <> "/v1/audio/speech",
-      json: %{model: ctx.model, input: "Hello", voice: "default", response_format: format},
-      headers: [
-        {"authorization", "Bearer #{ctx.token}"},
-        {"accept-encoding", accept_encoding}
-      ],
-      retry: false,
-      decode_body: false,
-      compressed: false,
-      receive_timeout: 30_000
-    )
+    body = %{model: ctx.model, input: "Hello", voice: "default", response_format: format}
+
+    post!(ctx.base <> "/v1/audio/speech", Jason.encode!(body), [
+      {"authorization", "Bearer #{ctx.token}"},
+      {"accept-encoding", accept_encoding},
+      {"content-type", "application/json"},
+      {"accept", "application/json"}
+    ])
   end
 
   defp asr(ctx, format) do
-    Req.post!(ctx.base <> "/v1/audio/transcriptions",
-      form_multipart: [
-        model: ctx.model,
-        response_format: format,
-        language: "en",
-        file:
-          {File.stream!(Path.join(ctx.dir, "fixture.flac")),
-           filename: "clip.flac", content_type: "application/octet-stream"}
-      ],
-      headers: [
-        {"authorization", "Bearer #{ctx.token}"},
-        {"accept-encoding", "identity"}
-      ],
-      retry: false,
+    {:multipart, body, boundary} =
+      HTTP.FormData.new()
+      |> HTTP.FormData.append_field("model", ctx.model)
+      |> HTTP.FormData.append_field("response_format", format)
+      |> HTTP.FormData.append_field("language", "en")
+      |> HTTP.FormData.append_file(
+        "file",
+        "clip.flac",
+        File.stream!(Path.join(ctx.dir, "fixture.flac")),
+        "application/octet-stream"
+      )
+      |> HTTP.FormData.to_body()
+
+    post!(ctx.base <> "/v1/audio/transcriptions", body, [
+      {"authorization", "Bearer #{ctx.token}"},
+      {"accept-encoding", "identity"},
+      {"content-type", "multipart/form-data; boundary=#{boundary}"}
+    ])
+  end
+
+  defp post!(url, body, headers) do
+    Backplane.HTTPClient.post!(url,
+      headers: headers,
+      body: IO.iodata_to_binary(body),
+      receive_timeout: 30_000,
       decode_body: false,
-      compressed: false,
-      receive_timeout: 30_000
+      retry: false
     )
   end
 

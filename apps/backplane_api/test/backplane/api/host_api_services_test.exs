@@ -373,7 +373,7 @@ defmodule Backplane.Api.HostApiServicesTest do
       end
 
       assert {:ok, response} =
-               Req.post("http://127.0.0.1:#{port}/v1/chat/completions",
+               Backplane.HTTPClient.post("http://127.0.0.1:#{port}/v1/chat/completions",
                  headers: [{"authorization", "Bearer #{c.token}"}],
                  json: %{model: model, stream: true},
                  retry: false,
