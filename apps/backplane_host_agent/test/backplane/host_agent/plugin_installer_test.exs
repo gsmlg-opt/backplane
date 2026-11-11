@@ -1,7 +1,11 @@
 defmodule Backplane.HostAgent.PluginInstallerTest do
   use ExUnit.Case, async: true
 
+  alias Backplane.HostAgent.Memory.Hooks.Cursor
   alias Backplane.HostAgent.PluginInstaller
+
+  @url "http://127.0.0.1:4232"
+  @real_source Path.expand("../../../../../integrations/memory", __DIR__)
 
   @tag :tmp_dir
   test "installs packaged memory plugin for Hermes into the default home target", %{
@@ -24,6 +28,30 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     assert result["valid"] == true
     assert File.read!(Path.join(target, "plugin.yaml")) =~ "hermes"
     assert File.read!(Path.join(target, "__init__.py")) =~ "hermes"
+
+    assert File.read!(Path.join(target, "INSTRUCTIONS.md")) ==
+             File.read!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+  end
+
+  @tag :tmp_dir
+  test "Hermes install bundles the shared instructions and needs them in the source", %{
+    tmp_dir: tmp_dir
+  } do
+    source_root = source_root!(tmp_dir)
+    home_dir = Path.join(tmp_dir, "home")
+    target = Path.join([home_dir, ".hermes", "plugins", "backplane-memory"])
+    opts = %{source_root: source_root, home_dir: home_dir}
+
+    assert {:ok, %{"valid" => true}} = PluginInstaller.install("memory", "hermes", opts)
+    File.rm!(Path.join(target, "INSTRUCTIONS.md"))
+
+    assert {:ok, %{"installed" => true, "valid" => false}} =
+             PluginInstaller.status("memory", "hermes", opts)
+
+    File.rm!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+
+    assert {:error, {:source_missing_file, "shared/INSTRUCTIONS.md"}} =
+             PluginInstaller.install("memory", "hermes", opts)
   end
 
   @tag :tmp_dir
@@ -44,10 +72,34 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     assert File.exists?(Path.join(target, "openclaw.plugin.json"))
     assert File.exists?(Path.join(target, "plugin.mjs"))
 
-    for helper <- ~w(contract journal client context service rollout) do
+    for helper <- ~w(contract journal client context service) do
       assert File.read!(Path.join(target, helper <> ".mjs")) ==
                "// packaged #{helper} helper\n"
     end
+
+    assert File.read!(Path.join(target, "INSTRUCTIONS.md")) ==
+             File.read!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+  end
+
+  @tag :tmp_dir
+  test "OpenClaw install bundles the shared instructions and needs them in the source", %{
+    tmp_dir: tmp_dir
+  } do
+    source_root = source_root!(tmp_dir)
+    home_dir = Path.join(tmp_dir, "home")
+    target = Path.join([home_dir, ".openclaw", "extensions", "backplane-memory"])
+    opts = %{source_root: source_root, home_dir: home_dir}
+
+    assert {:ok, %{"valid" => true}} = PluginInstaller.install("memory", "openclaw", opts)
+    File.rm!(Path.join(target, "INSTRUCTIONS.md"))
+
+    assert {:ok, %{"installed" => true, "valid" => false}} =
+             PluginInstaller.status("memory", "openclaw", opts)
+
+    File.rm!(Path.join(source_root, "shared/INSTRUCTIONS.md"))
+
+    assert {:error, {:source_missing_file, "shared/INSTRUCTIONS.md"}} =
+             PluginInstaller.install("memory", "openclaw", opts)
   end
 
   @tag :tmp_dir
@@ -117,8 +169,8 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
                home_dir: home_dir
              })
 
-    assert {:error, {:unsupported_runtime, "memory", "codex"}} =
-             PluginInstaller.install("memory", "codex", %{
+    assert {:error, {:unsupported_runtime, "memory", "vscode"}} =
+             PluginInstaller.install("memory", "vscode", %{
                source_root: source_root,
                home_dir: home_dir
              })
@@ -144,9 +196,17 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     home_dir = Path.join(tmp_dir, "home")
 
     assert [
+             %{"plugin" => "memory", "runtime" => "claude_code"},
+             %{"plugin" => "memory", "runtime" => "codex"},
+             %{"plugin" => "memory", "runtime" => "cursor"},
              %{"plugin" => "memory", "runtime" => "hermes"},
              %{"plugin" => "memory", "runtime" => "openclaw"}
-           ] = PluginInstaller.list(%{source_root: source_root, home_dir: home_dir})
+           ] =
+             PluginInstaller.list(%{
+               source_root: source_root,
+               home_dir: home_dir,
+               host_agent_url: @url
+             })
 
     assert {:ok, %{"installed" => false, "valid" => false}} =
              PluginInstaller.status("memory", "hermes", %{
@@ -166,6 +226,626 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
       assert source =~ Path.join(["integrations", "memory", runtime])
       assert File.read!(Path.join(target, "README.md")) =~ "Backplane"
     end
+
+    for installed <- ~w(.hermes/plugins .openclaw/extensions) do
+      assert File.read!(Path.join([home_dir, installed, "backplane-memory/INSTRUCTIONS.md"])) ==
+               File.read!(Path.join(@real_source, "shared/INSTRUCTIONS.md"))
+    end
+
+    refute File.exists?(
+             Path.join([home_dir, ".openclaw/extensions/backplane-memory/rollout.mjs"])
+           )
+  end
+
+  describe "claude_code marketplace mode" do
+    @describetag :tmp_dir
+
+    defp claude_opts(tmp_dir, extra \\ %{}) do
+      Map.merge(
+        %{
+          source_root: @real_source,
+          home_dir: Path.join(tmp_dir, "home"),
+          host_agent_url: @url
+        },
+        extra
+      )
+    end
+
+    test "installs a rendered marketplace and the hook client", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir)
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      market = Path.join([data, "plugins", "claude"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+
+      assert {:ok, result} = PluginInstaller.install("memory", "claude_code", opts)
+      assert %{"installed" => true, "valid" => true, "target_path" => ^market} = result
+
+      assert result["next_steps"] == [
+               "claude plugin marketplace add #{market}",
+               "claude plugin install backplane-memory@backplane-local"
+             ]
+
+      assert File.regular?(Path.join(market, ".claude-plugin/marketplace.json"))
+      plugin = Path.join(market, "backplane-memory")
+
+      assert %{"mcpServers" => %{"backplane-memory" => %{"url" => url}}} =
+               plugin |> Path.join(".mcp.json") |> File.read!() |> Jason.decode!()
+
+      assert url == "http://127.0.0.1:4232/memory/claude-code/mcp"
+
+      hooks = File.read!(Path.join(plugin, "hooks/hooks.json"))
+      assert hooks =~ "'#{client}' claude_code SessionStart"
+      refute hooks =~ "__HOOK_CLIENT__"
+      refute hooks =~ "__HOST_AGENT_URL__"
+
+      assert File.stat!(client).mode |> Bitwise.band(0o777) == 0o755
+      script = File.read!(client)
+      assert script =~ ~s(baked_url="http://127.0.0.1:4232")
+      refute script =~ "__HOST_AGENT_URL__"
+
+      assert File.exists?(Path.join(plugin, "skills/backplane-memory/SKILL.md"))
+    end
+
+    test "honours data_dir and is idempotent", %{tmp_dir: tmp_dir} do
+      data = Path.join([tmp_dir, "home", "bp-data"])
+      opts = claude_opts(tmp_dir, %{data_dir: data})
+
+      assert {:ok, first} = PluginInstaller.install("memory", "claude_code", opts)
+      assert first["target_path"] == Path.join([data, "plugins", "claude"])
+      assert {:ok, second} = PluginInstaller.install("memory", "claude_code", opts)
+      assert second == first
+      assert {:ok, %{"valid" => true}} = PluginInstaller.status("memory", "claude_code", opts)
+
+      assert File.read!(Path.join(data, "plugins/claude/backplane-memory/hooks/hooks.json")) =~
+               Path.join(data, "bin/backplane-memory-hook")
+    end
+
+    test "remove keeps the hook client while another hook-client runtime is installed", %{
+      tmp_dir: tmp_dir
+    } do
+      extra = %{
+        "cursor_like" => %{
+          uses_hook_client: true,
+          required_files: [],
+          target_parts: [".extra", "backplane-memory"]
+        }
+      }
+
+      opts = claude_opts(tmp_dir, %{extra_runtimes: extra})
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+      other = Path.join([tmp_dir, "home", ".extra", "backplane-memory"])
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+      File.mkdir_p!(other)
+      # A stray staging dir must not pin the client.
+      File.mkdir_p!(Path.join([data, "plugins", ".backplane-memory.install-1"]))
+
+      assert {:ok, %{"installed" => false}} =
+               PluginInstaller.remove("memory", "claude_code", opts)
+
+      refute File.exists?(Path.join([data, "plugins", "claude"]))
+      assert File.exists?(client)
+
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+      File.rm_rf!(other)
+      assert {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
+      refute File.exists?(client)
+    end
+
+    test "renders safely for data dirs with spaces and quotes", %{tmp_dir: tmp_dir} do
+      data = Path.join([tmp_dir, "home", "my data's \"dir\" \\x"])
+      opts = claude_opts(tmp_dir, %{data_dir: data})
+
+      assert {:ok, %{"target_path" => target}} =
+               PluginInstaller.install("memory", "claude_code", opts)
+
+      %{"hooks" => hooks} =
+        target
+        |> Path.join("backplane-memory/hooks/hooks.json")
+        |> File.read!()
+        |> Jason.decode!()
+
+      command = hooks["SessionStart"] |> hd() |> get_in(["hooks", Access.at(0), "command"])
+      # Run the command with `echo` standing in for argument display via the real client path.
+      client = Path.join(data, "bin/backplane-memory-hook")
+      File.write!(client, "#!/bin/sh\nprintf '%s|%s' \"$1\" \"$2\"\n")
+      assert {"claude_code|SessionStart", 0} = System.cmd("sh", ["-c", command])
+    end
+
+    test "rejects hostile host agent URLs without writing anything", %{tmp_dir: tmp_dir} do
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+
+      for url <- [
+            ~s|http://127.0.0.1:4222"$(touch pwned)"|,
+            "http://host/`id`",
+            "http://host/a b",
+            "ftp://host",
+            "http://",
+            "http://h\\x"
+          ] do
+        assert {:error, :invalid_host_agent_url} =
+                 PluginInstaller.install(
+                   "memory",
+                   "claude_code",
+                   claude_opts(tmp_dir, %{host_agent_url: url})
+                 )
+      end
+
+      refute File.exists?(data)
+    end
+
+    test "ignores target_path and refuses to replace unrelated directories", %{tmp_dir: tmp_dir} do
+      home = Path.join(tmp_dir, "home")
+      data = Path.join([home, ".local", "share", "backplane"])
+      unrelated = Path.join(home, "src/claude")
+      File.mkdir_p!(unrelated)
+      File.write!(Path.join(unrelated, "keep.txt"), "keep")
+
+      assert {:ok, %{"target_path" => target}} =
+               PluginInstaller.install(
+                 "memory",
+                 "claude_code",
+                 claude_opts(tmp_dir, %{target_path: unrelated})
+               )
+
+      assert target == Path.join([data, "plugins", "claude"])
+      assert File.exists?(Path.join(unrelated, "keep.txt"))
+
+      File.rm_rf!(target)
+      File.mkdir_p!(target)
+      File.write!(Path.join(target, "mine.txt"), "mine")
+      opts = claude_opts(tmp_dir)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.install("memory", "claude_code", opts)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.remove("memory", "claude_code", opts)
+
+      assert File.exists?(Path.join(target, "mine.txt"))
+    end
+
+    test "confines targets to the home directory", %{tmp_dir: tmp_dir} do
+      assert {:error, {:target_outside_home, _}} =
+               PluginInstaller.install(
+                 "memory",
+                 "claude_code",
+                 claude_opts(tmp_dir, %{data_dir: Path.join(tmp_dir, "outside")})
+               )
+    end
+  end
+
+  describe "codex marketplace mode" do
+    @describetag :tmp_dir
+
+    test "installs a rendered marketplace sharing the hook client", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir)
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      market = Path.join([data, "plugins", "codex"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+
+      assert {:ok, result} = PluginInstaller.install("memory", "codex", opts)
+      assert %{"installed" => true, "valid" => true, "target_path" => ^market} = result
+
+      assert result["next_steps"] == [
+               "codex plugin marketplace add #{market}",
+               "codex plugin add backplane-memory@backplane-local",
+               "Start Codex interactively once and trust the backplane-memory plugin hooks when prompted (Codex does not run plugin hooks until they are trusted)"
+             ]
+
+      plugin = Path.join(market, "plugins/backplane-memory")
+      assert File.regular?(Path.join(market, ".agents/plugins/marketplace.json"))
+
+      assert %{"mcpServers" => %{"backplane-memory" => %{"url" => url}}} =
+               plugin |> Path.join(".mcp.json") |> File.read!() |> Jason.decode!()
+
+      assert url == "http://127.0.0.1:4232/memory/codex/mcp"
+      refute File.exists?(Path.join(plugin, "hooks.json"))
+      manifest = File.read!(Path.join(plugin, ".codex-plugin/plugin.json"))
+      assert manifest =~ "'#{client}' codex SessionStart"
+      refute manifest =~ "__HOOK_CLIENT__"
+
+      assert %{"hooks" => %{"hooks" => %{"Stop" => [%{"hooks" => [stop]}]}}} =
+               Jason.decode!(manifest)
+
+      assert stop == %{"type" => "command", "command" => "'#{client}' codex Stop"}
+      assert File.stat!(client).mode |> Bitwise.band(0o777) == 0o755
+    end
+
+    test "remove keeps the hook client while claude_code is installed", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir)
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+      {:ok, _} = PluginInstaller.install("memory", "codex", opts)
+
+      assert {:ok, %{"installed" => false}} = PluginInstaller.remove("memory", "codex", opts)
+      refute File.exists?(Path.join([data, "plugins", "codex"]))
+      assert File.exists?(client)
+
+      {:ok, _} = PluginInstaller.install("memory", "codex", opts)
+      {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
+      assert File.exists?(client)
+      {:ok, _} = PluginInstaller.remove("memory", "codex", opts)
+      refute File.exists?(client)
+    end
+
+    test "ignores target_path and refuses unrelated or foreign-marketplace dirs", %{
+      tmp_dir: tmp_dir
+    } do
+      home = Path.join(tmp_dir, "home")
+      target = Path.join([home, ".local/share/backplane/plugins/codex"])
+      unrelated = Path.join(home, "src/codex")
+      File.mkdir_p!(unrelated)
+
+      assert {:ok, %{"target_path" => ^target}} =
+               PluginInstaller.install(
+                 "memory",
+                 "codex",
+                 claude_opts(tmp_dir, %{target_path: unrelated})
+               )
+
+      File.rm_rf!(target)
+      File.mkdir_p!(target)
+      File.write!(Path.join(target, "mine.txt"), "mine")
+      opts = claude_opts(tmp_dir)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.install("memory", "codex", opts)
+
+      assert {:error, :unexpected_target_contents} =
+               PluginInstaller.remove("memory", "codex", opts)
+
+      assert File.exists?(Path.join(target, "mine.txt"))
+    end
+  end
+
+  describe "cursor config mode" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      home = Path.join(tmp_dir, "home")
+      cursor = Path.join(home, ".cursor")
+      File.mkdir_p!(cursor)
+
+      %{
+        opts: claude_opts(tmp_dir),
+        home: home,
+        hooks: Path.join(cursor, "hooks.json"),
+        mcp: Path.join(cursor, "mcp.json"),
+        client: Path.join([home, ".local/share/backplane/bin/backplane-memory-hook"])
+      }
+    end
+
+    defp read_json!(path), do: path |> File.read!() |> Jason.decode!()
+
+    defp our_commands(hooks_json) do
+      for {_event, entries} <- hooks_json["hooks"],
+          %{"command" => command} <- entries,
+          String.contains?(command, "backplane-memory-hook"),
+          do: command
+    end
+
+    @user_hooks %{
+      "version" => 1,
+      "hooks" => %{
+        "stop" => [%{"command" => "./mine.sh"}],
+        "preToolUse" => [%{"command" => "./other.sh"}]
+      }
+    }
+    @user_mcp %{
+      "mcpServers" => %{
+        "zeta" => %{"type" => "stdio", "command" => "x", "args" => ["a"]},
+        "alpha" => %{"url" => "http://example.test/mcp"}
+      },
+      "other" => true
+    }
+
+    test "fresh install creates both files and the hook client", ctx do
+      assert {:ok, result} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert %{"installed" => true, "valid" => true, "target_path" => target} = result
+      assert target == ctx.hooks
+      assert result["next_steps"] == ["Restart Cursor"]
+
+      hooks = read_json!(ctx.hooks)
+      assert hooks["version"] == 1
+      assert Enum.sort(Map.keys(hooks["hooks"])) == Enum.sort(Cursor.supported_hooks())
+      assert length(our_commands(hooks)) == 8
+      assert hooks["hooks"]["stop"] == [%{"command" => "'#{ctx.client}' cursor stop"}]
+
+      assert read_json!(ctx.mcp) == %{
+               "mcpServers" => %{"backplane-memory" => %{"url" => "#{@url}/memory/cursor/mcp"}}
+             }
+
+      assert File.read!(ctx.hooks) |> String.ends_with?("}\n")
+      assert File.regular?(ctx.client)
+      refute File.exists?(ctx.hooks <> ".backplane-backup")
+    end
+
+    test "install over user entries keeps them and adds ours, order preserved", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      raw_mcp = ~s({"mcpServers":{"zeta":{"command":"x"},"alpha":{"url":"u"}},"other":true})
+      File.write!(ctx.mcp, raw_mcp)
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      hooks = read_json!(ctx.hooks)
+      assert hooks["hooks"]["preToolUse"] == [%{"command" => "./other.sh"}]
+      assert [%{"command" => "./mine.sh"}, %{"command" => ours}] = hooks["hooks"]["stop"]
+      assert ours =~ "backplane-memory-hook"
+
+      mcp_raw = File.read!(ctx.mcp)
+      {zeta, _} = :binary.match(mcp_raw, "zeta")
+      {alpha, _} = :binary.match(mcp_raw, "alpha")
+      {ours_pos, _} = :binary.match(mcp_raw, "backplane-memory")
+      assert zeta < alpha and alpha < ours_pos
+      mcp = Jason.decode!(mcp_raw)
+      assert mcp["other"] == true
+      assert Map.keys(mcp["mcpServers"]) |> Enum.sort() == ["alpha", "backplane-memory", "zeta"]
+
+      assert File.read!(ctx.mcp <> ".backplane-backup") == raw_mcp
+      assert read_json!(ctx.hooks <> ".backplane-backup") == @user_hooks
+    end
+
+    test "double install does not duplicate and keeps the first backup", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      first = {File.read!(ctx.hooks), File.read!(ctx.mcp)}
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert {File.read!(ctx.hooks), File.read!(ctx.mcp)} == first
+      assert length(our_commands(read_json!(ctx.hooks))) == 8
+      assert read_json!(ctx.hooks <> ".backplane-backup") == @user_hooks
+      assert read_json!(ctx.mcp <> ".backplane-backup") == @user_mcp
+    end
+
+    test "remove restores the user's original content", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert {:ok, %{"installed" => false, "valid" => false}} =
+               PluginInstaller.remove("memory", "cursor", ctx.opts)
+
+      assert read_json!(ctx.hooks) == @user_hooks
+      assert read_json!(ctx.mcp) == @user_mcp
+      assert File.regular?(ctx.hooks <> ".backplane-backup")
+      refute File.exists?(ctx.client)
+    end
+
+    test "remove drops emptied events but keeps version", ctx do
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+
+      assert read_json!(ctx.hooks) == %{"version" => 1, "hooks" => %{}}
+      assert read_json!(ctx.mcp) == %{"mcpServers" => %{}}
+    end
+
+    test "remove with no config files writes nothing", ctx do
+      assert {:ok, %{"installed" => false}} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      refute File.exists?(ctx.hooks)
+      refute File.exists?(ctx.mcp)
+    end
+
+    test "invalid JSON errors and leaves every file unchanged", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.write!(ctx.mcp, "{ not json")
+
+      assert {:error, {:invalid_json, path}} =
+               PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert path == ctx.mcp
+      assert read_json!(ctx.hooks) == @user_hooks
+      assert File.read!(ctx.mcp) == "{ not json"
+      refute File.exists?(ctx.hooks <> ".backplane-backup")
+      refute File.exists?(ctx.client)
+
+      assert {:error, {:invalid_json, ^path}} =
+               PluginInstaller.remove("memory", "cursor", ctx.opts)
+
+      assert File.read!(ctx.mcp) == "{ not json"
+    end
+
+    test "hook client survives cursor removal while claude_code is installed", ctx do
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", ctx.opts)
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      assert File.regular?(ctx.client)
+
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "claude_code", ctx.opts)
+      assert File.regular?(ctx.client)
+      {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      refute File.exists?(ctx.client)
+    end
+
+    test "hook client survives codex removal while cursor is installed", ctx do
+      {:ok, _} = PluginInstaller.install("memory", "codex", ctx.opts)
+      {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      {:ok, _} = PluginInstaller.remove("memory", "codex", ctx.opts)
+      assert File.regular?(ctx.client)
+    end
+
+    test "target_path option is ignored and bad URLs write nothing", ctx do
+      opts = Map.put(ctx.opts, :target_path, Path.join(ctx.home, "elsewhere/hooks.json"))
+      assert {:ok, %{"target_path" => target}} = PluginInstaller.install("memory", "cursor", opts)
+      assert target == ctx.hooks
+
+      File.rm!(ctx.hooks)
+      File.rm!(ctx.mcp)
+
+      assert {:error, :invalid_host_agent_url} =
+               PluginInstaller.install("memory", "cursor", %{ctx.opts | host_agent_url: "x'y"})
+
+      refute File.exists?(ctx.hooks)
+    end
+
+    test "preserves 0600 permissions and creates new files 0600", ctx do
+      File.write!(ctx.mcp, Jason.encode!(@user_mcp))
+      File.chmod!(ctx.mcp, 0o600)
+
+      mode = fn path -> Bitwise.band(File.stat!(path).mode, 0o7777) end
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      assert mode.(ctx.mcp) == 0o600
+      assert mode.(ctx.mcp <> ".backplane-backup") == 0o600
+      assert mode.(ctx.hooks) == 0o600
+
+      assert {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      assert mode.(ctx.mcp) == 0o600
+    end
+
+    test "symlinked configs stay symlinks and their targets are updated", ctx do
+      store = Path.join(ctx.home, "dotfiles")
+      File.mkdir_p!(store)
+      File.write!(Path.join(store, "mcp.json"), Jason.encode!(@user_mcp))
+      File.write!(Path.join(store, "hooks.json"), Jason.encode!(@user_hooks))
+      # absolute link and relative link
+      File.ln_s!(Path.join(store, "mcp.json"), ctx.mcp)
+      File.ln_s!("../dotfiles/hooks.json", ctx.hooks)
+
+      assert {:ok, _} = PluginInstaller.install("memory", "cursor", ctx.opts)
+      assert {:ok, _} = File.read_link(ctx.mcp)
+      assert {:ok, _} = File.read_link(ctx.hooks)
+
+      assert Map.has_key?(
+               read_json!(Path.join(store, "mcp.json"))["mcpServers"],
+               "backplane-memory"
+             )
+
+      assert length(our_commands(read_json!(Path.join(store, "hooks.json")))) == 8
+      assert read_json!(ctx.mcp <> ".backplane-backup") == @user_mcp
+
+      assert {:ok, _} = PluginInstaller.remove("memory", "cursor", ctx.opts)
+      assert {:ok, _} = File.read_link(ctx.mcp)
+      assert {:ok, _} = File.read_link(ctx.hooks)
+      assert read_json!(Path.join(store, "mcp.json")) == @user_mcp
+      assert read_json!(Path.join(store, "hooks.json")) == @user_hooks
+    end
+
+    test "a dangling symlink errors and writes nothing", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+      File.ln_s!(Path.join(ctx.home, "missing.json"), ctx.mcp)
+
+      assert {:error, {:dangling_symlink, path}} =
+               PluginInstaller.install("memory", "cursor", ctx.opts)
+
+      assert path == ctx.mcp
+      assert read_json!(ctx.hooks) == @user_hooks
+      refute File.exists?(Path.join(ctx.home, "missing.json"))
+      refute File.exists?(ctx.client)
+    end
+
+    test "status reports an unrelated hooks.json as not installed", ctx do
+      File.write!(ctx.hooks, Jason.encode!(@user_hooks))
+
+      assert {:ok, %{"installed" => false, "valid" => false}} =
+               PluginInstaller.status("memory", "cursor", ctx.opts)
+    end
+  end
+
+  describe "per-action next steps" do
+    @describetag :tmp_dir
+
+    @remove_steps %{
+      "claude_code" => [
+        "claude plugin uninstall backplane-memory@backplane-local",
+        "claude plugin marketplace remove backplane-local"
+      ],
+      "codex" => [
+        "codex plugin remove backplane-memory@backplane-local",
+        "codex plugin marketplace remove backplane-local"
+      ],
+      "cursor" => ["Restart Cursor"],
+      "hermes" => ["hermes memory off", "Restart Hermes"],
+      "openclaw" => [
+        "In ~/.openclaw/openclaw.json remove plugins.slots.memory and " <>
+          "plugins.entries.backplane-memory",
+        "Restart OpenClaw"
+      ]
+    }
+
+    for runtime <- ~w(claude_code codex cursor hermes openclaw) do
+      test "#{runtime}: remove returns the client-side uninstall steps", %{tmp_dir: tmp_dir} do
+        runtime = unquote(runtime)
+        opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+        {:ok, installed} = PluginInstaller.install("memory", runtime, opts)
+        assert is_list(installed["next_steps"]) and installed["next_steps"] != []
+
+        assert {:ok, removed} = PluginInstaller.remove("memory", runtime, opts)
+        assert removed["installed"] == false
+        assert removed["next_steps"] == @remove_steps[runtime]
+        refute Enum.any?(removed["next_steps"], &(&1 =~ ~r/marketplace add|plugin (install|add)/))
+      end
+
+      test "#{runtime}: status carries no install steps", %{tmp_dir: tmp_dir} do
+        runtime = unquote(runtime)
+        opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+        {:ok, _} = PluginInstaller.install("memory", runtime, opts)
+
+        assert {:ok, status} = PluginInstaller.status("memory", runtime, opts)
+        assert status["installed"] == true
+        refute Map.has_key?(status, "next_steps")
+      end
+    end
+
+    test "Hermes install tells how to enable the provider", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+      assert {:ok, result} = PluginInstaller.install("memory", "hermes", opts)
+
+      assert result["next_steps"] == [
+               "Enable the provider in the Hermes profile config " <>
+                 "(memory: provider: backplane-memory) or run: " <>
+                 "hermes memory setup backplane-memory",
+               "Restart Hermes"
+             ]
+    end
+
+    test "OpenClaw install tells how to enable the memory slot and hooks", %{tmp_dir: tmp_dir} do
+      opts = claude_opts(tmp_dir, %{source_root: source_root!(tmp_dir)})
+      assert {:ok, result} = PluginInstaller.install("memory", "openclaw", opts)
+
+      assert result["next_steps"] == [
+               ~s(In ~/.openclaw/openclaw.json set plugins.slots.memory to "backplane-memory"),
+               "In ~/.openclaw/openclaw.json set plugins.entries.backplane-memory.enabled " <>
+                 "and plugins.entries.backplane-memory.hooks.allowConversationAccess to true",
+               "Restart OpenClaw"
+             ]
+    end
+  end
+
+  describe "extra_runtimes test hook" do
+    @describetag :tmp_dir
+
+    test "is read from the atom key only and must be a map", %{tmp_dir: tmp_dir} do
+      data = Path.join([tmp_dir, "home", ".local", "share", "backplane"])
+      client = Path.join([data, "bin", "backplane-memory-hook"])
+      other = Path.join([tmp_dir, "home", ".extra", "backplane-memory"])
+
+      fake = %{
+        "cursor_like" => %{
+          uses_hook_client: true,
+          required_files: [],
+          target_parts: [".extra", "backplane-memory"]
+        }
+      }
+
+      for value <- ["nope", fake, %{"claude_code" => %{uses_hook_client: false}}] do
+        opts = claude_opts(tmp_dir, %{"extra_runtimes" => value})
+        {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+        File.mkdir_p!(other)
+        assert {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
+        refute File.exists?(client)
+        File.rm_rf!(other)
+      end
+
+      opts = claude_opts(tmp_dir, %{extra_runtimes: "nope"})
+      {:ok, _} = PluginInstaller.install("memory", "claude_code", opts)
+      assert {:ok, _} = PluginInstaller.remove("memory", "claude_code", opts)
+    end
   end
 
   defp source_root!(tmp_dir) do
@@ -184,11 +864,20 @@ defmodule Backplane.HostAgent.PluginInstallerTest do
     File.write!(Path.join(openclaw, "openclaw.plugin.json"), ~s({"id":"backplane-memory"}))
     File.write!(Path.join(openclaw, "plugin.mjs"), "export default {};\n")
 
-    for helper <- ~w(contract journal client context service rollout) do
+    for helper <- ~w(contract journal client context service) do
       File.write!(Path.join(openclaw, helper <> ".mjs"), "// packaged #{helper} helper\n")
     end
 
     File.write!(Path.join(openclaw, "plugin.yaml"), "name: openclaw\n")
+
+    claude = Path.join(source_root, "claude_code")
+    File.mkdir_p!(Path.join(claude, ".claude-plugin"))
+    File.cp_r!(Path.join(@real_source, "claude_code"), claude)
+    File.cp_r!(Path.join(@real_source, "codex"), Path.join(source_root, "codex"))
+    File.cp_r!(Path.join(@real_source, "cursor"), Path.join(source_root, "cursor"))
+    File.mkdir_p!(Path.join(source_root, "shared/bin"))
+    File.write!(Path.join(source_root, "shared/bin/backplane-memory-hook"), "#!/bin/sh\n")
+    File.write!(Path.join(source_root, "shared/INSTRUCTIONS.md"), "Shared instructions\n")
 
     source_root
   end

@@ -67,6 +67,8 @@ defmodule Backplane.LLM.Router do
 
   plug(Backplane.LLM.ResourceAuthorization)
 
+  plug(Backplane.LLM.OpenAI.Dispatch)
+
   plug(Backplane.Audio.RouteParser)
 
   plug(:dispatch)
@@ -124,6 +126,10 @@ defmodule Backplane.LLM.Router do
 
   get "/v1/responses" do
     Backplane.LLM.ResponsesWebSocket.call(conn)
+  end
+
+  get "/v1/realtime" do
+    Backplane.LLM.OpenAI.RealtimeWebSocket.call(conn)
   end
 
   get "/v1/responses/:response_id" do

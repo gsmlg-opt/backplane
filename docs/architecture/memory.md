@@ -126,10 +126,102 @@ the two rankings are fused with Reciprocal Rank Fusion. If no embedding model
 is configured, the proxy errors, or vectors are missing, search falls back to
 full-text results only.
 
-## Not yet built
+## Host collectors
 
-Host-side collectors and the Codex / Cursor / Claude Code / Sigma / Synapsis
-plugins are described in the spec and are delivered in later plans.
+Host agents scan local state (git checkouts, Docker containers, systemd
+services, launchd jobs, host facts) and upload only changes as
+`host.snapshot.collected` events (`integration`/`client_id` `host_collector`, no
+session). The payload is `{collector, unit, complete, items, host_label}` plus,
+for `git`, `unscanned`: `unit` is the scan root for `git` and `"local"`
+otherwise; `complete` is true only when the whole unit was scanned; `host_label`
+is the agent's `machine_name` (or its hostname) and names the host in fact
+content, while fact subjects always use the host id; `unscanned` lists
+directories below the root that could not be read. A repository whose git
+commands fail unexpectedly is dropped and the root marked incomplete. Strings
+are sanitized to valid UTF-8; commit subjects and branches are truncated to 200
+characters, and a snapshot that would exceed the capture `batch_bytes` limit
+keeps only its leading items and is marked incomplete. Host info reports IPv4
+addresses of physical interfaces and non-ephemeral listening ports; it is not
+reported at all when the listening scan fails. The agent remembers each unit's
+fingerprint in `collector_state.json` next to the capture spool (keyed by host
+id); deleting that file forces one full re-report, which the gateway diff turns
+into a no-op for unchanged items. The gateway validates the event like any other, then
+`Backplane.Memory.Workers.HostSnapshotWorker` (queue `:memory`, unique per
+event) applies it asynchronously; the job is enqueued in the same transaction
+as the insert, so an accepted event always has its job.
+
+`Backplane.Memory.HostSnapshots.apply/1` is deterministic (no LLM). One state
+row per (host, collector, unit) records the fact slots of the last applied
+snapshot (slot = `property|subject keys`). Applying diffs against it in one
+transaction: new or changed slots are written as `host_collector` facts
+(`writer`/`integration` `host_collector`, `host_id` = reporting host),
+unchanged slots are left alone, and vanished slots are forgotten.
+
+- Only facts whose writer is `host_collector` are ever invalidated; `agent` and
+  `user` facts are never touched.
+- Disappearance counts only when the unit's scan was `complete`. A disabled
+  collector, a removed or unreadable root, or a partial failure never
+  invalidates anything. Items at or below an `unscanned` directory are kept
+  even in a complete scan.
+- Ordering uses `occurred_at`. A snapshot older than the applied one (offline
+  spool, retries) is ignored as stale. Host clocks ahead of the gateway are
+  clamped to the gateway time so later snapshots are not mistaken for stale.
+- Invalid payloads are cancelled with a warning (no retry, no records); other
+  failures, including a failed forget (which rolls the whole apply back), retry.
+
+## Plugins
+
+Packages live under `integrations/memory/` and ship inside the host-agent
+release (`priv/integrations/memory`). All five clients reach memory through the
+local host agent (`127.0.0.1:4222`): MCP at `/memory/:agent_id/mcp`, direct tool
+calls at `/memory/:agent_id/call/:method`, capture at
+`/capture/v1/hooks/:integration/:hook`. Agent ids: `claude-code`, `codex`,
+`cursor`, `hermes`, `openclaw`.
+
+**Hook client.** `shared/bin/backplane-memory-hook <integration> <hook>` is a
+POSIX shell script that streams hook stdin to the capture endpoint with
+`curl --max-time 2`, discards all output and always exits 0, so a down or slow
+host agent never affects the agent. The base URL comes from
+`$BACKPLANE_HOST_AGENT_URL`, else the URL baked in at install, else the
+default. For Cursor `beforeSubmitPrompt` it prints `{"continue":true}`. Cursor
+events are normalized host-side (`conversation_id`, `workspace_roots`,
+camelCase event names).
+
+**Instruction source.** `shared/INSTRUCTIONS.md` is the single resident
+instruction (after finishing work, call `memory::remember` if something is worth
+keeping; no blocking Stop hook). It is shipped in each package's skill, served
+as `instructions` in MCP `initialize`, and a test fails on drift.
+
+**Install** (via `host_agent::install_plugin` with `plugin: "memory"`; the
+installer copies files only and never runs other CLIs, results carry
+`next_steps`). `<data>` is `~/.local/share/backplane`; every install also copies
+the hook client to `<data>/bin/backplane-memory-hook`.
+
+| Runtime | Installed to | Next steps |
+| --- | --- | --- |
+| `claude_code` | marketplace `<data>/plugins/claude` | `claude plugin marketplace add <data>/plugins/claude`, then `claude plugin install backplane-memory@backplane-local` |
+| `codex` | marketplace `<data>/plugins/codex` | `codex plugin marketplace add <data>/plugins/codex`, then `codex plugin add backplane-memory@backplane-local`; then start Codex interactively once and trust the plugin hooks when prompted (Codex does not run plugin hooks until trusted) |
+| `cursor` | merged into `~/.cursor/hooks.json` and `~/.cursor/mcp.json` (one-time `*.backplane-backup`; `remove` restores the user's own entries) | restart Cursor |
+| `hermes` | `~/.hermes/plugins/backplane-memory` | enable `memory: provider: backplane-memory` (or `hermes memory setup backplane-memory`), restart Hermes |
+| `openclaw` | `~/.openclaw/extensions/backplane-memory` | set `plugins.slots.memory`, the entry's `enabled` and `hooks.allowConversationAccess` in `~/.openclaw/openclaw.json`, restart OpenClaw |
+
+`remove` results carry the client-side uninstall commands instead (for example
+`claude plugin uninstall backplane-memory@backplane-local`); run them before or
+right after removing so no client keeps calling a deleted hook client.
+
+**Hermes and OpenClaw** keep native plugins that recall and write through the
+global tools. They surface memory only in a live, owner-private session and fail
+closed otherwise (OpenClaw requires an unsandboxed `owner-private` audience;
+see each README). A down or older host agent, or `gateway_unavailable`, degrades
+to no recall context without raising into the agent; writes are queued by the
+host.
+
+CI: `.github/workflows/memory-plugins.yml` runs the package, installer and hook
+tests and verifies the packaged release (`shared/bin/backplane-memory-hook`
+executable, `INSTRUCTIONS.md`, `claude_code`, `codex`, `cursor`).
+
+Sigma and Synapsis plugins are tracked as `internal request` issues in their
+own repositories: gsmlg-opt/sigma#3 and gsmlg-opt/Synapsis#25.
 
 ## Historical documents
 

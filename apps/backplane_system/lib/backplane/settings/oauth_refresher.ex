@@ -104,13 +104,16 @@ defmodule Backplane.Settings.OAuthRefresher do
 
   @spec register_figma_mcp_client(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def register_figma_mcp_client(redirect_uri, opts \\ []) do
+    # Figma currently rejects the Backplane name with 403; Codex is accepted.
+    # Only the registration name is shared, not Codex credentials or callbacks.
+    # Request Basic explicitly: Figma requires a secret even when it returns "none".
     body = %{
-      "client_name" => "Backplane",
+      "client_name" => "Codex",
       "redirect_uris" => [redirect_uri],
       "grant_types" => ["authorization_code", "refresh_token"],
       "response_types" => ["code"],
       "scope" => @figma_scope,
-      "token_endpoint_auth_method" => "none"
+      "token_endpoint_auth_method" => "client_secret_basic"
     }
 
     registration_url =

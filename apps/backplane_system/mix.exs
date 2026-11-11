@@ -1,7 +1,7 @@
 defmodule BackplaneSystem.MixProject do
   use Mix.Project
 
-  @version "1.10.66"
+  @version "1.10.71"
 
   def project do
     [
@@ -41,6 +41,7 @@ defmodule BackplaneSystem.MixProject do
       {:req, "~> 0.5", override: true},
       {:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, override: true},
       {:styx, "~> 0.1.1"},
+      {:secrethub_sdk, "~> 1.0.0-rc.32"},
       {:tzdata, "~> 1.1"},
       {:boruta, "~> 2.3"},
       {:joken, "~> 2.6"},

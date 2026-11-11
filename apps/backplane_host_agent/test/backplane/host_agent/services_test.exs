@@ -24,6 +24,12 @@ defmodule Backplane.HostAgent.ServicesTest do
     assert :error = Services.resolve("memory::search")
   end
 
+  test "every plugins tool declares an object inputSchema" do
+    for tool <- PluginsService.tools() do
+      assert %{"type" => "object"} = tool["inputSchema"], "#{tool["name"]} lacks inputSchema"
+    end
+  end
+
   test "resolve returns day and math local services" do
     assert {:ok, DayService, "now"} = Services.resolve("day::now")
     assert {:ok, MathService, "evaluate"} = Services.resolve("math::evaluate")
@@ -53,6 +59,11 @@ defmodule Backplane.HostAgent.ServicesTest do
     assert "host_agent::list_plugins" in tool_names
     assert "host_agent::install_plugin" in tool_names
     assert "host_agent::remove_plugin" in tool_names
+
+    install = Enum.find(PluginsService.tools(), &(&1["name"] == "host_agent::install_plugin"))
+
+    assert install["inputSchema"]["properties"]["runtime"]["enum"] ==
+             ~w(claude_code codex cursor hermes openclaw)
 
     assert {:ok, %{"installed" => true, "valid" => true, "target_path" => target}} =
              PluginsService.call(
@@ -144,6 +155,8 @@ defmodule Backplane.HostAgent.ServicesTest do
     File.write!(Path.join(hermes, "README.md"), "Backplane Hermes\n")
     File.write!(Path.join(hermes, "plugin.yaml"), "name: hermes\n")
     File.write!(Path.join(hermes, "__init__.py"), "# hermes\n")
+    File.mkdir_p!(Path.join(source_root, "shared"))
+    File.write!(Path.join(source_root, "shared/INSTRUCTIONS.md"), "Shared instructions\n")
 
     openclaw = Path.join(source_root, "openclaw")
     File.mkdir_p!(openclaw)

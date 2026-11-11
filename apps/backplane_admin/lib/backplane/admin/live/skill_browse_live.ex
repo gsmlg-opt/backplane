@@ -364,15 +364,42 @@ defmodule Backplane.Admin.SkillBrowseLive do
         class="mb-4 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-2"
       >
         <span class="text-sm font-medium">{MapSet.size(@selected)} selected</span>
-        <.dm_btn size="xs" phx-click="show-bulk" phx-value-action="tags" title="Set Tags">
-          <.dm_mdi name="tag-multiple" class="w-4 h-4" />
-        </.dm_btn>
-        <.dm_btn size="xs" phx-click="show-bulk" phx-value-action="category" title="Set Category">
-          <.dm_mdi name="shape" class="w-4 h-4" />
-        </.dm_btn>
-        <.dm_btn size="xs" variant="ghost" phx-click="clear-selection" title="Clear Selection">
-          <.dm_mdi name="close" class="w-4 h-4" />
-        </.dm_btn>
+        <.dm_tooltip :let={tooltip_attrs} content="Set tags" position="bottom">
+          <.dm_btn {tooltip_attrs}
+            type="button"
+            size="xs"
+            shape="circle"
+            aria-label="Set tags on selected skills"
+            phx-click="show-bulk"
+            phx-value-action="tags"
+          >
+            <.dm_mdi name="tag-multiple" class="w-4 h-4" />
+          </.dm_btn>
+        </.dm_tooltip>
+        <.dm_tooltip :let={tooltip_attrs} content="Set category" position="bottom">
+          <.dm_btn {tooltip_attrs}
+            type="button"
+            size="xs"
+            shape="circle"
+            aria-label="Set category on selected skills"
+            phx-click="show-bulk"
+            phx-value-action="category"
+          >
+            <.dm_mdi name="shape" class="w-4 h-4" />
+          </.dm_btn>
+        </.dm_tooltip>
+        <.dm_tooltip :let={tooltip_attrs} content="Clear selection" position="bottom">
+          <.dm_btn {tooltip_attrs}
+            type="button"
+            size="xs"
+            shape="circle"
+            variant="ghost"
+            aria-label="Clear skill selection"
+            phx-click="clear-selection"
+          >
+            <.dm_mdi name="close" class="w-4 h-4" />
+          </.dm_btn>
+        </.dm_tooltip>
       </div>
 
       <%!-- Bulk tag modal --%>
@@ -494,17 +521,20 @@ defmodule Backplane.Admin.SkillBrowseLive do
             </td>
             <td role="cell">
               <div class="flex gap-2">
-                <.dm_btn
-                  type="button"
-                  size="xs"
-                  variant="error"
-                  data-confirm={"Delete skill #{skill.name}?"}
-                  phx-click="delete"
-                  phx-value-id={skill.id}
-                  title="Delete"
-                >
-                  <.dm_mdi name="delete" class="w-4 h-4" />
-                </.dm_btn>
+                <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
+                  <.dm_btn {tooltip_attrs}
+                    type="button"
+                    size="xs"
+                    shape="circle"
+                    variant="error"
+                    aria-label={"Delete #{skill.name} skill"}
+                    data-confirm={"Delete skill #{skill.name}?"}
+                    phx-click="delete"
+                    phx-value-id={skill.id}
+                  >
+                    <.dm_mdi name="delete" class="w-4 h-4" />
+                  </.dm_btn>
+                </.dm_tooltip>
               </div>
             </td>
           </tr>
@@ -515,29 +545,43 @@ defmodule Backplane.Admin.SkillBrowseLive do
       <div :if={@total > 0} class="flex items-center justify-between mt-4 text-sm">
         <div class="flex items-center gap-2 text-on-surface-variant">
           <span>Page {@page} of {total_pages(@total)}</span>
-          <.dm_btn :if={MapSet.size(@selected) == 0} size="xs" phx-click="select-all" title="Select page">
-            <.dm_mdi name="checkbox-multiple-marked-outline" class="w-4 h-4" />
-          </.dm_btn>
+          <.dm_tooltip :if={MapSet.size(@selected) == 0} :let={tooltip_attrs} content="Select page" position="bottom">
+            <.dm_btn {tooltip_attrs}
+              type="button"
+              size="xs"
+              shape="circle"
+              aria-label="Select all skills on this page"
+              phx-click="select-all"
+            >
+              <.dm_mdi name="checkbox-multiple-marked-outline" class="w-4 h-4" />
+            </.dm_btn>
+          </.dm_tooltip>
         </div>
         <div class="flex items-center gap-2">
-          <.dm_btn
-            :if={@page > 1}
-            size="xs"
-            phx-click="page"
-            phx-value-page={@page - 1}
-            title="Previous"
-          >
-            <.dm_mdi name="chevron-left" class="w-4 h-4" />
-          </.dm_btn>
-          <.dm_btn
-            :if={@page < total_pages(@total)}
-            size="xs"
-            phx-click="page"
-            phx-value-page={@page + 1}
-            title="Next"
-          >
-            <.dm_mdi name="chevron-right" class="w-4 h-4" />
-          </.dm_btn>
+          <.dm_tooltip :if={@page > 1} :let={tooltip_attrs} content="Previous" position="bottom">
+            <.dm_btn {tooltip_attrs}
+              type="button"
+              size="xs"
+              shape="circle"
+              aria-label="Previous skills page"
+              phx-click="page"
+              phx-value-page={@page - 1}
+            >
+              <.dm_mdi name="chevron-left" class="w-4 h-4" />
+            </.dm_btn>
+          </.dm_tooltip>
+          <.dm_tooltip :if={@page < total_pages(@total)} :let={tooltip_attrs} content="Next" position="bottom">
+            <.dm_btn {tooltip_attrs}
+              type="button"
+              size="xs"
+              shape="circle"
+              aria-label="Next skills page"
+              phx-click="page"
+              phx-value-page={@page + 1}
+            >
+              <.dm_mdi name="chevron-right" class="w-4 h-4" />
+            </.dm_btn>
+          </.dm_tooltip>
         </div>
       </div>
 
@@ -555,9 +599,17 @@ defmodule Backplane.Admin.SkillBrowseLive do
         >
           <div class="sticky top-0 z-10 flex items-center justify-between border-b border-outline-variant bg-surface px-6 py-4">
             <h2 class="text-lg font-bold">{@selected_skill.name}</h2>
-            <.dm_btn size="xs" phx-click="close-detail" title="Close">
-              <.dm_mdi name="close" class="w-4 h-4" />
-            </.dm_btn>
+            <.dm_tooltip :let={tooltip_attrs} content="Close" position="bottom">
+              <.dm_btn {tooltip_attrs}
+                type="button"
+                size="xs"
+                shape="circle"
+                aria-label={"Close #{@selected_skill.name} skill details"}
+                phx-click="close-detail"
+              >
+                <.dm_mdi name="close" class="w-4 h-4" />
+              </.dm_btn>
+            </.dm_tooltip>
           </div>
 
           <div class="p-6 space-y-4">

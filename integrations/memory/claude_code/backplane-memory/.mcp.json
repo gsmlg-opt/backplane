@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "backplane-memory": {
+      "type": "http",
+      "url": "__HOST_AGENT_URL__/memory/claude-code/mcp"
+    }
+  }
+}

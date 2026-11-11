@@ -24,14 +24,16 @@ Figma OAuth client ID and secret.
 ## How the Backplane flow works
 
 1. An administrator opens **System → Credentials → Connect Figma MCP**.
-2. Backplane builds the callback URL from `BACKPLANE_ADMIN_URL`:
-   `BACKPLANE_ADMIN_URL/oauth/callback`.
+2. Dynamic registration uses the fixed `http://localhost:4221/callback` for manual
+   URL submission, even when Backplane is remote. Explicitly configured clients
+   retain `BACKPLANE_ADMIN_URL/oauth/callback`.
 3. If both explicit client variables are present, Backplane uses that client.
    If both are absent, it attempts Figma Dynamic Client Registration with this
    callback URL and the `mcp:connect` scope.
 4. Backplane opens Figma's authorization page with the client ID, callback,
    PKCE challenge, state, scope, and resource.
-5. Figma redirects to the callback. Backplane exchanges the authorization code,
+5. Figma redirects to localhost. Paste the full address into the original Backplane
+   page, even if the callback page cannot load. Backplane exchanges the authorization code,
    encrypts the access token, refresh token, and any dynamically registered
    client material, then stores the credential as an upstream OAuth credential.
 6. The MCP upstream sends the resulting access token as a Bearer token.
@@ -77,18 +79,22 @@ restarts.
 
 ## Automatic registration and HTTP 403
 
-Backplane supports automatic registration for environments where Figma permits
-Dynamic Client Registration. This does not bypass Figma's MCP Catalog policy.
-If registration returns HTTP 403, Figma is refusing the Backplane client as an
-unapproved client. Apply for approval and configure the issued client ID and
-secret instead.
+Backplane dynamically registers using the compatibility name `Codex`, while
+retaining its own callback and newly issued client credentials. On 2026-11-11,
+otherwise identical registration requests returned HTTP 403 for `Backplane` and
+HTTP 201 for `Codex`. This depends on Figma's current name-based acceptance and
+does not mean Backplane has been approved for the MCP Catalog. See the
+[current credential flow](../credentials/figma-mcp-oauth.md).
+
+A 403 response alone does not identify the rejection reason. An explicitly
+registered Backplane client remains the intended production configuration.
 
 Other common causes are:
 
-- `BACKPLANE_ADMIN_URL` is missing, points to localhost, or is not reachable
-  from the browser.
+- `BACKPLANE_ADMIN_URL` is not reachable from the browser. Localhost works when
+  the browser and Backplane run on the same machine.
 - The callback URI registered with Figma differs from
-  `BACKPLANE_ADMIN_URL/oauth/callback`.
+  the callback chosen by the active flow (`/callback` or `/oauth/callback`).
 - Only one of `FIGMA_MCP_CLIENT_ID` and `FIGMA_MCP_CLIENT_SECRET` is set.
 - The deployment is using a client issued for a different callback or Figma
   environment.

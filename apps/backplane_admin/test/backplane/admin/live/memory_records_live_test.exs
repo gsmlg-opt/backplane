@@ -39,9 +39,13 @@ defmodule Backplane.Admin.MemoryRecordsLiveTest do
 
     html = view |> form("#memory-record-forget", %{"reason" => "outdated"}) |> render_submit()
     refute html =~ "Stale fact"
-    assert {:ok, %{record: %{status: "forgotten", forgotten_reason: "outdated"}}} = Records.get(r.id)
 
-    html = view |> form("#memory-records-search", %{"include_inactive" => "true"}) |> render_change()
+    assert {:ok, %{record: %{status: "forgotten", forgotten_reason: "outdated"}}} =
+             Records.get(r.id)
+
+    html =
+      view |> form("#memory-records-search", %{"include_inactive" => "true"}) |> render_change()
+
     assert html =~ "Stale fact"
   end
 
@@ -72,17 +76,22 @@ defmodule Backplane.Admin.MemoryRecordsLiveTest do
       assert :ok = Settings.set("memory.llm_model", "")
 
       {:ok, view, html} = live_with_sandbox(conn, "/memory")
-      assert html =~ "提炼未启用：未配置 memory.llm_model"
+      assert html =~ "Distillation is off: memory.llm_model is not configured."
       assert has_element?(view, "#memory-llm-model-warning")
 
       assert :ok = Settings.set("memory.llm_model", "prov/model")
       {:ok, view, html} = live_with_sandbox(Phoenix.ConnTest.build_conn(), "/memory")
-      refute html =~ "提炼未启用"
+      refute html =~ "Distillation is off"
       refute has_element?(view, "#memory-llm-model-warning")
     end
 
     test "shows record counts", %{conn: conn} do
-      remember(%{"kind" => "fact", "property" => "p", "subjects" => [%{"type" => "a", "key" => "b"}]})
+      remember(%{
+        "kind" => "fact",
+        "property" => "p",
+        "subjects" => [%{"type" => "a", "key" => "b"}]
+      })
+
       {:ok, _view, html} = live_with_sandbox(conn, "/memory")
       assert html =~ "fact"
     end

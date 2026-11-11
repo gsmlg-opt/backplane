@@ -101,7 +101,7 @@ defmodule Backplane.Admin.EndpointTest do
     app_js = File.read!(Path.expand("../../../assets/js/app.js", __DIR__))
 
     assert app_js =~
-             "hooks: {...DuskmoonHooks, DuskmoonLeftMenu: SessionLeftMenu, AdminSidebarSession, ReplayKeyboard, ThemeSegmentControl}"
+             "hooks: {...DuskmoonHooks, DuskmoonLeftMenu: SessionLeftMenu, AdminSidebarSession, ReplayKeyboard, ThemeSegmentControl, OpenAIServiceModal}"
 
     refute app_js =~ ".theme-controller-dropdown"
     refute app_js =~ ~s|removeAttribute("data-theme")|

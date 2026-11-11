@@ -303,11 +303,12 @@ defmodule Backplane.Admin.ManagedToolDetailLive do
           <:title>
             <div class="flex items-center justify-between w-full">
               <span>Test Tool</span>
-              <.dm_tooltip :let={tooltip_attrs} :if={@test_result || @test_error} content="Clear results">
+              <.dm_tooltip :let={tooltip_attrs} :if={@test_result || @test_error} content="Clear results" position="bottom">
                 <.dm_btn {tooltip_attrs}
                   size="xs"
                   shape="circle"
                   variant="ghost"
+                  aria-label={"Clear #{@tool.name} test results"}
                   phx-click="clear_result"
                 >
                   <.dm_mdi name="close" class="w-4 h-4" />

@@ -4,12 +4,12 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
   @integrations_root Path.expand("../../../../../../integrations/memory", __DIR__)
 
   @tag timeout: 20_000
-  test "Hermes packaged provider uses bound recall source and durable capture contracts" do
+  test "Hermes packaged provider uses the global memory tools and durable capture" do
     python = System.find_executable("python3") || flunk("python3 is required")
     source = Path.join([@integrations_root, "hermes", "__init__.py"])
 
-    script = ~S'''
-    import contextlib, hashlib, importlib.util, io, json, os, sys, tempfile, threading, time
+    script = ~S"""
+    import contextlib, importlib.util, io, json, logging, os, sys, tempfile, threading, time
     from pathlib import Path
     from urllib.error import URLError
     from urllib.parse import urlparse
@@ -19,20 +19,11 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     plugin = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = plugin
     spec.loader.exec_module(plugin)
-    sys.path.insert(0, str(Path(sys.argv[1]).parent.parent / "tests"))
-    from test_hermes_runtime import load_pinned_scrubber
-    scrubber = load_pinned_scrubber()
     calls, calls_lock = [], threading.Lock()
     capture_entered, capture_release, capture_returned = (threading.Event() for _ in range(3))
-    access_id = "74be1bcf-a924-4fb4-9a3a-8cddf8d857b7"
-    binding = {"access_id": access_id, "authority_version": 1, "partition": {
-        "memory_space_id": "1123e91e-203b-47a4-9d2f-dcb0317094cd",
-        "scope": "host-bound-fixture", "namespace": "private"}}
-    fingerprint = hashlib.sha256(plugin.canonical_json(binding).encode()).hexdigest()
-    capabilities = {"protocol": "memory_sources.v1", "supported": True, "ready": True,
-        "negotiated": ["memory_sources.v1", "hermes_capture.v1"],
-        "binding": binding, "binding_fingerprint": fingerprint, "capture_ready": True,
-        "capture_binding": binding, "capture_binding_fingerprint": fingerprint}
+    record = {"id": "mem-1", "kind": "fact", "content": "prior memory query fact", "status": "active",
+              "observed_at": "2026-11-09T10:00:00Z",
+              "provenance": {"host": "gao-mbp", "agent": "codex", "writer": "agent"}}
 
     class Response:
         def __init__(self, body): self.body = body
@@ -45,26 +36,13 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
         path = urlparse(request.full_url).path
         with calls_lock:
             calls.append({"url": request.full_url, "method": request.method, "body": body, "timeout": timeout})
-        if path.endswith("/source_capabilities"):
-            return Response({"ok": True, "result": capabilities})
-        if path.endswith("/recall"):
-            return Response({"ok": True, "result": {"results": [{
-                "canonical_id": "context-fixture", "revision": 7,
-                "content": "prior memory query fact", "policy_version": "current_context.v1",
-                "lifecycle_state": "active", "effective_support": True,
-                "support_complete": True, "independent_support": True,
-                "source_refs": [], "trust": "candidate_inference",
-                "expires_at": None, "valid_until": None}]}})
-        if path.endswith("/remember"):
-            return Response({"ok": True, "result": {"success": True}})
-        if path.endswith("/source_mutate") or path.endswith("/source_reconcile"):
-            return Response({"ok": True, "result": {"protocol": "memory_sources.v1",
-                "event_id": body["event_id"], "status": "committed", "outcome": "applied",
-                "authority": "canonical", "consistency": "canonical"}})
+        if path.endswith("/call/search"):
+            return Response({"ok": True, "result": {"results": [record]}})
+        if path.endswith("/call/remember"):
+            return Response({"ok": True, "result": {**record, "id": "mem-saved", "content": body["content"]}})
         if path == "/capture/v1/status":
             return Response({"ok": True, "result": {"protocol": "hermes_capture.v1",
-                "items": [{"event_id": event, "status": "canonical_committed"}
-                    for event in body["event_ids"]]}})
+                "items": [{"event_id": event, "status": "canonical_committed"} for event in body["event_ids"]]}})
         if path.startswith("/capture/v1/hooks/hermes/"):
             if path.endswith("/message"):
                 capture_entered.set()
@@ -72,44 +50,31 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
                     raise AssertionError("capture release deadline exceeded")
                 capture_returned.set()
             return Response({"ok": True, "status": "accepted", "event_id": body["event_id"]})
-        raise AssertionError("unexpected request path")
+        raise AssertionError("unexpected request path " + path)
+
+    warnings = io.StringIO()
+    handler = logging.StreamHandler(warnings)
+    plugin.logger.addHandler(handler)
+    plugin.logger.propagate = False
 
     with tempfile.TemporaryDirectory(prefix="backplane-hermes-contract-") as temporary:
         home = Path(temporary).resolve()
-        (home / "memories").mkdir()
-        for name in ("MEMORY.md", "USER.md"):
-            (home / "memories" / name).write_text("", encoding="utf-8")
         (home / "backplane-memory.json").write_text(json.dumps({
-            "url": "http://127.0.0.1:4222", "agent_id": "hermes test",
-            "memory_access_id": access_id}), encoding="utf-8")
+            "url": "http://127.0.0.1:4222", "agent_id": "hermes test"}), encoding="utf-8")
         provider = plugin.BackplaneMemoryProvider()
         with patch.dict(os.environ, {}, clear=True), \
              patch.object(plugin, "urlopen", side_effect=urlopen), \
-             patch.object(plugin, "_load_egress_scrubber", return_value=scrubber), \
              patch("socket.socket.connect", side_effect=AssertionError("network forbidden")):
             try:
                 provider.initialize("session-1", hermes_home=str(home), cwd=str(home / "checkout"))
-                initial = provider.flush(timeout=3, canonical=True)
-                assert initial["success"], initial
                 with patch.object(plugin, "_post", side_effect=AssertionError("local API must not send")):
                     available = provider.is_available()
                     prompt = provider.system_prompt_block()
-                provider.queue_prefetch("memory query")
-                deadline = time.monotonic() + 3
-                recall = ""
-                while time.monotonic() < deadline and not recall:
-                    recall = provider.prefetch("memory query")
-                    if not recall:
-                        time.sleep(0.01)
-                assert recall, "prefetch deadline exceeded"
-                saved = json.loads(provider.handle_tool_call("memory_save", {
+                context = provider.prefetch("memory query")
+                saved = json.loads(provider.handle_tool_call("memory_remember", {
                     "content": "remember me", "tags": ["m18"]}))
-                (home / "memories" / "MEMORY.md").write_text(
-                    "native fact API_KEY=synthetic-private-secret-value", encoding="utf-8")
-                provider.on_memory_write("add", "memory", "native fact API_KEY=synthetic-private-secret-value",
-                    metadata={"session_id": "session-native", "role": "user"})
-                source_settled = provider.flush(timeout=3, canonical=True)
-                assert source_settled["success"], source_settled
+                provider.on_memory_write("add", "memory", "native fact",
+                    metadata={"session_id": "session-native"})
 
                 started = time.monotonic()
                 provider.sync_turn("actual user", "actual assistant", session_id="session-2", messages=[
@@ -129,30 +94,30 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
                 provider.shutdown()
             shutdown = provider.delivery_status()
 
-    warnings = io.StringIO()
     with patch.object(plugin, "urlopen", side_effect=URLError("private-secret")), \
-         patch("socket.socket.connect", side_effect=AssertionError("network forbidden")), \
-         contextlib.redirect_stderr(warnings):
-        failure = plugin._post("http://127.0.0.1:4222", "hermes test", "recall", {"query": "private-secret"})
+         patch("socket.socket.connect", side_effect=AssertionError("network forbidden")):
+        failure = plugin._post("http://127.0.0.1:4222", "hermes test", "search", {"query": "private-secret"})
 
     print(json.dumps({"calls": calls, "available": available, "prompt": prompt,
-        "recall": recall, "saved": saved, "elapsed_ms": elapsed_ms,
+        "context": context, "saved": saved, "elapsed_ms": elapsed_ms,
         "durable": durable, "capture_blocked": capture_blocked, "settled": settled,
         "shutdown": shutdown, "journal_owned": journal_owned,
         "failure": failure, "warnings": warnings.getvalue()}))
-    '''
+    """
 
     {output, 0} = System.cmd(python, ["-B", "-c", script, source], stderr_to_stdout: true)
     refute output =~ "private-secret"
     result = Jason.decode!(output)
 
     assert result["available"]
-    refute result["prompt"] =~ "prior memory query fact"
 
-    assert result["recall"] ==
-             "- [candidate inference; context-fixture; revision 7] prior memory query fact"
+    assert result["prompt"] ==
+             File.read!(Path.join([@integrations_root, "shared", "INSTRUCTIONS.md"]))
 
-    assert result["saved"] == %{"success" => true}
+    assert result["context"] =~ "prior memory query fact"
+    assert result["context"] =~ "host gao-mbp"
+    assert result["context"] =~ "agent codex"
+    assert result["saved"]["id"] == "mem-saved"
     assert result["elapsed_ms"] < 100
     assert result["capture_blocked"]
     assert result["journal_owned"]
@@ -163,54 +128,33 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     assert result["warnings"] =~ "request_failed"
 
     calls = result["calls"]
-    access_id = "74be1bcf-a924-4fb4-9a3a-8cddf8d857b7"
-    recall_calls = Enum.filter(calls, &String.ends_with?(&1["url"], "/call/recall"))
-    assert recall_calls != []
+    base = "http://127.0.0.1:4222/memory/hermes%20test/call/"
 
-    for recall <- recall_calls do
-      assert recall["url"] == "http://127.0.0.1:4222/memory/hermes%20test/call/recall"
+    assert [search] = Enum.filter(calls, &String.ends_with?(&1["url"], "/call/search"))
+    assert search["url"] == base <> "search"
+    assert search["body"] == %{"query" => "memory query", "limit" => 8}
 
-      assert recall["body"] == %{
-               "query" => "memory query",
-               "limit" => 5,
-               "token_budget" => 1200,
-               "memory_access_id" => access_id
-             }
-    end
+    assert [tool, mirrored] = Enum.filter(calls, &String.ends_with?(&1["url"], "/call/remember"))
+    assert tool["url"] == base <> "remember"
 
-    assert [remember] = Enum.filter(calls, &String.ends_with?(&1["url"], "/call/remember"))
-    assert remember["url"] == "http://127.0.0.1:4222/memory/hermes%20test/call/remember"
-
-    assert remember["body"] == %{
+    assert tool["body"] == %{
              "content" => "remember me",
-             "type" => "semantic",
              "tags" => ["m18"],
-             "session_id" => "session-1",
-             "memory_access_id" => access_id
+             "session_id" => "session-1"
            }
 
-    assert [capabilities] =
-             Enum.filter(calls, &String.ends_with?(&1["url"], "/call/source_capabilities"))
+    assert %{
+             "content" => "native fact",
+             "kind" => "note",
+             "writer" => "agent",
+             "session_id" => "session-native",
+             "request_key" => "hermes:" <> _
+           } = mirrored["body"]
 
-    assert capabilities["body"] == %{"memory_access_id" => access_id}
-    assert [mutation] = Enum.filter(calls, &String.ends_with?(&1["url"], "/call/source_mutate"))
-    source = mutation["body"]
-    assert source["protocol"] == "memory_sources.v1"
-    assert source["operation"] == "upsert"
-    assert source["type"] == "semantic"
-    assert source["memory_access_id"] == access_id
-    assert source["source"]["integration"] == "hermes"
-    assert source["source"]["target"] == "memory"
-    assert {:ok, _} = Ecto.UUID.cast(source["source"]["installation_id"])
-    assert {:ok, _} = Ecto.UUID.cast(source["source"]["profile_id"])
-    assert {:ok, _} = Ecto.UUID.cast(source["entry_id"])
-    assert {:ok, _} = Ecto.UUID.cast(source["event_id"])
-    assert source["revision"] > 0
-    assert source["content"] =~ "native fact"
-    refute Jason.encode!(calls) =~ "synthetic-private-secret-value"
-    assert source["provenance"]["session_id"] == "session-native"
-    assert source["provenance"]["role"] == "user"
-    assert String.ends_with?(source["provenance"]["cwd"], "/checkout")
+    for retired <-
+          ~w(source_capabilities source_mutate source_reconcile source_status recall list) do
+      refute Enum.any?(calls, &String.ends_with?(&1["url"], "/call/" <> retired))
+    end
 
     assert [%{"role" => "user"} = user, %{"role" => "assistant"} = assistant] =
              Enum.sort_by(result["durable"], & &1["source_sequence"])
@@ -237,12 +181,10 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
 
     for call <- calls do
       assert call["method"] == "POST"
-      assert call["timeout"] == 20
+      assert call["timeout"] <= 20
       refute Map.has_key?(call["body"], "scope")
       refute Map.has_key?(call["body"], "host_id")
-
-      if String.contains?(call["url"], "/capture/"),
-        do: refute(Map.has_key?(call["body"], "memory_access_id"))
+      refute Map.has_key?(call["body"], "memory_access_id")
     end
   end
 
@@ -259,7 +201,7 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     end
   end
 
-  test "OpenClaw packaged plugin declares policy-bound hooks, tools, and provider flush" do
+  test "OpenClaw packaged plugin registers the global memory tools, hooks and instructions" do
     node = System.find_executable("node") || flunk("node is required")
     source = Path.join([@integrations_root, "openclaw", "plugin.mjs"])
 
@@ -268,12 +210,16 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
     const { default: plugin } = await import(pathToFileURL(process.argv[1]).href);
     const hooks = {}, registrations = {}, warnings = [];
     plugin.register({
-      pluginConfig: { enabled: true, bindings: [{ agent_id: "main", memory_access_id: "11111111-1111-4111-8111-111111111111" }] },
+      pluginConfig: { enabled: true },
       config: { plugins: { entries: { "backplane-memory": { hooks: { allowConversationAccess: true } } } } },
       logger: { warn: (message) => warnings.push(message) },
       on: (name, _handler, options) => { hooks[name] = options || {}; },
       registerTool: (factory, options) => { registrations.tools = { contextVersion: factory.contextVersion, names: options.names }; },
-      registerMemoryCapability: (capability) => { registrations.flush = capability.providerFlushPlanResolver(); registrations.runtime = typeof capability.providerRuntime.open; },
+      registerMemoryCapability: (capability) => {
+        registrations.flush = capability.providerFlushPlanResolver();
+        registrations.runtime = typeof capability.providerRuntime.open;
+        registrations.prompt = capability.promptBuilder();
+      },
       registerService: (service) => { registrations.service = service.id; },
     });
     console.log(JSON.stringify({ hooks, registrations, warnings }));
@@ -288,7 +234,6 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
              "session_end"
            ]
 
-    assert result["hooks"]["before_prompt_build"] == %{"requiresToolAuthority" => true}
     assert result["registrations"]["tools"]["contextVersion"] == 2
 
     manifest =
@@ -297,48 +242,87 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
       |> File.read!()
       |> Jason.decode!()
 
-    assert Enum.sort(result["registrations"]["tools"]["names"]) ==
-             Enum.sort(manifest["contracts"]["tools"])
+    tool_names =
+      Enum.map(Backplane.MemoryToolContract.tools(), fn "memory::" <> short ->
+        "backplane_memory_" <> short
+      end)
+
+    assert Enum.sort(result["registrations"]["tools"]["names"]) == Enum.sort(tool_names)
+    assert Enum.sort(manifest["contracts"]["tools"]) == Enum.sort(tool_names)
+    refute Map.has_key?(manifest["configSchema"]["properties"], "bindings")
+
+    assert hd(result["registrations"]["prompt"]) ==
+             File.read!(Path.join(@integrations_root, "shared/INSTRUCTIONS.md"))
+
+    assert String.trim_trailing(hd(result["registrations"]["prompt"])) ==
+             Backplane.MemoryToolContract.instructions()
 
     assert result["registrations"]["runtime"] == "function"
     assert result["registrations"]["service"] == "backplane-memory-delivery"
 
-    assert result["registrations"]["flush"]["persistenceToolNames"] ==
-             ["backplane_memory_save", "backplane_memory_correct"]
+    assert result["registrations"]["flush"]["persistenceToolNames"] == [
+             "backplane_memory_remember"
+           ]
 
     assert result["registrations"]["flush"]["lookupToolNames"] ==
-             ["backplane_memory_search", "backplane_memory_get", "backplane_memory_status"]
+             ["backplane_memory_search", "backplane_memory_get", "backplane_memory_recent"]
 
     assert result["warnings"] == []
   end
 
-  test "OpenClaw missing permission and invalid context fail closed without secret diagnostics" do
+  @tag :tmp_dir
+  test "OpenClaw hooks degrade without throwing or leaking content and capture stays contract-valid",
+       %{tmp_dir: tmp_dir} do
     node = System.find_executable("node") || flunk("node is required")
     source = Path.join([@integrations_root, "openclaw", "plugin.mjs"])
 
     script = ~S'''
     import { pathToFileURL } from "node:url";
     const { default: plugin } = await import(pathToFileURL(process.argv[1]).href);
-    const warnings = [], missing = [], hooks = {};
-    let calls = 0, caught;
-    globalThis.fetch = async () => { calls++; throw new Error("private-secret"); };
+    const warnings = [], missing = [], hooks = {}, captures = [], paths = [];
+    let mode = "throw";
+    globalThis.fetch = async (url, init) => {
+      const path = new URL(url).pathname, body = JSON.parse(init.body);
+      paths.push(path);
+      if (mode === "throw" && path.startsWith("/memory/")) throw new Error("private-secret");
+      if (path.startsWith("/memory/")) return { ok: false, status: 503, json: async () => ({ ok: false, error: "gateway_unavailable" }) };
+      if (path.startsWith("/capture/v1/hooks/")) {
+        captures.push({ hook: path.split("/").at(-1), body });
+        return { ok: true, status: 202, json: async () => ({ ok: true, status: "accepted", event_id: body.event_id }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, result: { protocol: "openclaw_capture.v1", items: [] } }) };
+    };
     const base = {
       logger: { warn: (message) => warnings.push(message) },
       registerTool() {}, registerMemoryCapability() {}, registerService() {},
     };
     plugin.register({ ...base, on: (name) => missing.push(name) });
-    plugin.register({ ...base, pluginConfig: { fallback_on_error: false },
+    let dispose;
+    plugin.register({ ...base, pluginConfig: { journal_path: process.argv[2] + "/delivery.sqlite" },
       config: { plugins: { entries: { "backplane-memory": { hooks: { allowConversationAccess: true } } } } },
-      on: (name, handler) => { hooks[name] = handler; },
+      on: (name, handler) => { hooks[name] = handler; }, lifecycle: { onDispose: (fn) => { dispose = fn; } },
     });
-    try { await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, {}); }
-    catch (error) { caught = error.message; }
-    let endCaught;
-    try { await hooks.agent_end({ success: true, messages: [{ role: "user", content: "private-secret" }] }, {}); }
-    catch (error) { endCaught = error.message; }
-    const disabled = [];
-    plugin.register({ pluginConfig: { enabled: false }, on: () => disabled.push("hook"), registerTool: () => disabled.push("tool"), registerMemoryCapability: () => disabled.push("provider"), registerService: () => disabled.push("service") });
-    console.log(JSON.stringify({ missing, disabled, warnings, calls, caught, endCaught }));
+    const results = {};
+    results.invalid = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, {}) ?? null;
+    const live = () => {};
+    const ctx = { agentId: "main", sessionId: "session-one", sessionKey: "agent:main:main", runId: "run-one",
+      memoryAudience: { kind: "owner-private", agentId: "main" }, sandboxed: false,
+      assertMemoryAudienceCurrent: live, assertInvocationCurrent: live,
+      toolAuthority: { assertActive: live, allows: () => true }, hookInvocation: { assertActive: live } };
+    results.shared = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] },
+      { ...ctx, runId: "shared", memoryAudience: { kind: "conversation", agentId: "main" } }) ?? null;
+    results.missing = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] },
+      { ...ctx, runId: "missing", sandboxed: undefined }) ?? null;
+    results.thrown = await hooks.before_prompt_build({ prompt: "private-secret", messages: [] }, ctx) ?? null;
+    mode = "unavailable";
+    const next = { ...ctx, runId: "run-two" };
+    const history = [{ role: "user", content: "private-secret" }];
+    results.unavailable = await hooks.before_prompt_build({ prompt: "what changed?", messages: history }, next) ?? null;
+    await hooks.agent_end({ messages: [...history, { role: "user", content: "what changed?" }, { role: "assistant", content: "an answer" }] }, next);
+    await hooks.session_end({ sessionId: "session-one", reason: "reset" }, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await dispose();
+    console.log(JSON.stringify({ missing, warnings, results, captures, paths }));
     '''
 
     {output, 0} =
@@ -347,16 +331,36 @@ defmodule Backplane.HostAgent.Memory.IntegrationPluginContractTest do
         "--input-type=module",
         "-e",
         script,
-        source
+        source,
+        tmp_dir
       ])
 
     result = Jason.decode!(output)
     assert result["missing"] == []
-    assert result["disabled"] == []
-    assert result["calls"] == 0
-    assert is_binary(result["caught"])
-    assert is_binary(result["endCaught"])
+
+    assert result["results"] == %{
+             "invalid" => nil,
+             "shared" => nil,
+             "missing" => nil,
+             "thrown" => nil,
+             "unavailable" => nil
+           }
+
     assert Enum.any?(result["warnings"], &String.contains?(&1, "conversation_access_required"))
-    refute output =~ "private-secret"
+
+    assert Enum.any?(
+             result["warnings"],
+             &String.contains?(&1, "memory search failed: gateway_unavailable (HTTP 503)")
+           )
+
+    refute Enum.any?(result["warnings"], &String.contains?(&1, "private-secret"))
+    refute Enum.any?(result["paths"], &(&1 =~ ~r/source_|recall|\/list$/))
+
+    assert Enum.map(result["captures"], & &1["hook"]) ==
+             ["session-start", "message", "message", "message", "session-end"]
+
+    for %{"hook" => hook, "body" => body} <- result["captures"] do
+      assert {:ok, _event_type} = Backplane.OpenClawCaptureContract.validate(hook, body)
+    end
   end
 end

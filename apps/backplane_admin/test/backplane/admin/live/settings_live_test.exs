@@ -359,18 +359,15 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       assert has_element?(
                view,
-               ~s(a[href="/system/credentials/plain-action-key/edit"] el-dm-button[aria-label="Edit plain-action-key"])
+               ~s(a.btn-circle[href="/system/credentials/plain-action-key/edit"][aria-label="Edit plain-action-key"])
              )
 
       assert has_element?(
                view,
-               ~s(a[href="/system/credentials/oauth-action-key/edit"] el-dm-button[aria-label="Edit oauth-action-key"])
+               ~s(a.btn-circle[href="/system/credentials/oauth-action-key/edit"][aria-label="Edit oauth-action-key"])
              )
 
-      refute has_element?(
-               view,
-               ~s(a[href="/system/credentials/new/anthropic_oauth"] el-dm-button[aria-label="Reconnect oauth-action-key"])
-             )
+      refute has_element?(view, ~s([aria-label="Reconnect oauth-action-key"]))
 
       assert has_element?(
                view,
@@ -658,8 +655,12 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       assert query["code_challenge"] == expected_challenge
     end
 
-    test "registers a Figma client when explicit credentials are absent", %{conn: conn} do
+    test "registers a loopback Figma callback independently of the remote admin origin", %{
+      conn: conn
+    } do
       configured = Application.get_env(:backplane, OAuthRefresher, [])
+      prior_admin_url = Application.fetch_env!(:backplane, :admin_url)
+      Application.put_env(:backplane, :admin_url, "https://remote-admin.example.test")
 
       prior_env =
         snapshot_env(
@@ -681,6 +682,7 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
       System.delete_env("FIGMA_MCP_TOKEN_ENDPOINT_AUTH_METHOD")
 
       on_exit(fn ->
+        Application.put_env(:backplane, :admin_url, prior_admin_url)
         Application.put_env(:backplane, OAuthRefresher, configured)
         restore_env(prior_env)
       end)
@@ -696,11 +698,13 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest do
 
       query = auth_url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
       assert query["client_id"] == "dynamic-figma-client"
+      assert query["redirect_uri"] == "http://localhost:4221/callback"
       assert {:ok, attrs} = OAuthStateStore.pop(query["state"])
 
       assert attrs["oauth_client"] == %{
                "client_id" => "dynamic-figma-client",
-               "token_endpoint_auth_method" => "none"
+               "client_secret" => "dynamic-figma-secret",
+               "token_endpoint_auth_method" => "client_secret_basic"
              }
 
       assert attrs["persist_oauth_client"]
@@ -1429,12 +1433,12 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
     body = conn.body_params
 
     if body == %{
-         "client_name" => "Backplane",
-         "redirect_uris" => [Backplane.WebOrigins.admin_url("/oauth/callback")],
+         "client_name" => "Codex",
+         "redirect_uris" => ["http://localhost:4221/callback"],
          "grant_types" => ["authorization_code", "refresh_token"],
          "response_types" => ["code"],
          "scope" => "mcp:connect",
-         "token_endpoint_auth_method" => "none"
+         "token_endpoint_auth_method" => "client_secret_basic"
        } do
       conn
       |> put_resp_content_type("application/json")
@@ -1442,7 +1446,8 @@ defmodule Backplane.Admin.AdminSettingsSplitLiveTest.DeviceAuthMockEndpoint do
         201,
         Jason.encode!(%{
           "client_id" => "dynamic-figma-client",
-          "token_endpoint_auth_method" => "none"
+          "client_secret" => "dynamic-figma-secret",
+          "token_endpoint_auth_method" => "client_secret_basic"
         })
       )
     else

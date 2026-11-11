@@ -253,6 +253,8 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
   end
 
   test "request options enforce fixed endpoints, bounded timeouts and disabled logging" do
+    clear_proxy_env()
+
     Application.put_env(:backplane_monitor, :openrouter_req_options,
       adapter: InspectingAdapter,
       url: "https://example.com",
@@ -280,6 +282,30 @@ defmodule Backplane.Monitor.Providers.OpenRouterTest do
            ]
 
     assert Req.Request.get_header(request, "authorization") == ["Bearer key"]
+
+    System.put_env("HTTPS_PROXY", "http://10.0.0.1:3128")
+    assert {:ok, _result} = OpenRouter.fetch("key")
+    assert_receive {:request, request}
+    refute Map.has_key?(request.options, :connect_options)
+
+    assert request.options.finch[:conn_opts] == [
+             transport_opts: [timeout: 5_000],
+             proxy: {:http, "10.0.0.1", 3128, []}
+           ]
+  end
+
+  @proxy_vars ~w(HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy NO_PROXY no_proxy)
+
+  defp clear_proxy_env do
+    saved = Map.new(@proxy_vars, &{&1, System.get_env(&1)})
+    Enum.each(@proxy_vars, &System.delete_env/1)
+
+    on_exit(fn ->
+      Enum.each(saved, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end)
   end
 
   test "adapter exceptions containing secrets are returned as safe request failures" do

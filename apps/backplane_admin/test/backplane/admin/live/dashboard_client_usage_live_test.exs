@@ -21,19 +21,50 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
     {:ok, view, html} = live_with_sandbox(conn, "/dashboard/usage/clients")
 
     assert html =~ "Client Usage"
-    assert html =~ "usage-client"
-    assert html =~ "1,000"
-    assert html =~ "250"
-    assert html =~ "MCP Usage"
-    assert html =~ "gpt-test"
-    assert html =~ "math::add"
-    refute has_element?(view, "#client-#{client.id}-models th", "Cached Tokens")
+    assert has_element?(view, ~s(#client-usage-tab-llm.tab-active[aria-selected="true"]), "LLM")
+    assert has_element?(view, ~s(#client-usage-tab-mcp[aria-selected="false"]), "MCP")
+    assert has_element?(view, "#client-llm-usage-table td", "usage-client")
+    assert has_element?(view, "#client-llm-usage-table td", "gpt-test")
+    assert has_element?(view, "#client-llm-usage-table td", "1,000 / 200 (20.0%)")
+    assert has_element?(view, "#client-llm-usage-table td", "250")
+    refute has_element?(view, "#client-llm-usage-table th", "Cached Tokens")
+    refute has_element?(view, "#client-mcp-usage")
 
-    assert has_element?(
-             view,
-             "#client-#{client.id}-models td",
-             "1,000 / 200 (20.0%)"
-           )
+    view |> element("#client-usage-tab-mcp") |> render_click()
+    assert_patch(view, "/dashboard/usage/clients/mcp?range=today")
+
+    assert has_element?(view, ~s(#client-usage-tab-mcp.tab-active[aria-selected="true"]))
+    assert has_element?(view, "#client-mcp-tools-table td", "usage-client")
+    assert has_element?(view, "#client-mcp-tools-table td", "math::add")
+    assert has_element?(view, "#client-mcp-rpc-table td", "tools/call")
+    assert has_element?(view, "#client-mcp-rpc-table td", "40 ms")
+    refute has_element?(view, "#client-llm-usage")
+  end
+
+  test "keeps the selected range when switching tabs and lists clients without usage", %{
+    conn: conn
+  } do
+    {active, _token} = insert_client(name: "busy-client", token: "busy-client-token")
+    {_idle, _token} = insert_client(name: "idle-client", token: "idle-client-token")
+    insert_timed_usage(active, "yesterday", DateTime.add(DateTime.utc_now(), -1, :day))
+
+    {:ok, view, _html} = live_with_sandbox(conn, "/dashboard/usage/clients?range=week")
+
+    assert has_element?(view, "#client-llm-usage-table td", "yesterday-model")
+    assert has_element?(view, "#client-usage-idle", "No LLM usage: idle-client")
+    refute has_element?(view, "#client-usage-idle", "busy-client")
+
+    view |> element("#client-usage-tab-mcp") |> render_click()
+    assert_patch(view, "/dashboard/usage/clients/mcp?range=week")
+    assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "最近一周")
+    assert has_element?(view, "#client-mcp-tools-table td", "yesterday::tool")
+    assert has_element?(view, "#client-usage-idle", "No MCP usage: idle-client")
+
+    path = "/dashboard/usage/clients/mcp?range=today"
+    view |> element(~s(#client-usage-range a[href="#{path}"])) |> render_click()
+    assert_patch(view, path)
+    refute has_element?(view, "#client-mcp-tools-table")
+    assert has_element?(view, "#client-mcp-usage", "No MCP usage recorded in this range.")
   end
 
   test "defaults missing and invalid client ranges to today for LLM and MCP usage", %{
@@ -53,12 +84,11 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
 
       assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "今天")
 
-      for {table, suffix} <- [{"models", "-model"}, {"rpc", "/method"}, {"tools", "::tool"}] do
-        selector = "#client-#{client.id}-#{table}"
+      each_usage_table(view, path, fn selector, suffix ->
         assert has_element?(view, selector, "today#{suffix}")
         refute has_element?(view, selector, "yesterday#{suffix}")
         refute has_element?(view, selector, "future#{suffix}")
-      end
+      end)
     end
 
     for label <- ["今天", "昨天", "最近一周", "最近二周", "最近一月"] do
@@ -112,8 +142,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
 
       assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), label)
 
-      for {table, suffix} <- [{"models", "-model"}, {"rpc", "/method"}, {"tools", "::tool"}] do
-        selector = "#client-#{client.id}-#{table}"
+      each_usage_table(view, path, fn selector, suffix ->
         assert has_element?(view, selector, "last-complete-microsecond#{suffix}")
         refute has_element?(view, selector, "before-#{days}-day-boundary#{suffix}")
 
@@ -124,7 +153,7 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
             refute has_element?(view, selector, "day-#{offset}#{suffix}")
           end
         end
-      end
+      end)
     end
 
     path = "/dashboard/usage/clients?range=today"
@@ -133,11 +162,23 @@ defmodule Backplane.Admin.DashboardClientUsageLiveTest do
 
     assert has_element?(view, ~s(#client-usage-range a[aria-current="true"]), "今天")
 
-    for {table, suffix} <- [{"models", "-model"}, {"rpc", "/method"}, {"tools", "::tool"}] do
-      selector = "#client-#{client.id}-#{table}"
+    each_usage_table(view, path, fn selector, suffix ->
       assert has_element?(view, selector, "day-0#{suffix}")
       refute has_element?(view, selector, "last-complete-microsecond#{suffix}")
-    end
+    end)
+  end
+
+  # Runs check on the LLM tab at `path`, then on both MCP tables with the same range,
+  # and patches back to `path` so range links keep targeting the LLM tab.
+  defp each_usage_table(view, path, check) do
+    check.("#client-llm-usage-table", "-model")
+
+    query = URI.parse(path).query || ""
+    render_patch(view, "/dashboard/usage/clients/mcp?" <> query)
+    check.("#client-mcp-rpc-table", "/method")
+    check.("#client-mcp-tools-table", "::tool")
+
+    render_patch(view, path)
   end
 
   defp insert_timed_usage(client, marker, inserted_at) do

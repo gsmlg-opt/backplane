@@ -19,6 +19,14 @@ defmodule Backplane.MemoryToolContract do
     "memory::forget" => "Mark a memory record as forgotten, with a reason."
   }
 
+  @instructions """
+                Backplane Memory is shared by all of the user's agents and hosts.
+                - Before you search a machine for a repo, service, path or past procedure, call memory::search (filters: host, kind, subject). Results show where each memory came from.
+                - When you finish a piece of work and learned something worth keeping — where something lives, how an operation is done, or what you did — call memory::remember once with kind fact, procedure, worklog or note, subjects like host:<name>, repo:<name>, service:<name>, path:<path>, and the current session_id when you know it. Most sessions need nothing remembered.
+                - If the user says something is outdated or should be forgotten, call memory::forget with a reason.
+                """
+                |> String.trim_trailing("\n")
+
   @kinds ~w(fact procedure worklog note)
   @subject_pattern "^[^:\\s]+:.+$"
 
@@ -114,4 +122,8 @@ defmodule Backplane.MemoryToolContract do
   @doc "Tool descriptions for the five public tools, keyed by tool name."
   @spec descriptions() :: %{String.t() => String.t()}
   def descriptions, do: @descriptions
+
+  @doc "Canonical resident instruction served to agents (no trailing newline)."
+  @spec instructions() :: String.t()
+  def instructions, do: @instructions
 end

@@ -472,31 +472,48 @@ defmodule Backplane.Admin.SkillUpstreamLive do
         </p>
       </div>
       <div class="flex items-center gap-1">
-        <.dm_btn
-          :if={@sources != []}
-          size="sm"
-          phx-click="export-sources"
-          title="Export"
-        >
-          <.dm_mdi name="export" class="w-5 h-5" />
-        </.dm_btn>
-        <.dm_btn size="sm" phx-click="toggle-import" title="Import">
-          <.dm_mdi name="import" class="w-5 h-5" />
-        </.dm_btn>
-        <.dm_btn
-          :if={@sources != []}
-          size="sm"
-          phx-click="sync-all"
-          disabled={@syncing_id == :all}
-          title="Sync All"
-        >
-          <.dm_mdi name="sync" class={["w-5 h-5", @syncing_id == :all && "animate-spin"]} />
-        </.dm_btn>
-        <.link navigate={~p"/skills/upstream/new"}>
-          <.dm_btn variant="primary" size="sm" title="Add Source">
+        <.dm_tooltip :let={tooltip_attrs} :if={@sources != []} content="Export" position="bottom">
+          <.dm_btn {tooltip_attrs}
+            size="sm"
+            shape="circle"
+            aria-label="Export skill sources"
+            phx-click="export-sources"
+          >
+            <.dm_mdi name="export" class="w-5 h-5" />
+          </.dm_btn>
+        </.dm_tooltip>
+        <.dm_tooltip :let={tooltip_attrs} content="Import" position="bottom">
+          <.dm_btn {tooltip_attrs}
+            size="sm"
+            shape="circle"
+            aria-label="Import skill sources"
+            phx-click="toggle-import"
+          >
+            <.dm_mdi name="import" class="w-5 h-5" />
+          </.dm_btn>
+        </.dm_tooltip>
+        <.dm_tooltip :let={tooltip_attrs} :if={@sources != []} content="Sync all" position="bottom">
+          <.dm_btn {tooltip_attrs}
+            size="sm"
+            shape="circle"
+            aria-label="Sync all skill sources"
+            phx-click="sync-all"
+            disabled={@syncing_id == :all}
+          >
+            <.dm_mdi name="sync" class={["w-5 h-5", @syncing_id == :all && "animate-spin"]} />
+          </.dm_btn>
+        </.dm_tooltip>
+        <.dm_tooltip :let={tooltip_attrs} content="Add source" position="bottom">
+          <.dm_btn {tooltip_attrs}
+            navigate={~p"/skills/upstream/new"}
+            variant="primary"
+            size="sm"
+            shape="circle"
+            aria-label="Add skill source"
+          >
             <.dm_mdi name="plus" class="w-5 h-5" />
           </.dm_btn>
-        </.link>
+        </.dm_tooltip>
       </div>
     </div>
 
@@ -548,21 +565,30 @@ defmodule Backplane.Admin.SkillUpstreamLive do
               </.dm_badge>
             </div>
             <div class="flex items-center gap-1">
-              <.dm_btn
-                size="xs"
-                variant="primary"
-                phx-click="sync-source"
-                phx-value-id={source.id}
-                disabled={@syncing_id == source.id}
-                title="Sync"
-              >
-                <.dm_mdi name="sync" class={["w-4 h-4", @syncing_id == source.id && "animate-spin"]} />
-              </.dm_btn>
-              <.link navigate={~p"/skills/upstream/#{source.id}/edit"} class="no-underline">
-                <.dm_btn size="xs" title="Edit">
+              <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                <.dm_btn {tooltip_attrs}
+                  navigate={~p"/skills/upstream/#{source.id}/edit"}
+                  size="xs"
+                  shape="circle"
+                  variant="outline"
+                  aria-label={"Edit #{source.name} source"}
+                >
                   <.dm_mdi name="pencil" class="w-4 h-4" />
                 </.dm_btn>
-              </.link>
+              </.dm_tooltip>
+              <.dm_tooltip :let={tooltip_attrs} content="Sync" position="bottom">
+                <.dm_btn {tooltip_attrs}
+                  size="xs"
+                  shape="circle"
+                  variant="primary"
+                  aria-label={"Sync #{source.name} source"}
+                  phx-click="sync-source"
+                  phx-value-id={source.id}
+                  disabled={@syncing_id == source.id}
+                >
+                  <.dm_mdi name="sync" class={["w-4 h-4", @syncing_id == source.id && "animate-spin"]} />
+                </.dm_btn>
+              </.dm_tooltip>
             </div>
           </div>
         </:title>

@@ -1155,9 +1155,10 @@ defmodule Backplane.AgentRuntime.Conversation do
     if s.commit, do: kill_task(s.commit)
     if s.nested && s.nested.task, do: kill_task(s.nested)
 
+    # Each cancellation is released by its owning module; only MCP resource
+    # requests carry the backend runtime that ResourceRequest.release/1 needs.
     Enum.each(s.cancellations, fn {_id, entry} ->
-      unless entry.operation.tool_name == "mcp_events",
-        do: Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+      unless entry.operation.tool_name == "mcp_events", do: release_cancellation_entry(entry)
     end)
 
     if Process.alive?(s.supervisor), do: Supervisor.stop(s.supervisor)
@@ -3079,8 +3080,16 @@ defmodule Backplane.AgentRuntime.Conversation do
       case role do
         {:provider, provider_identity, catalog} ->
           context
-          |> Map.merge(Map.drop(s.selection_context, [:interact, :emit, :provider_emit,
-            :request_new_context, :append_feedback, :stage_catalog]))
+          |> Map.merge(
+            Map.drop(s.selection_context, [
+              :interact,
+              :emit,
+              :provider_emit,
+              :request_new_context,
+              :append_feedback,
+              :stage_catalog
+            ])
+          )
           |> Map.merge(provider_identity)
           |> Map.put(:turn_id, s.conversation.turn_id)
           |> Map.put(:provider_selection, ProviderSelection.state(s.run).binding)
@@ -3432,21 +3441,17 @@ defmodule Backplane.AgentRuntime.Conversation do
         s
 
       {entry, remaining} ->
-        case entry.operation.tool_name do
-          "request_plugin_install" ->
-            Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry)
-
-          "clock::sleep" ->
-            Backplane.AgentRuntime.Codex.ClockWait.release(entry)
-
-          "mcp_events" ->
-            Backplane.AgentRuntime.Codex.EventRequest.release(entry)
-
-          _ ->
-            Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
-        end
-
+        release_cancellation_entry(entry)
         %{s | cancellations: remaining}
+    end
+  end
+
+  defp release_cancellation_entry(entry) do
+    case entry.operation.tool_name do
+      "request_plugin_install" -> Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry)
+      "clock::sleep" -> Backplane.AgentRuntime.Codex.ClockWait.release(entry)
+      "mcp_events" -> Backplane.AgentRuntime.Codex.EventRequest.release(entry)
+      _ -> Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
     end
   end
 

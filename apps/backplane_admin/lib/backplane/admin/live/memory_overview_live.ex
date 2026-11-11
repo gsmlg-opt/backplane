@@ -48,16 +48,16 @@ defmodule Backplane.Admin.MemoryOverviewLive do
     <div class="memory-page">
       <.memory_page_header title="Overview" subtitle="Memory records, captured events and sessions at a glance" />
 
-      <.dm_alert :if={@llm_unset?} id="memory-llm-model-warning" variant="warning" title="提炼未启用">
-        提炼未启用：未配置 memory.llm_model
+      <.dm_alert :if={@llm_unset?} id="memory-llm-model-warning" variant="warning" title="Distillation is off">
+        Distillation is off: memory.llm_model is not configured.
       </.dm_alert>
 
-      <.dm_alert :if={@distill_failed > 0} id="memory-distill-failed" variant="error" title="提炼失败">
-        {@distill_failed} 个会话提炼失败，见 Sessions 页
+      <.dm_alert :if={@distill_failed > 0} id="memory-distill-failed" variant="error" title="Distillation failed">
+        {@distill_failed} {if @distill_failed == 1, do: "session", else: "sessions"} failed to distill. See the Sessions page.
       </.dm_alert>
 
-      <.dm_alert :if={@distill_blocked > 0} id="memory-distill-blocked" variant="warning" title="提炼被阻塞">
-        {@distill_blocked} 个会话提炼被阻塞，见 Sessions 页
+      <.dm_alert :if={@distill_blocked > 0} id="memory-distill-blocked" variant="warning" title="Distillation blocked">
+        {@distill_blocked} {if @distill_blocked == 1, do: "session is", else: "sessions are"} blocked from distilling. See the Sessions page.
       </.dm_alert>
 
       <div class="mt-4 grid gap-4 md:grid-cols-2">

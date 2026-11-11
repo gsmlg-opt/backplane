@@ -19,6 +19,10 @@ defmodule BackplaneLlama.Application do
          max_children: 128,
          name: Backplane.LLM.ResponsesWebSocket.Supervisor},
         {DynamicSupervisor,
+         strategy: :one_for_one,
+         max_children: 128,
+         name: Backplane.LLM.OpenAI.RealtimeWebSocket.Supervisor},
+        {DynamicSupervisor,
          strategy: :one_for_one, name: Backplane.Audio.AccessLifecycle.Supervisor},
         Backplane.Audio.Media.Supervisor
       ]

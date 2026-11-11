@@ -5,6 +5,9 @@
 @source "../../../../deps/phoenix_duskmoon/lib";
 @source "../../../../deps/phoenix_duskmoon/assets/js";
 @plugin "@duskmoon-dev/core/plugin";
+/* base.css is the required prerequisite for individual imports; it defines --radius-full used by .btn-circle. */
+@import "@duskmoon-dev/core/base.css";
+/* TODO(upstream): duskmoon-dev/duskmoonui#82 btn-circle ignores btn-xs, so icon action buttons render 38px. */
 @import "@duskmoon-dev/core/themes/sunshine";
 @import "@duskmoon-dev/core/themes/moonlight";
 @import "@duskmoon-dev/core/components";

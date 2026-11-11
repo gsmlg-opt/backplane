@@ -542,7 +542,10 @@ defmodule Backplane.HostAgent.Worker do
 
   defp maybe_start_capture(capture_supervisor_module, %{capture: capture_config} = config, _pid)
        when is_map(capture_config) do
-    capture_config = Map.put(capture_config, :host_id, field(config, :host_id))
+    capture_config =
+      capture_config
+      |> Map.put(:host_id, field(config, :host_id))
+      |> Map.put(:host_label, field(config, :machine_name))
 
     case capture_supervisor_module.start_link(capture_config) do
       {:ok, pid} -> {:ok, pid}

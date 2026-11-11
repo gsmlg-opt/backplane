@@ -49,6 +49,58 @@ defmodule Backplane.Memory.Records.SearchTest do
     assert Records.search("zzqq", %{}) == []
   end
 
+  describe "ranking" do
+    test "a fresh exact match outranks older embedded weak matches before it is embedded" do
+      configure(&EmbeddingStub.plug/1)
+
+      older =
+        for n <- 1..12 do
+          remember!("launchd job job#{n} is loaded on p4 listening port #{n} axis:0", %{
+            "subjects" => [%{"type" => "service", "key" => "job#{n}"}]
+          })
+        end
+
+      :ok = EmbedRecordsWorker.perform(%Styx.Job{args: %{}})
+
+      # Stored while embeddings are unavailable, so it has no vector yet.
+      Application.delete_env(:backplane_memory, :embed_model)
+      fresh = remember!("Acceptance: the billing service on host acc-A listens on port 8443.")
+      configure(&EmbeddingStub.plug/1)
+
+      assert is_nil(repo().one(from(r in Record, where: r.id == ^fresh.id, select: r.embedding)))
+      assert Enum.all?(older, &(&1.id != fresh.id))
+
+      assert [first | _] = Records.search("billing service port axis:0", %{})
+      assert first.id == fresh.id
+    end
+
+    test "query terms do not match a subject's type prefix" do
+      typed =
+        remember!("alpha runs nightly", %{
+          "subjects" => [%{"type" => "service", "key" => "alpha"}]
+        })
+
+      keyed =
+        remember!("runs nightly", %{"subjects" => [%{"type" => "service", "key" => "billing"}]})
+
+      refute typed.id in ids(Records.search("service", %{}))
+      assert keyed.id in ids(Records.search("billing", %{}))
+    end
+
+    test "full-text fallback ranks records matching more query terms first" do
+      newer = remember!("only the service word here")
+
+      older =
+        remember!("billing and port are both here", %{
+          "observed_at" => DateTime.add(DateTime.utc_now(), -86_400, :second)
+        })
+
+      assert [first | rest] = Records.search("billing service port", %{})
+      assert first.id == older.id
+      assert newer.id in ids(rest)
+    end
+  end
+
   test "proxy 500 on query embedding falls back to full-text" do
     r = remember!("zebra crossing notes")
     configure(&EmbeddingStub.error_plug/1)

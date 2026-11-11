@@ -15,6 +15,7 @@ defmodule Backplane.Admin.SettingsLive do
   alias Backplane.Settings.OAuthStateStore
 
   @google_antigravity_redirect_uri "https://antigravity.google/oauth-callback"
+  @figma_redirect_uri "http://localhost:4221/callback"
   @google_token_url "https://oauth2.googleapis.com/token"
   @google_antigravity_scopes [
     "https://www.googleapis.com/auth/cloud-platform",
@@ -727,7 +728,11 @@ defmodule Backplane.Admin.SettingsLive do
         end
 
       vendor == "figma_oauth" ->
-        redirect_uri = Backplane.WebOrigins.admin_url("/oauth/callback")
+        redirect_uri =
+          case OAuthRefresher.figma_mcp_client_credentials() do
+            {:ok, _client_id, _client_secret} -> Backplane.WebOrigins.admin_url("/oauth/callback")
+            {:error, :missing_figma_mcp_client_id} -> @figma_redirect_uri
+          end
 
         case OAuthRefresher.resolve_figma_mcp_client(redirect_uri) do
           {:ok, oauth_client, persist_oauth_client?} ->
@@ -1440,18 +1445,17 @@ defmodule Backplane.Admin.SettingsLive do
                 <:col :let={cred} label="Actions">
                   <div class="flex items-center gap-1">
                     <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
-                      <.link {tooltip_attrs} patch={~p"/system/credentials/#{cred.name}/edit"} class="no-underline">
-                        <.dm_btn
-                          type="button"
-                          size="xs"
-                          shape="circle"
-                          variant="outline"
-                          aria-label={"Edit #{cred.name}"}
-                        >
-                          <.dm_mdi name="pencil" class="h-4 w-4" />
-                          <span class="sr-only">Edit</span>
-                        </.dm_btn>
-                      </.link>
+                      <.dm_btn
+                        {tooltip_attrs}
+                        patch={~p"/system/credentials/#{cred.name}/edit"}
+                        size="xs"
+                        shape="circle"
+                        variant="outline"
+                        aria-label={"Edit #{cred.name}"}
+                      >
+                        <.dm_mdi name="pencil" class="h-4 w-4" />
+                        <span class="sr-only">Edit</span>
+                      </.dm_btn>
                     </.dm_tooltip>
 
                     <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
@@ -1853,6 +1857,11 @@ defmodule Backplane.Admin.SettingsLive do
           <p class="text-sm text-on-surface-variant">
             Complete authorization in the browser window that just opened,
             then paste {if @device_flow_vendor == "figma_oauth", do: "the full callback URL", else: "the code"} below.
+          </p>
+          <p :if={@device_flow_vendor == "figma_oauth"} class="text-sm text-on-surface-variant">
+            After authorization, copy the full URL from the new window's address bar and paste it here.
+            If the localhost callback page cannot open, this is expected: copy its URL anyway.
+            Keep this Backplane page open until you submit the callback URL.
           </p>
           <form phx-submit="submit_auth_code" class="space-y-4" autocomplete="off">
             <.dm_input

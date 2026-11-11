@@ -104,7 +104,8 @@ defmodule Mix.Tasks.Agent.RunTest do
 
     assert_receive second
 
-    assert {:capture_start, %{host_id: "host-authoritative", db_path: "/tmp/capture.db"}} =
+    assert {:capture_start,
+            %{host_id: "host-authoritative", host_label: "t430", db_path: "/tmp/capture.db"}} =
              second
 
     assert_receive third

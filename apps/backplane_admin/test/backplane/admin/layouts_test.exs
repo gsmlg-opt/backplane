@@ -58,4 +58,27 @@ defmodule Backplane.Admin.LayoutsTest do
     refute Layouts.active_left_nav_id("/dashboard/overview/not-a-menu-item") ==
              "dashboard-overview"
   end
+
+  test "API capabilities belong to Llama without a separate top-level menu" do
+    refute Enum.any?(Layouts.top_nav_items(), &(&1.label == "API Proxy"))
+    llama = Layouts.left_nav_items("/llama/providers")
+
+    for path <- [
+          "/llama/openai/decisions",
+          "/llama/openai/images",
+          "/llama/embedding",
+          "/llama/openai/speech",
+          "/llama/openai/transcription",
+          "/llama/openai/realtime",
+          "/llama/audio"
+        ] do
+      assert Enum.any?(llama, &(&1.path == path))
+      assert Layouts.active_top_nav?(path, :llama)
+
+      assert Layouts.active_left_nav_id(path) ==
+               path |> String.trim_leading("/") |> String.replace("/", "-")
+    end
+
+    assert Enum.any?(llama, &(&1.label == "MiniMax Audio"))
+  end
 end

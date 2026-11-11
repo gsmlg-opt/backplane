@@ -62,6 +62,22 @@ defmodule Backplane.HostAgent.Memory.ClaudeCodeHookTest do
              ClaudeCode.normalize("SessionStart", [], %{host_id: "host"})
   end
 
+  test "defaults agent_id to the MCP path id claude-code; config and source override" do
+    input = Map.delete(fixture("Stop"), "agent_id")
+
+    assert {:ok, %{agent_id: "claude-code"}} =
+             ClaudeCode.normalize("Stop", input, %{host_id: "host"})
+
+    assert {:ok, %{agent_id: "claude-main"}} =
+             ClaudeCode.normalize("Stop", fixture("Stop"), %{host_id: "host"})
+
+    assert {:ok, %{agent_id: "from-config"}} =
+             ClaudeCode.normalize("Stop", fixture("Stop"), %{
+               host_id: "host",
+               agent_id: "from-config"
+             })
+  end
+
   defp fixture(hook) do
     %{
       "session_id" => "session-1",

@@ -460,11 +460,23 @@ defmodule Backplane.Admin.AgentMcpLive do
                 </td>
                 <td class="px-3 py-1.5 align-middle text-right">
                   <div class="flex items-center justify-end gap-1">
-                    <.dm_tooltip :let={tooltip_attrs} content={if server.enabled, do: "Disable", else: "Enable"}>
+                    <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+                      <.dm_btn {tooltip_attrs}
+                        patch={~p"/mcp/agent/#{server.id}/edit"}
+                        size="xs"
+                        shape="circle"
+                        variant="outline"
+                        aria-label={"Edit #{server.name} MCP server"}
+                      >
+                        <.dm_mdi name="pencil" class="w-4 h-4" />
+                      </.dm_btn>
+                    </.dm_tooltip>
+                    <.dm_tooltip :let={tooltip_attrs} content={if server.enabled, do: "Disable", else: "Enable"} position="bottom">
                       <.dm_btn {tooltip_attrs}
                         size="xs"
                         shape="circle"
                         variant={if server.enabled, do: "warning", else: "primary"}
+                        aria-label={"#{if server.enabled, do: "Disable", else: "Enable"} #{server.name} MCP server"}
                         phx-click="toggle_server"
                         phx-value-id={server.id}
                       >
@@ -474,18 +486,12 @@ defmodule Backplane.Admin.AgentMcpLive do
                         />
                       </.dm_btn>
                     </.dm_tooltip>
-                    <.dm_tooltip :let={tooltip_attrs} content="Edit">
-                      <.link {tooltip_attrs} patch={~p"/mcp/agent/#{server.id}/edit"}>
-                        <.dm_btn size="xs" shape="circle" variant="outline">
-                          <.dm_mdi name="pencil" class="w-4 h-4" />
-                        </.dm_btn>
-                      </.link>
-                    </.dm_tooltip>
-                    <.dm_tooltip :let={tooltip_attrs} content="Delete">
+                    <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">
                       <.dm_btn {tooltip_attrs}
                         size="xs"
                         shape="circle"
                         variant="error"
+                        aria-label={"Delete #{server.name} MCP server"}
                         phx-click="delete"
                         phx-value-id={server.id}
                         data-confirm={"Delete MCP server #{server.name}?"}

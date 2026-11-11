@@ -15,7 +15,7 @@ defmodule Backplane.Skills.AgentPlugins do
       %{
         "plugin" => "memory",
         "name" => "Backplane Memory",
-        "runtimes" => ["hermes", "openclaw"]
+        "runtimes" => ["claude_code", "codex", "cursor", "hermes", "openclaw"]
       }
     ]
   end

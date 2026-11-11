@@ -337,6 +337,20 @@ defmodule Backplane.Admin.MonitorPlansLive do
         </:col>
         <:col :let={plan} label="Actions">
           <div class="flex items-center gap-1">
+            <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
+              <.dm_btn
+                {tooltip_attrs}
+                patch={~p"/system/monitor/plans/#{plan.id}/edit"}
+                variant="outline"
+                size="xs"
+                shape="circle"
+                aria-label={"Edit #{plan.name}"}
+              >
+                <.dm_mdi name="pencil" class="h-4 w-4" />
+                <span class="sr-only">Edit</span>
+              </.dm_btn>
+            </.dm_tooltip>
+
             <.dm_tooltip :let={tooltip_attrs} content={if plan.active, do: "Deactivate", else: "Activate"} position="bottom">
               <.dm_btn {tooltip_attrs}
                 type="button"
@@ -350,20 +364,6 @@ defmodule Backplane.Admin.MonitorPlansLive do
                 <.dm_mdi name={if plan.active, do: "pause", else: "play"} class="h-4 w-4" />
                 <span class="sr-only">{if plan.active, do: "Deactivate", else: "Activate"}</span>
               </.dm_btn>
-            </.dm_tooltip>
-
-            <.dm_tooltip :let={tooltip_attrs} content="Edit" position="bottom">
-              <.link {tooltip_attrs} patch={~p"/system/monitor/plans/#{plan.id}/edit"} class="no-underline">
-                <.dm_btn
-                  type="button"
-                  size="xs"
-                  shape="circle"
-                  aria-label={"Edit #{plan.name}"}
-                >
-                  <.dm_mdi name="pencil" class="h-4 w-4" />
-                  <span class="sr-only">Edit</span>
-                </.dm_btn>
-              </.link>
             </.dm_tooltip>
 
             <.dm_tooltip :let={tooltip_attrs} content="Delete" position="bottom">

@@ -547,7 +547,7 @@ defmodule Backplane.Admin.AudioLive do
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
-      <header><h1 class="text-2xl font-bold">Audio</h1><p class="text-sm text-on-surface-variant">Configure speech and transcription. Preview requests may incur provider charges.</p></header>
+      <header><h1 class="text-2xl font-bold">MiniMax Audio</h1><p class="text-sm text-on-surface-variant">Configure MiniMax speech and transcription. Preview requests may incur provider charges.</p></header>
       <.dm_card variant="bordered"><:title>Audio service</:title>
         <p>Audio is {if @enabled, do: "enabled", else: "disabled"}.</p>
         <p class="text-sm text-warning">Previews may incur provider charges, including credit use with a Subscription Key.</p>

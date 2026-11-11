@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from test_hermes_runtime import capability, current, plugin
+from test_hermes_runtime import plugin, search_result
 
 
 @contextmanager
@@ -65,7 +65,7 @@ class DeadlineTest(unittest.TestCase):
     def build(self, base, *, worker=False):
         (self.home / 'backplane-memory.json').write_text(json.dumps({'url': base}))
         provider = plugin.BackplaneMemoryProvider()
-        with patch.dict(plugin.os.environ, {}, clear=True), patch.object(plugin, '_load_egress_scrubber', return_value=lambda text: text):
+        with patch.dict(plugin.os.environ, {}, clear=True):
             if worker:
                 provider.initialize('deadline-session', hermes_home=self.home, agent_context='subagent')
             else:
@@ -81,38 +81,52 @@ class DeadlineTest(unittest.TestCase):
         provider._journal.enqueue(payload['event_id'], '/capture/v1/hooks/hermes/message', payload)
         return payload
 
-    def test_default_http_deadline_allows_slow_async_recall(self):
+    def test_background_prefetch_allows_slow_searches(self):
         def dispatch(path, _payload, _raw):
-            if path.endswith('source_capabilities'):
-                return {'ok': True, 'result': capability()}
-            self.assertTrue(path.endswith('/recall'))
-            time.sleep(2.3)  # Real canonical recalls exceeded the former 2s limit.
-            return {'ok': True, 'result': {'results': [current('alpha slow recall')]}}
+            self.assertTrue(path.endswith('/call/search'))
+            time.sleep(2.3)  # Slower than the synchronous prefetch deadline.
+            return {'ok': True, 'result': search_result('alpha slow search')}
 
         with slow_http(dispatch) as base:
             provider = self.build(base, worker=True)
             started = time.monotonic()
-            self.assertEqual(provider.prefetch('alpha'), '')
+            provider.queue_prefetch('alpha')
             self.assertLess(time.monotonic() - started, 0.2)
-            key = ('deadline-session', 'alpha', provider._generation)
             deadline = time.monotonic() + 5
+            cached = None
             while time.monotonic() < deadline:
                 with provider._state_lock:
-                    cached = provider._cache.get(key)
+                    cached = provider._warm.get('deadline-session')
                 if cached:
                     break
                 time.sleep(0.02)
-            self.assertIsNotNone(cached, 'normal slow recall was discarded by the HTTP deadline')
-            self.assertIn('alpha slow recall', provider.prefetch('alpha'))
+            self.assertIsNotNone(cached, 'a slow background search was discarded by the HTTP deadline')
+            self.assertIn('alpha slow search', provider.prefetch('next turn text'))
             provider.shutdown()
+
+    def test_synchronous_prefetch_is_bounded_by_its_own_deadline(self):
+        release = threading.Event()
+
+        def dispatch(_path, _payload, _raw):
+            release.wait(timeout=5)
+            return {'ok': True, 'result': search_result('too late')}
+
+        with slow_http(dispatch) as base:
+            provider = self.build(base)
+            try:
+                with patch.object(plugin, 'SEARCH_TIMEOUT', 0.3), self.assertLogs(plugin.logger, level='WARNING') as logs:
+                    started = time.monotonic()
+                    self.assertEqual(provider.prefetch('alpha'), '')
+                    self.assertLess(time.monotonic() - started, 2)
+                self.assertEqual(len(logs.records), 1)
+            finally:
+                release.set()
 
     def test_timeout_after_acceptance_replays_immutable_payload_after_restart(self):
         accepted, attempts, bodies = {}, [], []
         release = threading.Event()
 
         def dispatch(path, payload, raw):
-            if path.endswith('source_capabilities'):
-                return {'ok': True, 'result': capability()}
             if path == '/capture/v1/status':
                 return {'ok': True, 'result': {'protocol': 'hermes_capture.v1',
                         'items': [{'event_id': 'immutable-event', 'status': 'canonical_committed'}]}}
@@ -128,7 +142,7 @@ class DeadlineTest(unittest.TestCase):
             first = self.build(base)
             payload = self.enqueue(first)
             try:
-                # Fault injection only; the slow-recall test uses the production limit.
+                # Fault injection only; the slow-search test uses the production limit.
                 with patch.object(plugin, 'TIMEOUT', 0.15):
                     first._deliver_once()
                 self.assertEqual(first.delivery_status()['local_pending'], 1)
@@ -153,8 +167,6 @@ class DeadlineTest(unittest.TestCase):
         accepted, release = threading.Event(), threading.Event()
 
         def dispatch(path, payload, _raw):
-            if path.endswith('source_capabilities'):
-                return {'ok': True, 'result': capability()}
             if path == '/capture/v1/status':
                 return {'ok': True, 'result': {'protocol': 'hermes_capture.v1',
                         'items': [{'event_id': 'immutable-event', 'status': 'canonical_committed'}]}}
@@ -210,7 +222,7 @@ class DeadlineTest(unittest.TestCase):
             provider._worker.join(timeout=2)
             provider._journal.close()
 
-    def test_stopping_during_delivery_does_not_start_queued_recall(self):
+    def test_stopping_during_delivery_does_not_start_queued_prefetch(self):
         provider = self.build('http://127.0.0.1:1')
         provider.queue_prefetch('alpha')
         with patch.object(provider, '_deliver_once', side_effect=provider._stopping.set), patch.object(provider, '_fetch_context') as fetch:

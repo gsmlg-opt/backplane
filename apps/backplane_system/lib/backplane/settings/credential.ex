@@ -16,6 +16,8 @@ defmodule Backplane.Settings.Credential do
     timestamps()
   end
 
+  @type t :: %__MODULE__{}
+
   @valid_kinds ~w(llm upstream service admin script custom)
 
   def changeset(credential, attrs) do

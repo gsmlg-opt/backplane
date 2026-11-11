@@ -18,7 +18,55 @@ defmodule Backplane.Audio.RouteParser do
   @impl true
   def init(opts), do: opts
 
+  def from_request(conn, operation, request) when operation in [:speech, :transcription] do
+    conn = Plug.Conn.put_private(conn, :audio_deadline, deadline())
+    policy = Config.policy()
+
+    limit =
+      if operation == :speech,
+        do: policy["speech_json_bytes"],
+        else: policy["upload_bytes"] + policy["multipart_overhead_bytes"]
+
+    if byte_size(request.body) <= limit and fallback_limits?(request, policy) do
+      admitted(conn, operation, policy, fn conn ->
+        case Backplane.LLM.OpenAI.Request.audio_params(request) do
+          {:ok, params} ->
+            conn
+            |> Map.put(:body_params, params)
+            |> Map.put(:params, params)
+            |> Plug.Conn.put_private(:audio_already_parsed, true)
+
+          {:error, code} ->
+            parser_error(conn, Error.new(400, "Invalid audio request", nil, to_string(code)))
+            |> Plug.Conn.halt()
+        end
+      end)
+    else
+      parser_error(conn, Error.new(413, "Request body too large", nil, "request_too_large"))
+      |> Plug.Conn.halt()
+    end
+  end
+
+  defp fallback_limits?(%{type: :json}, _policy), do: true
+
+  defp fallback_limits?(%{type: :multipart, parts: parts}, policy) do
+    file_bytes = for %{name: "file", data: data} <- parts, do: byte_size(data)
+
+    overhead =
+      Enum.reduce(parts, 0, fn part, count ->
+        count + byte_size(part.header) + 256 +
+          if(part.name == "file", do: 0, else: byte_size(part.data))
+      end)
+
+    length(parts) <= 16 and length(file_bytes) == 1 and hd(file_bytes) <= policy["upload_bytes"] and
+      overhead <= policy["multipart_overhead_bytes"]
+  end
+
+  defp fallback_limits?(_, _), do: false
+
   @impl true
+  def call(%Plug.Conn{private: %{audio_already_parsed: true}} = conn, _opts), do: conn
+
   def call(%Plug.Conn{method: "POST", request_path: "/v1/audio/speech"} = conn, _opts) do
     conn = Plug.Conn.put_private(conn, :audio_deadline, deadline())
 

@@ -1,0 +1,13 @@
+{
+  "name": "backplane-local",
+  "plugins": [
+    {
+      "name": "backplane-memory",
+      "source": {
+        "source": "local",
+        "path": "./plugins/backplane-memory"
+      },
+      "description": "Backplane shared memory: capture hooks, memory tools, and a resident usage instruction."
+    }
+  ]
+}

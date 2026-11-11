@@ -55,8 +55,12 @@ defmodule Backplane.Monitor.ApiAccounts do
     Credentials.list() |> Enum.filter(&api_key_credential?/1)
   end
 
+  @credential_kinds ~w(llm service admin)
+
+  def credential_kinds, do: @credential_kinds
+
   def api_key_credential?(%{kind: kind, metadata: metadata}) do
-    kind in ~w(llm service) and Map.get(metadata || %{}, "auth_type") in [nil, "api_key"]
+    kind in @credential_kinds and Map.get(metadata || %{}, "auth_type") in [nil, "api_key"]
   end
 
   def api_key_credential?(_credential), do: false
@@ -93,7 +97,7 @@ defmodule Backplane.Monitor.ApiAccounts do
           add_error(
             changeset,
             field,
-            "must reference an existing LLM or service API-key credential"
+            "must reference an existing LLM, service, or admin API-key credential"
           )
         end
     end
