@@ -181,10 +181,23 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
            end)
 
     html = render(view)
-    assert html =~ "Preference: 2026-07-28"
-    assert html =~ "Negotiated: 2026-07-28"
-    assert html =~ "Era: Modern"
-    assert html =~ "Negotiation: Ready"
+
+    assert status_details(html, upstream.id) == %{
+             "Status" => "Connected",
+             "Preference" => "2026-07-28",
+             "Negotiated" => "2026-07-28",
+             "Era" => "Modern",
+             "Negotiation" => "Ready"
+           }
+
+    tree = Floki.parse_fragment!(html)
+    popover_id = "upstream-status-#{upstream.id}"
+    assert [trigger] = Floki.find(tree, "#upstream-status-trigger-#{upstream.id}")
+    assert Floki.attribute(trigger, "command") == ["show-popover"]
+    assert Floki.attribute(trigger, "commandfor") == [popover_id]
+    assert Floki.attribute(trigger, "interestfor") == [popover_id]
+    assert Floki.text(trigger) |> String.trim() == "Connected"
+    assert [_popover] = Floki.find(tree, "##{popover_id}[popover]")
     refute html =~ "internal-credential-reference"
   end
 
@@ -199,8 +212,9 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
     html = render(view)
 
     refute html =~ "2099-01-01"
-    refute html =~ "Negotiated:"
-    refute html =~ "Negotiation: Ready"
+    details = status_details(html, Upstreams.get_by_name("status-unknown-version").id)
+    refute Map.has_key?(details, "Negotiated")
+    refute details["Negotiation"] == "Ready"
   end
 
   test "does not render a non-string negotiated protocol value", %{conn: conn} do
@@ -214,8 +228,9 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
     html = render(view)
 
     refute html =~ "unsafe"
-    refute html =~ "Negotiated:"
-    refute html =~ "Negotiation: Ready"
+    details = status_details(html, Upstreams.get_by_name("status-non-string-version").id)
+    refute Map.has_key?(details, "Negotiated")
+    refute details["Negotiation"] == "Ready"
   end
 
   test "delete action stops the upstream runtime", %{conn: conn} do
@@ -309,6 +324,19 @@ defmodule Backplane.Admin.UpstreamsLiveTest do
       Enum.find(Pool.list_upstream_pids(), fn {_pid, status} -> status.name == name end)
 
     {view, runtime_pid}
+  end
+
+  defp status_details(html, upstream_id) do
+    [details] =
+      html
+      |> Floki.parse_fragment!()
+      |> Floki.find("#upstream-status-#{upstream_id} dl")
+
+    details
+    |> Floki.children(include_text: false)
+    |> Enum.map(&(&1 |> Floki.text() |> String.trim()))
+    |> Enum.chunk_every(2)
+    |> Map.new(fn [term, value] -> {term, value} end)
   end
 
   defp clear_pool do

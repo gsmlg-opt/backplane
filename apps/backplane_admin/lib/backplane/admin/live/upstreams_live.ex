@@ -367,6 +367,8 @@ defmodule Backplane.Admin.UpstreamsLive do
   defp runtime_badge_color(%{status: :degraded}), do: "warning"
   defp runtime_badge_color(_), do: "error"
 
+  defp status_label(value), do: value |> to_string() |> String.capitalize()
+
   defp form_error(assigns) do
     ~H"""
     <div
@@ -446,25 +448,48 @@ defmodule Backplane.Admin.UpstreamsLive do
                 <span :if={upstream.command} class="text-on-surface">{upstream.command}</span>
               </td>
               <td class="px-3 py-1.5 align-middle">
-                <div :if={rs = @runtime_status[upstream.name]} class="space-y-1">
-                  <.dm_badge variant={runtime_badge_color(rs)}>
-                    {rs.status |> to_string() |> String.capitalize()}
-                  </.dm_badge>
-                  <div class="space-y-0.5 text-xs text-on-surface-variant">
-                    <div :if={preference = Map.get(rs, :protocol_preference)}>
-                      Preference: {preference}
-                    </div>
-                    <div :if={version = safe_negotiated_version(rs)}>
-                      Negotiated: {version}
-                    </div>
-                    <div :if={era = Map.get(rs, :era)}>
-                      Era: {era |> to_string() |> String.capitalize()}
-                    </div>
-                    <div :if={status = Map.get(rs, :negotiation_status)}>
-                      Negotiation: {status |> to_string() |> String.capitalize()}
-                    </div>
-                  </div>
-                </div>
+                <.dm_popover
+                  :if={rs = @runtime_status[upstream.name]}
+                  id={"upstream-status-#{upstream.id}"}
+                  placement="bottom-start"
+                  class="min-w-56"
+                >
+                  <:trigger :let={trigger_attrs}>
+                    <%!-- show-popover (not toggle) so a click after hover keeps it open; interestfor adds hover/focus --%>
+                    <button
+                      type="button"
+                      id={"upstream-status-trigger-#{upstream.id}"}
+                      class="cursor-pointer rounded-full focus-visible:outline-2 focus-visible:outline-primary"
+                      aria-label={"#{upstream.name} status: #{status_label(rs.status)}. Show protocol details"}
+                      {Map.merge(trigger_attrs, %{
+                        "command" => "show-popover",
+                        "interestfor" => "upstream-status-#{upstream.id}"
+                      })}
+                    >
+                      <.dm_badge variant={runtime_badge_color(rs)}>{status_label(rs.status)}</.dm_badge>
+                    </button>
+                  </:trigger>
+                  <dl class="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs">
+                    <dt class="text-on-surface-variant">Status</dt>
+                    <dd>{status_label(rs.status)}</dd>
+                    <%= if preference = Map.get(rs, :protocol_preference) do %>
+                      <dt class="text-on-surface-variant">Preference</dt>
+                      <dd class="font-mono">{preference}</dd>
+                    <% end %>
+                    <%= if version = safe_negotiated_version(rs) do %>
+                      <dt class="text-on-surface-variant">Negotiated</dt>
+                      <dd class="font-mono">{version}</dd>
+                    <% end %>
+                    <%= if era = Map.get(rs, :era) do %>
+                      <dt class="text-on-surface-variant">Era</dt>
+                      <dd>{status_label(era)}</dd>
+                    <% end %>
+                    <%= if status = Map.get(rs, :negotiation_status) do %>
+                      <dt class="text-on-surface-variant">Negotiation</dt>
+                      <dd>{status_label(status)}</dd>
+                    <% end %>
+                  </dl>
+                </.dm_popover>
                 <span :if={!@runtime_status[upstream.name]} class="text-on-surface-variant">&mdash;</span>
               </td>
               <td class="px-3 py-1.5 align-middle">
