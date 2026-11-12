@@ -86,7 +86,7 @@ jobs:
               fi
 
               case "$app" in
-                backplane_plugin_protocol|backplane_agent_runtime|backplane_ai_protocol|backplane_skill_protocol|backplane_mcp_protocol|backplane_json_schema|backplane_schema)
+                backplane_plugin_protocol|backplane_agent_runtime|backplane_ai_protocol|backplane_skill_protocol|backplane_mcp_protocol|backplane_json_schema|backplane_schema|backplane_oauth)
                   echo "Selective runtime releases cannot publish Hex packages; use all" >&2
                   exit 1
                   ;;
@@ -368,7 +368,7 @@ jobs:
       - name: Build packages and documentation before any publication
         run: |
           mkdir -p "$GITHUB_WORKSPACE/artifacts/hex"
-          for package in backplane_plugin_protocol backplane_json_schema backplane_schema backplane_mcp_protocol backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol; do
+          for package in backplane_plugin_protocol backplane_json_schema backplane_schema backplane_mcp_protocol backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_oauth; do
             (
               cd "apps/$package"
               mix docs
@@ -826,6 +826,8 @@ jobs:
             path: apps/backplane_ai_protocol
           - name: backplane_skill_protocol
             path: apps/backplane_skill_protocol
+          - name: backplane_oauth
+            path: apps/backplane_oauth
 
     permissions:
       contents: read

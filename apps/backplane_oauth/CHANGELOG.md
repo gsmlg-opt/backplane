@@ -113,7 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- confidential client management as stated in OAuth 2.0 RFC, documented [here](guides/confidential_clients.md). It defaults to false (already existing clients will not be confidential)
+- confidential client management as stated in OAuth 2.0 RFC, documented [here](https://github.com/malach-it/boruta_auth/blob/master/guides/confidential_clients.md). It defaults to false (already existing clients will not be confidential)
 - token as the created `Boruta.Oauth.Token` attribute in `Boruta.Oauth.TokenResponse`
 
 ### Changed

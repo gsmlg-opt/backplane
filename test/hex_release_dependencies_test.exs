@@ -3,7 +3,7 @@ ExUnit.start()
 defmodule Backplane.HexReleaseDependenciesTest do
   use ExUnit.Case, async: true
 
-  @packages ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol)
+  @packages ~w(backplane_agent_runtime backplane_ai_protocol backplane_skill_protocol backplane_mcp_protocol backplane_oauth)
 
   test "preflight archives contain the standalone project when invoked from an app directory" do
     jobs = YamlElixir.read_from_file!(".github/workflows/release.yml")["jobs"]
