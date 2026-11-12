@@ -222,7 +222,4 @@ config :backplane_telemetry,
   observability_v2_runtime_sink: false,
   use_legacy_telemetry_logger: false
 
-config :backplane_mcp_protocol,
-  compile_cli?: System.get_env("BACKPLANE_MCP_PROTOCOL_COMPILE_CLI") in ["1", "true"]
-
 import_config "#{config_env()}.exs"

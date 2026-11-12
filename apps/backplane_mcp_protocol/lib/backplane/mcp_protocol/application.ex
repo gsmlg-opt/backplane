@@ -20,14 +20,7 @@ defmodule Backplane.McpProtocol.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Backplane.McpProtocol.Supervisor]
-    {:ok, pid} = Supervisor.start_link(children, opts)
-
-    if Backplane.McpProtocol.should_compile_cli?() do
-      with {:module, cli} <- Code.ensure_loaded(Backplane.McpProtocol.CLI), do: cli.main()
-      {:ok, pid}
-    else
-      {:ok, pid}
-    end
+    Supervisor.start_link(children, opts)
   end
 
   defp maybe_start_session_store do
