@@ -31,8 +31,8 @@ defmodule BackplaneSystem.MixProject do
 
   defp deps do
     [
-      {:http_fetch, "~> 1.0.0-rc.13"},
-      {:http_test, "~> 1.0.0-rc.13", only: :test},
+      {:http_fetch, "~> 1.0.0-rc.15"},
+      {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane_memory_contract, in_umbrella: true},
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},

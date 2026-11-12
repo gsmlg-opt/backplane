@@ -42,7 +42,7 @@ defmodule Relayixir.Proxy.HttpClientTest do
     assert options[:redirect] == :manual
     assert options[:decode_body] == false
     assert options[:stream_response] == true
-    assert options[:tls_backend] == :ex_ssl
+    refute Keyword.has_key?(options, :tls_backend)
     assert options[:error_mode] == :structured
   end
 
@@ -92,7 +92,7 @@ defmodule Relayixir.Proxy.HttpClientTest do
              {"proxy-authorization", "Basic " <> Base.encode64("user:secret")}
            ]
 
-    assert client.options[:tls_backend] == :ex_ssl
+    refute Keyword.has_key?(client.options, :tls_backend)
     refute Keyword.has_key?(client.options, :ssl)
   end
 

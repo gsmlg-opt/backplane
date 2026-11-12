@@ -30,10 +30,10 @@ defmodule Backplane.HostAgent.MixProject do
 
   defp deps do
     [
-      {:http_test, "~> 1.0.0-rc.13", only: :test},
+      {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane_plugin_protocol, in_umbrella: true},
       {:phoenix_socket_client, "~> 0.9.0"},
-      {:http_fetch, "~> 1.0.0-rc.13"},
+      {:http_fetch, "~> 1.0.0-rc.15"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.9"},
       {:plug, "~> 1.16"},

@@ -14,9 +14,12 @@ defmodule Backplane.HTTPClient do
     * `:proxy` — an explicit `{scheme, host, port, opts}` tuple, or `:env` to
       resolve `HTTP(S)_PROXY`/`ALL_PROXY`/`NO_PROXY` (see `Proxy`)
     * `:redirect` (default `true`), `:decode_body` (default `true`), `:raw`
-    * `:retry` (`:safe_transient` default, `:transient`, `false`, or
-      `fun(response_or_error) -> boolean`), `:max_retries` (default 3) and
-      `:retry_delay` (integer ms or `fun(attempt) -> ms`)
+    * `:retry` — `:safe_transient` (default, Req semantics: GET/HEAD retry
+      no-response failures and 408/429/500/502/503/504), `:transient` (the same
+      for every idempotent method), `false`, or an http_fetch
+      `fun(request, response_or_error) -> boolean`; plus `:max_retries`
+      (default 3) and `:retry_delay` (ms or `fun(attempt) -> ms`). Retries run in
+      `HTTP.fetch/2`; one `:receive_timeout` bounds all attempts and delays.
     * `:into` — `fun({:data, chunk}, acc) -> {:cont, acc} | {:halt, acc}` with
       `:into_acc`, or any `Collectable`; the response body becomes the result
     * `:max_body_bytes` — reject larger response bodies
@@ -29,8 +32,6 @@ defmodule Backplane.HTTPClient do
   mapped to value lists.
   """
 
-  require Logger
-
   alias Backplane.HTTPClient.Error
   alias Backplane.HTTPClient.Proxy
   alias Backplane.HTTPClient.Response
@@ -39,23 +40,13 @@ defmodule Backplane.HTTPClient do
   @default_connect_timeout 30_000
   @default_user_agent "backplane"
   @safe_methods ["GET", "HEAD"]
-  @idempotent_methods ["GET", "HEAD", "OPTIONS", "PUT", "DELETE", "TRACE"]
-  @transient_statuses [408, 429, 500, 502, 503, 504]
-  @transient_reasons [
-    :timeout,
-    :connect_timeout,
-    :read_idle_timeout,
-    :econnrefused,
-    :econnreset,
-    :closed
-  ]
 
   @type result :: {:ok, Response.t()} | {:error, Error.t()}
 
   @spec request(keyword()) :: result()
   def request(opts) when is_list(opts) do
     with {:ok, prepared} <- prepare(opts) do
-      run(prepared, 0)
+      execute(prepared)
     end
   end
 
@@ -96,15 +87,11 @@ defmodule Backplane.HTTPClient do
          headers: build_headers(opts, content_type),
          body: body,
          timeout: timeout,
-         fetch: fetch_options(opts, method, timeout, url),
+         fetch: opts |> fetch_options(method, timeout, url) |> put_retry(opts, method),
          decode?: Keyword.get(opts, :decode_body, true) and not Keyword.get(opts, :raw, false),
          into: Keyword.get(opts, :into),
          into_acc: Keyword.get(opts, :into_acc),
-         max_body_bytes: Keyword.get(opts, :max_body_bytes),
-         retry: Keyword.get(opts, :retry, :safe_transient),
-         max_retries: Keyword.get(opts, :max_retries, 3),
-         retry_delay: Keyword.get(opts, :retry_delay),
-         retry_log_level: Keyword.get(opts, :retry_log_level, :warning)
+         max_body_bytes: Keyword.get(opts, :max_body_bytes)
        }}
     end
   end
@@ -254,30 +241,28 @@ defmodule Backplane.HTTPClient do
     |> Enum.reject(fn {_key, value} -> value in [nil, []] end)
   end
 
+  # Req's default `:safe_transient` covers GET/HEAD for both no-response
+  # failures and transient statuses, which is http_fetch's `:transient`
+  # restricted to safe methods.
+  defp put_retry(fetch, opts, method) do
+    retry =
+      case Keyword.get(opts, :retry, :safe_transient) do
+        :safe_transient -> if method in @safe_methods, do: :transient, else: false
+        retry -> retry
+      end
+
+    fetch
+    |> Keyword.put(:retry, retry)
+    |> put_if(:max_retries, Keyword.get(opts, :max_retries))
+    |> put_if(:retry_delay, Keyword.get(opts, :retry_delay))
+  end
+
   defp put_if(opts, _key, nil), do: opts
   defp put_if(opts, key, value), do: Keyword.put(opts, key, value)
 
   # -- execution -------------------------------------------------------------
 
-  # credo:disable-for-next-line Credo.Check.Design.TagTODO
-  # TODO(upstream): gsmlg-dev/http_fetch#160
-  # WORKAROUND(upstream): gsmlg-dev/http_fetch#160
-  # HTTP.fetch/2 performs one attempt, so Req's transient-retry behavior is
-  # reproduced here. Remove this loop once http_fetch ships an opt-in retry policy.
-  defp run(prepared, attempt) do
-    result = attempt(prepared)
-
-    if retry?(prepared, result, attempt) do
-      delay = retry_delay(prepared, result, attempt)
-      log_retry(prepared, result, attempt, delay)
-      Process.sleep(delay)
-      run(prepared, attempt + 1)
-    else
-      result
-    end
-  end
-
-  defp attempt(prepared) do
+  defp execute(prepared) do
     fetch =
       prepared.fetch
       |> Keyword.put(:headers, prepared.headers)
@@ -332,7 +317,8 @@ defmodule Backplane.HTTPClient do
       nil -> consume_binary(response.body || "", prepared)
     end
   rescue
-    error in RuntimeError -> {:error, Error.exception(reason: {:stream, error.message})}
+    error in HTTP.ResponseError ->
+      {:error, Error.exception(reason: normalize_reason(error.reason))}
   end
 
   defp consume_binary(body, prepared) do
@@ -466,67 +452,10 @@ defmodule Backplane.HTTPClient do
 
   defp normalize_reason(%HTTP.RequestError{reason: reason}), do: normalize_reason(reason)
   defp normalize_reason({:timeout, _}), do: :timeout
+  defp normalize_reason(:await_timeout), do: :timeout
   defp normalize_reason({:connect_failed, reason}), do: normalize_reason(reason)
   defp normalize_reason({:connect_failure, _token, reason}), do: normalize_reason(reason)
   defp normalize_reason(reason), do: reason
-
-  # -- retry -----------------------------------------------------------------
-
-  defp retry?(%{max_retries: max}, _result, attempt) when attempt >= max, do: false
-  defp retry?(%{retry: false}, _result, _attempt), do: false
-  defp retry?(%{retry: fun}, result, _attempt) when is_function(fun, 1), do: fun.(unwrap(result))
-
-  defp retry?(%{retry: :safe_transient, method: method}, result, _attempt),
-    do: method in @safe_methods and transient?(result)
-
-  defp retry?(%{retry: :transient, method: method}, result, _attempt),
-    do: method in @idempotent_methods and transient?(result)
-
-  defp retry?(_prepared, _result, _attempt), do: false
-
-  defp unwrap({:ok, response}), do: response
-  defp unwrap({:error, error}), do: error
-
-  defp transient?({:ok, %Response{status: status}}), do: status in @transient_statuses
-  defp transient?({:error, %Error{reason: reason}}), do: reason in @transient_reasons
-
-  defp retry_delay(%{retry_delay: delay}, _result, _attempt) when is_integer(delay), do: delay
-
-  defp retry_delay(%{retry_delay: fun}, _result, attempt) when is_function(fun, 1),
-    do: fun.(attempt)
-
-  defp retry_delay(_prepared, {:ok, %Response{} = response}, attempt) do
-    case retry_after(response) do
-      nil -> backoff(attempt)
-      delay -> delay
-    end
-  end
-
-  defp retry_delay(_prepared, _result, attempt), do: backoff(attempt)
-
-  defp backoff(attempt), do: Integer.pow(2, attempt) * 1_000
-
-  defp retry_after(response) do
-    with [value | _] <- Response.get_header(response, "retry-after"),
-         {seconds, ""} <- Integer.parse(String.trim(value)) do
-      max(seconds, 0) * 1_000
-    else
-      _ -> nil
-    end
-  end
-
-  defp log_retry(%{retry_log_level: false}, _result, _attempt, _delay), do: :ok
-
-  defp log_retry(prepared, result, attempt, delay) do
-    Logger.log(
-      prepared.retry_log_level,
-      "HTTP #{prepared.method} retry #{attempt + 1}/#{prepared.max_retries} in #{delay}ms: " <>
-        retry_reason(result)
-    )
-  end
-
-  defp retry_reason({:ok, %Response{status: status}}), do: "status #{status}"
-  defp retry_reason({:error, %Error{reason: reason}}), do: inspect(reason)
 
   defp deadline(:infinity), do: :infinity
   defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout

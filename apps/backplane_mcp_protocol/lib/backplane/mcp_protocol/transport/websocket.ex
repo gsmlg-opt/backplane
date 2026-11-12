@@ -48,8 +48,9 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
     - `:headers` - The headers to send with the WebSocket upgrade request.
     - `:transport_opts` - A keyword list or map of options passed to `HTTP.WebSocket.new/3`,
       including the library's supported string map keys. The transport always overrides
-      owner and headers, including string keys. Only browser mode with legacy delivery
-      is supported; ACK delivery and proxy mode are rejected. Incoming text messages
+      owner and headers, including string keys. Only browser mode with push delivery
+      (`:push`, or its former name `:legacy`) is supported; ACK delivery and proxy
+      mode are rejected. Incoming text messages
       are forwarded to the client; binary messages are ignored. TLS verification uses
       the library defaults unless explicitly configured through these options.
     """
@@ -329,7 +330,7 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
           end)
 
         {:ok,
-         [owner: self(), headers: Map.to_list(headers), mode: :browser, delivery: :legacy] ++
+         [owner: self(), headers: Map.to_list(headers), mode: :browser, delivery: :push] ++
            options}
       end
     end
@@ -339,7 +340,7 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
     defp validate_websocket_options(options) do
       Enum.reduce_while(options, :ok, fn
         {key, value}, :ok
-        when key in [:delivery, "delivery"] and value not in [:legacy, "legacy"] ->
+        when key in [:delivery, "delivery"] and value not in [:push, "push", :legacy, "legacy"] ->
           {:halt, {:error, {:unsupported_transport_option, :delivery}}}
 
         {key, value}, :ok when key in [:mode, "mode"] and value not in [:browser, "browser"] ->

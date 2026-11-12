@@ -82,7 +82,7 @@ defmodule Backplane.HTTPClientTest do
     HTTP.Test.expect(ctx.name, fn _ -> HTTP.Test.text("ok") end)
 
     assert {:ok, %Response{status: 200, body: "ok"}} =
-             HTTPClient.get("https://api.test", adapter: ctx.adapter, retry_log_level: false)
+             HTTPClient.get("https://api.test", adapter: ctx.adapter)
   end
 
   test "transport errors retry for GET and stop at max_retries", ctx do
@@ -92,8 +92,7 @@ defmodule Backplane.HTTPClientTest do
              HTTPClient.get("https://api.test",
                adapter: ctx.adapter,
                max_retries: 2,
-               retry_delay: 0,
-               retry_log_level: false
+               retry_delay: 0
              )
   end
 

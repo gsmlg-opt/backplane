@@ -57,7 +57,6 @@ defmodule Relayixir.Proxy.HttpClient do
       redirect: :manual,
       decode_body: false,
       stream_response: true,
-      tls_backend: :ex_ssl,
       connect_timeout: upstream.connect_timeout,
       # Allow separate header and body phases; the adapter enforces each deadline.
       timeout: upstream.connect_timeout + 2 * upstream.request_timeout

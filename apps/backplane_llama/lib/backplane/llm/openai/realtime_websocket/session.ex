@@ -52,7 +52,6 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocket.Session do
       mode: :browser,
       delivery: :ack,
       http_version: :http1,
-      tls_backend: :ex_ssl,
       connect_timeout: @opening_timeout,
       opening_timeout: @opening_timeout,
       write_timeout: @write_timeout,

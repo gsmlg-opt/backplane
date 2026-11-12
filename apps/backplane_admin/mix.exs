@@ -31,7 +31,7 @@ defmodule BackplaneAdmin.MixProject do
 
   defp deps do
     [
-      {:http_test, "~> 1.0.0-rc.13", only: :test},
+      {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane, in_umbrella: true},
       {:backplane_auth, in_umbrella: true},
       {:backplane_system, in_umbrella: true},

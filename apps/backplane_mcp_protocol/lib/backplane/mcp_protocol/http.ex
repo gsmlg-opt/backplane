@@ -5,7 +5,7 @@ defmodule Backplane.McpProtocol.HTTP do
   alias Elixir.HTTP, as: Fetch
 
   @max_redirects 3
-  @fetch_options ~w(http_version tls_backend ssl socket_opts proxy proxy_headers connect_address telemetry decode_body read_idle_timeout write_idle_timeout response_stream_ack_timeout http1_reuse http1_scope http1_pool_size http1_idle_timeout http2_reuse http2_scope)a
+  @fetch_options ~w(http_version ssl socket_opts proxy connect_address telemetry decode_body read_idle_timeout write_idle_timeout response_stream_ack_timeout http1_reuse http1_scope http1_pool_size http1_idle_timeout http2_reuse http2_scope)a
   @mcp_options ~w(allowed_origin request_timeout receive_timeout connect_timeout max_reconnections default_backoff max_backoff dest)a
 
   # request_timeout bounds the entire manual redirect chain; receive_timeout maps
@@ -261,7 +261,14 @@ defmodule Backplane.McpProtocol.HTTP do
   end
 
   defp await_response(promise, completion, timeout) do
-    Fetch.Promise.await(promise, timeout)
+    case Fetch.Promise.await(promise, timeout) do
+      {:error, :await_timeout} ->
+        Fetch.RequestCompletion.abort_and_await(completion, 1_000)
+        {:error, :timeout}
+
+      result ->
+        result
+    end
   catch
     :exit, {:timeout, _call} ->
       Fetch.RequestCompletion.abort_and_await(completion, 1_000)

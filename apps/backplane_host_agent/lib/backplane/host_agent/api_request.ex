@@ -12,7 +12,7 @@ defmodule Backplane.HostAgent.ApiRequest do
   @chunk_bytes 48 * 1024
   @request_header_name ~r/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
   @blocked_request_headers ~w(host cookie cookie2 forwarded x-real-ip connection keep-alive te trailer transfer-encoding upgrade content-length accept-encoding)
-  @timeout_reasons [:timeout, :read_idle_timeout, :idle_timeout]
+  @timeout_reasons [:timeout, :await_timeout, :read_idle_timeout, :idle_timeout]
   @hop_headers ~w(connection keep-alive proxy-authenticate proxy-authorization te trailer transfer-encoding upgrade content-length set-cookie)
 
   def apis, do: @apis

@@ -118,7 +118,7 @@ if Code.ensure_loaded?(HTTP.WebSocket) do
         assert normalized.owner == self()
         assert normalized.headers == [{"Authorization", "Bearer explicit"}]
         assert normalized.mode == :browser
-        assert normalized.delivery == :legacy
+        assert normalized.delivery == :push
         assert normalized.ssl == []
         socket
       end)

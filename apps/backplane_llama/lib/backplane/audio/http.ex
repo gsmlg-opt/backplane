@@ -38,7 +38,7 @@ defmodule Backplane.Audio.HTTP do
               %HTTP.Response{} = response ->
                 process_response(response, max_bytes, receiver, initial, deadline)
 
-              {:error, :timeout} ->
+              {:error, reason} when reason in [:timeout, :await_timeout] ->
                 {:error, timeout_error(), initial}
 
               {:error, {:timeout, _}} ->
@@ -135,7 +135,6 @@ defmodule Backplane.Audio.HTTP do
     stream =
       cond do
         is_pid(response.body) -> response.body
-        is_pid(response.stream) -> response.stream
         true -> nil
       end
 

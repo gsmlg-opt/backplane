@@ -128,7 +128,6 @@ defmodule Backplane.Monitor.ApiUsageFetcher do
             extra_headers,
         redirect: false,
         retry: false,
-        retry_log_level: false,
         # Bounded deadlines carried over from the former Finch pool settings:
         # 5 s connect, 15 s for the whole request.
         receive_timeout: 15_000,

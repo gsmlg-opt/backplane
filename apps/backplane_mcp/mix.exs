@@ -30,7 +30,7 @@ defmodule BackplaneMcp.MixProject do
 
   defp deps do
     [
-      {:http_test, "~> 1.0.0-rc.13", only: :test},
+      {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane_system, in_umbrella: true},
       {:backplane_telemetry, in_umbrella: true},
       {:backplane_auth, in_umbrella: true},
@@ -45,7 +45,7 @@ defmodule BackplaneMcp.MixProject do
       {:gaoxy_http, "~> 0.15.0"},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
-      {:http_fetch, "~> 1.0.0-rc.13"},
+      {:http_fetch, "~> 1.0.0-rc.15"},
       {:lazy_html, ">= 0.1.0"},
       {:jason, "~> 1.4"},
       {:decimal, "~> 3.0"},

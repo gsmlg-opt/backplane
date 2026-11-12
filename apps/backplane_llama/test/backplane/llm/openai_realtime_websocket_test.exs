@@ -383,7 +383,6 @@ defmodule Backplane.LLM.OpenAI.RealtimeWebSocketTest do
       headers: headers || auth(ctx),
       http_version: :http1,
       mode: :browser,
-      tls_backend: :ex_ssl,
       connect_timeout: 3_000,
       opening_timeout: 3_000,
       close_timeout: 500

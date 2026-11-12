@@ -39,8 +39,8 @@ defmodule BackplaneSkillProtocol.MixProject do
 
   defp deps do
     [
-      {:http_fetch, "~> 1.0.0-rc.13"},
-      {:http_test, "~> 1.0.0-rc.13", only: :test},
+      {:http_fetch, "~> 1.0.0-rc.15"},
+      {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:telemetry, "~> 1.2"},
       {:yaml_elixir, "~> 2.9"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}

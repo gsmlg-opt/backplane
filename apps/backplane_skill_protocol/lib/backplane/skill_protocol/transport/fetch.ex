@@ -29,14 +29,14 @@ defmodule Backplane.SkillProtocol.Transport.Fetch do
     exception -> {:error, exception}
   end
 
-  # Structured errors keep a bare `{:error, :timeout}` unambiguous: it only
-  # means this poll interval expired, so the request is still in flight.
+  # `:await_timeout` only means this poll interval expired; the request is
+  # still in flight.
   defp await_response(promise, request) do
     case HTTP.Promise.await(promise, poll_interval(request)) do
       %HTTP.Response{} = response ->
         read_response(response, promise, request)
 
-      {:error, :timeout} ->
+      {:error, :await_timeout} ->
         case interruption(request) do
           nil -> await_response(promise, request)
           reason -> abort(promise, reason)

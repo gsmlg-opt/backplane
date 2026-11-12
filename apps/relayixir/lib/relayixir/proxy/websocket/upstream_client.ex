@@ -25,7 +25,6 @@ defmodule Relayixir.Proxy.WebSocket.UpstreamClient do
            automatic_pong: false,
            delivery: :ack,
            http_version: :http1,
-           tls_backend: :ex_ssl,
            connect_timeout: upstream.connect_timeout,
            opening_timeout: opening_timeout,
            write_timeout: @write_timeout,

@@ -30,7 +30,7 @@ defmodule Backplane.Memory.MixProject do
 
   defp deps do
     [
-      {:http_test, "~> 1.0.0-rc.13", only: :test},
+      {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:backplane_memory_contract, in_umbrella: true},
       {:backplane_system, in_umbrella: true},
       {:backplane_skills, in_umbrella: true},

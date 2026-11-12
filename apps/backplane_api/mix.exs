@@ -53,7 +53,7 @@ defmodule BackplaneApi.MixProject do
       {:jason, "~> 1.4"},
       {:duskmoon_bundler_runtime, "~> 10.1"},
       {:duskmoon_bundler, "~> 10.1", runtime: Mix.env() != :prod},
-      {:http_web_socket, "~> 1.0.0-rc.5", only: :test},
+      {:http_web_socket, "~> 1.0.0-rc.15", only: :test},
       {:phoenix_live_reload, "~> 1.5", only: :dev},
       {:floki, ">= 0.30.0", only: :test},
       {:lazy_html, ">= 0.1.0"}
