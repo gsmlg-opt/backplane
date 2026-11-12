@@ -1,7 +1,7 @@
 defmodule BackplaneOauth.MixProject do
   use Mix.Project
 
-  @version "1.10.76"
+  @version "1.10.77"
   @source_url "https://github.com/gsmlg-opt/backplane"
 
   # Forked from Hex `boruta` 2.3.8 (https://github.com/malach-it/boruta_auth, MIT).
