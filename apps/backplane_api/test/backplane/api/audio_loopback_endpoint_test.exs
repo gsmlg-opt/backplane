@@ -382,6 +382,23 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     end
   end
 
+  test "a client that closes right after a complete response is recorded as success", ctx do
+    {format, _profile} = Enum.find(Plan.speech_profiles(), fn {format, _} -> format != "mp3" end)
+
+    response = speech(ctx, format, "identity", http1_reuse: false)
+    assert response.status == 200
+    assert_receive {:native_request, _, "/v1/t2a_v2", _headers, _body}
+    attrs = observed("audio.speech", "success")
+    assert attrs["response_bytes"] == byte_size(response.body)
+
+    response = asr(ctx, "json", http1_reuse: false)
+    assert response.status == 200
+    assert_receive {:native_request, _, "/v1/speech_to_text", _headers, _body}
+    attrs = observed("audio.transcriptions", "success")
+    assert attrs["response_bytes"] == byte_size(response.body)
+    clean!()
+  end
+
   test "native business errors, malformed JSON and hex, empty audio and HTTP errors are sanitized",
        ctx do
     for mode <- [
@@ -819,18 +836,23 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
     attrs
   end
 
-  defp speech(ctx, format, accept_encoding \\ "identity") do
+  defp speech(ctx, format, accept_encoding \\ "identity", opts \\ []) do
     body = %{model: ctx.model, input: "Hello", voice: "default", response_format: format}
 
-    post!(ctx.base <> "/v1/audio/speech", Jason.encode!(body), [
-      {"authorization", "Bearer #{ctx.token}"},
-      {"accept-encoding", accept_encoding},
-      {"content-type", "application/json"},
-      {"accept", "application/json"}
-    ])
+    post!(
+      ctx.base <> "/v1/audio/speech",
+      Jason.encode!(body),
+      [
+        {"authorization", "Bearer #{ctx.token}"},
+        {"accept-encoding", accept_encoding},
+        {"content-type", "application/json"},
+        {"accept", "application/json"}
+      ],
+      opts
+    )
   end
 
-  defp asr(ctx, format) do
+  defp asr(ctx, format, opts \\ []) do
     {:multipart, body, boundary} =
       HTTP.FormData.new()
       |> HTTP.FormData.append_field("model", ctx.model)
@@ -844,20 +866,28 @@ defmodule Backplane.Api.AudioLoopbackEndpointTest do
       )
       |> HTTP.FormData.to_body()
 
-    post!(ctx.base <> "/v1/audio/transcriptions", body, [
-      {"authorization", "Bearer #{ctx.token}"},
-      {"accept-encoding", "identity"},
-      {"content-type", "multipart/form-data; boundary=#{boundary}"}
-    ])
+    post!(
+      ctx.base <> "/v1/audio/transcriptions",
+      body,
+      [
+        {"authorization", "Bearer #{ctx.token}"},
+        {"accept-encoding", "identity"},
+        {"content-type", "multipart/form-data; boundary=#{boundary}"}
+      ],
+      opts
+    )
   end
 
-  defp post!(url, body, headers) do
-    Backplane.HTTPClient.post!(url,
-      headers: headers,
-      body: IO.iodata_to_binary(body),
-      receive_timeout: 30_000,
-      decode_body: false,
-      retry: false
+  defp post!(url, body, headers, opts) do
+    Backplane.HTTPClient.post!(
+      url,
+      [
+        headers: headers,
+        body: IO.iodata_to_binary(body),
+        receive_timeout: 30_000,
+        decode_body: false,
+        retry: false
+      ] ++ opts
     )
   end
 

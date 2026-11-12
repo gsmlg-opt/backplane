@@ -405,6 +405,11 @@ defmodule Backplane.LLM.Router do
         Task.shutdown(task, :brutal_kill)
         {:error, error, next_conn}
 
+      # The client read the whole response and closed; stop polling the closed
+      # connection and wait for the worker's own result.
+      {:error, %Error{code: "audio_cancelled"}, next_conn} when conn.state in [:sent, :file] ->
+        await_audio_receive(task, next_conn, deadline, consumer, nil)
+
       {:error, error, next_conn} ->
         Task.shutdown(task, :brutal_kill)
         AccessLifecycle.finish_error(next_conn.private.audio_observer, error, next_conn.status)

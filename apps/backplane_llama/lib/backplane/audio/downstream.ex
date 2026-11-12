@@ -62,11 +62,25 @@ defmodule Backplane.Audio.Downstream do
 
   def restore(conn, downstream) do
     case poll(conn, downstream) do
-      {:ok, conn} -> {:ok, conn}
-      {:error, %Error{code: "audio_timeout"}, next_conn} -> {:ok, next_conn}
-      {:error, error, _conn} -> {:error, error}
+      {:ok, conn} ->
+        {:ok, conn}
+
+      {:error, %Error{code: "audio_timeout"}, next_conn} ->
+        {:ok, next_conn}
+
+      {:error, %Error{code: "audio_cancelled"} = error, next_conn} ->
+        if complete?(conn), do: {:ok, next_conn}, else: {:error, error}
+
+      {:error, error, _conn} ->
+        {:error, error}
     end
   end
+
+  @doc """
+  Whether a complete, non-chunked response has been written. After that a peer
+  close only means the client finished reading; it is not a cancellation.
+  """
+  def complete?(%Plug.Conn{state: state}), do: state in [:sent, :file]
 
   def abort(%{adapter: {Gaoxy.PlugAdapter, _}} = conn), do: Gaoxy.HTTP.abort(conn)
   def abort(_conn), do: :ok
