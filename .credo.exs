@@ -31,7 +31,8 @@
 
           {Credo.Check.Design.AliasUsage, false},
           {Credo.Check.Design.TagFIXME, []},
-          {Credo.Check.Design.TagTODO, [exit_status: 2]},
+          {Credo.Check.Design.TagTODO,
+           [exit_status: 2, files: %{excluded: ["apps/backplane_oauth/lib/"]}]},
 
           {Credo.Check.Readability.AliasOrder, false},
           {Credo.Check.Readability.FunctionNames, []},

@@ -6,7 +6,7 @@ defmodule Backplane.Accounts.BorutaFoundationTest do
   alias Boruta.Ecto.Token
 
   test "boruta ecto adapter is configured on Backplane.Repo" do
-    oauth_config = Application.fetch_env!(:boruta, Boruta.Oauth)
+    oauth_config = Application.fetch_env!(:backplane_oauth, Boruta.Oauth)
 
     assert Keyword.fetch!(oauth_config, :repo) == Backplane.Repo
     assert Boruta.Config.repo() == Backplane.Repo

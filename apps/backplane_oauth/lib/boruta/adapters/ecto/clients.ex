@@ -1,0 +1,105 @@
+defmodule Boruta.Ecto.Clients do
+  @moduledoc false
+
+  @behaviour Boruta.Oauth.Clients
+  @behaviour Boruta.Openid.Clients
+
+  import Boruta.Config, only: [repo: 0]
+  import Boruta.Ecto.OauthMapper, only: [to_oauth_schema: 1]
+
+  alias Boruta.Ecto
+  alias Boruta.Ecto.ClientStore
+  alias Boruta.HttpClient
+  alias Boruta.Oauth
+
+  @impl Boruta.Oauth.Clients
+  def get_client(id) do
+    case get_client(:from_cache, id) do
+      {:ok, client} -> client
+      {:error, _reason} -> get_client(:from_database, id)
+    end
+  end
+
+  defp get_client(:from_cache, id), do: ClientStore.get_client(id)
+
+  defp get_client(:from_database, id) do
+    with {:ok, id} <- Elixir.Ecto.UUID.cast(id),
+         %Ecto.Client{} = client <- repo().get_by(Ecto.Client, id: id),
+         {:ok, client} <- client |> to_oauth_schema() |> ClientStore.put() do
+      client
+    else
+      _error -> nil
+    end
+  end
+
+  def invalidate(client) do
+    ClientStore.invalidate(client)
+  end
+
+  @impl Boruta.Oauth.Clients
+  def authorized_scopes(client) do
+    case ClientStore.authorized_scopes(client) do
+      {:ok, authorized_scopes} -> authorized_scopes
+      {:error, _reason} -> authorized_scopes(:from_database, client)
+    end
+  end
+
+  @impl Boruta.Oauth.Clients
+  def list_clients_jwk do
+    clients = repo().all(Ecto.Client)
+
+    Enum.map(clients, &rsa_key/1)
+    |> Enum.uniq_by(fn %{"kid" => kid} -> kid end)
+  end
+
+  @impl Boruta.Openid.Clients
+  def create_client(registration_params) do
+    with {:ok, client} <-
+           %Ecto.Client{}
+           |> Ecto.Client.registration_changeset(registration_params)
+           |> repo().insert() do
+      client |> to_oauth_schema() |> ClientStore.put()
+    end
+  end
+
+  @impl Boruta.Openid.Clients
+  def refresh_jwk_from_jwks_uri(client_id) do
+    with %Ecto.Client{jwks_uri: "" <> jwks_uri} = client <-
+           repo().get_by(Ecto.Client, id: client_id),
+         %URI{scheme: "" <> _scheme} <- URI.parse(jwks_uri),
+         {:ok, %Finch.Response{body: jwks, status: 200}} <-
+           HttpClient.get(jwks_uri, client.trusted_authorities, client.trusted_hosts),
+         {:ok, %{"keys" => [jwk]}} <- Jason.decode(jwks, keys: :strings),
+         {:ok, %Ecto.Client{jwt_public_key: jwt_public_key}} <-
+           Ecto.Client.update_changeset(client, %{
+             jwk: jwk,
+             token_endpoint_jwt_auth_alg: jwk["alg"]
+           })
+           |> repo().update() do
+      {:ok, jwt_public_key}
+    else
+      {:error, error} ->
+        {:error, error}
+
+      _ ->
+        {:error, "Could not refresh client jwk with jwks_uri."}
+    end
+  end
+
+  defp authorized_scopes(:from_database, %Oauth.Client{id: id}) do
+    case repo().get_by(Ecto.Client, id: id) do
+      %Ecto.Client{} = client ->
+        {:ok, client} = to_oauth_schema(client) |> ClientStore.put()
+        client.authorized_scopes
+
+      nil ->
+        []
+    end
+  end
+
+  defp rsa_key(%Ecto.Client{public_key: public_key, private_key: private_key}) do
+    {_type, jwk} = public_key |> :jose_jwk.from_pem() |> :jose_jwk.to_map()
+
+    Map.put(jwk, "kid", Oauth.Client.Crypto.kid_from_private_key(private_key))
+  end
+end

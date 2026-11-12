@@ -818,10 +818,10 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
   end
 
   defp with_token_generator(generator, fun) do
-    oauth_config = Application.fetch_env!(:boruta, Boruta.Oauth)
+    oauth_config = Application.fetch_env!(:backplane_oauth, Boruta.Oauth)
 
     Application.put_env(
-      :boruta,
+      :backplane_oauth,
       Boruta.Oauth,
       Keyword.put(oauth_config, :token_generator, generator)
     )
@@ -829,7 +829,7 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
     try do
       fun.()
     after
-      Application.put_env(:boruta, Boruta.Oauth, oauth_config)
+      Application.put_env(:backplane_oauth, Boruta.Oauth, oauth_config)
     end
   end
 end

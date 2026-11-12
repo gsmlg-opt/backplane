@@ -42,6 +42,7 @@ jobs:
           - backplane_memory
           - backplane_memory_contract
           - backplane_monitor
+          - backplane_oauth
           - backplane_plugin_protocol
           - backplane_plugins
           - backplane_schema

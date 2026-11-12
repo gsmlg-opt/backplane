@@ -44,7 +44,7 @@ defmodule BackplaneSystem.MixProject do
       {:styx, "~> 0.1.1"},
       {:secrethub_sdk, "~> 1.0.0-rc.32"},
       {:tzdata, "~> 1.1"},
-      {:boruta, "~> 2.3"},
+      {:backplane_oauth, in_umbrella: true},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
       {:jason, "~> 1.4"},

@@ -875,7 +875,7 @@ defmodule Backplane.Admin.AuthOAuthLive do
   end
 
   defp oauth_issuer do
-    :boruta
+    :backplane_oauth
     |> Application.get_env(Boruta.Oauth, [])
     |> Keyword.get(:issuer, "")
     |> String.trim_trailing("/")

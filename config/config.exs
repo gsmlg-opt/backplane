@@ -10,7 +10,7 @@ config :backplane_system, ecto_repos: [Backplane.Repo]
 
 config :backplane, bootstrap_admin_emails: []
 
-config :boruta, Boruta.Oauth,
+config :backplane_oauth, Boruta.Oauth,
   repo: Backplane.Repo,
   issuer: "http://localhost:4220",
   token_generator: Backplane.Auth.AccessTokenGenerator,

@@ -35,7 +35,7 @@ defmodule BackplaneAuth.MixProject do
       {:backplane_data_case, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.12"},
       {:bcrypt_elixir, "~> 3.0"},
-      {:boruta, "~> 2.3"},
+      {:backplane_oauth, in_umbrella: true},
       {:joken, "~> 2.6"},
       {:jose, "~> 1.11"},
       {:jason, "~> 1.4"},
