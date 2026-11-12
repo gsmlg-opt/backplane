@@ -7,8 +7,8 @@ defmodule Backplane.Auth.OAuth do
   alias Backplane.Auth.Resources
   alias Backplane.Endpoints
   alias Backplane.Repo
-  alias Boruta.Ecto.Admin
-  alias Boruta.Ecto.{Client, Scope}
+  alias Backplane.Oauth.Ecto.Admin
+  alias Backplane.Oauth.Ecto.{Client, Scope}
 
   @supported_grant_types ["authorization_code", "refresh_token", "revoke", "introspect"]
 

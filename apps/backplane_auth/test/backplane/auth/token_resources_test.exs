@@ -6,7 +6,7 @@ defmodule Backplane.Auth.TokenResourcesTest do
   alias Backplane.Auth.Schemas.OAuthTokenResource
   alias Backplane.Auth.TokenResources
   alias Backplane.Repo
-  alias Boruta.Ecto.Token
+  alias Backplane.Oauth.Ecto.Token
 
   setup do
     clear_boruta_cache()
@@ -377,9 +377,9 @@ defmodule Backplane.Auth.TokenResourcesTest do
         expires_at: System.system_time(:second) + 3_600
       )
 
-    assert %Boruta.Oauth.Token{} = Boruta.Ecto.AccessTokens.get_by(value: token.value)
-    assert {:ok, _cached} = Boruta.Ecto.TokenStore.get(value: token.value)
-    assert {:ok, _cached} = Boruta.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+    assert %Backplane.Oauth.Token{} = Backplane.Oauth.Ecto.AccessTokens.get_by(value: token.value)
+    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
+    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
 
     assert {:ok, _binding} =
              TokenResources.bind_issued("access_token", client.id, token.value, :mcp)
@@ -390,10 +390,10 @@ defmodule Backplane.Auth.TokenResourcesTest do
     revoked = Repo.reload!(token)
     assert %DateTime{} = revoked.revoked_at
     assert %DateTime{} = revoked.refresh_token_revoked_at
-    assert {:error, "Not cached."} = Boruta.Ecto.TokenStore.get(value: token.value)
+    assert {:error, "Not cached."} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
 
     assert {:error, "Not cached."} =
-             Boruta.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+             Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
   end
 
   test "LineageError has a fixed non-sensitive message" do
@@ -440,7 +440,7 @@ defmodule Backplane.Auth.TokenResourcesTest do
   end
 
   defp clear_boruta_cache do
-    _ = Boruta.Cache.delete_all()
+    _ = Backplane.Oauth.Cache.delete_all()
     :ok
   end
 

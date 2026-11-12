@@ -3,8 +3,8 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
   alias Backplane.Auth
   alias Backplane.Repo
-  alias Boruta.Ecto.ClientStore
-  alias Boruta.Ecto.Clients, as: BorutaClients
+  alias Backplane.Oauth.Ecto.ClientStore
+  alias Backplane.Oauth.Ecto.Clients, as: BorutaClients
 
   @https_required_message "OAuth protected resources require an HTTPS API origin."
 
@@ -445,7 +445,7 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
     assert html =~ "reports:read"
     assert html =~ "Read reports"
-    assert %Boruta.Ecto.Scope{name: "reports:read"} = Auth.OAuth.get_scope("reports:read")
+    assert %Backplane.Oauth.Ecto.Scope{name: "reports:read"} = Auth.OAuth.get_scope("reports:read")
   end
 
   test "OAuth tokens page lists issued tokens and revokes access", %{conn: conn} do
@@ -701,7 +701,7 @@ defmodule Backplane.Admin.AuthSettingsLiveTest do
 
   defp prime_client_cache(client_id) do
     on_exit(fn ->
-      ClientStore.invalidate(%Boruta.Oauth.Client{id: client_id})
+      ClientStore.invalidate(%Backplane.Oauth.Client{id: client_id})
     end)
 
     BorutaClients.get_client(client_id)

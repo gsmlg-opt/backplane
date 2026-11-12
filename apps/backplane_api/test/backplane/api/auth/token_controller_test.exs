@@ -7,11 +7,11 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
   alias Backplane.Auth
   alias Backplane.Auth.Resources
   alias Backplane.Repo
-  alias Boruta.Ecto.Token
-  alias Boruta.Oauth.TokenResponse
+  alias Backplane.Oauth.Ecto.Token
+  alias Backplane.Oauth.TokenResponse
 
   defmodule LineageErrorTokenGenerator do
-    @behaviour Boruta.Oauth.TokenGenerator
+    @behaviour Backplane.Oauth.TokenGenerator
 
     @impl true
     def generate(:access_token, %{type: "access_token"}) do
@@ -478,11 +478,11 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
     user = auth_user_fixture!()
     client = oauth_client_fixture!(resources: [:mcp], scopes: ["openid"])
     token = access_token_fixture!(user, client, ["openid"])
-    oauth_token = Boruta.Ecto.OauthMapper.to_oauth_schema(token)
+    oauth_token = Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema(token)
 
-    assert %Boruta.Oauth.Token{} = Boruta.Ecto.AccessTokens.get_by(value: token.value)
-    assert {:ok, _cached} = Boruta.Ecto.TokenStore.get(value: token.value)
-    assert {:ok, _cached} = Boruta.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+    assert %Backplane.Oauth.Token{} = Backplane.Oauth.Ecto.AccessTokens.get_by(value: token.value)
+    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
+    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
 
     response =
       conn
@@ -492,21 +492,21 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
 
     assert json_response(response, 400)["error"] == "server_error"
     assert %DateTime{} = Repo.reload!(token).revoked_at
-    assert {:error, "Not cached."} = Boruta.Ecto.TokenStore.get(value: token.value)
+    assert {:error, "Not cached."} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
 
     assert {:error, "Not cached."} =
-             Boruta.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+             Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
   end
 
   test "binding failure revokes and invalidates the issued access row", %{conn: conn} do
     user = auth_user_fixture!()
     client = oauth_client_fixture!(resources: [:mcp], scopes: ["github::*"])
     token = resource_access_token_fixture!(user, client, ["github::*"], :mcp)
-    oauth_token = Boruta.Ecto.OauthMapper.to_oauth_schema(token)
+    oauth_token = Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema(token)
 
-    assert %Boruta.Oauth.Token{} = Boruta.Ecto.AccessTokens.get_by(value: token.value)
-    assert {:ok, _cached} = Boruta.Ecto.TokenStore.get(value: token.value)
-    assert {:ok, _cached} = Boruta.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+    assert %Backplane.Oauth.Token{} = Backplane.Oauth.Ecto.AccessTokens.get_by(value: token.value)
+    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
+    assert {:ok, _cached} = Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
 
     response =
       conn
@@ -516,10 +516,10 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
 
     assert json_response(response, 400)["error"] == "server_error"
     assert %DateTime{} = Repo.reload!(token).revoked_at
-    assert {:error, "Not cached."} = Boruta.Ecto.TokenStore.get(value: token.value)
+    assert {:error, "Not cached."} = Backplane.Oauth.Ecto.TokenStore.get(value: token.value)
 
     assert {:error, "Not cached."} =
-             Boruta.Ecto.TokenStore.get(refresh_token: token.refresh_token)
+             Backplane.Oauth.Ecto.TokenStore.get(refresh_token: token.refresh_token)
   end
 
   describe "endpoint resources" do
@@ -700,10 +700,10 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
     oauth_client =
       client.id
       |> Auth.OAuth.get_client()
-      |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+      |> Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema()
 
     assert {:ok, code} =
-             Boruta.Ecto.Codes.create(%{
+             Backplane.Oauth.Ecto.Codes.create(%{
                client: oauth_client,
                resource_owner: nil,
                redirect_uri: hd(client.redirect_uris),
@@ -818,18 +818,18 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
   end
 
   defp with_token_generator(generator, fun) do
-    oauth_config = Application.fetch_env!(:backplane_oauth, Boruta.Oauth)
+    oauth_config = Application.fetch_env!(:backplane_oauth, Backplane.Oauth)
 
     Application.put_env(
       :backplane_oauth,
-      Boruta.Oauth,
+      Backplane.Oauth,
       Keyword.put(oauth_config, :token_generator, generator)
     )
 
     try do
       fun.()
     after
-      Application.put_env(:backplane_oauth, Boruta.Oauth, oauth_config)
+      Application.put_env(:backplane_oauth, Backplane.Oauth, oauth_config)
     end
   end
 end

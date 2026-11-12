@@ -5,7 +5,7 @@ defmodule Backplane.Auth.EndpointAccessTest do
 
   alias Backplane.Auth.{EndpointAccess, OAuth}
   alias Backplane.Endpoints
-  alias Boruta.Ecto.Token
+  alias Backplane.Oauth.Ecto.Token
 
   setup do
     {:ok, endpoint} = Endpoints.create(%{name: "chatgpt", mcp_enabled: true, llm_enabled: true})

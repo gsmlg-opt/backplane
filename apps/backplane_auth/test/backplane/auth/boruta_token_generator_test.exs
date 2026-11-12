@@ -1,8 +1,8 @@
 defmodule Backplane.Auth.BorutaTokenGeneratorTest do
   use Backplane.Auth.DataCase, async: false
 
-  alias Boruta.Ecto.Admin
-  alias Boruta.Ecto.Scope
+  alias Backplane.Oauth.Ecto.Admin
+  alias Backplane.Oauth.Ecto.Scope
 
   test "persists a pkce public client and scope through the configured token generator" do
     assert {:ok, scope} =

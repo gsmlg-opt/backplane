@@ -14,7 +14,7 @@ defmodule Backplane.Auth.Schemas.OAuthTokenResource do
   @timestamps_opts [type: :utc_datetime_usec]
 
   schema "oauth_token_resources" do
-    belongs_to :oauth_token, Boruta.Ecto.Token
+    belongs_to :oauth_token, Backplane.Oauth.Ecto.Token
     field :resource, :string
 
     timestamps()

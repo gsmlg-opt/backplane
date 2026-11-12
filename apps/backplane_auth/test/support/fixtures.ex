@@ -43,22 +43,22 @@ defmodule Backplane.Auth.Fixtures do
 
   @doc """
   Issues an access token (with refresh token) through Boruta's adapter, the
-  same path the token endpoint uses. Returns the `Boruta.Ecto.Token` row;
+  same path the token endpoint uses. Returns the `Backplane.Oauth.Ecto.Token` row;
   the JWT access token is its `value`.
   """
   def access_token_fixture!(user, client, scopes) when is_list(scopes) do
     oauth_client =
       client.id
       |> Auth.OAuth.get_client()
-      |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+      |> Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema()
 
     {:ok, token} =
-      Boruta.Ecto.AccessTokens.create(
+      Backplane.Oauth.Ecto.AccessTokens.create(
         %{client: oauth_client, sub: user.id, scope: Enum.join(scopes, " ")},
         refresh_token: true
       )
 
-    Backplane.Repo.get_by!(Boruta.Ecto.Token, value: token.value)
+    Backplane.Repo.get_by!(Backplane.Oauth.Ecto.Token, value: token.value)
   end
 
   @doc """
@@ -71,7 +71,7 @@ defmodule Backplane.Auth.Fixtures do
     code_value = "fixture-code-#{unique()}"
 
     code =
-      Backplane.Repo.insert!(%Boruta.Ecto.Token{
+      Backplane.Repo.insert!(%Backplane.Oauth.Ecto.Token{
         type: "code",
         value: code_value,
         client_id: client.id,
@@ -86,10 +86,10 @@ defmodule Backplane.Auth.Fixtures do
     oauth_client =
       client.id
       |> Auth.OAuth.get_client()
-      |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+      |> Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema()
 
     {:ok, oauth_token} =
-      Boruta.Ecto.AccessTokens.create(
+      Backplane.Oauth.Ecto.AccessTokens.create(
         %{
           client: oauth_client,
           sub: user.id,
@@ -107,7 +107,7 @@ defmodule Backplane.Auth.Fixtures do
         resource
       )
 
-    Backplane.Repo.get_by!(Boruta.Ecto.Token,
+    Backplane.Repo.get_by!(Backplane.Oauth.Ecto.Token,
       type: "access_token",
       client_id: client.id,
       value: oauth_token.value

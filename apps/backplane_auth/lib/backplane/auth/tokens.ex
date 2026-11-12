@@ -17,7 +17,7 @@ defmodule Backplane.Auth.Tokens do
   alias Backplane.Auth.Schemas.{SigningKey, User}
   alias Backplane.Repo
   alias Backplane.Settings.Encryption
-  alias Boruta.Ecto.{Client, Token}
+  alias Backplane.Oauth.Ecto.{Client, Token}
 
   @alg "RS256"
   @access_token_ttl 3_600
@@ -67,7 +67,7 @@ defmodule Backplane.Auth.Tokens do
       end
 
     sign_jwt!(key, %{
-      "iss" => Boruta.Config.issuer(),
+      "iss" => Backplane.Oauth.Config.issuer(),
       "sub" => sub,
       "aud" => audience,
       "client_id" => client_id,
@@ -241,7 +241,7 @@ defmodule Backplane.Auth.Tokens do
   defp validate_expiration(_claims), do: {:error, :invalid_token}
 
   defp validate_issuer(%{"iss" => issuer}) do
-    if issuer == Boruta.Config.issuer(), do: :ok, else: {:error, :invalid_token}
+    if issuer == Backplane.Oauth.Config.issuer(), do: :ok, else: {:error, :invalid_token}
   end
 
   defp validate_issuer(_claims), do: {:error, :invalid_token}
@@ -342,7 +342,7 @@ defmodule Backplane.Auth.Tokens do
   # must invalidate the corresponding entries or revocation is delayed until
   # the cache entry expires.
   defp invalidate_boruta_cache(%Token{type: type, value: value, refresh_token: refresh_token}) do
-    Boruta.Ecto.TokenStore.invalidate(%Boruta.Oauth.Token{
+    Backplane.Oauth.Ecto.TokenStore.invalidate(%Backplane.Oauth.Token{
       type: type,
       value: value,
       refresh_token: refresh_token

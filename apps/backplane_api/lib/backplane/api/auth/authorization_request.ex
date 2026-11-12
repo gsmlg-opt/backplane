@@ -3,7 +3,7 @@ defmodule Backplane.Api.Auth.AuthorizationRequest do
 
   alias Backplane.Auth.{OAuth, RBAC, Resources}
   alias Backplane.Auth.Schemas.User
-  alias Boruta.Ecto.Client
+  alias Backplane.Oauth.Ecto.Client
 
   @spec preflight(Client.t(), map(), nil | Resources.key()) ::
           {:ok, map()} | {:error, atom()}

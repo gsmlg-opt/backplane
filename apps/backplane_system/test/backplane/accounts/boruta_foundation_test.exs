@@ -1,17 +1,17 @@
 defmodule Backplane.Accounts.BorutaFoundationTest do
   use BackplaneSystem.DataCase, async: false
 
-  alias Boruta.Ecto.Client
-  alias Boruta.Ecto.Scope
-  alias Boruta.Ecto.Token
+  alias Backplane.Oauth.Ecto.Client
+  alias Backplane.Oauth.Ecto.Scope
+  alias Backplane.Oauth.Ecto.Token
 
   test "boruta ecto adapter is configured on Backplane.Repo" do
-    oauth_config = Application.fetch_env!(:backplane_oauth, Boruta.Oauth)
+    oauth_config = Application.fetch_env!(:backplane_oauth, Backplane.Oauth)
 
     assert Keyword.fetch!(oauth_config, :repo) == Backplane.Repo
-    assert Boruta.Config.repo() == Backplane.Repo
-    assert Boruta.Config.issuer() == Application.fetch_env!(:backplane, :api_url)
-    assert Boruta.Config.resource_owners() == Backplane.Auth.ResourceOwners
+    assert Backplane.Oauth.Config.repo() == Backplane.Repo
+    assert Backplane.Oauth.Config.issuer() == Application.fetch_env!(:backplane, :api_url)
+    assert Backplane.Oauth.Config.resource_owners() == Backplane.Auth.ResourceOwners
     assert Code.ensure_loaded?(Client)
     assert Code.ensure_loaded?(Scope)
     assert Code.ensure_loaded?(Token)

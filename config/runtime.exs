@@ -103,7 +103,7 @@ if config_env() == :prod do
     admin_url: admin_url,
     bootstrap_admin_emails: bootstrap_admin_emails
 
-  config :backplane_oauth, Boruta.Oauth, issuer: api_url
+  config :backplane_oauth, Backplane.Oauth, issuer: api_url
 
   config :backplane_api, Backplane.Api.Endpoint,
     url: [host: host, port: 443, scheme: "https"],

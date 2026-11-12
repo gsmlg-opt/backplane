@@ -1,0 +1,61 @@
+# credo:disable-for-this-file Credo.Check.Warning.SpecWithStruct
+defmodule Backplane.Oauth.Authorization.AccessToken do
+  @moduledoc """
+  Check against given params and return the corresponding access token
+  """
+
+  alias Backplane.Oauth.Error
+  alias Backplane.Oauth.Token
+
+  @doc """
+  Authorize the access token corresponding to the given params.
+
+  ## Examples
+      iex> authorize(%{value: "value"})
+      {:ok, %Backplane.Oauth.Token{...}}
+  """
+  @spec authorize(
+          params ::
+            [value: String.t()]
+            | [refresh_token: String.t()]
+        ) ::
+          {:error,
+           %Error{
+             :error => :invalid_access_token | :invalid_grant,
+             :error_description => String.t(),
+             :format => nil,
+             :redirect_uri => nil,
+             :status => :bad_request
+           }}
+          | {:ok, Token.t()}
+  def authorize(value: value) do
+    with %Token{} = token <- Backplane.Oauth.AccessTokensAdapter.get_by(value: value),
+         :ok <- Token.ensure_valid(token) do
+      {:ok, token}
+    else
+      _ ->
+        {:error,
+         %Error{
+           status: :bad_request,
+           error: :invalid_access_token,
+           error_description: "Given access token is invalid, revoked, or expired."
+         }}
+    end
+  end
+
+  def authorize(refresh_token: refresh_token) do
+    with %Token{} = token <-
+           Backplane.Oauth.AccessTokensAdapter.get_by(refresh_token: refresh_token),
+         :ok <- Token.ensure_valid(token, :refresh_token) do
+      {:ok, token}
+    else
+      _ ->
+        {:error,
+         %Error{
+           status: :bad_request,
+           error: :invalid_grant,
+           error_description: "Given refresh token is invalid, revoked, or expired."
+         }}
+    end
+  end
+end

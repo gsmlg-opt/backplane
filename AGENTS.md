@@ -52,7 +52,7 @@ This is an umbrella project. Key apps include:
 - **`apps/backplane`** (`:backplane`) — Core orchestrator: Styx jobs, native/managed tool registration, upstream boot
 - **`apps/backplane_system`** — Shared Repo, migrations, settings, credentials, clients, accounts, registries, and audit
 - **`apps/backplane_auth`** — OAuth/OIDC, resource authentication, and authorization
-- **`apps/backplane_oauth`** (`:backplane_oauth`) — In-tree fork of Hex `boruta` 2.3.8 (OAuth/OIDC provider core); keeps the `Boruta.*` module namespace, configured via `config :backplane_oauth, Boruta.Oauth`
+- **`apps/backplane_oauth`** (`:backplane_oauth`) — OAuth/OIDC provider core (`Backplane.Oauth.*`), forked from Hex `boruta` 2.3.8; configured via `config :backplane_oauth, Backplane.Oauth`
 - **`apps/backplane_api`** — Public Phoenix endpoint and API controllers; dev port 4220
 - **`apps/backplane_mcp`** — MCP transport, upstream pooling, managed service adapters, and MCP logging
 - **`apps/backplane_llama`** — LLM providers, routing, authorization, proxying, and usage logging

@@ -5,7 +5,7 @@ defmodule Backplane.Api.Auth.Helpers do
   import Phoenix.Controller
 
   alias Backplane.Auth
-  alias Boruta.Ecto.Client
+  alias Backplane.Oauth.Ecto.Client
 
   def json_error(conn, status, error, description \\ nil) do
     body =

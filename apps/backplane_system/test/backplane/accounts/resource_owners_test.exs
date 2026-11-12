@@ -3,7 +3,7 @@ defmodule Backplane.Accounts.ResourceOwnersTest do
 
   alias Backplane.Accounts
   alias Backplane.Accounts.ResourceOwners
-  alias Boruta.Oauth.ResourceOwner
+  alias Backplane.Oauth.ResourceOwner
 
   describe "boruta resource owner callbacks" do
     test "resolves a resource owner by stable user subject" do

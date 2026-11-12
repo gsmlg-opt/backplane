@@ -1,12 +1,12 @@
 defmodule Backplane.Auth.ResourceOwners do
   @moduledoc "Boruta resource-owner adapter backed by Backplane Auth users."
 
-  @behaviour Boruta.Oauth.ResourceOwners
+  @behaviour Backplane.Oauth.ResourceOwners
 
   alias Backplane.Auth.{Accounts, RBAC}
   alias Backplane.Auth.Schemas.User
-  alias Boruta.Ecto.OauthMapper
-  alias Boruta.Oauth.ResourceOwner
+  alias Backplane.Oauth.Ecto.OauthMapper
+  alias Backplane.Oauth.ResourceOwner
 
   @impl true
   def get_by(sub: sub) when is_binary(sub) do
@@ -28,7 +28,7 @@ defmodule Backplane.Auth.ResourceOwners do
     with %User{} = user <- Accounts.get_user(sub) do
       user
       |> RBAC.effective_scope_names()
-      |> Boruta.Ecto.Admin.get_scopes_by_names()
+      |> Backplane.Oauth.Ecto.Admin.get_scopes_by_names()
       |> Enum.map(&OauthMapper.to_oauth_schema/1)
     else
       _missing -> []

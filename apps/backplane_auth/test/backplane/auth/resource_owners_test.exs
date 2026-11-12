@@ -5,7 +5,7 @@ defmodule Backplane.Auth.ResourceOwnersTest do
 
   alias Backplane.Auth
   alias Backplane.Auth.ResourceOwners
-  alias Boruta.Oauth.{ResourceOwner, Scope}
+  alias Backplane.Oauth.{ResourceOwner, Scope}
 
   @password "correct horse battery staple"
 

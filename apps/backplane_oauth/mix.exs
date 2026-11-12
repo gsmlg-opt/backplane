@@ -4,8 +4,8 @@ defmodule BackplaneOauth.MixProject do
   @version "1.10.76"
 
   # Forked from Hex `boruta` 2.3.8 (https://github.com/malach-it/boruta_auth, MIT).
-  # Module names keep the upstream `Boruta.*` namespace; the OTP application and
-  # configuration key are `:backplane_oauth`.
+  # Modules live under `Backplane.Oauth` (upstream `Boruta.Oauth.*` folded into it);
+  # configure with `config :backplane_oauth, Backplane.Oauth`.
 
   def project do
     [
@@ -24,13 +24,13 @@ defmodule BackplaneOauth.MixProject do
 
   def application do
     [
-      mod: {Boruta.Application, []},
+      mod: {Backplane.Oauth.Supervisor, []},
       extra_applications: [:logger, :runtime_tools, :crypto, :public_key]
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "priv/boruta", "test/support"]
-  defp elixirc_paths(_), do: ["lib", "priv/boruta"]
+  defp elixirc_paths(:test), do: ["lib", "priv/backplane_oauth", "test/support"]
+  defp elixirc_paths(_), do: ["lib", "priv/backplane_oauth"]
 
   defp deps do
     [

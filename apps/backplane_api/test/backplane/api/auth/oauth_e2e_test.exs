@@ -271,7 +271,7 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     code = Map.fetch!(callback_params, "code")
     assert callback_params["state"] == "state-resource-resume"
 
-    assert {:ok, %Boruta.Ecto.Token{value: ^code}, :mcp} =
+    assert {:ok, %Backplane.Oauth.Ecto.Token{value: ^code}, :mcp} =
              Auth.TokenResources.lookup_code(client.id, code)
   end
 
@@ -339,7 +339,7 @@ defmodule Backplane.Api.Auth.OAuthE2ETest do
     code = Map.fetch!(callback_params, "code")
     assert callback_params["state"] == "state-no-resource-resume"
 
-    assert {:ok, %Boruta.Ecto.Token{value: ^code}, nil} =
+    assert {:ok, %Backplane.Oauth.Ecto.Token{value: ^code}, nil} =
              Auth.TokenResources.lookup_code(client.id, code)
   end
 

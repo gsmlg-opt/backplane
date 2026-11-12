@@ -1,11 +1,11 @@
 defmodule Backplane.Accounts.ResourceOwners do
   @moduledoc "Boruta resource-owner adapter backed by Backplane users."
 
-  @behaviour Boruta.Oauth.ResourceOwners
+  @behaviour Backplane.Oauth.ResourceOwners
 
   alias Backplane.Accounts
   alias Backplane.Accounts.User
-  alias Boruta.Oauth.ResourceOwner
+  alias Backplane.Oauth.ResourceOwner
 
   @impl true
   def get_by(sub: sub) when is_binary(sub) do

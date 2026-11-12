@@ -1,0 +1,48 @@
+# credo:disable-for-this-file Credo.Check.Warning.SpecWithStruct
+defmodule Backplane.Oauth.Request.Authorize do
+  @moduledoc false
+
+  import Backplane.Oauth.Request.Base
+
+  alias Backplane.Oauth.ClientsAdapter
+  alias Backplane.Oauth.CodeRequest
+  alias Backplane.Oauth.Error
+  alias Backplane.Oauth.HybridRequest
+  alias Backplane.Oauth.TokenRequest
+  alias Backplane.Oauth.Validator
+
+  @spec request(conn :: map(), resource_owner :: struct()) ::
+          {:error,
+           %Backplane.Oauth.Error{
+             :error => :invalid_request,
+             :error_description => String.t(),
+             :format => nil,
+             :redirect_uri => nil,
+             :status => :bad_request
+           }}
+          | {:ok,
+             oauth_request ::
+               CodeRequest.t()
+               | TokenRequest.t()
+               | HybridRequest.t()}
+  def request(%{query_params: query_params} = request, resource_owner) do
+    with client <- ClientsAdapter.get_client(query_params["client_id"]),
+         {:ok, unsigned_params} <- fetch_unsigned_request(request, client),
+         {:ok, params} <-
+           Validator.validate(
+             :authorize,
+             query_params
+             |> Enum.into(unsigned_params)
+           ) do
+      build_request(Enum.into(params, %{"resource_owner" => resource_owner}))
+    else
+      {:error, error_description} ->
+        {:error,
+         %Error{
+           status: :bad_request,
+           error: :invalid_request,
+           error_description: error_description
+         }}
+    end
+  end
+end

@@ -1,16 +1,16 @@
 defmodule Backplane.Api.Auth.TokenController do
   use Backplane.Api, :controller
 
-  @behaviour Boruta.Oauth.TokenApplication
+  @behaviour Backplane.Oauth.TokenApplication
 
   alias Backplane.Api.Auth.{Helpers, ResourceParams}
   alias Backplane.Auth
   alias Backplane.Auth.{Resources, TokenResources}
-  alias Boruta.Oauth.Authorization.{AccessToken, Client, Code}
-  alias Boruta.Oauth.{AuthorizationCodeRequest, RefreshTokenRequest}
-  alias Boruta.Oauth.Error
-  alias Boruta.Oauth.Request
-  alias Boruta.Oauth.TokenResponse
+  alias Backplane.Oauth.Authorization.{AccessToken, Client, Code}
+  alias Backplane.Oauth.{AuthorizationCodeRequest, RefreshTokenRequest}
+  alias Backplane.Oauth.Error
+  alias Backplane.Oauth.Request
+  alias Backplane.Oauth.TokenResponse
 
   @supported_grant_types ["authorization_code", "refresh_token"]
 
@@ -26,7 +26,7 @@ defmodule Backplane.Api.Auth.TokenController do
     Helpers.json_error(conn, 400, "unsupported_grant_type")
   end
 
-  @impl Boruta.Oauth.TokenApplication
+  @impl Backplane.Oauth.TokenApplication
   def token_success(conn, %TokenResponse{} = response) do
     case conn.private[:backplane_oauth_resource] do
       nil ->
@@ -52,7 +52,7 @@ defmodule Backplane.Api.Auth.TokenController do
     end
   end
 
-  @impl Boruta.Oauth.TokenApplication
+  @impl Backplane.Oauth.TokenApplication
   def token_error(conn, %Error{} = error) do
     detect_refresh_reuse(conn)
 
@@ -150,8 +150,8 @@ defmodule Backplane.Api.Auth.TokenController do
          client
        ) do
     case boruta_call(AccessToken, :authorize, [[refresh_token: refresh_token]]) do
-      {:ok, %Boruta.Oauth.Token{client: ^client}} -> :ok
-      {:ok, %Boruta.Oauth.Token{}} -> {:error, invalid_refresh_grant_error()}
+      {:ok, %Backplane.Oauth.Token{client: ^client}} -> :ok
+      {:ok, %Backplane.Oauth.Token{}} -> {:error, invalid_refresh_grant_error()}
       {:error, %Error{} = error} -> {:error, error}
     end
   end
@@ -216,7 +216,7 @@ defmodule Backplane.Api.Auth.TokenController do
   defp grant_resource_active?(client_id, resource) do
     if Resources.endpoint?(resource) do
       case Auth.OAuth.get_client(client_id) do
-        %Boruta.Ecto.Client{} = client -> Auth.OAuth.client_allows_resource?(client, resource)
+        %Backplane.Oauth.Ecto.Client{} = client -> Auth.OAuth.client_allows_resource?(client, resource)
         _missing -> false
       end
     else
@@ -231,7 +231,7 @@ defmodule Backplane.Api.Auth.TokenController do
   end
 
   defp issue_token(conn) do
-    Boruta.Oauth.token(conn, __MODULE__)
+    Backplane.Oauth.token(conn, __MODULE__)
   rescue
     _error in TokenResources.LineageError ->
       Helpers.json_error(conn, 400, "server_error")

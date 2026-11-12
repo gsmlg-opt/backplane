@@ -2,7 +2,7 @@ defmodule Backplane.Api.PageControllerTest do
   use Backplane.Api.ConnCase, async: false
 
   alias Backplane.Auth
-  alias Boruta.Ecto.Admin
+  alias Backplane.Oauth.Ecto.Admin
 
   @base_url "https://gateway.example.test"
   @stored_oauth_secret "docs-regression-secret-must-never-render"

@@ -3,7 +3,7 @@ defmodule Backplane.Api.Auth.LoginController do
 
   alias Backplane.Api.Auth.AuthorizeController
   alias Backplane.Auth
-  alias Boruta.Ecto.Client
+  alias Backplane.Oauth.Ecto.Client
 
   def new(conn, _params) do
     html(conn, login_form())

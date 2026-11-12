@@ -270,7 +270,7 @@ defmodule Backplane.Api.AudioVoicesEndpointTest do
       })
 
     code =
-      Repo.insert!(%Boruta.Ecto.Token{
+      Repo.insert!(%Backplane.Oauth.Ecto.Token{
         type: "code",
         value: "audio-code-#{unique}",
         client_id: client.id,
@@ -282,10 +282,10 @@ defmodule Backplane.Api.AudioVoicesEndpointTest do
     {:ok, _} = Auth.TokenResources.bind_issued("code", client.id, code.value, resource)
 
     oauth_client =
-      client.id |> Auth.OAuth.get_client() |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+      client.id |> Auth.OAuth.get_client() |> Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema()
 
     {:ok, token} =
-      Boruta.Ecto.AccessTokens.create(
+      Backplane.Oauth.Ecto.AccessTokens.create(
         %{
           client: oauth_client,
           sub: user.id,

@@ -3,9 +3,9 @@ defmodule Backplane.Auth.OAuthTest do
 
   alias Backplane.Auth
   alias Backplane.Repo
-  alias Boruta.Ecto.{Admin, Client, Scope}
-  alias Boruta.Ecto.ClientStore
-  alias Boruta.Ecto.Clients, as: BorutaClients
+  alias Backplane.Oauth.Ecto.{Admin, Client, Scope}
+  alias Backplane.Oauth.Ecto.ClientStore
+  alias Backplane.Oauth.Ecto.Clients, as: BorutaClients
 
   setup do
     old_url = Application.get_env(:backplane, :api_url)
@@ -601,7 +601,7 @@ defmodule Backplane.Auth.OAuthTest do
 
   defp prime_client_cache(client_id) do
     on_exit(fn ->
-      ClientStore.invalidate(%Boruta.Oauth.Client{id: client_id})
+      ClientStore.invalidate(%Backplane.Oauth.Client{id: client_id})
     end)
 
     BorutaClients.get_client(client_id)

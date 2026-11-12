@@ -1,20 +1,20 @@
 defmodule Backplane.Api.Auth.IntrospectController do
   use Backplane.Api, :controller
 
-  @behaviour Boruta.Oauth.IntrospectApplication
+  @behaviour Backplane.Oauth.IntrospectApplication
 
   alias Backplane.Api.Auth.Helpers
-  alias Boruta.Oauth.Error
-  alias Boruta.Oauth.IntrospectResponse
+  alias Backplane.Oauth.Error
+  alias Backplane.Oauth.IntrospectResponse
 
   def introspect(conn, params) do
     case Helpers.check_client_enabled(conn, params) do
-      :ok -> Boruta.Oauth.introspect(conn, __MODULE__)
+      :ok -> Backplane.Oauth.introspect(conn, __MODULE__)
       {:error, :invalid_client} -> Helpers.json_error(conn, 401, "invalid_client")
     end
   end
 
-  @impl Boruta.Oauth.IntrospectApplication
+  @impl Backplane.Oauth.IntrospectApplication
   def introspect_success(conn, %IntrospectResponse{active: true} = response) do
     body = %{
       active: true,
@@ -34,7 +34,7 @@ defmodule Backplane.Api.Auth.IntrospectController do
     json(conn, %{active: false})
   end
 
-  @impl Boruta.Oauth.IntrospectApplication
+  @impl Backplane.Oauth.IntrospectApplication
   def introspect_error(conn, %Error{error: :invalid_client}) do
     Helpers.json_error(conn, 401, "invalid_client")
   end

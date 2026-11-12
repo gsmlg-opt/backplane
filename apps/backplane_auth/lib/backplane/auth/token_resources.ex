@@ -16,7 +16,7 @@ defmodule Backplane.Auth.TokenResources do
   alias Backplane.Auth.Schemas.OAuthTokenResource
   alias Backplane.Auth.Tokens
   alias Backplane.Repo
-  alias Boruta.Ecto.Token
+  alias Backplane.Oauth.Ecto.Token
 
   defmodule LineageError do
     @moduledoc false

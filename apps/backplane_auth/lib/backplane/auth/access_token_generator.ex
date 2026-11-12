@@ -9,18 +9,18 @@ defmodule Backplane.Auth.AccessTokenGenerator do
   `type` field is used to tell them apart.
   """
 
-  @behaviour Boruta.Oauth.TokenGenerator
+  @behaviour Backplane.Oauth.TokenGenerator
 
   alias Backplane.Auth.Tokens
 
-  @impl Boruta.Oauth.TokenGenerator
+  @impl Backplane.Oauth.TokenGenerator
   def generate(:access_token, %{type: "access_token"} = token) do
     Tokens.sign_access_token!(token)
   end
 
   def generate(_type, _token), do: random_token()
 
-  @impl Boruta.Oauth.TokenGenerator
+  @impl Backplane.Oauth.TokenGenerator
   def secret(_client), do: random_token()
 
   defp random_token do

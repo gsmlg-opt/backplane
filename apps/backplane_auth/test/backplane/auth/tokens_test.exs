@@ -7,7 +7,7 @@ defmodule Backplane.Auth.TokensTest do
   alias Backplane.Auth.Resources
   alias Backplane.Auth.Schemas.{OAuthTokenResource, SigningKey}
   alias Backplane.Repo
-  alias Boruta.Ecto.Token
+  alias Backplane.Oauth.Ecto.Token
 
   test "opaque and malformed compact tokens never load signing keys" do
     parent = self()
@@ -56,7 +56,7 @@ defmodule Backplane.Auth.TokensTest do
     token = access_token_fixture!(user, client, ["openid", "gsmlg:read"])
 
     assert {:ok, claims} = Auth.Tokens.verify_access_token(token.value)
-    assert claims["iss"] == Boruta.Config.issuer()
+    assert claims["iss"] == Backplane.Oauth.Config.issuer()
     assert claims["sub"] == user.id
     assert claims["aud"] == client.id
     assert claims["client_id"] == client.id
@@ -72,7 +72,7 @@ defmodule Backplane.Auth.TokensTest do
       {_user, client, token} = resource_token_fixture!(resource, scope)
 
       assert {:ok, auth} = Auth.Tokens.verify_resource_access_token(token.value, resource)
-      assert auth.claims["iss"] == Boruta.Config.issuer()
+      assert auth.claims["iss"] == Backplane.Oauth.Config.issuer()
       assert auth.claims["aud"] == Resources.uri(resource)
       assert auth.claims["client_id"] == client.id
       assert auth.claims["sub"] == token.sub
@@ -86,10 +86,10 @@ defmodule Backplane.Auth.TokensTest do
 
     oauth_client =
       client
-      |> Boruta.Ecto.OauthMapper.to_oauth_schema()
+      |> Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema()
 
     assert {:ok, oauth_token} =
-             Boruta.Ecto.AccessTokens.create(
+             Backplane.Oauth.Ecto.AccessTokens.create(
                %{
                  client: oauth_client,
                  sub: user.id,
@@ -116,13 +116,13 @@ defmodule Backplane.Auth.TokensTest do
     user = auth_user_fixture!()
     client = oauth_client_fixture!(resources: [:mcp], scopes: ["github::*"])
     client = Auth.OAuth.get_client(client.id)
-    oauth_client = Boruta.Ecto.OauthMapper.to_oauth_schema(client)
+    oauth_client = Backplane.Oauth.Ecto.OauthMapper.to_oauth_schema(client)
     missing_code = "missing-code-#{System.unique_integer([:positive])}"
     missing_token = "missing-token-#{System.unique_integer([:positive])}"
     message = "OAuth token resource lineage could not be resolved"
 
     assert_raise Auth.TokenResources.LineageError, message, fn ->
-      Boruta.Ecto.AccessTokens.create(
+      Backplane.Oauth.Ecto.AccessTokens.create(
         %{
           client: oauth_client,
           sub: user.id,
@@ -134,7 +134,7 @@ defmodule Backplane.Auth.TokensTest do
     end
 
     assert_raise Auth.TokenResources.LineageError, message, fn ->
-      Boruta.Ecto.AccessTokens.create(
+      Backplane.Oauth.Ecto.AccessTokens.create(
         %{
           client: oauth_client,
           sub: user.id,
@@ -340,7 +340,7 @@ defmodule Backplane.Auth.TokensTest do
     token =
       external_key
       |> JOSE.JWT.sign(signer, %{
-        "iss" => Boruta.Config.issuer(),
+        "iss" => Backplane.Oauth.Config.issuer(),
         "sub" => Ecto.UUID.generate(),
         "aud" => Resources.uri(:mcp),
         "exp" => System.system_time(:second) + 60

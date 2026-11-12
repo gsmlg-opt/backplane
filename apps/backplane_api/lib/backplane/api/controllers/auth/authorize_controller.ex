@@ -1,14 +1,14 @@
 defmodule Backplane.Api.Auth.AuthorizeController do
   use Backplane.Api, :controller
 
-  @behaviour Boruta.Oauth.AuthorizeApplication
+  @behaviour Backplane.Oauth.AuthorizeApplication
 
   alias Backplane.Api.Auth.{AuthorizationRequest, ResourceParams}
   alias Backplane.Auth
   alias Backplane.Auth.Schemas.User
-  alias Boruta.Ecto.Client
-  alias Boruta.Oauth.AuthorizeResponse
-  alias Boruta.Oauth.Error
+  alias Backplane.Oauth.Ecto.Client
+  alias Backplane.Oauth.AuthorizeResponse
+  alias Backplane.Oauth.Error
 
   def authorize(conn, params) do
     with :ok <- validate_untrusted_parameter_shapes(conn, params),
@@ -39,13 +39,13 @@ defmodule Backplane.Api.Auth.AuthorizeController do
       |> put_private(:backplane_oauth_resource, resource)
       |> put_private(:backplane_oauth_client_id, client.id)
       |> Map.put(:query_params, normalized_params)
-      |> Boruta.Oauth.authorize(Auth.ResourceOwners.from_user(user), __MODULE__)
+      |> Backplane.Oauth.authorize(Auth.ResourceOwners.from_user(user), __MODULE__)
     else
       {:error, error} -> redirect_authorize_error(conn, params, error)
     end
   end
 
-  @impl Boruta.Oauth.AuthorizeApplication
+  @impl Backplane.Oauth.AuthorizeApplication
   def authorize_success(conn, %AuthorizeResponse{} = response) do
     case conn.private[:backplane_oauth_resource] do
       nil ->
@@ -64,7 +64,7 @@ defmodule Backplane.Api.Auth.AuthorizeController do
     end
   end
 
-  @impl Boruta.Oauth.AuthorizeApplication
+  @impl Backplane.Oauth.AuthorizeApplication
   def authorize_error(conn, %Error{error: error}) do
     redirect_authorize_error(conn, conn.query_params, error)
   end

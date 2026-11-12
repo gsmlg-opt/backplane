@@ -8,7 +8,7 @@ defmodule Backplane.Accounts do
   alias Backplane.Accounts.{AuthProvider, User, UserIdentity}
   alias Backplane.Repo
   alias Backplane.Settings.Encryption
-  alias Boruta.Oauth.ResourceOwner
+  alias Backplane.Oauth.ResourceOwner
 
   @type provision_result :: %{user: User.t(), identity: UserIdentity.t()}
 

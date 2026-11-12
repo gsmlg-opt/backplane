@@ -8,9 +8,9 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
   alias Backplane.Auth.Resources
   alias Backplane.Auth.Schemas.OAuthTokenResource
   alias Backplane.Repo
-  alias Boruta.Ecto.Token
-  alias Boruta.Oauth.AuthorizeResponse
-  alias Boruta.Oauth.Error
+  alias Backplane.Oauth.Ecto.Token
+  alias Backplane.Oauth.AuthorizeResponse
+  alias Backplane.Oauth.Error
 
   @redirect_uri "http://localhost:4555/auth/callback"
 
