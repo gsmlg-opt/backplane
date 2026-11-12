@@ -26,12 +26,9 @@ defmodule Backplane.LLM.Router do
 
   alias Backplane.LLM.{
     AccessEvent,
-    AutoModel,
     CredentialPlug,
-    ModelAlias,
     CodexCatalog,
     ModelExtractor,
-    ModelMetadata,
     ModelResolver,
     Provider,
     ProviderApi,
@@ -40,11 +37,12 @@ defmodule Backplane.LLM.Router do
   }
 
   alias Backplane.Embedding
+  alias Backplane.Endpoints
+  alias Backplane.Endpoints.Endpoint
+  alias Backplane.LLM.ModelCatalog
 
   alias Backplane.Audio.{
     AccessLifecycle,
-    Binding,
-    Config,
     Downstream,
     Error,
     Request,
@@ -76,14 +74,22 @@ defmodule Backplane.LLM.Router do
   # ── Routes ────────────────────────────────────────────────────────────────────
 
   get "/v1" do
+    resource = resource_key(conn)
+
     send_json(conn, 200, %{
-      "resource" => Backplane.Auth.Resources.uri(:v1),
-      "resource_documentation" => Backplane.Auth.Resources.documentation_uri(:v1)
+      "resource" => Backplane.Auth.Resources.uri(resource),
+      "resource_documentation" => Backplane.Auth.Resources.documentation_uri(resource)
     })
   end
 
   get "/v1/models" do
-    send_json(conn, 200, %{"object" => "list", "data" => build_model_list()})
+    entries =
+      case conn.private[:backplane_endpoint] do
+        %Endpoint{models: models} -> Enum.filter(ModelCatalog.entries(), &(&1["id"] in models))
+        _ -> ModelCatalog.entries()
+      end
+
+    send_json(conn, 200, %{"object" => "list", "data" => entries})
   end
 
   get "/v1/codex/models" do
@@ -548,7 +554,8 @@ defmodule Backplane.LLM.Router do
       {:ok, model_string} ->
         access = AccessEvent.put_requested_model(access, model_string)
 
-        with {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
+        with :ok <- check_endpoint_model(conn, model_string),
+             {:ok, provider, raw_model} <- ModelResolver.resolve(api_type, model_string),
              {:ok, provider_api} <- fetch_provider_api(provider, api_type),
              :ok <- reject_codex_chat_completions(conn, provider),
              {:ok, :native} <- ProtocolRoute.select(client_protocol, provider_api),
@@ -584,6 +591,9 @@ defmodule Backplane.LLM.Router do
             )
           end
         else
+          {:error, :model_not_allowed} ->
+            reject_model_not_allowed(conn, api_type, access)
+
           {:error, :no_provider} ->
             conn = send_not_found(conn, api_type, model_string)
 
@@ -664,6 +674,57 @@ defmodule Backplane.LLM.Router do
     end
   end
 
+  defp resource_key(conn) do
+    case conn.private[:backplane_endpoint] do
+      %Endpoint{name: name} -> {:endpoint, name, :v1}
+      _ -> :v1
+    end
+  end
+
+  defp check_endpoint_model(conn, model_string) do
+    case conn.private[:backplane_endpoint] do
+      %Endpoint{} = endpoint ->
+        if Endpoints.model_allowed?(endpoint, model_string),
+          do: :ok,
+          else: {:error, :model_not_allowed}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp reject_model_not_allowed(conn, api_type, access) do
+    conn = send_model_not_allowed(conn, api_type)
+
+    finalize_access(access, conn, :error,
+      error_kind: :validation,
+      error_code: "model_not_allowed",
+      error_reason: :model_not_allowed
+    )
+
+    conn
+  end
+
+  defp send_model_not_allowed(conn, :anthropic) do
+    send_json(conn, 403, %{
+      "type" => "error",
+      "error" => %{
+        "type" => "permission_error",
+        "message" => "Model is not allowed for this endpoint"
+      }
+    })
+  end
+
+  defp send_model_not_allowed(conn, _api_type) do
+    send_json(conn, 403, %{
+      "error" => %{
+        "message" => "Model is not allowed for this endpoint",
+        "type" => "invalid_request_error",
+        "code" => "model_not_allowed"
+      }
+    })
+  end
+
   defp reject_codex_chat_completions(
          %Plug.Conn{request_path: "/v1/chat/completions"},
          %Provider{preset_key: "openai-codex"}
@@ -691,7 +752,8 @@ defmodule Backplane.LLM.Router do
       {:ok, model_string} ->
         access = AccessEvent.put_requested_model(access, model_string)
 
-        with {:ok, provider, raw_model} <- Embedding.resolve_model(model_string),
+        with :ok <- check_endpoint_model(conn, model_string),
+             {:ok, provider, raw_model} <- Embedding.resolve_model(model_string),
              {:ok, rewritten_body} <-
                ModelExtractor.replace_model(raw_body, model_string, raw_model),
              {:ok, auth_headers} <- Embedding.build_auth_headers(provider) do
@@ -726,6 +788,9 @@ defmodule Backplane.LLM.Router do
             do_embedding_proxy(conn, upstream, rewritten_body, access)
           end
         else
+          {:error, :model_not_allowed} ->
+            reject_model_not_allowed(conn, :openai, access)
+
           {:error, :no_provider} ->
             conn = send_not_found(conn, :openai, model_string)
 
@@ -1091,198 +1156,6 @@ defmodule Backplane.LLM.Router do
   end
 
   defp provider_api_from_upstream(_), do: nil
-
-  # ── Model listing ─────────────────────────────────────────────────────────────
-
-  defp build_model_list do
-    providers =
-      Provider.list()
-      |> Enum.filter(& &1.enabled)
-
-    auto_models = AutoModel.list_configurations()
-    custom_aliases = ModelAlias.list()
-    provider_alias_names = ModelAlias.provider_names()
-
-    resolver_names =
-      MapSet.new(Enum.map(auto_models, & &1.name) ++ Enum.map(custom_aliases, & &1.alias))
-
-    provider_entries =
-      for provider <- providers,
-          provider.name not in provider_alias_names,
-          model <- provider.models,
-          model.enabled do
-        %{
-          "id" => "#{provider.name}/#{model.model}",
-          "object" => "model",
-          "created" => 1_700_000_000,
-          "owned_by" => provider.name,
-          "provider" => provider.name,
-          "canonical_id" => model.model
-        }
-      end
-
-    auto_model_entries =
-      for auto_model <- auto_models,
-          auto_model.enabled do
-        %{
-          "id" => auto_model.name,
-          "object" => "model",
-          "created" => 1_700_000_000,
-          "owned_by" => "backplane"
-        }
-      end
-
-    custom_alias_entries =
-      for model_alias <- custom_aliases do
-        %{
-          "id" => model_alias.alias,
-          "object" => "model",
-          "created" => 1_700_000_000,
-          "owned_by" => "backplane"
-        }
-      end
-
-    provider_alias_entries =
-      for provider <- providers,
-          provider.name in provider_alias_names,
-          model <- provider.models,
-          model.enabled do
-        %{
-          "id" => model.model,
-          "object" => "model",
-          "created" => 1_700_000_000,
-          "owned_by" => provider.name,
-          "provider" => provider.name,
-          "canonical_id" => model.model
-        }
-      end
-
-    # Build both namespaced and configured provider-alias targets from the
-    # preloaded catalog. Later OpenAI targets take precedence over Anthropic.
-    available_targets =
-      for api_surface <- [:anthropic, :openai],
-          provider <- providers,
-          api <- provider.apis,
-          api.enabled and api.api_surface == api_surface,
-          model <- provider.models,
-          model.enabled,
-          surface <- model.surfaces,
-          surface.enabled and surface.provider_api_id == api.id do
-        {provider, model, surface, api}
-      end
-
-    provider_targets =
-      Map.new(available_targets, fn {provider, model, _surface, _api} = target ->
-        {"#{provider.name}/#{model.model}", target}
-      end)
-
-    provider_alias_targets =
-      for api_surface <- [:anthropic, :openai],
-          provider_name <- Enum.reverse(provider_alias_names),
-          target <- available_targets,
-          {provider, model, _surface, api} = target,
-          provider.name == provider_name and api.api_surface == api_surface,
-          into: %{} do
-        {model.model, target}
-      end
-
-    entries =
-      (provider_entries ++ auto_model_entries ++ custom_alias_entries ++ provider_alias_entries)
-      |> Enum.uniq_by(& &1["id"])
-      |> Enum.sort_by(& &1["id"])
-
-    resolved_entries =
-      for entry <- entries,
-          target =
-            selected_model_target(
-              providers,
-              provider_targets,
-              provider_alias_targets,
-              resolver_names,
-              entry["id"]
-            ),
-          not is_nil(target) do
-        {provider, model, surface, _api} = target
-        raw_metadata = Map.merge(model.metadata || %{}, surface.metadata || %{})
-        metadata = ModelMetadata.normalize(provider.preset_key, raw_metadata)
-        Map.put(entry, "metadata", metadata)
-      end
-
-    audio_entries =
-      if Config.enabled?() do
-        enabled_bindings =
-          Binding.list()
-          |> Enum.filter(fn binding ->
-            binding.enabled and binding.provider.enabled and is_nil(binding.provider.deleted_at) and
-              binding.provider_model.enabled
-          end)
-
-        public_names =
-          Enum.map(enabled_bindings, fn binding ->
-            "#{binding.provider.name}/#{binding.provider_model.model}"
-          end) ++
-            Enum.map(custom_aliases, & &1.alias) ++
-            for(
-              binding <- enabled_bindings,
-              binding.provider.name in provider_alias_names,
-              do: binding.provider_model.model
-            )
-
-        for name <- Enum.uniq(public_names),
-            Enum.any?([:speech, :transcription], fn operation ->
-              match?({:ok, _}, Resolver.resolve(operation, name))
-            end) do
-          %{
-            "id" => name,
-            "object" => "model",
-            "created" => 1_700_000_000,
-            "owned_by" => "backplane"
-          }
-        end
-      else
-        []
-      end
-
-    (resolved_entries ++ audio_entries)
-    |> Enum.uniq_by(& &1["id"])
-    |> Enum.sort_by(& &1["id"])
-  end
-
-  defp selected_model_target(
-         providers,
-         provider_targets,
-         provider_alias_targets,
-         resolver_names,
-         id
-       )
-       when is_binary(id) do
-    case String.split(id, "/", parts: 2) do
-      [_provider_name, _raw_model] ->
-        Map.get(provider_targets, id)
-
-      [_alias_name] ->
-        if MapSet.member?(resolver_names, id),
-          do: selected_alias_target(providers, id),
-          else: Map.get(provider_alias_targets, id)
-    end
-  end
-
-  defp selected_alias_target(providers, id) do
-    Enum.find_value([:openai, :anthropic], fn api_surface ->
-      with {:ok, resolved_provider, raw_model} <- ModelResolver.resolve(api_surface, id),
-           %Provider{} = provider <- Enum.find(providers, &(&1.id == resolved_provider.id)),
-           %ProviderApi{} = api <-
-             Enum.find(provider.apis, &(&1.enabled and &1.api_surface == api_surface)),
-           model when not is_nil(model) <-
-             Enum.find(provider.models, &(&1.enabled and &1.model == raw_model)),
-           surface when not is_nil(surface) <-
-             Enum.find(model.surfaces, &(&1.enabled and &1.provider_api_id == api.id)) do
-        {provider, model, surface, api}
-      else
-        _ -> nil
-      end
-    end)
-  end
 
   # ── Error helpers ─────────────────────────────────────────────────────────────
 

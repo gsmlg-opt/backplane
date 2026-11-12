@@ -155,6 +155,27 @@ defmodule Backplane.Transport.IdempotencyTest do
     end
   end
 
+  test "same key, principal and body is not replayed across resources" do
+    key = "resource-#{System.unique_integer([:positive])}"
+    base = auth(:client_token, "subject-1", "client-1")
+
+    root = idempotency_conn(key, auth: Map.put(base, :resource, :mcp))
+    assert process_response(root, ~s({"source":"root"})).status == 200
+    assert Idempotency.call(root, []).halted
+
+    # An auth map without a resource is the root resource.
+    assert idempotency_conn(key, auth: base) |> Idempotency.call([]) |> Map.fetch!(:halted)
+
+    for resource <- [{:endpoint, "chatgpt", :mcp}, {:endpoint, "other", :mcp}] do
+      endpoint = idempotency_conn(key, auth: Map.put(base, :resource, resource))
+      refute Idempotency.call(endpoint, []).halted
+      assert process_response(endpoint, ~s({"source":"endpoint"})).status == 200
+      assert Idempotency.call(endpoint, []).resp_body == ~s({"source":"endpoint"})
+    end
+
+    assert Idempotency.call(root, []).resp_body == ~s({"source":"root"})
+  end
+
   test "normalizes atom and string auth keys into the same identity" do
     key = "auth-shape-#{System.unique_integer([:positive])}"
 

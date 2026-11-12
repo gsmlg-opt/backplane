@@ -3,9 +3,11 @@ defmodule Backplane.Auth.Resources do
   Defines canonical OAuth protected resources and their resource-relative scopes.
   """
 
+  alias Backplane.Endpoints
   alias Backplane.WebOrigins
 
-  @type key :: :mcp | :skill_protocol | :v1
+  @type base :: :mcp | :skill_protocol | :v1
+  @type key :: base() | {:endpoint, String.t(), :mcp | :v1}
 
   @keys [:mcp, :skill_protocol, :v1]
   @identity_scopes ["openid", "profile", "email"]
@@ -13,11 +15,48 @@ defmodule Backplane.Auth.Resources do
   @operation_scope_pattern ~r/\A(?:\*|[\w-]+::(?:\*|[\w-]+))\z/
   @v1_scopes ["llm::models", "llm::invoke", "llm::manage", "llm::*", "*"]
   @skill_protocol_scopes ["skill::read", "skill::*", "*"]
+  @persisted_endpoint ~r/\Aendpoint:([a-z0-9][a-z0-9-]{0,62}):(mcp|v1)\z/
+  @endpoint_feature %{mcp: :mcp, v1: :llm}
 
   @spec keys() :: [key()]
   def keys, do: @keys
 
+  @spec endpoint_key(String.t(), :mcp | :v1) :: key()
+  def endpoint_key(name, base) when is_binary(name) and base in [:mcp, :v1],
+    do: {:endpoint, name, base}
+
+  @spec base(key()) :: base()
+  def base({:endpoint, _name, base}), do: base
+  def base(key) when key in @keys, do: key
+
+  @spec endpoint?(term()) :: boolean()
+  def endpoint?({:endpoint, name, base}) when is_binary(name) and base in [:mcp, :v1], do: true
+  def endpoint?(_key), do: false
+
+  @spec oauth_bindable?(term()) :: boolean()
+  def oauth_bindable?(key) when key in [:mcp, :v1], do: true
+  def oauth_bindable?(key), do: endpoint?(key)
+
+  @spec to_persisted(key()) :: String.t()
+  def to_persisted({:endpoint, name, base}), do: "endpoint:#{name}:#{base}"
+  def to_persisted(key) when key in @keys, do: Atom.to_string(key)
+
+  @spec from_persisted(String.t()) :: {:ok, key()} | :error
+  def from_persisted("mcp"), do: {:ok, :mcp}
+  def from_persisted("skill_protocol"), do: {:ok, :skill_protocol}
+  def from_persisted("v1"), do: {:ok, :v1}
+
+  def from_persisted(value) when is_binary(value) do
+    case Regex.run(@persisted_endpoint, value) do
+      [_all, name, base] -> {:ok, {:endpoint, name, String.to_existing_atom(base)}}
+      nil -> :error
+    end
+  end
+
+  def from_persisted(_value), do: :error
+
   @spec path(key()) :: String.t()
+  def path({:endpoint, name, base}), do: "/endpoints/#{name}/#{base}"
   def path(:mcp), do: "/mcp"
   def path(:skill_protocol), do: "/skill-protocol/v1"
   def path(:v1), do: "/v1"
@@ -26,17 +65,36 @@ defmodule Backplane.Auth.Resources do
   def uri(key), do: WebOrigins.api_url(path(key))
 
   @spec metadata_uri(key()) :: String.t()
+  def metadata_uri({:endpoint, _name, _base} = key),
+    do: WebOrigins.api_url("/.well-known/oauth-protected-resource#{path(key)}")
+
   def metadata_uri(key),
     do: WebOrigins.api_url("/.well-known/oauth-protected-resource/#{key}")
 
   @spec documentation_uri(key()) :: String.t()
+  def documentation_uri({:endpoint, _name, base}), do: documentation_uri(base)
   def documentation_uri(:mcp), do: WebOrigins.api_url("/docs/mcp")
   def documentation_uri(:skill_protocol), do: WebOrigins.api_url("/docs/skills")
   def documentation_uri(:v1), do: WebOrigins.api_url("/docs/llm")
 
   @spec from_uri(String.t()) :: {:ok, key()} | :error
   def from_uri(value) when is_binary(value) do
-    Enum.find_value(@keys, :error, fn key -> if value == uri(key), do: {:ok, key} end)
+    Enum.find_value(@keys, endpoint_from_uri(value), fn key ->
+      if value == uri(key), do: {:ok, key}
+    end)
+  end
+
+  defp endpoint_from_uri(value) do
+    prefix = WebOrigins.api_url("/endpoints/")
+
+    with true <- String.starts_with?(value, prefix),
+         [name, base] <- value |> String.replace_prefix(prefix, "") |> String.split("/"),
+         {:ok, {:endpoint, ^name, base} = key} <- from_persisted("endpoint:#{name}:#{base}"),
+         {:ok, _endpoint} <- Endpoints.active(name, Map.fetch!(@endpoint_feature, base)) do
+      {:ok, key}
+    else
+      _no_match -> :error
+    end
   end
 
   @spec normalize_keys([term()]) :: {:ok, [key()]} | {:error, :invalid_resource}
@@ -69,11 +127,13 @@ defmodule Backplane.Auth.Resources do
   @spec valid_scope?(key(), String.t()) :: boolean()
   def valid_scope?(_key, "system::" <> _rest), do: false
   def valid_scope?(_key, scope) when scope in ["openid", "profile", "email"], do: true
+  def valid_scope?({:endpoint, _name, base}, scope), do: valid_scope?(base, scope)
   def valid_scope?(:mcp, scope), do: mcp_operation_scope?(scope)
   def valid_scope?(:skill_protocol, scope), do: scope in @skill_protocol_scopes
   def valid_scope?(:v1, scope), do: scope in @v1_scopes
 
   @spec operation_scope?(key(), String.t()) :: boolean()
+  def operation_scope?({:endpoint, _name, base}, scope), do: operation_scope?(base, scope)
   def operation_scope?(:mcp, scope), do: mcp_operation_scope?(scope)
   def operation_scope?(:skill_protocol, scope), do: scope in @skill_protocol_scopes
   def operation_scope?(:v1, scope), do: scope in @v1_scopes

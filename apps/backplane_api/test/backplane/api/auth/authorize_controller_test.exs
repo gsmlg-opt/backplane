@@ -516,6 +516,75 @@ defmodule Backplane.Api.Auth.AuthorizeControllerTest do
              Auth.TokenResources.lookup_code(client.id, code)
   end
 
+  test "binds an active endpoint resource to the code", %{conn: conn} do
+    {:ok, _endpoint} =
+      Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["github"]})
+
+    key = {:endpoint, "chatgpt", :mcp}
+    client = oauth_client!(resources: [:mcp], scopes: ["github::*"])
+    {conn, _user} = authenticated_conn(conn, ["github::*"])
+
+    authorize_conn =
+      get(
+        conn,
+        "/oauth/authorize",
+        authorize_params(client, %{
+          "resource" => Backplane.WebOrigins.api_url("/endpoints/chatgpt/mcp"),
+          "scope" => "github::*"
+        })
+      )
+
+    code = authorization_code_from_redirect(authorize_conn)
+    assert {:ok, %Token{value: ^code}, ^key} = Auth.TokenResources.lookup_code(client.id, code)
+  end
+
+  test "endpoint resources reject excluded clients, unassigned bases and inactive features", %{
+    conn: conn
+  } do
+    allowed = oauth_client!(resources: [:mcp], scopes: ["github::*"])
+    excluded = oauth_client!(resources: [:mcp], scopes: ["github::*"])
+    v1_only = oauth_client!(resources: [:v1], scopes: ["github::*"])
+
+    {:ok, _restricted} =
+      Backplane.Endpoints.create(%{
+        name: "chatgpt",
+        mcp_enabled: true,
+        mcp_prefixes: ["github"],
+        restrict_clients: true,
+        oauth_client_ids: [allowed.id, v1_only.id]
+      })
+
+    for client <- [excluded, v1_only] do
+      rejected =
+        conn
+        |> recycle()
+        |> get(
+          "/oauth/authorize",
+          authorize_params(client, %{
+            "resource" => Resources.uri({:endpoint, "chatgpt", :mcp}),
+            "scope" => "github::*"
+          })
+        )
+
+      assert_trusted_error(rejected, "invalid_target")
+    end
+
+    for resource <- ["/endpoints/chatgpt/v1", "/endpoints/unknown/mcp"] do
+      rejected =
+        conn
+        |> recycle()
+        |> get(
+          "/oauth/authorize",
+          authorize_params(allowed, %{
+            "resource" => Backplane.WebOrigins.api_url(resource),
+            "scope" => "github::*"
+          })
+        )
+
+      assert_trusted_error(rejected, "invalid_target")
+    end
+  end
+
   test "binding failure redirects server_error without disclosing the code", %{conn: conn} do
     client = oauth_client!(resources: [:mcp], scopes: ["github::*"])
     code = "already-bound-#{System.unique_integer([:positive])}"

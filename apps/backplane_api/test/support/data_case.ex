@@ -14,6 +14,7 @@ defmodule Backplane.Api.DataCase do
 
   setup tags do
     BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
+    Backplane.Endpoints.Cache.clear()
     :ok
   end
 

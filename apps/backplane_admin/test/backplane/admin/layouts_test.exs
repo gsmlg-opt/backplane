@@ -12,6 +12,7 @@ defmodule Backplane.Admin.LayoutsTest do
              "/system/config",
              "/system/appearance",
              "/system/clients",
+             "/system/endpoints",
              "/system/credentials",
              "/system/host-agents"
            ]

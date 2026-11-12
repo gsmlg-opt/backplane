@@ -9,6 +9,7 @@ defmodule Backplane.MCP.Dispatch do
 
   require Logger
 
+  alias Backplane.Auth.Resources
   alias Backplane.Clients
   alias Backplane.MCP.{Info, ObservabilityContext, ToolAccessEvent}
   alias Backplane.McpProtocol.Protocol
@@ -154,9 +155,9 @@ defmodule Backplane.MCP.Dispatch do
     get_prompt(params || %{}, context.auth)
   end
 
-  defp do_execute("completion/complete", %{"ref" => ref, "argument" => argument}, _context)
+  defp do_execute("completion/complete", %{"ref" => ref, "argument" => argument}, context)
        when is_map(ref) and is_map(argument) do
-    completions = compute_completions(ref, argument)
+    completions = compute_completions(ref, argument, context.auth)
 
     {:ok,
      %{
@@ -522,7 +523,8 @@ defmodule Backplane.MCP.Dispatch do
     reserved_names = MapSet.new(managed, & &1.name)
 
     skills =
-      SkillsRegistry.list()
+      auth
+      |> skill_prompt_entries()
       |> Enum.reject(&MapSet.member?(reserved_names, &1.name))
       |> Enum.map(fn skill ->
         %{
@@ -542,7 +544,7 @@ defmodule Backplane.MCP.Dispatch do
 
   defp get_prompt(%{"name" => name} = params, auth) when is_binary(name) and name != "" do
     case PromptRegistry.lookup(name) do
-      nil -> get_skill_prompt(name)
+      nil -> get_skill_prompt(name, auth)
       entry -> get_managed_prompt(entry, params["arguments"] || %{}, auth)
     end
   end
@@ -550,8 +552,15 @@ defmodule Backplane.MCP.Dispatch do
   defp get_prompt(_params, _auth),
     do: {:error, :invalid_params, "Invalid params: 'name' is required"}
 
-  defp get_skill_prompt(name) do
-    case Enum.find(SkillsRegistry.list(), &(&1.name == name)) do
+  # Named endpoints expose only their allowed prefixes; skills are never exposed.
+  defp skill_prompt_entries(auth),
+    do: if(endpoint_auth?(auth), do: [], else: SkillsRegistry.list())
+
+  defp endpoint_auth?(%{resource: resource}), do: Resources.endpoint?(resource)
+  defp endpoint_auth?(_auth), do: false
+
+  defp get_skill_prompt(name, auth) do
+    case Enum.find(skill_prompt_entries(auth), &(&1.name == name)) do
       nil ->
         {:error, :not_found, "Prompt not found: not found"}
 
@@ -634,6 +643,11 @@ defmodule Backplane.MCP.Dispatch do
     Enum.map(skill[:tools] || [], fn tool ->
       %{"name" => tool, "description" => "Tool required: #{tool}", "required" => false}
     end)
+  end
+
+  # Skill ids and the global tool list must not leak through a named endpoint.
+  defp compute_completions(ref, argument, auth) do
+    if endpoint_auth?(auth), do: [], else: compute_completions(ref, argument)
   end
 
   defp compute_completions(

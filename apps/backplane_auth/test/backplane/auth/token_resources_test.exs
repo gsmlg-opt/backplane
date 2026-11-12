@@ -14,6 +14,17 @@ defmodule Backplane.Auth.TokenResourcesTest do
     :ok
   end
 
+  test "endpoint resources persist and resolve" do
+    client = oauth_client_fixture!()
+    token = insert_token!(client_id: client.id, type: "code", value: unique("endpoint-bind"))
+    key = {:endpoint, "chatgpt", :mcp}
+
+    assert {:ok, %OAuthTokenResource{resource: "endpoint:chatgpt:mcp"}} =
+             TokenResources.bind_issued("code", client.id, token.value, key)
+
+    assert TokenResources.resource_for_token(token) == {:ok, key}
+  end
+
   test "changeset requires a token and a supported resource with named constraints" do
     changeset =
       OAuthTokenResource

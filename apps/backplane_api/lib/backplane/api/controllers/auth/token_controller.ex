@@ -32,7 +32,7 @@ defmodule Backplane.Api.Auth.TokenController do
       nil ->
         send_token_response(conn, response)
 
-      resource when resource in [:mcp, :v1] ->
+      resource ->
         client_id = conn.private[:backplane_oauth_client_id]
 
         with {:ok, _binding} <-
@@ -167,9 +167,8 @@ defmodule Backplane.Api.Auth.TokenController do
         {:ok, _token, nil} when is_nil(supplied) ->
           {:ok, conn}
 
-        {:ok, _token, resource}
-        when resource in [:mcp, :v1] and resource == supplied ->
-          {:ok, put_resource_private(conn, client_id, resource)}
+        {:ok, _token, resource} when not is_nil(resource) and resource == supplied ->
+          bind_grant_resource(conn, client_id, resource)
 
         {:ok, _token, _bound_or_unbound} ->
           {:error, :invalid_target}
@@ -194,12 +193,8 @@ defmodule Backplane.Api.Auth.TokenController do
         {:ok, _token, nil} ->
           {:error, :invalid_target}
 
-        {:ok, _token, resource} when resource in [:mcp, :v1] and is_nil(supplied) ->
-          {:ok, put_resource_private(conn, client_id, resource)}
-
-        {:ok, _token, resource}
-        when resource in [:mcp, :v1] and resource == supplied ->
-          {:ok, put_resource_private(conn, client_id, resource)}
+        {:ok, _token, resource} when is_nil(supplied) or resource == supplied ->
+          bind_grant_resource(conn, client_id, resource)
 
         {:ok, _token, _mismatch} ->
           {:error, :invalid_target}
@@ -207,6 +202,25 @@ defmodule Backplane.Api.Auth.TokenController do
         :not_found ->
           {:ok, conn}
       end
+    end
+  end
+
+  defp bind_grant_resource(conn, client_id, resource) do
+    if Resources.oauth_bindable?(resource) and grant_resource_active?(client_id, resource),
+      do: {:ok, put_resource_private(conn, client_id, resource)},
+      else: {:error, :invalid_target}
+  end
+
+  # Endpoint resources can be disabled or exclude the client after the grant
+  # was issued; never mint a new access token for them in that state.
+  defp grant_resource_active?(client_id, resource) do
+    if Resources.endpoint?(resource) do
+      case Auth.OAuth.get_client(client_id) do
+        %Boruta.Ecto.Client{} = client -> Auth.OAuth.client_allows_resource?(client, resource)
+        _missing -> false
+      end
+    else
+      true
     end
   end
 

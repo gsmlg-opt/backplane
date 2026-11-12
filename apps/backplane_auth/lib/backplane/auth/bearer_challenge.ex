@@ -31,6 +31,9 @@ defmodule Backplane.Auth.BearerChallenge do
   defp maybe_add(params, _key, nil), do: params
   defp maybe_add(params, key, value), do: params ++ [{key, to_string(value)}]
 
+  defp maybe_add_resource_metadata(params, _conn, {:endpoint, _name, _base} = resource),
+    do: params ++ [{"resource_metadata", Resources.metadata_uri(resource)}]
+
   defp maybe_add_resource_metadata(params, conn, resource) do
     if OAuth.enabled_client_for_resource?(resource) and
          conn.request_path == Resources.path(resource) and

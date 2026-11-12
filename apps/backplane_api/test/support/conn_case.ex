@@ -13,6 +13,7 @@ defmodule Backplane.Api.ConnCase do
 
   setup tags do
     BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
+    Backplane.Endpoints.Cache.clear()
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

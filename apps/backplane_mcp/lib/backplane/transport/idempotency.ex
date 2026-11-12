@@ -116,14 +116,34 @@ defmodule Backplane.Transport.Idempotency do
          {:ok, subject} <- auth_field(auth, :subject, &optional_string/1),
          {:ok, client_id} <- auth_field(auth, :client_id, &optional_string/1),
          {:ok, scopes} <- auth_field(auth, :scopes, &normalize_scopes/1),
-         {:ok, metadata} <- auth_field(auth, :principal_metadata, &canonical_metadata/1) do
-      {:ok, {kind, subject, client_id, scopes, metadata}}
+         {:ok, metadata} <- auth_field(auth, :principal_metadata, &canonical_metadata/1),
+         {:ok, resource} <- resource_identity(auth) do
+      {:ok, {kind, subject, client_id, scopes, metadata, resource}}
     else
       _invalid -> :error
     end
   end
 
   defp auth_identity(_auth), do: :error
+
+  # The protected resource is part of the identity: a response cached for the
+  # root `/mcp` must never replay at an endpoint, nor across endpoints. A
+  # missing resource is the root.
+  defp resource_identity(auth) do
+    case {Map.get(auth, :resource), Map.get(auth, "resource")} do
+      {nil, nil} -> {:ok, :mcp}
+      {resource, nil} -> normalize_resource(resource)
+      {nil, resource} -> normalize_resource(resource)
+      {resource, resource} -> normalize_resource(resource)
+      _conflicting -> :error
+    end
+  end
+
+  defp normalize_resource(:mcp), do: {:ok, :mcp}
+  defp normalize_resource({:endpoint, name, base}) when is_binary(name) and is_atom(base),
+    do: {:ok, {:endpoint, name, base}}
+
+  defp normalize_resource(_other), do: :error
 
   defp auth_field(auth, field, normalizer) do
     case {Map.fetch(auth, field), Map.fetch(auth, Atom.to_string(field))} do

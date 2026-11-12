@@ -45,8 +45,10 @@ defmodule Backplane.Api.Auth.IntrospectController do
 
   defp maybe_put_resource_audience(body, client_id, token) do
     case Backplane.Auth.TokenResources.lookup_access_token(client_id, token) do
-      {:ok, _token, resource} when resource in [:mcp, :v1] ->
-        Map.put(body, :aud, Backplane.Auth.Resources.uri(resource))
+      {:ok, _token, resource} when not is_nil(resource) ->
+        if Backplane.Auth.Resources.oauth_bindable?(resource),
+          do: Map.put(body, :aud, Backplane.Auth.Resources.uri(resource)),
+          else: body
 
       _unmapped ->
         body

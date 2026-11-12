@@ -442,9 +442,9 @@ defmodule Backplane.Transport.McpHandler do
     name = if is_map(params), do: params["name"]
 
     case conn.assigns[:resource_auth] do
-      %{kind: :oauth} ->
+      %{kind: :oauth} = auth ->
         conn
-        |> Backplane.Auth.BearerChallenge.put(:mcp,
+        |> Backplane.Auth.BearerChallenge.put(Map.get(auth, :resource, :mcp),
           error: "insufficient_scope",
           scope: name
         )
@@ -566,7 +566,7 @@ defmodule Backplane.Transport.McpHandler do
   defp trusted_auth_context(conn) do
     case conn.assigns[:resource_auth] do
       auth when is_map(auth) ->
-        Map.take(auth, [:kind, :client_id, :scopes, :subject, :principal_metadata])
+        Map.take(auth, [:kind, :client_id, :scopes, :subject, :principal_metadata, :resource])
 
       _ ->
         %{kind: :open, client_id: nil, scopes: [], subject: nil, principal_metadata: %{}}

@@ -92,6 +92,37 @@ defmodule Backplane.Api.Auth.DiscoveryControllerTest do
            }
   end
 
+  test "publishes endpoint protected-resource metadata for active features only", %{conn: conn} do
+    {:ok, endpoint} =
+      Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["day"]})
+
+    body =
+      conn
+      |> get("/.well-known/oauth-protected-resource/endpoints/chatgpt/mcp")
+      |> json_response(200)
+
+    assert body["resource"] == WebOrigins.api_url("/endpoints/chatgpt/mcp")
+    assert body["resource"] == Resources.uri({:endpoint, "chatgpt", :mcp})
+    assert body["authorization_servers"] == [WebOrigins.api_base_url()]
+    assert body["resource_name"] == "Backplane endpoint chatgpt (MCP)"
+
+    for path <- [
+          "/.well-known/oauth-protected-resource/endpoints/chatgpt/v1",
+          "/.well-known/oauth-protected-resource/endpoints/unknown/mcp",
+          "/.well-known/oauth-protected-resource/endpoints/chatgpt/skill_protocol",
+          "/.well-known/oauth-protected-resource/endpoints/chatgpt/llm"
+        ] do
+      assert conn |> recycle() |> get(path) |> response(404)
+    end
+
+    assert {:ok, _disabled} = Backplane.Endpoints.set_enabled(endpoint, false)
+
+    assert conn
+           |> recycle()
+           |> get("/.well-known/oauth-protected-resource/endpoints/chatgpt/mcp")
+           |> response(404)
+  end
+
   test "does not publish metadata for unknown or non-canonical resource paths", %{conn: conn} do
     for path <- [
           "/.well-known/oauth-protected-resource/unknown",

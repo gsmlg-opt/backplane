@@ -101,6 +101,63 @@ defmodule Backplane.Api.Auth.ResourceOAuthE2ETest do
     assert called["result"]["content"]
   end
 
+  test "endpoint MCP resource completes authorization code + PKCE with its own audience", %{
+    conn: conn
+  } do
+    {:ok, _endpoint} =
+      Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["e2e"]})
+
+    key = {:endpoint, "chatgpt", :mcp}
+    %{client: client, user: user} = resource_principals(:mcp, ["e2e::echo"])
+
+    token = complete_resource_flow(conn, client, user, key, "e2e::echo")
+
+    assert {:ok, auth} = Auth.Tokens.verify_resource_access_token(token["access_token"], key)
+    assert auth.claims["aud"] == Backplane.WebOrigins.api_url("/endpoints/chatgpt/mcp")
+    assert auth.scopes == ["e2e::echo"]
+
+    assert {:error, :invalid_token} =
+             Auth.Tokens.verify_resource_access_token(token["access_token"], :mcp)
+
+    refreshed = refresh_token(conn, client, token["refresh_token"], nil)
+
+    assert {:ok, refreshed_auth} =
+             Auth.Tokens.verify_resource_access_token(refreshed["access_token"], key)
+
+    assert refreshed_auth.claims["aud"] == Resources.uri(key)
+  end
+
+  test "endpoint insufficient_scope challenge points at the endpoint resource metadata", %{
+    conn: conn
+  } do
+    {:ok, _endpoint} =
+      Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["e2e"]})
+
+    key = {:endpoint, "chatgpt", :mcp}
+    %{client: client, user: user} = resource_principals(:mcp, ["e2e::echo"])
+    token = complete_resource_flow(conn, client, user, key, "e2e::echo")
+
+    body = %{
+      "jsonrpc" => "2.0",
+      "method" => "tools/call",
+      "id" => 1,
+      "params" => %{"name" => "e2e::hidden", "arguments" => %{}}
+    }
+
+    denied =
+      Plug.Test.conn(:post, "/endpoints/chatgpt/mcp", Jason.encode!(body))
+      |> put_req_header("content-type", "application/json")
+      |> maybe_put_bearer(token["access_token"])
+      |> then(&Backplane.Api.Endpoint.call(&1, Backplane.Api.Endpoint.init([])))
+
+    assert denied.status == 403
+    header = bearer_header(denied)
+    assert header =~ ~s(error="insufficient_scope")
+
+    assert resource_metadata_path(header) ==
+             "/.well-known/oauth-protected-resource/endpoints/chatgpt/mcp"
+  end
+
   test "v1 grants keep model discovery and invocation separate", %{conn: conn} do
     metadata =
       conn

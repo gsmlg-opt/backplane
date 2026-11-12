@@ -38,6 +38,17 @@ defmodule Backplane.Auth.Metadata do
   end
 
   @spec protected_resource(Resources.key()) :: map()
+  def protected_resource({:endpoint, name, base} = key) do
+    label = if base == :mcp, do: "MCP", else: "LLM API"
+
+    base
+    |> protected_resource()
+    |> Map.merge(%{
+      resource: Resources.uri(key),
+      resource_name: "Backplane endpoint #{name} (#{label})"
+    })
+  end
+
   def protected_resource(:mcp) do
     protected_resource_metadata(:mcp, "Backplane MCP Hub")
   end

@@ -12,6 +12,7 @@ defmodule Backplane.Auth.TokenResources do
 
   import Ecto.Query
 
+  alias Backplane.Auth.Resources
   alias Backplane.Auth.Schemas.OAuthTokenResource
   alias Backplane.Auth.Tokens
   alias Backplane.Repo
@@ -25,14 +26,14 @@ defmodule Backplane.Auth.TokenResources do
     def exception(_options), do: %__MODULE__{}
   end
 
-  @type resource :: :mcp | :skill_protocol | :v1
+  @type resource :: Resources.key()
   @type lookup_result :: :not_found | {:ok, Token.t(), nil | resource()}
   @type binding_result :: :unbound | {:ok, resource()}
 
   @spec bind_issued(String.t(), String.t(), String.t(), resource()) ::
           {:ok, OAuthTokenResource.t()} | {:error, :not_found | :binding_failed}
   def bind_issued(type, client_id, value, resource)
-      when type in ["code", "access_token"] and resource in [:mcp, :skill_protocol, :v1] do
+      when type in ["code", "access_token"] and (resource == :skill_protocol or is_tuple(resource) or resource in [:mcp, :v1]) do
     case Repo.get_by(Token, type: type, client_id: client_id, value: value) do
       nil ->
         {:error, :not_found}
@@ -89,7 +90,7 @@ defmodule Backplane.Auth.TokenResources do
   defp binding_changeset(%Token{id: token_id}, resource) do
     OAuthTokenResource.changeset(%OAuthTokenResource{}, %{
       oauth_token_id: token_id,
-      resource: Atom.to_string(resource)
+      resource: Resources.to_persisted(resource)
     })
   end
 
@@ -124,8 +125,10 @@ defmodule Backplane.Auth.TokenResources do
     end
   end
 
-  defp persisted_resource!("mcp"), do: :mcp
-  defp persisted_resource!("skill_protocol"), do: :skill_protocol
-  defp persisted_resource!("v1"), do: :v1
-  defp persisted_resource!(_corrupt), do: raise(LineageError)
+  defp persisted_resource!(value) do
+    case Resources.from_persisted(value) do
+      {:ok, resource} -> resource
+      :error -> raise LineageError
+    end
+  end
 end

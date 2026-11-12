@@ -140,6 +140,7 @@ defmodule Backplane.Admin.Layouts do
           %{label: dgettext("navigation", "Config"), path: "/system/config", icon: "tune-variant"},
           %{label: dgettext("navigation", "Appearance"), path: "/system/appearance", icon: "palette-outline"},
           %{label: dgettext("navigation", "Clients"), path: "/system/clients", icon: "account-group"},
+          %{label: dgettext("navigation", "Endpoints"), path: "/system/endpoints", icon: "lan-connect"},
           %{label: dgettext("navigation", "Credentials"), path: "/system/credentials", icon: "key-variant"},
           %{
             label: dgettext("navigation", "Host Agents"),

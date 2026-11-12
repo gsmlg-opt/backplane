@@ -400,6 +400,216 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
     refute challenge =~ "attacker.example"
   end
 
+  describe "endpoint mode" do
+    test "missing credentials are challenged even when no clients exist" do
+      endpoint = endpoint!("e", mcp_prefixes: ["day"])
+
+      conn = conn(:post, "/endpoints/e/mcp") |> on_endpoint(endpoint) |> authenticate(:mcp)
+
+      assert conn.status == 401
+      assert conn.halted
+      assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+
+      assert get_resp_header(conn, "www-authenticate") == [
+               ~s(Bearer resource_metadata="#{Resources.metadata_uri({:endpoint, "e", :mcp})}")
+             ]
+
+      refute conn.assigns[:resource_auth]
+    end
+
+    test "invalid and malformed credentials are challenged" do
+      endpoint = endpoint!("e", mcp_prefixes: ["day"])
+
+      for conn <- [
+            conn(:post, "/endpoints/e/mcp") |> bearer("unknown"),
+            conn(:post, "/endpoints/e/mcp") |> put_req_header("authorization", "Basic abc")
+          ] do
+        conn = conn |> on_endpoint(endpoint) |> authenticate(:mcp)
+
+        assert conn.status == 401
+        assert [challenge] = get_resp_header(conn, "www-authenticate")
+        assert challenge =~ ~s(error="invalid_token")
+        assert challenge =~ Resources.metadata_uri({:endpoint, "e", :mcp})
+        refute conn.assigns[:resource_auth]
+      end
+    end
+
+    test "client tokens get scopes narrowed to the endpoint prefixes" do
+      endpoint = endpoint!("e", mcp_prefixes: ["day"])
+      {client, token} = pat_fixture!(scopes: ["*"])
+
+      conn =
+        conn(:post, "/endpoints/e/mcp")
+        |> bearer(token)
+        |> on_endpoint(endpoint)
+        |> authenticate(:mcp)
+
+      assert conn.status == nil
+      assert conn.assigns.client.id == client.id
+      assert conn.assigns.tool_scopes == ["day::*"]
+
+      assert conn.assigns.resource_auth == %{
+               kind: :client_token,
+               subject: nil,
+               client_id: client.id,
+               principal_metadata: %{},
+               resource: {:endpoint, "e", :mcp},
+               scopes: ["day::*"]
+             }
+    end
+
+    test "v1 endpoint keeps caller scopes and assigns no tool scopes" do
+      endpoint = endpoint!("e", mcp_enabled: false, llm_enabled: true, models: ["m"])
+      {_client, token} = pat_fixture!(scopes: ["llm::invoke"])
+
+      conn =
+        conn(:post, "/endpoints/e/v1/responses")
+        |> bearer(token)
+        |> on_endpoint(endpoint)
+        |> authenticate(:v1)
+
+      assert conn.status == nil
+      assert conn.assigns.resource_auth.resource == {:endpoint, "e", :v1}
+      assert conn.assigns.resource_auth.scopes == ["llm::invoke"]
+      refute Map.has_key?(conn.assigns, :tool_scopes)
+    end
+
+    test "restricted endpoints forbid unlisted client tokens and admit listed ones" do
+      {listed, listed_token} = pat_fixture!(scopes: ["*"])
+      {_other, other_token} = pat_fixture!(scopes: ["*"])
+
+      endpoint =
+        endpoint!("e", mcp_prefixes: ["day"], restrict_clients: true, client_ids: [listed.id])
+
+      forbidden =
+        conn(:post, "/endpoints/e/mcp")
+        |> bearer(other_token)
+        |> on_endpoint(endpoint)
+        |> authenticate(:mcp)
+
+      assert forbidden.status == 403
+      assert forbidden.halted
+      assert Jason.decode!(forbidden.resp_body) == %{"error" => "Forbidden"}
+      refute forbidden.assigns[:resource_auth]
+      refute Map.has_key?(forbidden.assigns, :client)
+
+      allowed =
+        conn(:post, "/endpoints/e/mcp")
+        |> bearer(listed_token)
+        |> on_endpoint(endpoint)
+        |> authenticate(:mcp)
+
+      assert allowed.status == nil
+      assert allowed.assigns.resource_auth.client_id == listed.id
+    end
+
+    test "OAuth tokens authenticate only on their exact endpoint binding" do
+      e = endpoint!("e", mcp_prefixes: ["day"])
+      f = endpoint!("f", mcp_prefixes: ["day"])
+
+      root_token = oauth_token!(:mcp, ["day::now"])
+      endpoint_token = oauth_token!({:endpoint, "e", :mcp}, ["day::now", "github::read"], [:mcp])
+
+      accepted =
+        conn(:post, "/endpoints/e/mcp")
+        |> bearer(endpoint_token.value)
+        |> on_endpoint(e)
+        |> authenticate(:mcp)
+
+      assert accepted.status == nil
+      refute Map.has_key?(accepted.assigns, :client)
+
+      assert accepted.assigns.resource_auth == %{
+               kind: :oauth,
+               subject: endpoint_token.sub,
+               client_id: endpoint_token.client_id,
+               principal_metadata: %{},
+               resource: {:endpoint, "e", :mcp},
+               scopes: ["day::now"]
+             }
+
+      assert accepted.assigns.tool_scopes == ["day::now"]
+
+      root_on_endpoint =
+        conn(:post, "/endpoints/e/mcp")
+        |> bearer(root_token.value)
+        |> on_endpoint(e)
+        |> authenticate(:mcp)
+
+      endpoint_on_root = conn(:post, "/mcp") |> bearer(endpoint_token.value) |> authenticate(:mcp)
+
+      endpoint_on_other =
+        conn(:post, "/endpoints/f/mcp")
+        |> bearer(endpoint_token.value)
+        |> on_endpoint(f)
+        |> authenticate(:mcp)
+
+      for conn <- [root_on_endpoint, endpoint_on_root, endpoint_on_other] do
+        assert conn.status == 401
+        assert Jason.decode!(conn.resp_body)["error"] == "invalid_token"
+        refute conn.assigns[:resource_auth]
+      end
+    end
+
+    test "endpoint OAuth access follows enablement and the client restriction list" do
+      e = endpoint!("e", mcp_prefixes: ["day"])
+      token = oauth_token!({:endpoint, "e", :mcp}, ["day::*"], [:mcp])
+
+      call = fn endpoint ->
+        conn(:post, "/endpoints/e/mcp")
+        |> bearer(token.value)
+        |> on_endpoint(endpoint)
+        |> authenticate(:mcp)
+      end
+
+      assert call.(e).status == nil
+
+      assert {:ok, disabled} = Backplane.Endpoints.set_enabled(e, false)
+      assert call.(disabled).status == 404
+      assert call.(e).status == 404
+
+      assert {:ok, enabled} = Backplane.Endpoints.set_enabled(disabled, true)
+      assert call.(enabled).status == nil
+
+      assert {:ok, listed} =
+               Backplane.Endpoints.update(enabled, %{
+                 restrict_clients: true,
+                 oauth_client_ids: [token.client_id]
+               })
+
+      assert call.(listed).status == nil
+
+      assert {:ok, removed} = Backplane.Endpoints.update(listed, %{oauth_client_ids: []})
+      rejected = call.(removed)
+      assert rejected.status == 401
+      assert Jason.decode!(rejected.resp_body)["error"] == "invalid_token"
+    end
+
+    test "rejects an endpoint whose feature does not match the plug resource" do
+      mcp_only = endpoint!("e", mcp_prefixes: ["day"])
+      {_client, token} = pat_fixture!(scopes: ["*"])
+
+      conn =
+        conn(:post, "/endpoints/e/v1/responses")
+        |> bearer(token)
+        |> on_endpoint(mcp_only)
+        |> authenticate(:v1)
+
+      assert conn.status == 404
+      assert conn.halted
+      refute conn.assigns[:resource_auth]
+
+      skill =
+        conn(:get, "/endpoints/e/skill")
+        |> bearer(token)
+        |> on_endpoint(mcp_only)
+        |> authenticate(:skill_protocol)
+
+      assert skill.status == 404
+      refute skill.assigns[:resource_auth]
+    end
+  end
+
   def required_scope(_conn, suffix), do: "llm::" <> suffix
 
   defp authenticate(conn, resource) do
@@ -408,11 +618,24 @@ defmodule Backplane.Auth.ResourceAuthPlugTest do
 
   defp bearer(conn, token), do: put_req_header(conn, "authorization", "Bearer #{token}")
 
-  defp oauth_token!(resource, scopes) do
+  defp oauth_token!(resource, scopes, client_resources \\ nil) do
     user = auth_user_fixture!()
-    client = oauth_client_fixture!(resources: [resource], scopes: scopes)
+    client = oauth_client_fixture!(resources: client_resources || [resource], scopes: scopes)
     resource_access_token_fixture!(user, client, scopes, resource)
   end
+
+  defp endpoint!(name, attrs) do
+    {:ok, endpoint} =
+      attrs
+      |> Map.new()
+      |> Map.put_new(:mcp_enabled, true)
+      |> Map.put(:name, name)
+      |> Backplane.Endpoints.create()
+
+    endpoint
+  end
+
+  defp on_endpoint(conn, endpoint), do: put_private(conn, :backplane_endpoint, endpoint)
 
   defp pat_fixture!(attrs \\ []) do
     {:ok, client, token} =

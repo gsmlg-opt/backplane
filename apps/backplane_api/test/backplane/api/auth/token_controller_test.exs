@@ -522,6 +522,142 @@ defmodule Backplane.Api.Auth.TokenControllerTest do
              Boruta.Ecto.TokenStore.get(refresh_token: token.refresh_token)
   end
 
+  describe "endpoint resources" do
+    setup do
+      {:ok, endpoint} =
+        Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["github"]})
+
+      %{endpoint: endpoint, key: {:endpoint, "chatgpt", :mcp}}
+    end
+
+    test "code exchange binds the endpoint audience and refresh keeps it", %{conn: conn, key: key} do
+      {user, client} = resource_subject!(:mcp)
+      original = issue_resource_token(conn, user, client, key)
+
+      assert {:ok, claims} = Auth.Tokens.verify_access_token(original["access_token"])
+      assert claims["aud"] == Resources.uri(key)
+      assert claims["aud"] == Backplane.WebOrigins.api_url("/endpoints/chatgpt/mcp")
+
+      assert {:ok, %Token{}, ^key} =
+               Auth.TokenResources.lookup_access_token(client.id, original["access_token"])
+
+      introspection =
+        conn
+        |> recycle()
+        |> put_basic_auth(client.id, client.plaintext_secret)
+        |> post("/oauth/introspect", %{"token" => original["access_token"]})
+        |> json_response(200)
+
+      assert introspection["active"] == true
+      assert introspection["aud"] == Resources.uri(key)
+
+      inherited =
+        conn
+        |> recycle()
+        |> refresh(client, original["refresh_token"], [])
+        |> json_response(200)
+
+      assert {:ok, inherited_claims} = Auth.Tokens.verify_access_token(inherited["access_token"])
+      assert inherited_claims["aud"] == Resources.uri(key)
+
+      exact =
+        conn
+        |> recycle()
+        |> refresh(client, inherited["refresh_token"], [{"resource", Resources.uri(key)}])
+        |> json_response(200)
+
+      assert {:ok, %Token{}, ^key} =
+               Auth.TokenResources.lookup_access_token(client.id, exact["access_token"])
+    end
+
+    test "endpoint-bound grants reject the root resource and vice versa", %{conn: conn, key: key} do
+      {user, client} = resource_subject!(:mcp)
+      {code, verifier} = authorization_code!(user, client, key)
+
+      rejected =
+        conn
+        |> exchange_code(client, code, verifier, [{"resource", Resources.uri(:mcp)}])
+        |> json_response(400)
+
+      assert rejected["error"] == "invalid_target"
+
+      accepted =
+        conn
+        |> recycle()
+        |> exchange_code(client, code, verifier, [{"resource", Resources.uri(key)}])
+        |> json_response(200)
+
+      cross =
+        conn
+        |> recycle()
+        |> refresh(client, accepted["refresh_token"], [{"resource", Resources.uri(:mcp)}])
+        |> json_response(400)
+
+      assert cross["error"] == "invalid_target"
+
+      {root_code, root_verifier} = authorization_code!(user, client, :mcp)
+
+      root_rejected =
+        conn
+        |> recycle()
+        |> exchange_code(client, root_code, root_verifier, [{"resource", Resources.uri(key)}])
+        |> json_response(400)
+
+      assert root_rejected["error"] == "invalid_target"
+    end
+
+    test "a disabled endpoint resource is an invalid target", %{
+      conn: conn,
+      endpoint: endpoint,
+      key: key
+    } do
+      {user, client} = resource_subject!(:mcp)
+      {code, verifier} = authorization_code!(user, client, key)
+      assert {:ok, _disabled} = Backplane.Endpoints.set_enabled(endpoint, false)
+
+      rejected =
+        conn
+        |> exchange_code(client, code, verifier, [{"resource", Resources.uri(key)}])
+        |> json_response(400)
+
+      assert rejected["error"] == "invalid_target"
+    end
+  end
+
+  describe "endpoint refresh after access changes" do
+    test "refresh is refused once the endpoint is disabled or excludes the client", %{conn: conn} do
+      {:ok, endpoint} =
+        Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true, mcp_prefixes: ["github"]})
+
+      key = {:endpoint, "chatgpt", :mcp}
+      {user, client} = resource_subject!(:mcp)
+      original = issue_resource_token(conn, user, client, key)
+
+      assert {:ok, disabled} = Backplane.Endpoints.set_enabled(endpoint, false)
+
+      refused =
+        conn
+        |> recycle()
+        |> refresh(client, original["refresh_token"], [])
+        |> json_response(400)
+
+      assert refused["error"] == "invalid_target"
+
+      assert {:ok, enabled} = Backplane.Endpoints.set_enabled(disabled, true)
+
+      assert {:ok, _restricted} =
+               Backplane.Endpoints.update(enabled, %{restrict_clients: true, oauth_client_ids: []})
+
+      excluded =
+        conn
+        |> recycle()
+        |> refresh(client, original["refresh_token"], [])
+        |> json_response(400)
+
+      assert excluded["error"] == "invalid_target"
+    end
+  end
+
   defp confidential_client! do
     assert {:ok, _scope} =
              Auth.OAuth.create_scope(%{name: "openid", label: "openid", public: true})

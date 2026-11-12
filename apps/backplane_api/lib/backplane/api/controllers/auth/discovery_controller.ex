@@ -1,7 +1,7 @@
 defmodule Backplane.Api.Auth.DiscoveryController do
   use Backplane.Api, :controller
 
-  alias Backplane.Auth.Metadata
+  alias Backplane.Auth.{Metadata, Resources}
 
   def openid_configuration(conn, _params) do
     json(conn, Metadata.openid_configuration())
@@ -21,6 +21,16 @@ defmodule Backplane.Api.Auth.DiscoveryController do
 
   def protected_resource(conn, %{"resource" => "v1"}) do
     json(conn, Metadata.protected_resource(:v1))
+  end
+
+  def protected_resource(conn, %{"name" => name, "feature" => feature})
+      when feature in ["mcp", "v1"] do
+    key = {:endpoint, name, String.to_existing_atom(feature)}
+
+    case Resources.from_uri(Resources.uri(key)) do
+      {:ok, ^key} -> json(conn, Metadata.protected_resource(key))
+      _inactive_or_invalid -> send_resp(conn, 404, "not found")
+    end
   end
 
   def protected_resource(conn, _params) do

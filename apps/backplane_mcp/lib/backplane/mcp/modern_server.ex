@@ -175,6 +175,11 @@ defmodule Backplane.MCP.ModernServer do
   defp normalize_auth_field(:resource, resource) when resource in [:mcp, :v1], do: {:ok, resource}
   defp normalize_auth_field(:resource, "mcp"), do: {:ok, :mcp}
   defp normalize_auth_field(:resource, "v1"), do: {:ok, :v1}
+
+  defp normalize_auth_field(:resource, {:endpoint, name, :mcp} = resource)
+       when is_binary(name) and name != "",
+       do: {:ok, resource}
+
   defp normalize_auth_field(:scopes, scopes), do: normalize_scopes(scopes)
   defp normalize_auth_field(_field, _value), do: :error
 

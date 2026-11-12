@@ -95,6 +95,12 @@ defmodule Backplane.Api.Router do
       :protected_resource
     )
 
+    get(
+      "/.well-known/oauth-protected-resource/endpoints/:name/:feature",
+      Auth.DiscoveryController,
+      :protected_resource
+    )
+
     get("/oauth/jwks", Auth.JwksController, :index)
     get("/oauth/userinfo", Auth.UserinfoController, :show)
     post("/oauth/token", Auth.TokenController, :token)

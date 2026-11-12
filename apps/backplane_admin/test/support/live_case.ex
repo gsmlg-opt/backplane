@@ -15,6 +15,7 @@ defmodule Backplane.Admin.LiveCase do
     BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
     # Browser fixtures must not consume the session creation budget of later tests.
     :ok = Phoenix.SessionProcess.RateLimiter.reset()
+    Backplane.Endpoints.Cache.clear()
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 

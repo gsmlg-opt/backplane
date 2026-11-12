@@ -32,7 +32,6 @@ defmodule Backplane.MCP.DispatchTest do
   end
 
   setup do
-
     :ets.delete_all_objects(:backplane_tools)
     PromptRegistry.clear()
 
@@ -176,6 +175,34 @@ defmodule Backplane.MCP.DispatchTest do
                "prompts/get",
                %{"name" => "fixture_prompt", "arguments" => %{"topic" => "Elixir"}},
                context()
+             )
+  end
+
+  test "endpoint contexts hide skill prompts and suppress completions" do
+    auth = %{
+      kind: :client_token,
+      client_id: "c1",
+      scopes: ["fixture::*"],
+      subject: nil,
+      principal_metadata: %{},
+      resource: {:endpoint, "chatgpt", :mcp}
+    }
+
+    endpoint_context = %{context(["fixture::*"]) | auth: auth}
+
+    assert {:ok, %{"prompts" => prompts}} =
+             Dispatch.execute("prompts/list", %{}, endpoint_context)
+
+    assert Enum.map(prompts, & &1["name"]) == ["failing_prompt", "fixture_prompt"]
+
+    assert {:ok, %{"completion" => %{"values" => []}}} =
+             Dispatch.execute(
+               "completion/complete",
+               %{
+                 "ref" => %{"type" => "ref/tool", "name" => "fixture::echo"},
+                 "argument" => %{"name" => "tool_name", "value" => "fixture"}
+               },
+               endpoint_context
              )
   end
 

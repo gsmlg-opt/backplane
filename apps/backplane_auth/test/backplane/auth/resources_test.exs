@@ -1,7 +1,8 @@
 defmodule Backplane.Auth.ResourcesTest do
-  use ExUnit.Case, async: false
+  use Backplane.Auth.DataCase, async: false
 
   alias Backplane.Auth.Resources
+  alias Backplane.WebOrigins
 
   setup do
     old_url = Application.get_env(:backplane, :api_url)
@@ -248,6 +249,64 @@ defmodule Backplane.Auth.ResourcesTest do
     Application.put_env(:backplane, :env, :test)
     Application.put_env(:backplane, :api_url, "http://backplane.example.test:4220")
     assert Resources.validate_origin([:mcp]) == {:error, :https_required}
+  end
+
+  describe "endpoint resources" do
+    setup do
+      {:ok, _} = Backplane.Endpoints.create(%{name: "chatgpt", mcp_enabled: true})
+      :ok
+    end
+
+    test "from_uri resolves only active enabled features" do
+      assert Resources.from_uri(WebOrigins.api_url("/endpoints/chatgpt/mcp")) ==
+               {:ok, {:endpoint, "chatgpt", :mcp}}
+
+      assert Resources.from_uri(WebOrigins.api_url("/endpoints/chatgpt/v1")) == :error
+      assert Resources.from_uri(WebOrigins.api_url("/endpoints/missing/mcp")) == :error
+      assert Resources.from_uri(WebOrigins.api_url("/endpoints/chatgpt/mcp/x")) == :error
+
+      endpoint = Backplane.Endpoints.get_by_name("chatgpt")
+      {:ok, _} = Backplane.Endpoints.set_enabled(endpoint, false)
+      assert Resources.from_uri(WebOrigins.api_url("/endpoints/chatgpt/mcp")) == :error
+    end
+
+    test "scopes delegate to the base resource" do
+      mcp = {:endpoint, "chatgpt", :mcp}
+      assert Resources.valid_scope?(mcp, "day::*")
+      refute Resources.valid_scope?(mcp, "system::x")
+      assert Resources.valid_scope?({:endpoint, "x", :v1}, "llm::invoke")
+      refute Resources.valid_scope?({:endpoint, "x", :v1}, "day::*")
+      assert Resources.operation_scope?(mcp, "day::now")
+      assert {:ok, ["day::now"]} = Resources.default_scopes(mcp, ["day::now"], ["day::now"])
+    end
+
+    test "persisted form round-trips and rejects malformed names" do
+      for key <- [:mcp, :v1, :skill_protocol, {:endpoint, "chatgpt", :mcp}, {:endpoint, "a-1", :v1}] do
+        assert Resources.from_persisted(Resources.to_persisted(key)) == {:ok, key}
+      end
+
+      assert Resources.from_persisted("endpoint:Bad:mcp") == :error
+      assert Resources.from_persisted("endpoint:ok:skill_protocol") == :error
+      assert Resources.from_persisted("admin") == :error
+    end
+
+    test "paths, metadata and helpers" do
+      key = Resources.endpoint_key("chatgpt", :mcp)
+      assert Resources.path(key) == "/endpoints/chatgpt/mcp"
+      assert Resources.uri(key) == WebOrigins.api_url("/endpoints/chatgpt/mcp")
+
+      assert Resources.metadata_uri(key) ==
+               WebOrigins.api_url("/.well-known/oauth-protected-resource/endpoints/chatgpt/mcp")
+
+      assert Resources.documentation_uri(key) == Resources.documentation_uri(:mcp)
+      assert Resources.base(key) == :mcp
+      assert Resources.endpoint?(key)
+      refute Resources.endpoint?(:mcp)
+      assert Resources.oauth_bindable?(key)
+      assert Resources.oauth_bindable?(:v1)
+      refute Resources.oauth_bindable?(:skill_protocol)
+      assert Resources.keys() == [:mcp, :skill_protocol, :v1]
+    end
   end
 
   defp restore(app, key, nil), do: Application.delete_env(app, key)

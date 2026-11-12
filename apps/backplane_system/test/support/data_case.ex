@@ -14,6 +14,8 @@ defmodule BackplaneSystem.DataCase do
 
   setup tags do
     BackplaneDataCase.setup_sandbox(Backplane.Repo, tags)
+    # Sandbox rollbacks do not invalidate cached endpoints.
+    Backplane.Endpoints.Cache.clear()
     :ok
   end
 

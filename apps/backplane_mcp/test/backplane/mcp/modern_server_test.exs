@@ -236,6 +236,7 @@ defmodule Backplane.MCP.ModernServerTest do
     assert frame.assigns.dispatch_context.scopes == ["public::echo"]
     assert frame.assigns.dispatch_context.auth == auth(["public::echo"])
     assert frame.assigns.dispatch_context.client == client
+
     assert %{context: %Backplane.Observability.Context{}, mcp_request_id: nil} =
              frame.assigns.dispatch_context.observability
 
@@ -360,6 +361,31 @@ defmodule Backplane.MCP.ModernServerTest do
 
       assert {:error, %Error{code: -32_603, reason: :internal_error}, %Frame{}} =
                ModernServer.init_request(context, Frame.new(context.assigns))
+    end
+  end
+
+  test "accepts a well-formed endpoint resource and rejects malformed ones", %{
+    task_supervisor: task_supervisor
+  } do
+    endpoint_auth = %{restricted_auth(["public::echo"]) | resource: {:endpoint, "chatgpt", :mcp}}
+
+    context = %{
+      type: :stdio,
+      auth: endpoint_auth,
+      assigns: %{resource_auth: endpoint_auth, tool_scopes: ["public::echo"], client: nil}
+    }
+
+    assert {:response, %{"result" => %{"tools" => tools}}} =
+             execute_modern("tools/list", %{}, context, task_supervisor)
+
+    assert Enum.map(tools, & &1["name"]) == ["public::echo"]
+
+    for bad <- [{:endpoint, "", :mcp}, {:endpoint, :x, :mcp}, {:endpoint, "a", :v1}, {:other, 1}] do
+      bad_auth = %{endpoint_auth | resource: bad}
+      bad_context = build_request_context(%{resource_auth: bad_auth}, endpoint_auth)
+
+      assert {:error, %Error{code: -32_603}, %Frame{}} =
+               ModernServer.init_request(bad_context, Frame.new(bad_context.assigns))
     end
   end
 

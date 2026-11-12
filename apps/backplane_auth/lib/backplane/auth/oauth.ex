@@ -5,6 +5,7 @@ defmodule Backplane.Auth.OAuth do
   import Ecto.Query
 
   alias Backplane.Auth.Resources
+  alias Backplane.Endpoints
   alias Backplane.Repo
   alias Boruta.Ecto.Admin
   alias Boruta.Ecto.{Client, Scope}
@@ -79,10 +80,22 @@ defmodule Backplane.Auth.OAuth do
   end
 
   @spec client_allows_resource?(Client.t(), Resources.key()) :: boolean()
+  def client_allows_resource?(%Client{} = client, {:endpoint, name, base}) do
+    feature = if base == :mcp, do: :mcp, else: :llm
+
+    base in client_resources(client) and
+      case Endpoints.active(name, feature) do
+        {:ok, endpoint} -> Endpoints.client_allowed?(endpoint, :oauth, client.id)
+        :error -> false
+      end
+  end
+
   def client_allows_resource?(%Client{} = client, resource),
     do: resource in client_resources(client)
 
   @spec enabled_client_for_resource?(Resources.key()) :: boolean()
+  def enabled_client_for_resource?({:endpoint, _name, _base}), do: true
+
   def enabled_client_for_resource?(resource) do
     Enum.any?(list_clients(), fn client ->
       client_enabled?(client) and client_allows_resource?(client, resource)

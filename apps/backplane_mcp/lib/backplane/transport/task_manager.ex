@@ -272,7 +272,7 @@ defmodule Backplane.Transport.TaskManager do
   end
 
   defp owner_key(auth) do
-    {auth[:kind], auth[:client_id], auth[:subject]}
+    {auth[:kind], auth[:client_id], auth[:subject], auth[:resource] || :mcp}
   end
 
   defp generate_task_id do

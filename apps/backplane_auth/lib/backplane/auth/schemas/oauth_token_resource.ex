@@ -7,6 +7,8 @@ defmodule Backplane.Auth.Schemas.OAuthTokenResource do
 
   import Ecto.Changeset
 
+  alias Backplane.Auth.Resources
+
   @primary_key {:id, Ecto.UUID, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec]
@@ -25,7 +27,12 @@ defmodule Backplane.Auth.Schemas.OAuthTokenResource do
     binding
     |> cast(attrs, [:oauth_token_id, :resource])
     |> validate_required([:oauth_token_id, :resource])
-    |> validate_inclusion(:resource, ["mcp", "skill_protocol", "v1"])
+    |> validate_change(:resource, fn :resource, value ->
+      case Resources.from_persisted(value) do
+        {:ok, _key} -> []
+        :error -> [resource: "is invalid"]
+      end
+    end)
     |> foreign_key_constraint(:oauth_token_id)
     |> unique_constraint(:oauth_token_id,
       name: :oauth_token_resources_oauth_token_id_index

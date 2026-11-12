@@ -10,6 +10,8 @@ defmodule Backplane.Auth.ResourceAuthPlug do
 
   alias Backplane.Auth.{BearerChallenge, OAuth, Resources, Tokens}
   alias Backplane.Clients
+  alias Backplane.Endpoints
+  alias Backplane.Endpoints.Endpoint
 
   @type resource_auth :: %{
           kind: :oauth | :client_token | :open,
@@ -33,6 +35,9 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   end
 
   @impl true
+  def call(%Plug.Conn{private: %{backplane_endpoint: %Endpoint{} = endpoint}} = conn, opts),
+    do: call_endpoint(conn, endpoint, opts)
+
   def call(conn, %{resource: resource} = opts) do
     case bearer_credential(conn) do
       :missing -> authenticate_missing(conn, resource, opts)
@@ -40,6 +45,64 @@ defmodule Backplane.Auth.ResourceAuthPlug do
       {:ok, token} -> authenticate(conn, resource, token, opts)
     end
   end
+
+  # Endpoint mode: each endpoint feature is its own protected resource. It never
+  # falls back to open access and re-reads the endpoint so disablement applies
+  # immediately.
+  defp call_endpoint(conn, %Endpoint{name: name}, %{resource: base} = opts) do
+    with {:ok, feature} <- endpoint_feature(base),
+         {:ok, endpoint} <- Endpoints.active(name, feature) do
+      key = Resources.endpoint_key(name, base)
+
+      case bearer_credential(conn) do
+        :missing -> oauth_reject(conn, key, opts, nil)
+        :invalid -> oauth_reject(conn, key, opts, "invalid_token")
+        {:ok, token} -> authenticate_endpoint(conn, endpoint, key, token, opts)
+      end
+    else
+      :error -> send_auth_error(conn, opts, 404, "Not Found")
+    end
+  end
+
+  defp endpoint_feature(:mcp), do: {:ok, :mcp}
+  defp endpoint_feature(:v1), do: {:ok, :llm}
+  defp endpoint_feature(_base), do: :error
+
+  defp authenticate_endpoint(conn, endpoint, key, token, opts) do
+    case Tokens.verify_resource_access_token(token, key) do
+      {:ok, oauth} ->
+        oauth_success(conn, key, %{oauth | scopes: endpoint_scopes(endpoint, key, oauth.scopes)})
+
+      {:error, :invalid_token} ->
+        oauth_reject(conn, key, opts, "invalid_token")
+
+      :not_oauth ->
+        authenticate_endpoint_opaque(conn, endpoint, key, token, opts)
+    end
+  end
+
+  defp authenticate_endpoint_opaque(conn, endpoint, key, token, opts) do
+    case Clients.verify_token(token) do
+      {:ok, client} ->
+        if Endpoints.client_allowed?(endpoint, :client_token, client.id) do
+          scopes = endpoint_scopes(endpoint, key, client.scopes)
+          client_token_success(conn, key, client, scopes)
+        else
+          send_auth_error(conn, opts, 403, "Forbidden")
+        end
+
+      :error ->
+        oauth_reject(conn, key, opts, "invalid_token")
+
+      {:error, reason} when reason in [:unavailable, :overloaded] ->
+        unavailable(conn, opts)
+    end
+  end
+
+  defp endpoint_scopes(endpoint, {:endpoint, _name, :mcp}, scopes),
+    do: Endpoints.restrict_tool_scopes(endpoint, scopes)
+
+  defp endpoint_scopes(_endpoint, {:endpoint, _name, :v1}, scopes), do: scopes
 
   defp authenticate(conn, resource, token, opts) do
     case Tokens.verify_resource_access_token(token, resource) do
@@ -95,14 +158,14 @@ defmodule Backplane.Auth.ResourceAuthPlug do
     assign_success(conn, resource, auth)
   end
 
-  defp client_token_success(conn, resource, client) do
+  defp client_token_success(conn, resource, client, scopes \\ nil) do
     auth = %{
       kind: :client_token,
       subject: nil,
       client_id: client.id,
       principal_metadata: %{},
       resource: resource,
-      scopes: client.scopes
+      scopes: scopes || client.scopes
     }
 
     conn
@@ -130,6 +193,9 @@ defmodule Backplane.Auth.ResourceAuthPlug do
   defp assign_success(conn, resource, auth) when resource in [:skill_protocol, :v1],
     do: assign(conn, :resource_auth, auth)
 
+  defp assign_success(conn, {:endpoint, _name, :mcp}, auth), do: assign_success(conn, :mcp, auth)
+  defp assign_success(conn, {:endpoint, _name, :v1}, auth), do: assign_success(conn, :v1, auth)
+
   defp oauth_reject(conn, resource, opts, challenge_error) do
     challenge_opts =
       []
@@ -153,7 +219,7 @@ defmodule Backplane.Auth.ResourceAuthPlug do
       "error" => %{
         "code" => status,
         "message" => message,
-        "status" => if(status == 503, do: "UNAVAILABLE", else: "UNAUTHENTICATED")
+        "status" => google_status(status)
       }
     }
 
@@ -169,6 +235,11 @@ defmodule Backplane.Auth.ResourceAuthPlug do
     |> send_resp(status, Jason.encode!(%{error: message}))
     |> halt()
   end
+
+  defp google_status(503), do: "UNAVAILABLE"
+  defp google_status(403), do: "PERMISSION_DENIED"
+  defp google_status(404), do: "NOT_FOUND"
+  defp google_status(_status), do: "UNAUTHENTICATED"
 
   defp required_scope(conn, %{required_scope: {module, function, args}})
        when is_atom(module) and is_atom(function) and is_list(args),

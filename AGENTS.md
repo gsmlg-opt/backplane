@@ -24,6 +24,8 @@ The public dev endpoint listens on `http://localhost:4220`; the admin dev endpoi
 | `DELETE` | `/mcp` | Public (`dev 4220`) | Legacy MCP session cleanup |
 | `*` | `/v1/*` | Public (`dev 4220`) | LLM proxy (OpenAI-compatible) |
 | `POST` | `/v1/messages` | Public (`dev 4220`) | LLM proxy (Anthropic Messages) |
+| `POST`/`GET`/`DELETE` | `/endpoints/{name}/mcp` | Public (`dev 4220`) | Named endpoint MCP surface, restricted to allowed tool prefixes |
+| `*` | `/endpoints/{name}/v1/*` | Public (`dev 4220`) | Named endpoint LLM surface (`GET /v1`, `/v1/models`, `POST /v1/messages`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`; others 404), restricted to allowed models |
 | `*` | `/skills/*` | Public (`dev 4220`) | Skill library HTTP surface |
 | `*` | `/host-agent/*` | Public (`dev 4220`) | Host-agent HTTP surface |
 | `*` | `/skill-protocol/v1/*` | Public (`dev 4220`) | Authenticated skill protocol API |
@@ -34,6 +36,7 @@ The public dev endpoint listens on `http://localhost:4220`; the admin dev endpoi
 
 - `Backplane.Auth.ResourceAuthPlug` validates OAuth resource access tokens and server-issued `bp2_` DB client bearer tokens. Both are scoped. Configured shared bearer tokens are retired; nonempty legacy credential configuration fails startup.
 - Missing credentials are accepted only when the resource has no enabled OAuth client and no DB clients exist. Inactive and unissued clients still protect the resource. Open access is for local development only; invalid supplied credentials are rejected.
+- Named endpoints (`/endpoints/{name}/mcp` and `/v1/*`) never open access, even with zero clients; unknown, disabled, or feature-disabled endpoints return 404. Each feature is its own OAuth protected resource (RFC 9728 metadata at `/.well-known/oauth-protected-resource/endpoints/{name}/{mcp|v1}`); OAuth tokens are audience-bound to that endpoint feature. `bp2_` tokens are not bound to endpoints but may be restricted per endpoint to selected clients. Endpoint MCP prefixes `admin`, `hub`, `skill`, and `system` are forbidden.
 - The admin endpoint is intentionally a trusted-operator surface without application-level authentication. Restrict it through network/deployment controls; do not treat public API authentication as admin protection.
 
 ### MCP Protocol Compatibility
@@ -169,6 +172,7 @@ PostgreSQL with pgvector. Core tables include:
 - `mcp_upstreams` — DB-managed upstream MCP server definitions
 - `skills` — Skill records (id, name, description, content, tags; tsvector + GIN indexes)
 - `clients` — MCP client access tokens and scopes
+- `endpoints` — Named endpoint definitions (unique immutable slug, enabled MCP/LLM features, allowed MCP prefixes and models, optional client restriction); belongs to `Backplane.Endpoints` in `backplane_system`
 - `llm_providers` — LLM provider definitions (references credential by name)
 - `llm_model_aliases` — Global model alias → provider/model mapping
 - `llm_logs` — Insert-only LLM proxy access records (Observability v2 durable writes)
@@ -210,6 +214,7 @@ Key admin routes (see `apps/backplane_admin/lib/backplane/admin/router.ex`):
 - **MCP Hub** (`/mcp/managed`, `/mcp/upstreams`, `/mcp/inspector`) — Managed day/web/math/skill services, upstream servers, and protocol inspection
 - **LLM Providers** (`/llama/providers`) — Provider CRUD, model aliases, usage panel, health status
 - **Clients** (`/system/clients`) — MCP client token and scope management
+- **Endpoints** (`/system/endpoints`) — Named endpoint CRUD: MCP prefixes, models, and optional client restriction
 - **Dashboard → Usage** — Plan Usage (`/dashboard/usage/plans`) and API Usage (`/dashboard/usage/api`) display provider figures and support refresh
 - **System → Config** (`/system/config`) — Persistent global API information fetching switch
 - **System → Monitor** — Plan Usage (`/system/monitor/plans`) and API Usage (`/system/monitor/api-usage`); API Usage supports add/edit/pause/delete with `/system/monitor/api-usage/new` and `/system/monitor/api-usage/:id/edit` patch routes
