@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) according to OAuth / OpenID connect specifications, changes may break in order to comply with those.
 
+## [Unreleased] - Backplane OAuth
+
+First release as `backplane_oauth`, forked from Boruta 2.3.8. Versions follow
+Backplane releases; entries below this one are the upstream Boruta history.
+
+### Changed
+
+- Modules moved from `Boruta.*` to `Backplane.Oauth.*` (`Boruta.Oauth.*` folded into
+  `Backplane.Oauth.*`); configure with `config :backplane_oauth, Backplane.Oauth`.
+- `Boruta.Application` is now `Backplane.Oauth.Supervisor`, the default token
+  generator `Boruta.TokenGenerator` is now `Backplane.Oauth.SecureToken`, and the
+  JSON Schema error formatter is now `Backplane.Oauth.JsonSchemaErrorFormatter`.
+- Mix tasks are `backplane_oauth.gen.migration` and `backplane_oauth.gen.controllers`.
+- Outbound JWKS and request object fetches use `http_fetch` in place of Finch and
+  Mint, and keep trusted host and authority pinning. Query strings in fetched URLs
+  are now sent; an optional `http_adapter` config selects an `HTTP.Adapter`.
+
+### Removed
+
+- The Finch dependency and its `OpenIDHttpClient` pool.
+- The upstream development `Boruta.Repo` and its `priv/repo` migrations.
+
 ## [2.3.8] - 2026-08-01
 
 ### Fixed

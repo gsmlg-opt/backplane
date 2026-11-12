@@ -7,8 +7,7 @@ defmodule Backplane.Oauth.Supervisor do
 
   def start(_type, _args) do
     children = [
-      Backplane.Oauth.Cache,
-      {Finch, name: OpenIDHttpClient}
+      Backplane.Oauth.Cache
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Backplane.Oauth.Supervisor)

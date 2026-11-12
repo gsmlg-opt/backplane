@@ -50,7 +50,7 @@ defmodule BackplaneOauth.MixProject do
     [
       {:ecto_sql, ">= 3.5.2"},
       {:ex_json_schema, "~> 0.6"},
-      {:finch, "~> 0.16"},
+      {:http_fetch, "~> 1.0.0-rc.15"},
       {:jason, "~> 1.4"},
       {:joken, "~> 2.0"},
       {:jose, "~> 1.11"},
@@ -62,6 +62,7 @@ defmodule BackplaneOauth.MixProject do
       {:puid, "~> 1.0"},
       {:secure_random, "~> 0.5"},
       {:shards, "~> 1.0"},
+      {:http_test, "~> 1.0.0-rc.15", only: :test},
       {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
     ]
   end

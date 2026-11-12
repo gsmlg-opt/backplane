@@ -148,7 +148,7 @@ defmodule Backplane.Oauth.Request.Base do
 
   def fetch_unsigned_request(%{query_params: %{"request_uri" => request_uri}}, client) do
     with %URI{scheme: "" <> scheme} when scheme in ["http", "https"] <- URI.parse(request_uri),
-         {:ok, %Finch.Response{body: request, status: 200}} <-
+         {:ok, %{body: request, status: 200}} <-
            client_get(request_uri, client),
          {:ok, params} <- Joken.peek_claims(request) do
       {:ok, params}
@@ -173,7 +173,7 @@ defmodule Backplane.Oauth.Request.Base do
 
   def fetch_unsigned_request(%{body_params: %{"request_uri" => request_uri}}, client) do
     with %URI{scheme: "" <> _scheme} <- URI.parse(request_uri),
-         {:ok, %Finch.Response{body: request, status: 200}} <-
+         {:ok, %{body: request, status: 200}} <-
            client_get(request_uri, client),
          {:ok, params} <- Joken.peek_claims(request) do
       {:ok, params}

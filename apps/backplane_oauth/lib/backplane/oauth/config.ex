@@ -129,6 +129,14 @@ defmodule Backplane.Oauth.Config do
     end
   end
 
+  @spec http_adapter() :: term() | nil
+  @doc false
+  # Optional `HTTP.Adapter` selection for outbound JWKS and request object
+  # fetches; tests set `http_adapter: {HTTP.Test, name}`.
+  def http_adapter do
+    Keyword.get(oauth_config(), :http_adapter)
+  end
+
   @spec issuer() :: String.t()
   @doc false
   def issuer do

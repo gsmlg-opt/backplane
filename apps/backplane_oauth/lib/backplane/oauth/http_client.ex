@@ -5,12 +5,18 @@ defmodule Backplane.Oauth.HttpClient do
 
   @receive_timeout 15_000
 
+  @type response :: %{
+          status: non_neg_integer(),
+          headers: [{String.t(), String.t()}],
+          body: binary()
+        }
+
   @spec get(
           url :: String.t(),
           trusted_authorities :: String.t(),
           trusted_hosts :: list(String.t())
         ) ::
-          {:ok, Finch.Response.t()} | {:error, term()}
+          {:ok, response()} | {:error, term()}
   def get(url, trusted_authorities \\ "", trusted_hosts \\ []) do
     trusted_hosts = add_issuer_host(trusted_hosts)
 
@@ -57,8 +63,8 @@ defmodule Backplane.Oauth.HttpClient do
   end
 
   defp host_from_url(url) do
-    case Finch.Request.parse_url(url) do
-      {scheme, host, _port, _path, _query} when scheme in [:http, :https] ->
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] ->
         case normalize_host(host) do
           {:ok, normalized_host} -> {:ok, normalized_host}
           :error -> {:error, "Could not parse outbound request host."}
@@ -113,37 +119,62 @@ defmodule Backplane.Oauth.HttpClient do
     end
   end
 
-  @dialyzer {:no_opaque, trusted_get: 3}
   defp trusted_get(url, trusted_hosts, trusted_authorities) do
     with {:ok, url, cacerts} <- get_cacerts(url, trusted_hosts, trusted_authorities),
-         {:https, host, port, path, _query} <- Finch.Request.parse_url(url) do
-      with {:ok, conn} <-
-             Mint.HTTP.connect(:https, host, port,
-               transport_opts: [cacerts: cacerts],
-               protocols: [:http1]
-             ),
-           {:ok, conn, request_ref} <-
-             Mint.HTTP.request(conn, "GET", path, [{"connection", "close"}], nil) do
-        receive_response(conn, request_ref, %{status: nil, headers: [], body: []})
-      else
-        {:error,
-         %Mint.TransportError{
-           reason: {:tls_alert, _}
-         }} ->
-          {:error, "Host certificate is not trusted."}
-
-        {:error, reason} ->
-          {:error, reason}
-
-        response ->
-          response
-      end
+         {:ok, :https} <- url_scheme(url) do
+      fetch(url, cacerts)
     else
-      {:http, _host, _port, _path, _query} ->
-        {:error, "Certificate pinning requires HTTPS."}
+      {:ok, :http} -> {:error, "Certificate pinning requires HTTPS."}
+      {:error, error} -> {:error, error}
+    end
+  end
 
-      {:error, error} ->
-        {:error, error}
+  defp fetch(url, cacerts) do
+    options =
+      put_adapter(
+        [
+          method: "GET",
+          headers: [{"connection", "close"}],
+          redirect: :manual,
+          timeout: @receive_timeout,
+          ssl: [cacerts: cacerts]
+        ],
+        Config.http_adapter()
+      )
+
+    url
+    |> HTTP.fetch(options)
+    |> HTTP.Promise.await(@receive_timeout + 5_000)
+    |> to_response()
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, reason -> {:error, reason}
+  end
+
+  defp put_adapter(options, nil), do: options
+  defp put_adapter(options, adapter), do: Keyword.put(options, :adapter, adapter)
+
+  defp to_response(%HTTP.Response{} = response) do
+    {:ok,
+     %{
+       status: response.status,
+       headers: HTTP.Headers.to_list(response.headers),
+       body: HTTP.Response.read_all(response)
+     }}
+  rescue
+    error in HTTP.ResponseError -> {:error, error.reason}
+  end
+
+  defp to_response({:error, {:tls_alert, _alert}}),
+    do: {:error, "Host certificate is not trusted."}
+
+  defp to_response({:error, reason}), do: {:error, reason}
+
+  defp url_scheme(url) do
+    case URI.parse(url) do
+      %URI{scheme: "https", host: "" <> _host} -> {:ok, :https}
+      %URI{scheme: "http", host: "" <> _host} -> {:ok, :http}
+      _uri -> {:error, "Could not parse outbound request host."}
     end
   end
 
@@ -165,69 +196,5 @@ defmodule Backplane.Oauth.HttpClient do
 
   def get_cacerts(url, _trusted_hosts, trusted_authorities) do
     {:ok, url, trusted_authorities}
-  end
-
-  defp receive_response(conn, request_ref, response) do
-    receive do
-      message ->
-        case Mint.HTTP.stream(conn, message) do
-          {:ok, conn, responses} ->
-            response = collect_responses(responses, request_ref, response)
-
-            if response[:done] do
-              Mint.HTTP.close(conn)
-
-              case response[:error] do
-                nil ->
-                  {:ok,
-                   %Finch.Response{
-                     status: response.status,
-                     headers: response.headers,
-                     body: IO.iodata_to_binary(Enum.reverse(response.body))
-                   }}
-
-                reason ->
-                  {:error, reason}
-              end
-            else
-              receive_response(conn, request_ref, response)
-            end
-
-          {:error, conn, reason, _responses} ->
-            Mint.HTTP.close(conn)
-            {:error, reason}
-
-          :unknown ->
-            receive_response(conn, request_ref, response)
-        end
-    after
-      @receive_timeout ->
-        Mint.HTTP.close(conn)
-        {:error, :timeout}
-    end
-  end
-
-  defp collect_responses(responses, request_ref, response) do
-    Enum.reduce(responses, response, fn
-      {:status, ^request_ref, status}, response ->
-        %{response | status: status}
-
-      {:headers, ^request_ref, headers}, response ->
-        %{response | headers: response.headers ++ headers}
-
-      {:data, ^request_ref, data}, response ->
-        %{response | body: [data | response.body]}
-
-      {:done, ^request_ref}, response ->
-        Map.put(response, :done, true)
-
-      {:error, ^request_ref, reason}, response ->
-        response
-        |> Map.put(:done, true)
-        |> Map.put(:error, reason)
-
-      _response, response ->
-        response
-    end)
   end
 end
