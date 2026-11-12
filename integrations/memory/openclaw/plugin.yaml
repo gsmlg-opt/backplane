@@ -1,5 +1,5 @@
 name: backplane-memory
-version: 1.10.74
+version: 1.10.75
 description: "Backplane memory shared across the user's agents and hosts, via the local Backplane host agent."
 author: "Backplane"
 homepage: "https://github.com/gsmlg-opt/backplane"
