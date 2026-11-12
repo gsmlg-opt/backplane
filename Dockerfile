@@ -39,6 +39,7 @@ COPY apps/backplane_mcp_protocol/mix.exs ./apps/backplane_mcp_protocol/mix.exs
 COPY apps/backplane_memory/mix.exs ./apps/backplane_memory/mix.exs
 COPY apps/backplane_memory_contract/mix.exs ./apps/backplane_memory_contract/mix.exs
 COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
+COPY apps/backplane_oauth/mix.exs ./apps/backplane_oauth/mix.exs
 COPY apps/backplane_plugin_protocol/mix.exs ./apps/backplane_plugin_protocol/mix.exs
 COPY apps/backplane_plugins/mix.exs ./apps/backplane_plugins/mix.exs
 COPY apps/backplane_schema/mix.exs ./apps/backplane_schema/mix.exs
@@ -99,6 +100,7 @@ COPY apps/backplane_mcp_protocol/mix.exs ./apps/backplane_mcp_protocol/mix.exs
 COPY apps/backplane_memory/mix.exs ./apps/backplane_memory/mix.exs
 COPY apps/backplane_memory_contract/mix.exs ./apps/backplane_memory_contract/mix.exs
 COPY apps/backplane_monitor/mix.exs ./apps/backplane_monitor/mix.exs
+COPY apps/backplane_oauth/mix.exs ./apps/backplane_oauth/mix.exs
 COPY apps/backplane_plugin_protocol/mix.exs ./apps/backplane_plugin_protocol/mix.exs
 COPY apps/backplane_plugins/mix.exs ./apps/backplane_plugins/mix.exs
 COPY apps/backplane_schema/mix.exs ./apps/backplane_schema/mix.exs
