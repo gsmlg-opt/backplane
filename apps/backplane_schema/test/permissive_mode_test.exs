@@ -116,6 +116,58 @@ defmodule Backplane.Schema.PermissiveModeTest do
       assert permissive_result == %{name: "John", email: "john@example.com", role: "admin"}
     end
 
+    test "coercions update the existing input key without duplicating fields" do
+      for {schema, data, expected} <- [
+            {%{n: {:coerce, :integer}}, %{"n" => "1", "extra" => true},
+             %{"n" => 1, "extra" => true}},
+            {%{n: {:coerce, :integer}}, %{n: "1", extra: true}, %{n: 1, extra: true}},
+            {%{"n" => {:coerce, :integer}}, %{"n" => "1"}, %{"n" => 1}},
+            {%{n: {:coerce, :integer}}, %{:n => "1", "n" => "untouched"},
+             %{:n => 1, "n" => "untouched"}}
+          ] do
+        assert {:ok, ^expected} = Backplane.Schema.validate(schema, data, mode: :permissive)
+      end
+    end
+
+    test "transforms and defaults retain existing string keys" do
+      schema = %{
+        name: {:string, {:transform, &String.upcase/1}},
+        count: {:integer, {:default, 1}},
+        missing: {:string, {:default, "new"}}
+      }
+
+      assert {:ok, %{:missing => "new", "name" => "JOHN", "count" => 1, "extra" => true}} =
+               Backplane.Schema.validate(
+                 schema,
+                 %{"name" => "john", "count" => nil, "extra" => true},
+                 mode: :permissive
+               )
+    end
+
+    test "nested maps retain string keys even when validation does not change values" do
+      schema = %{u: %{n: :string}}
+      data = %{"u" => %{"n" => "a", "extra" => true}, "x" => 1}
+
+      assert {:ok, ^data} = Backplane.Schema.validate(schema, data, mode: :permissive)
+    end
+
+    test "nested maps and list entries apply conversions under existing string keys" do
+      schema = %{u: %{n: {:coerce, :integer}}, entries: {:list, %{n: {:coerce, :integer}}}}
+
+      data = %{
+        "u" => %{"n" => "1", "extra" => true},
+        "entries" => [%{"n" => "2", "extra" => false}],
+        "x" => 1
+      }
+
+      assert {:ok,
+              %{
+                "u" => %{"n" => 1, "extra" => true},
+                "entries" => [%{"n" => 2, "extra" => false}],
+                "x" => 1
+              }} = Backplane.Schema.validate(schema, data, mode: :permissive)
+    end
+
     test "invalid mode option raises error" do
       schema = %{name: :string}
       data = %{name: "John"}

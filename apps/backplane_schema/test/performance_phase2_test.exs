@@ -36,9 +36,9 @@ defmodule Backplane.Schema.PerformancePhase2Test do
 
     assert {:ok, permissive} = Backplane.Schema.decode(schema, data, mode: :permissive)
     assert permissive["ignored"]
-    assert [%{"ignored" => true} = entry] = permissive[:entries]
+    assert [%{"ignored" => true} = entry] = permissive["entries"]
     assert entry["active"] == false
-    assert entry[:quantity] == 2
+    assert entry["quantity"] == 2
   end
 
   test "strict callbacks receive the unfiltered root and structs keep their fields" do

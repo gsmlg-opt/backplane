@@ -639,7 +639,10 @@ defmodule Backplane.Schema do
           parser
 
         {:ok, value} ->
-          Backplane.Schema.Parser.update_data(parser, key, value)
+          data_key =
+            if opts[:mode] == :permissive, do: existing_data_key(parser.data, key), else: key
+
+          Backplane.Schema.Parser.update_data(parser, data_key, value)
 
         {:error, [_ | _] = nested_errs} ->
           reduce_errors(path, key, nested_errs, parser)
@@ -651,6 +654,13 @@ defmodule Backplane.Schema do
       end
     end)
   end
+
+  defp existing_data_key(data, key) when is_map(data) and not is_struct(data) and is_atom(key) do
+    string_key = Atom.to_string(key)
+    if not Map.has_key?(data, key) and Map.has_key?(data, string_key), do: string_key, else: key
+  end
+
+  defp existing_data_key(_data, key), do: key
 
   defp traverse_schema_strict(
          schema,
