@@ -36,7 +36,7 @@ defmodule Backplane.JsonSchema.Compiler do
       is_valid_types?: 1
     ]
 
-  @default_vocabs_list Dialect.supported_vocabularies()
+  @default_vocabs_list Dialect.default_active_vocabularies()
 
   defp vocab_supported?(supported, uri) when is_list(supported), do: uri in supported
 
