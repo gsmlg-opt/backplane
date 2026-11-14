@@ -217,12 +217,16 @@ defmodule Backplane.JsonSchema.ErrorFormatter do
 
   defp format_path(path) when is_binary(path), do: path
   defp format_path([]), do: "/"
-  defp format_path([single]) when is_binary(single) or is_integer(single), do: "/" <> to_string(single)
+
   defp format_path(path) when is_list(path) do
-    iodata = [?/ | Enum.intersperse(Enum.reverse(path), ?/)]
-    IO.iodata_to_binary(iodata)
+    "/" <> Enum.map_join(Enum.reverse(path), "/", &escape_path_segment/1)
   end
+
   defp format_path(_), do: "/"
+
+  defp escape_path_segment(segment) do
+    segment |> to_string() |> String.replace("~", "~0") |> String.replace("/", "~1")
+  end
 
   defp format_invalid_keyword("$ref", value, %{contrast: "string"}) do
     "Keyword '$ref' must be a string, got: #{inspect(value)}"
