@@ -74,6 +74,7 @@ defmodule Backplane.LLM.Router do
   # Parsing runs after authentication but before the routed access lifecycle.
   # Keep these failures in the same log without duplicating successful requests
   # or the separate audio lifecycle.
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
   # TODO(upstream): gsmlg-dev/gaoxy#28 - observe HTTP failures before Plug once available.
   defp parse_request(conn, opts) do
     protocol =
