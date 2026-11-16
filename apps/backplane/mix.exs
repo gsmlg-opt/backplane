@@ -41,7 +41,7 @@ defmodule Backplane.MixProject do
       {:backplane_data_case, in_umbrella: true, only: :test},
 
       # Job processing
-      {:styx, "~> 0.1.1"},
+      {:styx, "~> 0.2"},
 
       # Timezone data (must start before Styx)
       {:tzdata, "~> 1.1"},

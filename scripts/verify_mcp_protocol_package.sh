@@ -31,8 +31,8 @@ if sys.argv[2] == "source":
     needle = '      {:backplane_schema, "~> 1.10.58"}'
     replacement = '      if(System.get_env("SCHEMA_SOURCE"), do: {:backplane_schema, path: System.fetch_env!("SCHEMA_SOURCE"), override: true}, else: {:backplane_schema, "~> 1.10.58"})'
 else:
-    needle = '[protocol, {:plug, "~> 1.18"}, {:gaoxy_http, "~> 0.15.0"}]'
-    replacement = '[protocol, {:backplane_schema, path: System.fetch_env!("SCHEMA_SOURCE"), override: true}, {:plug, "~> 1.18"}, {:gaoxy_http, "~> 0.15.0"}]'
+    needle = '[protocol, {:plug, "~> 1.18"}, {:gaoxy_http, "~> 0.15"}]'
+    replacement = '[protocol, {:backplane_schema, path: System.fetch_env!("SCHEMA_SOURCE"), override: true}, {:plug, "~> 1.18"}, {:gaoxy_http, "~> 0.15"}]'
 if text.count(needle) != 1:
     raise SystemExit("candidate schema qualification marker is missing or ambiguous")
 path.write_text(text.replace(needle, replacement))

@@ -46,7 +46,7 @@ defmodule Relayixir.MixProject do
 
   defp deps do
     [
-      {:gaoxy_http, "~> 0.15.0"},
+      {:gaoxy_http, "~> 0.15"},
       {:plug, "~> 1.15"},
       {:http_fetch, "~> 1.0.0-rc.15"},
       {:http_web_socket, "~> 1.0.0-rc.15"},

@@ -40,8 +40,8 @@ defmodule BackplaneSystem.MixProject do
       {:pgvector, "~> 0.3"},
       {:phoenix_pubsub, "~> 2.1"},
       {:bcrypt_elixir, "~> 3.0"},
-      {:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, override: true},
-      {:styx, "~> 0.1.1"},
+      {:websock_adapter, "~> 0.15", hex: :gaoxy_websock_adapter, override: true},
+      {:styx, "~> 0.2"},
       {:secrethub_sdk, "~> 1.0.0-rc.32"},
       {:tzdata, "~> 1.1"},
       {:backplane_oauth, in_umbrella: true},
@@ -51,7 +51,7 @@ defmodule BackplaneSystem.MixProject do
       {:toml, "~> 0.7"},
       {:telemetry_poller, "~> 1.1"},
       {:plug, "~> 1.16"},
-      {:gaoxy_http, "~> 0.15.0", only: :test},
+      {:gaoxy_http, "~> 0.15", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]

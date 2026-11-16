@@ -40,7 +40,7 @@ defmodule Backplane.Memory.MixProject do
       {:jason, "~> 1.4"},
       {:postgrex, "~> 0.19"},
       {:phoenix_pubsub, "~> 2.1"},
-      {:styx, "~> 0.1.1"},
+      {:styx, "~> 0.2"},
       {:tzdata, "~> 1.1"}
     ]
   end

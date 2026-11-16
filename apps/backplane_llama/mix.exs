@@ -41,7 +41,7 @@ defmodule BackplaneLlama.MixProject do
       {:phoenix, "~> 1.8"},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},
-      {:styx, "~> 0.1.1"},
+      {:styx, "~> 0.2"},
       {:http_fetch, "~> 1.0.0-rc.15"},
       {:jason, "~> 1.4"},
       {:http_web_socket, "~> 1.0.0-rc.15"},
@@ -49,7 +49,7 @@ defmodule BackplaneLlama.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:mox, "~> 1.1", only: :test},
-      {:gaoxy_http, "~> 0.15.0"}
+      {:gaoxy_http, "~> 0.15"}
     ]
   end
 end

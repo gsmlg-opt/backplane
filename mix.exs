@@ -26,7 +26,7 @@ defmodule Backplane.Umbrella.MixProject do
       {:http_fetch, "~> 1.0.0-rc.5"},
       {:http_web_socket, "~> 1.0.0-rc.5"},
       {:http_event_source, "~> 1.0.0-rc.5"},
-      {:websock_adapter, "~> 0.15.0", hex: :gaoxy_websock_adapter, override: true}
+      {:websock_adapter, "~> 0.15", hex: :gaoxy_websock_adapter, override: true}
     ]
   end
 
