@@ -367,6 +367,9 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert response =~ "HTTP/1.1 200 OK"
     assert response =~ ~S("id":"resp_endpoint_1")
 
+    [_, response_request_id] = Regex.run(~r/x-request-id: ([^\r\n]+)/i, response)
+    assert one_log!().request_id == response_request_id
+
     captured = Agent.get(__MODULE__.Store, & &1)
     assert captured.submissions == 1
     assert captured.body["model"] == "endpoint-model"
@@ -392,6 +395,42 @@ defmodule Backplane.Api.LLMProtocolEndpointIntegrationTest do
     assert observation["protocol_terminal"] == "completed"
     assert observation["bytes_seen"] in 1..8_388_608
     assert length(observation["diagnostics"]) <= 32
+  end
+
+  test "malformed root and named requests retain client and response correlation", %{
+    endpoint_port: port,
+    token: token
+  } do
+    {:ok, _} =
+      Backplane.Endpoints.create(%{
+        name: "logging-regression",
+        llm_enabled: true,
+        models: ["endpoint-provider/endpoint-model"]
+      })
+
+    for path <- ["/v1/responses", "/endpoints/logging-regression/v1/responses"] do
+      response = post_over_socket(token, port, path, ~s({"private-parse-sentinel":invalid}))
+      assert response =~ "HTTP/1.1 400 Bad Request"
+      assert response =~ "invalid_json"
+      [_, request_id] = Regex.run(~r/x-request-id: ([^\r\n]+)/i, response)
+
+      :sys.get_state(:llm_proxy)
+      :ok = LogWriter.flush()
+
+      assert [log] =
+               Backplane.Repo.all(from(l in ProxyRequest, where: l.request_id == ^request_id))
+
+      assert log.status == 400
+      assert log.error_code == "invalid_json"
+      assert log.client_id != nil
+      assert log.requested_model == nil
+      assert log.provider_id == nil
+      refute inspect(log) =~ "private-parse-sentinel"
+      refute inspect(log) =~ token
+    end
+
+    assert submission_count() == 0
+    assert Backplane.Repo.aggregate(ProxyRequest, :count, :id) == 2
   end
 
   test "semantic non-stream JSON over chunked transfer is observed exactly once", %{

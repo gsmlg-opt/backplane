@@ -21,6 +21,170 @@ defmodule Backplane.LLM.AccessObservabilityTest do
 
   @moduletag observability_v2: true
 
+  test "persists a response adapter exception without replaying Responses", %{openai: openai} do
+    context = Context.root()
+    payload = Jason.encode!(%{"model" => openai.model, "input" => "hi", "stream" => true})
+
+    request =
+      conn(:post, "/v1/responses", payload)
+      |> put_req_header("content-type", "application/json")
+      |> Context.put(context)
+
+    {_, state} = request.adapter
+    request = %{request | adapter: {__MODULE__.FailingResponseAdapter, state}}
+
+    error =
+      assert_raise Plug.Conn.WrapperError, fn ->
+        Router.call(request, Router.init([]))
+      end
+
+    assert %Plug.Conn.NotSentError{message: "private-response-exception"} = error.reason
+
+    flush_logs!()
+    assert Agent.get(__MODULE__.SubmissionStore, & &1) == 1
+    assert Backplane.Repo.aggregate(Backplane.LLM.ProxyRequest, :count, :id) == 1
+    log = log_for_request(context.request_id)
+    assert log.status == 500
+    assert log.outcome == "error"
+    assert log.provider_name == "obs-openai"
+    assert log.requested_model == openai.model
+    assert log.error_code == "Plug.Conn.NotSentError"
+    assert log.stream
+    refute inspect(log) =~ "private-response-exception"
+  end
+
+  test "persists JSON parse failures without recording request fragments" do
+    context = Context.root()
+
+    request =
+      conn(:post, "/v1/responses", ~s({"private-prompt-sentinel":invalid}))
+      |> put_req_header("content-type", "application/json")
+      |> Context.put(context)
+
+    logs =
+      ExUnit.CaptureLog.capture_log(fn ->
+        result = Router.call(request, Router.init([]))
+        assert result.status == 400
+        assert Jason.decode!(result.resp_body)["error"]["code"] == "invalid_json"
+      end)
+
+    flush_logs!()
+    assert Backplane.Repo.aggregate(Backplane.LLM.ProxyRequest, :count, :id) == 1
+    log = log_for_request(context.request_id)
+    assert log.status == 400
+    assert log.error_kind == "validation"
+    assert log.error_code == "invalid_json"
+    assert log.provider_id == nil
+    refute inspect(log) =~ "private-prompt-sentinel"
+    refute logs =~ "private-prompt-sentinel"
+  end
+
+  test "persists body timeouts and bad request failures before model resolution" do
+    for {read_failure, status, code} <- [
+          {:timeout, 408, "Plug.TimeoutError"},
+          {:closed, 400, "Plug.BadRequestError"}
+        ] do
+      context = Context.root()
+
+      request =
+        conn(:post, "/v1/responses", "")
+        |> put_req_header("content-type", "application/json")
+        |> Context.put(context)
+
+      {_, state} = request.adapter
+      state = Map.put(state, :read_failure, read_failure)
+      request = %{request | adapter: {__MODULE__.FailingReadAdapter, state}}
+
+      assert catch_error(Router.call(request, Router.init([])))
+      flush_logs!()
+      log = log_for_request(context.request_id)
+      assert log.status == status
+      assert log.error_code == code
+      assert log.provider_id == nil
+    end
+
+    assert Backplane.Repo.aggregate(Backplane.LLM.ProxyRequest, :count, :id) == 2
+  end
+
+  test "persists body size rejection without retaining the partial request" do
+    context = Context.root()
+
+    request =
+      conn(:post, "/v1/responses", "")
+      |> put_req_header("content-type", "application/json")
+      |> Context.put(context)
+
+    {_, state} = request.adapter
+
+    request = %{
+      request
+      | adapter: {__MODULE__.FailingReadAdapter, Map.put(state, :read_failure, :too_large)}
+    }
+
+    result = Router.call(request, [])
+    assert result.status == 413
+    flush_logs!()
+    log = log_for_request(context.request_id)
+    assert log.error_code == "request_too_large"
+    assert log.status == 413
+    refute inspect(log) =~ "private-partial-body"
+  end
+
+  test "records the local Codex Chat Completions rejection", %{openai_provider: provider} do
+    {:ok, _} =
+      Credentials.store_device_token("obs-codex-cred", "openai_oauth", %{
+        "type" => "codex_device_oauth",
+        "access_token" => "fixture-access-token",
+        "refresh_token" => "fixture-refresh-token",
+        "expires_at" => System.system_time(:millisecond) + 3_600_000
+      })
+
+    {:ok, _} =
+      Provider.update(provider, %{preset_key: "openai-codex", credential: "obs-codex-cred"})
+
+    ModelResolver.clear_cache()
+
+    result =
+      llm_request(:post, "/v1/chat/completions", %{
+        "model" => "obs-openai/gpt-obs",
+        "messages" => []
+      })
+
+    assert result.status == 400
+    flush_logs!()
+    assert Backplane.Repo.aggregate(Backplane.LLM.ProxyRequest, :count, :id) == 1
+    assert log_for_request(result).error_code == "codex_requires_responses_api"
+  end
+
+  test "persists non-stream response exceptions for chat, Messages and embeddings", ctx do
+    for {path, model, body} <- [
+          {"/v1/chat/completions", ctx.openai.model, %{"messages" => []}},
+          {"/v1/messages", ctx.anthropic.model, %{"messages" => [], "max_tokens" => 16}},
+          {"/v1/embeddings", "obs-embed/#{ctx.embedding.model.model}", %{"input" => "hi"}}
+        ] do
+      context = Context.root()
+
+      request =
+        conn(:post, path, Jason.encode!(Map.put(body, "model", model)))
+        |> put_req_header("content-type", "application/json")
+        |> Context.put(context)
+
+      {_, state} = request.adapter
+      request = %{request | adapter: {__MODULE__.FailingResponseAdapter, state}}
+
+      error = assert_raise Plug.Conn.WrapperError, fn -> Router.call(request, []) end
+      assert %Plug.Conn.NotSentError{} = error.reason
+      flush_logs!()
+      log = log_for_request(context.request_id)
+      assert log.status == 500
+      assert log.error_code == "Plug.Conn.NotSentError"
+      assert log.requested_model == model
+      refute inspect(log) =~ "private-response-exception"
+    end
+
+    assert Backplane.Repo.aggregate(Backplane.LLM.ProxyRequest, :count, :id) == 3
+  end
+
   setup do
     auth_token = Application.get_env(:backplane, :auth_token)
     auth_tokens = Application.get_env(:backplane, :auth_tokens)
@@ -718,5 +882,25 @@ defmodule Backplane.LLM.AccessObservabilityTest do
     defdelegate get_http_protocol(state), to: Plug.Adapters.Test.Conn
 
     def chunk(_state, _body), do: {:error, :closed}
+  end
+
+  defmodule FailingResponseAdapter do
+    defdelegate read_req_body(state, opts), to: Plug.Adapters.Test.Conn
+
+    def send_resp(_state, _status, _headers, _body),
+      do: raise(Plug.Conn.NotSentError, "private-response-exception")
+
+    def send_chunked(_state, _status, _headers),
+      do: raise(Plug.Conn.NotSentError, "private-response-exception")
+  end
+
+  defmodule FailingReadAdapter do
+    defdelegate send_resp(state, status, headers, body), to: Plug.Adapters.Test.Conn
+
+    def read_req_body(%{read_failure: :too_large} = state, _opts),
+      do: {:more, "private-partial-body", state}
+
+    def read_req_body(state, _opts), do: {:error, state.read_failure}
+    defdelegate get_peer_data(state), to: Plug.Adapters.Test.Conn
   end
 end

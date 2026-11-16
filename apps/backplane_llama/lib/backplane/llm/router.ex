@@ -67,9 +67,63 @@ defmodule Backplane.LLM.Router do
 
   plug(Backplane.LLM.OpenAI.Dispatch)
 
-  plug(Backplane.Audio.RouteParser)
+  plug(:parse_request)
 
   plug(:dispatch)
+
+  # Parsing runs after authentication but before the routed access lifecycle.
+  # Keep these failures in the same log without duplicating successful requests
+  # or the separate audio lifecycle.
+  # TODO(upstream): gsmlg-dev/gaoxy#28 - observe HTTP failures before Plug once available.
+  defp parse_request(conn, opts) do
+    protocol =
+      if conn.request_path == "/v1/embeddings",
+        do: :openai,
+        else: ProtocolRoute.client_protocol(conn.request_path)
+
+    if protocol == :unknown do
+      Backplane.Audio.RouteParser.call(conn, opts)
+    else
+      access = AccessEvent.start(conn, operation_for_path(conn.request_path), protocol)
+
+      AccessEvent.with_failure_logging(access, conn, fn ->
+        parse_conversation(conn, opts, access)
+      end)
+    end
+  end
+
+  defp parse_conversation(conn, opts, access) do
+    Backplane.Audio.RouteParser.call(conn, opts)
+  rescue
+    error in [Plug.Parsers.ParseError, Plug.Parsers.RequestTooLargeError] ->
+      {status, code, message} =
+        case error do
+          %Plug.Parsers.ParseError{} ->
+            {400, "invalid_json", "Malformed request body"}
+
+          %Plug.Parsers.RequestTooLargeError{} ->
+            {413, "request_too_large", "Request body too large"}
+        end
+
+      result =
+        conn
+        |> send_json(status, %{
+          "error" => %{
+            "message" => message,
+            "type" => "invalid_request_error",
+            "code" => code
+          }
+        })
+        |> halt()
+
+      AccessEvent.finalize(access, result, :error,
+        error_kind: :validation,
+        error_code: code,
+        error_reason: code
+      )
+
+      result
+  end
 
   # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -606,7 +660,15 @@ defmodule Backplane.LLM.Router do
             conn
 
           {:error, :codex_requires_responses_api} ->
-            send_codex_rejection(conn)
+            conn = send_codex_rejection(conn)
+
+            finalize_access(access, conn, :error,
+              error_kind: :validation,
+              error_code: "codex_requires_responses_api",
+              error_reason: :codex_requires_responses_api
+            )
+
+            conn
 
           {:error, {:unsupported_translation, requested_protocol, native_protocols}} ->
             conn =
@@ -958,19 +1020,21 @@ defmodule Backplane.LLM.Router do
 
     conn = strip_client_authentication(conn)
 
-    result_conn =
-      if client_protocol == :openai_responses do
-        Backplane.LLM.ResponsesLifecycle.create(conn, upstream, provider, provider_api, opts)
-      else
-        HttpPlug.call(conn, upstream, opts)
-      end
+    AccessEvent.with_failure_logging(access, conn, fn ->
+      result_conn =
+        if client_protocol == :openai_responses do
+          Backplane.LLM.ResponsesLifecycle.create(conn, upstream, provider, provider_api, opts)
+        else
+          HttpPlug.call(conn, upstream, opts)
+        end
 
-    finalize_access(access, result_conn, outcome_for_conn(result_conn),
-      api_surface: api_type,
-      status: result_conn.status
-    )
+      finalize_access(access, result_conn, outcome_for_conn(result_conn),
+        api_surface: api_type,
+        status: result_conn.status
+      )
 
-    result_conn
+      result_conn
+    end)
   end
 
   defp do_host_proxy(
@@ -1016,21 +1080,23 @@ defmodule Backplane.LLM.Router do
         end
       end)
 
-    result_conn =
-      Backplane.LLM.HostProxy.call(
-        strip_client_authentication(conn),
-        provider.host_service_id,
-        protocol,
-        headers,
-        opts
+    AccessEvent.with_failure_logging(access, conn, fn ->
+      result_conn =
+        Backplane.LLM.HostProxy.call(
+          strip_client_authentication(conn),
+          provider.host_service_id,
+          protocol,
+          headers,
+          opts
+        )
+
+      finalize_access(access, result_conn, outcome_for_conn(result_conn),
+        api_surface: api_type(protocol),
+        status: result_conn.status
       )
 
-    finalize_access(access, result_conn, outcome_for_conn(result_conn),
-      api_surface: api_type(protocol),
-      status: result_conn.status
-    )
-
-    result_conn
+      result_conn
+    end)
   end
 
   defp response_model_mapping(opts, _client_protocol, model, model, _stream?), do: opts
@@ -1066,14 +1132,16 @@ defmodule Backplane.LLM.Router do
 
     conn = strip_client_authentication(conn)
 
-    result_conn = HttpPlug.call(conn, upstream, body: rewritten_body)
+    AccessEvent.with_failure_logging(access, conn, fn ->
+      result_conn = HttpPlug.call(conn, upstream, body: rewritten_body)
 
-    finalize_access(access, result_conn, outcome_for_status(result_conn.status),
-      api_surface: :openai,
-      status: result_conn.status
-    )
+      finalize_access(access, result_conn, outcome_for_status(result_conn.status),
+        api_surface: :openai,
+        status: result_conn.status
+      )
 
-    result_conn
+      result_conn
+    end)
   end
 
   defp is_stream_request?(body) when is_binary(body) do
@@ -1342,8 +1410,8 @@ defmodule Backplane.LLM.Router do
   def call(conn, opts) do
     super(conn, opts)
   rescue
-    e in Plug.Parsers.ParseError ->
-      Logger.warning("LLM Router: malformed request body: #{Exception.message(e)}")
+    _e in Plug.Parsers.ParseError ->
+      Logger.warning("LLM Router: malformed request body")
 
       send_resp(
         conn,
@@ -1357,8 +1425,8 @@ defmodule Backplane.LLM.Router do
         })
       )
 
-    e in Plug.Parsers.RequestTooLargeError ->
-      Logger.warning("LLM Router: request body too large: #{Exception.message(e)}")
+    _e in Plug.Parsers.RequestTooLargeError ->
+      Logger.warning("LLM Router: request body too large")
 
       send_resp(
         conn,

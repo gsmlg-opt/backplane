@@ -310,6 +310,86 @@ defmodule Backplane.LLM.AccessEvent do
 
   def scan_stream_chunk(%__MODULE__{} = state, _chunk), do: state
 
+  @not_sent_error_reasons %{
+    ":system_memory_pressure" => "system_memory_pressure",
+    ":safety_sample_unavailable" => "safety_sample_unavailable",
+    ":memory_hard_limit" => "memory_hard_limit",
+    ":timeout" => "timeout",
+    ":closed" => "closed",
+    ":invalid_response_headers" => "invalid_response_headers",
+    ":buffer_limit" => "buffer_limit"
+  }
+
+  @doc "Logs escaped proxy failures while preserving their original kind, reason and stack."
+  @spec with_failure_logging(t(), Plug.Conn.t(), (-> result)) :: result when result: var
+  def with_failure_logging(%__MODULE__{} = state, %Plug.Conn{} = conn, fun)
+      when is_function(fun, 0) do
+    fun.()
+  catch
+    kind, reason ->
+      stack = __STACKTRACE__
+
+      try do
+        {failure_conn, opts} = failure_observation(conn, kind, reason)
+        finalize(state, failure_conn, :error, opts)
+      after
+        :erlang.raise(kind, reason, stack)
+      end
+  end
+
+  defp failure_observation(_conn, :error, %Plug.Conn.WrapperError{
+         conn: %Plug.Conn{} = conn,
+         kind: kind,
+         reason: reason
+       }) do
+    failure_observation(conn, kind, reason)
+  end
+
+  defp failure_observation(conn, :error, %{__exception__: true, __struct__: module} = exception)
+       when is_atom(module) do
+    status = Plug.Exception.status(exception)
+
+    {conn,
+     [
+       status: failure_status(conn, status),
+       error_kind: failure_error_kind(status),
+       error_code: inspect(module),
+       error_reason: failure_error_reason(exception)
+     ]}
+  end
+
+  defp failure_observation(conn, kind, _reason) do
+    code =
+      case kind do
+        :exit -> "proxy_exit"
+        :throw -> "proxy_throw"
+        :error -> "proxy_error"
+      end
+
+    {conn,
+     [
+       status: failure_status(conn, 500),
+       error_kind: "internal",
+       error_code: code,
+       error_reason: code
+     ]}
+  end
+
+  defp failure_status(%Plug.Conn{state: state, status: status}, _fallback)
+       when state in [:sent, :chunked, :file] and is_integer(status),
+       do: status
+
+  defp failure_status(_conn, fallback), do: fallback
+
+  defp failure_error_reason(%Plug.Conn.NotSentError{message: message}),
+    do: Map.get(@not_sent_error_reasons, message, "proxy_exception")
+
+  defp failure_error_reason(_exception), do: "proxy_exception"
+
+  defp failure_error_kind(408), do: "timeout"
+  defp failure_error_kind(status) when status in 400..499, do: "validation"
+  defp failure_error_kind(_status), do: "internal"
+
   @doc "Finalizes a terminal proxy outcome and emits observability events."
   @spec finalize(t(), Plug.Conn.t(), atom(), keyword()) :: :ok
   def finalize(%__MODULE__{} = state, %Plug.Conn{} = conn, outcome, opts \\ []) do
