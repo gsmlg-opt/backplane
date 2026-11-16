@@ -30,7 +30,8 @@ defmodule Backplane.Observability.ContextPlug do
   end
 
   defp request_id(conn) do
-    conn.assigns[:request_id] ||
+    List.first(Plug.Conn.get_resp_header(conn, "x-request-id")) ||
+      conn.assigns[:request_id] ||
       conn |> Plug.Conn.get_req_header("x-request-id") |> List.first() ||
       Backplane.Observability.Id.request_id()
   end
