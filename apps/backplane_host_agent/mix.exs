@@ -43,8 +43,7 @@ defmodule Backplane.HostAgent.MixProject do
       {:backplane_memory, in_umbrella: true, only: [:dev, :test], runtime: false},
       {:day_ex, in_umbrella: true},
       {:math_ex, in_umbrella: true},
-      # TODO(upstream): gsmlg-dev/concord#122 - adopt the fix for native FTS compilation on stable Rust.
-      {:ex_turso, "~> 3.0"}
+      {:ex_turso, "~> 3.1.18"}
     ]
   end
 end
