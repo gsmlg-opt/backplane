@@ -1,7 +1,7 @@
 defmodule Backplane.McpProtocol.MixProject do
   use Mix.Project
 
-  @version "1.10.77"
+  @version "1.10.78"
   @source_url "https://github.com/gsmlg-opt/backplane/tree/main/apps/backplane_mcp_protocol"
 
   def project do
