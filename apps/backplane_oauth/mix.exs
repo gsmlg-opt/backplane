@@ -59,7 +59,6 @@ defmodule BackplaneOauth.MixProject do
       {:phoenix, "~> 1.0"},
       {:plug, "~> 1.0"},
       {:postgrex, ">= 0.0.0"},
-      {:puid, "~> 1.0"},
       {:secure_random, "~> 0.5"},
       {:shards, "~> 1.0"},
       {:http_test, "~> 1.0.0-rc.15", only: :test},
