@@ -1,10 +1,10 @@
 defmodule Backplane.Admin.Components.LocalTime do
   use Phoenix.Component
 
-  attr :id, :string, default: nil
-  attr :datetime, :any, required: true
-  attr :format, :string, default: nil
-  attr :class, :string, default: nil
+  attr(:id, :string, default: nil)
+  attr(:datetime, :any, required: true)
+  attr(:format, :string, default: nil)
+  attr(:class, :string, default: nil)
 
   def local_time(assigns) do
     if is_nil(assigns.datetime) or assigns.datetime == "" do
@@ -12,11 +12,14 @@ defmodule Backplane.Admin.Components.LocalTime do
       {fallback_text(@datetime, @format)}
       """
     else
-      id = assigns[:id] || "lt-#{to_iso8601(assigns.datetime) |> String.replace(~r/[^a-zA-Z0-9]/, "-")}"
+      id =
+        assigns[:id] ||
+          "lt-#{to_iso8601(assigns.datetime) |> String.replace(~r/[^a-zA-Z0-9]/, "-")}"
+
       assigns = assign(assigns, :id, id)
 
       ~H"""
-      <local-time id={@id} datetime={to_iso8601(@datetime)} format={@format} class={@class} phx-update="ignore">
+      <local-time id={@id} datetime={to_iso8601(@datetime)} format={@format} data-datetime={to_iso8601(@datetime)} data-format={@format || ""} class={@class} phx-update="ignore">
         {fallback_text(@datetime, @format)}
       </local-time>
       """

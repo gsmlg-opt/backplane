@@ -105,7 +105,7 @@ const ReplayKeyboard = {
 
 class LocalTime extends HTMLElement {
   static get observedAttributes() {
-    return ["datetime", "format"]
+    return ["datetime", "format", "data-datetime", "data-format"]
   }
 
   connectedCallback() {
@@ -117,7 +117,12 @@ class LocalTime extends HTMLElement {
   }
 
   render() {
-    const datetime = this.getAttribute("datetime")
+    // LiveView updates data attributes on ignored nodes; native attributes and
+    // localized text remain owned by this element.
+    const datetime = this.dataset.datetime ?? this.getAttribute("datetime")
+    if (datetime && this.getAttribute("datetime") !== datetime) {
+      this.setAttribute("datetime", datetime)
+    }
     if (!datetime) {
       this.textContent = ""
       return
@@ -130,7 +135,7 @@ class LocalTime extends HTMLElement {
         return
       }
 
-      const format = this.getAttribute("format")
+      const format = this.dataset.format ?? this.getAttribute("format")
       if (format === "time") {
         this.textContent = date.toLocaleTimeString(undefined, {
           hour: "2-digit",

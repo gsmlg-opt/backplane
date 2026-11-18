@@ -76,6 +76,38 @@ defmodule Backplane.Admin.DashboardApiUsageLiveTest do
     refute html =~ @secret
   end
 
+  test "refresh updates timestamps on an already mounted dashboard", %{
+    conn: conn,
+    credential: credential
+  } do
+    account = create_account(credential, "openrouter")
+    :ok = ApiAccounts.refresh_account(account.id)
+    first = await_state(account.id, &(&1.last_success_at != nil and not &1.refreshing))
+    {:ok, view, _html} = live(conn, @path)
+    selector = "#api-account-#{account.id}-success"
+
+    assert has_element?(
+             view,
+             selector <> "[datetime='#{DateTime.to_iso8601(first.last_success_at)}']"
+           )
+
+    view |> element("#refresh-api-account-#{account.id}") |> render_click()
+
+    second =
+      await_state(
+        account.id,
+        &(&1.last_success_at != first.last_success_at and not &1.refreshing)
+      )
+
+    send(view.pid, :reload_states)
+
+    # Ignored custom elements receive data attributes; the browser synchronizes datetime/text.
+    assert has_element?(
+             view,
+             selector <> "[data-datetime='#{DateTime.to_iso8601(second.last_success_at)}']"
+           )
+  end
+
   test "OpenAI displays organization spending, token units, and pending balance support",
        %{conn: conn, credential: credential} do
     HTTP.Test.stub(OpenAI, fn request ->
