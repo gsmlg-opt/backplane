@@ -5407,7 +5407,7 @@ msgstr ""
 #: lib/backplane/admin/live/provider_show_live.ex:1464
 #: lib/backplane/admin/live/provider_show_live.ex:1464
 #, elixir-autogen, elixir-format
-msgid "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering. WebSocket token usage is not yet included in gateway usage totals."
+msgid "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering."
 msgstr ""
 
 #: lib/backplane/admin/live/dashboard_api_usage_live.ex:283

@@ -68,6 +68,7 @@ config :backplane_api, Backplane.Api.Endpoint,
     limits: %{max_bytes: 268_435_456},
     http_limits: %{
       request_timeout: 600_000,
+      read_timeout: 120_000,
       max_body_bytes: 50_000_000,
       max_buffer_bytes: 65_536
     }

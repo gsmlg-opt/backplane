@@ -8,6 +8,9 @@
   pkgs-stable = import inputs.nixpkgs-stable {system = pkgs.stdenv.system;};
   hostAgentConfig = "${config.devenv.state}/host-agent/host_agent.yaml";
 in {
+  # Native NIFs must use the same libc as the stable BEAM runtime.
+  stdenv = pkgs-stable.stdenv;
+
   env.GREET = "Backplane";
   # Disable the Erlang break menu so Ctrl+C stops service-like Mix tasks
   # such as `mix agent.run` instead of leaving the BEAM at a BREAK prompt.
@@ -32,6 +35,8 @@ in {
     ]
     ++ lib.optionals stdenv.isLinux [
       inotify-tools
+      # ex_turso builds vendored OpenSSL on Linux.
+      perl
     ];
 
   languages.elixir.enable = true;
@@ -85,7 +90,7 @@ in {
         ${pkgs.curl}/bin/curl --fail --silent --output /dev/null \
           --header 'content-type: application/json' \
           --data '{"limit":1}' \
-          http://127.0.0.1:4222/memory/devenv/call/list
+          http://127.0.0.1:4222/memory/devenv/call/recent
       '';
       period = 1;
       probe_timeout = 5;

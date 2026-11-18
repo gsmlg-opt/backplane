@@ -307,7 +307,7 @@ defmodule Backplane.Admin.ProvidersLiveTest do
 
       assert has_element?(
                view,
-               "#provider-base-url[value='https://cloudcode-pa.googleapis.com']"
+               "#provider-base-url[value='https://daily-cloudcode-pa.googleapis.com']"
              )
 
       refute has_element?(view, "#provider-google-antigravity-enabled")
@@ -512,6 +512,11 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       {:ok, view, _} = live(conn, "/llama/llm/new")
       assert has_element?(view, "#llm-antigravity-project-id")
 
+      assert has_element?(
+               view,
+               "#llm-antigravity-user-agent[value='antigravity/cli/1.5.11 (aidev_client; os_type=linux; arch=amd64)']"
+             )
+
       for {project, version} <- [{"project-one", "1.0"}, {"project-two", "2.0"}] do
         render_submit(view, "save", %{
           "llm" => %{
@@ -595,6 +600,95 @@ defmodule Backplane.Admin.ProvidersLiveTest do
       assert html =~ "Quota:"
       assert html =~ "Unavailable"
       refute html =~ "Quota: 0"
+    end
+
+    test "groups Antigravity Argon and Hydrogen variants consistently across initial and repeated discovery",
+         %{conn: conn} do
+      {:ok, provider} =
+        Provider.create(%{
+          name: "antigravity-grouping-test",
+          preset_key: "google-antigravity",
+          credential: "google-antigravity"
+        })
+
+      {:ok, api} =
+        ProviderApi.create(%{
+          provider_id: provider.id,
+          api_surface: :antigravity,
+          base_url: "https://daily-cloudcode-pa.googleapis.com"
+        })
+
+      for {model_id, display_name, metadata} <- [
+            {"gemini-4-argon-medium", "Gemini 4 Argon (Medium)",
+             %{
+               "displayName" => "Gemini 4 Argon (Medium)",
+               "recommended" => true,
+               "tagTitle" => "New",
+               "provenance" => "antigravity_fetch_available_models",
+               "slug" => "gemini-4-argon-medium"
+             }},
+            {"gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)",
+             %{
+               "displayName" => "Gemini 4 Hydrogen (XHigh)",
+               "recommended" => true,
+               "tagTitle" => "New",
+               "provenance" => "antigravity_fetch_available_models",
+               "slug" => "gemini-4-hydrogen-xhigh"
+             }},
+            {"gemini-4-hydrogen-tiered-xhigh", "Gemini 4 Hydrogen (XHigh)",
+             %{
+               "displayName" => "Gemini 4 Hydrogen (XHigh)",
+               "recommended" => true,
+               "provenance" => "antigravity_fetch_available_models",
+               "slug" => "gemini-4-hydrogen-tiered-xhigh"
+             }},
+            {"gemini-3.1-flash-image", "Gemini 3.1 Flash Image",
+             %{
+               "displayName" => "Gemini 3.1 Flash Image",
+               "provenance" => "antigravity_fetch_available_models",
+               "slug" => "gemini-3.1-flash-image"
+             }},
+            {"gemini-4-carbon-disabled", "Gemini 4 Carbon",
+             %{
+               "displayName" => "Gemini 4 Carbon",
+               "recommended" => true,
+               "tagTitle" => "Unavailable",
+               "provenance" => "antigravity_fetch_available_models",
+               "slug" => "gemini-4-carbon-disabled"
+             }},
+            {"chat_20706", "chat_20706",
+             %{
+               "provenance" => "antigravity_fetch_available_models",
+               "slug" => "chat_20706"
+             }}
+          ] do
+        {:ok, model} =
+          ProviderModel.create(%{
+            provider_id: provider.id,
+            model: model_id,
+            display_name: display_name,
+            source: :discovered,
+            metadata: metadata
+          })
+
+        {:ok, _surface} =
+          ProviderModelSurface.create(%{
+            provider_model_id: model.id,
+            provider_api_id: api.id,
+            metadata: metadata
+          })
+      end
+
+      {:ok, _view, html} = live(conn, "/llama/llm/#{provider.id}/models")
+
+      assert html =~ "Gemini 4 Argon"
+      assert html =~ "gemini-4-argon-medium"
+      assert html =~ "Gemini 4 Hydrogen"
+      assert html =~ "gemini-4-hydrogen-xhigh"
+      assert html =~ "gemini-4-hydrogen-tiered-xhigh"
+      assert html =~ "gemini-3.1-flash-image"
+      refute html =~ "gemini-4-carbon-disabled"
+      refute html =~ "chat_20706"
     end
 
     test "openai codex preset rejects non openai oauth credentials", %{conn: conn} do

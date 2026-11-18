@@ -383,14 +383,16 @@ defmodule Backplane.LLM.ProviderPreset do
       default_credential: "google-antigravity",
       credential_kind: "llm",
       credential_auth_type: "google_oauth",
-      default_base_url: "https://cloudcode-pa.googleapis.com",
+      default_base_url: "https://daily-cloudcode-pa.googleapis.com",
       surfaces: %{
         antigravity: %{
           enabled: true,
-          base_url: "https://cloudcode-pa.googleapis.com",
+          base_url: "https://daily-cloudcode-pa.googleapis.com",
           discovery_path: "/v1internal:fetchAvailableModels",
           native_protocols: [:google_antigravity],
-          backend_config: %{}
+          backend_config: %{
+            "user_agent" => "antigravity/cli/1.5.11 (aidev_client; os_type=linux; arch=amd64)"
+          }
         }
       },
       notes: "Google Antigravity subscription API using its native Cloud Code protocol.",

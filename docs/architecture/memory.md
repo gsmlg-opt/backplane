@@ -187,6 +187,41 @@ default. For Cursor `beforeSubmitPrompt` it prints `{"continue":true}`. Cursor
 events are normalized host-side (`conversation_id`, `workspace_roots`,
 camelCase event names).
 
+**Synapsis lifecycle contract.** The host accepts
+`POST /capture/v1/hooks/synapsis/<hook>` for `session-start`,
+`user-prompt-submit`, `post-tool-use`, and `session-end`.
+`Backplane.HostAgent.Memory.Hooks.inventory("synapsis")` advertises these four
+hooks. Each request supplies `schema_version: "1.0"`, a stable `event_id` UUID,
+a durable `session_id` UUID, an absolute trusted project root in `cwd`, a UTC
+ISO 8601 `timestamp`, a `payload` object, and optional configured `agent_id`.
+The host stamps its configured host identity and keeps the source fields as
+provenance. The hook payloads are defined below.
+
+| Hook | Payload fields | Canonical event |
+| --- | --- | --- |
+| `session-start` | empty object | `agent.session.started` |
+| `user-prompt-submit` | `message_id`, `content` | `agent.prompt.submitted` |
+| `post-tool-use` | `tool_call_id`, `tool_name`, boolean `is_error`, public JSON/text `result` | `agent.tool.completed` |
+| `session-end` | `reason` | `agent.session.ended` |
+
+Prompt content is limited to 262,144 UTF-8 bytes. The complete JSON request is
+limited to 480,000 bytes. Supply public content only. Session lifecycle events
+use session/hook identity, prompts use their accepted message ID, and tool
+completions use their tool call ID. Preserve the event UUID and complete request
+for a repeated logical event. The existing durable spool assigns ordered session
+sequences and retains delivery receipts for up to 30 days, bounded to 100,000
+receipts. Repeated captures within that receipt window return `duplicate`,
+including after upload and host restart. Reuse of an identity with changed
+content returns an identity collision. `timestamp` becomes `occurred_at`, and
+the spool's `enqueued_at` records local receipt time.
+
+Synapsis owns asynchronous client delivery with a timeout of at most two seconds.
+Capture failure must leave session execution independent, and ambiguous outcomes
+must avoid retries. `session-end` describes normal session shutdown. Abrupt
+process or host loss has no guaranteed end event. A released host adapter permits
+client integration. Verification of a real Synapsis session producing canonical
+Backplane captures belongs to the downstream integration acceptance.
+
 **Instruction source.** `shared/INSTRUCTIONS.md` is the single resident
 instruction (after finishing work, call `memory::remember` if something is worth
 keeping; no blocking Stop hook). It is shipped in each package's skill, served

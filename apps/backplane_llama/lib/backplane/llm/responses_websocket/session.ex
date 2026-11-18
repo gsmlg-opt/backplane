@@ -12,7 +12,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
 
   use GenServer, restart: :temporary
 
-  alias Backplane.LLM.ResponsesWebSocket.Policy
+  alias Backplane.HTTPClient.Proxy
+  alias Backplane.LLM.ResponsesWebSocket.{Policy, ResponseAccess}
   alias HTTP.{ClientCompletion, WebSocket}
   alias HTTP.WebSocket.Event
 
@@ -39,9 +40,19 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
   def init(opts) do
     Process.flag(:trap_exit, true)
     owner = Keyword.fetch!(opts, :owner)
+    url = Keyword.fetch!(opts, :url)
+    uri = URI.parse(url)
+
+    proxy_scheme =
+      case uri.scheme do
+        "ws" -> "http"
+        "wss" -> "https"
+        scheme -> scheme
+      end
 
     options = [
       headers: Keyword.fetch!(opts, :headers),
+      proxy: Proxy.from_env(%{uri | scheme: proxy_scheme}),
       mode: :browser,
       delivery: :ack,
       http_version: :http1,
@@ -60,7 +71,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
       telemetry_url: nil
     ]
 
-    case WebSocket.new(Keyword.fetch!(opts, :url), Keyword.get(opts, :protocols, []), options) do
+    case WebSocket.new(url, Keyword.get(opts, :protocols, []), options) do
       %WebSocket{} = socket ->
         timer = Process.send_after(self(), :opening_expired, @opening_timeout + 100)
 
@@ -71,6 +82,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
            owner_monitor: Process.monitor(owner),
            socket_monitor: Process.monitor(socket.pid),
            policy: Keyword.fetch!(opts, :policy),
+           response_access:
+             ResponseAccess.new(Keyword.get(opts, :access), Keyword.get(opts, :remote_ip)),
            opening_timer: timer,
            attach_timer: nil,
            opening: :pending,
@@ -187,7 +200,12 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
         %{socket: socket, pending: nil} = state
       )
       when is_binary(bytes) and byte_size(bytes) <= @message_limit do
-    state = %{state | pending: {bytes, ref}}
+    state = %{
+      state
+      | pending: {bytes, ref},
+        response_access: ResponseAccess.observe(state.response_access, bytes)
+    }
+
     state = if state.attached, do: deliver(state), else: state
     {:noreply, state}
   end

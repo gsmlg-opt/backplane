@@ -59,6 +59,10 @@ defmodule Backplane.LLM.Antigravity.ModelDiscoveryTest do
 
       assert HTTP.Headers.get_all(request.headers, "x-client-version") == ["1.0"]
 
+      assert HTTP.Headers.get_all(request.headers, "user-agent") == [
+               "antigravity/cli/1.5.11 (aidev_client; os_type=linux; arch=amd64)"
+             ]
+
       assert Formata.JSON.decode!(IO.iodata_to_binary(request.body)) == %{
                "project" => "managed-project"
              }

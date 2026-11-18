@@ -63,6 +63,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     end
 
     @impl true
+    def handle_info({:event, event}, state), do: {:push, {:text, event}, state}
     def handle_info(:disconnect, state), do: {:stop, :normal, {1011, "peer finished"}, state}
     def handle_info(_message, state), do: {:ok, state}
 
@@ -168,6 +169,103 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert connections() == 0
   end
 
+  test "reports WebSocket handshakes as a separate Responses protocol", ctx do
+    capture_ws_access()
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+
+    assert_receive {:ws_access,
+                    %{
+                      "operation" => "responses.websocket.handshake",
+                      "api_surface" => "openai_responses_ws",
+                      "http_method" => "GET",
+                      "status" => 101,
+                      "outcome" => "success",
+                      "provider_name" => "ws-provider",
+                      "requested_model" => "ws-provider/model",
+                      "stream" => "true"
+                    } = record},
+                   5_000
+
+    refute Map.has_key?(record, "input_tokens")
+    refute Map.has_key?(record, "output_tokens")
+    cleanup(socket)
+
+    Agent.update(__MODULE__.Store, &%{&1 | reject: true})
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Error{}}, 5_000
+
+    assert_receive {:ws_access,
+                    %{
+                      "api_surface" => "openai_responses_ws",
+                      "status" => 429,
+                      "outcome" => "error"
+                    }}
+
+    cleanup(socket)
+  end
+
+  test "records terminal usage once per response on a shared WebSocket", ctx do
+    capture_ws_access()
+    socket = connect(ctx)
+    assert_receive {WebSocket, ^socket, %Event.Open{}}, 5_000
+    assert_receive {:ws_access, %{"operation" => "responses.websocket.handshake"}}
+    assert_receive {:upstream_open, peer}, 2_000
+
+    for lane <- ~w(a b c d) do
+      create = %{"type" => "response.create", "model" => "model", "stream_id" => lane}
+      :ok = WebSocket.send(socket, Jason.encode!(create))
+      assert_receive {:upstream_create, ^peer, ^create}, 2_000
+      assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+      push_response(peer, socket, "response.created", lane, %{})
+    end
+
+    usage = %{
+      "input_tokens" => 21,
+      "output_tokens" => 5,
+      "total_tokens" => 26,
+      "input_tokens_details" => %{"cached_tokens" => 12},
+      "output_tokens_details" => %{"reasoning_tokens" => 2}
+    }
+
+    push_response(peer, socket, "response.incomplete", "b", %{"usage" => usage})
+
+    assert_receive {:ws_access,
+                    %{
+                      "api_surface" => "openai_responses_ws",
+                      "operation" => "responses.websocket.create",
+                      "provider_request_id" => "resp_b",
+                      "outcome" => "error",
+                      "input_tokens" => 21,
+                      "output_tokens" => 5,
+                      "total_tokens" => 26,
+                      "cached_tokens" => 12,
+                      "reasoning_tokens" => 2
+                    }}
+
+    push_response(peer, socket, "response.incomplete", "b", %{"usage" => usage})
+
+    push_response(peer, socket, "response.completed", "a", %{
+      "usage" => %{"input_tokens" => 3, "output_tokens" => 0}
+    })
+
+    assert_receive {:ws_access,
+                    %{
+                      "provider_request_id" => "resp_a",
+                      "outcome" => "success",
+                      "input_tokens" => 3,
+                      "output_tokens" => 0,
+                      "total_tokens" => 3
+                    }}
+
+    push_response(peer, socket, "response.failed", "c", %{})
+    assert_receive {:ws_access, %{"provider_request_id" => "resp_c", "outcome" => "error"} = log}
+    refute Map.has_key?(log, "input_tokens")
+    refute Map.has_key?(log, "output_tokens")
+    cleanup(socket)
+    refute_received {:ws_access, _}
+  end
+
   test "routes native turns and preserves session headers, provider defaults and raw events",
        ctx do
     socket =
@@ -227,7 +325,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert connections() == 1
   end
 
-  test "Codex OAuth injects account credentials and honors API originator defaults", ctx do
+  test "Codex OAuth injects account credentials and accepts CLI WebSocket creates", ctx do
     {:ok, _} =
       Credentials.store_device_token(
         "ws-provider-key",
@@ -282,6 +380,19 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert {"originator", "api-originator"} in headers
     assert Enum.count(headers, fn {name, _} -> name == "authorization" end) == 1
     assert Enum.count(headers, fn {name, _} -> name == "originator" end) == 1
+    assert_receive {:upstream_open, peer}, 2_000
+
+    for fields <- [%{"generate" => false}, %{"previous_response_id" => "resp_previous"}] do
+      create = Map.merge(fields, %{"type" => "response.create", "model" => "model"})
+      :ok = WebSocket.send(socket, Jason.encode!(Map.put(create, "stream", true)))
+      assert_receive {:upstream_create, ^peer, ^create}, 2_000
+      assert_receive {WebSocket, ^socket, %Event.Message{}}, 2_000
+    end
+
+    create = %{"type" => "response.create", "model" => "model", "stream" => false}
+    :ok = WebSocket.send(socket, Jason.encode!(create))
+    assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
+    refute_receive {:upstream_create, ^peer, _}, 100
     cleanup(socket)
   end
 
@@ -358,6 +469,7 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     for attrs <- [
           %{"type" => "response.create", "model" => "other/model"},
           %{"type" => "response.cancel", "model" => "model"},
+          %{"type" => "response.create", "model" => "model", "stream" => true},
           %{"type" => "response.create", "model" => "model", "background" => true}
         ] do
       socket = connect(ctx)
@@ -440,6 +552,53 @@ defmodule Backplane.Api.ResponsesWebSocketEndpointTest do
     assert_receive {WebSocket, ^socket, %Event.Close{code: 1008}}, 5_000
     refute_receive {:upstream_create, ^peer, _}, 100
     cleanup(socket)
+  end
+
+  def capture_access(_event, _measurements, %{attributes: attributes}, owner),
+    do: send(owner, {:ws_access, attributes})
+
+  defp capture_ws_access do
+    app = :backplane_telemetry
+
+    flags = [
+      observability_v2_enabled: true,
+      observability_v2_llm_write: true,
+      observability_v2_test_disabled: false
+    ]
+
+    original = Map.new(flags, fn {key, _} -> {key, Application.fetch_env(app, key)} end)
+    Enum.each(flags, fn {key, value} -> Application.put_env(app, key, value) end)
+
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:backplane, :llm_proxy, :request, :stop],
+        &__MODULE__.capture_access/4,
+        self()
+      )
+
+    on_exit(fn ->
+      :telemetry.detach(handler)
+
+      Enum.each(original, fn
+        {key, {:ok, value}} -> Application.put_env(app, key, value)
+        {key, :error} -> Application.delete_env(app, key)
+      end)
+    end)
+  end
+
+  defp push_response(peer, socket, type, lane, fields) do
+    event =
+      Jason.encode!(%{
+        "type" => type,
+        "stream_id" => lane,
+        "response" => Map.put(fields, "id", "resp_#{lane}")
+      })
+
+    send(peer, {:event, event})
+    assert_receive {WebSocket, ^socket, %Event.Message{data: ^event}}, 2_000
   end
 
   defp auth(ctx), do: [{"authorization", "Bearer " <> ctx.token}]

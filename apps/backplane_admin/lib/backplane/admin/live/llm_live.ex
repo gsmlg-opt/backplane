@@ -138,12 +138,19 @@ defmodule Backplane.Admin.LLMLive do
         true -> protocols(provider, api)
       end
 
+    backend_config = api.backend_config || %{}
+
+    backend_config =
+      if new?,
+        do: Map.merge(defaults[:backend_config] || %{}, backend_config),
+        else: backend_config
+
     %{
       "path" => url_path(api.base_url),
       "default_headers" => Formata.JSON.encode!(api.default_headers || %{}),
-      "project_id" => (api.backend_config || %{})["project_id"] || "",
-      "user_agent" => (api.backend_config || %{})["user_agent"] || "",
-      "client_version" => (api.backend_config || %{})["client_version"] || "",
+      "project_id" => backend_config["project_id"] || "",
+      "user_agent" => backend_config["user_agent"] || "",
+      "client_version" => backend_config["client_version"] || "",
       "responses_websocket" =>
         to_string(
           if(new?,

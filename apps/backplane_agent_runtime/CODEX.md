@@ -45,7 +45,8 @@ cannot select adapters, credentials, workspaces, environments, or grants.
   adapter is required before claiming durability or restart recovery. Supplying
   `goal: goal_owner` to `Codex.ExtensionRuntime` routes only the three Goal tools
   to the persistent thread owner; other extension families retain their selected
-  adapters.
+  adapters. Encrypted Codex History/Notes use the explicit host-selected transport
+  described below.
 - `:dynamic` conditionally exposes MCP resource operations, `tool_search`, and
   plugin request tools. Search publishes admitted tools for the next provider
   turn; another call in the discovery batch remains fenced to the old catalog.
@@ -222,6 +223,68 @@ provider adapter negotiates them and `:configured` returns them in
 projection supports the pinned `web_search` declaration and normalizes observed
 provider events. Local tests use an injected adapter and do not establish live
 provider compatibility.
+
+## Encrypted History and Notes
+
+A host with verified Codex History/Notes backend support can select this transport
+when starting the extension runtime. Authentication and HTTP execution belong to
+the host adapter.
+
+```elixir
+{:ok, runtime} = ExtensionRuntime.start_link(
+  scope: %{host_id: "host", caller_id: "sigma", run_id: run_id, project_id: project_id},
+  history_notes: %{
+    mode: :remote_encrypted,
+    adapter: MyHistoryNotesTransport,
+    context: host_http_context,
+    request_context: %{session_id: session_id, current_agent_name: "writer"},
+    output_policy: %{"mode" => "bytes", "limit" => 16_384},
+    output_limit: 1_048_576
+  }
+)
+```
+
+The four encrypted input fields are `history::search_contents.query`,
+`notes::search_contents.query`, `notes::append_to_file.text` and
+`notes::write_file.text`. The runtime forwards their opaque string bytes unchanged.
+Existing local reference and host adapters continue publishing plaintext schemas.
+The catalog retains direct-model-only exposure and is fixed when the profile is
+created.
+
+Implement `Backplane.AgentRuntime.Codex.HistoryNotes` callbacks `execute/3` and
+`cancel/3`. Execution receives the admitted operation, owner scope and configured
+adapter context. `operation.history_notes_request` supplies the relative
+`alpha/history/v2/<operation>` or `alpha/notes/v2/<operation>` path, a body containing
+the original arguments plus trusted session/agent `context`, and the two Codex
+headers. `x-openai-encrypted-tool-arguments` is `"true"` for the four operations
+above. `x-openai-tool-output-truncation-policy` contains JSON with `mode` set to
+`"bytes"` or `"tokens"` and a nonnegative `limit`. The host issues a POST through
+its selected HTTP client and retains the operation identity and live effect
+deadline. Backend selection, credentials and session context come from the host.
+
+An encrypted response uses `{:ok, %{"encrypted_output" => opaque_string}}` with an
+optional ordered `"images"` array. Each image has base64 `"data"`, `"mime_type"`
+and optional `"detail"`. The runtime returns portable content maps, beginning with
+`%{type: :encrypted_content, data: %{"encrypted_content" => opaque_string}}`, followed
+by `%{type: :image, data: image}` attachments. AI Protocol constructors and the native
+Responses codec accept this representation. Ordinary JSON responses without
+`encrypted_output` produce a text block before their attachments. The backend owns
+truncation before encryption. Local bounds reject an oversized result whole.
+
+Both callbacks run in the existing Conversation effect lifecycle, keeping the
+extension process responsive. Cancellation seals dispatch before invoking the
+host's `cancel/3` with the exact registered operation, stop generation and cleanup
+deadline. The adapter confirms actual local transport-worker retirement through
+the existing `ToolEffects.Cancellation` assertion. The Conversation also observes
+its effect worker terminate. Missing proof produces `:unknown_outcome` and retains
+the registration. A cancellation receipt records the remote outcome as unknown.
+Stored content and images reopen without invoking the adapter or replaying effects.
+
+The reference contract follows the pinned Codex backend and output behavior.
+Functional tests cover callback forwarding, opaque output, ordered attachments,
+file-store reopen and real local worker retirement. Consumer HTTP integration and
+a real-model complete-profile turn remain downstream acceptance steps.
+[Codex source](https://github.com/openai/codex/tree/46fdd5ef39735f4159cdcf0ec5e85c10521494e5/codex-rs/ext/history-notes)
 
 ## Host Requirements
 

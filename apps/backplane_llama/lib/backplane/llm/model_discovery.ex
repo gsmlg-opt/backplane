@@ -33,6 +33,8 @@ defmodule Backplane.LLM.ModelDiscovery do
   @discovery_stale_key "backplane_discovery_stale"
   @request_timeout_ms 30_000
   @max_google_pages 1_000
+  # Google gates Gemini 4 and 3.8 model visibility on the Antigravity CLI identity.
+  @default_antigravity_user_agent "antigravity/cli/1.5.11 (aidev_client; os_type=linux; arch=amd64)"
 
   @type discovery_result :: %{
           discovered: non_neg_integer(),
@@ -146,12 +148,14 @@ defmodule Backplane.LLM.ModelDiscovery do
         end
 
       api.api_surface == :antigravity ->
+        backend_config = api.backend_config || %{}
+
         with {:ok, headers} <- discovery_headers(provider, api),
              {:ok, request} <-
                Antigravity.build_request(:fetch_available_models, %{},
-                 project: (api.backend_config || %{})["project_id"],
-                 user_agent: (api.backend_config || %{})["user_agent"],
-                 client_version: (api.backend_config || %{})["client_version"]
+                 project: backend_config["project_id"],
+                 user_agent: backend_config["user_agent"] || @default_antigravity_user_agent,
+                 client_version: backend_config["client_version"]
                ),
              {:ok, response} <- post_antigravity_models(api, headers, request),
              {:ok, details} <- parse_antigravity_model_details(response.body, api) do
@@ -966,8 +970,10 @@ defmodule Backplane.LLM.ModelDiscovery do
     |> Repo.update_all(set: [enabled: false])
   end
 
-  defp model_metadata(nil, %ModelDetail{metadata: metadata}, api) do
-    Map.put(metadata, "api_surface", Atom.to_string(api.api_surface))
+  defp model_metadata(nil, %ModelDetail{id: id, metadata: metadata}, api) do
+    metadata
+    |> Map.put("api_surface", Atom.to_string(api.api_surface))
+    |> Map.put("slug", id)
   end
 
   defp model_metadata(model, %ModelDetail{metadata: metadata}, api) do

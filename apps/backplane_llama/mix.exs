@@ -1,7 +1,7 @@
 defmodule BackplaneLlama.MixProject do
   use Mix.Project
 
-  @version "1.10.79"
+  @version "1.10.82"
 
   def project do
     [

@@ -243,15 +243,18 @@ defmodule Backplane.LLM.ProviderPresetTest do
 
     assert preset.default_credential == "google-antigravity"
     assert preset.credential_auth_type == "google_oauth"
-    assert preset.default_base_url == "https://cloudcode-pa.googleapis.com"
+    assert preset.default_base_url == "https://daily-cloudcode-pa.googleapis.com"
 
     assert ProviderPreset.surfaces(preset) == %{
              antigravity: %{
                enabled: true,
-               base_url: "https://cloudcode-pa.googleapis.com",
+               base_url: "https://daily-cloudcode-pa.googleapis.com",
                discovery_path: "/v1internal:fetchAvailableModels",
                native_protocols: [:google_antigravity],
-               backend_config: %{}
+               backend_config: %{
+                 "user_agent" =>
+                   "antigravity/cli/1.5.11 (aidev_client; os_type=linux; arch=amd64)"
+               }
              }
            }
 

@@ -146,12 +146,11 @@ bound. Retained streams default to 128 calls and 1,048,576 total tool-input byte
 `max_tool_calls` and `max_total_tool_input_bytes` can tighten these limits. SSE
 framing limits also apply.
 
-The Responses codec supports text, function/custom calls, text results, ordered
-text/image tool results, usage and terminal events. It rejects images outside
-tool results, reasoning, opaque provider state and unsupported events. This
-subset does not establish complete provider parity or
-enable cross-protocol gateway routes. All credentials, approvals and execution
-authority remain host-owned.
+The Responses codec supports text, function and custom calls, ordered tool
+results containing text, images and encrypted content, usage and terminal
+events. It rejects images and encrypted content outside tool results, reasoning,
+opaque provider state and unsupported events. Hosts own credentials, approvals
+and execution authority.
 
 ## Responses image tool results
 
@@ -203,6 +202,20 @@ The independent fixtures and tests verify canonical reload followed by exact
 JSON transmission through the public codec and an OTP HTTP host client to a
 loopback server. This pure package does not own an HTTP client. No remote
 provider or model acceptance is claimed.
+
+## Responses encrypted tool results
+
+Pass `%{type: :encrypted_content, data: %{"encrypted_content" => ciphertext}}`
+as a block in a tool result. `ciphertext` is a nonempty UTF-8 string subject to
+the usual `limits` at construction, reload and encoding. The Responses codec
+emits `%{"type" => "encrypted_content", "encrypted_content" => ciphertext}`
+in the native `output` array, preserving its value and the order of any image
+attachments. JSON persistence uses the ordinary `ContentBlock` type and data
+fields, so callers can reconstruct the block with `ContentBlock.new/2`.
+
+Provider transport and encryption are host-owned. The codec forwards the
+ciphertext as an opaque string and applies the same call identity and tool
+result status rules as for image results.
 
 ## Typed audio and resources
 

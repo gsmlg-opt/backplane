@@ -119,6 +119,7 @@ url = "postgres://backplane:change-me@postgres:5432/backplane"
 | `SECRET_KEY_BASE` | Phoenix secret for cookies/sessions |
 | `PHX_HOST` | Public hostname |
 | `BACKPLANE_API_PORT` | Public API/MCP/LLM port (falls back to `BACKPLANE_PORT`, `PORT`, then 4100) |
+| `BACKPLANE_API_READ_TIMEOUT_MS` | Public API request-body socket read timeout in milliseconds (positive integer; default `120000`, two minutes). Applied at startup; restart after changing it. |
 | `BACKPLANE_ADMIN_PORT` | Separate admin UI port (default 4101) |
 | `BACKPLANE_API_URL` | Public API origin and OAuth issuer, for example `https://backplane.example.com` |
 | `BACKPLANE_ADMIN_URL` | Trusted admin origin used to build OAuth callbacks, for example `https://admin.backplane.internal` |

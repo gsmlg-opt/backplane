@@ -60,6 +60,75 @@ defmodule Backplane.AiProtocol.ResponsesImageTest do
     end
   end
 
+  test "opaque encrypted output survives JSON reload with ordered image attachments" do
+    ciphertext = "opaque/+=:雪\n{\"keep\":true}"
+    encrypted = %{type: :encrypted_content, data: %{"encrypted_content" => ciphertext}}
+
+    for {kind, output_type} <- [
+          function: "function_call_output",
+          custom: "custom_tool_call_output"
+        ],
+        attachments <- [[], [image(@uri, "high"), image(@png, "low")]] do
+      request = request(kind, [encrypted | attachments], :success)
+      restored = reload(request)
+      assert restored == request
+      assert {:ok, wire} = Codec.encode_request(:openai_responses, restored)
+
+      images =
+        Enum.map(attachments, fn block ->
+          %{"type" => "input_image", "image_url" => @uri, "detail" => block.data["detail"]}
+        end)
+
+      assert List.last(wire["input"]) == %{
+               "type" => output_type,
+               "call_id" => "image_#{kind}",
+               "output" => [
+                 %{"type" => "encrypted_content", "encrypted_content" => ciphertext} | images
+               ]
+             }
+    end
+  end
+
+  test "encrypted content requires a bounded opaque string and preserves the tool-result boundary" do
+    for data <- [
+          %{},
+          %{"encrypted_content" => ""},
+          %{"encrypted_content" => <<255>>},
+          %{"encrypted_content" => %{"ciphertext" => "opaque"}},
+          %{"encrypted_content" => "opaque", "extra" => true}
+        ] do
+      assert {:error, %Error{kind: :invalid_request}} =
+               ContentBlock.new(%{type: :encrypted_content, data: data})
+    end
+
+    encrypted = %{
+      type: :encrypted_content,
+      data: %{"encrypted_content" => String.duplicate("x", 40)}
+    }
+
+    request = request(:function, [encrypted])
+    opts = [limits: %{max_string_bytes: 32}]
+    assert {:error, %Error{kind: :invalid_request}} = ContentBlock.new(encrypted, opts)
+
+    assert {:error, %Error{kind: :invalid_request}} =
+             Codec.encode_request(:openai_responses, request, opts)
+
+    assert_incompatible(request(:function, [encrypted], :error))
+
+    assert_incompatible(
+      request(:function, [Map.put(encrypted, :extensions, %{"test::tag" => true})])
+    )
+
+    assert {:ok, non_tool_request} =
+             Request.new(%{model: "fixture", input: [%{role: :user, content: [encrypted]}]})
+
+    assert_incompatible(non_tool_request)
+
+    for protocol <- [:openai, :anthropic, :google] do
+      assert {:error, %Error{kind: :incompatible}} = Codec.encode_request(protocol, request)
+    end
+  end
+
   test "unsupported and malformed opaque image forms reject explicitly before submission" do
     for data <- [
           "opaque",

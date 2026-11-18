@@ -10,12 +10,15 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
   use GenServer
 
   alias Backplane.AgentRuntime.{Error, Goal}
+  alias Backplane.AgentRuntime.Codex.HistoryNotes
 
   @memory_names ~w(add_ad_hoc_note list read search)
   @goal_names ~w(get_goal create_goal update_goal)
   @skill_names ~w(list read)
   @history_names ~w(list_windows list_items read_item search_contents)
   @note_names ~w(list_files_by_prefix read_file search_contents append_to_file write_file)
+  @history_note_tools Enum.map(@history_names, &("history::" <> &1)) ++
+                        Enum.map(@note_names, &("notes::" <> &1))
   @board_names ~w(create_channel get_channels list_threads search_posts read_thread read_post subscribe unsubscribe post)
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -24,23 +27,31 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
 
   @spec contracts(map()) :: [map()]
   def contracts(%{extension_runtime: runtime}) when is_pid(runtime) do
-    %{board_namespace: board_namespace} = GenServer.call(runtime, :capabilities)
+    %{board_namespace: board_namespace, history_notes: history_notes} =
+      GenServer.call(runtime, :capabilities)
 
     Enum.concat([
       Enum.map(@goal_names, &contract(nil, &1, runtime)),
       Enum.map(@memory_names, &contract("memories", &1, runtime)),
       Enum.map(@skill_names, &contract("skills", &1, runtime)),
-      Enum.map(@history_names, &contract("history", &1, runtime)),
-      Enum.map(@note_names, &contract("notes", &1, runtime)),
+      Enum.map(@history_names, &contract("history", &1, runtime, history_notes)),
+      Enum.map(@note_names, &contract("notes", &1, runtime, history_notes)),
       Enum.map(@board_names, &contract(board_namespace, &1, runtime))
     ])
   end
 
   def contracts(_context), do: []
 
+  @doc false
+  def history_notes_tool?(name), do: name in @history_note_tools
+
   @spec call(map()) :: {:ok, map()} | {:error, Error.t()}
-  def call(%{backend_context: %{runtime: runtime}} = operation) when is_pid(runtime),
-    do: GenServer.call(runtime, {:tool, operation}, :infinity)
+  def call(%{backend_context: %{runtime: runtime}} = operation) when is_pid(runtime) do
+    case GenServer.call(runtime, {:tool, operation}, :infinity) do
+      {:remote_history_notes, config, scope} -> HistoryNotes.call(operation, scope, config)
+      result -> result
+    end
+  end
 
   def call(_operation),
     do: {:error, Error.new(:unsupported_capability, "extension runtime is unavailable")}
@@ -51,6 +62,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
          {:ok, board_namespace} <-
            board_namespace(Keyword.get(opts, :board_namespace, "collaboration")),
          :ok <- validate_adapter(Keyword.get(opts, :adapter)),
+         {:ok, history_notes} <- HistoryNotes.configure(Keyword.get(opts, :history_notes)),
          {:ok, owner_monitor} <- monitor_owner(Keyword.get(opts, :owner_pid)) do
       {:ok,
        %{
@@ -60,6 +72,8 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
          goal: Keyword.get(opts, :goal),
          adapter: Keyword.get(opts, :adapter),
          adapter_context: Keyword.get(opts, :adapter_context, %{}),
+         history_notes: history_notes,
+         history_notes_requests: %{},
          reference: reference_state(opts)
        }}
     end
@@ -71,6 +85,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
      %{
        mode: if(state.adapter, do: :host, else: :ephemeral_reference),
        durable: not is_nil(state.adapter),
+       history_notes: if(state.history_notes, do: :remote_encrypted, else: :plaintext),
        board_namespace: state.board_namespace
      }, state}
   end
@@ -78,18 +93,49 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
   def handle_call({:tool, operation}, _from, state) do
     with :ok <- owner_check(state.scope, operation),
          :ok <- known_tool(operation.tool_name, state.board_namespace) do
-      case execute(state, operation) do
-        {:ok, result, next} -> {:reply, {:ok, result}, next}
-        {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      case dispatch(state, operation) do
+        {:ok, result, next} ->
+          {:reply, {:ok, result}, next}
+
+        {:error, %Error{} = error} ->
+          {:reply, {:error, error}, state}
+
+        {:remote_history_notes, config, scope} ->
+          {:reply, {:remote_history_notes, config, scope}, state}
       end
     else
       {:error, %Error{} = error} -> {:reply, {:error, error}, state}
     end
   end
 
+  def handle_call({:history_notes, request}, from, state),
+    do: HistoryNotes.handle(request, from, state)
+
   @impl true
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state),
     do: {:stop, :normal, state}
+
+  def handle_info({:DOWN, monitor, :process, _owner, _reason}, state),
+    do: {:noreply, HistoryNotes.owner_down(state, monitor)}
+
+  @impl true
+  def handle_cast({:release_history_notes, entry}, state),
+    do: {:noreply, HistoryNotes.release_entry(state, entry)}
+
+  @impl true
+  def terminate(_reason, state) do
+    Enum.each(state.history_notes_requests, fn {_registration, entry} ->
+      :atomics.put(entry.gate, 1, 2)
+    end)
+  end
+
+  defp dispatch(%{history_notes: config} = state, operation) when is_map(config) do
+    if operation.tool_name in @history_note_tools,
+      do: {:remote_history_notes, config, state.scope},
+      else: execute(state, operation)
+  end
+
+  defp dispatch(state, operation), do: execute(state, operation)
 
   defp execute(%{goal: goal} = state, %{tool_name: name} = operation)
        when is_pid(goal) and name in @goal_names do
@@ -529,7 +575,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
     }
   end
 
-  defp contract(namespace, name, runtime) do
+  defp contract(namespace, name, runtime, history_notes \\ :plaintext) do
     tool_name = if namespace, do: namespace <> "::" <> name, else: name
     schema_name = if name in @board_names, do: "collaboration::" <> name, else: tool_name
     read_only = read_only?(schema_name)
@@ -539,7 +585,7 @@ defmodule Backplane.AgentRuntime.Codex.ExtensionRuntime do
       name: name,
       exposure: if(namespace in ["history", "notes"], do: :direct_model_only, else: :direct),
       description: description(schema_name),
-      schema: schema(schema_name),
+      schema: HistoryNotes.schema(schema(schema_name), schema_name, history_notes),
       backend: Backplane.AgentRuntime.Codex.Backend,
       backend_context: %{family: :extensions, runtime: runtime},
       revision: 1,

@@ -130,6 +130,22 @@ defmodule Backplane.AgentRuntime.Codex.Backend do
   def cancel(%{backend_context: %{family: :dynamic}} = operation),
     do: DynamicRuntime.cancel_resource(operation)
 
+  def cancel(
+        %{
+          backend_context: %{family: :extensions},
+          history_notes_admission: %{registration: registration},
+          resource_registration: registration,
+          cleanup_deadline: deadline,
+          tool_name: name
+        } = operation
+      )
+      when is_binary(registration) and registration != "" and is_integer(deadline) do
+    if ExtensionRuntime.history_notes_tool?(name),
+      do: Backplane.AgentRuntime.Codex.HistoryNotes.cancel(operation),
+      else:
+        {:error, Error.new(:unsupported_capability, "tool has no verified cancellation contract")}
+  end
+
   def cancel(_),
     do: {:error, Error.new(:unsupported_capability, "tool has no verified cancellation contract")}
 end

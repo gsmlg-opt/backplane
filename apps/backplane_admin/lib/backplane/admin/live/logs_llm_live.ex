@@ -210,24 +210,22 @@ defmodule Backplane.Admin.LogsLlmLive do
   end
 
   defp token_summary(%{input_tokens: in_t, output_tokens: out_t} = record) do
-    in_val = in_t || 0
-    out_val = out_t || 0
-    total = record.total_tokens || in_val + out_val
+    total = record.total_tokens || if(is_integer(in_t) and is_integer(out_t), do: in_t + out_t)
 
     case record.cached_tokens do
       nil ->
         dgettext("admin", "%{total} (%{input} input / %{output} output)",
           total: format_token_count(total),
-          input: format_token_count(in_val),
-          output: format_token_count(out_val)
+          input: format_token_count(in_t),
+          output: format_token_count(out_t)
         )
 
       cached ->
         dgettext("admin", "%{total} (%{input} input / %{cached} cached / %{output} output)",
           total: format_token_count(total),
-          input: format_token_count(in_val),
+          input: format_token_count(in_t),
           cached: format_token_count(cached),
-          output: format_token_count(out_val)
+          output: format_token_count(out_t)
         )
     end
   end
@@ -255,6 +253,7 @@ defmodule Backplane.Admin.LogsLlmLive do
   defp protocol_label("google_antigravity"), do: "Google Antigravity"
   defp protocol_label("openai_chat_completions"), do: "OpenAI Chat Completions"
   defp protocol_label("openai_responses"), do: "OpenAI Responses"
+  defp protocol_label("openai_responses_ws"), do: "openai responses (ws)"
   defp protocol_label("anthropic_messages"), do: "Anthropic Messages"
   defp protocol_label(nil), do: dgettext("admin", "Unknown")
   defp protocol_label(value), do: value

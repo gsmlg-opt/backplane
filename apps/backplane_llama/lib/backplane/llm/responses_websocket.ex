@@ -7,6 +7,7 @@ defmodule Backplane.LLM.ResponsesWebSocket do
   interrupt or steering semantics are inferred from this transport.
   """
   import Plug.Conn
+  alias Backplane.LLM.AccessEvent
   alias Backplane.LLM.ResponsesWebSocket.{Headers, Policy, Session, Socket}
   alias Relayixir.Proxy.WebSocket.Adapter
 
@@ -19,12 +20,19 @@ defmodule Backplane.LLM.ResponsesWebSocket do
          {:ok, headers, credential} <- Headers.build(conn, route),
          {:ok, policy} <- Policy.pin(route, conn, credential),
          {:ok, url} <- upstream_url(route),
+         access = access(conn, route),
          {:ok, session} <-
            DynamicSupervisor.start_child(
              __MODULE__.Supervisor,
-             {Session, owner: self(), url: url, headers: headers, policy: policy}
+             {Session,
+              owner: self(),
+              remote_ip: conn.remote_ip,
+              url: url,
+              headers: headers,
+              policy: policy,
+              access: access}
            ) do
-      upgrade(conn, session)
+      upgrade(conn, session, access)
     else
       {:error, :disabled} ->
         error(conn, 501, "responses_websocket_disabled")
@@ -48,13 +56,26 @@ defmodule Backplane.LLM.ResponsesWebSocket do
     _ -> error(conn, 503, "responses_websocket_unavailable")
   end
 
-  defp upgrade(conn, session) do
+  defp access(conn, route) do
+    access =
+      conn
+      |> AccessEvent.start("responses.websocket.handshake", :openai_responses_ws)
+      |> AccessEvent.put_requested_model(route.requested)
+      |> AccessEvent.put_resolution(route.provider, route.raw, route.api)
+      |> AccessEvent.mark_upstream_start()
+
+    %{access | stream?: true}
+  end
+
+  defp upgrade(conn, session, access) do
     case Session.open(session) do
       {:ok, metadata} ->
         try do
           conn
           |> handshake_headers(metadata)
-          |> Adapter.upgrade(Socket, %{session: session},
+          |> Adapter.upgrade(
+            Socket,
+            %{session: session, access: access, remote_ip: conn.remote_ip},
             compress: false,
             timeout: 60_000,
             max_frame_size: Policy.max_bytes(),
@@ -69,19 +90,27 @@ defmodule Backplane.LLM.ResponsesWebSocket do
         rescue
           _ ->
             Session.close(session)
-            error(conn, 400, "invalid_upgrade")
+            handshake_error(conn, access, 400, "invalid_upgrade")
         end
 
       {:error, :session_unavailable} ->
         Session.close(session)
-        error(conn, 502, "upstream_websocket_unavailable")
+        handshake_error(conn, access, 502, "upstream_websocket_unavailable")
 
       {:error, _reason, metadata} ->
         status =
           if is_map(metadata) and metadata.status in 400..599, do: metadata.status, else: 502
 
-        conn |> handshake_headers(metadata) |> error(status, "upstream_websocket_rejected")
+        conn
+        |> handshake_headers(metadata)
+        |> handshake_error(access, status, "upstream_websocket_rejected")
     end
+  end
+
+  defp handshake_error(conn, access, status, code) do
+    conn = error(conn, status, code)
+    AccessEvent.finalize(access, conn, :error, error_kind: :transport, error_code: code)
+    conn
   end
 
   defp query_model(conn) do
