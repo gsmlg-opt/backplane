@@ -1,7 +1,7 @@
 defmodule BackplaneSkills.MixProject do
   use Mix.Project
 
-  @version "1.10.80"
+  @version "1.10.81"
 
   def project do
     [
