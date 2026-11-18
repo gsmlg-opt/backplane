@@ -7,15 +7,27 @@ defmodule Backplane.LLM.ResponsesWebSocket.Socket do
   """
 
   @behaviour WebSock
+  alias Backplane.LLM.AccessEvent
   alias Backplane.LLM.ResponsesWebSocket.Session
 
   @impl true
-  def init(%{session: session} = state) do
+  def init(%{session: session, access: access}) do
     monitor = Process.monitor(session)
+    conn = %Plug.Conn{status: 101}
+    state = %{session: session, monitor: monitor}
 
     case Session.attach(session, self()) do
-      :ok -> {:ok, Map.put(state, :monitor, monitor)}
-      _ -> {:stop, :normal, {1011, "Upstream unavailable"}, state}
+      :ok ->
+        AccessEvent.finalize(access, conn, :success)
+        {:ok, state}
+
+      _ ->
+        AccessEvent.finalize(access, conn, :error,
+          error_kind: :transport,
+          error_code: "upstream_websocket_unavailable"
+        )
+
+        {:stop, :normal, {1011, "Upstream unavailable"}, state}
     end
   end
 

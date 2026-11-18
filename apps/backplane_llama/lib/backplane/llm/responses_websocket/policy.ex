@@ -1,7 +1,8 @@
 defmodule Backplane.LLM.ResponsesWebSocket.Policy do
   @moduledoc """
   Pins one native Responses upstream and checks each creation before submission.
-  Only the model field is rewritten; response events remain upstream-owned bytes.
+  Rewrites the model and normalizes Codex's redundant stream flag.
+  Response events remain upstream-owned bytes.
   """
   import Ecto.Query
   alias Backplane.AiProtocol.OpenAIResponsesWebSocket, as: Codec
@@ -56,13 +57,22 @@ defmodule Backplane.LLM.ResponsesWebSocket.Policy do
          true <- model in [policy.requested, policy.raw],
          :ok <- authorize(policy.principal),
          :ok <- current?(policy),
-         {:ok, encoded} <- Codec.encode_create(Map.put(params, "model", policy.raw)),
+         {:ok, encoded} <- params |> upstream_params(policy) |> Codec.encode_create(),
          :ok <- rate_limit(policy.provider.id) do
       {:ok, encoded}
     else
       false -> {:error, :model_mismatch}
       {:error, reason} when is_atom(reason) -> {:error, reason}
       _ -> {:error, :invalid_request}
+    end
+  end
+
+  defp upstream_params(params, policy) do
+    params = Map.put(params, "model", policy.raw)
+
+    case {policy.provider.preset_key, params} do
+      {"openai-codex", %{"stream" => true}} -> Map.delete(params, "stream")
+      _ -> params
     end
   end
 

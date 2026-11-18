@@ -22,12 +22,14 @@ Send a complete native JSON text message such as:
 ```
 
 The request model may be the original requested model or the pinned raw upstream
-model. Only that field is rewritten; unknown fields remain intact. HTTP-only
-`stream` and `background` fields, other client event types, binary messages and
-model switching are rejected. Unknown upstream text events are forwarded with
-identical bytes. Multiple creates can use the same connection; the provider owns
-response scheduling and correlation. Backplane does not invent interrupt,
-steering, cancellation or provider concurrency semantics.
+model. Backplane rewrites it to the upstream model and preserves unknown fields.
+For providers using the `openai-codex` preset, Backplane removes the redundant
+`stream: true` flag sent by Codex CLI, including on prewarm and continuation
+requests. All other uses of `stream`, as well as `background`, other client event
+types, binary messages and model switching, are rejected. Upstream text events
+are forwarded with identical bytes. Multiple creates can use the same connection;
+the provider owns response scheduling and correlation. Backplane does not invent
+interrupt, steering, cancellation or provider concurrency semantics.
 
 Authentication and invocation scope are checked before upgrade and revalidated
 before every create. Provider/API/model enabled state, route identity, credential
@@ -54,6 +56,9 @@ protected from caller/default overrides. Codex account/FedRAMP headers come from
 credential metadata. Caller cookies and account/project/organization overrides
 are not forwarded. Upstream URL uses the configured API base plus `/responses`
 (or `/v1/responses` for a base without a path), without forwarding the gateway-only routing query.
+Outbound connections use the shared environment proxy rules (`HTTP_PROXY` for
+`ws`, `HTTPS_PROXY` for `wss`, and `NO_PROXY` for bypass). The WebSocket transport
+supports HTTP proxies, using CONNECT for `wss`.
 
 HTTP rc.5 exposes only `retry-after` and
 `x-codex-websocket-max-unfragmented-message-bytes` in handshake responses. The
@@ -118,6 +123,17 @@ its existing cached artifact matched the package SHA256 and was consumed with
 Rustler's supported global-cache option. Published ex_turso 3.1.15 forces source
 compilation; installing official Rust 1.99.1 allowed that build to pass. No source
 patch, incompatible dependency override or NIF validation bypass was used.
-Real-provider/Codex qualification has not been performed. Arbitrary response-header
-forwarding and WebSocket-specific token-usage accounting are not implemented;
-the admin toggle explicitly discloses the accounting limitation.
+On 2026-11-19, Codex CLI 0.170.0 completed a plain response and a tool round trip
+through a local gateway using `openai-codex/gpt-6.1-sol` over an HTTP CONNECT proxy.
+With HTTP fallback blocked, the tool round trip used one WebSocket for prewarm,
+generation and tool output continuation. The plain-response check recovered from
+one failed prewarm handshake by opening a new WebSocket. This verification covers
+the selected Codex route. Other providers still need live verification.
+
+LLM logs record the handshake and a separate row for each observed
+`response.completed`, `response.incomplete` or `response.failed` event with a
+response ID. The response row reports upstream token usage when supplied and
+measures time from `response.created` when observed. The gateway remembers up to
+2,048 response IDs per connection to deduplicate terminal events. If the socket
+closes before a terminal event arrives, usage for that response is unavailable.
+Arbitrary response-header forwarding remains unsupported.

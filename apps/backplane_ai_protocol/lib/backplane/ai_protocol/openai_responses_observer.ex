@@ -1,6 +1,6 @@
 defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
   @moduledoc """
-  Bounded native observer for OpenAI Responses JSON and SSE response bytes.
+  Bounded native observer for OpenAI Responses JSON, SSE and terminal events.
 
   Observation never authorizes or submits a request and never rewrites native payloads.
   """
@@ -117,6 +117,16 @@ defmodule Backplane.AiProtocol.OpenAIResponsesObserver do
       end
 
     facts(state)
+  end
+
+  @doc "Observes one already decoded terminal event without retaining the response body."
+  @spec observe_terminal_event(map()) :: map()
+  def observe_terminal_event(%{"type" => type, "response" => response} = event)
+      when type in ["response.completed", "response.incomplete", "response.failed"] and
+             is_map(response) do
+    %__MODULE__{events_seen: 1}
+    |> observe_event(event)
+    |> facts()
   end
 
   @spec facts(t()) :: map()

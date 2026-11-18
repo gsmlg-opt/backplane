@@ -507,7 +507,10 @@ defmodule Backplane.LLM.AccessEvent do
       response_bytes: response_bytes(conn),
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
-      total_tokens: total_tokens(usage.input_tokens, usage.output_tokens),
+      total_tokens:
+        Map.get_lazy(usage, :total_tokens, fn ->
+          total_tokens(usage.input_tokens, usage.output_tokens)
+        end),
       cached_tokens: usage.cached_tokens,
       reasoning_tokens: usage.reasoning_tokens,
       finish_reason: usage.finish_reason,
@@ -544,6 +547,13 @@ defmodule Backplane.LLM.AccessEvent do
   end
 
   defp stream_usage(_state, _conn, _outcome, opts) do
+    case Keyword.fetch(opts, :observed_usage) do
+      {:ok, usage} -> usage
+      :error -> unobserved_usage(opts)
+    end
+  end
+
+  defp unobserved_usage(opts) do
     {input, output} = Keyword.get(opts, :tokens, {nil, nil})
 
     %{

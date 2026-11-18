@@ -72,6 +72,27 @@ defmodule Backplane.Admin.LogsLiveTest do
     refute detail =~ "super-secret"
   end
 
+  test "llm log list and detail distinguish Responses WebSocket from HTTP", %{conn: conn} do
+    log =
+      insert_llm_log(%{
+        api_surface: "openai_responses_ws",
+        operation: "responses.websocket.handshake",
+        status: 101,
+        input_tokens: nil,
+        output_tokens: nil
+      })
+
+    insert_llm_log(%{api_surface: "openai_responses", operation: "responses"})
+
+    {:ok, list, _html} = live_with_sandbox(conn, "/system/logs/llm")
+    assert has_element?(list, "#llm-logs-table td", "openai responses (ws)")
+    assert has_element?(list, "#llm-logs-table td", "OpenAI Responses")
+
+    {:ok, detail, _html} = live_with_sandbox(conn, "/system/logs/llm/#{log.id}")
+    assert has_element?(detail, "dd", "openai responses (ws)")
+    assert has_element?(detail, "dd", "- (- input / - output)")
+  end
+
   test "llm list displays client first, provider, and separate formatted token counts", %{
     conn: conn
   } do

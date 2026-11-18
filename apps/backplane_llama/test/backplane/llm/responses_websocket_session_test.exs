@@ -3,6 +3,54 @@ defmodule Backplane.LLM.ResponsesWebSocket.SessionTest do
 
   alias Backplane.LLM.ResponsesWebSocket.Session
 
+  test "uses the environment proxy before resolving an upstream WebSocket host" do
+    variables = ~w(HTTP_PROXY http_proxy NO_PROXY no_proxy)
+    original = Map.new(variables, &{&1, System.get_env(&1)})
+
+    on_exit(fn ->
+      Enum.each(original, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+    end)
+
+    {proxy_url, listener} = upstream()
+    proxy = URI.parse(proxy_url)
+    System.put_env("HTTP_PROXY", "http://#{proxy.host}:#{proxy.port}")
+    System.delete_env("NO_PROXY")
+    System.delete_env("no_proxy")
+    parent = self()
+
+    peer =
+      spawn(fn ->
+        case :gen_tcp.accept(listener, 7_000) do
+          {:ok, socket} ->
+            request = head(socket)
+            send(parent, {:proxy_request, request})
+            upgrade(socket, request)
+            close_reply(socket)
+
+          {:error, _} ->
+            :ok
+        end
+      end)
+
+    on_exit(fn -> if Process.alive?(peer), do: Process.exit(peer, :kill) end)
+
+    {:ok, session} =
+      Session.start_link(
+        owner: self(),
+        url: "ws://responses.example.invalid/v1/responses",
+        headers: [],
+        policy: %{}
+      )
+
+    assert {:ok, %{status: 101}} = Session.open(session)
+    assert_receive {:proxy_request, request}
+    assert request =~ "responses.example.invalid/v1/responses HTTP/1.1\r\n"
+    assert :ok = Session.close(session)
+  end
+
   test "expired or oversized creation is rejected before policy lookup or any upstream send" do
     {url, server} = upstream()
     parent = self()

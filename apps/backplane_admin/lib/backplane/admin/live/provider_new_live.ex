@@ -616,7 +616,7 @@ defmodule Backplane.Admin.ProviderNewLive do
           <p class="text-sm text-base-content/60">
             {dgettext(
               "admin",
-              "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering. WebSocket token usage is not yet included in gateway usage totals."
+              "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering."
             )}
           </p>
           <.error errors={@errors} field="openai_responses_websocket" />

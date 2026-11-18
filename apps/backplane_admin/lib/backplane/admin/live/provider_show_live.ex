@@ -1461,7 +1461,7 @@ defmodule Backplane.Admin.ProviderShowLive do
             checked={field_value(@form, @key, "responses_websocket") in [true, "true", "on"]}
           />
           <p class="text-sm text-base-content/60">
-            {dgettext("admin", "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering. WebSocket token usage is not yet included in gateway usage totals.")}
+            {dgettext("admin", "Requires native Responses. Enables WebSocket forwarding with an explicit model query. Does not enable background cancellation or steering.")}
           </p>
           <.error errors={@errors} field="openai_responses_websocket" />
         </div>
