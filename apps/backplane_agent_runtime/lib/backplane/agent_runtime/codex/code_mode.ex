@@ -10,6 +10,10 @@ defmodule Backplane.AgentRuntime.Codex.CodeMode do
 
   alias Backplane.AgentRuntime.{Error, Codex.ResourceRegistry}
 
+  # credo:disable-for-next-line Credo.Check.Design.TagTODO
+  # TODO(upstream): duskmoon-dev/duskmoon-bundler#41 blocks the proposed Deno
+  # replacement: QuickBEAM needs a supported strict native capability policy.
+
   @grammar """
   start: pragma_source | plain_source
   pragma_source: PRAGMA_LINE NEWLINE SOURCE
