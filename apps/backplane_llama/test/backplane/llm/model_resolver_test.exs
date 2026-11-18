@@ -32,6 +32,33 @@ defmodule Backplane.LLM.ModelResolverTest do
       assert raw_model == "claude-sonnet"
     end
 
+    test "resolves model casing and forwards the canonical model name" do
+      provider = create_provider_model("minimax", :openai, "MiniMax-M3.1-Flash")
+
+      assert {:ok, resolved, "MiniMax-M3.1-Flash"} =
+               ModelResolver.resolve(:openai, "MINIMAX/minimax-m3.1-flash")
+
+      assert resolved.id == provider.id
+
+      assert {:error, :api_type_mismatch, ^provider} =
+               ModelResolver.resolve(:anthropic, "minimax/minimax-m3.1-flash")
+    end
+
+    test "requires an exact ID when stored models differ only by case" do
+      provider = create_provider_model("minimax", :openai, "MiniMax-M3.1-Flash")
+      {:ok, _} = ProviderModel.create(%{provider_id: provider.id, model: "minimax-m3.1-flash"})
+      add_provider_surface(provider, :anthropic, "minimax-m3.1-flash")
+
+      assert {:error, :no_provider} =
+               ModelResolver.resolve(:openai, "minimax/MINIMAX-M3.1-FLASH")
+
+      assert {:ok, _, "MiniMax-M3.1-Flash"} =
+               ModelResolver.resolve(:openai, "minimax/MiniMax-M3.1-Flash")
+
+      assert {:error, :api_type_mismatch, ^provider} =
+               ModelResolver.resolve(:openai, "minimax/minimax-m3.1-flash")
+    end
+
     test "returns :no_provider for unknown provider name" do
       assert {:error, :no_provider} =
                ModelResolver.resolve(:anthropic, "nonexistent-provider/claude-sonnet")
@@ -103,11 +130,11 @@ defmodule Backplane.LLM.ModelResolverTest do
     end
 
     test "resolves every model in a configured provider without its namespace" do
-      provider = create_provider_model("provider-aliases", :openai, "gpt-4o-mini")
+      provider = create_provider_model("provider-aliases", :openai, "MiniMax-M3.1-Flash")
       assert :ok = ModelAlias.add_provider("provider-aliases")
 
-      assert {:ok, resolved_provider, "gpt-4o-mini"} =
-               ModelResolver.resolve(:openai, "gpt-4o-mini")
+      assert {:ok, resolved_provider, "MiniMax-M3.1-Flash"} =
+               ModelResolver.resolve(:openai, "minimax-m3.1-flash")
 
       assert resolved_provider.id == provider.id
     end

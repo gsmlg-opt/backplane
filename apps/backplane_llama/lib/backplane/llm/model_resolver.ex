@@ -107,26 +107,44 @@ defmodule Backplane.LLM.ModelResolver do
   end
 
   defp resolve_prefixed(api_type, provider_name, raw_model) do
+    provider_name = String.downcase(provider_name)
+
     provider =
       Provider
       |> where([p], p.name == ^provider_name and is_nil(p.deleted_at))
       |> Repo.one()
 
-    cond do
-      is_nil(provider) ->
-        {:error, :no_provider}
+    with %Provider{enabled: true} <- provider,
+         canonical when is_binary(canonical) <- canonical_model(provider.id, raw_model) do
+      cond do
+        provider_model_available?(provider, api_type, canonical) ->
+          {:ok, provider, canonical}
 
-      not provider.enabled ->
-        {:error, :no_provider}
+        provider_model_exists_on_other_surface?(provider, canonical, api_type) ->
+          {:error, :api_type_mismatch, provider}
 
-      provider_model_available?(provider, api_type, raw_model) ->
-        {:ok, provider, raw_model}
+        true ->
+          {:error, :no_provider}
+      end
+    else
+      _ -> {:error, :no_provider}
+    end
+  end
 
-      provider_model_exists_on_other_surface?(provider, raw_model, api_type) ->
-        {:error, :api_type_mismatch, provider}
+  defp canonical_model(provider_id, requested) do
+    matches =
+      ProviderModel
+      |> where([model], model.provider_id == ^provider_id)
+      |> where([model], fragment("lower(?) = lower(?)", model.model, ^requested))
+      |> order_by([model], desc: fragment("? = ?", model.model, ^requested))
+      |> select([model], model.model)
+      |> limit(2)
+      |> Repo.all()
 
-      true ->
-        {:error, :no_provider}
+    case matches do
+      [^requested | _] -> requested
+      [canonical] -> canonical
+      _ -> nil
     end
   end
 
@@ -217,8 +235,12 @@ defmodule Backplane.LLM.ModelResolver do
         |> where([p], p.name == ^provider_name and is_nil(p.deleted_at))
         |> Repo.one()
 
-      if provider && provider.enabled && provider_model_available?(provider, api_type, alias_name) do
-        {:ok, provider, alias_name}
+      with %Provider{enabled: true} <- provider,
+           canonical when is_binary(canonical) <- canonical_model(provider.id, alias_name),
+           true <- provider_model_available?(provider, api_type, canonical) do
+        {:ok, provider, canonical}
+      else
+        _ -> nil
       end
     end)
     |> case do
