@@ -90,7 +90,7 @@ in {
         ${pkgs.curl}/bin/curl --fail --silent --output /dev/null \
           --header 'content-type: application/json' \
           --data '{"limit":1}' \
-          http://127.0.0.1:4222/memory/devenv/call/list
+          http://127.0.0.1:4222/memory/devenv/call/recent
       '';
       period = 1;
       probe_timeout = 5;
