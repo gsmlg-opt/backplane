@@ -27,6 +27,8 @@ defmodule Backplane.LLM.Antigravity.Router do
   alias Backplane.Transport.CacheBodyReader
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
+  @default_user_agent "antigravity/cli/1.5.11 (aidev_client; os_type=linux; arch=amd64)"
+
   @provider_owned_headers [
     "authorization",
     "x-api-key",
@@ -181,7 +183,7 @@ defmodule Backplane.LLM.Antigravity.Router do
       model_opts ++
         [
           project: config["project_id"],
-          user_agent: config["user_agent"],
+          user_agent: config["user_agent"] || @default_user_agent,
           client_version: config["client_version"]
         ]
 

@@ -21,6 +21,8 @@ defmodule Backplane.LLM.Google.Router do
   alias Backplane.Transport.CacheBodyReader
   alias Relayixir.Proxy.{HttpPlug, Upstream}
 
+  @default_antigravity_user_agent "antigravity/cli/1.5.11 (aidev_client; os_type=linux; arch=amd64)"
+
   plug(RequestAuthPlug)
   plug(:match)
 
@@ -149,16 +151,18 @@ defmodule Backplane.LLM.Google.Router do
         do: :stream_generate_content,
         else: :generate_content
 
+    backend_config = api.backend_config || %{}
+
     with {:ok, body} <- decode_body(raw_body),
          {:ok, native_body} <- AntigravityGoogle.encode_request(body),
          {:ok, request} <-
            Antigravity.build_request(operation, native_body,
-             project: (api.backend_config || %{})["project_id"],
+             project: backend_config["project_id"],
              model: raw_model,
              session_id: body["sessionId"] || Ecto.UUID.generate(),
              request_id: "agent-" <> Ecto.UUID.generate(),
-             user_agent: (api.backend_config || %{})["user_agent"],
-             client_version: (api.backend_config || %{})["client_version"]
+             user_agent: backend_config["user_agent"] || @default_antigravity_user_agent,
+             client_version: backend_config["client_version"]
            ) do
       {:ok,
        %{
@@ -188,7 +192,7 @@ defmodule Backplane.LLM.Google.Router do
       {"content-type", "application/json"},
       {"accept", "application/json"},
       {"x-client-name", "antigravity"},
-      {"user-agent", config["user_agent"]},
+      {"user-agent", config["user_agent"] || @default_antigravity_user_agent},
       {"x-client-version", config["client_version"]}
     ]
     |> Enum.reject(fn {_name, value} -> is_nil(value) end)
