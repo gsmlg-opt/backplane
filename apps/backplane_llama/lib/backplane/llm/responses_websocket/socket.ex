@@ -11,9 +11,9 @@ defmodule Backplane.LLM.ResponsesWebSocket.Socket do
   alias Backplane.LLM.ResponsesWebSocket.Session
 
   @impl true
-  def init(%{session: session, access: access}) do
+  def init(%{session: session, access: access, remote_ip: remote_ip}) do
     monitor = Process.monitor(session)
-    conn = %Plug.Conn{status: 101}
+    conn = %Plug.Conn{status: 101, remote_ip: remote_ip}
     state = %{session: session, monitor: monitor}
 
     case Session.attach(session, self()) do

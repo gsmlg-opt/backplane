@@ -24,7 +24,13 @@ defmodule Backplane.LLM.ResponsesWebSocket do
          {:ok, session} <-
            DynamicSupervisor.start_child(
              __MODULE__.Supervisor,
-             {Session, owner: self(), url: url, headers: headers, policy: policy, access: access}
+             {Session,
+              owner: self(),
+              remote_ip: conn.remote_ip,
+              url: url,
+              headers: headers,
+              policy: policy,
+              access: access}
            ) do
       upgrade(conn, session, access)
     else
@@ -67,7 +73,9 @@ defmodule Backplane.LLM.ResponsesWebSocket do
         try do
           conn
           |> handshake_headers(metadata)
-          |> Adapter.upgrade(Socket, %{session: session, access: access},
+          |> Adapter.upgrade(
+            Socket,
+            %{session: session, access: access, remote_ip: conn.remote_ip},
             compress: false,
             timeout: 60_000,
             max_frame_size: Policy.max_bytes(),

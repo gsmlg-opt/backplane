@@ -82,7 +82,8 @@ defmodule Backplane.LLM.ResponsesWebSocket.Session do
            owner_monitor: Process.monitor(owner),
            socket_monitor: Process.monitor(socket.pid),
            policy: Keyword.fetch!(opts, :policy),
-           response_access: ResponseAccess.new(Keyword.get(opts, :access)),
+           response_access:
+             ResponseAccess.new(Keyword.get(opts, :access), Keyword.get(opts, :remote_ip)),
            opening_timer: timer,
            attach_timer: nil,
            opening: :pending,

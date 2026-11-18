@@ -9,18 +9,19 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
   @max_response_ids 2_048
   @max_counter 2_147_483_647
 
-  def new(nil), do: nil
-  def new(%AccessEvent{} = access), do: {access, %{}}
+  def new(nil, _remote_ip), do: nil
+  def new(%AccessEvent{} = access, remote_ip), do: {access, remote_ip, %{}}
 
   def observe(nil, _bytes), do: nil
 
-  def observe({access, ids} = state, bytes) do
+  def observe({access, remote_ip, ids} = state, bytes) do
     case Serialization.from_json(bytes) do
       {:ok, %{"type" => type, "response" => %{"id" => id}} = event}
       when type in ["response.created" | @terminal_types] and is_binary(id) and
              byte_size(id) in 1..128 ->
         if Regex.match?(~r/\A[A-Za-z0-9._:-]+\z/, id) do
-          {access, observe_event(access, ids, :binary.copy(id), type, event)}
+          {access, remote_ip,
+           observe_event(access, remote_ip, ids, :binary.copy(id), type, event)}
         else
           state
         end
@@ -32,26 +33,26 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
     _ -> state
   end
 
-  defp observe_event(_access, ids, id, _type, _event)
+  defp observe_event(_access, _remote_ip, ids, id, _type, _event)
        when map_size(ids) >= @max_response_ids and not is_map_key(ids, id),
        do: ids
 
-  defp observe_event(_access, ids, id, "response.created", _event),
+  defp observe_event(_access, _remote_ip, ids, id, "response.created", _event),
     do: Map.put_new_lazy(ids, id, fn -> System.monotonic_time(:millisecond) end)
 
-  defp observe_event(access, ids, id, _type, event) do
+  defp observe_event(access, remote_ip, ids, id, _type, event) do
     case Map.get(ids, id) do
       :finished ->
         ids
 
       started_at ->
         facts = OpenAIResponsesObserver.observe_terminal_event(event)
-        finalize(access, started_at, id, facts)
+        finalize(access, remote_ip, started_at, id, facts)
         Map.put(ids, id, :finished)
     end
   end
 
-  defp finalize(access, started_at, id, facts) do
+  defp finalize(access, remote_ip, started_at, id, facts) do
     access = %{
       access
       | event_id: Id.generator().event_id(),
@@ -62,7 +63,7 @@ defmodule Backplane.LLM.ResponsesWebSocket.ResponseAccess do
     }
 
     usage = usage(facts, id)
-    conn = %Plug.Conn{status: 101}
+    conn = %Plug.Conn{status: 101, remote_ip: remote_ip}
 
     if facts.protocol_terminal == :incomplete do
       AccessEvent.finalize(access, conn, :error,
