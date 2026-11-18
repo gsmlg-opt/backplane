@@ -5,6 +5,11 @@ defmodule Backplane.AiProtocol.ContentBlock do
   Opaque reasoning and provider state are preserved as provenance-tagged values; they are never
   converted into display text.
 
+  Responses encrypted tool results use `%{type: :encrypted_content,
+  data: %{"encrypted_content" => ciphertext}}`. The data contains exactly one
+  nonempty UTF-8 string, bounded by the same `limits` as other structured data.
+  The string is stored and replayed byte for byte.
+
   Responses tool-result images use `%{type: :image, data: %{"data" => bytes,
   "mime_type" => mime, "detail" => detail}}`. String-keyed `data` and `mime_type`
   are required: PNG, JPEG, WebP or GIF MIME and valid nonempty base64, either
@@ -45,6 +50,7 @@ defmodule Backplane.AiProtocol.ContentBlock do
     :resource_link,
     :reasoning,
     :tool_call,
+    :encrypted_content,
     :refusal,
     :provider_state
   ]
@@ -57,6 +63,7 @@ defmodule Backplane.AiProtocol.ContentBlock do
           | :resource_link
           | :reasoning
           | :tool_call
+          | :encrypted_content
           | :refusal
           | :provider_state
 
@@ -161,8 +168,20 @@ defmodule Backplane.AiProtocol.ContentBlock do
     end
   end
 
+  defp build(:encrypted_content, attrs, opts) do
+    with :ok <- data_only_fields(attrs),
+         %{"encrypted_content" => ciphertext} = data
+         when map_size(data) == 1 and is_binary(ciphertext) and ciphertext != "" <- attrs[:data],
+         {:ok, data} <- required_bounded_value(attrs, :data, opts) do
+      {:ok, %__MODULE__{type: :encrypted_content, data: data}}
+    else
+      {:error, %Error{}} = error -> error
+      _ -> {:error, Error.invalid!("Encrypted content requires exactly one non-empty string")}
+    end
+  end
+
   defp build(type, attrs, opts) when type in [:audio, :resource, :resource_link] do
-    with :ok <- media_fields(attrs),
+    with :ok <- data_only_fields(attrs),
          {:ok, data} <- Backplane.AiProtocol.Media.validate(type, Map.get(attrs, :data), opts) do
       {:ok, %__MODULE__{type: type, data: data}}
     end
@@ -187,9 +206,9 @@ defmodule Backplane.AiProtocol.ContentBlock do
     end
   end
 
-  defp media_fields(attrs) do
+  defp data_only_fields(attrs) do
     if Enum.any?([:text, :tool_call, :reason, :state], &(not is_nil(Map.get(attrs, &1)))),
-      do: {:error, Error.invalid!("Media content must use only its typed data and extensions")},
+      do: {:error, Error.invalid!("Content must use only its typed data and extensions")},
       else: :ok
   end
 

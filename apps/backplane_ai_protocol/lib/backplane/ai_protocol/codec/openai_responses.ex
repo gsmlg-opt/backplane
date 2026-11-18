@@ -1,8 +1,8 @@
 defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
   @moduledoc """
   Pure Responses codec for text, JSON function and raw custom tools, including
-  ordered text/image tool outputs. Images use string-keyed `data`, `mime_type`
-  and optional `detail` fields; see `Backplane.AiProtocol.ContentBlock`.
+  ordered text, image and encrypted tool outputs. See
+  `Backplane.AiProtocol.ContentBlock` for the canonical data forms.
 
   Tool result status `nil` or `:success` encodes as an ordinary completed output.
   Status `:error` is incompatible: Responses has no semantic `is_error` field,
@@ -38,7 +38,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
              request.output_constraints,
              ~w(model input tools stream)
            ),
-         {:ok, input} <- encode_input(request),
+         {:ok, input} <- encode_input(request, opts),
          {:ok, tools} <- encode_tools(request.tools) do
       wire = %{"model" => model, "input" => input, "stream" => Keyword.get(opts, :stream, false)}
       wire = if tools == [], do: wire, else: Map.put(wire, "tools", tools)
@@ -52,20 +52,20 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
 
   def encode_request(_request, _opts), do: invalid("Responses model must be a concrete string")
 
-  defp encode_input(request) do
+  defp encode_input(request, opts) do
     calls =
       for %{content: blocks} <- request.input,
           %{type: :tool_call, tool_call: call} <- blocks,
           do: call
 
-    with :ok <- unique_ids(calls), do: encode_messages(request.input, %{}, [])
+    with :ok <- unique_ids(calls), do: encode_messages(request.input, %{}, [], opts)
   end
 
-  defp encode_messages([], _kinds, acc), do: {:ok, acc |> Enum.reverse() |> List.flatten()}
+  defp encode_messages([], _kinds, acc, _opts), do: {:ok, acc |> Enum.reverse() |> List.flatten()}
 
-  defp encode_messages([message | rest], kinds, acc) do
-    with {:ok, items} <- encode_message(message, kinds) do
-      encode_messages(rest, record_call_kinds(message, kinds), [items | acc])
+  defp encode_messages([message | rest], kinds, acc, opts) do
+    with {:ok, items} <- encode_message(message, kinds, opts) do
+      encode_messages(rest, record_call_kinds(message, kinds), [items | acc], opts)
     end
   end
 
@@ -81,16 +81,16 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
 
   defp record_call_kinds(_message, kinds), do: kinds
 
-  defp encode_message(%{role: :tool} = message, kinds) do
+  defp encode_message(%{role: :tool} = message, kinds, opts) do
     with :ok <- tool_result_status(message.status),
          {:ok, kind} <- fetch_kind(kinds, message.tool_call_id),
-         {:ok, output} <- encode_tool_output(message) do
+         {:ok, output} <- encode_tool_output(message, opts) do
       type = if kind == :custom, do: "custom_tool_call_output", else: "function_call_output"
       {:ok, [%{"type" => type, "call_id" => message.tool_call_id, "output" => output}]}
     end
   end
 
-  defp encode_message(%{role: role, content: blocks}, _kinds) do
+  defp encode_message(%{role: role, content: blocks}, _kinds, _opts) do
     collect(blocks, fn
       %ContentBlock{type: :text, text: text} ->
         type = if role == :assistant, do: "output_text", else: "input_text"
@@ -110,29 +110,37 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end)
   end
 
-  defp encode_message(_state, _kinds), do: Common.unsupported("provider_state")
+  defp encode_message(_state, _kinds, _opts), do: Common.unsupported("provider_state")
 
   defp tool_result_status(status) when status in [nil, :success], do: :ok
   defp tool_result_status(_status), do: Common.unsupported("responses_tool_error_status")
 
-  defp encode_tool_output(message) do
-    if Enum.any?(message.content, &(&1.type == :image)) do
+  defp encode_tool_output(message, opts) do
+    if Enum.any?(message.content, &(&1.type in [:image, :encrypted_content])) do
       if message.extensions == %{},
-        do: collect(message.content, &encode_tool_output_block/1),
+        do: collect(message.content, &encode_tool_output_block(&1, opts)),
         else: Common.unsupported("responses_tool_message_metadata")
     else
       Common.tool_result_text(message.content)
     end
   end
 
-  defp encode_tool_output_block(%ContentBlock{extensions: extensions, reason: reason})
+  defp encode_tool_output_block(%ContentBlock{extensions: extensions, reason: reason}, _opts)
        when extensions != %{} or not is_nil(reason),
        do: Common.unsupported("responses_tool_content_metadata")
 
-  defp encode_tool_output_block(%ContentBlock{type: :text, text: text}),
+  defp encode_tool_output_block(%ContentBlock{type: :text, text: text}, _opts),
     do: {:ok, %{"type" => "input_text", "text" => text}}
 
-  defp encode_tool_output_block(%ContentBlock{type: :image, data: data}) when is_map(data) do
+  defp encode_tool_output_block(%ContentBlock{type: :encrypted_content} = block, opts) do
+    with {:ok, %ContentBlock{data: %{"encrypted_content" => ciphertext}}} <-
+           ContentBlock.new(block, opts) do
+      {:ok, %{"type" => "encrypted_content", "encrypted_content" => ciphertext}}
+    end
+  end
+
+  defp encode_tool_output_block(%ContentBlock{type: :image, data: data}, _opts)
+       when is_map(data) do
     with true <- Enum.all?(Map.keys(data), &(&1 in ~w(data mime_type detail))),
          mime when mime in ~w(image/png image/jpeg image/webp image/gif) <- data["mime_type"],
          detail when detail in ~w(auto low high original) <- Map.get(data, "detail", "auto"),
@@ -143,7 +151,7 @@ defmodule Backplane.AiProtocol.Codec.OpenAIResponses do
     end
   end
 
-  defp encode_tool_output_block(_block), do: Common.unsupported("responses_tool_content")
+  defp encode_tool_output_block(_block, _opts), do: Common.unsupported("responses_tool_content")
 
   defp image_uri(data, mime) when is_binary(data) do
     prefix = "data:#{mime};base64,"

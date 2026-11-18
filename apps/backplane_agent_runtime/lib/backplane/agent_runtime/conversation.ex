@@ -3344,6 +3344,20 @@ defmodule Backplane.AgentRuntime.Conversation do
            coordinator
          )
 
+  defp register_cancellation_admission(
+         %{backend_context: %{family: :extensions}} = operation,
+         registration,
+         coordinator,
+         timeout
+       ),
+       do:
+         Backplane.AgentRuntime.Codex.HistoryNotes.register_admission(
+           operation,
+           registration,
+           coordinator,
+           timeout
+         )
+
   defp register_cancellation_admission(operation, registration, coordinator, _timeout),
     do:
       Backplane.AgentRuntime.Codex.ResourceScope.register_admission(
@@ -3447,11 +3461,21 @@ defmodule Backplane.AgentRuntime.Conversation do
   end
 
   defp release_cancellation_entry(entry) do
-    case entry.operation.tool_name do
-      "request_plugin_install" -> Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry)
-      "clock::sleep" -> Backplane.AgentRuntime.Codex.ClockWait.release(entry)
-      "mcp_events" -> Backplane.AgentRuntime.Codex.EventRequest.release(entry)
-      _ -> Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
+    case entry.operation do
+      %{backend_context: %{family: :extensions}} ->
+        Backplane.AgentRuntime.Codex.HistoryNotes.release(entry)
+
+      %{tool_name: "request_plugin_install"} ->
+        Backplane.AgentRuntime.Codex.PluginInstallWait.release(entry)
+
+      %{tool_name: "clock::sleep"} ->
+        Backplane.AgentRuntime.Codex.ClockWait.release(entry)
+
+      %{tool_name: "mcp_events"} ->
+        Backplane.AgentRuntime.Codex.EventRequest.release(entry)
+
+      _ ->
+        Backplane.AgentRuntime.Codex.ResourceRequest.release(entry)
     end
   end
 
@@ -3459,9 +3483,11 @@ defmodule Backplane.AgentRuntime.Conversation do
   # Keep its exact registration until an authoritative acknowledgement or Runtime teardown.
   defp release_stopped_cancellations(s, uncertain) do
     Enum.reduce(s.cancellations, s, fn {invocation, entry}, current ->
-      if uncertain && entry.operation.tool_name in ["mcp_events", "clock::sleep"],
-        do: current,
-        else: release_cancellation(current, invocation)
+      if uncertain &&
+           (entry.operation.tool_name in ["mcp_events", "clock::sleep"] or
+              get_in(entry.operation, [:backend_context, :family]) == :extensions),
+         do: current,
+         else: release_cancellation(current, invocation)
     end)
   end
 
@@ -3497,14 +3523,16 @@ defmodule Backplane.AgentRuntime.Conversation do
 
     binding_matches and operation.run_id === s.run.run_id and
       operation.incarnation === s.run.incarnation and
-      operation.tool_name in [
-        "list_mcp_resources",
-        "list_mcp_resource_templates",
-        "read_mcp_resource",
-        "request_plugin_install",
-        "mcp_events",
-        "clock::sleep"
-      ] and
+      (operation.tool_name in [
+         "list_mcp_resources",
+         "list_mcp_resource_templates",
+         "read_mcp_resource",
+         "request_plugin_install",
+         "mcp_events",
+         "clock::sleep"
+       ] or
+         (get_in(operation, [:backend_context, :family]) === :extensions and
+            Backplane.AgentRuntime.Codex.ExtensionRuntime.history_notes_tool?(operation.tool_name))) and
       Map.delete(ToolEffects.cancellation_identity(operation), :session_binding_identity) ===
         ToolEffects.cancellation_identity(invocation)
   end
@@ -3596,10 +3624,18 @@ defmodule Backplane.AgentRuntime.Conversation do
       )
 
     Enum.each(entries, fn {_id, entry} ->
-      case entry.operation.tool_name do
-        "clock::sleep" -> Backplane.AgentRuntime.Codex.ClockWait.seal_admission(entry)
-        "mcp_events" -> Backplane.AgentRuntime.Codex.EventRequest.seal_admission(entry)
-        _ -> Backplane.AgentRuntime.Codex.ResourceScope.seal_admission(entry)
+      case entry.operation do
+        %{backend_context: %{family: :extensions}} ->
+          Backplane.AgentRuntime.Codex.HistoryNotes.seal_admission(entry)
+
+        %{tool_name: "clock::sleep"} ->
+          Backplane.AgentRuntime.Codex.ClockWait.seal_admission(entry)
+
+        %{tool_name: "mcp_events"} ->
+          Backplane.AgentRuntime.Codex.EventRequest.seal_admission(entry)
+
+        _ ->
+          Backplane.AgentRuntime.Codex.ResourceScope.seal_admission(entry)
       end
     end)
 
@@ -4007,7 +4043,12 @@ defmodule Backplane.AgentRuntime.Conversation do
                 task_stop != :ok or
                   s.resource_cleanup != :confirmed or
                   map_size(Map.get(s.run, :active_tools, %{})) > 0 or
-                  not provider_retired?(reason, Map.get(s.run, :active_provider), effect, task_stop)
+                  not provider_retired?(
+                    reason,
+                    Map.get(s.run, :active_provider),
+                    effect,
+                    task_stop
+                  )
             }
     }
 
