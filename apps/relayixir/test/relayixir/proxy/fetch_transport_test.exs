@@ -222,16 +222,19 @@ defmodule Relayixir.Proxy.FetchTransportTest do
 
     {port, _server} =
       start_origin(fn socket ->
-        read_request(socket)
+        {_headers, pending} = read_until(socket, "", "\r\n\r\n")
+        send(owner, :continue_upload)
+        assert read_chunked_body(socket, pending, []) == "firstlast"
         send(owner, {:upstream_after_timeout, :gen_tcp.recv(socket, 0, 2_000)})
       end)
 
+    # Start the first-byte deadline only after the origin has received the request headers.
+    conn = Plug.Test.conn(:post, "/silent", "firstlast")
+    {_adapter, state} = conn.adapter
+    conn = %{conn | adapter: {GatedUploadAdapter, state}}
+
     result =
-      HttpPlug.call(
-        Plug.Test.conn(:get, "/silent"),
-        %{upstream(port) | first_byte_timeout: 100, request_timeout: 1_000},
-        body: ""
-      )
+      HttpPlug.call(conn, %{upstream(port) | first_byte_timeout: 100, request_timeout: 1_000})
 
     assert result.status == 504
     assert result.private[:relayixir_proxy_error] == :upstream_timeout
