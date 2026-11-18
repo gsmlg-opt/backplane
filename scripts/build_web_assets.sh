@@ -13,5 +13,4 @@ mix duskmoon_bundler.build backplane_admin --tailwind
 mix do --app backplane_api phx.digest
 mix do --app backplane_admin phx.digest
 
-elixir -pa "_build/${MIX_ENV:-dev}/lib/jason/ebin" \
-  scripts/verify_web_assets.exs --source .
+elixir scripts/verify_web_assets.exs --source .

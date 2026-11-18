@@ -33,7 +33,7 @@ defmodule Backplane.VerifyWebAssets do
       File.cp_r!(Path.join(root, path), Path.join(artifact, path))
     end
 
-    File.write!(Path.join(artifact, @artifact_manifest), Formata.JSON.encode!(manifest))
+    File.write!(Path.join(artifact, @artifact_manifest), JSON.encode!(manifest))
     :ok
   end
 
@@ -66,7 +66,7 @@ defmodule Backplane.VerifyWebAssets do
 
   def run(_args) do
     raise ArgumentError,
-          "usage: elixir -pa PATH_TO_JASON_EBIN scripts/verify_web_assets.exs " <>
+          "usage: elixir scripts/verify_web_assets.exs " <>
             "--source ROOT | --release RELEASE_ROOT | " <>
             "--export ROOT ARTIFACT REVISION VERSION | --import ARTIFACT ROOT REVISION VERSION"
   end
@@ -198,7 +198,7 @@ defmodule Backplane.VerifyWebAssets do
   defp read_json!(path) do
     path
     |> File.read!()
-    |> Formata.JSON.decode!()
+    |> JSON.decode!()
   rescue
     error -> raise "cannot read asset manifest #{path}: #{Exception.message(error)}"
   end

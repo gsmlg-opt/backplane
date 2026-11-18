@@ -88,7 +88,7 @@ defmodule Backplane.DockerfileTest do
     refute dockerfile =~ ~s(mix "do" --app backplane_admin assets.deploy)
 
     assert dockerfile =~
-             "elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs"
+             "elixir scripts/verify_web_assets.exs"
   end
 
   test "normalizes source and plugin versions before compiling either Docker stage" do

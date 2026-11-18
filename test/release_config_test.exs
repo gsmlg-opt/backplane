@@ -857,7 +857,7 @@ defmodule Backplane.ReleaseConfigTest do
       workflow = File.read!(path)
 
       assert workflow =~
-               "elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane"
+               "elixir scripts/verify_web_assets.exs --release _build/prod/rel/backplane"
 
       refute workflow =~ ~s(mix "do" --app backplane_api assets.deploy)
       refute workflow =~ ~s(mix "do" --app backplane_admin assets.deploy)

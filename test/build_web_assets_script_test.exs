@@ -30,7 +30,7 @@ defmodule Backplane.BuildWebAssetsScriptTest do
              "#{@repo_root}\tmix duskmoon_bundler.build backplane_admin --tailwind",
              "#{@repo_root}\tmix do --app backplane_api phx.digest",
              "#{@repo_root}\tmix do --app backplane_admin phx.digest",
-             "#{@repo_root}\telixir -pa _build/test/lib/jason/ebin scripts/verify_web_assets.exs --source ."
+             "#{@repo_root}\telixir scripts/verify_web_assets.exs --source ."
            ]
   end
 

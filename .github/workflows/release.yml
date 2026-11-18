@@ -189,7 +189,7 @@ jobs:
           mix deps.compile
           mix npm.install --frozen
           mix assets.deploy
-          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
+          elixir scripts/verify_web_assets.exs \
             --export . artifacts/web-assets "$GATED_SHA" "$RELEASE_VERSION"
 
       - name: Upload qualified static web assets
@@ -272,7 +272,7 @@ jobs:
       - name: Import qualified web assets
         if: matrix.release == 'backplane'
         run: >-
-          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs
+          elixir scripts/verify_web_assets.exs
           --import artifacts/web-assets . "$GATED_SHA" "$RELEASE_VERSION"
 
       - name: Refresh compiled admin build metadata
@@ -302,7 +302,7 @@ jobs:
           test "${#helpers[@]}" -eq 1 && test -x "${helpers[0]}"
           guardians=(_build/prod/rel/backplane/lib/backplane_mcp_protocol-*/priv/bin/backplane-mcp-stdio-guardian)
           test "${#guardians[@]}" -eq 1 && test -x "${guardians[0]}"
-          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane
+          elixir scripts/verify_web_assets.exs --release _build/prod/rel/backplane
           elixir -e '
             paths = Path.wildcard("_build/prod/rel/backplane/lib/backplane*-*/ebin/*.app")
             for required <- ["backplane.app", "backplane_admin.app"] do

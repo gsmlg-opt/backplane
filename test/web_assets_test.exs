@@ -36,7 +36,7 @@ defmodule Backplane.WebAssetsTest do
     refute File.exists?(Path.join(artifact, "_build"))
     refute File.exists?(Path.join(artifact, "mix.lock"))
 
-    manifest = artifact |> Path.join("web-assets.json") |> File.read!() |> Formata.JSON.decode!()
+    manifest = artifact |> Path.join("web-assets.json") |> File.read!() |> JSON.decode!()
     assert manifest["source_revision"] == @revision
     assert manifest["version"] == "9.8.7"
     assert map_size(manifest["files"]) == 15
@@ -161,7 +161,7 @@ defmodule Backplane.WebAssetsTest do
 
     File.write!(
       Path.join(static, "cache_manifest.json"),
-      Formata.JSON.encode!(%{
+      JSON.encode!(%{
         "latest" => %{
           "assets/css/app-built.css" => "assets/css/app-built-digest.css",
           "assets/js/app-built.js" => "assets/js/app-built-digest.js"
@@ -171,7 +171,7 @@ defmodule Backplane.WebAssetsTest do
   end
 
   defp manifest(logical_name, output) do
-    Formata.JSON.encode!(%{"entries" => %{logical_name => %{"file" => output}}})
+    JSON.encode!(%{"entries" => %{logical_name => %{"file" => output}}})
   end
 
   defp export_assets(context) do

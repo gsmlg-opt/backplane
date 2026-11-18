@@ -129,7 +129,7 @@ jobs:
         if: matrix.release == 'backplane'
         run: |
           elixir test/build_web_assets_script_test.exs
-          elixir -pa _build/prod/lib/jason/ebin test/web_assets_test.exs
+          elixir test/web_assets_test.exs
 
       - name: Verify retained Bookworm Docker release builder
         if: matrix.release == 'backplane' && matrix.target.name == 'linux-x64'
@@ -150,7 +150,7 @@ jobs:
           docker buildx build --target web-assets \
             --build-arg VCS_REF="$revision" --build-arg VERSION="$RELEASE_VERSION" \
             --output type=local,dest=artifacts/web-assets .
-          elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs \
+          elixir scripts/verify_web_assets.exs \
             --import artifacts/web-assets . "$revision" "$RELEASE_VERSION"
 
       - name: Build OTP release
@@ -162,11 +162,7 @@ jobs:
 
       - name: Verify packaged web assets
         if: matrix.release == 'backplane'
-        run: elixir -pa _build/prod/lib/jason/ebin scripts/verify_web_assets.exs --release _build/prod/rel/backplane
-
-      - name: Verify packaged web assets
-        if: matrix.release == 'backplane'
-        run: mix run --no-start scripts/verify_web_assets.exs --release _build/prod/rel/backplane
+        run: elixir scripts/verify_web_assets.exs --release _build/prod/rel/backplane
 
       - name: Smoke test host-agent native database
         if: matrix.release == 'host_agent'
