@@ -550,7 +550,7 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
       Enum.reduce_while(rows, :ok, fn row, :ok ->
         with {:ok, json} <- decode_storage(row["envelope_json"], row["event_id"], state.cipher),
              {:ok, envelope} <- Jason.decode(json) do
-          if envelope["integration"] in ["hermes", "openclaw"] do
+          if envelope["integration"] in ["hermes", "openclaw", "synapsis"] do
             case Store.execute(
                    conn,
                    "INSERT INTO capture_delivery_receipts(event_id,idempotency_key,fingerprint,sequence,acknowledged_at,expires_at) VALUES (?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING",

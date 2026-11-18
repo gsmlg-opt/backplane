@@ -2,7 +2,8 @@ defmodule Backplane.HostAgent.Memory.Hooks do
   @moduledoc """
   Dispatches locally verified runtime hook contracts to capture normalizers.
 
-  Claude Code, Codex and Cursor are supported. OpenCode is deliberately unsupported:
+  Claude Code, Codex, Cursor, Hermes, OpenClaw and Synapsis are supported.
+  OpenCode is deliberately unsupported:
   no OpenCode runtime or versioned hook contract is present in this repository,
   so accepting that integration would make an unverified compatibility claim.
   """
@@ -12,13 +13,15 @@ defmodule Backplane.HostAgent.Memory.Hooks do
   alias Backplane.HostAgent.Memory.Hooks.Cursor
   alias Backplane.HostAgent.Memory.Hooks.Hermes
   alias Backplane.HostAgent.Memory.Hooks.OpenClaw
+  alias Backplane.HostAgent.Memory.Hooks.Synapsis
 
   @adapters %{
     "claude_code" => ClaudeCode,
     "codex" => Codex,
     "cursor" => Cursor,
     "hermes" => Hermes,
-    "openclaw" => OpenClaw
+    "openclaw" => OpenClaw,
+    "synapsis" => Synapsis
   }
 
   @doc "Normalizes a hook through a locally verified adapter."
@@ -31,7 +34,7 @@ defmodule Backplane.HostAgent.Memory.Hooks do
 
   @doc "Returns the explicit availability disposition for a runtime."
   def availability(integration)
-      when integration in ["claude_code", "codex", "cursor", "hermes", "openclaw"],
+      when integration in ["claude_code", "codex", "cursor", "hermes", "openclaw", "synapsis"],
       do: {:supported, Map.fetch!(@adapters, integration)}
 
   def availability("opencode"), do: {:unsupported, :local_hook_contract_unavailable}
