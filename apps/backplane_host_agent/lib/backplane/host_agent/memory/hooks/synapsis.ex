@@ -92,10 +92,10 @@ defmodule Backplane.HostAgent.Memory.Hooks.Synapsis do
 
   defp logical_id("user-prompt-submit", source), do: source["payload"]["message_id"]
   defp logical_id("post-tool-use", source), do: source["payload"]["tool_call_id"]
-  defp logical_id(_, source), do: source["session_id"]
+  defp logical_id(_, source), do: source["event_id"]
 
   defp bounded_json?(source) do
-    case Jason.encode(source) do
+    case Formata.encode(source, :json) do
       {:ok, json} -> byte_size(json) <= 480_000
       {:error, _} -> false
     end

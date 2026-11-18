@@ -525,6 +525,8 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
         {:ok, nil}
 
       {:ok, %Result{rows: [row]}} ->
+        attrs = legacy_synapsis_receipt_attrs(row, attrs)
+
         if row["fingerprint"] == delivery_fingerprint(attrs),
           do: EventEnvelope.build(put_value(attrs, :sequence, row["sequence"])),
           else: {:error, :identity_collision}
@@ -534,6 +536,24 @@ defmodule Backplane.HostAgent.Memory.Spool.Turso do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Older Synapsis lifecycle receipts keyed start/end by session. Match an exact
+  # replay by event ID while keeping that legacy key out of new admissions.
+  defp legacy_synapsis_receipt_attrs(%{"event_id" => event_id, "idempotency_key" => key}, attrs) do
+    hooks = %{"agent.session.started" => "session-start", "agent.session.ended" => "session-end"}
+
+    with "synapsis" <- value(attrs, :integration),
+         ^event_id <- value(attrs, :event_id),
+         session when is_binary(session) <- value(attrs, :session_id),
+         {:ok, hook} <- Map.fetch(hooks, value(attrs, :event_type)),
+         prefix = "synapsis:#{session}:#{hook}:",
+         true <- key == prefix <> session,
+         true <- value(attrs, :idempotency_key) == prefix <> event_id do
+      put_value(attrs, :idempotency_key, key)
+    else
+      _ -> attrs
     end
   end
 

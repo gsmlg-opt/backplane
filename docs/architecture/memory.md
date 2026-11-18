@@ -205,13 +205,16 @@ provenance. The hook payloads are defined below.
 | `session-end` | `reason` | `agent.session.ended` |
 
 Prompt content is limited to 262,144 UTF-8 bytes. The complete JSON request is
-limited to 480,000 bytes. Supply public content only. Session lifecycle events
-use session/hook identity, prompts use their accepted message ID, and tool
-completions use their tool call ID. Preserve the event UUID and complete request
-for a repeated logical event. The existing durable spool assigns ordered session
+limited to 480,000 bytes. Supply public content only. Start and end hooks use the
+event UUID as their logical identity, so a reopened Worker can use the same
+durable session ID with fresh event UUIDs. Prompts use their accepted message ID,
+and tool completions use their tool call ID. Preserve the event UUID and complete
+request when retrying a logical event. The durable spool assigns ordered session
 sequences and retains delivery receipts for up to 30 days, bounded to 100,000
 receipts. Repeated captures within that receipt window return `duplicate`,
-including after upload and host restart. Reuse of an identity with changed
+including after upload and host restart. Exact retries of start and end events
+recorded with the old session-based identity also return `duplicate` while their
+pending rows or delivery receipts exist. Reuse of an identity with changed
 content returns an identity collision. `timestamp` becomes `occurred_at`, and
 the spool's `enqueued_at` records local receipt time.
 

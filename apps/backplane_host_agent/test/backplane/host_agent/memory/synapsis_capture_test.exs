@@ -4,7 +4,7 @@ defmodule Backplane.HostAgent.Memory.SynapsisCaptureTest do
   import Plug.Conn
   import Plug.Test
 
-  alias Backplane.HostAgent.Memory.{CaptureSupervisor, CaptureUploader}
+  alias Backplane.HostAgent.Memory.{CaptureSupervisor, CaptureUploader, Hooks}
   alias Backplane.HostAgent.Memory.Spool.Turso, as: Spool
   alias Backplane.HostAgent.MemoryRouter
   alias Backplane.Memory.Ingest.EventValidator
@@ -121,15 +121,88 @@ defmodule Backplane.HostAgent.Memory.SynapsisCaptureTest do
     Supervisor.stop(after_delivery)
   end
 
+  test "a durable session can reopen and still deduplicate its older lifecycle events", %{
+    tmp_dir: dir
+  } do
+    clock = start_supervised!({Agent, fn -> ~U[2026-11-19 08:00:00Z] end})
+    suffix = System.unique_integer([:positive])
+    spool = :"synapsis_reopen_spool_#{suffix}"
+    host_id = "trusted-host"
+
+    {:ok, supervisor} =
+      CaptureSupervisor.start_link(%{
+        enabled: true,
+        db_path: Path.join(dir, "capture.db"),
+        host_id: host_id,
+        name: :"synapsis_reopen_capture_#{suffix}",
+        spool_name: spool,
+        uploader_name: :"synapsis_reopen_uploader_#{suffix}",
+        channel_provider: ChannelProvider,
+        upload_interval_ms: 0,
+        clock: fn -> Agent.get(clock, & &1) end
+      })
+
+    original =
+      Enum.filter(sources(), fn {hook, _} -> hook in ["session-start", "session-end"] end)
+
+    for {hook, source} <- original do
+      session = source["session_id"]
+      old_key = "synapsis:#{session}:#{hook}:#{session}"
+      assert {:ok, attrs} = Hooks.normalize("synapsis", hook, source, %{host_id: host_id})
+      assert {:ok, _} = Spool.append(spool, %{attrs | idempotency_key: old_key})
+      assert %{"status" => "duplicate", "idempotency_key" => ^old_key} = post_hook(hook, source)
+    end
+
+    assert :ok =
+             Spool.acknowledge(
+               spool,
+               Enum.map(original, fn {_, source} -> source["event_id"] end)
+             )
+
+    Agent.update(clock, &DateTime.add(&1, 61, :second))
+    send(Process.whereis(spool), :compact_acknowledged)
+
+    for {hook, source} <- original do
+      event_id = source["event_id"]
+      session = source["session_id"]
+      old_key = "synapsis:#{session}:#{hook}:#{session}"
+
+      assert {:ok, %{state: :acknowledged, acknowledged: true, reason: nil}} ==
+               Spool.event_status(spool, event_id)
+
+      assert %{"status" => "duplicate", "idempotency_key" => ^old_key} = post_hook(hook, source)
+
+      reopened = %{
+        source
+        | "event_id" => String.replace_prefix(event_id, "2c", "3c"),
+          "timestamp" => "2026-11-19T08:02:00Z"
+      }
+
+      new_id = reopened["event_id"]
+      new_key = "synapsis:#{session}:#{hook}:#{new_id}"
+
+      assert %{"status" => "accepted", "event_id" => ^new_id, "idempotency_key" => ^new_key} =
+               post_hook(hook, reopened)
+
+      assert %{"status" => "duplicate", "event_id" => ^new_id} = post_hook(hook, reopened)
+
+      assert %{"error" => "capture identity collision"} =
+               post_hook(hook, %{source | "timestamp" => reopened["timestamp"]}, 400)
+    end
+
+    assert %{pending_depth: 2} = Spool.stats(spool)
+    Supervisor.stop(supervisor)
+  end
+
   defp post_hook(hook, source, expected_status \\ 202) do
     response =
       :post
-      |> conn("/capture/v1/hooks/synapsis/#{hook}", Jason.encode!(source))
+      |> conn("/capture/v1/hooks/synapsis/#{hook}", Formata.JSON.encode!(source))
       |> put_req_header("content-type", "application/json")
       |> then(&MemoryRouter.call(&1, MemoryRouter.init([])))
 
     assert response.status == expected_status
-    Jason.decode!(response.resp_body)
+    Formata.JSON.decode!(response.resp_body)
   end
 
   defp sources do
