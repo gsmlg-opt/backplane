@@ -91,6 +91,18 @@ if config_env() == :prod do
       port_str -> String.to_integer(port_str)
     end
 
+  api_read_timeout =
+    case Integer.parse(System.get_env("BACKPLANE_API_READ_TIMEOUT_MS", "120000")) do
+      {timeout, ""} when timeout > 0 -> timeout
+      _ -> raise "BACKPLANE_API_READ_TIMEOUT_MS must be a positive integer in milliseconds"
+    end
+
+  api_http_limits =
+    Application.fetch_env!(:backplane_api, Backplane.Api.Endpoint)
+    |> Keyword.fetch!(:http)
+    |> Keyword.fetch!(:http_limits)
+    |> Map.put(:read_timeout, api_read_timeout)
+
   config :backplane_memory, llm_proxy_url: "http://127.0.0.1:#{api_port}"
 
   api_url = System.get_env("BACKPLANE_API_URL", "http://#{host}:#{api_port}")
@@ -107,7 +119,7 @@ if config_env() == :prod do
 
   config :backplane_api, Backplane.Api.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
-    http: [ip: {0, 0, 0, 0}, port: api_port],
+    http: [ip: {0, 0, 0, 0}, port: api_port, http_limits: api_http_limits],
     secret_key_base: secret_key_base,
     server: server?
 
