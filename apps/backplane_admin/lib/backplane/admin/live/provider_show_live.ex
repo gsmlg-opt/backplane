@@ -341,21 +341,39 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp antigravity_display_model?(model) do
     metadata = model.metadata || %{}
-    # Keep hand-authored/legacy rows that predate the native catalog shape.
-    if is_nil(metadata["slug"]) do
-      true
-    else
-      recommended? = metadata["recommended"] == true
+    display_name = metadata["displayName"] || model.display_name
+    recommended? = metadata["recommended"] == true
 
-      recommended? and model.model != "gemini-pro-agent" and
-        not String.match?(model.model, ~r/^gemini-2(?:\.\d+)?-/)
+    has_distinct_display_name? =
+      is_binary(display_name) and display_name != "" and display_name != model.model
+
+    # Keep hand-authored/legacy rows that predate the native catalog shape.
+    cond do
+      is_nil(metadata["slug"]) and metadata["provenance"] != "antigravity_fetch_available_models" ->
+        true
+
+      model.model == "gemini-pro-agent" ->
+        false
+
+      String.match?(model.model, ~r/^(?:chat_|tab_)/) ->
+        false
+
+      String.ends_with?(model.model, "-disabled") or metadata["tagTitle"] == "Unavailable" ->
+        false
+
+      String.match?(model.model, ~r/^gemini-2(?:\.\d+)?-/) ->
+        false
+
+      true ->
+        recommended? or has_distinct_display_name?
     end
   end
 
   defp antigravity_model_family(model) do
     model.model
     |> String.replace(~r/-(?:extra-)?low\z/, "")
-    |> String.replace(~r/-(?:high|medium|tiered|thinking)\z/, "")
+    |> String.replace(~r/-(?:tiered-)?(?:xhigh|high|medium)\z/, "")
+    |> String.replace(~r/-(?:tiered|thinking|sonar|disabled)\z/, "")
     |> case do
       "gemini-pro-agent" -> "gemini-3.1-pro"
       family -> family
@@ -366,8 +384,18 @@ defmodule Backplane.Admin.ProviderShowLive do
     variants
     |> Enum.find(&(&1.model == family))
     |> case do
-      %{display_name: name} when is_binary(name) and name != "" -> name
-      _ -> family
+      %{display_name: name} when is_binary(name) and name != "" and name != family ->
+        name
+
+      _ ->
+        variants
+        |> Enum.find_value(fn variant ->
+          name = (variant.metadata || %{})["displayName"] || variant.display_name
+
+          if is_binary(name) and name != "" and name != variant.model do
+            String.replace(name, ~r/\s*\((?:Extra\s+)?(?:Low|Medium|High|XHigh)\)\z/i, "")
+          end
+        end) || family
     end
   end
 
@@ -387,8 +415,11 @@ defmodule Backplane.Admin.ProviderShowLive do
 
     options =
       if provider && provider.credential && not MapSet.member?(known_names, provider.credential) do
-        options ++ [{provider.credential,
-           dgettext("admin", "%{name} (missing)", name: provider.credential)}]
+        options ++
+          [
+            {provider.credential,
+             dgettext("admin", "%{name} (missing)", name: provider.credential)}
+          ]
       else
         options
       end
@@ -591,7 +622,8 @@ defmodule Backplane.Admin.ProviderShowLive do
 
   defp require_credential(errors, params) do
     if blank?(params["host_service_id"]),
-      do: require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
+      do:
+        require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
       else: errors
   end
 
@@ -850,7 +882,9 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp google_api_version(api) do
-    if String.contains?(api.base_url || "", "/v1beta"), do: "v1beta", else: dgettext("admin", "Unknown")
+    if String.contains?(api.base_url || "", "/v1beta"),
+      do: "v1beta",
+      else: dgettext("admin", "Unknown")
   end
 
   defp google_credential_auth_type(provider) do
@@ -887,12 +921,12 @@ defmodule Backplane.Admin.ProviderShowLive do
   end
 
   defp directory_status(nil), do: nil
+
   defp directory_status(%{errors: []}),
     do: dgettext("admin", "Last reload completed successfully.")
 
   defp directory_status(%{errors: errors}),
-    do:
-      dgettext("errors", "Last reload incomplete: %{errors}", errors: Enum.join(errors, "; "))
+    do: dgettext("errors", "Last reload incomplete: %{errors}", errors: Enum.join(errors, "; "))
 
   defp error(assigns) do
     ~H"""

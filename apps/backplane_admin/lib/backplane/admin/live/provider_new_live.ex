@@ -238,7 +238,8 @@ defmodule Backplane.Admin.ProviderNewLive do
 
   defp require_credential(errors, params) do
     if blank?(params["host_service_id"]),
-      do: require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
+      do:
+        require_field(errors, params, "credential", dgettext("errors", "Credential is required")),
       else: errors
   end
 
@@ -308,18 +309,18 @@ defmodule Backplane.Admin.ProviderNewLive do
     |> Map.put_new("#{prefix}_model_discovery_path", defaults.discovery_path || "")
     |> Map.put_new("#{prefix}_default_headers", "{}")
     |> Map.put_new("#{prefix}_responses_websocket", "false")
-    |> put_backend_config_defaults(surface)
+    |> put_backend_config_defaults(surface, Map.get(defaults, :backend_config, %{}))
     |> put_protocol_defaults(Map.get(defaults, :native_protocols, []))
   end
 
-  defp put_backend_config_defaults(params, :antigravity) do
+  defp put_backend_config_defaults(params, :antigravity, backend_config) do
     params
-    |> Map.put_new("antigravity_project_id", "")
-    |> Map.put_new("antigravity_user_agent", "")
-    |> Map.put_new("antigravity_client_version", "")
+    |> Map.put_new("antigravity_project_id", Map.get(backend_config, "project_id", ""))
+    |> Map.put_new("antigravity_user_agent", Map.get(backend_config, "user_agent", ""))
+    |> Map.put_new("antigravity_client_version", Map.get(backend_config, "client_version", ""))
   end
 
-  defp put_backend_config_defaults(params, _surface), do: params
+  defp put_backend_config_defaults(params, _surface, _backend_config), do: params
 
   defp backend_config_from_params(:antigravity, params) do
     %{
@@ -670,7 +671,9 @@ defmodule Backplane.Admin.ProviderNewLive do
   defp surface_title(:antigravity), do: "Google Antigravity Native API"
 
   defp surface_description(:openai), do: dgettext("admin", "Used by clients calling /v1.")
-  defp surface_description(:anthropic), do: dgettext("admin", "Used by clients calling /v1/messages.")
+
+  defp surface_description(:anthropic),
+    do: dgettext("admin", "Used by clients calling /v1/messages.")
 
   defp surface_description(:google),
     do:
